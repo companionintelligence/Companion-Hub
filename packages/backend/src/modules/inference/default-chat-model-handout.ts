@@ -37,13 +37,16 @@ export function onboardingTier(
 
 /**
  * The chat model an app is handed while nobody has chosen one: the setup wizard's Default among the
- * models the engine has (`defaultChatModelId`). `available` is the wizard's list, the catalog rows
- * the hardware may run in catalog order. A model `accept` rules out, one the app cannot use, is passed
- * over for the next in that order. Undefined when the engine has none of them, which leaves the
- * caller to its recommendation list.
+ * models the engine has (`defaultChatModelId`). `available` and `recommended` are the wizard's lists
+ * for this Hub, read at {@link onboardingTier} as `GET /api/inference/onboarding-profile` reads them:
+ * the catalog rows the hardware may run in catalog order, and the recommendations best first. The
+ * installed model highest on `recommended` wins, else the first installed in catalog order. A model
+ * `accept` rules out, one the app cannot use, is passed over for the next. Undefined when the engine
+ * has none of them, which leaves the caller to its recommendation list.
  */
 export function installedDefaultChatModel(options: {
   available: readonly CuratedModel[];
+  recommended: readonly CuratedModel[];
   backend: InferenceBackendType;
   isInstalled: (model: CuratedModel) => boolean;
   accept: (model: CuratedModel) => boolean;
@@ -52,8 +55,9 @@ export function installedDefaultChatModel(options: {
   const id = defaultChatModelId({
     backend,
     availableModels: available,
+    recommendedModels: options.recommended,
     candidateIds: available.filter((model) => model.backend === backend && options.isInstalled(model)).map((model) => model.id),
-    installedOnly: true,
+    candidatesOnly: true,
     accept: options.accept,
   });
   return id ? available.find((model) => model.id === id) : undefined;

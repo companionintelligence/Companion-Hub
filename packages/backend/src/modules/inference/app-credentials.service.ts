@@ -328,20 +328,20 @@ export class AppCredentialsService implements OnApplicationShutdown {
     const preferredModelId = preferences.preferredModel;
     const recommended = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile).filter((m) => m.backend === backendType);
     // With no model chosen, the setup wizard's Default leads while the engine has it, as on the app.env
-    // path (`InferenceEnvResolver`): the top of the recommendation list is a model nobody was offered.
-    const wizardDefault = preferredModelId
-      ? undefined
-      : installedDefaultChatModel({
-          available:
-            this.modelRegistry.getModelsForHardware(
-              onboardingTier(profile, (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram)),
-              profile,
-              { includeRemoteHostBackends: true },
-            ) ?? [],
-          backend: backendType,
-          isInstalled: (model) => this.isCuratedModelAvailable(model, endpointHealth.modelsLoaded, backendType, endpointReady),
-          accept: (model) => checkModelRequirements(model, requirements).verdict !== 'fails',
-        });
+    // path (`InferenceEnvResolver`). It is ranked by the lists the wizard shows on this Hub, read at the
+    // onboarding tier: `recommended` above is read at `profile.tier`, which for a card the container
+    // runtime cannot reach yet is another tier than the wizard's.
+    let wizardDefault: CuratedModel | undefined;
+    if (!preferredModelId) {
+      const wizardTier = onboardingTier(profile, (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram));
+      wizardDefault = installedDefaultChatModel({
+        available: this.modelRegistry.getModelsForHardware(wizardTier, profile, { includeRemoteHostBackends: true }) ?? [],
+        recommended: this.modelRegistry.getRecommendedModelsForHardware(wizardTier, profile) ?? [],
+        backend: backendType,
+        isInstalled: (model) => this.isCuratedModelAvailable(model, endpointHealth.modelsLoaded, backendType, endpointReady),
+        accept: (model) => checkModelRequirements(model, requirements).verdict !== 'fails',
+      });
+    }
     if (wizardDefault) {
       this.logger.info(`[AppCredentials] ${slug}: no chat model chosen yet; handing out the setup wizard's default ${wizardDefault.backendModelId}`);
     }
