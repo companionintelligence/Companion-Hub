@@ -733,6 +733,68 @@ describe('AiSetupStep', () => {
       await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
       expect(isMarkedDefault('qwen3-8b')).toBe(true);
     });
+
+    it('leaves no Default through a rescan after the person unticked every chat model', async () => {
+      api.profile = laptopProfile(['qwen3-5-4b', 'nomic-embed-text']);
+      const user = userEvent.setup();
+      renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-4b'));
+      await user.click(screen.getByTestId('rescan-btn'));
+      await waitFor(() => expect(rescanInferenceHardware).toHaveBeenCalled());
+      await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(2));
+
+      expect(isMarkedDefault('qwen3-5-4b')).toBe(false);
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+      expect(isMarkedDefault('qwen3-8b')).toBe(true);
+    });
+
+    it('does not tick an embedder off the list a re-check finds while the person has one ticked', async () => {
+      api.profile = laptopProfile(['qwen3-5-4b']);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      // Nomic Embed Text is ticked to download. EmbeddingGemma arrives meanwhile.
+      await user.click(screen.getByTestId('model-checkbox-nomic-embed-text'));
+      api.profile = laptopProfile(['qwen3-5-4b', 'embeddinggemma']);
+      await user.click(screen.getByTestId('ollama-recheck-btn'));
+      await user.click(screen.getByTestId('other-group-embedding'));
+      await waitFor(() => expect(within(screen.getByTestId('model-row-embeddinggemma')).getByText('Installed')).toBeInTheDocument());
+
+      expect(isTicked('embeddinggemma')).toBe(false);
+      expect(await continueWith(onComplete)).toMatchObject({ selectedModels: ['qwen3-5-4b', 'nomic-embed-text'] });
+    });
+
+    it('ticks a model a re-check finds as the Default after every chat model was unticked, wherever the catalog lists it', async () => {
+      api.profile = laptopProfile(['qwen3-5-0-8b']);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      // Gemma 3 270M comes after the unticked Qwen 3.5 0.8B in the catalog. Neither is recommended.
+      await user.click(screen.getByTestId('other-group-small'));
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-0-8b'));
+      api.profile = laptopProfile(['qwen3-5-0-8b', 'gemma3-270m']);
+      await user.click(screen.getByTestId('ollama-recheck-btn'));
+      await waitFor(() => expect(isTicked('gemma3-270m')).toBe(true));
+
+      expect(await continueWith(onComplete)).toMatchObject({ selectedModels: ['gemma3-270m'], preferredModelId: 'gemma3-270m' });
+    });
+
+    it('does not save a vision model the person unticked', async () => {
+      api.profile = laptopProfile(['qwen3-8b', 'gemma4-e4b', 'nomic-embed-text']);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      await user.click(screen.getByTestId('model-checkbox-gemma4-e4b'));
+
+      const config = await continueWith(onComplete);
+      expect(config).toMatchObject({ selectedModels: ['qwen3-8b', 'nomic-embed-text'], preferredModelId: 'qwen3-8b' });
+      expect(config.preferredVisionModelId).toBeUndefined();
+    });
   });
 
   it('submits only Ollama-backed models with the agent framework and exposure', async () => {

@@ -149,6 +149,8 @@ export const AiSetupStep = ({
   selectedModelIdsRef.current = selectedModelIds;
   const preferredModelIdRef = useRef(preferredModelId);
   preferredModelIdRef.current = preferredModelId;
+  // Models the person unticked. A vision model among them is not saved as the vision model by default.
+  const untickedModelIdsRef = useRef(new Set<string>());
 
   // Both agent frameworks share one default: among the ticked chat models (or, with `selectedIds` left
   // out, the ones the engine has), the highest on the recommended list, else the first in catalog
@@ -192,12 +194,14 @@ export const AiSetupStep = ({
    * chat model the engine has is ticked as the Default. An embedder is ticked the same way, or a Hub
    * whose only embedder is off the list would save none. Memory would then be handed the recommended
    * one to download in place of the one its index was built with. `defaultId` is the Default to keep
-   * ticked. Left out (or passed as `undefined`), it is the one the wizard would mark.
+   * ticked. Left out (or passed as `undefined`), it is the one the wizard would mark. `alreadyTicked`
+   * is what a re-check keeps: an embedder among it stands, so an off-list one that arrives is not added.
    */
   const getDefaultSelectedModelIds = (
     data: HardwareProfileResponse,
     backend: InferenceBackendType,
     defaultId = getDefaultPreferredModelId(data, backend),
+    alreadyTicked: readonly string[] = [],
   ): string[] => {
     const installed = new Set(data.installedCatalogIds ?? []);
     const onEngine = data.availableModels.filter((m) => {
@@ -207,8 +211,9 @@ export const AiSetupStep = ({
     });
     const recommended = new Set(data.recommendedModels.map((m) => m.id));
     const ticked = new Set(onEngine.filter((m) => recommended.has(m.id) || m.id === defaultId).map((m) => m.id));
+    const embedderTicked = [...ticked, ...alreadyTicked].some((id) => data.availableModels.some((m) => m.id === id && isEmbeddingModel(m)));
     const firstEmbedder = onEngine.find(isEmbeddingModel);
-    if (firstEmbedder && !onEngine.some((m) => ticked.has(m.id) && isEmbeddingModel(m))) {
+    if (firstEmbedder && !embedderTicked) {
       ticked.add(firstEmbedder.id);
     }
     return onEngine.filter((m) => ticked.has(m.id)).map((m) => m.id);
@@ -250,10 +255,12 @@ export const AiSetupStep = ({
       const defaultSelected = keptSelection ?? getDefaultSelectedModelIds(data, resolvedBackend);
       setSelectedModelIds(defaultSelected);
       const keptPreferred = preferredModelIdRef.current;
+      // As on a re-check: someone who unticked every chat model keeps no Default through a rescan, so
+      // the badge does not land on a card left unticked.
       setPreferredModelId(
         keptSelection && keptPreferred && defaultSelected.includes(keptPreferred)
           ? keptPreferred
-          : getDefaultPreferredModelId(data, resolvedBackend, defaultSelected),
+          : getDefaultPreferredModelId(data, resolvedBackend, defaultSelected, keptSelection !== null && !keptPreferred),
       );
     } catch (e) {
       // Same rule for the failure path: a newer request is already in flight and may well succeed,
@@ -364,9 +371,11 @@ export const AiSetupStep = ({
       // Preserve earlier opt-outs while selecting newly detected models, which are ticked as the first
       // load would tick them, around the Default kept above. With that one gone, a chat model still
       // ticked stands as the Default, so a model off the list that arrives is not ticked in its place.
-      // Only with no chat model ticked is a new one ticked as the Default.
+      // Only with no chat model ticked is a new one ticked as the Default. The new models are ranked
+      // among themselves, so a model the person unticked earlier does not decide which one that is.
       const standingDefault = keptPreferred ?? getDefaultPreferredModelId(data, backend, stillSelected, true);
-      const newlySelectable = getDefaultSelectedModelIds(data, backend, standingDefault).filter((id) => !previouslyInstalled.has(id));
+      const newlyInstalled = { ...data, installedCatalogIds: [...nextInstalled].filter((id) => !previouslyInstalled.has(id)) };
+      const newlySelectable = getDefaultSelectedModelIds(newlyInstalled, backend, standingDefault, stillSelected);
       const nextSelected = [...new Set([...stillSelected, ...newlySelectable])];
       setSelectedModelIds(nextSelected);
       // Someone who unticked every chat model left no Default. The re-check keeps it that way unless it
@@ -486,6 +495,8 @@ export const AiSetupStep = ({
 
     const isRemoving = selectedModelIds.includes(modelId);
     const next = isRemoving ? selectedModelIds.filter((id) => id !== modelId) : [...selectedModelIds, modelId];
+    if (isRemoving) untickedModelIdsRef.current.add(modelId);
+    else untickedModelIdsRef.current.delete(modelId);
     setSelectedModelIds(next);
     const isAgent = model.backend === selectedBackend && isAgentModel(model);
     if (isRemoving && modelId === preferredModelId) {
@@ -548,10 +559,16 @@ export const AiSetupStep = ({
     const effectivePreferredEmbeddingModelId = getDefaultPreferredAuxModelId(profile, embeddingBackend, isEmbeddingModel, selectedModels);
     // A vision model off the recommended list is a whole chat model, so it is not ticked (and pinned)
     // for this. With nothing ticked that sees images, the one the engine has is still saved, as it was
-    // while every installed model was ticked; otherwise apps are handed one that may not be there.
+    // while every installed model was ticked; otherwise apps are handed one that may not be there. One
+    // the person unticked stays out, as it did then.
     const effectivePreferredVisionModelId =
       getDefaultPreferredAuxModelId(profile, selectedBackend, isVisionModel, selectedModels) ??
-      getDefaultPreferredAuxModelId(profile, selectedBackend, isVisionModel);
+      getDefaultPreferredAuxModelId(
+        profile,
+        selectedBackend,
+        isVisionModel,
+        installedCatalogIds.filter((id) => !untickedModelIdsRef.current.has(id)),
+      );
 
     return {
       agentFrameworks,
