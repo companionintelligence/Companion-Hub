@@ -1,4 +1,5 @@
 import { hubNetworkName } from '@/common/constants';
+import { HUB_FORWARD_AUTH_MIDDLEWARES } from '@ci-hub/common/schemas';
 
 export type ExposureMode = 'local' | 'cloudflare' | 'tailscale';
 
@@ -27,9 +28,6 @@ export const APP_STARTING_MIDDLEWARE = 'ci-hub-app-starting@file';
 /** `traefik.http.routers.<router>.<option>`. Traefik reads option names without regard to case. */
 const HTTP_ROUTER_LABEL = /^traefik\.http\.routers\.([^.]+)\.(.+)$/i;
 
-/** The Hub's forward auth. The Hub's own container also defines it for the Docker provider. */
-const FORWARD_AUTH_MIDDLEWARES = new Set(['ci-hub@file', 'ci-hub@docker']);
-
 function middlewareChain(value: string | boolean | undefined): string[] {
   return typeof value === 'string'
     ? value
@@ -44,34 +42,46 @@ function middlewareChain(value: string | boolean | undefined): string[] {
  * whatever chain an app's `extraLabels` set there, so a manifest can't drop the edge header strip or
  * the Hub login. Donetick, Firefly III and OnlyOffice set chains on these routers: theirs now follow
  * ours, and their forward auth under the other provider counts as ours, so it isn't run twice.
- * Runs after interpolation and compares keys without regard to case, as Traefik reads them.
+ * Runs after interpolation and compares keys without regard to case, as Traefik reads them. A chain
+ * under another spelling of our key is folded into ours: Traefik would read only one of the two and
+ * TraefikConfigService only ours.
  */
 export function withHubMiddlewaresFirst(
   labels: Record<string, string | boolean>,
   hubLabels: Record<string, string | boolean>,
 ): Record<string, string | boolean> {
-  const hubChains = new Map<string, string[]>();
+  const hubChains = new Map<string, { key: string; chain: string[] }>();
   for (const [key, value] of Object.entries(hubLabels)) {
     if (HTTP_ROUTER_LABEL.exec(key)?.[2]?.toLowerCase() === 'middlewares') {
-      hubChains.set(key.toLowerCase(), middlewareChain(value));
+      hubChains.set(key.toLowerCase(), { key, chain: middlewareChain(value) });
     }
   }
 
   const result = { ...labels };
+  const chains = new Map<string, string[]>();
   for (const [key, value] of Object.entries(labels)) {
-    const hubChain = hubChains.get(key.toLowerCase());
-    if (!hubChain) {
+    const hub = hubChains.get(key.toLowerCase());
+    if (!hub) {
       continue;
     }
-    const chain = [...hubChain];
-    const hasForwardAuth = chain.some((name) => FORWARD_AUTH_MIDDLEWARES.has(name.toLowerCase()));
+    let chain = chains.get(hub.key);
+    if (!chain) {
+      chain = [...hub.chain];
+      chains.set(hub.key, chain);
+    }
+    const hasForwardAuth = hub.chain.some((name) => HUB_FORWARD_AUTH_MIDDLEWARES.has(name.toLowerCase()));
     for (const name of middlewareChain(value)) {
       const lower = name.toLowerCase();
       const known = chain.some((existing) => existing.toLowerCase() === lower);
-      if (!known && !(hasForwardAuth && FORWARD_AUTH_MIDDLEWARES.has(lower))) {
+      if (!known && !(hasForwardAuth && HUB_FORWARD_AUTH_MIDDLEWARES.has(lower))) {
         chain.push(name);
       }
     }
+    if (key !== hub.key) {
+      delete result[key];
+    }
+  }
+  for (const [key, chain] of chains) {
     result[key] = chain.join(',');
   }
   return result;

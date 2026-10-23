@@ -1373,6 +1373,7 @@ describe('DockerComposeBuilder — an app’s Traefik labels stay inside the app
       {
         'traefik.http.middlewares.{{CI_HUB_APP_ID}}-proto.headers.customrequestheaders.X-Forwarded-Proto': 'https',
         'traefik.http.routers.{{CI_HUB_APP_ID}}.middlewares': '{{CI_HUB_APP_ID}}-proto@docker',
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-insecure.middlewares': '{{CI_HUB_APP_ID}}-gzip@docker',
         // Traefik reads option names without regard to case, so this is the same chain.
         'traefik.http.routers.{{CI_HUB_APP_ID}}-insecure.MIDDLEWARES': 'ci-hub@docker,{{CI_HUB_APP_ID}}-proto@docker',
       },
@@ -1382,10 +1383,11 @@ describe('DockerComposeBuilder — an app’s Traefik labels stay inside the app
       'ci-hub-edge-headers@file,ci-hub@file,my-app-_user-proto@docker,ci-hub-app-starting@file',
     );
     // The Hub's forward auth under the Docker provider is the same login, so it isn't asked for twice.
-    expect(labels['traefik.http.routers.my-app-_user-insecure.MIDDLEWARES']).toBe(
-      'ci-hub-edge-headers@file,ci-hub@file,my-app-_user-proto@docker,ci-hub-app-starting@file',
+    // The other spelling is folded into ours, the one key Traefik and TraefikConfigService both read.
+    expect(labels['traefik.http.routers.my-app-_user-insecure.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,my-app-_user-gzip@docker,my-app-_user-proto@docker,ci-hub-app-starting@file',
     );
-    expect(labels['traefik.http.routers.my-app-_user-insecure.middlewares']).toMatch(/^ci-hub-edge-headers@file,ci-hub@file(,|$)/);
+    expect(labels).not.toHaveProperty('traefik.http.routers.my-app-_user-insecure.MIDDLEWARES');
   });
 
   it('keeps names that spell the app id out, as a compose written for this app may', async () => {
