@@ -265,6 +265,11 @@ is set, so the source-address check alone passed public tunnel traffic with no c
   inside the appliance when its resolved address is private, none of `TUNNEL_MARKER_HEADERS` is
   present, and every hop of `x-forwarded-for` is private. An internal request is admitted before
   `Authorization` is read, so an app sending `Bearer ollama` on every turn costs no key-store lookup.
+  The tailnet (100.64.0.0/10, `fd7a:115c:a1e0::/48`) counts as private, so a tailnet caller is admitted
+  here by default. With `HUB_INFERENCE_TAILNET_AUTH=require-key` the guard passes
+  `{ tailnetIsOutside: true }` and `internalOriginRefusal` answers `tailnet-address` for a resolved
+  address or forwarded hop on the tailnet, which sends the caller to leg 2. Only this guard asks; the
+  app-only guards (`InternalOriginGuard`, `AppContainerOriginGuard`) and Portal SSO keep the default.
 - **Leg 2, key.** Otherwise the request needs `Authorization: Bearer <key>` where the token is
   64 lowercase hex (`HUB_API_KEY_SHAPE` in `api-key.service.ts` — the one definition `AuthMiddleware`
   screens `qa:read` tokens with too) and resolves with the `inference` scope. The guard sets
