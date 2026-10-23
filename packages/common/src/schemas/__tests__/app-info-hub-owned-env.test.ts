@@ -148,6 +148,46 @@ describe('appInfoSchema: a field that writes APP_BASE_URL', () => {
 });
 
 /*
+ * The Hub takes the host of APP_BASE_URL as one of the app's own hosts. A Hub integration writes
+ * after that, and a base URL field keeps the value it finds in app.env, so its host would be the
+ * next env build's APP_BASE_HOST.
+ */
+describe('appInfoSchema: a Hub integration that names APP_BASE_URL', () => {
+  const refused = "APP_BASE_URL is the app's address from the Hub or the person, so a Hub integration can't set it";
+
+  it('is refused for every integration', () => {
+    expect(
+      issuesOf({
+        hub_integration: {
+          inference: { llm_base_url: 'APP_BASE_URL' },
+          inference_provider: { env: 'APP_BASE_URL', ollama: 'a', openai_compatible: 'b' },
+          oidc: { issuer_env: 'APP_BASE_URL' },
+          memory: { url_env: 'APP_BASE_URL', token_env: 'APP_BASE_URL' },
+        },
+      }),
+    ).toEqual([
+      ['hub_integration.inference.llm_base_url', refused],
+      ['hub_integration.inference_provider.env', refused],
+      ['hub_integration.oidc.issuer_env', refused],
+      ['hub_integration.memory.url_env', refused],
+      ['hub_integration.memory.token_env', refused],
+    ]);
+  });
+
+  it('leaves APP_BASE_URL to a form field and an alias', () => {
+    expect(
+      issuesOf({
+        form_fields: [
+          { type: 'app_base_url', label: 'Public URL', env_variable: 'APP_BASE_URL' },
+          { type: 'app_base_url', label: 'Site URL', env_variable: 'SITE_URL', alias_env_variables: ['APP_BASE_URL'] },
+        ],
+        hub_integration: { inference: { llm_base_url: 'LLM_URL' }, memory: { url_env: 'MEMORY_URL', token_env: 'MEMORY_TOKEN' } },
+      }),
+    ).toEqual([]);
+  });
+});
+
+/*
  * An installed app keeps the manifest it was installed with. One installed before these rules is
  * read with what they refuse left out, so the app keeps starting with the Hub's values.
  */
@@ -193,6 +233,29 @@ describe('parseInstalledAppInfo', () => {
       'hub_integration.inference_provider (APP_DOMAIN)',
       'hub_integration.oidc (APP_URN)',
       'hub_integration.memory (APP_LOCAL_DOMAIN)',
+    ]);
+  });
+
+  it('reads one whose Hub integrations name APP_BASE_URL without them', () => {
+    const { parsed, leftOut } = installed({
+      hub_integration: {
+        inference: { llm_base_url: 'APP_BASE_URL', chat_model: 'LLM_MODEL' },
+        inference_provider: { env: 'APP_BASE_URL', ollama: 'ollama', openai_compatible: 'openai' },
+        oidc: { issuer_env: 'APP_BASE_URL' },
+        memory: { url_env: 'MEMORY_URL', token_env: 'APP_BASE_URL' },
+      },
+    });
+
+    const integration = parsed.success ? parsed.data.hub_integration : undefined;
+    expect(integration?.inference).toEqual({ chat_model: 'LLM_MODEL' });
+    expect(integration?.memory).toEqual({});
+    expect(integration?.inference_provider).toBeUndefined();
+    expect(integration?.oidc).toBeUndefined();
+    expect(leftOut).toEqual([
+      'hub_integration.inference.llm_base_url (APP_BASE_URL)',
+      'hub_integration.inference_provider (APP_BASE_URL)',
+      'hub_integration.oidc (APP_BASE_URL)',
+      'hub_integration.memory (APP_BASE_URL)',
     ]);
   });
 

@@ -14,6 +14,7 @@ import {
   type AppInfo,
   type FormField,
   HUB_OWNED_APP_ENV_VARS,
+  hubIntegrationMayWrite,
   type MemoryUrlStyle,
   type HubIntegration,
   writesAppBaseUrl,
@@ -118,13 +119,13 @@ const HUB_ONLY_SECRET_ENV_VAR_SET: ReadonlySet<string> = new Set(HUB_ONLY_SECRET
  *
  * Those names come from the manifest, which any store can publish, so a Hub-only secret is never
  * passed through under one: `"token_env": "JWT_SECRET"` would otherwise hand the app that secret.
- * Nor is a value the Hub sets for the app itself (`HUB_OWNED_APP_ENV_VARS`).
+ * Nor is a name no Hub integration may write (`hubIntegrationMayWrite`).
  */
 export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration'>): ReadonlySet<string> {
   const keys = new Set(HUB_ENV_KEYS_INHERITED_BY_APPS);
   const memory = config.hub_integration?.memory;
   for (const name of [memory?.url_env, memory?.token_env]) {
-    if (name && !HUB_ONLY_SECRET_ENV_VAR_SET.has(name) && !HUB_OWNED_APP_ENV_VARS.has(name)) keys.add(name);
+    if (name && !HUB_ONLY_SECRET_ENV_VAR_SET.has(name) && hubIntegrationMayWrite(name)) keys.add(name);
   }
   return keys;
 }
@@ -137,6 +138,15 @@ export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration'
  */
 function manifestMayWriteEnv(name: string): boolean {
   return !HUB_OWNED_APP_ENV_VARS.has(name);
+}
+
+/**
+ * Whether a manifest's Hub integration may have the Hub write `name`: not a value the Hub sets for
+ * the app and not `APP_BASE_URL` (`hubIntegrationMayWrite`). As with {@link manifestMayWriteEnv}, the
+ * schema refuses those names already.
+ */
+function integrationMayWriteEnv(name: string): boolean {
+  return hubIntegrationMayWrite(name);
 }
 
 /**
@@ -225,7 +235,7 @@ export function applyHubInferenceEnv(options: {
 
     const value = hubKey === 'llm_base_url' && stripV1 ? resolved.replace(/\/v1\/?$/, '') : resolved;
 
-    if (manifestMayWriteEnv(appEnvVar)) {
+    if (integrationMayWriteEnv(appEnvVar)) {
       options.envMap.set(appEnvVar, value);
     }
   }
@@ -426,7 +436,7 @@ export class AppHelpers {
     }
 
     const configuredSwitch = config.hub_integration?.inference_provider;
-    const providerSwitch = configuredSwitch && manifestMayWriteEnv(configuredSwitch.env) ? configuredSwitch : undefined;
+    const providerSwitch = configuredSwitch && integrationMayWriteEnv(configuredSwitch.env) ? configuredSwitch : undefined;
     if (providerSwitch) {
       const usesOpenAiCompatible = (this.config.getInferencePreferences().preferredBackend ?? 'ollama') !== 'ollama';
       entries.set(providerSwitch.env, usesOpenAiCompatible ? providerSwitch.openai_compatible : providerSwitch.ollama);
@@ -440,7 +450,7 @@ export class AppHelpers {
     if (providerSwitch) ownedKeys.add(providerSwitch.env);
     return {
       entries,
-      ownedKeys: [...ownedKeys].filter((key): key is string => typeof key === 'string' && key.length > 0 && manifestMayWriteEnv(key)),
+      ownedKeys: [...ownedKeys].filter((key): key is string => typeof key === 'string' && key.length > 0 && integrationMayWriteEnv(key)),
       aiEnv,
     };
   }
@@ -632,6 +642,13 @@ export class AppHelpers {
     // schema refuses such a manifest, so this is only for one that reaches here some other way.
     const leaveOutManifestEnv = (name: string, source: string) => {
       this.logger.warn(`[AppHelpers] ${appUrn}: ${source} names ${name}, which the Hub sets for the app; the Hub's value is kept`);
+    };
+    const leaveOutIntegrationEnv = (name: string, source: string) => {
+      if (HUB_OWNED_APP_ENV_VARS.has(name)) {
+        leaveOutManifestEnv(name, source);
+      } else {
+        this.logger.warn(`[AppHelpers] ${appUrn}: ${source} names ${name}, which no Hub integration may write; it is left out`);
+      }
     };
 
     /*
@@ -1092,9 +1109,9 @@ export class AppHelpers {
     // to opted-in apps protects third-party identity-provider variables with the
     // same name.
     const oidcIntegration =
-      config.hub_integration?.oidc && manifestMayWriteEnv(config.hub_integration.oidc.issuer_env) ? config.hub_integration.oidc : undefined;
+      config.hub_integration?.oidc && integrationMayWriteEnv(config.hub_integration.oidc.issuer_env) ? config.hub_integration.oidc : undefined;
     if (config.hub_integration?.oidc && !oidcIntegration) {
-      leaveOutManifestEnv(config.hub_integration.oidc.issuer_env, 'hub_integration.oidc.issuer_env');
+      leaveOutIntegrationEnv(config.hub_integration.oidc.issuer_env, 'hub_integration.oidc.issuer_env');
     }
     if (oidcIntegration) {
       if (normalizedCloudUrl) {
@@ -1213,10 +1230,10 @@ export class AppHelpers {
     // brokered connection exists.
     const memoryIntegration = config.hub_integration?.memory;
     const refusedMemoryEnv = [memoryIntegration?.url_env, memoryIntegration?.token_env].filter(
-      (name): name is string => name !== undefined && !manifestMayWriteEnv(name),
+      (name): name is string => name !== undefined && !integrationMayWriteEnv(name),
     );
     for (const name of refusedMemoryEnv) {
-      leaveOutManifestEnv(name, 'hub_integration.memory');
+      leaveOutIntegrationEnv(name, 'hub_integration.memory');
     }
     if (memoryIntegration?.url_env && memoryIntegration?.token_env && refusedMemoryEnv.length === 0) {
       // The app URN lets its wrapper query the per-app Companion Memory connect

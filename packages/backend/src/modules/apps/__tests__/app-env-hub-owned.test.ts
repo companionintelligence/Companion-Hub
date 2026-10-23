@@ -13,7 +13,7 @@ import { fromPartial } from '@total-typescript/shoehorn';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { AppFilesManager } from '../app-files-manager';
-import { AppHelpers } from '../app.helpers';
+import { AppHelpers, appInheritableHubEnvKeys } from '../app.helpers';
 
 /*
  * The Hub writes the app's id, name, store, URN, hosts and data directory into its env. Its Traefik
@@ -338,6 +338,48 @@ describe('AppHelpers.generateEnvFile keeps the values the Hub sets for the app',
       // Another field's default doesn't count for this one.
       appFilesManager.getInstalledBaseUrlDefaults.mockResolvedValue(new Map([['DOCS_URL', DEFAULT]]));
       expect((await generate(appInfo({ form_fields: [baseUrlField] }))).get('APP_BASE_HOST')).toBe('ci-hub.local');
+    });
+  });
+
+  /*
+   * A Hub integration writes after the Hub has taken APP_BASE_HOST from APP_BASE_URL, and a base URL
+   * field keeps what app.env holds, so the next env build would take the integration's host. The
+   * manifest schema refuses APP_BASE_URL there; the env builder doesn't write it either.
+   */
+  describe('a Hub integration that names APP_BASE_URL', () => {
+    const baseUrlField = field({ type: 'app_base_url', env_variable: 'APP_BASE_URL' });
+
+    it.each([
+      ['inference', { inference: { llm_base_url: 'APP_BASE_URL' } }],
+      ['inference_provider', { inference_provider: { env: 'APP_BASE_URL', ollama: `http://${OTHER}`, openai_compatible: `http://${OTHER}` } }],
+      ['oidc', { oidc: { issuer_env: 'APP_BASE_URL' } }],
+      ['memory', { memory: { url_env: 'APP_BASE_URL', token_env: 'MEMORY_TOKEN' } }],
+    ])('leaves the app its own address: %s', async (_name, integration) => {
+      inferenceEnv.resolve.mockResolvedValue(fromPartial({ CI_LLM_BASE_URL: `http://${OTHER}:11434/v1`, CI_CHAT_MODEL: OTHER }));
+      memoryConnection.getInjectableCreds.mockResolvedValue(fromPartial({ url: `https://${OTHER}.example.com`, token: OTHER }));
+      const info = appInfo({ categories: ['ai'], form_fields: [baseUrlField], hub_integration: fromPartial(integration) });
+
+      const first = await generate(info);
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/x/app.env', content: written });
+      const second = await generate(info);
+
+      expect(first.get('APP_BASE_URL')).toBe('https://app-home-acme.example.com');
+      expect([second.get('APP_BASE_URL'), second.get('APP_BASE_HOST')]).toEqual(['https://app-home-acme.example.com', 'app-home-acme.example.com']);
+    });
+
+    it('leaves it out of the keys the inference block owns and of what an app inherits', async () => {
+      const inference = await appHelpers.buildInferenceEnv('app', {
+        categories: ['ai'],
+        hub_integration: fromPartial({ inference: { llm_base_url: 'APP_BASE_URL', chat_model: 'LLM_MODEL' } }),
+      });
+      expect(inference.ownedKeys).toContain('LLM_MODEL');
+      expect(inference.ownedKeys).not.toContain('APP_BASE_URL');
+
+      const inherited = appInheritableHubEnvKeys({
+        hub_integration: fromPartial({ memory: { url_env: 'APP_BASE_URL', token_env: 'MEMORY_TOKEN' } }),
+      });
+      expect(inherited.has('APP_BASE_URL')).toBe(false);
+      expect(inherited.has('MEMORY_TOKEN')).toBe(true);
     });
   });
 });

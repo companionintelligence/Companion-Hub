@@ -50,6 +50,26 @@ function appWrittenEnvName(schema: z.ZodString): z.ZodString {
 }
 
 /**
+ * Whether a Hub integration (`inference`, `inference_provider`, `oidc` and `memory`) may write `name`
+ * into the app's env: not one of {@link HUB_OWNED_APP_ENV_VARS} and not `APP_BASE_URL`, the app's
+ * address. The Hub takes the host of `APP_BASE_URL` as one of the app's own hosts
+ * (`APP_BASE_HOST`). An integration writes after that, and a base URL field keeps the value it finds
+ * in the app's env, so the next env build would take the host of the integration's URL.
+ */
+export function hubIntegrationMayWrite(name: string): boolean {
+  return !HUB_OWNED_APP_ENV_VARS.has(name) && name !== 'APP_BASE_URL';
+}
+
+/** An env variable a Hub integration writes for the app: see {@link hubIntegrationMayWrite}. */
+function integrationWrittenEnvName(schema: z.ZodString): z.ZodString {
+  return appWrittenEnvName(schema).superRefine((name, ctx) => {
+    if (name === 'APP_BASE_URL') {
+      ctx.addIssue({ code: 'custom', message: "APP_BASE_URL is the app's address from the Hub or the person, so a Hub integration can't set it" });
+    }
+  });
+}
+
+/**
  * Standardized inference variable names that apps can request from the Hub.
  * When declared in `hub_integration.inference`, the Hub resolves the value at
  * env-generation time and writes it into the app's `app.env` under the
@@ -80,7 +100,7 @@ export type InferenceVariable = (typeof INFERENCE_VARIABLES)[number];
 // subset of inference vars (e.g. ci-memory declares llm_* only), so this must
 // be a partial record — otherwise marketplace config fails safeParse and the
 // Hub reports "App ci-memory:ci-marketplace not found".
-export const inferenceEnvMappingSchema = z.partialRecord(z.enum(INFERENCE_VARIABLES), appWrittenEnvName(z.string().min(1)));
+export const inferenceEnvMappingSchema = z.partialRecord(z.enum(INFERENCE_VARIABLES), integrationWrittenEnvName(z.string().min(1)));
 
 /**
  * Dual-provider apps (e.g. AnythingLLM) expose an internal provider switch env var.
@@ -89,7 +109,7 @@ export const inferenceEnvMappingSchema = z.partialRecord(z.enum(INFERENCE_VARIAB
  */
 export const inferenceProviderSchema = z.object({
   /** Env variable the app reads its LLM provider mode from (e.g. APP_LLM_PROVIDER). */
-  env: appWrittenEnvName(
+  env: integrationWrittenEnvName(
     z
       .string()
       .min(1)
@@ -165,7 +185,7 @@ export const hubIntegrationSchema = z
          * Must be a valid environment variable name so it is never written as a
          * malformed/whitespace-padded key (which would silently misconfigure OIDC).
          */
-        issuer_env: appWrittenEnvName(
+        issuer_env: integrationWrittenEnvName(
           z
             .string()
             .min(1)
@@ -216,14 +236,14 @@ export const hubIntegrationSchema = z
     memory: z
       .object({
         /** Env var to receive the resolved Companion Memory URL (must be a valid env name). */
-        url_env: appWrittenEnvName(
+        url_env: integrationWrittenEnvName(
           z
             .string()
             .min(1)
             .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'url_env must be a valid environment variable name'),
         ).optional(),
         /** Env var to receive the minted, memory-scoped api key (must be a valid env name). */
-        token_env: appWrittenEnvName(
+        token_env: integrationWrittenEnvName(
           z
             .string()
             .min(1)
@@ -810,6 +830,7 @@ export const appInfoSchema = z.preprocess(normalizeAppInfoInput, appInfoObjectSc
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const isHubOwnedEnvName = (value: unknown): boolean => typeof value === 'string' && HUB_OWNED_APP_ENV_VARS.has(value);
+const isRefusedIntegrationEnvName = (value: unknown): boolean => typeof value === 'string' && !hubIntegrationMayWrite(value);
 
 /** What {@link withoutHubOwnedEnvNames} left out of a manifest. */
 type LeftOut = {
@@ -825,7 +846,7 @@ type LeftOut = {
 /**
  * A manifest without what {@link appInfoSchema} refuses about the values the Hub sets for every app:
  * a form field or alias named for one of {@link HUB_OWNED_APP_ENV_VARS}, a Hub integration that names
- * one and a default on a field that writes `APP_BASE_URL`.
+ * one or `APP_BASE_URL` and a default on a field that writes `APP_BASE_URL`.
  */
 function withoutHubOwnedEnvNames(config: Record<string, unknown>): LeftOut & { config: Record<string, unknown> } {
   const leftOut: string[] = [];
@@ -865,23 +886,26 @@ function withoutHubOwnedEnvNames(config: Record<string, unknown>): LeftOut & { c
     const kept: Record<string, unknown> = { ...integration };
     if (isRecord(integration.inference)) {
       const entries = Object.entries(integration.inference);
-      for (const [key, name] of entries.filter(([, name]) => isHubOwnedEnvName(name))) {
+      for (const [key, name] of entries.filter(([, name]) => isRefusedIntegrationEnvName(name))) {
         leftOut.push(`hub_integration.inference.${key} (${String(name)})`);
       }
-      kept.inference = Object.fromEntries(entries.filter(([, name]) => !isHubOwnedEnvName(name)));
+      kept.inference = Object.fromEntries(entries.filter(([, name]) => !isRefusedIntegrationEnvName(name)));
     }
-    if (isRecord(integration.inference_provider) && isHubOwnedEnvName(integration.inference_provider.env)) {
+    if (isRecord(integration.inference_provider) && isRefusedIntegrationEnvName(integration.inference_provider.env)) {
       leftOut.push(`hub_integration.inference_provider (${String(integration.inference_provider.env)})`);
       delete kept.inference_provider;
     }
-    if (isRecord(integration.oidc) && isHubOwnedEnvName(integration.oidc.issuer_env)) {
+    if (isRecord(integration.oidc) && isRefusedIntegrationEnvName(integration.oidc.issuer_env)) {
       leftOut.push(`hub_integration.oidc (${String(integration.oidc.issuer_env)})`);
       delete kept.oidc;
     }
     // The URL and the key go together: the Hub writes neither without the other.
-    if (isRecord(integration.memory) && (isHubOwnedEnvName(integration.memory.url_env) || isHubOwnedEnvName(integration.memory.token_env))) {
+    if (
+      isRecord(integration.memory) &&
+      (isRefusedIntegrationEnvName(integration.memory.url_env) || isRefusedIntegrationEnvName(integration.memory.token_env))
+    ) {
       const { url_env, token_env, ...memory } = integration.memory;
-      leftOut.push(`hub_integration.memory (${[url_env, token_env].filter(isHubOwnedEnvName).join(', ')})`);
+      leftOut.push(`hub_integration.memory (${[url_env, token_env].filter(isRefusedIntegrationEnvName).join(', ')})`);
       kept.memory = memory;
     }
     result = { ...result, hub_integration: kept };
