@@ -74,6 +74,11 @@ interface AiPhaseState {
    * step ended before it got to the pins, which is not a pin that happened either.
    */
   pinFailures?: Record<string, string>;
+  /**
+   * Set when the Hub refused more than one model and gave each the same reason, which is then said once above the
+   * list. A GPU whose memory the Hub does not know refuses every pin with one long sentence.
+   */
+  pinRefusal?: string;
   error?: string;
 }
 
@@ -445,6 +450,7 @@ export const InstallStep = ({
               ...pinTracked.filter((m) => m.state === 'pulled' || m.state === 'loaded' || m.state === 'pinned').map((m) => m.catalogId),
             ]);
             const pinFailures: Record<string, string> = {};
+            const hubRefusals: string[] = [];
 
             for (const modelId of ollamaSelected) {
               if (cancelled()) return;
@@ -455,10 +461,13 @@ export const InstallStep = ({
               try {
                 await pinInferenceModel(modelId);
               } catch (pinError) {
-                pinFailures[modelId] = (pinError as Error)?.message || t('ONBOARDING_PIN_FAILED');
+                const refusal = (pinError as Error)?.message;
+                if (refusal) hubRefusals.push(refusal);
+                pinFailures[modelId] = refusal || t('ONBOARDING_PIN_FAILED');
               }
             }
-            setAiPhase((prev) => ({ ...prev, pinFailures }));
+            const pinRefusal = hubRefusals.length > 1 && new Set(hubRefusals).size === 1 ? hubRefusals[0] : undefined;
+            setAiPhase((prev) => ({ ...prev, pinFailures, pinRefusal }));
           }
         } catch {
           // A failed read ends the wait and the pins early. The apps are already requested, and the
@@ -758,11 +767,18 @@ export const InstallStep = ({
                 <span>{t('ONBOARDING_PIN_MODELS')}</span>
               </div>
               {pinFailureEntries.length > 0 && (
-                <ul className="ml-6 mt-1 space-y-0.5 text-xs text-destructive" data-testid="pin-models-failures">
-                  {pinFailureEntries.map(([modelId, reason]) => (
-                    <li key={modelId}>{t('ONBOARDING_PIN_NOT_PINNED', { model: modelId, reason })}</li>
-                  ))}
-                </ul>
+                <div className="ml-6 mt-1 space-y-0.5 text-xs text-destructive" data-testid="pin-models-failures">
+                  {aiPhase.pinRefusal && <p data-testid="pin-models-refusal">{aiPhase.pinRefusal}</p>}
+                  <ul className="space-y-0.5">
+                    {pinFailureEntries.map(([modelId, reason]) => (
+                      <li key={modelId}>
+                        {reason === aiPhase.pinRefusal
+                          ? t('ONBOARDING_PIN_NOT_PINNED_SAME_REASON', { model: modelId })
+                          : t('ONBOARDING_PIN_NOT_PINNED', { model: modelId, reason })}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )}
               {pinMark === 'failed' && !aiPhase.pinFailures && (
                 <p className="ml-6 mt-1 text-xs text-destructive" data-testid="pin-models-failures">

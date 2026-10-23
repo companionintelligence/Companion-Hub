@@ -1169,6 +1169,7 @@
   "ONBOARDING_SKIPPED": "Skipped",
   "ONBOARDING_PIN_MODELS": "Pin models",
   "ONBOARDING_PIN_NOT_PINNED": "{{model}} is not pinned: {{reason}}",
+  "ONBOARDING_PIN_NOT_PINNED_SAME_REASON": "{{model}} is not pinned.",
   "ONBOARDING_PIN_STILL_DOWNLOADING": "it is still downloading. Pin it from Settings > AI once it is done.",
   "ONBOARDING_PIN_NOT_DOWNLOADED": "its download failed.",
   "ONBOARDING_PIN_FAILED": "the Hub could not pin it.",

@@ -20,7 +20,7 @@ import { MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.ser
 import { appBearerFor } from './engine-credential-scope';
 import { catalogEmbedsOn, embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
 import { pickUtilityModel } from './utility-handout';
-import { installedDefaultChatModel, onboardingTier } from './default-chat-model-handout';
+import { installedDefaultChatModel } from './default-chat-model-handout';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 
 /**
@@ -467,10 +467,10 @@ export class InferenceEnvResolver {
       chatCurated = backendPreferredCurated;
     } else {
       /*
-       * ⚠ WITH NO MODEL CHOSEN, THE SETUP WIZARD'S DEFAULT, NOT THE TOP OF THE RECOMMENDATION LIST.
-       * The list ranks by capability: on a 128 GB unified-memory machine it starts with MiniMax M2
-       * 230B, a 61.6 GB load, where the wizard marks Gemma 4 E4B. A Hub restored after pairing skips
-       * the wizard, so its apps ran on a model nobody had been offered (`installedDefaultChatModel`).
+       * ⚠ WITH NO MODEL CHOSEN, THE SETUP WIZARD'S DEFAULT, RANKED BY THE LIST THE WIZARD SHOWS.
+       * `llmCandidates` is read at `profile.tier` while the wizard reads the onboarding tier: for a card
+       * the container runtime cannot reach yet, those differ. A Hub restored after pairing skips the
+       * wizard, so its apps run on what the wizard would have marked (`installedDefaultChatModel`).
        */
       const wizardDefault = preferredId ? undefined : this.wizardDefault(backendType, modelsLoaded, listedBy, profile, suitable);
       if (wizardDefault) {
@@ -520,9 +520,10 @@ export class InferenceEnvResolver {
     profile: Awaited<ReturnType<HardwareInspectorService['getProfile']>>,
     suitable: (model: CuratedModel) => boolean,
   ): CuratedModel | undefined {
-    const tier = onboardingTier(profile, (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram));
     return installedDefaultChatModel({
-      available: this.modelRegistry.getModelsForHardware(tier, profile, { includeRemoteHostBackends: true }) ?? [],
+      registry: this.modelRegistry,
+      profile,
+      computeTier: (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram),
       backend: backendType,
       isInstalled: (model) => this.isInstalled(model, modelsLoaded, listedBy),
       accept: suitable,
