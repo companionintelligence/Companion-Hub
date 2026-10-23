@@ -148,8 +148,8 @@ describe('custom app edit', () => {
 
   // A config saved before a label rule existed. The Hub leaves those labels out of the running app; the
   // editor opens it with them, so they can be removed, and says which one a save refuses.
-  it('opens a saved config that holds a label a save now refuses, and names that label', () => {
-    const extraLabels = { 'com.example.team': 'web', 'traefik.docker.network': 'ci-hub_network' };
+  it('opens a saved config that holds labels a save now refuses, and names each one', () => {
+    const extraLabels = { 'com.example.team': 'web', 'traefik.docker.network': 'ci-hub_network', 'ci-hub.appurn': 'other-app:ci-marketplace' };
     const stored = JSON.stringify({
       schemaVersion: 2,
       services: [{ name: 'web', image: 'nginx:1.27-alpine', isMain: true, internalPort: 80, extraLabels }],
@@ -170,6 +170,7 @@ describe('custom app edit', () => {
     expect(notice).toHaveTextContent('This app has labels the Hub no longer accepts');
     expect(notice).toHaveTextContent('Service web:');
     expect(notice).toHaveTextContent('Remove traefik.docker.network.');
+    expect(notice).toHaveTextContent('Remove ci-hub.appurn.');
   });
 
   it('still refuses to open a saved config with a privileged service', () => {

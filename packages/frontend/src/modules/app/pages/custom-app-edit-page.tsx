@@ -42,8 +42,8 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
   const navigate = useNavigate();
   const [ready, setReady] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
-  /** The first label the saved config holds that a save now refuses, in the words the save uses. */
-  const [refusedLabel, setRefusedLabel] = useState<string | null>(null);
+  /** Each label the saved config holds that a save now refuses, in the words the save uses for it. */
+  const [refusedLabels, setRefusedLabels] = useState<string[]>([]);
   const params = useParams<{ appId: string }>();
 
   const [appName] = useState(params.appId);
@@ -81,11 +81,12 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
       setServices(servicesWithId);
       // Kept beside the form, which has no fields for them, so a save writes them back.
       setOverrides(parsed.data.overrides);
-      // In the sentence a save gives for the first of them.
-      setRefusedLabel(
-        parsed.labelIssues.length > 0
-          ? describeComposeIssue(parsed.labelIssues, { services: servicesWithId, overrides: parsed.data.overrides })
-          : null,
+      // All of them, so they can go in one save. A save names the first one left.
+      const values = { services: servicesWithId, overrides: parsed.data.overrides };
+      const refusals = parsed.labelIssues.map((issue) => describeComposeIssue([issue], values));
+      // Kept when unchanged, so the same config read again doesn't render the page again.
+      setRefusedLabels((current) =>
+        current.length === refusals.length && current.every((refusal, index) => refusal === refusals[index]) ? current : refusals,
       );
       setReady(true);
     } catch {
@@ -133,14 +134,16 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
 
   return (
     <div className="page-scroller-edge-0 relative h-full overflow-y-auto" data-page-scroller="custom-app-edit">
-      {refusedLabel && (
+      {refusedLabels.length > 0 && (
         <Alert variant="danger" className="mb-4" data-testid="custom-app-edit-refused-label">
           <AlertIcon>
             <AlertCircle strokeWidth={2} />
           </AlertIcon>
           <div>
             <AlertHeading>{t('CUSTOM_APP_EDIT_REFUSED_LABELS_TITLE')}</AlertHeading>
-            <AlertDescription>{i18n.exists(refusedLabel) ? t(refusedLabel) : refusedLabel}</AlertDescription>
+            {refusedLabels.map((refusal) => (
+              <AlertDescription key={refusal}>{i18n.exists(refusal) ? t(refusal) : refusal}</AlertDescription>
+            ))}
             <AlertDescription>{t('CUSTOM_APP_EDIT_REFUSED_LABELS_HINT')}</AlertDescription>
           </div>
         </Alert>
