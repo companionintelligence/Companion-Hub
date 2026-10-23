@@ -65,7 +65,7 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
 
     try {
       // A config saved before a label rule existed still opens, with those labels in it, so they can be
-      // removed here. The Hub leaves them out of the running app meanwhile.
+      // removed here. Until then the Hub leaves them out each time the app starts or restarts.
       const parsed = safeParseKeepingBuilderEnforcedLabels(dynamicComposeFormSchema, JSON.parse(currentConfig.current));
       if (!parsed.success) {
         setConfigError(t('CUSTOM_APP_INVALID_CONFIG'));
