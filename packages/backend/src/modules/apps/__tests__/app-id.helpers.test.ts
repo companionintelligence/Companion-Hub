@@ -41,7 +41,60 @@ describe('assertAppIdFree', () => {
     expect(() => assertAppIdFree(createAppUrn(appName, store), installed())).toThrow('APP_ERROR_APP_ID_RESERVED');
   });
 
+  // The Hub names an app's other routers `<id>-insecure` and `<id>-tailscale`, and its public-host
+  // middleware `<id>-public-host`. App `x` from store `home` and app `x` from store `home-insecure`
+  // would both define the router `x-home-insecure`.
+  it.each([
+    [
+      ['x', 'home-insecure'],
+      ['x', 'home'],
+    ],
+    [
+      ['x', 'home'],
+      ['x', 'home-insecure'],
+    ],
+    [
+      ['x', 'home-tailscale'],
+      ['x', 'home'],
+    ],
+    [
+      ['x-home', 'public-host'],
+      ['x', 'home'],
+    ],
+    [
+      ['x', 'Home-Insecure'],
+      ['x', 'home'],
+    ],
+  ])('refuses %j next to %j, whose ids differ by a suffix the Hub names routes with', ([appName, store], other) => {
+    let error: unknown;
+    try {
+      assertAppIdFree(createAppUrn(appName, store), installed(other as [string, string]));
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(TranslatableError);
+    expect((error as TranslatableError).getResponse()).toMatchObject({ message: 'APP_ERROR_APP_ID_ROUTE_IN_USE' });
+    expect((error as TranslatableError).getStatus()).toBe(409);
+  });
+
+  it('names the route both apps would get', () => {
+    expect(() => assertAppIdFree(createAppUrn('x', 'home-insecure'), installed(['x', 'home']))).toThrow(
+      expect.objectContaining({
+        response: {
+          message: 'APP_ERROR_APP_ID_ROUTE_IN_USE',
+          intlParams: expect.objectContaining({ route: 'x-home-insecure', otherAppId: 'x-home' }),
+        },
+      }),
+    );
+  });
+
   it('lets an app be installed again and ids that only start alike', () => {
-    expect(() => assertAppIdFree(createAppUrn('a', 'b-c'), installed(['a', 'b-c'], ['a', 'b-c-d'], ['a', 'b'], ['x-a', 'b-c']))).not.toThrow();
+    expect(() =>
+      assertAppIdFree(
+        createAppUrn('a', 'b-c'),
+        installed(['a', 'b-c'], ['a', 'b-c-d'], ['a', 'b'], ['x-a', 'b-c'], ['a', 'b-c-lab'], ['a', 'b-c-secure']),
+      ),
+    ).not.toThrow();
   });
 });

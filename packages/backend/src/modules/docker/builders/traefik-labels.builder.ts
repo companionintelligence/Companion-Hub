@@ -16,6 +16,13 @@ interface TraefikLabelsArgs {
   httpsBackend?: boolean;
 }
 
+/**
+ * What the builder adds to an app's id for its other routers (`-insecure`, `-tailscale`) and its
+ * public-host middleware (`-public-host`). An app whose id is another app's id plus one of these
+ * would get a router or middleware of the same name as that app's.
+ */
+export const HUB_ROUTE_NAME_SUFFIXES: readonly string[] = ['-insecure', '-tailscale', '-public-host'];
+
 /** The file-provider middleware that strips visitor-set forwarded headers from tunnel requests. */
 export const EDGE_HEADERS_MIDDLEWARE = 'ci-hub-edge-headers@file';
 

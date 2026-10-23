@@ -1583,6 +1583,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       this.refuseInstallWhileBusy(appUrn, (await this.appRepository.getAppByUrn(appUrn))?.status);
     }
 
+    // Before the download and the image checks too: the refusal needs only the installed apps.
+    const apps = await this.appRepository.getApps();
+    assertAppIdFree(appUrn, apps);
+
     /*
      * The image check asks each image's registry, the bundle download asks Companion Portal, and on a
      * slow link each took seconds, one after the other. The check starts here, on the compose the
@@ -1650,13 +1654,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     const { exposed, exposedLocal, openPort, domain, isVisibleOnGuestDashboard, enableAuth, port } = parsedForm;
-    const apps = await this.appRepository.getApps();
 
     if (demoMode && apps.length >= 6) {
       throw new TranslatableError('SYSTEM_ERROR_DEMO_MODE_LIMIT');
     }
-
-    assertAppIdFree(appUrn, apps);
 
     // Prevent exposing to internet in production - use exposedLocal with Cloudflare tunnel instead
     const { isProduction } = this.config.getConfig();
