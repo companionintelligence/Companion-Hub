@@ -28,6 +28,19 @@ export function isLocalHostname(hostname: string): boolean {
   return hostname.trim().toLowerCase().replace(/\.+$/, '') === 'localhost';
 }
 
+/**
+ * Whether an address is one Tailscale hands to a tailnet node: 100.64.0.0/10 (RFC 6598 CGNAT) or the
+ * tailnet's IPv6 prefix `fd7a:115c:a1e0::/48`. A subset of what {@link isPrivateOrLocalIp} admits, kept
+ * apart so a route that must tell "a tailnet caller" from "a container on this host" can ask.
+ */
+export function isTailnetIp(ip: string | undefined | null): boolean {
+  const normalized = normalizeIpLiteral(ip);
+  if (!normalized || !isIP(normalized)) return false;
+  if (normalized.includes(':')) return normalized.startsWith('fd7a:115c:a1e0:');
+  const [a, b = -1] = normalized.split('.').map(Number);
+  return a === 100 && b >= 64 && b <= 127;
+}
+
 export function isPrivateOrLocalIp(ip: string, options?: { includeUnspecified?: boolean }): boolean {
   const normalized = normalizeIpLiteral(ip);
   if (!normalized) return false;
