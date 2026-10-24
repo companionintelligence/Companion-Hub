@@ -360,17 +360,18 @@ afterwards: a `0.0.0.0` with no guard is the exposure this mode exists to avoid.
 status probe reads the guard as `systemctl is-active` — no sudo — which for a `RemainAfterExit`
 oneshot is evidence, not a hint: rules that failed leave the unit `failed`, not `active`.
 
-Two nodes are deliberately not touched by this path. **beta-1** runs Ollama as a user-scope unit
-(`ollama-local.service` under `ci`'s `systemd --user`) with the system unit disabled; enabling the
-system unit there would start a second daemon on the same port, so the installer refuses with the
-reason — before running ollama.com's installer, which would do exactly that. And a node with no
-tailnet address fails the tailnet bind rather than falling back to something else. The beta-1
-refusal is decided by the socket, not the unit's name: **core-2** runs an `ollama-tunnel.service`
+Two kinds of node are deliberately not touched by this path. The first runs Ollama as a user-scope
+unit (`ollama-local.service` under a login user's `systemd --user`) with the system unit disabled;
+enabling the system unit there would start a second daemon on the same port, so the installer refuses
+with the reason — before running ollama.com's installer, which would do exactly that. beta-1 was such
+a node until 2026-10-23, when its Ollama moved to the system `ollama.service`; it is managed like any
+other node now. The second has no tailnet address: it fails the tailnet bind rather than falling back
+to something else. The user-scope refusal is decided by the socket, not the unit's name: **core-2** runs an `ollama-tunnel.service`
 under `ci`'s `systemd --user` too — an ssh forward to beta-1 — while its system `ollama.service` is
 what serves `:11434`, and it is managed like any other node, with a note naming the tunnel unit
 (see [the listener rule in `CLI.md`](CLI.md#ollamas-bind-one-file-read-back)). That is the only
 case the name gives way to: a serving system unit. With **nothing** on `:11434` beside an active
-`ollama*` user unit the node is still skipped — beta-1 mid-restart looks exactly like that, and the
+`ollama*` user unit the node is still skipped — a user-unit node mid-restart looks exactly like that, and the
 probe has no way to tell a tunnel from a daemon that has not bound yet — and so is a listener the
 probe cannot classify, unless its uid belongs to no login user.
 
