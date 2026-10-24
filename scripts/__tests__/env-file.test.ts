@@ -99,7 +99,9 @@ describe.skipIf(process.platform === 'win32')('env file mode', () => {
 
   it('restricts on removeEnvVar too', () => {
     const p = path.join(dir, '.env.prod');
-    writeFileSync(p, 'CI_HUB_CONTAINER_UID=1000\nJWT_SECRET=y\n');
+    // The pin has to name this user: a pin to another uid leaves the mode alone (restrictEnvFileMode),
+    // and GitHub runners run as 1001, not 1000.
+    writeFileSync(p, `CI_HUB_CONTAINER_UID=${process.getuid?.()}\nJWT_SECRET=y\n`);
     chmodSync(p, 0o664);
 
     removeEnvVar(p, 'CI_HUB_CONTAINER_UID');
