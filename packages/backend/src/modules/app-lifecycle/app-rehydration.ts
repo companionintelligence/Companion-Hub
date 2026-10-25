@@ -75,6 +75,15 @@ export interface RehydrationStateFile {
   skipped: RehydrationSkipped[];
 }
 
+/**
+ * Whether the restore on record finished at or after `since`, a pairing's `markedAt`, and so ran for
+ * that pairing. A record an earlier pairing left finished before it. A date that cannot be read counts
+ * as no run.
+ */
+export function restoreRanSince(run: RehydrationStateFile | null, since: string): boolean {
+  return Boolean(run?.completedAt && Date.parse(run.completedAt) >= Date.parse(since));
+}
+
 /** Why an app the Portal lists for this device was not restored when no store on this Hub lists it. */
 export const UNLISTED_REASON = 'No matching marketplace app found for Portal application';
 
