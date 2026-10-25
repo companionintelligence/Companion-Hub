@@ -1,3 +1,4 @@
+import type { ModuleRef } from '@nestjs/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { ConfigurationService } from '@/core/config/configuration.service';
@@ -5,6 +6,7 @@ import type { LoggerService } from '@/core/logger/logger.service';
 import type { AppStoreService } from '@/modules/app-stores/app-store.service';
 import type { AppsRepository } from '@/modules/apps/apps.repository';
 import type { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
+import { PortExposeService } from '@/modules/custom-apps/port-expose.service';
 import type { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import type { RegistrationService } from '@/modules/registration/registration.service';
 import type { AppRehydrationService, RehydrationExecuteResult } from '../app-rehydration.service';
@@ -60,6 +62,8 @@ describe('PairingAppRestoreService', () => {
   let rehydration: MockProxy<AppRehydrationService>;
   let exposureSync: MockProxy<ExposureSyncService>;
   let keyRefresh: MockProxy<DeviceKeyRefreshService>;
+  let portExpose: MockProxy<PortExposeService>;
+  let moduleRef: MockProxy<ModuleRef>;
   let config: { getConfig: () => { ciHubApiKey: string | null } };
   let service: PairingAppRestoreService;
 
@@ -108,6 +112,10 @@ describe('PairingAppRestoreService', () => {
     keyRefresh = mock<DeviceKeyRefreshService>();
     keyRefresh.refreshStaleDeviceKeys.mockResolvedValue([]);
     config = { getConfig: () => ({ ciHubApiKey: 'new-device-key' }) };
+    portExpose = mock<PortExposeService>();
+    portExpose.releaseUnrestoredRegistryEntries.mockResolvedValue([]);
+    moduleRef = mock<ModuleRef>();
+    moduleRef.get.mockImplementation(((token: unknown) => (token === PortExposeService ? portExpose : undefined)) as never);
 
     service = new PairingAppRestoreService(
       mock<LoggerService>(),
@@ -120,6 +128,7 @@ describe('PairingAppRestoreService', () => {
       rehydration,
       exposureSync,
       keyRefresh,
+      moduleRef,
     );
   });
 
@@ -208,6 +217,58 @@ describe('PairingAppRestoreService', () => {
       expect(state.restoreIntent).toBe(false);
       expect(exposureSync.syncExposurePublic).toHaveBeenCalledTimes(1);
       expect(keyRefresh.refreshStaleDeviceKeys).toHaveBeenCalled();
+    });
+
+    /*
+     * The sync releases every app the Hub no longer has except the ports exposed This Machine Only or on
+     * the Private VPN, which only the Hub removes. A restore that could not bring one back left its
+     * entry on the Portal for good (#2134).
+     */
+    it('removes the Portal entries for exposed ports the restore did not bring back, before it syncs', async () => {
+      apps.getApps.mockResolvedValueOnce([]).mockResolvedValue([localApp('wordpress', 'installing')]);
+      await service.runCheck();
+      expect(portExpose.releaseUnrestoredRegistryEntries).not.toHaveBeenCalled();
+
+      const afterRestore = [portalApp('wordpress'), { ...portalApp('notes'), pinned: true, port: 8091 }];
+      cloudflare.getDeviceApplications.mockResolvedValue(afterRestore);
+      portExpose.releaseUnrestoredRegistryEntries.mockResolvedValue(['notes']);
+      apps.getApps.mockResolvedValue([localApp('wordpress'), localApp('ci-memory'), localApp('ci-hermes')]);
+
+      await expect(service.runCheck()).resolves.toBe('released');
+
+      // Read again after the restore: a port it put back has registered itself since.
+      expect(portExpose.releaseUnrestoredRegistryEntries).toHaveBeenCalledWith(afterRestore);
+      expect(portExpose.releaseUnrestoredRegistryEntries.mock.invocationCallOrder[0]).toBeLessThan(
+        exposureSync.syncExposurePublic.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      );
+    });
+
+    it('still lifts the hold when those entries cannot be removed', async () => {
+      apps.getApps.mockResolvedValueOnce([]).mockResolvedValue([localApp('wordpress', 'installing')]);
+      await service.runCheck();
+
+      portExpose.releaseUnrestoredRegistryEntries.mockRejectedValue(new Error('Portal unreachable'));
+      apps.getApps.mockResolvedValue([localApp('wordpress'), localApp('ci-memory'), localApp('ci-hermes')]);
+
+      await expect(service.runCheck()).resolves.toBe('released');
+      expect(exposureSync.syncExposurePublic).toHaveBeenCalledTimes(1);
+    });
+
+    // Removing those entries asks the Portal twice. A factory reset meanwhile owns the next pairing's check.
+    it('does not lift the hold when a forget overtook the removal of those entries', async () => {
+      apps.getApps.mockResolvedValueOnce([]).mockResolvedValue([localApp('wordpress', 'installing')]);
+      await service.runCheck();
+
+      apps.getApps.mockResolvedValue([localApp('wordpress'), localApp('ci-memory'), localApp('ci-hermes')]);
+      portExpose.releaseUnrestoredRegistryEntries.mockImplementation(async () => {
+        service.forget();
+        return [];
+      });
+      const clearsBefore = vi.mocked(recovery.clearPairingAppCheck).mock.calls.length;
+
+      await expect(service.runCheck()).resolves.toBe('none');
+      expect(vi.mocked(recovery.clearPairingAppCheck).mock.calls.length).toBe(clearsBefore);
+      expect(exposureSync.syncExposurePublic).not.toHaveBeenCalled();
     });
 
     it('syncs anyway once an install has held it past the deadline', async () => {

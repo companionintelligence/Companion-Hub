@@ -10,6 +10,7 @@ import { AppStoreService } from '@/modules/app-stores/app-store.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
+import { PortExposeService } from '@/modules/custom-apps/port-expose.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { UserRepository } from '@/modules/user/user.repository';
@@ -19,8 +20,10 @@ import {
   buildRehydrationPlan,
   CATALOG_DOWNLOAD_WAIT_MS,
   CatalogStillDownloadingError,
+  EXPOSED_PORT_OUTSIDE_RESTORE_REASON,
   type RehydrationPlan,
   type RehydrationStateFile,
+  UNLISTED_REASON,
 } from '../app-rehydration';
 import { AppRehydrationService } from '../app-rehydration.service';
 import * as recovery from '../registration-recovery-state';
@@ -64,10 +67,12 @@ describe('AppRehydrationService.executeRehydrate', () => {
   let cloudflare: MockProxy<CloudflareClientService>;
   let marketplace: MockProxy<MarketplaceService>;
   let appStores: MockProxy<AppStoreService>;
+  let portExpose: MockProxy<PortExposeService>;
   let service: AppRehydrationService;
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    vi.mocked(recovery.readPairingAppCheck).mockResolvedValue(null);
 
     // The state file, in memory: a run recorded as done must read back as done.
     let stateFile: RehydrationStateFile | null = null;
@@ -96,6 +101,7 @@ describe('AppRehydrationService.executeRehydrate', () => {
     apps.getApps.mockResolvedValue([]);
     const files = mock<AppFilesManager>();
     files.getAppPaths.mockReturnValue({ appInstalledDir: '/nonexistent/immich' } as never);
+    portExpose = mock<PortExposeService>();
 
     const module = await Test.createTestingModule({
       providers: [
@@ -110,6 +116,7 @@ describe('AppRehydrationService.executeRehydrate', () => {
         { provide: AppFilesManager, useValue: files },
         { provide: AppLifecycleService, useValue: lifecycle },
         { provide: UserRepository, useValue: users },
+        { provide: PortExposeService, useValue: portExpose },
       ],
     }).compile();
     service = module.get(AppRehydrationService);
@@ -319,6 +326,135 @@ describe('AppRehydrationService.executeRehydrate', () => {
    * The catalog listed only the apps it had reached, so the device's apps were skipped as unlisted. The
    * run was recorded as done and the next sync released them.
    */
+  /*
+   * A port made with "Expose a port" lives only in this Hub's database, so a reinstall that deleted it
+   * lost the port. The restore skipped it as an app no store lists (#2131). The Portal now keeps
+   * its kind, port and mode. The restore after a pairing exposes it again.
+   */
+  describe('ports this device exposed', () => {
+    const gameUrn = 'game:_user';
+    const game = {
+      id: 'id-game',
+      name: 'game',
+      slug: 'game',
+      port: 80,
+      publicDomain: 'ci0.pw',
+      pinned: false,
+      kind: 'port-expose',
+      upstreamPort: 3080,
+      exposureMode: 'cloudflare',
+    };
+    const SYSTEM: LifecycleActor = { kind: 'system', reason: 'restore-after-pairing' };
+
+    beforeEach(() => {
+      vi.mocked(recovery.readPairingAppCheck).mockResolvedValue({ markedAt: new Date().toISOString() });
+      cloudflare.getDeviceApplications.mockResolvedValue([{ name: 'immich' }, game] as never);
+      lifecycle.installApp.mockResolvedValue({ requestId: 'r' } as never);
+      portExpose.createPortExposeApp.mockResolvedValue({ appUrn: gameUrn as AppUrn, appName: 'game', storeId: '_user' });
+    });
+
+    it('exposes the port again during the restore after a pairing, in the mode it had', async () => {
+      const result = await service.executeRehydrate({ actor: SYSTEM });
+
+      expect(portExpose.createPortExposeApp).toHaveBeenCalledWith({
+        name: 'game',
+        port: 3080,
+        exposureMode: 'cloudflare',
+        localSubdomain: 'game',
+        publicDomain: 'ci0.pw',
+      });
+      expect(result).toMatchObject({ queued: [appUrn], started: [gameUrn], skipped: [] });
+      expect(result.message).toContain('exposed 1 port(s) again');
+      expect(recovery.writeRehydrationState).toHaveBeenCalledWith(expect.objectContaining({ startedUrns: [gameUrn] }));
+    });
+
+    it('puts a This Machine Only or Private VPN port back where it was', async () => {
+      cloudflare.getDeviceApplications.mockResolvedValue([
+        { ...game, name: 'notes', slug: 'notes', port: 8091, publicDomain: null, pinned: true, upstreamPort: 8091, exposureMode: 'tailscale' },
+      ] as never);
+
+      await service.executeRehydrate({ actor: SYSTEM });
+
+      expect(portExpose.createPortExposeApp).toHaveBeenCalledWith({ name: 'notes', port: 8091, exposureMode: 'tailscale', localSubdomain: 'notes' });
+    });
+
+    it('leaves an exposed port alone outside the restore after a pairing', async () => {
+      vi.mocked(recovery.readPairingAppCheck).mockResolvedValue(null);
+
+      const result = await service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
+
+      expect(portExpose.createPortExposeApp).not.toHaveBeenCalled();
+      expect(result.skipped).toEqual([{ name: 'game', reason: EXPOSED_PORT_OUTSIDE_RESTORE_REASON, code: 'unlisted', appUrn: gameUrn }]);
+    });
+
+    it('records a port nothing answers on as not restored, saying why', async () => {
+      portExpose.createPortExposeApp.mockRejectedValue(
+        new TranslatableError('PORT_EXPOSE_PORT_UNREACHABLE', { port: '3080', host: 'host.docker.internal' }, HttpStatus.BAD_REQUEST),
+      );
+
+      const result = await service.executeRehydrate({ actor: SYSTEM });
+
+      const expected = {
+        name: 'game',
+        reason: 'PORT_EXPOSE_PORT_UNREACHABLE',
+        appUrn: gameUrn,
+        code: 'failed',
+        params: { port: '3080', host: 'host.docker.internal' },
+      };
+      expect(result).toMatchObject({ incomplete: false, started: [], skipped: [expected] });
+      expect(recovery.writeRehydrationState).toHaveBeenCalledWith(expect.objectContaining({ skipped: [expected] }));
+    });
+
+    // An exposed port comes from no store, so a Hub whose catalog is not there yet can still put it back.
+    it('exposes the port again when the app catalog is empty', async () => {
+      cloudflare.getDeviceApplications.mockResolvedValue([game] as never);
+      marketplace.getAvailableAppUrns.mockResolvedValue([]);
+
+      await expect(service.executeRehydrate({ actor: SYSTEM })).resolves.toMatchObject({ started: [gameUrn] });
+    });
+
+    // Only the tunnel sync writes a public row. A registry row claiming one is not taken at its word.
+    it('does not put a registry row back on the public web', async () => {
+      cloudflare.getDeviceApplications.mockResolvedValue([{ ...game, pinned: true }] as never);
+
+      const result = await service.executeRehydrate({ actor: SYSTEM });
+
+      expect(portExpose.createPortExposeApp).not.toHaveBeenCalled();
+      expect(result.skipped).toEqual([expect.objectContaining({ name: 'game', code: 'unlisted' })]);
+    });
+
+    // A row marked as an exposed port is never a store app, even when a store lists an app of its name.
+    it('does not install a store app in place of an exposed port it cannot rebuild', async () => {
+      cloudflare.getDeviceApplications.mockResolvedValue([{ ...game, name: 'immich', slug: 'immich', pinned: true }] as never);
+      vi.mocked(buildRehydrationPlan).mockReturnValue({ items: [], portalAppCount: 0, localAppDataCount: 0 });
+
+      const result = await service.executeRehydrate({ actor: SYSTEM });
+
+      expect(buildRehydrationPlan).toHaveBeenCalledWith(expect.objectContaining({ portalApps: [] }));
+      expect(lifecycle.installApp).not.toHaveBeenCalled();
+      expect(portExpose.createPortExposeApp).not.toHaveBeenCalled();
+      expect(result.skipped).toEqual([{ name: 'immich', reason: UNLISTED_REASON, code: 'unlisted' }]);
+    });
+
+    // The restore does not come through the form's route, so it is held to the form's schema itself.
+    it('refuses what the expose form would refuse', async () => {
+      const longName = 'a'.repeat(51);
+      cloudflare.getDeviceApplications.mockResolvedValue([{ ...game, name: longName, slug: 'game' }] as never);
+
+      const result = await service.executeRehydrate({ actor: SYSTEM });
+
+      expect(portExpose.createPortExposeApp).not.toHaveBeenCalled();
+      expect(result.skipped).toEqual([
+        {
+          name: longName,
+          reason: "CI Portal's details for this exposed port are not ones Expose a port accepts, so it was not exposed again",
+          appUrn: `${longName}:_user`,
+          code: 'failed',
+        },
+      ]);
+    });
+  });
+
   describe('while the app catalog is still downloading', () => {
     // Another app's folder is already there, so the catalog is not empty.
     beforeEach(() => {

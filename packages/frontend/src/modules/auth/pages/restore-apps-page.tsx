@@ -349,7 +349,7 @@ function RestoreAppsContent() {
   }
 
   const skipped = result?.skipped ?? [];
-  const actionableCount = plan?.items.filter((item) => item.action === 'install' || item.action === 'start').length ?? 0;
+  const actionableCount = plan?.items.filter((item) => item.action === 'install' || item.action === 'start' || item.action === 'expose').length ?? 0;
 
   return (
     <div

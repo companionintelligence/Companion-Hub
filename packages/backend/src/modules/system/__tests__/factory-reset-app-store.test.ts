@@ -1,4 +1,5 @@
 import path from 'node:path';
+import type { ModuleRef } from '@nestjs/core';
 import { vol } from 'memfs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
@@ -18,6 +19,7 @@ import { AppStoreService } from '@/modules/app-stores/app-store.service';
 import type { ReposHelpers } from '@/modules/app-stores/repos.helpers';
 import type { AppsRepository } from '@/modules/apps/apps.repository';
 import type { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
+import type { PortExposeService } from '@/modules/custom-apps/port-expose.service';
 import { MarketplaceCacheBus } from '@/modules/marketplace/marketplace-cache.bus';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import type { PortalCatalogService } from '@/core/portal/portal-catalog.service';
@@ -205,6 +207,10 @@ function hub() {
   keyRefresh.refreshStaleDeviceKeys.mockResolvedValue([]);
   const exposureSync = mock<ExposureSyncService>();
   exposureSync.syncExposurePublic.mockResolvedValue(undefined);
+  const portExpose = mock<PortExposeService>();
+  portExpose.releaseUnrestoredRegistryEntries.mockResolvedValue([]);
+  const moduleRef = mock<ModuleRef>();
+  moduleRef.get.mockReturnValue(portExpose as never);
   const restore = new PairingAppRestoreService(
     logger,
     { getConfig: () => ({ ciHubApiKey: 'new-device-key' }) } as unknown as ConfigurationService,
@@ -216,6 +222,7 @@ function hub() {
     rehydration,
     exposureSync,
     keyRefresh,
+    moduleRef,
   );
 
   return { reset, restore, table, marketplace, pulls, installed, logger };

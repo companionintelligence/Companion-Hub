@@ -290,4 +290,146 @@ describe('PortExposeService', () => {
       );
     });
   });
+
+  /*
+   * A port exposed This Machine Only or on the Private VPN reaches Companion Portal only through the
+   * registry, so that is where its kind and mode go for a reinstalled Hub to put it back (#2131).
+   */
+  describe('registry entries for exposed ports', () => {
+    const portExposeRow = (appName: string, exposureMode: string, port: number | null = 8091, extra: Record<string, unknown> = {}) =>
+      ({
+        appName,
+        appStoreSlug: '_user',
+        localSubdomain: appName,
+        exposureMode,
+        port,
+        publicDomain: null,
+        config: { kind: PORT_EXPOSE_KIND },
+        ...extra,
+      }) as any;
+
+    beforeEach(() => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+    });
+
+    it('sends the kind and mode when a This Machine Only port is exposed', async () => {
+      appsRepository.getAppByUrn.mockResolvedValueOnce(null as any).mockResolvedValue(portExposeRow('notes', 'local'));
+
+      await service.createPortExposeApp({ name: 'notes', port: 8091, exposureMode: 'local' });
+
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith({
+        organizationId: 'org-1',
+        apps: [{ name: 'notes', slug: 'notes', port: 8091, publicDomain: undefined, kind: PORT_EXPOSE_KIND, exposureMode: 'local' }],
+      });
+    });
+
+    it('names the row and nothing more when it removes one', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(portExposeRow('notes', 'tailscale'));
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(null as any);
+
+      await service.beforePortExposeUninstall('notes:_user');
+
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith({
+        organizationId: 'org-1',
+        apps: [{ name: 'notes', slug: 'notes', port: 8091, publicDomain: undefined, remove: true }],
+      });
+    });
+
+    it('sends every This Machine Only and Private VPN port at once and nothing else', async () => {
+      appsRepository.getApps.mockResolvedValue([
+        portExposeRow('notes', 'tailscale'),
+        portExposeRow('dev', 'local', 8092),
+        portExposeRow('game', 'cloudflare', 3080),
+        portExposeRow('broken', 'local', null),
+        // Its entry was removed when the uninstall began. Sent again, it would stay pinned once the app is gone.
+        portExposeRow('gone', 'local', 8093, { status: 'uninstalling' }),
+        { ...portExposeRow('wordpress', 'local', 8080), appStoreSlug: 'ci-marketplace', config: {} },
+      ]);
+
+      await service.syncAllPortalRegistryEntries();
+
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledTimes(1);
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith({
+        organizationId: 'org-1',
+        apps: [
+          { name: 'notes', slug: 'notes', port: 8091, publicDomain: undefined, kind: PORT_EXPOSE_KIND, exposureMode: 'tailscale' },
+          { name: 'dev', slug: 'dev', port: 8092, publicDomain: undefined, kind: PORT_EXPOSE_KIND, exposureMode: 'local' },
+        ],
+      });
+    });
+
+    // A save through the generic config route rewrites the stored form without `kind`.
+    it('finds an exposed port by its config.json when its stored form lost the kind', async () => {
+      appsRepository.getApps.mockResolvedValue([{ ...portExposeRow('notes', 'tailscale'), config: {} }]);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ kind: PORT_EXPOSE_KIND } as any);
+
+      await service.syncAllPortalRegistryEntries();
+
+      expect(appFilesManager.getInstalledAppInfo).toHaveBeenCalledWith('notes:_user');
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith(
+        expect.objectContaining({ apps: [expect.objectContaining({ name: 'notes', kind: PORT_EXPOSE_KIND, exposureMode: 'tailscale' })] }),
+      );
+    });
+
+    it('sends nothing when there is nothing to send, or the Hub is not registered', async () => {
+      await service.syncAllPortalRegistryEntries();
+
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null as any);
+      appsRepository.getApps.mockResolvedValue([portExposeRow('notes', 'tailscale')]);
+      await service.syncAllPortalRegistryEntries();
+
+      expect(portalClient.postDeviceApplicationsRegistry).not.toHaveBeenCalled();
+    });
+  });
+
+  /*
+   * The tunnel sync never releases a row the registry pinned, so after a reinstall the entry for a port
+   * the restore could not bring back stayed on the Portal for good (#2134).
+   */
+  describe('releaseUnrestoredRegistryEntries', () => {
+    const portalEntry = (name: string, extra: Record<string, unknown> = {}) =>
+      ({ id: `id-${name}`, name, slug: name, port: 8091, publicDomain: null, pinned: true, ...extra }) as any;
+
+    beforeEach(() => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+    });
+
+    it('removes the pinned entries this Hub has no app for, in one request', async () => {
+      appsRepository.getApps.mockResolvedValue([{ appName: 'wordpress', appStoreSlug: 'ci-marketplace', localSubdomain: null } as any]);
+
+      const released = await service.releaseUnrestoredRegistryEntries([
+        portalEntry('notes'),
+        portalEntry('old', { port: 8092 }),
+        portalEntry('game', { pinned: false }),
+        portalEntry('legacy', { pinned: undefined }),
+      ]);
+
+      expect(released).toEqual(['notes', 'old']);
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith({
+        organizationId: 'org-1',
+        apps: [
+          { name: 'notes', slug: 'notes', port: 8091, remove: true },
+          { name: 'old', slug: 'old', port: 8092, remove: true },
+        ],
+      });
+    });
+
+    // The registry removes by slug. A public app on the same subdomain shares the row: removing it would take that app's address.
+    it('leaves an entry whose name or slug an app here uses', async () => {
+      appsRepository.getApps.mockResolvedValue([
+        { appName: 'notes', appStoreSlug: '_user', localSubdomain: 'notes' } as any,
+        { appName: 'blog', appStoreSlug: 'ci-marketplace', localSubdomain: 'myblog' } as any,
+        { appName: 'wiki', appStoreSlug: 'ci-marketplace', localSubdomain: null } as any,
+      ]);
+
+      const released = await service.releaseUnrestoredRegistryEntries([
+        portalEntry('notes'),
+        portalEntry('blogpin', { slug: 'myblog' }),
+        portalEntry('wikipin', { slug: 'wiki-ci-marketplace' }),
+      ]);
+
+      expect(released).toEqual([]);
+      expect(portalClient.postDeviceApplicationsRegistry).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -96,7 +96,14 @@ describe('describeRestoreFailure', () => {
   it('says why a refused or unlisted app was left out', () => {
     expect(describe_({ reason: 'APP_ACTION_GRANT_DENIED', code: 'refused' })).toBe('You are not allowed to install this app.');
     expect(describe_({ reason: 'No matching marketplace app found for Portal application', code: 'unlisted' })).toBe(
-      "This Hub's app store has no listing for it, so it can't be installed here.",
+      "It isn't in this Hub's app store. If you added it yourself with Expose a port or Create a custom app, add it again under the same name.",
+    );
+  });
+
+  // An exposed port the restore tried to put back says why it could not, with the port it tried.
+  it('says why an exposed port did not come back', () => {
+    expect(describe_({ reason: 'PORT_EXPOSE_PORT_UNREACHABLE', code: 'failed', params: { port: '8092', host: 'host.docker.internal' } })).toBe(
+      "Nothing answered on port 8092, so it wasn't exposed again. Start the program, then use Expose a port under the same name.",
     );
   });
 
@@ -113,6 +120,11 @@ describe('storePathFor', () => {
     expect(storePathFor('kimai:ci-marketplace')).toBe('/store/ci-marketplace/kimai');
     expect(storePathFor(undefined)).toBeNull();
     expect(storePathFor('kimai')).toBeNull();
+  });
+
+  // An exposed port or custom app comes from no store, so a link to its "listing" opened an empty page.
+  it('links nowhere for an app made on this Hub', () => {
+    expect(storePathFor('game:_user')).toBeNull();
   });
 });
 

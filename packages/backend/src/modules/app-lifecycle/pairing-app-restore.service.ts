@@ -1,4 +1,5 @@
 import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppStoreService } from '@/modules/app-stores/app-store.service';
@@ -99,6 +100,7 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
     private readonly appRehydrationService: AppRehydrationService,
     private readonly exposureSyncService: ExposureSyncService,
     private readonly deviceKeyRefreshService: DeviceKeyRefreshService,
+    private readonly moduleRef: ModuleRef,
   ) {}
 
   onApplicationBootstrap() {
@@ -267,9 +269,47 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
       );
     }
 
+    await this.releaseUnrestoredExposedPorts();
+    // That asked the Portal twice. A factory reset (`forget`) meanwhile leaves the next pairing's check
+    // to its own pass: releasing now would clear it and let a sync out before its restore.
+    if (this.checkGeneration !== this.generation) {
+      return 'none';
+    }
+
     // The restore this intent asked for is done. Left in place, it would restore again on a later pairing.
     await clearRestoreIntent();
     return this.release();
+  }
+
+  /**
+   * Removes the Portal's entries for ports exposed This Machine Only or on the Private VPN that the
+   * restore did not bring back, before app sync runs again (#2134). The sync releases every other app
+   * the Hub no longer has, but never these, so without this they stayed on the Portal's home page and
+   * held a public subdomain until the device was deleted.
+   *
+   * Reads the device's apps again rather than reusing the list the restore began with: a port put back
+   * since then has re-registered itself. A failure is logged and holds nothing. An entry left behind
+   * costs less than app sync held back.
+   */
+  private async releaseUnrestoredExposedPorts(): Promise<void> {
+    if (this.checkGeneration !== this.generation) {
+      return;
+    }
+
+    try {
+      const { PortExposeService } = await import('@/modules/custom-apps/port-expose.service');
+      const portExpose = this.moduleRef.get(PortExposeService, { strict: false });
+      const released = await portExpose.releaseUnrestoredRegistryEntries(await this.cloudflareClientService.getDeviceApplications());
+      if (released.length > 0) {
+        this.logger.info(
+          `[PairingAppRestore] Removed CI Portal's entries for ${released.length} exposed port(s) the restore did not bring back: ${released.join(', ')}`,
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        `[PairingAppRestore] Could not remove CI Portal's entries for exposed ports the restore did not bring back: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   /**
