@@ -118,16 +118,23 @@ export function describeRestoreFailure(
   if (failure.code === 'unlisted') {
     return t('RESTORE_APPS_REASON_UNLISTED');
   }
+  // An exposed port the restore tried to put back: the expose form's own refusal says what is wrong but not what to do next.
+  if (failure.reason === 'PORT_EXPOSE_PORT_UNREACHABLE' && failure.params?.port) {
+    return t('RESTORE_APPS_REASON_PORT_UNREACHABLE', { port: failure.params.port });
+  }
   if (exists(failure.reason)) {
     return t(failure.reason, failure.params ?? {});
   }
   return failure.reason;
 }
 
+/** The store apps made on this Hub live in ("Expose a port", "Create a custom app"). No App Store page lists them. */
+const USER_APPS_STORE = '_user';
+
 /** The App Store page an app that was not restored can be installed from, when the Hub knows which listing it is. */
 export function storePathFor(urn: string | undefined): string | null {
   const separator = urn?.indexOf(':') ?? -1;
-  if (!urn || separator <= 0 || separator === urn.length - 1) {
+  if (!urn || separator <= 0 || separator === urn.length - 1 || urn.slice(separator + 1) === USER_APPS_STORE) {
     return null;
   }
   return `/store/${encodeURIComponent(urn.slice(separator + 1))}/${encodeURIComponent(urn.slice(0, separator))}`;

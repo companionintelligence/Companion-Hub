@@ -30,7 +30,7 @@ import {
   resolveRoutingSubdomain,
   type AppPublicRoutingSnapshot,
 } from '../apps/app-public-routing.helpers';
-import { isPortExposeApp } from '@ci-hub/common/schemas';
+import { isPortExposeApp, PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
 import { CloudflareClientService, AppInfo, type PublicDnsFailure, type PublicDnsFailureReason } from '../cloudflare/cloudflare-client.service';
 import { DockerReadFacade } from '../docker/docker-read.facade';
 import { RegistrationService } from '../registration/registration.service';
@@ -242,6 +242,8 @@ export class ExposureSyncService implements OnModuleDestroy {
   /** Set once the operator refusal has been logged; cleared by the next Serve write that succeeds. */
   private servePermissionDeniedReported = false;
   private tailscaleServeDisabledReported = false;
+  /** This process has sent Companion Portal its This Machine Only and Private VPN ports (`refreshPortExposeRegistryOnce`). */
+  private portExposeRegistryRefreshed = false;
   /** `<port> <old name> <new name>` of each rename already logged at info. */
   private readonly reportedRenames = new Set<string>();
   /** The node name last warned about as unpublished while opted out; cleared once it is served. */
@@ -750,6 +752,32 @@ export class ExposureSyncService implements OnModuleDestroy {
   }
 
   /**
+   * Sends Companion Portal this Hub's This Machine Only and Private VPN ports once per start, after the
+   * first sync it answered (#2131). The registry is otherwise written only when such a port is created
+   * or changed, so one exposed before it carried the port's kind and mode would never get them. A
+   * reinstall could not put it back. A failure is tried again after the next sync.
+   *
+   * Looked up when needed, as `AppLifecycleService` does: `PortExposeService` lives in a module that
+   * imports this one.
+   */
+  private refreshPortExposeRegistryOnce(): void {
+    if (this.portExposeRegistryRefreshed) {
+      return;
+    }
+    this.portExposeRegistryRefreshed = true;
+
+    void (async () => {
+      const { PortExposeService } = await import('../custom-apps/port-expose.service');
+      await this.moduleRef.get(PortExposeService, { strict: false })?.syncAllPortalRegistryEntries();
+    })().catch((error) => {
+      this.portExposeRegistryRefreshed = false;
+      this.logger.warn(
+        `[Portal] Could not send CI Portal this Hub's This Machine Only and Private VPN ports: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  }
+
+  /**
    * Whether a Cloudflare pass — and so a custom-domain reconcile — is running.
    *
    * Lets the background poll stand down while any other trigger is mid-pass,
@@ -866,10 +894,33 @@ export class ExposureSyncService implements OnModuleDestroy {
        */
       const syncedAppUrns = new Set(syncedDbApps.map((app: AppFromDb) => createAppUrn(app.appName, app.appStoreSlug)));
 
+      /*
+       * Whether a row is a port made with "Expose a port". Its stored form says so, but a save through the
+       * generic config route rewrites the form without `kind`, so a `_user` app's config.json is asked too,
+       * as the uninstall path does.
+       */
+      let appFilesManager: AppFilesManager | null | undefined;
+      const installedInfoOf = async (app: AppFromDb) => {
+        if (appFilesManager === undefined) {
+          try {
+            appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false }) ?? null;
+          } catch {
+            // `ModuleRef.get` throws for a provider it cannot resolve. Not knowing must not fail the sync.
+            appFilesManager = null;
+          }
+        }
+        return appFilesManager?.getInstalledAppInfo(createAppUrn(app.appName, app.appStoreSlug)).catch(() => null);
+      };
+      const isExposedPort = async (app: AppFromDb): Promise<boolean> =>
+        isPortExposeApp(app.config) || (app.appStoreSlug === '_user' && isPortExposeApp(await installedInfoOf(app)));
+
       const exposedApps: AppInfo[] = await Promise.all(
         syncedDbApps.map(async (app: AppFromDb) => {
           const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
+          // An exposed port says so, with the port it forwards to, so a reinstalled Hub can put it back (#2131).
+          const exposedPort = app.port && (await isExposedPort(app)) ? { kind: PORT_EXPOSE_KIND, upstreamPort: app.port } : {};
           return {
+            ...exposedPort,
             name: app.appName,
             subdomain,
             publicDomain: app.publicDomain || defaultPublicDomain,
@@ -931,6 +982,9 @@ export class ExposureSyncService implements OnModuleDestroy {
 
       const result = await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined, customDomainApps);
       this.settleCloudflareRetry(result.ok, options);
+      if (result.ok) {
+        this.refreshPortExposeRegistryOnce();
+      }
 
       const appEntries = exposedApps.filter((entry) => entry.privilegedKind !== 'hub');
 

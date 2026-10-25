@@ -4,6 +4,7 @@ import type { ActorCheckContext, LifecycleActor, SystemLifecycleReason } from '@
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ModuleRef } from '@nestjs/core';
+import { PortExposeService } from '@/modules/custom-apps/port-expose.service';
 import { AppLifecycleService } from '../app-lifecycle.service';
 import { HubAccessService } from '../hub-access.service';
 import { ForwardAuthSecretResolver } from '@/modules/auth/forward-auth-secret.resolver';
@@ -355,6 +356,102 @@ describe('AppLifecycleService', () => {
 
       const syncedApps = cloudflareClientService.syncState.mock.calls[0]?.[1] as any[];
       expect(syncedApps.filter((entry) => entry.privilegedKind !== 'hub').map((entry) => entry.name)).toEqual(['n8n', 'nextcloud']);
+    });
+
+    // A reinstalled Hub can only put an exposed port back if the Portal knows it was one and its port (#2131).
+    it('marks an exposed port in the sync, with the port it forwards to', async () => {
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'acme',
+        hubSubdomain: 'hub1-acme',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'game',
+          appStoreSlug: '_user',
+          status: 'running',
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          localSubdomain: 'game',
+          port: 3080,
+          config: { kind: 'port-expose', port: 3080, exposureMode: 'cloudflare', localSubdomain: 'game', exposedLocal: true, openPort: true },
+        },
+        {
+          appName: 'nextcloud',
+          appStoreSlug: 'ci-marketplace',
+          status: 'running',
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          port: 8443,
+          config: { exposureMode: 'cloudflare', openPort: true },
+        },
+      ] as any);
+      configService.getConfig.mockReturnValue({ userSettings: { domain: 'ci.computer', localDomain: 'lan' }, domain: 'ci.computer' } as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 2 });
+
+      await service.triggerCloudflareSync();
+
+      const synced = cloudflareClientService.syncState.mock.calls[0]?.[1] as any[];
+      expect(synced.find((entry) => entry.name === 'game')).toMatchObject({ kind: 'port-expose', upstreamPort: 3080, localPort: 80 });
+      expect(synced.find((entry) => entry.name === 'nextcloud')).not.toHaveProperty('kind');
+    });
+
+    // A save through the generic config route rewrites the stored form without `kind`, so config.json is asked too.
+    it('marks an exposed port whose stored form lost its kind, from its config.json', async () => {
+      const files = { getInstalledAppInfo: vi.fn().mockResolvedValue({ kind: 'port-expose' }) };
+      vi.mocked((exposureSyncService as any).moduleRef.get).mockImplementation((token: unknown) => (token === AppFilesManager ? files : undefined));
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'acme',
+        hubSubdomain: 'hub1-acme',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'game',
+          appStoreSlug: '_user',
+          status: 'running',
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          localSubdomain: 'game',
+          port: 3080,
+          config: { exposureMode: 'cloudflare', localSubdomain: 'game', exposedLocal: true, openPort: true },
+        },
+      ] as any);
+      configService.getConfig.mockReturnValue({ userSettings: { domain: 'ci.computer', localDomain: 'lan' }, domain: 'ci.computer' } as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1 });
+
+      await service.triggerCloudflareSync();
+
+      const synced = cloudflareClientService.syncState.mock.calls[0]?.[1] as any[];
+      expect(files.getInstalledAppInfo).toHaveBeenCalledWith('game:_user');
+      expect(synced.find((entry) => entry.name === 'game')).toMatchObject({ kind: 'port-expose', upstreamPort: 3080 });
+    });
+
+    /*
+     * The registry is written only when a This Machine Only or Private VPN port is created or changed,
+     * so one exposed before it carried the kind and mode would never get them (#2131).
+     */
+    it('sends the Portal its This Machine Only and Private VPN ports once per start, after a sync it answered', async () => {
+      const portExpose = { syncAllPortalRegistryEntries: vi.fn().mockRejectedValueOnce(new Error('Portal busy')).mockResolvedValue(undefined) };
+      vi.mocked((exposureSyncService as any).moduleRef.get).mockImplementation((token: unknown) =>
+        token === PortExposeService ? portExpose : undefined,
+      );
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({ id: 'org-id', tunnelId: 'tunnel-id', slug: 'acme' } as any);
+      appsRepository.getApps.mockResolvedValue([]);
+      configService.getConfig.mockReturnValue({ userSettings: { localDomain: 'lan' } } as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 0 });
+
+      await service.triggerCloudflareSync();
+      await vi.waitFor(() => expect(portExpose.syncAllPortalRegistryEntries).toHaveBeenCalledTimes(1));
+
+      // The first attempt failed, so the next sync tries again; after that, no more.
+      await service.triggerCloudflareSync();
+      await vi.waitFor(() => expect(portExpose.syncAllPortalRegistryEntries).toHaveBeenCalledTimes(2));
+      await service.triggerCloudflareSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(portExpose.syncAllPortalRegistryEntries).toHaveBeenCalledTimes(2);
     });
 
     it('should not include Hub route when hubSubdomain is not set', async () => {

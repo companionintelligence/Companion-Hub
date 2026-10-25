@@ -1,17 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createAppUrn } from '@/common/helpers/app-helpers';
+import type { PortalDeviceApplication } from '@/modules/cloudflare/cloudflare-client.service';
+import { PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
+import { deriveAppSlug, RESERVED_APP_NAMES, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import type { z } from 'zod';
 import type { appFormSchema } from './dto/app-lifecycle.dto';
 
-export interface PortalDeviceApplication {
-  id: string;
-  name: string;
-  slug: string;
-  port: number;
-  publicDomain: string | null;
-}
+export type { PortalDeviceApplication };
 
 export interface LocalAppDataEntry {
   storeId: string;
@@ -20,7 +17,27 @@ export interface LocalAppDataEntry {
   hasAppEnv: boolean;
 }
 
-export type RehydrationAction = 'install' | 'start' | 'skip_running' | 'skip_busy' | 'skip_unresolved';
+export type RehydrationAction = 'install' | 'start' | 'expose' | 'skip_running' | 'skip_busy' | 'skip_unresolved';
+
+/** The store a port made with "Expose a port" lives in. */
+export const EXPOSED_PORT_STORE = '_user';
+
+/** Where a port this Hub exposed before a reinstall comes back. */
+export interface ExposedPortTarget {
+  port: number;
+  exposureMode: 'cloudflare' | 'local' | 'tailscale';
+  localSubdomain: string;
+  publicDomain?: string;
+}
+
+/** A Portal app that is a port this device exposed, with where it comes back. */
+export interface ExposedPortEntry {
+  portalApp: PortalDeviceApplication;
+  target: ExposedPortTarget;
+}
+
+/** Why an exposed port the Portal lists was left alone by a rehydrate that is not the restore after a pairing. */
+export const EXPOSED_PORT_OUTSIDE_RESTORE_REASON = 'Exposed ports are put back only by the restore after pairing';
 
 /** App statuses with an operation still under way. Rehydrate leaves these apps to it, and a restore after pairing waits for them. */
 export const IN_FLIGHT_STATUSES: ReadonlySet<string> = new Set([
@@ -41,6 +58,8 @@ export interface RehydrationPlanItem {
   action: RehydrationAction;
   reason?: string;
   form?: z.infer<typeof appFormSchema>;
+  /** Where an `expose` item puts the port back. */
+  exposedPort?: ExposedPortTarget;
   hasExistingData: boolean;
   hasInstalledCompose: boolean;
 }
@@ -191,6 +210,77 @@ export function resolvePortalAppToUrn(portalApp: PortalDeviceApplication, storeS
 
   candidates.sort((a, b) => b.score - a.score);
   return candidates[0]?.urn ?? null;
+}
+
+/**
+ * Where to put back an app the Portal lists as a port this device exposed, or `null` when it is not one
+ * or the Portal's details cannot be trusted to rebuild it (#2131).
+ *
+ * ⚠ PUBLIC ONLY UNDER A NAME THAT WAS ALREADY PUBLIC. The restore publishes a program on this machine
+ * on the Portal's word, so each detail is held to what the Portal route that wrote it can have written.
+ * A row the tunnel sync wrote is not pinned and was public. A row the registry wrote is pinned and was
+ * This Machine Only or on the Private VPN. Anything else is not an exposed port to the restore. Nor is a
+ * row from a Portal that predates these details.
+ */
+export function exposedPortTarget(portalApp: PortalDeviceApplication): ExposedPortTarget | null {
+  if (portalApp.kind !== PORT_EXPOSE_KIND) {
+    return null;
+  }
+
+  const port = portalApp.upstreamPort;
+  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1024 || port > 65535) {
+    return null;
+  }
+
+  // The name is the app's id here. `createPortExposeApp` derives the id from it, so a name that derives
+  // to something else, or to a reserved route, would come back as a different app.
+  if (deriveAppSlug(portalApp.name) !== portalApp.name || RESERVED_APP_NAMES.includes(portalApp.name)) {
+    return null;
+  }
+
+  const localSubdomain = sanitizeAppSubdomain(portalApp.slug);
+  if (!localSubdomain) {
+    return null;
+  }
+
+  if (portalApp.pinned === false && portalApp.exposureMode === 'cloudflare') {
+    const publicDomain = portalApp.publicDomain?.trim();
+    return { port, exposureMode: 'cloudflare', localSubdomain, ...(publicDomain ? { publicDomain } : {}) };
+  }
+
+  if (portalApp.pinned === true && (portalApp.exposureMode === 'local' || portalApp.exposureMode === 'tailscale')) {
+    return { port, exposureMode: portalApp.exposureMode, localSubdomain };
+  }
+
+  return null;
+}
+
+/**
+ * Plan items for the ports the Portal lists as exposed on this device. One this Hub already has is left
+ * alone. A missing one is put back only when `restore` says this is the restore after a pairing, the
+ * one time the Hub takes the Portal's word for what to publish.
+ */
+export function planExposedPorts(input: {
+  exposed: ReadonlyArray<ExposedPortEntry>;
+  dbAppsByUrn: ReadonlyMap<string, { status: string }>;
+  restore: boolean;
+}): RehydrationPlanItem[] {
+  return input.exposed.map(({ portalApp, target }): RehydrationPlanItem => {
+    const appUrn = createAppUrn(portalApp.name, EXPOSED_PORT_STORE);
+    const dbApp = input.dbAppsByUrn.get(appUrn);
+    const item = { portalApp, appUrn, exposedPort: target, hasExistingData: false, hasInstalledCompose: false };
+
+    if (dbApp && IN_FLIGHT_STATUSES.has(dbApp.status)) {
+      return { ...item, action: 'skip_busy', reason: `An operation is already in progress for this app (${dbApp.status})` };
+    }
+    if (dbApp) {
+      return { ...item, action: 'skip_running', reason: 'App is already running locally' };
+    }
+    if (!input.restore) {
+      return { ...item, action: 'skip_unresolved', reason: EXPOSED_PORT_OUTSIDE_RESTORE_REASON };
+    }
+    return { ...item, action: 'expose' };
+  });
 }
 
 /** Keep only app-data folders that correspond to a Portal-listed app URN. */

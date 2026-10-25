@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Injectable } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { APP_DATA_DIR } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { castAppUrn, createAppUrn } from '@/common/helpers/app-helpers';
@@ -13,6 +14,8 @@ import { CloudflareClientService, type PortalDeviceApplication } from '@/modules
 import { isAiAppInfo } from '@/modules/apps/app.helpers';
 import { SUPPORTED_APP_SLUGS } from '@/modules/inference/app-credentials.service';
 import { bootstrapAppNamesForSlug } from '@/modules/inference/bootstrap-app-names';
+import { CreatePortExposeAppDto } from '@/modules/custom-apps/dto/custom-apps.dto';
+import { PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { UserRepository } from '@/modules/user/user.repository';
@@ -24,8 +27,12 @@ import {
   buildRehydrationPlan,
   CATALOG_DOWNLOAD_WAIT_MS,
   CatalogStillDownloadingError,
+  type ExposedPortEntry,
+  type ExposedPortTarget,
+  exposedPortTarget,
   filterLocalEntriesForPortalUrns,
   isKeptAppSkip,
+  planExposedPorts,
   resolvePortalAppToUrn,
   scanLocalAppData,
   skipCodeForAction,
@@ -168,6 +175,32 @@ function restoredNothing(state: RehydrationStateFile): boolean {
   return state.queuedUrns.length === 0 && state.startedUrns.length === 0 && state.skipped.length === 0;
 }
 
+/**
+ * The Portal's apps for this device, told apart: the ports it exposed (#2131), the rows marked as one that
+ * the restore cannot rebuild (`exposedPortTarget`) and the rest, which a store may list. A marked row is
+ * never a store app. Matched against the stores, it installed a store app that happened to share its name.
+ */
+function splitExposedPorts(portalApps: PortalDeviceApplication[]): {
+  storeApps: PortalDeviceApplication[];
+  exposed: ExposedPortEntry[];
+  unrebuildable: PortalDeviceApplication[];
+} {
+  const storeApps: PortalDeviceApplication[] = [];
+  const exposed: ExposedPortEntry[] = [];
+  const unrebuildable: PortalDeviceApplication[] = [];
+  for (const portalApp of portalApps) {
+    const target = exposedPortTarget(portalApp);
+    if (target) {
+      exposed.push({ portalApp, target });
+    } else if (portalApp.kind === PORT_EXPOSE_KIND) {
+      unrebuildable.push(portalApp);
+    } else {
+      storeApps.push(portalApp);
+    }
+  }
+  return { storeApps, exposed, unrebuildable };
+}
+
 @Injectable()
 export class AppRehydrationService {
   /** The run under way, which a second caller joins rather than queueing the same installs again. */
@@ -184,6 +217,7 @@ export class AppRehydrationService {
     private readonly appFilesManager: AppFilesManager,
     private readonly appLifecycleService: AppLifecycleService,
     private readonly userRepository: UserRepository,
+    private readonly moduleRef: ModuleRef,
   ) {}
 
   async getRehydrationStatus(): Promise<{ completed: boolean; state: RehydrationStateFile | null }> {
@@ -285,8 +319,17 @@ export class AppRehydrationService {
 
   async buildPlan(): Promise<RehydrationPlan> {
     await this.assertCanRehydrate();
-    const { listed } = await this.fetchPortalApplications();
-    return this.buildPlanFromPortalApps(listed);
+    const { listed, exposed } = await this.fetchPortalApplications();
+    return this.buildPlanFromPortalApps(listed, exposed, await this.restoresExposedPorts());
+  }
+
+  /**
+   * Whether this rehydrate may put back the ports the Portal lists as exposed on this device: only the
+   * restore after a pairing, while that pairing's apps check stands. That is the one time a Hub has
+   * lost its own record of them and takes the Portal's word for what to publish (#2131).
+   */
+  private async restoresExposedPorts(): Promise<boolean> {
+    return Boolean(await readPairingAppCheck());
   }
 
   async executeRehydrate(options: RehydrateOptions): Promise<RehydrationExecuteResult> {
@@ -340,11 +383,13 @@ export class AppRehydrationService {
       };
     }
 
-    const { listed, unlisted } = await this.fetchPortalApplications(CATALOG_DOWNLOAD_WAIT_MS);
-    const plan = await this.buildPlanFromPortalApps(listed);
+    const { listed, unlisted, exposed } = await this.fetchPortalApplications(CATALOG_DOWNLOAD_WAIT_MS);
+    const plan = await this.buildPlanFromPortalApps(listed, exposed, await this.restoresExposedPorts());
 
     const queued: string[] = [];
     const started: string[] = [];
+    /** Exposed ports put back. Recorded with the starts: like them, they are serving when the run ends. */
+    const exposedUrns: string[] = [];
     /*
      * An app the Portal lists that no store here does is not in the plan, but it was not restored
      * either. Leaving it out of the record left it out of the summary the next sign-in shows, so
@@ -354,7 +399,7 @@ export class AppRehydrationService {
     const refused: string[] = [];
 
     for (const item of plan.items) {
-      await this.executePlanItem(item, queued, started, skipped, refused, options.actor);
+      await this.executePlanItem(item, { queued, started, exposed: exposedUrns, skipped, refused }, options.actor);
     }
 
     /*
@@ -373,7 +418,7 @@ export class AppRehydrationService {
       const state: RehydrationStateFile = {
         completedAt: new Date().toISOString(),
         queuedUrns: queued,
-        startedUrns: started,
+        startedUrns: [...started, ...exposedUrns],
         skipped,
       };
       await this.writeRehydrationState(state);
@@ -381,11 +426,11 @@ export class AppRehydrationService {
 
     return {
       success: true,
-      message: this.summarize(queued, started, refused, plan),
+      message: this.summarize(queued, started, exposedUrns, refused, plan),
       incomplete,
       plan,
       queued,
-      started,
+      started: [...started, ...exposedUrns],
       skipped,
     };
   }
@@ -396,15 +441,17 @@ export class AppRehydrationService {
    */
   private async planForCompletedRun(): Promise<RehydrationPlan> {
     try {
-      return await this.buildPlanFromPortalApps((await this.fetchPortalApplications()).listed);
+      const { listed, exposed } = await this.fetchPortalApplications();
+      return await this.buildPlanFromPortalApps(listed, exposed, false);
     } catch (error) {
       this.logger.warn(`Could not rebuild the plan of a finished restore: ${error instanceof Error ? error.message : String(error)}`);
       return { items: [], portalAppCount: 0, localAppDataCount: 0 };
     }
   }
 
-  private summarize(queued: string[], started: string[], refused: string[], plan: RehydrationPlan): string {
-    const acted = `Queued ${queued.length} install(s) and ${started.length} start(s) from Portal`;
+  private summarize(queued: string[], started: string[], exposed: string[], refused: string[], plan: RehydrationPlan): string {
+    const queuedAndStarted = `Queued ${queued.length} install(s) and ${started.length} start(s) from Portal`;
+    const acted = exposed.length > 0 ? `${queuedAndStarted} and exposed ${exposed.length} port(s) again` : queuedAndStarted;
 
     if (refused.length > 0) {
       // A refused start is an installed app its requester may not start, not one they may not install.
@@ -417,7 +464,7 @@ export class AppRehydrationService {
       return `${acted}; ${what} were refused for this account`;
     }
 
-    return queued.length + started.length > 0 ? acted : 'No apps required rehydration';
+    return queued.length + started.length + exposed.length > 0 ? acted : 'No apps required rehydration';
   }
 
   private async assertCanRehydrate(): Promise<void> {
@@ -433,15 +480,22 @@ export class AppRehydrationService {
   }
 
   /**
-   * The device's apps from the Portal: those an enabled store here lists, and those none does. Throws
-   * when the Portal gives no answer (`CloudflareClientService.getDeviceApplications`).
+   * The device's apps from the Portal: the ports this device exposed (#2131), those an enabled store
+   * here lists and those none does. Throws when the Portal gives no answer
+   * (`CloudflareClientService.getDeviceApplications`).
+   *
+   * Exposed ports are told apart first (`splitExposedPorts`). They come from no store, so neither the
+   * catalog download nor an empty catalog says anything about them.
    */
-  private async fetchPortalApplications(
-    catalogDownloadWaitMs = 0,
-  ): Promise<{ listed: PortalDeviceApplication[]; unlisted: PortalDeviceApplication[] }> {
-    let apps = await this.cloudflareClientService.getDeviceApplications();
+  private async fetchPortalApplications(catalogDownloadWaitMs = 0): Promise<{
+    listed: PortalDeviceApplication[];
+    unlisted: PortalDeviceApplication[];
+    exposed: ExposedPortEntry[];
+  }> {
+    let split = splitExposedPorts(await this.cloudflareClientService.getDeviceApplications());
+    let apps = split.storeApps;
     if (apps.length === 0) {
-      return { listed: [], unlisted: [] };
+      return { listed: [], unlisted: split.unrebuildable, exposed: split.exposed };
     }
 
     /*
@@ -463,9 +517,10 @@ export class AppRehydrationService {
 
       // Read again after the wait, with the device key the Hub holds now. A factory reset or a pairing
       // onto another device may have come meanwhile. The list read before it was then the old device's.
-      apps = await this.cloudflareClientService.getDeviceApplications();
+      split = splitExposedPorts(await this.cloudflareClientService.getDeviceApplications());
+      apps = split.storeApps;
       if (apps.length === 0) {
-        return { listed: [], unlisted: [] };
+        return { listed: [], unlisted: split.unrebuildable, exposed: split.exposed };
       }
     }
 
@@ -501,10 +556,18 @@ export class AppRehydrationService {
       }
     }
 
-    return { listed, unlisted };
+    return { listed, unlisted: [...split.unrebuildable, ...unlisted], exposed: split.exposed };
   }
 
-  private async buildPlanFromPortalApps(portalApps: PortalDeviceApplication[]): Promise<RehydrationPlan> {
+  /**
+   * The plan for `portalApps`, the store apps, with an item for each exposed port after them.
+   * `restoreExposedPorts` says whether a missing one is put back (`restoresExposedPorts`).
+   */
+  private async buildPlanFromPortalApps(
+    portalApps: PortalDeviceApplication[],
+    exposed: ReadonlyArray<ExposedPortEntry> = [],
+    restoreExposedPorts = false,
+  ): Promise<RehydrationPlan> {
     const localEntries = scanLocalAppData(APP_DATA_DIR);
     const storeSlugs = await this.getStoreSlugsWithApps();
 
@@ -536,13 +599,23 @@ export class AppRehydrationService {
       `Rehydration plan: ${portalApps.length} Portal app(s), ${portalUrns.size} resolvable, ${localEntries.length} local app-data folder(s) on disk (${scopedLocalEntries.length} match Portal)`,
     );
 
-    return buildRehydrationPlan({
+    const plan = buildRehydrationPlan({
       portalApps,
       storeSlugs,
       localEntries: scopedLocalEntries,
       installedComposeUrns,
       dbAppsByUrn,
     });
+    if (exposed.length === 0) {
+      return plan;
+    }
+
+    const exposedItems = planExposedPorts({
+      exposed,
+      dbAppsByUrn: new Map(dbApps.map((app) => [createAppUrn(app.appName, app.appStoreSlug), { status: app.status }])),
+      restore: restoreExposedPorts,
+    });
+    return { ...plan, items: [...plan.items, ...exposedItems], portalAppCount: plan.portalAppCount + exposed.length };
   }
 
   private async hasInstalledCompose(appUrn: AppUrn): Promise<boolean> {
@@ -557,12 +630,10 @@ export class AppRehydrationService {
 
   private async executePlanItem(
     item: RehydrationPlanItem,
-    queued: string[],
-    started: string[],
-    skipped: RehydrationSkipped[],
-    refused: string[],
+    outcome: { queued: string[]; started: string[]; exposed: string[]; skipped: RehydrationSkipped[]; refused: string[] },
     actor: LifecycleActor,
   ): Promise<void> {
+    const { queued, started, exposed, skipped, refused } = outcome;
     const label = item.portalApp.name;
     const target = item.appUrn ? { appUrn: item.appUrn } : {};
 
@@ -571,7 +642,7 @@ export class AppRehydrationService {
       return;
     }
 
-    if (!item.appUrn || !item.form) {
+    if (!item.appUrn || (item.action === 'expose' ? !item.exposedPort : !item.form)) {
       skipped.push({ name: label, reason: 'Missing install target', code: 'no_target', ...target });
       return;
     }
@@ -582,6 +653,12 @@ export class AppRehydrationService {
       if (item.action === 'start') {
         await this.appLifecycleService.startApp({ appUrn: item.appUrn, skipPull: true, actor });
         started.push(item.appUrn);
+        return;
+      }
+
+      if (item.action === 'expose' && item.exposedPort) {
+        await this.exposePortAgain(item.portalApp.name, item.exposedPort);
+        exposed.push(item.appUrn);
         return;
       }
 
@@ -597,6 +674,35 @@ export class AppRehydrationService {
         refused.push(item.appUrn);
       }
     }
+  }
+
+  /**
+   * Puts back a port this device exposed before a reinstall, in the mode it had (#2131).
+   *
+   * Through `PortExposeService`, so it is held to everything "Expose a port" is: the name and the port
+   * must be free here. Something must also answer on the port. That last check is why a port whose
+   * program is not running comes back under **Not restored**, with the reason. The values are checked
+   * against the form's own schema first, since this call does not come through its route.
+   *
+   * Looked up when needed, as `AppLifecycleService` does for exposed ports: `PortExposeService` lives in
+   * a module that imports this one.
+   */
+  private async exposePortAgain(name: string, target: ExposedPortTarget): Promise<void> {
+    const parsed = CreatePortExposeAppDto.schema.safeParse({
+      name,
+      port: target.port,
+      exposureMode: target.exposureMode,
+      localSubdomain: target.localSubdomain,
+      publicDomain: target.publicDomain,
+    });
+    if (!parsed.success) {
+      throw new Error("CI Portal's details for this exposed port are not ones Expose a port accepts, so it was not exposed again");
+    }
+    const request = parsed.data;
+
+    // `ModuleRef.get` throws for a provider it cannot find, so there is no missing service to check for.
+    const { PortExposeService } = await import('../custom-apps/port-expose.service');
+    await this.moduleRef.get(PortExposeService, { strict: false }).createPortExposeApp(request);
   }
 
   private async getStoreSlugsWithApps(): Promise<string[]> {
