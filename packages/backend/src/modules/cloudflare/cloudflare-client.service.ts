@@ -15,7 +15,7 @@ import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
 import { describeNetworkError } from '@/common/helpers/network-error';
 import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
 import { PortalClientService } from '@/core/portal/portal-client.service';
-import { type DnsAvailability, readDnsAvailability } from './dns-availability';
+import { type PortalDnsAvailability, readDnsAvailability } from './dns-availability';
 
 /** How long `getDeviceApplications` waits for the Portal before it counts as no answer. */
 const DEVICE_APPLICATIONS_TIMEOUT_MS = 15_000;
@@ -736,7 +736,7 @@ export class CloudflareClientService {
     }
   }
 
-  async checkDnsAvailability(subdomain: string, domain?: string): Promise<DnsAvailability> {
+  async checkDnsAvailability(subdomain: string, domain?: string): Promise<PortalDnsAvailability> {
     try {
       const response = await this.client.get('cloudflare/check-dns-availability', {
         ...this.getRequestConfig(),

@@ -26,6 +26,13 @@ export const dnsAvailabilitySchema = z.object({
 
 export type DnsAvailability = z.infer<typeof dnsAvailabilitySchema>;
 
+/**
+ * Portal's answer as the Hub reads it: what the forms get, plus whether a taken name is held by this
+ * device's own row (`heldByCaller`). That flag is for the Hub alone. `CloudflareController` decides with
+ * it and answers the forms without it, so their schema stays as it is (#2133).
+ */
+export type PortalDnsAvailability = DnsAvailability & { heldByCaller?: true };
+
 function isDnsUnavailableReason(value: unknown): value is DnsUnavailableReason {
   return (DNS_UNAVAILABLE_REASONS as readonly unknown[]).includes(value);
 }
@@ -38,12 +45,12 @@ function isDnsUnavailableReason(value: unknown): value is DnsUnavailableReason {
  * Hub does not know is dropped and the rest of the answer kept, because rejecting
  * the answer would turn a newer Portal's "taken" into "unable to verify".
  */
-export function readDnsAvailability(body: unknown): DnsAvailability | undefined {
+export function readDnsAvailability(body: unknown): PortalDnsAvailability | undefined {
   if (typeof body !== 'object' || body === null) {
     return undefined;
   }
 
-  const { available, reason, message } = body as Record<string, unknown>;
+  const { available, reason, message, heldByCaller } = body as Record<string, unknown>;
 
   if (typeof available !== 'boolean') {
     return undefined;
@@ -53,5 +60,6 @@ export function readDnsAvailability(body: unknown): DnsAvailability | undefined 
     available,
     ...(!available && isDnsUnavailableReason(reason) ? { reason } : {}),
     message: typeof message === 'string' ? message : undefined,
+    ...(!available && reason === 'hostname_taken' && heldByCaller === true ? { heldByCaller: true as const } : {}),
   };
 }

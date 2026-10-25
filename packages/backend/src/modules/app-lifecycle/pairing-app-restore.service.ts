@@ -7,7 +7,7 @@ import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { isOperational } from '@/modules/registration/registration-state';
-import { CatalogStillDownloadingError, IN_FLIGHT_STATUSES } from './app-rehydration';
+import { CatalogStillDownloadingError, IN_FLIGHT_STATUSES, restoreRanSince } from './app-rehydration';
 import { AppRehydrationService } from './app-rehydration.service';
 import { DeviceKeyRefreshService } from './device-key-refresh.service';
 import { ExposureSyncService } from './exposure-sync.service';
@@ -215,9 +215,7 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
     }
 
     const rehydration = await readRehydrationState();
-    const ranForThisPairing = Boolean(rehydration?.completedAt && Date.parse(rehydration.completedAt) >= Date.parse(pending.markedAt));
-
-    if (!ranForThisPairing) {
+    if (!restoreRanSince(rehydration, pending.markedAt)) {
       try {
         const result = await this.appRehydrationService.executeRehydrate({
           // A finished run left from an earlier pairing is not this one's.

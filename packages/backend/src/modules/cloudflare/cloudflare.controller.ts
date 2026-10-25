@@ -36,11 +36,18 @@ export class CloudflareController {
       return { available: true };
     }
 
-    if (await this.cloudflareHostnameService.resolvesToExistingAppHostname(subdomain, domain, this.parseOptionalAppUrn(appUrn))) {
+    const parsedAppUrn = this.parseOptionalAppUrn(appUrn);
+    if (await this.cloudflareHostnameService.resolvesToExistingAppHostname(subdomain, domain, parsedAppUrn)) {
       return { available: true };
     }
 
-    return this.cloudflareClientService.checkDnsAvailability(subdomain, domain);
+    // `heldByCaller` is for this decision only; the forms' answer has no such field.
+    const { heldByCaller, ...availability } = await this.cloudflareClientService.checkDnsAvailability(subdomain, domain);
+    if (heldByCaller && (await this.cloudflareHostnameService.isOwnNameFromBeforePairing(subdomain, parsedAppUrn))) {
+      return { available: true };
+    }
+
+    return availability;
   }
 
   @Get('domains')
