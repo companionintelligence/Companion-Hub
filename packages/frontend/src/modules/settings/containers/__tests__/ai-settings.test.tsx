@@ -763,6 +763,48 @@ describe('AiSettingsContainer', () => {
     await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ backend: 'ollama', model: 'o1' })));
   });
 
+  it('keeps the saved vision and embedding models when Save is pressed with nothing changed', async () => {
+    // v2 and e2 rank first among the checked models; the Hub has v1 and e1 saved.
+    const seeing = (id: string) => ({ ...llm(id, 'ollama'), metadata: { capabilities: { vision: true } } });
+    const embedder = (id: string) => ({ ...llm(id, 'ollama'), modality: 'embedding' });
+    fetchInferenceOnboardingProfile.mockResolvedValue(
+      profileWithInstalled(['o1', 'v1', 'v2', 'e1', 'e2'], [llm('o1', 'ollama'), seeing('v2'), seeing('v1'), embedder('e2'), embedder('e1')]),
+    );
+    fetchInferencePreferences.mockResolvedValue({
+      preferredBackend: 'ollama',
+      preferredModel: 'o1',
+      preferredVisionModel: 'v1',
+      preferredEmbeddingModel: 'e1',
+    });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-v2')).toBeChecked());
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() =>
+      expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ model: 'o1', visionModel: 'v1', embeddingModel: 'e1' })),
+    );
+  });
+
+  it('ranks the vision models again once one of their checkboxes is changed', async () => {
+    const seeing = (id: string) => ({ ...llm(id, 'ollama'), metadata: { capabilities: { vision: true } } });
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1', 'v1', 'v2'], [llm('o1', 'ollama'), seeing('v2'), seeing('v1')]));
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', preferredModel: 'o1', preferredVisionModel: 'v2' });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-v2')).toBeChecked());
+    await user.click(screen.getByTestId('recommended-model-checkbox-v2'));
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ visionModel: 'v1' })));
+  });
+
   it('ranks the checked models again once a chat model checkbox is changed', async () => {
     fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1', 'o2'], [llm('o2', 'ollama'), llm('o1', 'ollama')]));
     fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', preferredModel: 'o1' });

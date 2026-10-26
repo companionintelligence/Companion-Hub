@@ -84,23 +84,36 @@ const compatibleSelection = (availableModelById: ModelIndex, backend: InferenceB
 const unpinnablePins = (availableModelById: ModelIndex, pinnedIds: Iterable<string>): string[] =>
   [...pinnedIds].filter((modelId) => isHubLoadableBackend(availableModelById.get(modelId)?.backend));
 
+/** The engine that embeds for `backend`: itself on Ollama and oMLX, else the shared embedding engine. */
+const embeddingBackendFor = (backend: InferenceBackendType): InferenceBackendType =>
+  backend === 'omlx' || backend === 'ollama' ? backend : EMBEDDING_INFERENCE_BACKEND;
+
 /**
- * The catalog id of the stored chat model when it is one the engine shown has installed, else null.
- * Save keeps it as the chat model until someone picks another; ranking the checked models instead
- * replaced a default of Llama 3.2 3B with Gemma 4 E2B on a save that changed nothing.
+ * The catalog id of a stored model when the engine shown has it installed and it can fill the role
+ * (`match`), else null. Save keeps it in that role until someone picks another; ranking the checked
+ * models instead replaced a default of Llama 3.2 3B with Gemma 4 E2B, as chat and vision model, on
+ * a save that changed nothing.
  */
-const installedStoredChatModelId = (
+const installedStoredModelId = (
   profile: HardwareProfileResponse,
   backend: InferenceBackendType,
   storedId: string | null | undefined,
+  match: (model: CuratedModel) => boolean,
 ): string | null => {
   if (!storedId) return null;
   const installed = new Set(profile.installedCatalogIds ?? []);
   const model = profile.availableModels.find(
     (candidate) => candidate.id === storedId || candidate.backendModelId === storedId || `user.${candidate.backendModelId}` === storedId,
   );
-  return model && model.backend === backend && isAgentModel(model) && installed.has(model.id) ? model.id : null;
+  return model && model.backend === backend && match(model) && installed.has(model.id) ? model.id : null;
 };
+
+/** The saved preferences Save keeps per role, from the last preferences read. */
+interface StoredRoleModels {
+  chat: string | null;
+  vision: string | null;
+  embedding: string | null;
+}
 
 // A null match does not clear the stored preference because serialization drops the
 // undefined field. Preference-clearing UI must wait until the API carries explicit null.
@@ -186,8 +199,11 @@ export const AiSettingsContainer = () => {
   const encodeEndpointRef = useRef('');
   encodeEndpointRef.current = encodeEndpoint;
   const trackedModelsRef = useRef<TrackedModel[]>([]);
-  // The chat model the Hub has saved, as the last preferences read reported it.
-  const storedPreferredModelRef = useRef<string | null>(null);
+  // The chat, vision and embedding models the Hub has saved, as the last preferences read reported them.
+  const storedRoleModelsRef = useRef<StoredRoleModels>({ chat: null, vision: null, embedding: null });
+  // The saved vision and embedding models Save writes back, each until a checkbox of its role
+  // changes. The chat model's equivalent is `chosenChatModelId`, which the page also shows.
+  const keptRoleModelsRef = useRef<Omit<StoredRoleModels, 'chat'>>({ vision: null, embedding: null });
   // Share one catalog index between Save and confirmation so they cannot disagree or
   // rebuild it independently.
   const availableModelById = useMemo<ModelIndex>(() => (profile ? indexAvailableModels(profile) : new Map()), [profile]);
@@ -242,6 +258,15 @@ export const AiSettingsContainer = () => {
     } finally {
       setRuntimeModelsLoading(false);
     }
+  }, []);
+
+  /** Keeps the saved vision and embedding models for Save when the engine shown has them installed. */
+  const keepStoredRoleModels = useCallback((data: HardwareProfileResponse, backend: InferenceBackendType) => {
+    const stored = storedRoleModelsRef.current;
+    keptRoleModelsRef.current = {
+      vision: installedStoredModelId(data, backend, stored.vision, isVisionModel),
+      embedding: installedStoredModelId(data, embeddingBackendFor(backend), stored.embedding, isEmbeddingModel),
+    };
   }, []);
 
   const fetchProfile = async (isRescan = false, backendOverride?: InferenceBackendType) => {
@@ -299,9 +324,14 @@ export const AiSettingsContainer = () => {
         }
       }
       const storedPreferred = prefData?.preferredModel;
-      storedPreferredModelRef.current = storedPreferred ?? null;
+      storedRoleModelsRef.current = {
+        chat: storedPreferred ?? null,
+        vision: prefData?.preferredVisionModel ?? null,
+        embedding: prefData?.preferredEmbeddingModel ?? null,
+      };
       const downloadedChoice = storedPreferred && !knownIds.has(storedPreferred) ? storedPreferred : null;
-      setChosenChatModelId(downloadedChoice ?? installedStoredChatModelId(data, preferredBackend, storedPreferred));
+      setChosenChatModelId(downloadedChoice ?? installedStoredModelId(data, preferredBackend, storedPreferred, isAgentModel));
+      keepStoredRoleModels(data, preferredBackend);
       if (downloadedChoice) {
         setSelectedModelIds((prev) =>
           prev.filter((id) => {
@@ -458,6 +488,8 @@ export const AiSettingsContainer = () => {
   const handleToggleModel = (modelId: string) => {
     const model = availableModelById.get(modelId);
     if (model?.modality === 'llm') setChosenChatModelId(null);
+    if (model && isVisionModel(model)) keptRoleModelsRef.current.vision = null;
+    if (model && isEmbeddingModel(model)) keptRoleModelsRef.current.embedding = null;
     setSelectedModelIds((prev) => (prev.includes(modelId) ? prev.filter((id) => id !== modelId) : [...prev, modelId]));
   };
 
@@ -538,8 +570,9 @@ export const AiSettingsContainer = () => {
       setProfile(data);
       // Re-seed the checkboxes for the new backend from server truth (see seedSelectedModelIds).
       seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
-      // A chat model chosen on one engine is no choice on another.
-      setChosenChatModelId(installedStoredChatModelId(data, selectedBackend, storedPreferredModelRef.current));
+      // A model chosen on one engine is no choice on another.
+      setChosenChatModelId(installedStoredModelId(data, selectedBackend, storedRoleModelsRef.current.chat, isAgentModel));
+      keepStoredRoleModels(data, selectedBackend);
     });
     fetchRuntimeModels(selectedBackend);
     if (selectedBackend === 'vllm') {
@@ -549,7 +582,7 @@ export const AiSettingsContainer = () => {
     } else if (selectedBackend === 'lemonade') {
       void checkLemonadeStatus();
     }
-  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, checkOmlxStatus, checkLemonadeStatus, seedSelectedModelIds]);
+  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, checkOmlxStatus, checkLemonadeStatus, seedSelectedModelIds, keepStoredRoleModels]);
 
   const hasActiveTransfers = Object.values(trackedModels).some((model) => ['pulling', 'loading', 'unloading'].includes(model.state));
 
@@ -605,9 +638,14 @@ export const AiSettingsContainer = () => {
 
       const checkboxPreferred = resolvePreferredModelId(profile, selectedBackend, isAgentModel, compatibleSelectedModelIds);
       const preferredModel = chosenChatModelId ?? checkboxPreferred;
-      const embeddingBackend = selectedBackend === 'omlx' || selectedBackend === 'ollama' ? selectedBackend : EMBEDDING_INFERENCE_BACKEND;
-      const preferredEmbeddingModel = resolvePreferredModelId(profile, embeddingBackend, isEmbeddingModel, compatibleSelectedModelIds);
-      const preferredVisionModel = resolvePreferredModelId(profile, selectedBackend, isVisionModel, compatibleSelectedModelIds);
+      // A kept model that is no longer checked (Load in Downloaded Models unchecks the other LLMs) is
+      // ranked again like the rest.
+      const kept = (modelId: string | null) => (modelId && compatibleSelectedModelIds.includes(modelId) ? modelId : null);
+      const preferredEmbeddingModel =
+        kept(keptRoleModelsRef.current.embedding) ??
+        resolvePreferredModelId(profile, embeddingBackendFor(selectedBackend), isEmbeddingModel, compatibleSelectedModelIds);
+      const preferredVisionModel =
+        kept(keptRoleModelsRef.current.vision) ?? resolvePreferredModelId(profile, selectedBackend, isVisionModel, compatibleSelectedModelIds);
 
       // Cloud keys first so the debounced AI-app restart (from preferences) sees them.
       // Masked keys (`••••`) omit apiKey so the Hub keeps the stored secret. A stored key whose field
