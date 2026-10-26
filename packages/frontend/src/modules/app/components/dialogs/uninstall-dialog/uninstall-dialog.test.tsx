@@ -62,7 +62,8 @@ vi.mock('sonner', () => ({
 const normalApp = { id: 'plane', name: 'Plane', urn: 'plane:ci-marketplace' } as never;
 const providerApp = { id: 'ci-memory', name: 'CI Memory', urn: 'ci-memory:ci-marketplace' } as never;
 
-const DATA_LOST = 'All data for this app will be lost.';
+const DATA_LOST = 'All data for this app will be lost, including its backups.';
+const RESET_HINT = 'To start over and keep the backups, use Reset app instead.';
 const DATA_KEPT = "This app's data and backups stay on this Hub.";
 
 describe('UninstallDialog', () => {
@@ -90,12 +91,20 @@ describe('UninstallDialog', () => {
     expect(screen.getByRole('dialog', { name: 'Uninstall Plane?' })).toBeInTheDocument();
   });
 
-  it('says the data will be lost while Delete all data is on', () => {
-    render(<UninstallDialog info={normalApp} isOpen onClose={vi.fn()} />);
+  it('says the data and its backups will be lost while Delete all data is on', () => {
+    render(<UninstallDialog info={normalApp} isOpen onClose={vi.fn()} canReset />);
 
     expect(screen.getByRole('switch', { name: 'Delete all data' })).toBeChecked();
     expect(screen.getByText(DATA_LOST)).toBeInTheDocument();
+    expect(screen.getByText(RESET_HINT)).toBeInTheDocument();
     expect(screen.queryByText(DATA_KEPT)).not.toBeInTheDocument();
+  });
+
+  it('points at Reset app only when the page offers it', () => {
+    render(<UninstallDialog info={normalApp} isOpen onClose={vi.fn()} />);
+
+    expect(screen.getByText(DATA_LOST)).toBeInTheDocument();
+    expect(screen.queryByText(RESET_HINT)).not.toBeInTheDocument();
   });
 
   it('says the data will be kept once Delete all data is off, and uninstalls without deleting it', async () => {
@@ -106,6 +115,7 @@ describe('UninstallDialog', () => {
 
     expect(screen.getByText(DATA_KEPT)).toBeInTheDocument();
     expect(screen.queryByText(DATA_LOST)).not.toBeInTheDocument();
+    expect(screen.queryByText(RESET_HINT)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Uninstall' }));
     expect(h.mutate).toHaveBeenCalledWith({ path: { urn: 'plane:ci-marketplace' }, body: { deleteAllData: false, force: false } });
