@@ -82,11 +82,12 @@ const APP_DOWN_SERVICE_URL = 'http://127.0.0.1:9';
 const COMPOSE_PROJECT_LABEL = 'com.docker.compose.project';
 
 /**
- * While its containers are gone, an app keeps its down routers in these states: running, or coming
- * back by itself, which the page calls starting. Stop and Uninstall mark the app `stopping` and
- * `uninstalling` before they take it down, so a stopped or removed app keeps none.
+ * While its containers are gone, an app keeps its down routers in these states: running, coming
+ * back by itself, which the page calls starting, and stopped, where the page says so and points at
+ * Start. Uninstall marks the app `uninstalling` before it takes it down, so a removed app keeps none.
+ * Before a stopped app kept its route, its address answered Traefik's bare 404.
  */
-const APP_DOWN_KEPT_STATUSES: ReadonlySet<AppStatus> = new Set<AppStatus>(['running', ...COMING_BACK_STATUSES]);
+const APP_DOWN_KEPT_STATUSES: ReadonlySet<AppStatus> = new Set<AppStatus>(['running', ...COMING_BACK_STATUSES, 'stopping', 'stopped']);
 
 /**
  * A copy of an app router that still answers while the app's containers are gone (CI-Hub#1944).

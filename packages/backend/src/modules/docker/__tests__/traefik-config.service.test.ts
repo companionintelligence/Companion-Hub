@@ -373,16 +373,32 @@ describe('TraefikConfigService — routes while an app restarts', () => {
     expect(kept?.middlewares).toContain('wordpress-ci-marketplace-proxy-headers');
   });
 
-  it('drops every route of an app that is no longer running, the kept one included', async () => {
+  it('drops every route of an app being uninstalled, the kept one included', async () => {
     runningContainers(publicWebLabels());
     await service.generateTraefikConfig();
 
-    // A Stop (or an uninstall) regenerates apps.yml once compose down has removed the containers.
-    appsInDb({ appId: 'wordpress', status: 'stopping' });
+    // An uninstall regenerates apps.yml once compose down has removed the containers.
+    appsInDb({ appId: 'wordpress', status: 'uninstalling' });
     docker.listContainers.mockResolvedValue([] as never);
     await service.generateTraefikConfig();
 
     expect(written.has(`${DYNAMIC_DIR}/apps.yml`)).toBe(false);
+  });
+
+  it('keeps only the route to the page once Stop has taken the containers down', async () => {
+    runningContainers(publicWebLabels());
+    await service.generateTraefikConfig();
+
+    // Stop regenerates apps.yml once compose down has removed the containers, with the app still `stopping`.
+    appsInDb({ appId: 'wordpress', status: 'stopping' });
+    docker.listContainers.mockResolvedValue([] as never);
+    await service.generateTraefikConfig();
+
+    const [kept, ...others] = await fileOnlyRoutersFor(ORIGIN_HOST);
+    expect(kept?.name).toBe(`wordpress-ci-marketplace-insecure${APP_DOWN_ROUTER_SUFFIX}`);
+    expect(kept?.servers).toEqual([{ url: 'http://127.0.0.1:9' }]);
+    expect(others).toEqual([]);
+    expect(parsed('apps.yml').http.routers).not.toHaveProperty('wordpress-ci-marketplace-insecure');
   });
 
   it("keeps an app's route to the page through another app's rebuild while its containers are gone", async () => {
@@ -402,7 +418,7 @@ describe('TraefikConfigService — routes while an app restarts', () => {
     expect(routers).toHaveProperty(`wordpress-ci-marketplace-insecure${APP_DOWN_ROUTER_SUFFIX}`);
   });
 
-  it.each<AppStatus>(['running', 'starting', 'restarting', 'updating', 'resetting', 'backing_up', 'restoring'])(
+  it.each<AppStatus>(['running', 'starting', 'restarting', 'updating', 'resetting', 'backing_up', 'restoring', 'stopping', 'stopped'])(
     'keeps it while the app is %s',
     async (status) => {
       await rebuildWhileNextcloudIsDown({ status });
@@ -411,7 +427,7 @@ describe('TraefikConfigService — routes while an app restarts', () => {
     },
   );
 
-  it.each<AppStatus>(['stopping', 'stopped', 'uninstalling', 'install_failed', 'missing'])('drops it once the app is %s', async (status) => {
+  it.each<AppStatus>(['uninstalling', 'install_failed', 'missing'])('drops it once the app is %s', async (status) => {
     await rebuildWhileNextcloudIsDown({ status });
 
     expect(parsed('apps.yml').http.routers).not.toHaveProperty(`nextcloud-ci-marketplace-insecure${APP_DOWN_ROUTER_SUFFIX}`);

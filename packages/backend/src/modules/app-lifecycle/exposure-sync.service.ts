@@ -6,6 +6,7 @@ import { SSEService } from '@/core/sse/sse.service';
 import { Injectable, Optional, type OnModuleDestroy } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
+import type { AppStatus } from '@/core/database/drizzle/types';
 import {
   buildOriginServerName,
   buildPublicWebIdentity,
@@ -95,6 +96,17 @@ type PublicDomainMove = {
 
 /** Why an app is recreated for its public identity; see `restartRevertedApps`. */
 type PublicIdentityRestart = 'revert' | 'apply' | 'public-domain-move';
+
+/**
+ * The states in which an app on Public Web is in the payload, and so keeps its public DNS record.
+ *
+ * A stopped app is one of them. Companion Portal deletes the record of every app a sync leaves out,
+ * and with the record gone the app's address gave a DNS error (Cloudflare 1016, or NXDOMAIN) until
+ * Start brought it back. Kept, the address reaches Traefik, which keeps the app's route to the Hub's
+ * page for a stopped app (see `APP_DOWN_KEPT_STATUSES` in traefik-config.service.ts). An app being
+ * uninstalled, one whose install failed and one whose containers went missing still drop out.
+ */
+const CLOUDFLARE_PUBLISHED_STATUSES: ReadonlySet<AppStatus> = new Set<AppStatus>(['running', 'starting', 'restarting', 'stopping', 'stopped']);
 
 /**
  * Refusals that come from the user's own plan or naming. The Portal refuses every
@@ -877,8 +889,7 @@ export class ExposureSyncService implements OnModuleDestroy {
           return false;
         }
         return (
-          publishesCloudflarePublicRoute(publicRoutingSnapshotOf(app as AppPublicRoutingSnapshot)) &&
-          ['running', 'starting', 'restarting'].includes(app.status)
+          publishesCloudflarePublicRoute(publicRoutingSnapshotOf(app as AppPublicRoutingSnapshot)) && CLOUDFLARE_PUBLISHED_STATUSES.has(app.status)
         );
       });
 
@@ -975,8 +986,9 @@ export class ExposureSyncService implements OnModuleDestroy {
 
       /*
        * Built from EVERY app row, not from `syncedDbApps`: the publish payload
-       * leaves stopped apps out on purpose, and a stopped app is exactly the one
-       * Portal must not offer to restart. See `CustomDomainApplyReport`.
+       * leaves some apps out (one being uninstalled, a failed install), and the
+       * report must still say a stopped app is not running, since that is the
+       * one Portal must not offer to restart. See `CustomDomainApplyReport`.
        */
       const customDomainApps = await this.buildCustomDomainApplyReport(apps, toPublicHostname);
 
