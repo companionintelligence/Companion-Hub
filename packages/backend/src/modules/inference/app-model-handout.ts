@@ -260,9 +260,9 @@ export interface ContextHandoutInput {
   model: CuratedModel;
   servedLocally: boolean;
   /**
-   * Memory the model may use on this node: `modelMemoryCeilingMb(profile)`, the budget the load is
-   * fit-checked against with nothing else loaded, so the window an app is told is one the load path
-   * will not refuse or step down on an empty card.
+   * Memory the model may use on this node: `MemoryManagerService.modelCeilingMb`, the node's
+   * `modelMemoryCeilingMb(profile)` without what this model itself holds now, so the window an app
+   * is told is one the load path will not refuse or step down on an empty card.
    */
   effectiveInferenceMemoryMb: number;
   minContextLength?: number;

@@ -16,7 +16,7 @@ import {
   handoutContextLength,
   selectPoolChatModel,
 } from './app-model-handout';
-import { MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
+import { handoutCeilingMb, MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
 import { appBearerFor } from './engine-credential-scope';
 import { catalogEmbedsOn, embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
 import { pickUtilityModel } from './utility-handout';
@@ -326,7 +326,7 @@ export class InferenceEnvResolver {
       // same three sources against the same ceiling; it differs by the app's floor and cap, and it
       // asks the model's own engine where this asks the active one.
       const askOllama = chatServedLocally && backendType === 'ollama';
-      const [sizing, residentContextLength, servedContextLength] = await Promise.all([
+      const [sizing, residentContextLength, servedContextLength, ceilingMb] = await Promise.all([
         chatServedLocally
           ? probeLocalSizing({
               backendType,
@@ -339,6 +339,9 @@ export class InferenceEnvResolver {
           : null,
         askOllama ? this.ollamaBackend.residentContextLength(chatCurated.backendModelId) : null,
         chatServedLocally ? Promise.resolve(backend.servedContextLength?.(chatCurated.backendModelId) ?? null).catch(() => null) : null,
+        // Not counting what the model itself holds now, or a resident model is sized against itself.
+        // Asked of the model's own engine: a pool model served here need not be on the active one.
+        chatServedLocally ? handoutCeilingMb(this.memoryManager, profile, chatCurated) : modelMemoryCeilingMb(profile),
       ]);
       // Through the pool, the largest cap among the nodes serving the model — the proxy places a
       // request only on nodes whose cap can take its window, so no smaller node binds (see
@@ -348,7 +351,7 @@ export class InferenceEnvResolver {
       const sized = handoutContextLength({
         model: chatCurated,
         servedLocally: chatServedLocally,
-        effectiveInferenceMemoryMb: modelMemoryCeilingMb(profile),
+        effectiveInferenceMemoryMb: ceilingMb,
         minContextLength: requirements.minContextLength,
         kvMbPerToken: sizing?.kvMbPerToken ?? null,
         weightMb: sizing?.weightMb ?? null,

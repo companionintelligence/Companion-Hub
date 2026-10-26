@@ -1,5 +1,5 @@
 import { Test, type TestingModule } from '@nestjs/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -958,6 +958,21 @@ describe('InferenceEnvResolver', () => {
 
       expect(env.CI_LLM_NUM_CTX).toBe('16384');
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('hermes-agent: the context cap (16384) is below its 64000-token floor'));
+    });
+
+    it("sizes the window against the chat model's own ceiling, asked of its own engine", async () => {
+      setCap(null);
+      const memoryManager = {
+        modelCeilingMb: vi.fn().mockResolvedValue(1_000),
+        footprintSighting: vi.fn().mockResolvedValue(null),
+      };
+      Object.assign(service, { memoryManager });
+
+      const env = await service.resolve({ appSlug: 'openclaw' });
+
+      expect(memoryManager.modelCeilingMb).toHaveBeenCalledWith(baseProfile, 'ollama', 'qwen3-coder:30b');
+      // 1 GB holds no 30B window: the handout falls to the floor, where the node's 24 GB gave 65536.
+      expect(env.CI_LLM_NUM_CTX).toBe('4096');
     });
 
     it('sizes exactly as before when no cap is set — the default is the old behaviour', async () => {

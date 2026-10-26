@@ -2,7 +2,7 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { InferenceRouterService } from '../inference-router.service';
 import { HardwareInspectorService } from '../hardware-inspector.service';
 import { ModelRegistryService } from '../model-registry.service';
-import { MemoryManagerService } from '../memory-manager.service';
+import { MemoryManagerService, modelMemoryCeilingMb } from '../memory-manager.service';
 import { ModelPullerService } from '../model-puller.service';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import { InferenceBackendRegistry } from '../backends/backend-registry';
@@ -92,6 +92,8 @@ describe('InferenceRouterService', () => {
     // 512 MB display reserve.
     memoryManager.loadHeadroomMb.mockResolvedValue(24_064);
     memoryManager.footprintSighting.mockResolvedValue(null);
+    // Nothing resident, so a model's own ceiling is the node's.
+    memoryManager.modelCeilingMb.mockImplementation(async (profile) => modelMemoryCeilingMb(profile));
     modelRegistry.getTrackedModels.mockReturnValue([]);
     modelRegistry.getCatalog.mockReturnValue([]);
     modelRegistry.getPinnedModels.mockReturnValue([]);
