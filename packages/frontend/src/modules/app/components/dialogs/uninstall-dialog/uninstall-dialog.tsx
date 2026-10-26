@@ -18,9 +18,11 @@ interface IProps {
   info: AppInfo;
   isOpen: boolean;
   onClose: () => void;
+  /** The page offers Reset app for this app, so the dialog may point at it. Port-expose apps, failed installs and a caller without the reset grant have none. */
+  canReset?: boolean;
 }
 
-export const UninstallDialog = ({ info, isOpen, onClose }: IProps) => {
+export const UninstallDialog = ({ info, isOpen, onClose, canReset = false }: IProps) => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { setOptimisticStatus } = useAppStatus();
@@ -56,10 +58,11 @@ export const UninstallDialog = ({ info, isOpen, onClose }: IProps) => {
         <DialogDescription className="text-center py-4">
           <AlertTriangle className="mb-2 text-destructive size-12 mx-auto" />
           <h3>{t('COMMON_ACTION_CANNOT_BE_UNDONE')}</h3>
-          {/* Delete all data takes the app's backups with its data folder and volumes, and off it keeps all three. */}
+          {/* Delete all data takes the app's backups along with its data folder and volumes. With it off, all three stay. */}
           <span className="text-muted-foreground">
             {t(shouldDeleteAllData ? 'APP_UNINSTALL_FORM_DATA_AND_BACKUPS_LOST' : 'APP_UNINSTALL_FORM_DATA_KEPT')}
           </span>
+          {shouldDeleteAllData && canReset && <p className="mt-2 text-muted-foreground">{t('APP_UNINSTALL_FORM_RESET_KEEPS_BACKUPS')}</p>}
           {requiresForce && (
             <MemoryProviderForceWarning
               consumers={consumers}
