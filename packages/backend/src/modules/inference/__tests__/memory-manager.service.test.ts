@@ -1,5 +1,5 @@
 import { Test, type TestingModule } from '@nestjs/testing';
-import { MemoryManagerService, modelMemoryCeilingMb } from '../memory-manager.service';
+import { handoutCeilingMb, MemoryManagerService, modelMemoryCeilingMb } from '../memory-manager.service';
 import { readFootprintSightings } from '../footprint-sighting-record';
 import { CURATED_MODELS } from '../catalog/curated-models';
 import { handoutContextLength } from '../app-model-handout';
@@ -725,6 +725,56 @@ describe('MemoryManagerService', () => {
         const profile = makeProfile({ ram: { totalMb: 65536, availableMb: 4096, usedMb: 61440, sampledAt: '2026-09-20T12:00:00.000Z' } });
 
         expect(await service.modelCeilingMb(profile, 'ollama', 'qwen3-coder:30b')).toBe(modelMemoryCeilingMb(profile));
+      });
+
+      it('is the node ceiling on a card whose memory is unknown: what the model holds there is VRAM, not MemAvailable', async () => {
+        reportResidency([
+          { backend: 'ollama', source: 'measured', models: [resident('gemma4:e4b', { totalBytes: 7_000 * MiB })] },
+          ...nothingResident().filter((entry) => entry.backend !== 'ollama'),
+        ]);
+        const profile = makeProfile({
+          gpu: { available: true, vendor: 'nvidia', model: 'RTX 3060', vramMb: 0, unifiedMemory: false, driverVersion: '', runtimeAvailable: true },
+          ram: { totalMb: 32_768, availableMb: 20_000, usedMb: 12_768, sampledAt: '2026-10-26T08:00:00.000Z' },
+        });
+
+        expect(await service.modelCeilingMb(profile, 'ollama', 'gemma4:e4b')).toBe(20_000 - 2048);
+      });
+
+      it('never goes past the RAM a CPU host has, however much MemAvailable still counts of the model', async () => {
+        // 100 GB resident on a 128 GB host with 60 GB available: part of the model is reclaimable page cache.
+        reportResidency([
+          { backend: 'ollama', source: 'measured', models: [resident('qwen3.6:35b', { totalBytes: 100_000 * MiB })] },
+          ...nothingResident().filter((entry) => entry.backend !== 'ollama'),
+        ]);
+        const cpuOnly = makeProfile({
+          gpu: { available: false, vendor: 'none', model: '', vramMb: 0, unifiedMemory: false, driverVersion: '', runtimeAvailable: false },
+          ram: { totalMb: 131_072, availableMb: 61_440, usedMb: 69_632, sampledAt: '2026-10-26T08:00:00.000Z' },
+        });
+
+        expect(await service.modelCeilingMb(cpuOnly, 'ollama', 'qwen3.6:35b')).toBe(131_072 - 2048);
+      });
+
+      it('handoutCeilingMb falls back to the node ceiling when no manager answers', async () => {
+        const profile = coreSeven(50_000);
+
+        expect(await handoutCeilingMb(undefined, profile, { backend: 'ollama', backendModelId: minimax })).toBe(47_952);
+        expect(
+          await handoutCeilingMb({ modelCeilingMb: async () => undefined as unknown as number }, profile, {
+            backend: 'ollama',
+            backendModelId: minimax,
+          }),
+        ).toBe(47_952);
+        expect(
+          await handoutCeilingMb(
+            {
+              modelCeilingMb: () => {
+                throw new Error('boom');
+              },
+            },
+            profile,
+            { backend: 'ollama', backendModelId: minimax },
+          ),
+        ).toBe(47_952);
       });
     });
 

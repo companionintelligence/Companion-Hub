@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException, type OnApplicationShutdown, Optional } from '@nestjs/common';
 import { probeLocalSizing } from './context-cost.util';
-import { MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
+import { handoutCeilingMb, MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
@@ -524,9 +524,8 @@ export class AppCredentialsService implements OnApplicationShutdown {
         askOllama ? this.ollamaBackend.residentContextLength(chatModel.backendModelId) : null,
         chatServedLocally ? Promise.resolve(backend.servedContextLength?.(chatModel.backendModelId) ?? null).catch(() => null) : null,
         // Not counting what the model itself holds now, or a resident model is sized against itself.
-        chatServedLocally && this.memoryManager
-          ? this.memoryManager.modelCeilingMb(profile, backendType, chatModel.backendModelId).catch(() => modelMemoryCeilingMb(profile))
-          : modelMemoryCeilingMb(profile),
+        // Asked of the model's own engine: a pool model served here need not be on the active one.
+        chatServedLocally ? handoutCeilingMb(this.memoryManager, profile, chatModel) : modelMemoryCeilingMb(profile),
       ]);
       // Same cap as the resolver: through the pool, the largest cap among the nodes serving the
       // model (placement keeps the request off the smaller ones — see `poolContextCap`); this

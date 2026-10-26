@@ -16,7 +16,7 @@ import {
   handoutContextLength,
   selectPoolChatModel,
 } from './app-model-handout';
-import { MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
+import { handoutCeilingMb, MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
 import { appBearerFor } from './engine-credential-scope';
 import { catalogEmbedsOn, embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
 import { pickUtilityModel } from './utility-handout';
@@ -340,9 +340,8 @@ export class InferenceEnvResolver {
         askOllama ? this.ollamaBackend.residentContextLength(chatCurated.backendModelId) : null,
         chatServedLocally ? Promise.resolve(backend.servedContextLength?.(chatCurated.backendModelId) ?? null).catch(() => null) : null,
         // Not counting what the model itself holds now, or a resident model is sized against itself.
-        chatServedLocally && this.memoryManager
-          ? this.memoryManager.modelCeilingMb(profile, backendType, chatCurated.backendModelId).catch(() => modelMemoryCeilingMb(profile))
-          : modelMemoryCeilingMb(profile),
+        // Asked of the model's own engine: a pool model served here need not be on the active one.
+        chatServedLocally ? handoutCeilingMb(this.memoryManager, profile, chatCurated) : modelMemoryCeilingMb(profile),
       ]);
       // Through the pool, the largest cap among the nodes serving the model — the proxy places a
       // request only on nodes whose cap can take its window, so no smaller node binds (see

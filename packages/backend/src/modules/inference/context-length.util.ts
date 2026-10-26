@@ -85,9 +85,10 @@ export interface ModelMemoryInput {
 
 export interface ContextLengthInput extends ModelMemoryInput {
   /**
-   * Memory one model may use on this node, in MB: `MemoryManagerService.modelMemoryCeilingMb`, the
-   * budget a load is fit-checked against with nothing else loaded. Sizing against the whole card
-   * instead (`HardwareProfile.effectiveInferenceMemoryMb`) picked windows the fit check then refused
+   * Memory one model may use on this node, in MB: `MemoryManagerService.modelCeilingMb`, the
+   * budget a load is fit-checked against with nothing else loaded, not counting what the model
+   * itself holds now. Sizing against the whole card instead
+   * (`HardwareProfile.effectiveInferenceMemoryMb`) picked windows the fit check then refused
    * on an empty card.
    */
   effectiveInferenceMemoryMb: number;
