@@ -6,6 +6,7 @@ import { SSEService } from '@/core/sse/sse.service';
 import { Injectable, Optional, type OnModuleDestroy } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
+import type { AppStatus } from '@/core/database/drizzle/types';
 import {
   buildOriginServerName,
   buildPublicWebIdentity,
@@ -30,6 +31,7 @@ import {
   resolveRoutingSubdomain,
   type AppPublicRoutingSnapshot,
 } from '../apps/app-public-routing.helpers';
+import { ADDRESS_KEPT_STATUSES } from '../apps/app-starting-page';
 import { isPortExposeApp, PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
 import { CloudflareClientService, AppInfo, type PublicDnsFailure, type PublicDnsFailureReason } from '../cloudflare/cloudflare-client.service';
 import { DockerReadFacade } from '../docker/docker-read.facade';
@@ -95,6 +97,21 @@ type PublicDomainMove = {
 
 /** Why an app is recreated for its public identity; see `restartRevertedApps`. */
 type PublicIdentityRestart = 'revert' | 'apply' | 'public-domain-move';
+
+/**
+ * The states in which an app on Public Web is in the payload, and so keeps its public DNS record.
+ *
+ * Companion Portal deletes the record of every app a sync leaves out. With the record gone the
+ * app's address gave a DNS error (Cloudflare 1016, or NXDOMAIN) until a later sync brought it back,
+ * and resolvers keep that miss for up to 30 minutes. So the app stays in while it is stopped or
+ * while an update, reset, backup or restore has its containers down. Those are the states in which
+ * Traefik keeps its route to the Hub's page (`ADDRESS_KEPT_STATUSES`). A first install is the exception:
+ * it is published once it runs. An app being uninstalled, one whose install failed and one whose
+ * containers went missing drop out.
+ */
+const CLOUDFLARE_PUBLISHED_STATUSES: ReadonlySet<AppStatus> = new Set<AppStatus>(
+  [...ADDRESS_KEPT_STATUSES].filter((status) => status !== 'installing'),
+);
 
 /**
  * Refusals that come from the user's own plan or naming. The Portal refuses every
@@ -877,8 +894,7 @@ export class ExposureSyncService implements OnModuleDestroy {
           return false;
         }
         return (
-          publishesCloudflarePublicRoute(publicRoutingSnapshotOf(app as AppPublicRoutingSnapshot)) &&
-          ['running', 'starting', 'restarting'].includes(app.status)
+          publishesCloudflarePublicRoute(publicRoutingSnapshotOf(app as AppPublicRoutingSnapshot)) && CLOUDFLARE_PUBLISHED_STATUSES.has(app.status)
         );
       });
 
@@ -888,9 +904,10 @@ export class ExposureSyncService implements OnModuleDestroy {
        * Do not key this set by `appName`. The `app` table is unique on
        * `(app_name, app_store_slug)`, so two stores can ship an app named
        * `comfyui`, while the sync entries below carry only the name. A name-keyed
-       * set would let a running app represent a stopped app from another store.
-       * Custom-domain reconciliation would then treat the stopped app as queried
-       * but absent from the response and incorrectly remove its binding.
+       * set would let a running app represent an app from another store that this
+       * payload leaves out (a failed install, say). Custom-domain reconciliation
+       * would then treat the left-out app as queried but absent from the response
+       * and incorrectly remove its binding.
        */
       const syncedAppUrns = new Set(syncedDbApps.map((app: AppFromDb) => createAppUrn(app.appName, app.appStoreSlug)));
 
@@ -975,8 +992,10 @@ export class ExposureSyncService implements OnModuleDestroy {
 
       /*
        * Built from EVERY app row, not from `syncedDbApps`: the publish payload
-       * leaves stopped apps out on purpose, and a stopped app is exactly the one
-       * Portal must not offer to restart. See `CustomDomainApplyReport`.
+       * leaves some apps out (one being uninstalled, a failed install) but the
+       * report still covers them. It also says a stopped app is not running,
+       * since that is the one Portal must not offer to restart. See
+       * `CustomDomainApplyReport`.
        */
       const customDomainApps = await this.buildCustomDomainApplyReport(apps, toPublicHostname);
 
@@ -2111,10 +2130,11 @@ export class ExposureSyncService implements OnModuleDestroy {
      * publicly routed loses its binding because of its own settings, whatever
      * CI-Cloud says, and still does so on the first pass.
      *
-     * ⚠ AND ONLY THE APPS THIS ANSWER IS ABOUT COUNT. A stopped app is left out
-     * of the payload, so CI-Cloud rightly delivers nothing for it. Counting it
-     * would start the minute on every poll while it is stopped, and the first
-     * bad answer after it starts again would read as already confirmed.
+     * ⚠ AND ONLY THE APPS THIS ANSWER IS ABOUT COUNT. An app this payload leaves
+     * out (a failed install or one excluded for a release pass) gets nothing
+     * delivered, rightly. Counting it would start the minute on every poll while
+     * it is left out. The first bad answer after it is back would then read as
+     * already confirmed.
      */
     const holdsDomains = params.apps.some(
       (candidate) =>
@@ -2198,11 +2218,11 @@ export class ExposureSyncService implements OnModuleDestroy {
       /*
        * Attribute the delivered target before deciding whether to apply it. The
        * unmatched warning below means Companion Portal wired a hostname that no
-       * app on this Hub answers. A stopped app, an app excluded from this pass, or
-       * an app using an open host port still has a matching identity even though
-       * it declines the binding. Recording matches only in the binding branch
-       * would warn on every release pass and for every stopped app despite valid
-       * settings.
+       * app on this Hub answers. An app this payload leaves out (excluded from
+       * this pass or a failed install) or an app using an open host port still
+       * has a matching identity even though it declines the binding. Recording
+       * matches only in the binding branch would warn on every release pass and
+       * for every left-out app despite valid settings.
        *
        * Lowercase both sides because DNS is case-insensitive. The Hub composes
        * hostnames from organization slugs stored verbatim, and a rename can leave
@@ -2276,15 +2296,16 @@ export class ExposureSyncService implements OnModuleDestroy {
         cloudDrivenChange = true;
       } else {
         /*
-         * The app is published but absent from this payload because it is stopped
-         * or deliberately excluded during a release pass. Companion Portal
-         * reports a domain as delivered only after producing an ingress rule, and
-         * it cannot produce one for an omitted app. Absence therefore means "not
-         * queried," not "unbound."
+         * The app is published but absent from this payload: it is still being
+         * installed, its install failed or it is deliberately excluded during a
+         * release pass. Companion Portal reports a domain as delivered only after
+         * producing an ingress rule. It cannot produce one for an omitted app.
+         * Absence therefore means "not queried," not "unbound."
          *
-         * Clearing here would cause a flap: stopping would remove the binding,
-         * starting would generate an environment without the custom hostname, and
-         * the following sync would restore the binding and require another restart.
+         * Clearing here would cause a flap. The release pass would remove the
+         * binding and the restart after it would generate an environment without
+         * the custom hostname. The following sync would then restore the binding
+         * and require another restart.
          */
         continue;
       }

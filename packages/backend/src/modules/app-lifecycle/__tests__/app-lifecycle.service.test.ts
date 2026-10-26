@@ -3181,7 +3181,7 @@ describe('AppLifecycleService', () => {
 
     it('shows it again when the app fails after it left the sync', async () => {
       await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
-      appsRepository.getApps.mockResolvedValue([{ ...n8n, status: 'stopped' }, excalidraw] as any);
+      appsRepository.getApps.mockResolvedValue([{ ...n8n, status: 'install_failed' }, excalidraw] as any);
       await syncAfter(6);
       appsRepository.getApps.mockResolvedValue([n8n, excalidraw] as any);
       await syncAfter(6, { n8n: 'subdomain_quota_exceeded' });
@@ -3979,9 +3979,9 @@ describe('AppLifecycleService', () => {
       });
 
       it('does not start the minute on answers that were not about the app holding the domain', async () => {
-        // Stopped, so absent from the payload: an empty answer is exactly what CI-Cloud should say.
+        // A failed install, so absent from the payload: an empty answer is exactly what CI-Cloud should say.
         const domainless = runningComfy({ id: 8, appName: 'immich', localSubdomain: 'immich' });
-        appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com', status: 'stopped' }), domainless] as any);
+        appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com', status: 'install_failed' }), domainless] as any);
         await service.triggerCloudflareSync();
         now += 61_000;
 
@@ -4424,16 +4424,60 @@ describe('AppLifecycleService', () => {
     });
 
     it('leaves a stopped app bound rather than flapping it off and back on', async () => {
-      // A stopped app is not in the sync payload, so Companion Portal produced no ingress
-      // rule for it and cannot report its domain as delivered. Reading that as
-      // "unbound" would unbind on stop, regenerate its env without the custom
-      // hostname on start, and demand a second restart right after.
+      // A stopped app stays in the sync payload, so Companion Portal keeps its ingress rule and
+      // reports its domain as delivered. Unbinding on stop would regenerate its env without the
+      // custom hostname on start, and demand a second restart right after.
       appsRepository.getApps.mockResolvedValue([runningComfy({ status: 'stopped', customDomain: 'comfy.acme.com' })] as any);
-      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 0, customDomains: [] });
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
 
       await service.triggerCloudflareSync();
 
       expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    });
+
+    it('keeps a stopped app in the payload, so Companion Portal keeps its public DNS record', async () => {
+      // Left out, its record was deleted and its address gave a DNS error instead of the Hub's
+      // page for a stopped app. An app being uninstalled still goes.
+      appsRepository.getApps.mockResolvedValue([
+        runningComfy({ status: 'stopped' }),
+        runningComfy({ id: 8, appName: 'wordpress', localSubdomain: 'wordpress', status: 'stopping' }),
+        runningComfy({ id: 9, appName: 'immich', localSubdomain: 'immich', status: 'uninstalling' }),
+      ] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 2, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      const published = (cloudflareClientService.syncState.mock.calls.at(-1)?.[1] ?? []) as Array<{ name: string }>;
+      expect(published.map((entry) => entry.name)).toEqual(expect.arrayContaining(['comfyui', 'wordpress']));
+      expect(published.map((entry) => entry.name)).not.toContain('immich');
+    });
+
+    it.each(['updating', 'resetting', 'backing_up', 'restoring'])('keeps an app in the payload while it is %s', async (status) => {
+      // A sync in that window (the five-minute poll, another app's Start) deleted the record of an
+      // app whose backup or update had its containers down, while Traefik kept its route to the page.
+      appsRepository.getApps.mockResolvedValue([runningComfy({ status })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      const published = (cloudflareClientService.syncState.mock.calls.at(-1)?.[1] ?? []) as Array<{ name: string }>;
+      expect(published.map((entry) => entry.name)).toContain('comfyui');
+    });
+
+    it.each(['installing', 'install_failed', 'missing', 'uninstalling'])('leaves an app out of the payload while it is %s', async (status) => {
+      appsRepository.getApps.mockResolvedValue([runningComfy({ status })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 0, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      const published = (cloudflareClientService.syncState.mock.calls.at(-1)?.[1] ?? []) as Array<{ name: string }>;
+      expect(published.map((entry) => entry.name)).not.toContain('comfyui');
     });
 
     it('drops the binding of an app that no longer publishes a public route', async () => {
@@ -4465,12 +4509,12 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
     });
 
-    it('does not unbind a stopped app that merely shares an app name with a running one', async () => {
+    it('does not unbind an app left out of the payload that merely shares an app name with a running one', async () => {
       // `app` is unique on (app_name, app_store_slug), so two stores can both
       // ship an app called `comfyui`. The sync payload carries only the NAME.
       appsRepository.getApps.mockResolvedValue([
         runningComfy({ id: 7, appStoreSlug: 'ci-marketplace', localSubdomain: 'comfyui' }),
-        runningComfy({ id: 8, appStoreSlug: 'other-store', localSubdomain: 'comfyui-alt', status: 'stopped', customDomain: 'art.acme.com' }),
+        runningComfy({ id: 8, appStoreSlug: 'other-store', localSubdomain: 'comfyui-alt', status: 'install_failed', customDomain: 'art.acme.com' }),
       ] as any);
       cloudflareClientService.syncState.mockResolvedValue({
         ok: true,
@@ -4484,7 +4528,7 @@ describe('AppLifecycleService', () => {
 
       // The running one binds...
       expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: 'comfy.acme.com', pendingRestart: true });
-      // ...and the stopped one, which was never in the payload, keeps its domain.
+      // ...and the failed one, which was never in the payload, keeps its domain.
       expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalledWith(8, expect.anything(), expect.anything());
     });
 
@@ -4852,9 +4896,9 @@ describe('AppLifecycleService', () => {
     });
 
     it('does not ask for an app CI-Cloud was never told about', async () => {
-      // Stopped, so it is not in this sync's payload — Companion Portal cannot wire a
-      // domain to an app it was not asked about, and the choice waits.
-      appsRepository.getApps.mockResolvedValue([wantsComfy({ status: 'stopped' })] as any);
+      // Its install failed, so it is not in this sync's payload. Companion Portal cannot wire a
+      // domain to an app it was not asked about, so the choice waits.
+      appsRepository.getApps.mockResolvedValue([wantsComfy({ status: 'install_failed' })] as any);
 
       await service.triggerCloudflareSync();
 
