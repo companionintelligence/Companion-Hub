@@ -169,6 +169,9 @@ export class PortExposeService {
 
     const { appName } = extractAppUrn(appUrn);
     const routingSubdomain = sanitizeAppSubdomain(localSubdomain?.trim() || appName);
+    // The entry CI Portal holds for this port now, if it is This Machine Only or Private VPN. Read
+    // before the row changes: built afterwards, it names the new subdomain, not the one registered.
+    const previousRegistryRemoval = portExposeNeedsPortalRegistry(previousExposureMode) ? registryRemovalFor(app) : null;
     if (exposureMode === 'cloudflare') {
       const appsWithSameLocalSubdomain = await this.appsRepository.getAppsByLocalSubdomain(routingSubdomain, app.id);
       if (appsWithSameLocalSubdomain.length > 0) {
@@ -207,15 +210,28 @@ export class PortExposeService {
         status: 'running',
       });
 
+      /*
+       * ⚠ THE OLD REGISTRY ENTRY GOES FIRST, UNDER THE NAME IT WAS REGISTERED WITH (#2144).
+       *
+       * Switched to Public Web under the same subdomain, the tunnel sync claims the row the registry
+       * pinned. A `remove` sent after it released that row with the DNS record the sync had just made.
+       * Built from the updated row, a `remove` named the new subdomain and the old entry stayed.
+       *
+       * Right after the row changes: a later save reads the new row and can no longer name the old entry.
+       */
+      const nextNeedsPortal = portExposeNeedsPortalRegistry(exposureMode);
+      if (previousRegistryRemoval && (!nextNeedsPortal || previousRegistryRemoval.slug !== (routingSubdomain || appName))) {
+        // A public app here on the same subdomain shares the row: the remove would take its address down.
+        const publicAppsOnSlug = await this.appsRepository.getAppsByLocalSubdomain(previousRegistryRemoval.slug, app.id);
+        if (publicAppsOnSlug.length === 0) {
+          await this.postPortalRegistry(appUrn, previousRegistryRemoval);
+        }
+      }
+
       await this.syncPortExposeRoutes();
       await this.exposureSyncService.syncExposurePublic();
 
-      const previousNeedsPortal = portExposeNeedsPortalRegistry(previousExposureMode);
-      const nextNeedsPortal = portExposeNeedsPortalRegistry(exposureMode);
-
-      if (previousNeedsPortal && !nextNeedsPortal) {
-        await this.syncPortalRegistry(appUrn, 'remove');
-      } else if (nextNeedsPortal) {
+      if (nextNeedsPortal) {
         await this.syncPortalRegistry(appUrn, 'upsert');
       }
 
@@ -303,24 +319,28 @@ export class PortExposeService {
   }
 
   private async syncPortalRegistry(appUrn: AppUrn, action: 'upsert' | 'remove'): Promise<void> {
-    const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
-    if (!org?.id) {
-      this.logger.debug('[Portal] Skipping workload registry sync — device not registered');
-      return;
-    }
-
     const app = await this.appsRepository.getAppByUrn(appUrn);
     if (!app) {
       return;
     }
 
+    await this.postPortalRegistry(appUrn, action === 'remove' ? registryRemovalFor(app) : registryEntryFor(app));
+  }
+
+  /** Posts one registry entry for `appUrn`. A failure is logged: the registry never holds up the change that wrote it. */
+  private async postPortalRegistry(appUrn: AppUrn, entry: RegistryEntry): Promise<void> {
+    const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+    if (!org?.id) {
+      this.logger.debug('[Portal] Skipping workload registry sync: device not registered');
+      return;
+    }
+
     try {
-      await this.portalClient.postDeviceApplicationsRegistry({
-        organizationId: org.id,
-        apps: [action === 'remove' ? { ...registryEntryFor(app, { withKind: false }), remove: true } : registryEntryFor(app)],
-      });
+      await this.portalClient.postDeviceApplicationsRegistry({ organizationId: org.id, apps: [entry] });
     } catch (error) {
-      this.logger.warn(`[Portal] Failed to ${action} workload registry entry for ${appUrn}: ${describeNetworkError(error)}`);
+      this.logger.warn(
+        `[Portal] Failed to ${entry.remove ? 'remove' : 'upsert'} workload registry entry for ${appUrn}: ${describeNetworkError(error)}`,
+      );
     }
   }
 
@@ -542,6 +562,11 @@ function registryEntryFor(app: RegistryApp, { withKind = true }: { withKind?: bo
     publicDomain: app.publicDomain ?? undefined,
     ...(exposureMode ? { kind: PORT_EXPOSE_KIND, exposureMode } : {}),
   };
+}
+
+/** The entry that removes `app`'s row. */
+function registryRemovalFor(app: RegistryApp): RegistryEntry {
+  return { ...registryEntryFor(app, { withKind: false }), remove: true };
 }
 
 export function portExposePublishesCloudflare(exposureMode: string | null | undefined): boolean {
