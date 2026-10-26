@@ -84,36 +84,52 @@ const compatibleSelection = (availableModelById: ModelIndex, backend: InferenceB
 const unpinnablePins = (availableModelById: ModelIndex, pinnedIds: Iterable<string>): string[] =>
   [...pinnedIds].filter((modelId) => isHubLoadableBackend(availableModelById.get(modelId)?.backend));
 
-/** The engine that embeds for `backend`: itself on Ollama and oMLX, else the shared embedding engine. */
+/** The engine whose embedders Save ranks for `backend`: itself on Ollama and oMLX, else the shared embedding engine. */
 const embeddingBackendFor = (backend: InferenceBackendType): InferenceBackendType =>
   backend === 'omlx' || backend === 'ollama' ? backend : EMBEDDING_INFERENCE_BACKEND;
 
+/** The catalog model an id names: its catalog id, its engine id, or Lemonade's `user.` spelling of that. */
+const catalogModelFor = (models: Iterable<CuratedModel>, id: string): CuratedModel | undefined => {
+  for (const model of models) {
+    if (model.id === id || model.backendModelId === id || `user.${model.backendModelId}` === id) return model;
+  }
+  return undefined;
+};
+
 /**
- * The catalog id of a stored model when the engine shown has it installed and it can fill the role
- * (`match`), else null. Save keeps it in that role until someone picks another; ranking the checked
- * models instead replaced a default of Llama 3.2 3B with Gemma 4 E2B, as chat and vision model, on
- * a save that changed nothing.
+ * The catalog id of a stored model when it runs on `backend` and can fill the role (`match`), else
+ * null. Save keeps it in that role while it stays checked; ranking the checked models instead
+ * replaced a default of Llama 3.2 3B with Gemma 4 E2B, as chat and vision model, on a save that
+ * changed nothing.
  */
-const installedStoredModelId = (
+const storedRoleModelId = (
   profile: HardwareProfileResponse,
   backend: InferenceBackendType,
   storedId: string | null | undefined,
   match: (model: CuratedModel) => boolean,
 ): string | null => {
   if (!storedId) return null;
-  const installed = new Set(profile.installedCatalogIds ?? []);
-  const model = profile.availableModels.find(
-    (candidate) => candidate.id === storedId || candidate.backendModelId === storedId || `user.${candidate.backendModelId}` === storedId,
-  );
-  return model && model.backend === backend && match(model) && installed.has(model.id) ? model.id : null;
+  const model = catalogModelFor(profile.availableModels, storedId);
+  return model && model.backend === backend && match(model) ? model.id : null;
 };
 
 /** The saved preferences Save keeps per role, from the last preferences read. */
 interface StoredRoleModels {
+  /** The engine the preferences were read for. */
+  backend: InferenceBackendType | null;
   chat: string | null;
   vision: string | null;
   embedding: string | null;
 }
+
+/**
+ * The saved chat model Save keeps on `backend`. One the engine downloaded under its own name is not
+ * in the catalog, so it stays the choice only on the engine it was saved for.
+ */
+const storedChatModelId = (profile: HardwareProfileResponse, backend: InferenceBackendType, stored: StoredRoleModels): string | null => {
+  if (stored.chat && stored.backend === backend && !catalogModelFor(profile.availableModels, stored.chat)) return stored.chat;
+  return storedRoleModelId(profile, backend, stored.chat, isAgentModel);
+};
 
 // A null match does not clear the stored preference because serialization drops the
 // undefined field. Preference-clearing UI must wait until the API carries explicit null.
@@ -200,10 +216,10 @@ export const AiSettingsContainer = () => {
   encodeEndpointRef.current = encodeEndpoint;
   const trackedModelsRef = useRef<TrackedModel[]>([]);
   // The chat, vision and embedding models the Hub has saved, as the last preferences read reported them.
-  const storedRoleModelsRef = useRef<StoredRoleModels>({ chat: null, vision: null, embedding: null });
+  const storedRoleModelsRef = useRef<StoredRoleModels>({ backend: null, chat: null, vision: null, embedding: null });
   // The saved vision and embedding models Save writes back, each until a checkbox of its role
   // changes. The chat model's equivalent is `chosenChatModelId`, which the page also shows.
-  const keptRoleModelsRef = useRef<Omit<StoredRoleModels, 'chat'>>({ vision: null, embedding: null });
+  const keptRoleModelsRef = useRef<Pick<StoredRoleModels, 'vision' | 'embedding'>>({ vision: null, embedding: null });
   // Share one catalog index between Save and confirmation so they cannot disagree or
   // rebuild it independently.
   const availableModelById = useMemo<ModelIndex>(() => (profile ? indexAvailableModels(profile) : new Map()), [profile]);
@@ -260,12 +276,12 @@ export const AiSettingsContainer = () => {
     }
   }, []);
 
-  /** Keeps the saved vision and embedding models for Save when the engine shown has them installed. */
+  /** Keeps the saved vision and embedding models for Save when they run on the engine shown. */
   const keepStoredRoleModels = useCallback((data: HardwareProfileResponse, backend: InferenceBackendType) => {
     const stored = storedRoleModelsRef.current;
     keptRoleModelsRef.current = {
-      vision: installedStoredModelId(data, backend, stored.vision, isVisionModel),
-      embedding: installedStoredModelId(data, embeddingBackendFor(backend), stored.embedding, isEmbeddingModel),
+      vision: storedRoleModelId(data, backend, stored.vision, isVisionModel),
+      embedding: storedRoleModelId(data, embeddingBackendFor(backend), stored.embedding, isEmbeddingModel),
     };
   }, []);
 
@@ -315,22 +331,15 @@ export const AiSettingsContainer = () => {
 
       const tracked = await fetchTrackedModels();
       seedSelectedModelIds(data, preferredBackend, tracked);
-      const knownIds = new Set<string>();
-      for (const model of data.availableModels) {
-        knownIds.add(model.id);
-        if (model.backendModelId) {
-          knownIds.add(model.backendModelId);
-          knownIds.add(`user.${model.backendModelId}`);
-        }
-      }
       const storedPreferred = prefData?.preferredModel;
       storedRoleModelsRef.current = {
+        backend: preferredBackend,
         chat: storedPreferred ?? null,
         vision: prefData?.preferredVisionModel ?? null,
         embedding: prefData?.preferredEmbeddingModel ?? null,
       };
-      const downloadedChoice = storedPreferred && !knownIds.has(storedPreferred) ? storedPreferred : null;
-      setChosenChatModelId(downloadedChoice ?? installedStoredModelId(data, preferredBackend, storedPreferred, isAgentModel));
+      const downloadedChoice = storedPreferred && !catalogModelFor(data.availableModels, storedPreferred) ? storedPreferred : null;
+      setChosenChatModelId(storedChatModelId(data, preferredBackend, storedRoleModelsRef.current));
       keepStoredRoleModels(data, preferredBackend);
       if (downloadedChoice) {
         setSelectedModelIds((prev) =>
@@ -494,12 +503,7 @@ export const AiSettingsContainer = () => {
   };
 
   /** Catalog id for an engine id, including Lemonade's `user.` spelling. */
-  const catalogIdForEngineModel = (engineId: string): string | null => {
-    for (const model of availableModelById.values()) {
-      if (model.id === engineId || model.backendModelId === engineId || `user.${model.backendModelId}` === engineId) return model.id;
-    }
-    return null;
-  };
+  const catalogIdForEngineModel = (engineId: string): string | null => catalogModelFor(availableModelById.values(), engineId)?.id ?? null;
 
   // Unload is the one memory action the page offers directly, because nothing else reaches it:
   // deselect + Save only unpins (bookkeeping), and select + Save pins through a load that skips a
@@ -509,9 +513,9 @@ export const AiSettingsContainer = () => {
   const [unloadingModelId, setUnloadingModelId] = useState<string | null>(null);
   const [loadingModelId, setLoadingModelId] = useState<string | null>(null);
   /**
-   * The chat model chosen from Downloaded Models. A catalog id, or an engine id the catalog does
-   * not have. Save writes this instead of the first checked recommended model, so a file Lemonade
-   * downloaded under its own name stays the model the apps restart with.
+   * The chat model Save writes instead of the first checked recommended model: the saved one, or one
+   * chosen from Downloaded Models. A catalog id, or an engine id the catalog does not have, so a file
+   * Lemonade downloaded under its own name stays the model the apps restart with.
    */
   const [chosenChatModelId, setChosenChatModelId] = useState<string | null>(null);
   // One button for both places a resident model appears. It lives inside a `<label>` on the
@@ -567,11 +571,14 @@ export const AiSettingsContainer = () => {
       selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
       selectedBackend === 'omlx' ? omlxUrlRef.current : undefined,
     ).then((data) => {
+      // A reply for an engine the page has since left would seed its models and choices over the
+      // engine now shown.
+      if (lastHandledBackendRef.current !== selectedBackend) return;
       setProfile(data);
       // Re-seed the checkboxes for the new backend from server truth (see seedSelectedModelIds).
       seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
       // A model chosen on one engine is no choice on another.
-      setChosenChatModelId(installedStoredModelId(data, selectedBackend, storedRoleModelsRef.current.chat, isAgentModel));
+      setChosenChatModelId(storedChatModelId(data, selectedBackend, storedRoleModelsRef.current));
       keepStoredRoleModels(data, selectedBackend);
     });
     fetchRuntimeModels(selectedBackend);
@@ -637,10 +644,12 @@ export const AiSettingsContainer = () => {
       const compatibleSelectedModelIds = compatibleSelection(availableModelById, selectedBackend, selectedModelIds);
 
       const checkboxPreferred = resolvePreferredModelId(profile, selectedBackend, isAgentModel, compatibleSelectedModelIds);
-      const preferredModel = chosenChatModelId ?? checkboxPreferred;
-      // A kept model that is no longer checked (Load in Downloaded Models unchecks the other LLMs) is
-      // ranked again like the rest.
+      // A kept model that is no longer checked (Load in Downloaded Models unchecks the other LLMs, a
+      // Re-check drops one the engine stopped serving) is ranked again like the rest.
       const kept = (modelId: string | null) => (modelId && compatibleSelectedModelIds.includes(modelId) ? modelId : null);
+      // An engine id the catalog does not have has no checkbox, so only a catalog chat model must be checked.
+      const preferredModel =
+        (chosenChatModelId && availableModelById.has(chosenChatModelId) ? kept(chosenChatModelId) : chosenChatModelId) ?? checkboxPreferred;
       const preferredEmbeddingModel =
         kept(keptRoleModelsRef.current.embedding) ??
         resolvePreferredModelId(profile, embeddingBackendFor(selectedBackend), isEmbeddingModel, compatibleSelectedModelIds);
