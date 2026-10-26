@@ -396,6 +396,14 @@ export class AppFilesManager {
    *    service can still mount and read a subdirectory the root service
    *    created.
    *
+   * Nor may "writable by everyone" reach the other accounts on the computer.
+   * The folder that holds the store's apps (`app-data/<store>`) is set to 0700,
+   * so no other local account can reach any app's data, however open the sweep
+   * leaves it below. That costs the containers nothing, for the reason above:
+   * Docker resolves a bind mount's host path as root, and a container only sees
+   * the folder that is mounted. Before this, Memory's Postgres folder, object
+   * store and import folders were mode 777 to every local account.
+   *
    * See {@link buildPermissionsCommand} for the exact shell.
    *
    * Skipped when the app-data mount cannot carry POSIX permissions (a Windows
@@ -429,7 +437,8 @@ export class AppFilesManager {
     // Best effort, and only for what exists: a missing app.env is normal before
     // the first env generation, and a mount that rejects chmod (drvfs) is the
     // case `supportsPosixPermissions` already routes around.
-    for (const [target, mode] of [[appEnvPath, 0o600] as const, ...privateRoots.map((root) => [root, 0o700] as const)]) {
+    const storeDir = path.dirname(appDataDir);
+    for (const [target, mode] of [[appEnvPath, 0o600] as const, ...privateRoots.map((root) => [root, 0o700] as const), [storeDir, 0o700] as const]) {
       try {
         await fs.promises.chmod(target, mode);
       } catch (error) {

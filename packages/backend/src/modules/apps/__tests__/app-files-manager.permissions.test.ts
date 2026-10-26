@@ -162,9 +162,22 @@ describe('AppFilesManager.setAppDataDirPermissions', () => {
     await manager.setAppDataDirPermissions(appUrn);
 
     expect(await manager.getPrivateVolumePaths(appUrn)).toEqual([]);
+    // The one path above the app's own folder is the store folder the Hub closes, never one a manifest names.
     for (const call of chmod.mock.calls) {
-      expect(String(call[0]).startsWith(`${appDataDir}${path.sep}`)).toBe(true);
+      expect(String(call[0]) === path.dirname(appDataDir) || String(call[0]).startsWith(`${appDataDir}${path.sep}`)).toBe(true);
     }
+  });
+
+  it("closes the folder that holds the store's apps to every other local account", async () => {
+    filesystem.readJsonFile.mockResolvedValue(composeWith([{ hostPath: '${APP_DATA_DIR}/data/db', containerPath: '/var/lib/postgresql' }]));
+
+    await manager.setAppDataDirPermissions(appUrn);
+
+    // After the sweep, which leaves the app's own folders writable by any container's uid.
+    expect(chmod).toHaveBeenCalledWith(path.resolve('/app-data/ci-marketplace'), 0o700);
+    expect(chmod.mock.invocationCallOrder.at(-1)).toBeGreaterThan(execAsyncMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY);
+    // Nothing above the store folder, and not the app-data root that holds every store.
+    expect(chmod).not.toHaveBeenCalledWith(path.resolve('/app-data'), expect.anything());
   });
 
   it("passes the Hub's own uid, so a Hub running as a plain user keeps to the files it owns", async () => {
