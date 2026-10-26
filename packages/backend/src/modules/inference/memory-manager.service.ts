@@ -254,6 +254,48 @@ export class MemoryManagerService {
   }
 
   /**
+   * {@link modelMemoryCeilingMb} for sizing `backendModelId`'s own window: what it may occupy here,
+   * not counting the memory that model itself holds right now.
+   *
+   * On a unified-memory or CPU host the ceiling is live MemAvailable, and a model that is resident
+   * is already out of it. Sized that way, a model counted against itself: on core-7 (125 GB, AMD
+   * APU) MiniMax M2 230B got a 32768-token handout while it was not loaded and 4096 once it was,
+   * because MemAvailable then no longer held the 54 GB of weights it had loaded, and its 63 GB did
+   * not fit in what was left. What the engine holds for it comes back on its next load, so it is
+   * added back here. A discrete card's
+   * ceiling is the card, and a host that does not sample its RAM keeps its static figure; neither
+   * counts what is loaded, so both are answered as before.
+   */
+  async modelCeilingMb(profile: HardwareProfile, backend: InferenceBackendType, backendModelId: string): Promise<number> {
+    const ceiling = modelMemoryCeilingMb(profile);
+    if (modelPoolFor(profile) !== 'ram' || !profile.ram.sampledAt) {
+      return ceiling;
+    }
+    const heldMb = await this.heldNowMb(profile, backend, backendModelId).catch(() => null);
+    if (!heldMb || heldMb <= 0) {
+      return ceiling;
+    }
+    return Math.max(0, Math.min(profile.ram.availableMb + heldMb - SYSTEM_RESERVED_RAM_MB, unifiedGpuLimitMb(profile)));
+  }
+
+  /** What `backendModelId` holds on `backend` now, in the units the budget counted that engine in, or null when it is not resident or cannot be sized. */
+  private async heldNowMb(profile: HardwareProfile, backend: InferenceBackendType, backendModelId: string): Promise<number | null> {
+    const pool = modelPoolFor(profile);
+    const observation = await this.observe(profile.gpu.vendor);
+    const usage = deriveModelMemoryUsage({ pool, observation, tracked: this.modelRegistry.getLoadedModels() });
+    const entry = usage.backends.find((candidate) => candidate.backend === backend && candidate.source !== 'registry');
+    if (!entry) {
+      return null;
+    }
+    const catalog = this.modelRegistry.getCatalog();
+    const footprintMb = (id: string) =>
+      catalog.find((model) => model.backend === backend && sameEngineModelId(backend, model.backendModelId, id))?.runtime.memoryFootprintMb ?? null;
+    const shares = [...residentSharesMb(entry, observation.residency.get(backend)?.models ?? [], pool, footprintMb)];
+    const found = shares.find(([id]) => id === backendModelId) ?? shares.find(([id]) => sameEngineModelId(backend, id, backendModelId));
+    return found?.[1] ?? null;
+  }
+
+  /**
    * What `backendModelId` was last measured occupying on `backend` here, at what window, or null
    * when it has never been seen resident in a way that can be attributed to it (see
    * {@link attributeSightings}). Measures first, through the same cached observation the budget

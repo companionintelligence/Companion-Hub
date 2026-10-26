@@ -510,7 +510,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
       // Same measured-first sizing as InferenceEnvResolver; see `probeLocalSizing`. Only a
       // model this node serves can be measured, so a pool-served one keeps the heuristic.
       const askOllama = chatServedLocally && backendType === 'ollama';
-      const [sizing, residentContextLength, servedContextLength] = await Promise.all([
+      const [sizing, residentContextLength, servedContextLength, ceilingMb] = await Promise.all([
         chatServedLocally
           ? probeLocalSizing({
               backendType,
@@ -523,6 +523,10 @@ export class AppCredentialsService implements OnApplicationShutdown {
           : null,
         askOllama ? this.ollamaBackend.residentContextLength(chatModel.backendModelId) : null,
         chatServedLocally ? Promise.resolve(backend.servedContextLength?.(chatModel.backendModelId) ?? null).catch(() => null) : null,
+        // Not counting what the model itself holds now, or a resident model is sized against itself.
+        chatServedLocally && this.memoryManager
+          ? this.memoryManager.modelCeilingMb(profile, backendType, chatModel.backendModelId).catch(() => modelMemoryCeilingMb(profile))
+          : modelMemoryCeilingMb(profile),
       ]);
       // Same cap as the resolver: through the pool, the largest cap among the nodes serving the
       // model (placement keeps the request off the smaller ones — see `poolContextCap`); this
@@ -532,7 +536,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
       const sized = handoutContextLength({
         model: chatModel,
         servedLocally: chatServedLocally,
-        effectiveInferenceMemoryMb: modelMemoryCeilingMb(profile),
+        effectiveInferenceMemoryMb: ceilingMb,
         minContextLength: requirements.minContextLength,
         kvMbPerToken: sizing?.kvMbPerToken ?? null,
         weightMb: sizing?.weightMb ?? null,

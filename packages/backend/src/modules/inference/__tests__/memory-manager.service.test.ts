@@ -2,6 +2,7 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { MemoryManagerService, modelMemoryCeilingMb } from '../memory-manager.service';
 import { readFootprintSightings } from '../footprint-sighting-record';
 import { CURATED_MODELS } from '../catalog/curated-models';
+import { handoutContextLength } from '../app-model-handout';
 import { ModelRegistryService } from '../model-registry.service';
 import { ModelResidencyService } from '../model-residency.service';
 import { GpuProcessSamplerService } from '../gpu-process-sampler.service';
@@ -648,6 +649,83 @@ describe('MemoryManagerService', () => {
       expect(modelMemoryCeilingMb(strixHalo)).toBe(110_592);
       expect((await service.canFitModel(strixHalo, 112_000)).fits).toBe(false);
       expect((await service.canFitModel(strixHalo, 100_000)).fits).toBe(true);
+    });
+
+    describe("a model's own ceiling (modelCeilingMb)", () => {
+      // core-7, a Ryzen AI Max+ 395: MiniMax M2 230B resident, its runner holding 56 GB of the 125 GB.
+      const coreSeven = (availableMb: number): HardwareProfile => ({
+        ...unified(live(availableMb)),
+        gpu: { ...unified(live(availableMb)).gpu, vramMb: 110_570 },
+        ram: { totalMb: 125_780, availableMb, usedMb: 125_780 - availableMb, sampledAt: '2026-10-26T08:24:22.811Z' },
+      });
+      const minimax = 'gabegoodhart/minimax-m2:230b';
+      const minimaxResident = () =>
+        reportResidency([
+          { backend: 'ollama', source: 'measured', models: [resident(minimax, { totalBytes: 56_000 * MiB })] },
+          ...nothingResident().filter((entry) => entry.backend !== 'ollama'),
+        ]);
+
+      it('adds back what the model itself holds, so a resident model is not sized against itself', async () => {
+        minimaxResident();
+        const profile = coreSeven(50_000);
+
+        // The node's ceiling counts the 56 GB the model holds as gone: 50000 - 2048.
+        expect(modelMemoryCeilingMb(profile)).toBe(47_952);
+        expect(await service.modelCeilingMb(profile, 'ollama', minimax)).toBe(50_000 + 56_000 - 2048);
+      });
+
+      it('gives a resident MiniMax M2 230B the window it was handed before it loaded, not 4096', async () => {
+        // Measured on core-7: 0.2421875 MB a token from /api/show, 53,759 MB of weights, two Ollama slots.
+        const model = CURATED_MODELS.find((candidate) => candidate.id === 'minimax-m2-community-230b');
+        if (!model) throw new Error('catalog lost MiniMax M2 230B');
+        const handout = (ceilingMb: number) =>
+          handoutContextLength({
+            model,
+            servedLocally: true,
+            effectiveInferenceMemoryMb: ceilingMb,
+            kvMbPerToken: 0.2421875,
+            weightMb: 53_759,
+            kvSlots: 2,
+          });
+
+        // Not loaded: 92428 MB free.
+        expect(handout(await service.modelCeilingMb(coreSeven(92_428), 'ollama', minimax))).toBe(32_768);
+
+        // Loaded: the same host with its 56 GB out of MemAvailable.
+        minimaxResident();
+        service.invalidateObservation();
+        const loaded = coreSeven(92_428 - 56_000);
+        expect(handout(modelMemoryCeilingMb(loaded))).toBe(4_096);
+        expect(handout(await service.modelCeilingMb(loaded, 'ollama', minimax))).toBe(32_768);
+      });
+
+      it("never goes past what the APU's GPU addresses", async () => {
+        minimaxResident();
+
+        expect(await service.modelCeilingMb(coreSeven(80_000), 'ollama', minimax)).toBe(110_570);
+      });
+
+      it('is the node ceiling for a model that is not resident, or one resident on another engine', async () => {
+        minimaxResident();
+        const profile = coreSeven(50_000);
+
+        expect(await service.modelCeilingMb(profile, 'ollama', 'qwen3.6:35b')).toBe(47_952);
+        expect(await service.modelCeilingMb(profile, 'lemonade', minimax)).toBe(47_952);
+      });
+
+      it('is the node ceiling on a discrete card, which never counted what is loaded', async () => {
+        reportResidency([
+          {
+            backend: 'ollama',
+            source: 'measured',
+            models: [resident('qwen3-coder:30b', { engineGpuBytes: 18_000 * MiB, totalBytes: 18_000 * MiB })],
+          },
+          ...nothingResident().filter((entry) => entry.backend !== 'ollama'),
+        ]);
+        const profile = makeProfile({ ram: { totalMb: 65536, availableMb: 4096, usedMb: 61440, sampledAt: '2026-09-20T12:00:00.000Z' } });
+
+        expect(await service.modelCeilingMb(profile, 'ollama', 'qwen3-coder:30b')).toBe(modelMemoryCeilingMb(profile));
+      });
     });
 
     it('does not cap on a host-probe snapshot (no sampledAt): macOS/Windows keep the budget arithmetic', async () => {

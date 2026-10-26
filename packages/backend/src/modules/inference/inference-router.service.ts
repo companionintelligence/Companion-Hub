@@ -27,7 +27,6 @@ import {
   type EvictionPlan,
   type EvictionScope,
   MemoryManagerService,
-  modelMemoryCeilingMb,
   modelPoolFor,
 } from './memory-manager.service';
 import { CloudFallbackService, speaksOpenAiCompletions } from './cloud-fallback.service';
@@ -1328,8 +1327,8 @@ export class InferenceRouterService implements OnApplicationBootstrap {
    * The window to load a model at, and what it will then occupy — the figure the fit check and any
    * eviction are sized to. `contextLength` null sends the engine no window.
    *
-   * Everything is sized against the budget the fit check itself uses (`modelMemoryCeilingMb`, and
-   * `loadHeadroomMb` for what is free now), from the engine's own measurements where it has them:
+   * Everything is sized against the budget the fit check itself uses (`modelCeilingMb`, the node's
+   * ceiling without what this model holds now, and `loadHeadroomMb` for what is free now), from the engine's own measurements where it has them:
    * the per-token cost, the slot count it multiplies by, and what the model was last seen occupying
    * here (`MemoryManagerService.footprintSighting`), which replaces the catalog's figure.
    *
@@ -1388,7 +1387,8 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       kvSlots: kvSequencesFor(target.backend, cost, slots),
       sighting,
     };
-    const ceilingMb = modelMemoryCeilingMb(profile);
+    // Not counting what the model itself holds now: a resident model is not its own competition.
+    const ceilingMb = await this.memoryManager.modelCeilingMb(profile, target.backend, target.backendModelId);
     const localCap = this.localContextCap();
     const handout = handoutContextLength({
       model: curated,
