@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CuratedModel } from '@ci-hub/common/types';
 import { CURATED_MODELS } from '../catalog/curated-models';
-import { pickUtilityModel, UTILITY_MIN_PARAMETER_SCALE } from '../utility-handout';
+import { pickUtilityModel } from '../utility-handout';
 
 const model = (id: string, recommendedVramMb: number, parameterScale: number | undefined, extra: Partial<CuratedModel> = {}): CuratedModel =>
   ({
@@ -52,9 +52,8 @@ describe('pickUtilityModel', () => {
     const profile = { effectiveInferenceMemoryMb: 90_148 };
 
     expect(pickUtilityModel({ chat: chat35b, installed: [chat35b, gemma270m, gemma1b], profile })).toBe(chat35b);
-    // A model that clears the floor is still preferred to the chat model, and the smallest of those wins.
+    // A model that clears the floor is still preferred to the chat model. The smallest of those wins.
     expect(pickUtilityModel({ chat: chat35b, installed: [chat35b, gemma270m, gemma1b, qwen8b, gemma4b], profile })).toBe(gemma4b);
-    expect(UTILITY_MIN_PARAMETER_SCALE).toBe(3);
   });
 
   it('takes a model right at the floor and nothing under it', () => {

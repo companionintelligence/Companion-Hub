@@ -10,13 +10,13 @@ const PAIR_RESERVE_MB = 2_048;
 
 /**
  * The smallest model, by the catalog's `parameterScale` in billions, that background work is handed
- * to. A utility call fills a schema from a prompt with worked examples in it, and a model too small
+ * to. A utility call fills a schema from a prompt with worked examples in it. A model too small
  * for that copies the example instead of reading the input: on core-7 (2026-10-24) `gemma3:270m`,
  * handed out beside `qwen3.6:35b`, made Companion Memory store the prompt's made-up sister as the
  * owner's. Every catalog LLM listed at 2B or less sits below the floor, Gemma 4 E2B and Qwen 3.5 2B
  * included. The chat model is slower for this work, but it gets it right.
  */
-export const UTILITY_MIN_PARAMETER_SCALE = 3;
+const UTILITY_MIN_PARAMETER_SCALE = 3;
 
 /**
  * The model an app should run its background work on: extraction, classification, titling — the
