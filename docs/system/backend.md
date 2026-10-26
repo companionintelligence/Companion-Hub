@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-10-21 (Memory connect: page views are read-only, a finished connect takes over)
+> **Last updated:** 2026-10-26 (a stopped Public Web app stays in the Cloudflare sync)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -392,8 +392,9 @@ only CI-Cloud knows whether a hostname really routes here.
 - `reconcileCustomDomains` (`modules/app-lifecycle/exposure-sync.service.ts`) joins each delivered
   `targetHostname` against the app's own platform hostname and writes `app.custom_domain`. It runs
   last in the sync and in its own try/catch, so a DB error cannot swallow the per-app DNS reporting
-  above it. Apps absent from the payload (stopped, or excluded for a release pass) keep their
-  binding — "not asked about" is not "unbound".
+  above it. Apps absent from the payload (still installing, a failed install or excluded for a
+  release pass) keep their binding: "not asked about" is not "unbound". A stopped app is in the
+  payload (`CLOUDFLARE_PUBLISHED_STATUSES`), so its binding follows what CI-Cloud delivers.
   A domain CI-Cloud reports against two targets is a rebind in flight: it is dropped from both,
   and an app already serving on it **holds** its binding rather than being unbound by the drop.
 - `generateEnvFile` emits the bound hostname for `APP_PUBLIC_URL` / `APP_PUBLIC_HOSTNAME` /

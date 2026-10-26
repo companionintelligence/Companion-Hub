@@ -4458,6 +4458,28 @@ describe('AppLifecycleService', () => {
       expect(published.map((entry) => entry.name)).not.toContain('immich');
     });
 
+    it.each(['updating', 'resetting', 'backing_up', 'restoring'])('keeps an app in the payload while it is %s', async (status) => {
+      // A sync in that window (the five-minute poll, another app's Start) deleted the record of an
+      // app whose backup or update had its containers down, while Traefik kept its route to the page.
+      appsRepository.getApps.mockResolvedValue([runningComfy({ status })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      const published = (cloudflareClientService.syncState.mock.calls.at(-1)?.[1] ?? []) as Array<{ name: string }>;
+      expect(published.map((entry) => entry.name)).toContain('comfyui');
+    });
+
+    it.each(['installing', 'install_failed', 'missing', 'uninstalling'])('leaves an app out of the payload while it is %s', async (status) => {
+      appsRepository.getApps.mockResolvedValue([runningComfy({ status })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 0, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      const published = (cloudflareClientService.syncState.mock.calls.at(-1)?.[1] ?? []) as Array<{ name: string }>;
+      expect(published.map((entry) => entry.name)).not.toContain('comfyui');
+    });
+
     it('drops the binding of an app that no longer publishes a public route', async () => {
       appsRepository.getApps.mockResolvedValue([
         runningComfy({ status: 'stopped', exposedLocal: false, exposureMode: 'local', customDomain: 'comfy.acme.com' }),
@@ -4874,8 +4896,8 @@ describe('AppLifecycleService', () => {
     });
 
     it('does not ask for an app CI-Cloud was never told about', async () => {
-      // Its install failed, so it is not in this sync's payload — Companion Portal cannot wire a
-      // domain to an app it was not asked about, and the choice waits.
+      // Its install failed, so it is not in this sync's payload. Companion Portal cannot wire a
+      // domain to an app it was not asked about, so the choice waits.
       appsRepository.getApps.mockResolvedValue([wantsComfy({ status: 'install_failed' })] as any);
 
       await service.triggerCloudflareSync();

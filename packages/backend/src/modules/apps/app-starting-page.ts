@@ -44,7 +44,18 @@ export const COMING_BACK_STATUSES: ReadonlySet<AppStatus> = new Set([
   'backing_up',
   'restoring',
 ]);
-const STOPPED_STATUSES: ReadonlySet<AppStatus> = new Set(['stopped', 'stopping']);
+/** States in which the app is stopped or on its way there. The page says so. */
+export const STOPPED_STATUSES: ReadonlySet<AppStatus> = new Set(['stopped', 'stopping']);
+
+/**
+ * States in which an app keeps its address while its containers are gone: running, coming back by
+ * itself or stopped. Its route to this page stays in apps.yml (`TraefikConfigService`) and a Public
+ * Web app stays in the Cloudflare sync, so Companion Portal keeps its DNS record
+ * (`ExposureSyncService`, which leaves out a first install until it runs). One set for both, so a
+ * visitor does not get a record with no route or a route with no record. Uninstalling, a failed
+ * install and missing containers are not in it.
+ */
+export const ADDRESS_KEPT_STATUSES: ReadonlySet<AppStatus> = new Set<AppStatus>(['running', ...COMING_BACK_STATUSES, ...STOPPED_STATUSES]);
 
 export type AppStartingPageState = 'starting' | 'stopped' | 'not_responding' | 'unknown';
 

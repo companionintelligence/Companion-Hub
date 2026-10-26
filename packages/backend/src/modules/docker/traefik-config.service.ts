@@ -9,7 +9,7 @@ import { storedExposureForm } from '@ci-hub/common/types';
 import { Injectable, Inject } from '@nestjs/common';
 import Dockerode from 'dockerode';
 import * as yaml from 'yaml';
-import { COMING_BACK_STATUSES } from '../apps/app-starting-page';
+import { ADDRESS_KEPT_STATUSES } from '../apps/app-starting-page';
 import { AppsRepository } from '../apps/apps.repository';
 import { APP_STARTING_MIDDLEWARE } from './builders/traefik-labels.builder';
 import { DOCKERODE } from './constants';
@@ -83,11 +83,11 @@ const COMPOSE_PROJECT_LABEL = 'com.docker.compose.project';
 
 /**
  * While its containers are gone, an app keeps its down routers in these states: running, coming
- * back by itself, which the page calls starting, and stopped, where the page says so and points at
- * Start. Uninstall marks the app `uninstalling` before it takes it down, so a removed app keeps none.
- * Before a stopped app kept its route, its address answered Traefik's bare 404.
+ * back by itself (the page says starting) or stopped (the page says so and points at Start). Uninstall
+ * marks the app `uninstalling` before it takes it down, so a removed app keeps none. The Cloudflare
+ * sync keeps a Public Web app's DNS record in the same states; see `ADDRESS_KEPT_STATUSES`.
  */
-const APP_DOWN_KEPT_STATUSES: ReadonlySet<AppStatus> = new Set<AppStatus>(['running', ...COMING_BACK_STATUSES, 'stopping', 'stopped']);
+const APP_DOWN_KEPT_STATUSES: ReadonlySet<AppStatus> = ADDRESS_KEPT_STATUSES;
 
 /**
  * A copy of an app router that still answers while the app's containers are gone (CI-Hub#1944).
@@ -456,7 +456,7 @@ export class TraefikConfigService {
           }
         }
       }
-      for (const project of await this.keepDownRoutersOfAppsComingBack(previous, config, new Set(apps.keys()))) {
+      for (const project of await this.keepDownRoutersOfAppsWithoutContainers(previous, config, new Set(apps.keys()))) {
         appsWithDownRouters.add(project);
       }
       // After every container's services, so an app service that happens to share the name cannot
@@ -533,17 +533,23 @@ export class TraefikConfigService {
 
   /**
    * The down routers of apps with no container in this rebuild, carried over from the apps.yml it
-   * replaces while the Hub still expects the app back (CI-Hub#1944).
+   * replaces while the app is still installed and keeps its address (CI-Hub#1944).
    *
    * apps.yml is rebuilt from the containers running at that moment, and many things rebuild it:
    * another app's Start, Stop, Install or Uninstall, the next app of a batch restart, the Hub's own
    * start. One that ran while an app was between its compose down and compose up used to drop that
-   * app's down routers with its containers, and the 404 was back. They stay while the app is running
-   * or coming back and still goes out through Traefik; an app switched to local only has no routes.
+   * app's down routers with its containers and the 404 was back. They stay while the app is running,
+   * coming back or stopped and still goes out through Traefik; an app switched to local only has no
+   * routes. Only a route an earlier apps.yml had is kept: an app that has had no container since it
+   * last lost its routes (stopped before Hub releases that kept them, say) has none to keep.
    *
    * @returns the compose projects of the apps whose down routers it kept
    */
-  private async keepDownRoutersOfAppsComingBack(previous: unknown, config: TraefikConfig, seenProjects: ReadonlySet<string>): Promise<string[]> {
+  private async keepDownRoutersOfAppsWithoutContainers(
+    previous: unknown,
+    config: TraefikConfig,
+    seenProjects: ReadonlySet<string>,
+  ): Promise<string[]> {
     const previousHttp = (previous as Partial<TraefikConfig> | null)?.http;
     const candidates = Object.entries(previousHttp?.routers ?? {}).flatMap(([name, router]) => {
       if (!name.endsWith(APP_DOWN_ROUTER_SUFFIX) || name in config.http.routers || !isAppDownRouter(router)) {
@@ -561,9 +567,7 @@ export class TraefikConfigService {
       const installed = await this.appsRepository.getApps();
       expected = new Set(installed.filter((app) => APP_DOWN_KEPT_STATUSES.has(app.status) && isExposedThroughTraefik(app)).map(composeProjectOf));
     } catch (error) {
-      this.logger.warn(
-        `Could not read the apps' status; apps.yml keeps no route to the starting page for an app whose containers are gone: ${error}`,
-      );
+      this.logger.warn(`Could not read the apps' status; apps.yml keeps no route to the Hub's page for an app whose containers are gone: ${error}`);
       return [];
     }
 
