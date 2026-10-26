@@ -615,10 +615,12 @@ describe('InferenceEnvResolver', () => {
     it('hands out a smaller installed model for background calls when it fits beside the chat model, else the chat model', async () => {
       const chat = {
         ...makeLlm('qwen3-8-27b-lemonade', 'Qwen3.8-27B-GGUF', false, 'lemonade'),
+        parameterScale: 27,
         requirements: { minVramMb: 18000, recommendedVramMb: 18000, minRamMb: 0, diskMb: 0 },
       } as CuratedModel;
       const small = {
         ...makeLlm('gemma-4-e4b-lemonade', 'Gemma-4-E4B-it-GGUF', false, 'lemonade'),
+        parameterScale: 4,
         requirements: { minVramMb: 3500, recommendedVramMb: 3500, minRamMb: 0, diskMb: 0 },
       } as CuratedModel;
       modelRegistry.getRecommendedModelsForHardware.mockReturnValue([chat, small]);
