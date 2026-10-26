@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CuratedModel } from '@ci-hub/common/types';
+import { CURATED_MODELS } from '../catalog/curated-models';
 import { pickUtilityModel, UTILITY_MIN_PARAMETER_SCALE } from '../utility-handout';
 
 const model = (id: string, recommendedVramMb: number, parameterScale: number | undefined, extra: Partial<CuratedModel> = {}): CuratedModel =>
@@ -54,6 +55,28 @@ describe('pickUtilityModel', () => {
     // A model that clears the floor is still preferred to the chat model, and the smallest of those wins.
     expect(pickUtilityModel({ chat: chat35b, installed: [chat35b, gemma270m, gemma1b, qwen8b, gemma4b], profile })).toBe(gemma4b);
     expect(UTILITY_MIN_PARAMETER_SCALE).toBe(3);
+  });
+
+  it('takes a model right at the floor and nothing under it', () => {
+    const at3b = model('llama3-2-3b', 3_100, 3);
+    const at2b = model('gemma4-e2b', 2_500, 2);
+
+    expect(pickUtilityModel({ chat: chat27b, installed: [chat27b, at2b], profile: { effectiveInferenceMemoryMb: 65_536 } })).toBe(chat27b);
+    expect(pickUtilityModel({ chat: chat27b, installed: [chat27b, at2b, at3b], profile: { effectiveInferenceMemoryMb: 65_536 } })).toBe(at3b);
+  });
+
+  it('passes over the real catalog rows of the models that caused this', () => {
+    const byId = (id: string) => {
+      const found = CURATED_MODELS.find((m) => m.id === id);
+      if (!found) throw new Error(`catalog has no ${id}`);
+      return found;
+    };
+    const chat = byId('qwen3-6-35b');
+    const installed = ['qwen3-6-35b', 'gemma3-270m', 'gemma3-1b', 'gemma4-e2b'].map(byId);
+    const profile = { effectiveInferenceMemoryMb: 90_148 };
+
+    expect(pickUtilityModel({ chat, installed, profile })).toBe(chat);
+    expect(pickUtilityModel({ chat, installed: [...installed, byId('gemma4-e4b')], profile })?.id).toBe('gemma4-e4b');
   });
 
   it('never picks a model the catalog gives no size', () => {
