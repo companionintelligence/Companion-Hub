@@ -139,7 +139,7 @@
     },
     "test": {
       "cache": true,
-      "dependsOn": ["^test"],
+      "dependsOn": ["^test", "^build"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
       "outputs": []
     },
