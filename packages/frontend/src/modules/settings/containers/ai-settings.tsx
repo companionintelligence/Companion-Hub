@@ -84,6 +84,24 @@ const compatibleSelection = (availableModelById: ModelIndex, backend: InferenceB
 const unpinnablePins = (availableModelById: ModelIndex, pinnedIds: Iterable<string>): string[] =>
   [...pinnedIds].filter((modelId) => isHubLoadableBackend(availableModelById.get(modelId)?.backend));
 
+/**
+ * The catalog id of the stored chat model when it is one the engine shown has installed, else null.
+ * Save keeps it as the chat model until someone picks another; ranking the checked models instead
+ * replaced a default of Llama 3.2 3B with Gemma 4 E2B on a save that changed nothing.
+ */
+const installedStoredChatModelId = (
+  profile: HardwareProfileResponse,
+  backend: InferenceBackendType,
+  storedId: string | null | undefined,
+): string | null => {
+  if (!storedId) return null;
+  const installed = new Set(profile.installedCatalogIds ?? []);
+  const model = profile.availableModels.find(
+    (candidate) => candidate.id === storedId || candidate.backendModelId === storedId || `user.${candidate.backendModelId}` === storedId,
+  );
+  return model && model.backend === backend && isAgentModel(model) && installed.has(model.id) ? model.id : null;
+};
+
 // A null match does not clear the stored preference because serialization drops the
 // undefined field. Preference-clearing UI must wait until the API carries explicit null.
 const resolvePreferredModelId = (
@@ -168,6 +186,8 @@ export const AiSettingsContainer = () => {
   const encodeEndpointRef = useRef('');
   encodeEndpointRef.current = encodeEndpoint;
   const trackedModelsRef = useRef<TrackedModel[]>([]);
+  // The chat model the Hub has saved, as the last preferences read reported it.
+  const storedPreferredModelRef = useRef<string | null>(null);
   // Share one catalog index between Save and confirmation so they cannot disagree or
   // rebuild it independently.
   const availableModelById = useMemo<ModelIndex>(() => (profile ? indexAvailableModels(profile) : new Map()), [profile]);
@@ -279,8 +299,9 @@ export const AiSettingsContainer = () => {
         }
       }
       const storedPreferred = prefData?.preferredModel;
+      storedPreferredModelRef.current = storedPreferred ?? null;
       const downloadedChoice = storedPreferred && !knownIds.has(storedPreferred) ? storedPreferred : null;
-      setChosenChatModelId(downloadedChoice);
+      setChosenChatModelId(downloadedChoice ?? installedStoredChatModelId(data, preferredBackend, storedPreferred));
       if (downloadedChoice) {
         setSelectedModelIds((prev) =>
           prev.filter((id) => {
@@ -517,6 +538,8 @@ export const AiSettingsContainer = () => {
       setProfile(data);
       // Re-seed the checkboxes for the new backend from server truth (see seedSelectedModelIds).
       seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
+      // A chat model chosen on one engine is no choice on another.
+      setChosenChatModelId(installedStoredChatModelId(data, selectedBackend, storedPreferredModelRef.current));
     });
     fetchRuntimeModels(selectedBackend);
     if (selectedBackend === 'vllm') {

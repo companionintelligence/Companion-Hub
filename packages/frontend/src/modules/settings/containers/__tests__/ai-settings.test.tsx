@@ -745,6 +745,57 @@ describe('AiSettingsContainer', () => {
     await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ model: 'm1' })));
   });
 
+  it('keeps the saved chat model when Save is pressed with nothing changed', async () => {
+    // o2 ranks first among the checked models. Save used to write it over the saved o1, which
+    // restarted every app onto another model although nothing on the page was changed.
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1', 'o2'], [llm('o2', 'ollama'), llm('o1', 'ollama')]));
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', preferredModel: 'o1' });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-o2')).toBeChecked());
+    expect(screen.getByTestId('recommended-model-checkbox-o1')).toBeChecked();
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ backend: 'ollama', model: 'o1' })));
+  });
+
+  it('ranks the checked models again once a chat model checkbox is changed', async () => {
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1', 'o2'], [llm('o2', 'ollama'), llm('o1', 'ollama')]));
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', preferredModel: 'o1' });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-o1')).toBeChecked());
+    await user.click(screen.getByTestId('recommended-model-checkbox-o1'));
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ backend: 'ollama', model: 'o2' })));
+  });
+
+  it('does not carry the saved chat model over to another engine', async () => {
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1'], [llm('o1', 'ollama')]));
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', preferredModel: 'o1' });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-o1')).toBeChecked());
+    await user.click(screen.getByTestId('select-lemonade'));
+    await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('lemonade'));
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ backend: 'lemonade', model: null })));
+  });
+
   it('keeps installed models selected while a pull is in progress', async () => {
     // A tracked transfer starts the poller, which refetches tracked models every few seconds. It
     // must not rewrite the selection: `m2` is installed but was never pulled by this process.
