@@ -62,7 +62,7 @@ vi.mock('sonner', () => ({
 const normalApp = { id: 'plane', name: 'Plane', urn: 'plane:ci-marketplace' } as never;
 const providerApp = { id: 'ci-memory', name: 'CI Memory', urn: 'ci-memory:ci-marketplace' } as never;
 
-const DATA_LOST = 'All data for this app will be lost.';
+const DATA_LOST = 'All data for this app will be lost, including its backups. To start over and keep the backups, use Reset app instead.';
 const DATA_KEPT = "This app's data and backups stay on this Hub.";
 
 describe('UninstallDialog', () => {
@@ -90,7 +90,7 @@ describe('UninstallDialog', () => {
     expect(screen.getByRole('dialog', { name: 'Uninstall Plane?' })).toBeInTheDocument();
   });
 
-  it('says the data will be lost while Delete all data is on', () => {
+  it('says the data and its backups will be lost while Delete all data is on', () => {
     render(<UninstallDialog info={normalApp} isOpen onClose={vi.fn()} />);
 
     expect(screen.getByRole('switch', { name: 'Delete all data' })).toBeChecked();
