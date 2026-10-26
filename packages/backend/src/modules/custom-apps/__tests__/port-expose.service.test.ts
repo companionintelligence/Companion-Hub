@@ -280,6 +280,8 @@ describe('PortExposeService', () => {
     // Built from the updated row, the `remove` named the new subdomain and the old entry stayed (#2144).
     it('removes the old entry under its old subdomain when the switch picks a new one', async () => {
       deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      const updatedApp = { ...existingApp, exposureMode: 'cloudflare', localSubdomain: 'my-workload-web', publicDomain: 'example.com' };
+      appsRepository.getAppByUrn.mockResolvedValueOnce(existingApp as any).mockResolvedValue(updatedApp as any);
 
       await service.updatePortExposeApp('my-workload:_user', {
         port: 8080,
@@ -288,8 +290,34 @@ describe('PortExposeService', () => {
         publicDomain: 'example.com',
       });
 
+      const posted = portalClient.postDeviceApplicationsRegistry.mock.calls.map(([payload]) => payload.apps[0]);
+      expect(posted).toEqual([expect.objectContaining({ slug: 'my-workload', remove: true })]);
+    });
+
+    // The registry removes by slug, so a public app on the old subdomain would lose its address with it.
+    it('leaves the old entry alone when a public app here still serves on its subdomain', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      appsRepository.getAppByUrn.mockResolvedValueOnce(existingApp as any).mockResolvedValue({ ...existingApp, localSubdomain: 'renamed' } as any);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([{ appName: 'public-app' }] as any);
+
+      await service.updatePortExposeApp('my-workload:_user', { port: 8080, exposureMode: 'local', localSubdomain: 'renamed' });
+
+      expect(appsRepository.getAppsByLocalSubdomain).toHaveBeenCalledWith('my-workload', 7);
+      const posted = portalClient.postDeviceApplicationsRegistry.mock.calls.map(([payload]) => payload.apps[0]);
+      expect(posted).toEqual([expect.objectContaining({ slug: 'renamed', exposureMode: 'local' })]);
+    });
+
+    // A subdomain that sanitizes to nothing is stored empty and registered under the app's name.
+    it('removes nothing when the subdomain sanitizes to nothing and the entry keeps the app name', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      const unnamedApp = { ...existingApp, localSubdomain: '' };
+      appsRepository.getAppByUrn.mockResolvedValue(unnamedApp as any);
+
+      await service.updatePortExposeApp('my-workload:_user', { port: 8080, exposureMode: 'local', localSubdomain: '---' });
+
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledTimes(1);
       expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith(
-        expect.objectContaining({ apps: [expect.objectContaining({ slug: 'my-workload', remove: true })] }),
+        expect.objectContaining({ apps: [expect.objectContaining({ slug: 'my-workload', exposureMode: 'local' })] }),
       );
     });
 
