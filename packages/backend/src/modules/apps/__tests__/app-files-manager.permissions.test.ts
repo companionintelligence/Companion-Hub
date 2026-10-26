@@ -85,7 +85,9 @@ describe('AppFilesManager.setAppDataDirPermissions', () => {
 
   let filesystem: { pathExists: ReturnType<typeof vi.fn>; readJsonFile: ReturnType<typeof vi.fn> };
   let manager: InstanceType<typeof AppFilesManager>;
+  let logger: { debug: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
   let chmod: ReturnType<typeof vi.spyOn>;
+  let lstat: ReturnType<typeof vi.spyOn>;
 
   const composeWith = (volumes: Array<Record<string, unknown>>) => ({
     schemaVersion: 2,
@@ -111,15 +113,10 @@ describe('AppFilesManager.setAppDataDirPermissions', () => {
     const configuration = {
       getConfig: () => ({ directories: { dataDir: '/data', appDataDir: '/app-data', appDir: '/app' } }),
     } as unknown as ConfigurationService;
-    manager = new AppFilesManager(
-      configuration,
-      filesystem as unknown as FilesystemService,
-      {
-        debug: vi.fn(),
-        error: vi.fn(),
-      } as unknown as LoggerService,
-    );
+    logger = { debug: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    manager = new AppFilesManager(configuration, filesystem as unknown as FilesystemService, logger as unknown as LoggerService);
     chmod = vi.spyOn(fs.promises, 'chmod').mockResolvedValue(undefined);
+    lstat = vi.spyOn(fs.promises, 'lstat').mockImplementation((async () => ({ isSymbolicLink: () => false })) as unknown as typeof fs.promises.lstat);
   });
 
   it('keeps app.env out of the sweep and makes it 600, even for an app with no private volumes', async () => {
@@ -155,6 +152,7 @@ describe('AppFilesManager.setAppDataDirPermissions', () => {
       composeWith([
         { hostPath: '/etc', containerPath: '/host-etc', private: true },
         { hostPath: '${APP_DATA_DIR}/../other-app/data', containerPath: '/x', private: true },
+        { hostPath: '${APP_DATA_DIR}/..', containerPath: '/store', private: true },
         { hostPath: '${APP_DATA_DIR}', containerPath: '/all', private: true },
       ]),
     );
@@ -166,6 +164,7 @@ describe('AppFilesManager.setAppDataDirPermissions', () => {
     for (const call of chmod.mock.calls) {
       expect(String(call[0]) === path.dirname(appDataDir) || String(call[0]).startsWith(`${appDataDir}${path.sep}`)).toBe(true);
     }
+    expect(chmod.mock.calls.filter((call) => String(call[0]) === path.dirname(appDataDir))).toHaveLength(1);
   });
 
   it("closes the folder that holds the store's apps to every other local account", async () => {
@@ -174,10 +173,55 @@ describe('AppFilesManager.setAppDataDirPermissions', () => {
     await manager.setAppDataDirPermissions(appUrn);
 
     // After the sweep, which leaves the app's own folders writable by any container's uid.
-    expect(chmod).toHaveBeenCalledWith(path.resolve('/app-data/ci-marketplace'), 0o700);
-    expect(chmod.mock.invocationCallOrder.at(-1)).toBeGreaterThan(execAsyncMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY);
+    const storeCall = chmod.mock.calls.findIndex((call) => call[0] === path.resolve('/app-data/ci-marketplace'));
+    expect(storeCall).toBeGreaterThanOrEqual(0);
+    expect(chmod.mock.calls[storeCall]?.[1]).toBe(0o700);
+    expect(chmod.mock.invocationCallOrder[storeCall]).toBeGreaterThan(execAsyncMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY);
     // Nothing above the store folder, and not the app-data root that holds every store.
     expect(chmod).not.toHaveBeenCalledWith(path.resolve('/app-data'), expect.anything());
+  });
+
+  it('never closes the app-data root, even for a URN whose store half resolves to it', async () => {
+    filesystem.readJsonFile.mockResolvedValue(composeWith([]));
+
+    await manager.setAppDataDirPermissions('ci-memory:.' as AppUrn);
+
+    expect(chmod).not.toHaveBeenCalledWith(path.resolve('/app-data'), expect.anything());
+    expect(chmod).not.toHaveBeenCalledWith(path.resolve('/'), expect.anything());
+  });
+
+  it('warns once when the store folder belongs to another user and cannot be closed', async () => {
+    filesystem.readJsonFile.mockResolvedValue(composeWith([]));
+    const storeDir = path.resolve('/app-data/ci-marketplace');
+    chmod.mockImplementation(async (target: fs.PathLike) => {
+      if (target === storeDir) {
+        throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+      }
+    });
+
+    await manager.setAppDataDirPermissions(appUrn);
+    await manager.setAppDataDirPermissions(appUrn);
+
+    const warnings = logger.warn.mock.calls.filter((call) => String(call[0]).includes(storeDir));
+    expect(warnings).toHaveLength(1);
+    expect(String(warnings[0]?.[0])).toContain('EPERM');
+  });
+
+  it('does not follow a link a container left where app.env or a private folder was', async () => {
+    const secrets = path.join(appDataDir, 'data', 'secrets');
+    filesystem.readJsonFile.mockResolvedValue(
+      composeWith([{ hostPath: '${APP_DATA_DIR}/data/secrets', containerPath: '/run/secrets', private: true }]),
+    );
+    const links = new Set([path.join(appDataDir, 'app.env'), secrets]);
+    lstat.mockImplementation((async (target: fs.PathLike) => ({
+      isSymbolicLink: () => links.has(String(target)),
+    })) as unknown as typeof fs.promises.lstat);
+
+    await manager.setAppDataDirPermissions(appUrn);
+
+    expect(chmod).not.toHaveBeenCalledWith(path.join(appDataDir, 'app.env'), expect.anything());
+    expect(chmod).not.toHaveBeenCalledWith(secrets, expect.anything());
+    expect(chmod).toHaveBeenCalledWith(path.resolve('/app-data/ci-marketplace'), 0o700);
   });
 
   it("passes the Hub's own uid, so a Hub running as a plain user keeps to the files it owns", async () => {

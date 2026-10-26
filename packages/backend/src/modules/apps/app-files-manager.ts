@@ -14,6 +14,9 @@ import type { AppUrn } from '@ci-hub/common/types';
 /** What was last logged as left out of each app's installed manifest. */
 const loggedLeftOut = new Map<string, string>();
 
+/** Store folders the Hub could not close, so every prepare of every app in one does not warn again. */
+const storeDirsLeftOpen = new Set<string>();
+
 /**
  * Logs what `parseInstalledAppInfo` left out of an app's installed manifest, once until that changes.
  * The manifest is read on every app list, status check and env build, and it says the same thing
@@ -401,8 +404,10 @@ export class AppFilesManager {
    * so no other local account can reach any app's data, however open the sweep
    * leaves it below. That costs the containers nothing, for the reason above:
    * Docker resolves a bind mount's host path as root, and a container only sees
-   * the folder that is mounted. Before this, Memory's Postgres folder, object
-   * store and import folders were mode 777 to every local account.
+   * the folder that is mounted. That takes a Docker whose root is root on the
+   * app-data file system: on an NFS export with root_squash it is not, and no
+   * app in the store could mount its data, as Memory's private folder already
+   * could not.
    *
    * See {@link buildPermissionsCommand} for the exact shell.
    *
@@ -421,7 +426,8 @@ export class AppFilesManager {
       return;
     }
 
-    if (!(await supportsPosixPermissions(this.configuration.getConfig().directories.appDataDir))) {
+    const appDataRoot = this.configuration.getConfig().directories.appDataDir;
+    if (!(await supportsPosixPermissions(appDataRoot))) {
       this.logger.debug(`Skipped the permission sweep for ${appUrn}: the app-data mount cannot carry POSIX permissions`);
       return;
     }
@@ -437,13 +443,36 @@ export class AppFilesManager {
     // Best effort, and only for what exists: a missing app.env is normal before
     // the first env generation, and a mount that rejects chmod (drvfs) is the
     // case `supportsPosixPermissions` already routes around.
+    // The store folder is closed only when it sits directly under the app-data root, so a URN that
+    // resolves elsewhere can never close the root or a folder above it.
     const storeDir = path.dirname(appDataDir);
-    for (const [target, mode] of [[appEnvPath, 0o600] as const, ...privateRoots.map((root) => [root, 0o700] as const), [storeDir, 0o700] as const]) {
+    const closesStore = path.dirname(storeDir) === path.resolve(appDataRoot);
+    const targets = [[appEnvPath, 0o600] as const, ...privateRoots.map((root) => [root, 0o700] as const)];
+    if (closesStore) {
+      targets.push([storeDir, 0o700] as const);
+    }
+    for (const [target, mode] of targets) {
       try {
+        // chmod follows a link, and a container that mounts the whole data folder can put one where
+        // app.env or a private folder was. The store folder is above every mount, so no container can.
+        if (target !== storeDir && (await fs.promises.lstat(target)).isSymbolicLink()) {
+          this.logger.warn(`Not setting mode ${mode.toString(8)} on ${target}: it is a symbolic link`);
+          continue;
+        }
         await fs.promises.chmod(target, mode);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-          this.logger.debug(`Could not set mode ${mode.toString(8)} on ${target}: ${error instanceof Error ? error.message : String(error)}`);
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') {
+          continue;
+        }
+        const reason = error instanceof Error ? error.message : String(error);
+        if (target === storeDir && !storeDirsLeftOpen.has(storeDir)) {
+          storeDirsLeftOpen.add(storeDir);
+          this.logger.warn(
+            `Could not close ${storeDir} to other local accounts (${reason}). The data of every app in it stays reachable by them until the Hub's user owns the folder.`,
+          );
+        } else {
+          this.logger.debug(`Could not set mode ${mode.toString(8)} on ${target}: ${reason}`);
         }
       }
     }
