@@ -36,7 +36,8 @@
  *   QA_NO_TEMPLATES set to "1" to seed the .template files under an app's data/ as they are. By default each is rendered into the
  *                   mount without the suffix, from the app.env map, as the Hub's copyDataDir does.
  *   QA_RUN_PID_FILE optional run-specific marker path. The runner writes its PID there and drains active apps on SIGTERM/SIGINT,
- *                   allowing a fleet controller to stop only its own remote run.
+ *                   allowing a fleet controller to stop only its own remote run. A fleet token in this path namespaces Docker
+ *                   containers and compose projects so a stale resource from an earlier run cannot block a new run.
  *
  * Restart policy and host ports (an app is started here as the Hub starts it):
  *   - Each service runs under its manifest's `restart` (no | always | unless-stopped | on-failure), else `unless-stopped`: the Hub's
@@ -88,6 +89,21 @@ const QA_NO_PROXY_HEADERS = process.env.QA_NO_PROXY_HEADERS === '1';
 const QA_NO_TEMPLATES = process.env.QA_NO_TEMPLATES === '1';
 /** A per-run marker used by the fleet controller to request a graceful remote stop. */
 const QA_RUN_PID_FILE = process.env.QA_RUN_PID_FILE?.trim() ?? '';
+// The fleet controller embeds the numeric run token in QA_RUN_PID_FILE. Use it to namespace every
+// Docker resource this process owns; otherwise an orphaned `qa-stream-${appId}` from an earlier
+// run can make a fresh `docker run --name ...` fail before the app is tested. Direct CLI use keeps
+// the legacy names when no run token is supplied.
+const QA_RUN_NAMESPACE = (process.env.QA_RUN_TOKEN?.trim() || QA_RUN_PID_FILE.match(/fleet-qa-run-(\d+)/)?.[1] || '')
+  .replace(/[^A-Za-z0-9_.-]/g, '')
+  .slice(-20);
+
+function qaContainerName(appId: string): string {
+  return `qa-stream-${QA_RUN_NAMESPACE ? `${QA_RUN_NAMESPACE}-` : ''}${appId}`;
+}
+
+function qaProjectName(appId: string): string {
+  return `qa-${QA_RUN_NAMESPACE ? `${QA_RUN_NAMESPACE}-` : ''}${appId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+}
 // The fleet command intentionally uses `~/...` so the remote shell expands its home directory.
 // Node's filesystem APIs do not perform shell expansion, so normalize that spelling before the
 // marker is written or removed; otherwise Stop would signal a path the runner never created.
@@ -662,7 +678,7 @@ async function forceTeardown(o: {
   composeYml?: string;
   scratchDirs?: string[];
 }): Promise<void> {
-  const project = (o.composeProject || `qa-${o.appId}`).toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  const project = (o.composeProject || qaProjectName(o.appId)).toLowerCase().replace(/[^a-z0-9-]/g, '-');
   const ymlRef = o.composeYml ? `-f ${o.composeYml}` : '';
   // Compose teardown (operates on the project by name when we have no yml — compose v2 matches the
   // project label), then a single-container force-remove. One of the two is a no-op per app shape.
@@ -833,7 +849,7 @@ function isValidImageRef(ref: string): boolean {
 async function attemptApp(appId: string): Promise<Record<string, unknown>> {
   emit({ event: 'app_start', appId, ts: Date.now() });
 
-  const containerName = `qa-stream-${appId}`;
+  const containerName = qaContainerName(appId);
   const scratchDirs: string[] = [];
   let runFlags = '';
   let cmdSuffix = ''; // single-service manifest `command`, appended after the image in `docker run`
@@ -904,7 +920,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     // assertion + read-only exec probe) so they get a real verdict instead of a blind skip. The
     // dynamic import is GUARDED: if qa-mcp.ts isn't shipped alongside this file (manual partial scp),
     // only MCP apps degrade to skip — every web app still runs. Reusing `containerName`
-    // (`qa-stream-${appId}`) means the per-app watchdog + forceTeardown already cover the MCP container.
+    // (the run-namespaced qa-stream container name) means the per-app watchdog + forceTeardown already cover the MCP container.
     if (config.no_gui) {
       if (config.mcp) {
         try {
@@ -1661,7 +1677,7 @@ function appWatchdogMs(appId: string): number {
  * harness errors are returned by attemptApp and pass straight through (only pull/timeout retry once).
  */
 async function qaApp(appId: string): Promise<void> {
-  const containerName = `qa-stream-${appId}`;
+  const containerName = qaContainerName(appId);
   const budgetMs = appWatchdogMs(appId);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const watchdog = new Promise<Record<string, unknown>>((resolve) => {
@@ -2452,7 +2468,7 @@ async function composeUp(
   ymlPath: string,
   config: Record<string, unknown>,
 ): Promise<{ ok: boolean; hostPort: number; statsName: string; project: string; err: string; out: string }> {
-  const project = `qa-${appId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  const project = qaProjectName(appId);
   const specs = loadFieldSpecs(config);
   // Start from a clean scratch tree (scoped to THIS app's scratchBase). Postgres only applies
   // POSTGRES_PASSWORD on first init of an EMPTY data dir, but valueForVar mints a fresh
