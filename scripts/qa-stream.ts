@@ -592,7 +592,7 @@ function headTail(text: string, max = 600): string {
  * regardless of whether the second attempt recovers.
  */
 function isRetryableComposeFailure(text: string): boolean {
-  return /dependency(?: .*?)?failed to start|container .*\bis unhealthy\b|health ?check .*\b(?:unhealthy|starting)\b|context deadline exceeded|network is unreachable|connection (?:timed out|reset by peer)|i\/o timeout|temporary failure in name resolution|tls handshake timeout/i.test(
+  return /dependency(?: .*?)?failed to start|container .*\bis unhealthy\b|health ?check .*\b(?:unhealthy|starting)\b|\bhealth(?:check)?\s*[:=]\s*(?:unhealthy|starting)\b|context deadline exceeded|network is unreachable|connection (?:timed out|reset by peer)|i\/o timeout|temporary failure in name resolution|tls handshake timeout/i.test(
     text,
   );
 }
@@ -2434,7 +2434,7 @@ async function composeUp(
   scratchBase: string,
   ymlPath: string,
   config: Record<string, unknown>,
-): Promise<{ ok: boolean; hostPort: number; statsName: string; project: string; err: string }> {
+): Promise<{ ok: boolean; hostPort: number; statsName: string; project: string; err: string; out: string }> {
   const project = `qa-${appId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
   const specs = loadFieldSpecs(config);
   // Start from a clean scratch tree (scoped to THIS app's scratchBase). Postgres only applies
@@ -2657,7 +2657,10 @@ async function composeUp(
   const up = await execAsync(`docker compose -p ${project} -f ${ymlPath} up -d --quiet-pull`, 1_200_000);
   if (!up.ok) {
     const snapshot = await composeFailureSnapshot(project, ymlPath);
-    return { ok: false, hostPort: 0, statsName: '', project, err: `${up.err.slice(-600)}\n${snapshot}` };
+    // Compose writes progress and some daemon diagnostics to stdout while the shell error is on
+    // stderr. Preserve both channels: the caller classifies the combined text and bounds it for
+    // the result row. Dropping stdout hid useful health/registry lines behind a `ps` tail.
+    return { ok: false, hostPort: 0, statsName: '', project, err: `${up.err.slice(-600)}\n${snapshot}`, out: up.out };
   }
   // docker compose port may fail if service exited before port was bound — retry briefly
   let portMap = await execAsync(`docker compose -p ${project} -f ${ymlPath} port ${main?.name} ${mainPort}`);
@@ -2666,7 +2669,14 @@ async function composeUp(
     portMap = await execAsync(`docker compose -p ${project} -f ${ymlPath} port ${main?.name} ${mainPort}`);
   }
   const hostPort = reservedHostPort > 0 ? reservedHostPort : portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
-  return { ok: hostPort > 0, hostPort, statsName: `${project}-${main?.name}-1`, project, err: hostPort > 0 ? '' : 'no host port mapping' };
+  return {
+    ok: hostPort > 0,
+    hostPort,
+    statsName: `${project}-${main?.name}-1`,
+    project,
+    err: hostPort > 0 ? '' : 'no host port mapping',
+    out: up.out,
+  };
 }
 
 /** One container as Docker reports it: enough to tell "up and staying up" from "up for now". */
