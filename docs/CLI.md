@@ -635,6 +635,8 @@ cihub pool log [env] [--limit N]              # recent routing decisions, failov
 cihub pool enable [env] | cihub pool disable  # flip the persisted kill switch
 cihub pool enable --outbound | --inbound      # ...or just one direction
 cihub pool peer-enable <id> | peer-disable    # take one peer in or out of the pool
+cihub pool require-signed [env] [--yes]       # require pinned peer identities (refuses while any peer is legacy)
+cihub pool allow-bearer [env] [--yes]         # recovery switch: allow the legacy bearer path again
 ```
 
 | Flag | Effect |

@@ -62,6 +62,7 @@ const poolApi = {
   fetchPoolStatus: vi.fn(),
   fetchPoolPeers: vi.fn(),
   setPoolEnabledSetting: vi.fn(),
+  setPoolRequireSignedPeers: vi.fn(),
   setPoolPeerEnabled: vi.fn(),
   unpairPoolPeer: vi.fn(),
   pairPoolPeer: vi.fn(),
@@ -77,6 +78,7 @@ vi.mock('../hub-pool-cli', async (importOriginal) => ({
   fetchPoolStatus: (...args: unknown[]) => poolApi.fetchPoolStatus(...args),
   fetchPoolPeers: (...args: unknown[]) => poolApi.fetchPoolPeers(...args),
   setPoolEnabledSetting: (...args: unknown[]) => poolApi.setPoolEnabledSetting(...args),
+  setPoolRequireSignedPeers: (...args: unknown[]) => poolApi.setPoolRequireSignedPeers(...args),
   setPoolPeerEnabled: (...args: unknown[]) => poolApi.setPoolPeerEnabled(...args),
   unpairPoolPeer: (...args: unknown[]) => poolApi.unpairPoolPeer(...args),
   pairPoolPeer: (...args: unknown[]) => poolApi.pairPoolPeer(...args),
@@ -1285,6 +1287,16 @@ describe('parsePoolArgs', () => {
     expect(() => parsePoolArgs(['status', '--check-latency'])).toThrow();
   });
 
+  it('routes signed-peer policy commands without treating the env as a peer target', () => {
+    expect(parsePoolArgs(['require-signed', 'dev', '--yes'])).toMatchObject({
+      subcommand: 'require-signed',
+      target: undefined,
+      env: 'dev',
+      yes: true,
+    });
+    expect(parsePoolArgs(['allow-bearer']).subcommand).toBe('allow-bearer');
+  });
+
   it('takes the peer reference before the env for target subcommands', () => {
     const parsed = parsePoolArgs(['pair', POOL_PEER_FQDN, 'dev', '--name', 'Studio', '--yes']);
     expect(parsed).toMatchObject({ subcommand: 'pair', target: POOL_PEER_FQDN, displayName: 'Studio', yes: true, env: 'dev' });
@@ -1453,6 +1465,7 @@ describe('runPoolCommand', () => {
     poolApi.fetchPoolStatus.mockReset();
     poolApi.fetchPoolPeers.mockReset();
     poolApi.setPoolEnabledSetting.mockReset();
+    poolApi.setPoolRequireSignedPeers.mockReset();
     poolApi.setPoolPeerEnabled.mockReset();
     poolApi.unpairPoolPeer.mockReset();
     poolApi.pairPoolPeer.mockReset();
@@ -1553,6 +1566,56 @@ describe('runPoolCommand', () => {
       runPoolDoctorSection.mockReset().mockResolvedValue(section({ issueCount: 3, failureCount: 0 }));
       await runPoolCommand(['doctor']);
       expect(process.exitCode).toBeUndefined();
+    });
+  });
+
+  describe('pool peer authentication', () => {
+    const statusWithPeers = (poolRequireSignedPeers: boolean | undefined, peers: Record<string, unknown>[]) => ({
+      settings: { poolRequireSignedPeers },
+      peers,
+    });
+
+    it('refuses to enable signed-only mode while a paired peer is still bearer-authenticated', async () => {
+      poolApi.fetchPoolStatus.mockResolvedValue(statusWithPeers(false, [{ nodeFqdn: POOL_PEER_FQDN, status: 'connected', authMode: 'bearer' }]));
+
+      await runPoolCommand(['require-signed', '--yes']);
+
+      expect(poolApi.setPoolRequireSignedPeers).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+      expect(boxText()).toContain('Signed peer rollout blocked');
+      expect(boxText()).toContain(POOL_PEER_FQDN);
+    });
+
+    it('enables signed-only mode only after every paired peer is signed, then verifies the write', async () => {
+      poolApi.fetchPoolStatus
+        .mockResolvedValueOnce(statusWithPeers(false, [{ nodeFqdn: POOL_PEER_FQDN, status: 'connected', authMode: 'signed' }]))
+        .mockResolvedValueOnce(statusWithPeers(true, [{ nodeFqdn: POOL_PEER_FQDN, status: 'connected', authMode: 'signed' }]));
+      poolApi.setPoolRequireSignedPeers.mockResolvedValue({ poolRequireSignedPeers: true });
+
+      await runPoolCommand(['require-signed', '--yes']);
+
+      expect(poolApi.setPoolRequireSignedPeers).toHaveBeenCalledWith('.env.local', true);
+      expect(poolApi.fetchPoolStatus).toHaveBeenCalledTimes(2);
+      expect(boxText()).toContain('Signed peer policy enabled');
+      expect(boxText()).toContain('Verified poolRequireSignedPeers=true');
+    });
+
+    it('fails closed when an older Hub silently omits the policy field', async () => {
+      poolApi.fetchPoolStatus.mockResolvedValue(statusWithPeers(undefined, []));
+
+      await runPoolCommand(['require-signed', '--yes']);
+
+      expect(poolApi.setPoolRequireSignedPeers).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+      expect(boxText()).toContain('Signed peer policy unavailable');
+    });
+
+    it('requires --yes for the signed-only state change in a non-interactive shell', async () => {
+      poolApi.fetchPoolStatus.mockResolvedValue(statusWithPeers(false, []));
+
+      await expect(runPoolCommand(['require-signed'])).rejects.toThrow('exit');
+
+      expect(poolApi.setPoolRequireSignedPeers).not.toHaveBeenCalled();
     });
   });
 
