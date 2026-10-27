@@ -8,7 +8,7 @@
 
 <p align="center"><strong>Your own AI server, on the computer you already own.</strong></p>
 
-<p align="center"><a href="https://ci.computer/hub">Website</a> · <a href="#documentation">Documentation</a> · <a href="#install">Get started</a> · <a href="#license">License</a> · <a href="https://discord.com/invite/yQp9hwpzAa">Community</a></p>
+<p align="center"><a href="https://ci.computer/hub">Website</a> · <a href="#documentation">Documentation</a> · <a href="#install">Get started</a> · <a href="#license">License</a> · <a href="https://discord.com/invite/yQp9hwpzAa">Community</a> · <a href="https://docs.ci.computer/docs/reference/open-source-systems">Systems map</a></p>
 
 
 Install self-hosted apps, local models, and AI agents in one click, and run them side by side on a Mac, PC, or Linux box.
