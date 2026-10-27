@@ -13,10 +13,15 @@ const PAIR_RESERVE_MB = 2_048;
  * to. A utility call fills a schema from a prompt with worked examples in it. A model too small
  * for that copies the example instead of reading the input: on core-7 (2026-10-24) `gemma3:270m`,
  * handed out beside `qwen3.6:35b`, made Companion Memory store the prompt's made-up sister as the
- * owner's. Every catalog LLM listed at 2B or less sits below the floor, Gemma 4 E2B and Qwen 3.5 2B
- * included. The chat model is slower for this work, but it gets it right.
+ * owner's. Everything the catalog lists under 2B stays out: Gemma 3 270M and 1B, Qwen 3 0.6B and
+ * 1.7B, Qwen 3.5 0.8B, Llama 3.2 1B and the 1.5B models.
+ *
+ * The floor is 2B and not higher so that Gemma 4 E2B and Qwen 3.5 2B qualify. On a small machine one
+ * of those is often the only small model, and without it every background call runs on the chat
+ * model and slows the person's own chats. On a test Hub `gemma4:e2b` wrote photo titles and
+ * descriptions correctly through the pool.
  */
-const UTILITY_MIN_PARAMETER_SCALE = 3;
+const UTILITY_MIN_PARAMETER_SCALE = 2;
 
 /**
  * The model an app should run its background work on: extraction, classification, titling — the

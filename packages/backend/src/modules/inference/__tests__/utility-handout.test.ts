@@ -19,6 +19,12 @@ const qwen8b = model('qwen3-8b', 6_000, 8);
 const gemma4b = model('gemma-4-e4b', 3_500, 4);
 const embedder = model('nomic', 300, undefined, { modality: 'embedding' as CuratedModel['modality'] });
 
+const byId = (id: string): CuratedModel => {
+  const found = CURATED_MODELS.find((m) => m.id === id);
+  if (!found) throw new Error(`catalog has no ${id}`);
+  return found;
+};
+
 describe('pickUtilityModel', () => {
   it('picks the smallest installed chat model that fits beside the chat model', () => {
     // 24 GB card: 18 000 + 3 500 + the 2 GB reserve fits; the 8B would too, but the 4B is smaller.
@@ -57,25 +63,40 @@ describe('pickUtilityModel', () => {
   });
 
   it('takes a model right at the floor and nothing under it', () => {
-    const at3b = model('llama3-2-3b', 3_100, 3);
     const at2b = model('gemma4-e2b', 2_500, 2);
+    const under2b = model('qwen3-1-7b', 2_200, 1.7);
 
-    expect(pickUtilityModel({ chat: chat27b, installed: [chat27b, at2b], profile: { effectiveInferenceMemoryMb: 65_536 } })).toBe(chat27b);
-    expect(pickUtilityModel({ chat: chat27b, installed: [chat27b, at2b, at3b], profile: { effectiveInferenceMemoryMb: 65_536 } })).toBe(at3b);
+    expect(pickUtilityModel({ chat: chat27b, installed: [chat27b, under2b], profile: { effectiveInferenceMemoryMb: 65_536 } })).toBe(chat27b);
+    // The 1.7B is the smaller of the two, but only the 2B clears the floor.
+    expect(pickUtilityModel({ chat: chat27b, installed: [chat27b, under2b, at2b], profile: { effectiveInferenceMemoryMb: 65_536 } })).toBe(at2b);
   });
 
-  it('passes over the real catalog rows of the models that caused this', () => {
-    const byId = (id: string) => {
-      const found = CURATED_MODELS.find((m) => m.id === id);
-      if (!found) throw new Error(`catalog has no ${id}`);
-      return found;
-    };
+  it('passes over the real catalog rows under 2B and takes Gemma 4 E2B and Qwen 3.5 2B', () => {
     const chat = byId('qwen3-6-35b');
-    const installed = ['qwen3-6-35b', 'gemma3-270m', 'gemma3-1b', 'gemma4-e2b'].map(byId);
+    const tiny = ['gemma3-270m', 'gemma3-1b', 'qwen3-5-0-8b', 'qwen3-1-7b'].map(byId);
     const profile = { effectiveInferenceMemoryMb: 90_148 };
 
-    expect(pickUtilityModel({ chat, installed, profile })).toBe(chat);
-    expect(pickUtilityModel({ chat, installed: [...installed, byId('gemma4-e4b')], profile })?.id).toBe('gemma4-e4b');
+    expect(pickUtilityModel({ chat, installed: [chat, ...tiny], profile })).toBe(chat);
+    expect(pickUtilityModel({ chat, installed: [chat, ...tiny, byId('gemma4-e2b')], profile })?.id).toBe('gemma4-e2b');
+    expect(pickUtilityModel({ chat, installed: [chat, ...tiny, byId('qwen3-5-2b')], profile })?.id).toBe('qwen3-5-2b');
+    // E4B's footprint is measured and E2B's is still derived from its 7.2 GB download, so the catalog
+    // makes E4B the smaller of the two.
+    expect(pickUtilityModel({ chat, installed: [chat, ...tiny, byId('gemma4-e2b'), byId('gemma4-e4b')], profile })?.id).toBe('gemma4-e4b');
+  });
+
+  it('takes the 2B catalog rows and refuses the sub-2B ones on every engine', () => {
+    // A chat model far bigger than any of them, with memory to spare: only the floor decides.
+    const profile = { effectiveInferenceMemoryMb: 1_048_576 };
+    const takes = (id: string) => {
+      const row = byId(id);
+      const chat = model('big-chat', 500_000, 400, { backend: row.backend });
+      return pickUtilityModel({ chat, installed: [chat, row], profile }) === row;
+    };
+    const twoB = ['gemma4-e2b', 'gemma4-e2b-lemonade', 'qwen3-5-2b', 'qwen3-5-2b-lemonade', 'qwen3-5-2b-mlx'];
+    const underTwoB = ['gemma3-270m', 'gemma3-270m-mlx', 'qwen3-5-0-8b', 'qwen3-5-0-8b-lemonade', 'qwen3-5-0-8b-mlx', 'qwen3-1-7b-lemonade'];
+
+    expect(twoB.filter((id) => !takes(id))).toEqual([]);
+    expect(underTwoB.filter(takes)).toEqual([]);
   });
 
   it('never picks a model the catalog gives no size', () => {

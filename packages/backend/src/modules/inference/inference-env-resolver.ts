@@ -48,7 +48,7 @@ export interface StandardizedAiEnv {
   CI_VISION_MODEL?: string;
   /**
    * The model for an app's background calls (extraction, classification, titling): a smaller
-   * installed model of at least 3B that fits beside the chat model, else the chat model itself. See
+   * installed model of at least 2B that fits beside the chat model, else the chat model itself. See
    * `pickUtilityModel`. Always set when a chat model is.
    */
   CI_UTILITY_MODEL?: string;

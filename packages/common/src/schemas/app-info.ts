@@ -82,7 +82,7 @@ export const INFERENCE_VARIABLES = [
   'embedding_model',
   'vision_model',
   // The model for background calls (extraction, classification): a smaller installed model of at
-  // least 3B that fits beside the chat model, else the chat model. Companion Memory maps it to
+  // least 2B that fits beside the chat model, else the chat model. Companion Memory maps it to
   // LLM_UTILITY_MODEL.
   'utility_model',
   'ollama_host',
