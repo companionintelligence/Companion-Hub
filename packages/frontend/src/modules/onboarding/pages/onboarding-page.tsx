@@ -97,13 +97,7 @@ function Shell({ children }: { children: React.ReactNode }) {
             className="mb-3 flex h-14 w-14 items-center justify-center overflow-hidden rounded-[30%] border border-primary/30 bg-primary/10 p-2 shadow-sm"
             data-testid="onboarding-brand-mark"
           >
-            <img
-              alt={t('ONBOARDING_HUB_LOGO_ALT')}
-              src={HUB_MARK}
-              height={40}
-              width={40}
-              className="h-10 w-10 object-contain"
-            />
+            <img alt={t('ONBOARDING_HUB_LOGO_ALT')} src={HUB_MARK} height={40} width={40} className="h-10 w-10 object-contain" />
           </div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">{t('ONBOARDING_SET_UP_COMPANION_HUB')}</h1>
         </div>
