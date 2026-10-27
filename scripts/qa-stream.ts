@@ -46,7 +46,10 @@
  *   - Teardown and the stale-container cleanup stop and force-remove: a restart policy brings back a container that is only stopped.
  *   - The host port is reserved before the start and published as that exact port. If the bind loses a race for it ("address
  *     already in use" / "failed to bind host port" / "port is already allocated", e.g. a peer app at QA_CONCURRENCY=2) the start is retried with a fresh
- *     reservation, at most 2 times (`bindRetries` on the result), then scored as before. Other start failures are not retried.
+ *     reservation, at most 2 times (`bindRetries` on the result), then scored as before.
+ *   - A compose stack whose dependency healthcheck races first boot is retried once after a clean teardown. The first attempt's
+ *     score, failure kind, notes, and compact `docker compose ps -a` snapshot stay on the final row, so a recovered start is visible
+ *     and a persistent failure is still actionable. Other start failures are not retried.
  */
 
 import { exec, execSync, spawnSync } from 'node:child_process';
@@ -253,6 +256,9 @@ function toQAResult(result: Record<string, unknown>): Record<string, unknown> {
     retried: result.retried ?? false,
     attempts: result.attempts ?? 1,
     failKind: result.failKind ?? null,
+    ...(result.firstAttemptScore ? { firstAttemptScore: result.firstAttemptScore } : {}),
+    ...(result.firstAttemptFailKind ? { firstAttemptFailKind: result.firstAttemptFailKind } : {}),
+    ...(result.firstAttemptNotes ? { firstAttemptNotes: result.firstAttemptNotes } : {}),
     mcp: result.mcp ?? false, // true for MCP protocol-smoke verdicts (lets triage bucket drift correctly)
     timestamp: new Date(ts).toISOString(),
   };
@@ -349,6 +355,21 @@ function headTail(text: string, max = 600): string {
 }
 // </registry-failure>
 
+// <compose-transient>
+// (Extracted by scripts/__tests__/qa-stream-compose-retry.test.ts: keep this function self-contained.)
+/**
+ * A compose dependency can be reported as unhealthy while its first boot is still converging. This
+ * is deliberately narrower than "compose failed": registry/auth/missing-image/port/config failures
+ * are not made slower or less truthful by an automatic retry. The caller records the first attempt
+ * regardless of whether the second attempt recovers.
+ */
+function isRetryableComposeFailure(text: string): boolean {
+  return /dependency(?: .*?)?failed to start|container .*\bis unhealthy\b|health ?check .*\b(?:unhealthy|starting)\b|context deadline exceeded/i.test(
+    text,
+  );
+}
+// </compose-transient>
+
 /**
  * Async, non-blocking variant of execQuiet — and the reason the per-app watchdog can actually fire.
  * execSync (execQuiet) blocks the single Node thread for the whole call, so a JS timer set in qaApp
@@ -415,6 +436,20 @@ async function forceTeardown(o: {
       /* best-effort — a wipe failure must never block dispatch */
     }
   }
+}
+
+/**
+ * Preserve enough compose state to explain a failed dependency without copying container logs or
+ * environment values into the result stream. `docker compose up` often reports only the dependent
+ * service's error (for example, "dependency cap-mysql failed to start"); the `ps -a` snapshot names
+ * the actual unhealthy/exited service and its exit code. It is bounded and best-effort so diagnosis
+ * can never turn a start failure into a stuck QA slot.
+ */
+async function composeFailureSnapshot(project: string, ymlPath: string): Promise<string> {
+  const r = await execAsync(`docker compose -p ${shq(project)} -f ${shq(ymlPath)} ps -a --format json`, 20_000);
+  if (!r.ok) return `compose status unavailable: ${headTail(r.err, 320)}`;
+  const status = headTail(r.out, 1000);
+  return status ? `compose status: ${status}` : 'compose status: no containers';
 }
 
 interface AppConfig {
@@ -1305,14 +1340,19 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
 
 /**
  * Per-app entry point used by the worker pool. Runs attemptApp, and on a transient failure
- * (cold-pull `error` from a `pull` failKind, or a readiness `timeout`) retries ONCE — attemptApp
+ * (cold-pull `error` from a `pull` failKind, a readiness `timeout`, or a narrow compose dependency
+ * healthcheck race) retries ONCE — attemptApp
  * tears down its own containers in `finally`, so the retry starts clean and hits the now-warm
  * image cache. Emits exactly one app_result (the pool/server count `done` off it), so a retry
  * never double-counts. Real app crashes (`fail`), missing/404 images (`skip`), and structural
  * harness errors (port-map, dir-vs-file mount) are NOT retried.
  */
 function isRetryableTransient(result: Record<string, unknown>): boolean {
-  return result.failKind === 'pull' || result.failKind === 'timeout';
+  return (
+    result.failKind === 'pull' ||
+    result.failKind === 'timeout' ||
+    (result.failKind === 'compose' && isRetryableComposeFailure(String(result.notes ?? '')))
+  );
 }
 
 /** attemptApp + the single transient-failure retry, split out so qaApp can race it against the watchdog. */
@@ -1321,10 +1361,13 @@ async function attemptWithRetry(appId: string): Promise<Record<string, unknown>>
   if (isRetryableTransient(result)) {
     const firstScore = String(result.score);
     const firstNotes = String(result.notes ?? '');
+    const firstFailKind = String(result.failKind ?? '');
+    if (firstFailKind === 'compose') phase(appId, 'starting', 'Transient compose dependency failure; retrying once after clean teardown');
     const retry = await attemptApp(appId);
     retry.retried = true;
     retry.attempts = 2;
     retry.firstAttemptScore = firstScore;
+    retry.firstAttemptFailKind = firstFailKind;
     retry.firstAttemptNotes = firstNotes;
     result = retry;
   } else {
@@ -2350,7 +2393,10 @@ async function composeUp(
   // `spawnSync /bin/sh ETIMEDOUT` (notesnook's 7-service stack, hermes-agent, n8n). The per-app watchdog
   // stays the real backstop for a genuinely-stuck stack (force-fails to `timeout`, not `error`).
   const up = await execAsync(`docker compose -p ${project} -f ${ymlPath} up -d --quiet-pull`, 1_200_000);
-  if (!up.ok) return { ok: false, hostPort: 0, statsName: '', project, err: up.err.slice(-600) };
+  if (!up.ok) {
+    const snapshot = await composeFailureSnapshot(project, ymlPath);
+    return { ok: false, hostPort: 0, statsName: '', project, err: `${up.err.slice(-600)}\n${snapshot}` };
+  }
   // docker compose port may fail if service exited before port was bound — retry briefly
   let portMap = await execAsync(`docker compose -p ${project} -f ${ymlPath} port ${main?.name} ${mainPort}`);
   if (!portMap.ok) {
