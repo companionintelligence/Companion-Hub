@@ -26,6 +26,8 @@
  *   APP_STORE_DIR   path to CI-Marketplace/apps  (default: ~/devel/CI-Marketplace/apps
  *                   with fallback to ~/devel/CI-App-Store/apps)
  *   RESULTS_DIR     local results output dir      (default: ~/qa-results)
+ *   QA_MIN_FREE_MB  minimum free space to keep before accepting another app (default: 4096)
+ *   QA_MIN_FREE_PERCENT  minimum free percentage to keep before accepting another app (default: 5)
  *   SKIP_SCREENSHOT set to "1" to skip Playwright screenshot
  *   QA_ENV_FILE     set to "1" to attach a production-style app.env (system variables + form fields) to every service, as the
  *                   Hub does. Off by default. Safe at any QA_CONCURRENCY: each app's form-field specs and manifest are passed
@@ -54,7 +56,7 @@
 
 import { exec, execSync, spawnSync } from 'node:child_process';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
-import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statfsSync, statSync, writeFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import { connect } from 'node:net';
 import { EOL, homedir } from 'node:os';
@@ -88,10 +90,62 @@ const QA_CONCURRENCY = Math.max(1, Number(process.env.QA_CONCURRENCY) || 2);
 // runaway app from starving its neighbours once apps run concurrently.
 const QA_MEM_LIMIT = process.env.QA_MEM_LIMIT?.trim() || ''; // e.g. "1g", "512m"
 const QA_CPU_LIMIT = process.env.QA_CPU_LIMIT?.trim() || ''; // e.g. "1.5", "2"
+function nonNegativeEnvNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+const QA_MIN_FREE_MB = Math.floor(nonNegativeEnvNumber('QA_MIN_FREE_MB', 4096));
+const QA_MIN_FREE_PERCENT = Math.min(100, nonNegativeEnvNumber('QA_MIN_FREE_PERCENT', 5));
 
 [RESULTS_DIR, SCREENSHOTS_DIR].forEach((d) => {
   if (!existsSync(d)) mkdirSync(d, { recursive: true });
 });
+
+// <capacity-guard>
+/** Decide whether a results/docker filesystem has enough headroom for another app. */
+function capacityDecision(input: { availableBytes: number; totalBytes: number; minFreeMb: number; minFreePercent: number }) {
+  const availableMb = Math.floor(input.availableBytes / (1024 * 1024));
+  const totalMb = Math.floor(input.totalBytes / (1024 * 1024));
+  const freePercent = input.totalBytes > 0 ? (input.availableBytes / input.totalBytes) * 100 : null;
+  const percentFloorMb = totalMb > 0 ? Math.ceil((totalMb * input.minFreePercent) / 100) : 0;
+  const thresholdMb = Math.max(Math.floor(input.minFreeMb), percentFloorMb);
+  return {
+    ok: availableMb >= thresholdMb,
+    availableMb,
+    totalMb,
+    freePercent,
+    thresholdMb,
+  };
+}
+// </capacity-guard>
+
+/** Read the filesystem that backs the QA scratch/results directory. Fail open only when the probe itself is unavailable. */
+function diskCapacitySnapshot() {
+  try {
+    const fs = statfsSync(RESULTS_DIR);
+    const blockSize = Number(fs.bsize);
+    const availableBytes = Number(fs.bavail) * blockSize;
+    const totalBytes = Number(fs.blocks) * blockSize;
+    if (!Number.isFinite(blockSize) || blockSize <= 0 || !Number.isFinite(availableBytes) || !Number.isFinite(totalBytes)) {
+      return { ok: true, unavailable: true, reason: 'filesystem capacity probe returned invalid counters' };
+    }
+    return {
+      ...capacityDecision({ availableBytes, totalBytes, minFreeMb: QA_MIN_FREE_MB, minFreePercent: QA_MIN_FREE_PERCENT }),
+      unavailable: false,
+      path: RESULTS_DIR,
+    };
+  } catch (error) {
+    return {
+      ok: true,
+      unavailable: true,
+      reason: `filesystem capacity probe unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      path: RESULTS_DIR,
+    };
+  }
+}
 
 /**
  * Locate a usable Chromium binary from the Playwright browser cache directly,
@@ -1490,6 +1544,10 @@ function slotWeightFor(appId: string): number {
   return 1;
 }
 
+// A low-capacity node is a runner condition, not an app verdict. The fleet dispatcher receives
+// node_capacity, requeues buffered ids, and removes this node from the active work-stealing pool.
+let capacityBlocked = false;
+
 /**
  * Run qaApp over every appId with bounded intra-node concurrency (QA_CONCURRENCY total slots).
  * Each app consumes slotWeightFor(app) slots (multi-service=2, single=1) — a weighted semaphore —
@@ -1524,6 +1582,23 @@ async function runWithConcurrency(next: () => Promise<string | null>): Promise<v
     while (available > 0) {
       const appId = await fetchNext();
       if (appId === null) break; // source drained — let in-flight finish
+      const capacity = diskCapacitySnapshot();
+      if (!capacity.ok) {
+        capacityBlocked = true;
+        emit({
+          event: 'node_capacity',
+          appId,
+          reason: 'low-disk',
+          message: `capacity guard stopped dispatch: ${capacity.availableMb} MiB free; ${capacity.thresholdMb} MiB reserved`,
+          ...capacity,
+          ts: Date.now(),
+        });
+        // The server has not observed app_start for this id. It requeues this id and every other
+        // id already buffered for this node, then lets the in-flight apps drain before the runner
+        // exits with a distinct capacity code.
+        ended = true;
+        break;
+      }
       const weight = Math.min(slotWeightFor(appId), total); // clamp so an over-budget app can't deadlock
       if (weight > available && inflight.size > 0) {
         lookahead = appId; // no room right now — stash and wait for a finisher
@@ -2688,6 +2763,7 @@ void (async () => {
   writeBatchSummary(batchStart);
 
   emit({ event: 'batch_done', total: countResults(), ts: Date.now() });
+  if (capacityBlocked) process.exitCode = 75;
   // Let any background watchdog teardowns finish (bounded grace) so we don't leak their containers.
   await drainTeardowns(15_000);
   // runWithConcurrency has awaited every TRACKED qaApp, so in the normal case the event loop now
@@ -2696,7 +2772,7 @@ void (async () => {
   // abandoned attemptApp lingering as a dangling coroutine (its readiness-loop setTimeout). Arm an
   // UNREF'd fallback: it never keeps the process alive itself, but if something else is pinning the
   // loop it fires shortly after (stdout long since flushed) and force-exits — the node never hangs.
-  setTimeout(() => process.exit(0), 2000).unref();
+  setTimeout(() => process.exit(capacityBlocked ? 75 : 0), 2000).unref();
 })().catch((err) => {
   process.stderr.write(`qa-stream fatal: ${err?.stack || err}\n`);
   process.exit(1);
