@@ -502,6 +502,7 @@ export class DockerComposeBuilder {
       .setSysctls(params.sysctls)
       .setDNS(params.dns)
       .setPlatform(params.platform)
+      .setRuntime(params.runtime)
       .setNetwork(`${appName}_${appStoreId}_network`);
 
     if (envFile) {

@@ -838,6 +838,29 @@ describe('DockerComposeBuilder', () => {
 
     expect(yaml).toMatchSnapshot();
   });
+
+  it('should support kata and confidential container runtimes (kata, kata-qemu, kata-cc)', async () => {
+    const services: ServiceInput[] = [
+      {
+        name: 'secure-app',
+        image: 'myorg/confidential-app:1.0.0',
+        runtime: 'kata-cc',
+        isMain: true,
+        internalPort: 8080,
+      },
+      {
+        name: 'worker',
+        image: 'myorg/worker:1.0.0',
+        runtime: 'kata-qemu',
+      },
+    ];
+
+    const composeResult = await composeBuilder.getDockerCompose(services, { appId: 'test-secure-app' }, urn, subnet);
+    const parsed = yaml.parse(composeResult);
+
+    expect(parsed.services['secure-app'].runtime).toBe('kata-cc');
+    expect(parsed.services.worker.runtime).toBe('kata-qemu');
+  });
 });
 
 const mainService: ServiceInput = {

@@ -545,6 +545,33 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
           const result = safeParse(serviceSchema, service);
           expect(result.success).toBe(false);
         });
+
+        describe('Container Runtime (Kata & Confidential Containers)', () => {
+          it('should validate valid runtimes (kata, kata-qemu, kata-cc, runc)', () => {
+            for (const runtime of ['kata', 'kata-qemu', 'kata-cc', 'kata-clh', 'kata-fc', 'runc', 'crun']) {
+              const service = {
+                image: 'nginx:latest',
+                name: 'web-server',
+                runtime,
+              };
+              const result = safeParse(serviceSchema, service);
+              expect(result.success).toBe(true);
+              if (result.success) {
+                expect(result.data.runtime).toBe(runtime);
+              }
+            }
+          });
+
+          it('should reject invalid runtime names with special characters', () => {
+            const service = {
+              image: 'nginx:latest',
+              name: 'web-server',
+              runtime: 'kata; rm -rf /',
+            };
+            const result = safeParse(serviceSchema, service);
+            expect(result.success).toBe(false);
+          });
+        });
       });
     });
 

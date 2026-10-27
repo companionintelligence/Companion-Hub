@@ -2,7 +2,7 @@ import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { isRocmKfdPassthroughAvailable } from '@/modules/inference/host-rocm-availability';
-import { parseInstalledComposeJson } from '@ci-hub/common/schemas';
+import { isConfidentialRuntime, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { ModuleRef } from '@nestjs/core';
 import fs from 'node:fs';
@@ -10,8 +10,9 @@ import * as yaml from 'yaml';
 import { createKvmMissingError, createRocmKfdMissingError } from './app-lifecycle-errors';
 
 /**
- * Fails fast with friendly guidance when a compose manifest declares /dev/kfd or /dev/kvm but the
- * host cannot provide it, instead of surfacing Docker's raw device-attach error.
+ * Fails fast with friendly guidance when a compose manifest declares /dev/kfd or /dev/kvm (or a
+ * microVM/Confidential runtime like Kata Containers) but the host cannot provide it, instead of
+ * surfacing Docker's raw device-attach or runtime error.
  *
  * Shared by install and start: a device present at install time can still be gone by a later start
  * (ROCm/KVM modules not yet loaded at boot), so start needs the same preflight rather than relying
@@ -45,11 +46,14 @@ function isKvmHostDevice(device: string): boolean {
  */
 function userComposeRequiredDevices(composeYaml: string): { requiresKfd: boolean; requiresKvm: boolean } {
   try {
-    const parsed = yaml.parse(composeYaml) as { services?: Record<string, { devices?: unknown[] } | null> } | null;
+    const parsed = yaml.parse(composeYaml) as { services?: Record<string, { devices?: unknown[]; runtime?: unknown } | null> } | null;
     if (!parsed?.services) return { requiresKfd: false, requiresKvm: false };
     let requiresKfd = false;
     let requiresKvm = false;
     for (const svc of Object.values(parsed.services)) {
+      if (typeof svc?.runtime === 'string' && isConfidentialRuntime(svc.runtime)) {
+        requiresKvm = true;
+      }
       for (const device of svc?.devices ?? []) {
         if (typeof device !== 'string') continue;
         if (isKfdHostDevice(device)) requiresKfd = true;
@@ -82,6 +86,9 @@ export async function assertHostDevicesAvailable(moduleRef: ModuleRef, appUrn: A
     const architecture = config.get('architecture');
     const mergedServices = mergeArchitectureOverrides(services, overrides, architecture);
     for (const service of mergedServices) {
+      if (service.runtime && isConfidentialRuntime(service.runtime)) {
+        requiresKvm = true;
+      }
       for (const device of service.devices ?? []) {
         if (typeof device !== 'string') continue;
         if (isKfdHostDevice(device)) requiresKfd = true;
