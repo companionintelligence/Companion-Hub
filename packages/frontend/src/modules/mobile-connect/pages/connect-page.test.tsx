@@ -110,8 +110,9 @@ describe('ConnectPage clientLoader (connect ↔ /login handoff guard)', () => {
 });
 
 describe('ConnectPage', () => {
-  it('shows the CI logo, Log in, and Advanced — not email or a URL field', () => {
-    renderPage();
+  it('shows the Hub mark, Log in, and Advanced — not email or a URL field', () => {
+    const { container } = renderPage();
+    expect(container.querySelector('img')).toHaveAttribute('src', '/hub-mark.svg');
     expect(screen.getByTestId('oidc-login-btn')).toHaveTextContent('Log in');
     expect(screen.getByTestId('advanced-link')).toBeInTheDocument();
     expect(screen.queryByPlaceholderText('you@example.com')).not.toBeInTheDocument();

@@ -46,7 +46,7 @@ export async function clientLoader() {
 type Step = 'sign-in' | 'pick';
 
 const TOUCH = 'min-h-[44px]';
-const CI_LOGO = '/2024_CI__LogoMark_Color_med.svg';
+const HUB_MARK = '/hub-mark.svg';
 
 export default function ConnectPage() {
   const { t } = useTranslation();
@@ -219,7 +219,7 @@ export default function ConnectPage() {
   if (step === 'sign-in') {
     return (
       <div className="safe-area-inset flex h-dvh flex-col items-center justify-center-safe gap-5 overflow-y-auto px-8">
-        <img src={CI_LOGO} alt="" className="aspect-square w-[min(48vw,12rem)]" />
+        <img src={HUB_MARK} alt="" className="aspect-square w-[min(48vw,12rem)]" />
         <div className="flex w-full max-w-sm flex-col items-center gap-3">
           <Button
             type="button"
