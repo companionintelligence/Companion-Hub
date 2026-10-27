@@ -12,7 +12,6 @@ Install self-hosted apps, local models, and AI agents in one click, and run them
 Your apps, your models, and your data stay on your hardware.
 
 [![Latest release](https://img.shields.io/github/v/release/companionintelligence/CI-Hub?style=flat-square&color=0a6358&label=release)](https://github.com/companionintelligence/CI-Hub/releases/latest)
-[![Docs](https://img.shields.io/badge/docs-docs.ci.computer-0a6358?style=flat-square)](https://docs.ci.computer)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-0a6358?style=flat-square)](https://docs.ci.computer/docs/getting-started/system-requirements)
 [![License](https://img.shields.io/badge/license-PolyForm%20NC%201.0-0a6358?style=flat-square)](LICENSE.md)
 [![Discord](https://img.shields.io/badge/chat-Discord-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.com/invite/yQp9hwpzAa)
