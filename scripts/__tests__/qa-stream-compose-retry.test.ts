@@ -25,6 +25,8 @@ describe('isRetryableComposeFailure', () => {
   it('recognizes healthcheck convergence without retrying arbitrary compose errors', () => {
     expect(isRetryableComposeFailure('health check is starting for service database')).toBe(true);
     expect(isRetryableComposeFailure('healthcheck reports unhealthy')).toBe(true);
+    expect(isRetryableComposeFailure('Status: Up 1 second (health: starting)')).toBe(true);
+    expect(isRetryableComposeFailure('database health: unhealthy')).toBe(true);
     expect(isRetryableComposeFailure('read tcp [2600::1]:33608->[2600::2]:443: network is unreachable')).toBe(true);
     expect(isRetryableComposeFailure('read tcp 192.0.2.10:55358->198.51.100.69:443: connection timed out')).toBe(true);
     expect(isRetryableComposeFailure('failed to copy layer: connection reset by peer')).toBe(true);
@@ -46,5 +48,7 @@ describe('qa-stream retry wiring', () => {
     expect(source).toContain("result.failKind === 'compose' && isRetryableComposeFailure(String(result.notes ?? ''))");
     expect(source).toContain('firstAttemptFailKind');
     expect(source).toContain('composeFailureSnapshot');
+    expect(source).toContain('out: up.out');
+    expect(source).toContain('commandOutput(up.err, up.out)');
   });
 });
