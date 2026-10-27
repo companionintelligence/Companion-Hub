@@ -71,9 +71,10 @@
  *    (#1402, #1437), a password login that names a Portal subject with no
  *    `federated_identity` row, on a Hub that already has an operator, is
  *    admitted only after Portal WhoIs confirms org membership. The mock portal
- *    has no WhoIs route, so that check is `unknown` and login answers 503
- *    AUTH_ERROR_ORG_CHECK_UNAVAILABLE — every `before` block's login fails and
- *    every shot times out on the page behind it. A linked operator takes the
+ *    had no WhoIs route then, so that check was `unknown` and login answered 503
+ *    AUTH_ERROR_ORG_CHECK_UNAVAILABLE — every `before` block's login failed and
+ *    every shot timed out on the page behind it. (It has one now, and it only
+ *    vouches for `test-org-id`: see ORG below.) A linked operator takes the
  *    other path, which admits on `unknown` unless the user was revoked. So the
  *    seed writes the link an operator's first sign-in would have written:
  *    issuer = this Hub's CI_CLOUD_URL (AuthService.getPublicPortalBaseUrl),
@@ -96,8 +97,17 @@ const { eq, inArray } = await import('drizzle-orm');
 
 const { apiKey, app, deviceRegistration, federatedIdentity, user } = schema;
 
-/** The org/device identity storyboard.json is written against. */
-const ORG = { id: 'capture-org', slug: 'acme', name: 'Acme', hubSubdomain: 'hub-living-room-server-acme' };
+/**
+ * The org/device identity storyboard.json is written against.
+ *
+ * `id` is `test-org-id` because that is the one organization the mock portal's WhoIs route vouches
+ * for (e2e/mock-portal/scenarios.ts). Hub login and the hourly operator sweep ask Portal whether the
+ * signed-in person belongs to the PAIRED organization, by id (#2062). Any other id here is a settled
+ * "not a member": the sweep revokes the operator seconds after this seed runs, every `before`
+ * block's login answers 403 AUTH_ERROR_NOT_ORG_MEMBER, and every signed-in shot times out on the
+ * login page behind it. The id is not on screen; the slug and name are.
+ */
+const ORG = { id: 'test-org-id', slug: 'acme', name: 'Acme', hubSubdomain: 'hub-living-room-server-acme' };
 
 const OPERATOR_EMAIL = process.env.CAPTURE_OPERATOR_EMAIL ?? 'owner@acme.com';
 
