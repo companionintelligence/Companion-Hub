@@ -386,6 +386,11 @@ function registryFailureSignals(text: string): { rateLimited: boolean; notFound:
   };
 }
 
+/** Docker commands split useful diagnostics across stdout and stderr; keep both before classifying or bounding them. */
+function commandOutput(stderr: string, stdout: string): string {
+  return `${String(stderr ?? '')}\n${String(stdout ?? '')}`.trim();
+}
+
 /**
  * The start and the end of a long error text. The cause of a docker failure is at the END (the HTTP status, "429 Too Many
  * Requests"); `slice(0, n)` kept only the head and threw the cause away.
@@ -885,12 +890,17 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       result.pullMs = Date.now() - startT0;
       if (!up.ok) {
         // Classify compose failures the same as single-service pull failures
-        const sig = registryFailureSignals(up.err);
+        // Docker Compose writes progress and some daemon diagnostics to stdout, while the shell/CLI
+        // failure lands on stderr. Looking at stderr alone misclassified registry failures and left
+        // the operator with an opaque tail of a serialized compose error (seen in the fleet Pixelfed
+        // run). Keep both channels in the same bounded diagnostic; never persist the full output.
+        const composeOutput = commandOutput(up.err, up.out);
+        const sig = registryFailureSignals(composeOutput);
         // A rate limit first: it is neither a missing image nor missing credentials, and its text contains both of those words.
         if (sig.rateLimited) {
           result.score = 'skip' as Score;
           result.failKind = 'rate-limited';
-          result.notes = `registry rate limit (HTTP 429) on a dependency image, not an app failure; re-run later: ${headTail(up.err, 400)}`;
+          result.notes = `registry rate limit (HTTP 429) on a dependency image, not an app failure; re-run later: ${headTail(composeOutput, 400)}`;
           return result;
         }
         if (sig.auth) {
@@ -905,7 +915,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         }
         result.score = 'error';
         result.failKind = 'compose';
-        result.notes = `compose up failed${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${headTail(up.err, 600)}`;
+        result.notes = `compose up failed${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${headTail(composeOutput, 600)}`;
         return result;
       }
       hostPort = up.hostPort;

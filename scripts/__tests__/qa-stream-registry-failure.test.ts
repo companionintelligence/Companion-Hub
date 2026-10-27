@@ -9,8 +9,9 @@ const source = readFileSync(join(import.meta.dirname, '..', 'qa-stream.ts'), 'ut
 const block = /\/\/ <registry-failure>([\s\S]*?)\/\/ <\/registry-failure>/.exec(source);
 if (!block) throw new Error('the <registry-failure> block is missing from scripts/qa-stream.ts');
 const js = ts.transpileModule(block[1], { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
-const { registryFailureSignals, headTail } = new Function(`${js}\nreturn { registryFailureSignals, headTail };`)() as {
+const { registryFailureSignals, commandOutput, headTail } = new Function(`${js}\nreturn { registryFailureSignals, commandOutput, headTail };`)() as {
   registryFailureSignals: (text: string) => { rateLimited: boolean; notFound: boolean; auth: boolean };
+  commandOutput: (stderr: string, stdout: string) => string;
   headTail: (text: string, max?: number) => string;
 };
 
@@ -79,6 +80,15 @@ describe('registryFailureSignals', () => {
     expect(
       registryFailureSignals('Error response from daemon: driver failed programming external connectivity: bind: address already in use'),
     ).toEqual({ rateLimited: false, notFound: false, auth: false });
+  });
+});
+
+describe('commandOutput', () => {
+  it('combines both docker output channels before bounded classification', () => {
+    const combined = commandOutput('shell failed', COMPOSE_429);
+    expect(combined).toContain('shell failed');
+    expect(combined).toContain('429 Too Many Requests');
+    expect(registryFailureSignals(combined).rateLimited).toBe(true);
   });
 });
 
