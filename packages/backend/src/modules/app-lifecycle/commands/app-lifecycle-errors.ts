@@ -142,8 +142,11 @@ export function translateKvmInstallMessage(message: string): AppLifecycleError |
   const referencesKvm = normalizedMessage.includes('/dev/kvm');
   const missingDevice = normalizedMessage.includes('error gathering device information') && normalizedMessage.includes('no such file or directory');
   const blockedPath = normalizedMessage.includes('file path') && normalizedMessage.includes('is not allowed');
+  const kataKvmError =
+    (normalizedMessage.includes('kata') || normalizedMessage.includes('confidential')) &&
+    (normalizedMessage.includes('kvm') || normalizedMessage.includes('no such file or directory'));
 
-  if (referencesKvm && (missingDevice || blockedPath)) {
+  if ((referencesKvm && (missingDevice || blockedPath)) || kataKvmError) {
     return createKvmMissingError();
   }
 

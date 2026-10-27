@@ -327,6 +327,7 @@
   "CUSTOM_APP_ERROR_LOGGING_OPTION_KEY_INVALID": "Logging option key must be a valid string",
   "CUSTOM_APP_ERROR_LOGGING_OPTION_VALUE_INVALID": "Logging option value must be a valid string",
   "CUSTOM_APP_ERROR_SECURITY_OPT_INVALID": "Security option must be a valid string",
+  "CUSTOM_APP_ERROR_RUNTIME_INVALID": "Runtime must be a valid alphanumeric runtime name",
   "CUSTOM_APP_ERROR_LABEL_KEY_INVALID": "Label key must be a valid string",
   "CUSTOM_APP_ERROR_DNS_INVALID": "DNS server must be a valid string",
   "CUSTOM_APP_ERROR_SERVICES_MIN_LENGTH": "At least one service is required",

@@ -732,7 +732,37 @@ const serviceSchemaV2Object = z.object({
     .optional()
     .or(z.array(z.string('CUSTOM_APP_ERROR_DNS_INVALID')).optional()),
   platform: z.string().optional(),
+  /**
+   * OCI container runtime (e.g. `runc`, `kata`, `kata-qemu`, `kata-clh`, `kata-fc`, `kata-cc`).
+   * Used for microVM isolation via Kata Containers and hardware memory encryption / attestation
+   * via Confidential Containers (CoCo) for runtime DRM and IP protection.
+   */
+  runtime: z
+    .string()
+    .regex(/^[a-zA-Z0-9_.-]+$/, 'CUSTOM_APP_ERROR_RUNTIME_INVALID')
+    .optional(),
 });
+
+/**
+ * Known container runtimes for Kata Containers microVM isolation and Confidential Containers (CoCo).
+ * - Kata Containers: https://katacontainers.io
+ * - Confidential Containers: https://confidentialcontainers.org/docs/architecture/design-overview/
+ */
+export const CONFIDENTIAL_CONTAINER_RUNTIMES = [
+  'kata',
+  'kata-qemu',
+  'kata-clh',
+  'kata-fc',
+  'kata-cc',
+  'kata-qemu-sev',
+  'kata-qemu-snp',
+  'kata-qemu-tdx',
+] as const;
+
+export function isConfidentialRuntime(runtime?: string): boolean {
+  if (!runtime) return false;
+  return (CONFIDENTIAL_CONTAINER_RUNTIMES as readonly string[]).includes(runtime) || runtime.startsWith('kata');
+}
 
 export const serviceSchema = serviceSchemaV2Object.superRefine((service, ctx) => {
   assertCustomAppServiceSecurity(service, (issue) => ctx.addIssue({ code: 'custom', ...issue }));

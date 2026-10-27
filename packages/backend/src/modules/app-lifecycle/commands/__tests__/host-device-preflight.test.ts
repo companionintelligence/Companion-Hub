@@ -79,7 +79,7 @@ function createModuleRef(options: ModuleRefOptions = {}): ModuleRef {
 }
 
 /** Minimal schemaVersion 2 manifest that survives the real `parseComposeJson` validation. */
-function composeManifest(devices?: string[]): unknown {
+function composeManifest(devices?: string[], runtime?: string): unknown {
   return {
     schemaVersion: 2,
     services: [
@@ -88,6 +88,7 @@ function composeManifest(devices?: string[]): unknown {
         image: 'example/app:1.0.0',
         isMain: true,
         ...(devices ? { devices } : {}),
+        ...(runtime ? { runtime } : {}),
       },
     ],
   };
@@ -207,6 +208,35 @@ describe('assertHostDevicesAvailable', () => {
     });
   });
 
+  describe('kata and confidential container runtimes in the base manifest', () => {
+    it.each(['kata', 'kata-qemu', 'kata-cc', 'kata-qemu-sev', 'kata-qemu-snp', 'kata-qemu-tdx'])(
+      'rejects with KVM guidance error when runtime %s is specified and /dev/kvm is absent',
+      async (runtime) => {
+        const moduleRef = createModuleRef({ composeJson: composeManifest(undefined, runtime) });
+
+        await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).rejects.toMatchObject({
+          name: 'AppLifecycleError',
+          message: KVM_MISSING_USER_MESSAGE,
+          errorCode: KVM_MISSING_CODE,
+          errorDetail: KVM_MISSING_DETAIL,
+        });
+      },
+    );
+
+    it('resolves when kata runtime is specified and /dev/kvm is available on host', async () => {
+      markKvmPresent();
+      const moduleRef = createModuleRef({ composeJson: composeManifest(undefined, 'kata-cc') });
+
+      await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).resolves.toBeUndefined();
+    });
+
+    it('does not require /dev/kvm when runtime is standard runc', async () => {
+      const moduleRef = createModuleRef({ composeJson: composeManifest(undefined, 'runc') });
+
+      await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).resolves.toBeUndefined();
+    });
+  });
+
   describe('user compose override', () => {
     it('honours a kfd device declared only in the user override', async () => {
       vi.mocked(isRocmKfdPassthroughAvailable).mockResolvedValue(false);
@@ -260,6 +290,25 @@ describe('assertHostDevicesAvailable', () => {
       const moduleRef = createModuleRef({
         composeJson: composeManifest(),
         userCompose: 'services:\n  main:\n    devices:\n      - /dev/kvm\n',
+      });
+
+      await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).resolves.toBeUndefined();
+    });
+
+    it('honours a kata runtime declared only in the user override', async () => {
+      const moduleRef = createModuleRef({
+        composeJson: composeManifest(),
+        userCompose: 'services:\n  main:\n    runtime: kata-cc\n',
+      });
+
+      await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).rejects.toMatchObject({ errorCode: KVM_MISSING_CODE });
+    });
+
+    it('resolves when the user override declares kata runtime and the host provides kvm', async () => {
+      markKvmPresent();
+      const moduleRef = createModuleRef({
+        composeJson: composeManifest(),
+        userCompose: 'services:\n  main:\n    runtime: kata-cc\n',
       });
 
       await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).resolves.toBeUndefined();
@@ -346,6 +395,32 @@ describe('assertHostDevicesAvailable', () => {
       });
 
       // /dev/kvm is absent from the host, so a merge that kept it would reject.
+      await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).resolves.toBeUndefined();
+    });
+
+    it('scans runtime contributed by the matching architecture override', async () => {
+      const moduleRef = createModuleRef({
+        composeJson: {
+          schemaVersion: 2,
+          services: [{ name: 'main', image: 'example/app:1.0.0', isMain: true }],
+          overrides: [{ architecture: 'amd64', services: [{ name: 'main', runtime: 'kata-cc' }] }],
+        },
+        architecture: 'amd64',
+      });
+
+      await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).rejects.toMatchObject({ errorCode: KVM_MISSING_CODE });
+    });
+
+    it('leaves base runtime untouched when the override targets another architecture', async () => {
+      const moduleRef = createModuleRef({
+        composeJson: {
+          schemaVersion: 2,
+          services: [{ name: 'main', image: 'example/app:1.0.0', isMain: true }],
+          overrides: [{ architecture: 'arm64', services: [{ name: 'main', runtime: 'kata-cc' }] }],
+        },
+        architecture: 'amd64',
+      });
+
       await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).resolves.toBeUndefined();
     });
   });

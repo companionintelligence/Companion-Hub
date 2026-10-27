@@ -7,6 +7,8 @@ import {
   collectServiceSecurityViolations,
   isReservedHubLabel,
   TRUSTED_APP_SECURITY_ALLOWLIST,
+  CONFIDENTIAL_CONTAINER_RUNTIMES,
+  isConfidentialRuntime,
 } from './dynamic-compose.js';
 import { parseComposeJson, parseInstalledComposeJson } from './utils/convert-legacy-schema.js';
 import { collectTraefikLabelIssues, HUB_APP_NETWORK_NAMES, HUB_FORWARD_AUTH_MIDDLEWARES, HUB_TRAEFIK_NAMES } from './traefik-labels.js';
@@ -93,6 +95,8 @@ import { toJsonSchema } from './utils/to-json-schema.js';
 export {
   dynamicComposeSchema,
   dynamicComposeFormSchema,
+  CONFIDENTIAL_CONTAINER_RUNTIMES,
+  isConfidentialRuntime,
   parseComposeJson,
   parseInstalledComposeJson,
   serviceSchema,
