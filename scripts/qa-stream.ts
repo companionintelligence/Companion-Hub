@@ -35,6 +35,8 @@
  *   QA_NO_PROXY_HEADERS  set to "1" to stop the readiness probe sending X-Forwarded-Proto/Port (the Hub's Traefik adds them)
  *   QA_NO_TEMPLATES set to "1" to seed the .template files under an app's data/ as they are. By default each is rendered into the
  *                   mount without the suffix, from the app.env map, as the Hub's copyDataDir does.
+ *   QA_RUN_PID_FILE optional run-specific marker path. The runner writes its PID there and drains active apps on SIGTERM/SIGINT,
+ *                   allowing a fleet controller to stop only its own remote run.
  *
  * Restart policy and host ports (an app is started here as the Hub starts it):
  *   - Each service runs under its manifest's `restart` (no | always | unless-stopped | on-failure), else `unless-stopped`: the Hub's
@@ -56,7 +58,19 @@
 
 import { exec, execSync, spawnSync } from 'node:child_process';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
-import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statfsSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statfsSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import { connect } from 'node:net';
 import { EOL, homedir } from 'node:os';
@@ -72,6 +86,44 @@ const SKIP_SCREENSHOT = process.env.SKIP_SCREENSHOT === '1';
 const QA_ENV_FILE = process.env.QA_ENV_FILE === '1';
 const QA_NO_PROXY_HEADERS = process.env.QA_NO_PROXY_HEADERS === '1';
 const QA_NO_TEMPLATES = process.env.QA_NO_TEMPLATES === '1';
+/** A per-run marker used by the fleet controller to request a graceful remote stop. */
+const QA_RUN_PID_FILE = process.env.QA_RUN_PID_FILE?.trim() ?? '';
+
+// A fleet Stop closes the work feed and then signals this process through its own marker file.
+// Do not call process.exit() from the signal handler: active qaApp() calls still own Docker
+// teardown and need to finish their finally blocks. The worker pool sees the flag and drains only
+// the apps already in flight.
+let stopRequested = false;
+let stopWake: (() => void) | null = null;
+
+function requestGracefulStop(): void {
+  if (stopRequested) return;
+  stopRequested = true;
+  const wake = stopWake;
+  stopWake = null;
+  wake?.();
+}
+
+function installRunControl(): void {
+  if (!QA_RUN_PID_FILE) return;
+  try {
+    mkdirSync(dirname(QA_RUN_PID_FILE), { recursive: true });
+    writeFileSync(QA_RUN_PID_FILE, `${process.pid}\n`);
+  } catch (error) {
+    // The runner can still complete without the marker. Keep this visible on stderr so the
+    // controller records why a later Stop may have to fall back to closing the SSH session.
+    process.stderr.write(`run control marker unavailable: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+  process.once('SIGTERM', requestGracefulStop);
+  process.once('SIGINT', requestGracefulStop);
+  process.once('exit', () => {
+    try {
+      if (readFileSync(QA_RUN_PID_FILE, 'utf8').trim() === String(process.pid)) unlinkSync(QA_RUN_PID_FILE);
+    } catch {
+      /* best effort: the results directory may be gone or full */
+    }
+  });
+}
 
 // Durable results — qa-aggregate.ts SCPs results.json (an array of QAResult) and
 // batch-<N>-summary.json off each node. We append every app result here as it finishes
@@ -1628,6 +1680,11 @@ async function runWithConcurrency(next: () => Promise<string | null>): Promise<v
   // `next` may BLOCK (stdin work-stealing mode waits for the server to feed the next id), which is
   // fine — awaiting it yields to in-flight apps' finalizers.
   const fetchNext = async (): Promise<string | null> => {
+    if (stopRequested) {
+      ended = true;
+      lookahead = null;
+      return null;
+    }
     if (lookahead !== null) {
       const v = lookahead;
       lookahead = null;
@@ -2685,6 +2742,7 @@ if (!STDIN_MODE && appIds.length === 0) {
   process.stderr.write('Usage: qa-stream.ts <app-id> [app-id...]   (or QA_STDIN=1 to read ids from stdin)\n');
   process.exit(1);
 }
+installRunControl();
 
 /**
  * Stdin line reader for work-stealing mode. Buffers partial chunks, hands out one whole app id per
@@ -2694,7 +2752,7 @@ if (!STDIN_MODE && appIds.length === 0) {
  */
 function makeStdinReader(): () => Promise<string | null> {
   const queue: string[] = [];
-  let closed = false;
+  let closed = stopRequested;
   let wake: (() => void) | null = null;
   let buf = '';
   const pump = () => {
@@ -2721,12 +2779,15 @@ function makeStdinReader(): () => Promise<string | null> {
   });
   return async function nextFromStdin(): Promise<string | null> {
     for (;;) {
+      if (stopRequested) return null;
       const id = queue.shift();
       if (id !== undefined) return id;
       if (closed) return null;
       await new Promise<void>((res) => {
         wake = res;
+        stopWake = res;
       });
+      stopWake = null;
     }
   };
 }
@@ -2842,7 +2903,7 @@ void (async () => {
   // Persist the batch summary alongside results.json for qa-aggregate.ts to SCP.
   writeBatchSummary(batchStart);
 
-  emit({ event: 'batch_done', total: countResults(), ts: Date.now() });
+  emit({ event: 'batch_done', total: countResults(), stopped: stopRequested, ts: Date.now() });
   if (capacityBlocked) process.exitCode = 75;
   // Let any background watchdog teardowns finish (bounded grace) so we don't leak their containers.
   await drainTeardowns(15_000);

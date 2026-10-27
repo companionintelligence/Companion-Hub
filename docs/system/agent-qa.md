@@ -41,3 +41,11 @@ Multi-node Tailscale fleet runners and host inventories are **not published** in
 - Status server: `agent/status-server.ts` (port 3099)
 - Reports written to `agent/results/`
 - For general Hub development, ignore this system unless explicitly doing marketplace QA
+
+## Remote runner control
+
+The private fleet QA controller may copy `scripts/qa-stream.ts` to a node and set
+`QA_RUN_PID_FILE` to a run-specific marker path. The runner writes its PID there, drains active
+app checks when it receives `SIGTERM` or `SIGINT`, and removes the marker on exit. This is a
+scoped stop contract: operators and controllers must close the work feed or signal the recorded
+PID, never use a fleet-wide `pkill` that could terminate another QA session.
