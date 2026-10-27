@@ -88,6 +88,10 @@ const QA_NO_PROXY_HEADERS = process.env.QA_NO_PROXY_HEADERS === '1';
 const QA_NO_TEMPLATES = process.env.QA_NO_TEMPLATES === '1';
 /** A per-run marker used by the fleet controller to request a graceful remote stop. */
 const QA_RUN_PID_FILE = process.env.QA_RUN_PID_FILE?.trim() ?? '';
+// The fleet command intentionally uses `~/...` so the remote shell expands its home directory.
+// Node's filesystem APIs do not perform shell expansion, so normalize that spelling before the
+// marker is written or removed; otherwise Stop would signal a path the runner never created.
+const RUN_PID_PATH = QA_RUN_PID_FILE.startsWith('~/') ? join(home, QA_RUN_PID_FILE.slice(2)) : QA_RUN_PID_FILE;
 
 // A fleet Stop closes the work feed and then signals this process through its own marker file.
 // Do not call process.exit() from the signal handler: active qaApp() calls still own Docker
@@ -105,10 +109,10 @@ function requestGracefulStop(): void {
 }
 
 function installRunControl(): void {
-  if (!QA_RUN_PID_FILE) return;
+  if (!RUN_PID_PATH) return;
   try {
-    mkdirSync(dirname(QA_RUN_PID_FILE), { recursive: true });
-    writeFileSync(QA_RUN_PID_FILE, `${process.pid}\n`);
+    mkdirSync(dirname(RUN_PID_PATH), { recursive: true });
+    writeFileSync(RUN_PID_PATH, `${process.pid}\n`);
   } catch (error) {
     // The runner can still complete without the marker. Keep this visible on stderr so the
     // controller records why a later Stop may have to fall back to closing the SSH session.
@@ -118,7 +122,7 @@ function installRunControl(): void {
   process.once('SIGINT', requestGracefulStop);
   process.once('exit', () => {
     try {
-      if (readFileSync(QA_RUN_PID_FILE, 'utf8').trim() === String(process.pid)) unlinkSync(QA_RUN_PID_FILE);
+      if (readFileSync(RUN_PID_PATH, 'utf8').trim() === String(process.pid)) unlinkSync(RUN_PID_PATH);
     } catch {
       /* best effort: the results directory may be gone or full */
     }

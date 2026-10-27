@@ -9,9 +9,10 @@ const source = readFileSync(join(import.meta.dirname, '..', 'qa-stream.ts'), 'ut
 describe('qa-stream graceful stop contract', () => {
   it('writes a per-run PID marker and removes only its own marker on exit', () => {
     expect(source).toContain("const QA_RUN_PID_FILE = process.env.QA_RUN_PID_FILE?.trim() ?? '';");
-    expect(source).toContain('writeFileSync(QA_RUN_PID_FILE, `${process.pid}\\n`);');
-    expect(source).toContain("readFileSync(QA_RUN_PID_FILE, 'utf8').trim() === String(process.pid)");
-    expect(source).toContain('unlinkSync(QA_RUN_PID_FILE)');
+    expect(source).toContain("const RUN_PID_PATH = QA_RUN_PID_FILE.startsWith('~/') ? join(home, QA_RUN_PID_FILE.slice(2)) : QA_RUN_PID_FILE;");
+    expect(source).toContain('writeFileSync(RUN_PID_PATH, `${process.pid}\\n`);');
+    expect(source).toContain("readFileSync(RUN_PID_PATH, 'utf8').trim() === String(process.pid)");
+    expect(source).toContain('unlinkSync(RUN_PID_PATH)');
   });
 
   it('turns SIGTERM/SIGINT into a drain request instead of killing Docker teardown', () => {
