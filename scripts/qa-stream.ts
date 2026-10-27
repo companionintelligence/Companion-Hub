@@ -364,7 +364,7 @@ function headTail(text: string, max = 600): string {
  * regardless of whether the second attempt recovers.
  */
 function isRetryableComposeFailure(text: string): boolean {
-  return /dependency(?: .*?)?failed to start|container .*\bis unhealthy\b|health ?check .*\b(?:unhealthy|starting)\b|context deadline exceeded/i.test(
+  return /dependency(?: .*?)?failed to start|container .*\bis unhealthy\b|health ?check .*\b(?:unhealthy|starting)\b|context deadline exceeded|network is unreachable|connection (?:timed out|reset by peer)|i\/o timeout|temporary failure in name resolution|tls handshake timeout/i.test(
     text,
   );
 }
