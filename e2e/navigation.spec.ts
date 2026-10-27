@@ -37,7 +37,7 @@ test.describe('Navigation', () => {
       await expect(page.getByRole('tab', { name: 'Settings' })).toBeVisible();
     }).toPass({ timeout: 30000 });
 
-    await page.getByRole('link', { name: 'Companion Intelligence Logo' }).click();
+    await page.getByAltText('Companion Hub logo').click();
     await expect(page).toHaveURL(/\/home/);
     await expect(page.getByText('Disk space')).toBeVisible({ timeout: 30000 });
   });

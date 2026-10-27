@@ -37,7 +37,8 @@ const COMPLETE_ONBOARDING_RETRY_DELAY_MS = 500;
 /** Fixed id so repeat failures replace the notice instead of stacking, and success can clear it. */
 const COMPLETE_ONBOARDING_TOAST_ID = 'onboarding-complete-failed';
 
-const CI_SERVER_E_BRAIN_LOGO = '/brands/ci-server-e-brain.png';
+/** The tile is 40 px, so the small mark (`public/logo.svg`, the header's), not the full one. */
+const HUB_MARK = '/logo.svg';
 
 /**
  * Only transient failures are worth a second identical PATCH. A 4xx will not become a 2xx —
@@ -97,8 +98,8 @@ function Shell({ children }: { children: React.ReactNode }) {
             data-testid="onboarding-brand-mark"
           >
             <img
-              alt={t('ONBOARDING_CI_SERVER_E_BRAIN_LOGO_ALT')}
-              src={CI_SERVER_E_BRAIN_LOGO}
+              alt={t('ONBOARDING_HUB_LOGO_ALT')}
+              src={HUB_MARK}
               height={40}
               width={40}
               className="h-10 w-10 object-contain"

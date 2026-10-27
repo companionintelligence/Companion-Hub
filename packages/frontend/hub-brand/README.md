@@ -11,7 +11,7 @@ The Companion Hub's own mark, and every icon derived from it. This folder is the
 | [`brand/`](../brand) | CI Common | The Companion Intelligence company logo, vendored and `sha256`-stamped in [`ci-common.vendor.json`](../ci-common.vendor.json). | No. Refresh it with `node scripts/vendor-ci-common.mjs --from <ci-common checkout> --ref <tag>`, as [DEVELOPMENT_SETUP.md](../../../docs/DEVELOPMENT_SETUP.md) describes. |
 | `hub-brand/` (this folder) | This repo | The Companion Hub mark, app icon, favicons, and lockups. | No. Regenerate it with the scripts below. |
 
-Use the Hub mark wherever the product says "this app": the header, favicons, app icons, tray, setup, and bootstrap pages. Use the company logo from `brand/` where Companion Intelligence speaks as a company.
+Use the Hub mark wherever the product says "this app": the header, sign-in and onboarding screens, the mobile connect screen, favicons, app icons, tray, setup, and bootstrap pages. Use the company logo from `brand/` where Companion Intelligence speaks as a company (attribution, an About page). No served or bundled Hub screen does today, so `sync-brand.mjs` mirrors nothing from `brand/`.
 
 ## The mark
 
@@ -21,7 +21,7 @@ A bright core, the Companion, with six facets docked around it, the apps the Hub
 
 | File | Use |
 | --- | --- |
-| `logos/mark.svg` | Default, with a quarter of the mark's height as clear space. |
+| `logos/mark.svg` | Default, with a quarter of the mark's height as clear space. Served as `public/hub-mark.svg` for the mobile connect screen. |
 | `logos/mark-tight.svg` | Cropped to the disc. README, `public/hub.png`, `app-icon-source.png`. |
 | `logos/mark-small.svg` | Header icon, QR center, favicons, setup and bootstrap logos, tray. |
 | `logos/mark-mono.svg`, `logos/mark-small-mono.svg` | One ink (`currentColor`). |
