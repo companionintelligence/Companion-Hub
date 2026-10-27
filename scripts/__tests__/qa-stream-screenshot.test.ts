@@ -9,7 +9,7 @@ const source = readFileSync(join(import.meta.dirname, '..', 'qa-stream.ts'), 'ut
 const block = /\/\/ <screenshot-diagnostics>([\s\S]*?)\/\/ <\/screenshot-diagnostics>/.exec(source);
 if (!block) throw new Error('the <screenshot-diagnostics> block is missing from scripts/qa-stream.ts');
 const js = ts.transpileModule(block[1], { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
-const { screenshotDiagnostic } = new Function(`${js}\nreturn { screenshotDiagnostic };`)() as {
+const { screenshotDiagnostic, screenshotFailureKind } = new Function(`${js}\nreturn { screenshotDiagnostic, screenshotFailureKind };`)() as {
   screenshotDiagnostic: (input: {
     blank: boolean;
     timedOut: boolean;
@@ -18,6 +18,7 @@ const { screenshotDiagnostic } = new Function(`${js}\nreturn { screenshotDiagnos
     stderr: string;
     elapsedMs: number;
   }) => string;
+  screenshotFailureKind: (input: { attempted: boolean; hasScreenshot: boolean; backendHealthy: boolean | null }) => 'screenshot' | 'backend' | null;
 };
 
 const input = (overrides: Partial<Parameters<typeof screenshotDiagnostic>[0]> = {}) => ({
@@ -47,6 +48,13 @@ describe('qa-stream screenshot diagnostics', () => {
     expect(note).toMatch(/^screenshot failed: exit=1 \| /);
     expect(note).toContain('renderer failed');
     expect(note.length).toBeLessThan(220);
+  });
+
+  it('classifies an attempted screenshot failure and keeps backend degradation distinct', () => {
+    expect(screenshotFailureKind({ attempted: true, hasScreenshot: false, backendHealthy: null })).toBe('screenshot');
+    expect(screenshotFailureKind({ attempted: false, hasScreenshot: false, backendHealthy: null })).toBeNull();
+    expect(screenshotFailureKind({ attempted: true, hasScreenshot: false, backendHealthy: false })).toBe('backend');
+    expect(screenshotFailureKind({ attempted: true, hasScreenshot: true, backendHealthy: false })).toBe('backend');
   });
 });
 

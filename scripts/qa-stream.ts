@@ -363,6 +363,17 @@ function screenshotDiagnostic(input: {
   }
   return `screenshot failed: exit=${input.status ?? 'null'}${input.signal ? ` signal=${input.signal}` : ''}${errTail ? ` | ${errTail}` : ''}`;
 }
+
+/** Give screenshot/backend warnings a stable primary category without hiding either diagnosis. */
+function screenshotFailureKind(input: {
+  attempted: boolean;
+  hasScreenshot: boolean;
+  backendHealthy: boolean | null;
+}): 'screenshot' | 'backend' | null {
+  if (input.backendHealthy === false) return 'backend';
+  if (input.attempted && !input.hasScreenshot) return 'screenshot';
+  return null;
+}
 // </screenshot-diagnostics>
 
 function captureScreenshot(
@@ -1464,9 +1475,11 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
 
     // ── Screenshot ────────────────────────────────────────────
     const screenshotPath = join(SCREENSHOTS_DIR, `${appId}.png`);
+    let screenshotAttempted = false;
     if (SKIP_SCREENSHOT || config.no_gui) {
       result.hasScreenshot = false;
     } else {
+      screenshotAttempted = true;
       phase(appId, 'screenshot', 'Taking screenshot');
       const chromeBin = resolveChromiumBinary();
       if (chromeBin) {
@@ -1497,6 +1510,8 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         result.notes = result.notes ? `${result.notes} | no chromium on node` : 'no chromium on node';
       }
     }
+    const screenshotKind = screenshotFailureKind({ attempted: screenshotAttempted, hasScreenshot: result.hasScreenshot, backendHealthy: null });
+    if (screenshotKind) result.failKind = screenshotKind;
 
     // ── Benchmark ─────────────────────────────────────────────
     phase(appId, 'benchmark', 'Collecting metrics');
@@ -1545,6 +1560,8 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     if (!backend.healthy) {
       result.backendDown = backend.down;
       result.backendErrors = backend.errors;
+      result.failKind =
+        screenshotFailureKind({ attempted: screenshotAttempted, hasScreenshot: result.hasScreenshot, backendHealthy: false }) ?? 'backend';
     }
 
     // ── Score ─────────────────────────────────────────────────
@@ -1555,7 +1572,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     if (result.backendHealthy === false) {
       result.score = 'warn';
       result.notes =
-        `frontend serves but backend degraded — down: ${(result.backendDown as string[]).join(', ')}` +
+        `${result.notes ? `${result.notes} | ` : ''}frontend serves but backend degraded — down: ${(result.backendDown as string[]).join(', ')}` +
         (result.backendErrors ? ` | ${String(result.backendErrors).replace(/\s+/g, ' ').slice(0, 200)}` : '');
     }
   } catch (err) {
