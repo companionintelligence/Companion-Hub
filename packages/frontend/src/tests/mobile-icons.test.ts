@@ -9,8 +9,9 @@ import { getLogo } from '@/lib/theme/theme';
  *
  * Background: the Tauri iOS (`gen/apple/.../AppIcon.appiconset`) and Android
  * (`gen/android/.../res/mipmap-*`) icon sets are what actually get compiled
- * into the shipped apps. They are generated copies of the canonical CI brand
- * assets under `src-tauri/icons/`. A regression once left the whole `gen/` set
+ * into the shipped apps. They are generated from the Hub mark
+ * (`packages/frontend/hub-brand`, `pnpm --filter mobile icons`), and `src-tauri/icons/`
+ * holds a copy. A regression once left the whole `gen/` set
  * as the DEFAULT TAURI PLACEHOLDER (cyan/yellow "8") while `icons/` already
  * held the CI globe logo — so both simulators showed the wrong icon. These
  * tests assert, structurally:

@@ -64,7 +64,7 @@ Key behaviors agents must preserve:
 - The Hub container can be newer or older than the desktop shell, so `readStartupProgress` treats fields an older shell leaves out as false, null, or (for Docker) available.
 - Restart Hub needs `restart_hub_command` on the desktop IPC allowlist (`packages/desktop/src-tauri/permissions/allow-desktop-ipc.toml`). On an older shell without it, the screen starts the Hub instead.
 - When Docker doesn't answer (`daemon_unavailable` or `error`, not a missing CLI or a refused permission) and the shell reports `docker_engine: wsl-engine`, the Docker screen says WSL stopped the engine and offers **Start engine** (`start_wsl_engine_command`) instead of Docker Desktop's steps. An older shell reports no engine and gets Docker Desktop's steps, as before.
-- These screens show while the Hub that serves the page may be down, so `SetupPageShell` inlines its logo into the bundle (`src/assets/hub-logo.png?inline`, the file the bootstrap page ships) instead of loading `/hub.png` from the Hub.
+- These screens show while the Hub that serves the page may be down, so `SetupPageShell` inlines its logo into the bundle (`src/assets/hub-logo.png?inline`, the file the bootstrap page ships) instead of loading `/hub.png` from the Hub. Both files, `/hub.png`, and the favicons are mirrors of `packages/frontend/hub-brand/`, the Hub's own mark; `pnpm --filter frontend brand:sync` rewrites them and `brand:check` fails on drift. The `brand/` folder next to it is the vendored Companion Intelligence company logo, not the Hub's.
 
 Tests: `packages/frontend/src/components/hub-status/hub-status.test.tsx`, `packages/frontend/src/components/hub-status/__tests__/hub-status-wsl-engine.test.tsx`
 
