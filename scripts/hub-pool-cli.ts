@@ -663,6 +663,15 @@ export async function setPoolEnabledSetting(
   });
 }
 
+/** Require every paired peer to authenticate with its pinned Ed25519 identity. */
+export async function setPoolRequireSignedPeers(envFileName: string, poolRequireSignedPeers: boolean): Promise<PoolStatusResponse['settings']> {
+  return hubApiFetch(envFileName, '/inference/pool/settings', {
+    method: 'PATCH',
+    body: JSON.stringify({ poolRequireSignedPeers }),
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
 /**
  * Set this node's prompt ceiling, or clear it with `null`. A PATCH of the one field, like the kill
  * switches above, so nothing else in the stored settings is rewritten.

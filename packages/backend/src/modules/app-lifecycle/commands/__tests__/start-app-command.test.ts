@@ -35,10 +35,11 @@ vi.mock('node:fs', async () => ({
   },
 }));
 
-vi.mock('@ci-hub/common/schemas', async (importOriginal) => ({
-  ...((await importOriginal()) as any),
-  parseComposeJson: vi.fn().mockReturnValue({ services: [], overrides: [] }),
-}));
+// An installed compose is read with parseInstalledComposeJson: one stub stands for both parses.
+vi.mock('@ci-hub/common/schemas', async (importOriginal) => {
+  const parse = vi.fn().mockReturnValue({ services: [], overrides: [] });
+  return { ...((await importOriginal()) as any), parseComposeJson: parse, parseInstalledComposeJson: parse };
+});
 
 vi.mock('@/modules/inference/host-rocm-availability', () => ({
   isRocmKfdPassthroughAvailable: vi.fn().mockResolvedValue(true),
@@ -95,6 +96,8 @@ describe('StartAppCommand — pull policy', () => {
     traefikConfigService.regenerateTraefikConfig.mockResolvedValue();
 
     const marketplaceService = mock<MarketplaceService>();
+
+    marketplaceService.listedAppUrns.mockResolvedValue([]);
     marketplaceService.copyAppFromRepoToInstalled.mockResolvedValue();
 
     const subnetManagerMock = mock<SubnetManagerService>();
@@ -106,6 +109,8 @@ describe('StartAppCommand — pull policy', () => {
     ]);
 
     const appsRepository = mock<AppsRepository>();
+
+    appsRepository.getApps.mockResolvedValue([]);
     appsRepository.getAppByUrn.mockResolvedValue({
       id: 1,
       subnet: '10.128.10.0/24',

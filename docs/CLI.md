@@ -635,6 +635,8 @@ cihub pool log [env] [--limit N]              # recent routing decisions, failov
 cihub pool enable [env] | cihub pool disable  # flip the persisted kill switch
 cihub pool enable --outbound | --inbound      # ...or just one direction
 cihub pool peer-enable <id> | peer-disable    # take one peer in or out of the pool
+cihub pool require-signed [env] [--yes]       # require pinned peer identities (refuses while any peer is legacy)
+cihub pool allow-bearer [env] [--yes]         # recovery switch: allow the legacy bearer path again
 ```
 
 | Flag | Effect |
@@ -1317,8 +1319,8 @@ not the one requested**; the dry run lists every file it would move, by name, an
 would install (`all`) or remove (`tailnet`, `local`) before the restart.
 
 Two refusals, both facts about the machine rather than failures: a node whose `:11434` belongs to a
-**user-scope** unit (beta-1 runs `ollama-local.service` under the `ci` user's `systemd --user`, with
-the system unit disabled) is skipped with the reason, because `systemctl enable --now ollama` there
+**user-scope** unit (beta-1 ran `ollama-local.service` under the `ci` user's `systemd --user`, with
+the system unit disabled, until 2026-10-23) is skipped with the reason, because `systemctl enable --now ollama` there
 starts a second daemon that collides on the port — and ollama.com's own installer runs that command,
 so the check happens *before* anything is downloaded. And `--bind tailnet` on a node with no tailnet
 address fails rather than silently binding somewhere else.
@@ -1339,8 +1341,9 @@ bind: ollama-tunnel.service is active under ci's systemd --user, but the system 
 ```
 
 Everywhere else the name refuses as it always did, on purpose. **Nothing listening** on `:11434`
-beside an active `ollama*` user unit is still a skip: that is exactly what beta-1 looks like for
-the second between `systemctl --user restart ollama-local` stopping the daemon and the new one
+beside an active `ollama*` user unit is still a skip: that is exactly what a user-unit node (beta-1
+until 2026-10-23) looks like for the second between `systemctl --user restart ollama-local` stopping
+the daemon and the new one
 binding, and the probe's `systemctl --user list-units` rows carry no `OLLAMA_HOST` that could tell a
 tunnel from a daemon that has not bound yet — so a free port is not treated as proof. Something
 listening whose owner the probe **cannot see** (no pid, no cgroup — an `ss` before iproute2 5.10)
@@ -1485,7 +1488,7 @@ still applied — if systemd reports it never loaded the file (a previous run cu
 `daemon-reload`), it is reloaded and Ollama restarted; otherwise the read-back fails the node as
 above. The dry run prints the same plan — what is in effect now, whether the file would change, or
 what the daemon resolves instead — and runs nothing. A node whose `:11434` belongs to a user-scope unit (beta-1's
-`ollama-local.service`) is skipped with the reason: a drop-in under `ollama.service.d/` configures
+`ollama-local.service` until 2026-10-23) is skipped with the reason: a drop-in under `ollama.service.d/` configures
 nothing there, and that unit carries its own environment. A user-scope unit that merely *looks* like
 one (core-2's `ollama-tunnel.service`, an ssh forward beside a **serving** system unit) is not a
 skip — [the listener decides](#ollamas-bind-one-file-read-back); the same unit with nobody on the

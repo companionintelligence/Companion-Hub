@@ -318,6 +318,26 @@ describe('handleAppSseEvent', () => {
     expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ['getCustomDomains'] });
   });
 
+  // #2101: another tab's install has no row during its checks. The event says what is under way, so
+  // every open page shows it at once, and the read that follows brings the rest.
+  it('marks the operation an install began on the app at once, and reads the app again', () => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, { event: 'operation_change', appUrn: 'audiomass:ci-marketplace', operation: 'install' });
+
+    const [key, update] = queryClient.setQueryData.mock.calls[0] as [unknown, (current: unknown) => unknown];
+    expect(key).toEqual(['getApp', 'audiomass:ci-marketplace']);
+    expect(update({ app: null, info: { id: 'audiomass' } })).toEqual({ app: null, info: { id: 'audiomass' }, operation: { command: 'install' } });
+    expect(update(undefined)).toBeUndefined();
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['getApp', 'audiomass:ci-marketplace'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['getInstalledApps'] });
+  });
+
+  it('clears the operation when the install ends with nothing under way', () => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, { event: 'operation_change', appUrn: 'audiomass:ci-marketplace', operation: null });
+
+    const [, update] = queryClient.setQueryData.mock.calls[0] as [unknown, (current: unknown) => unknown];
+    expect(update({ app: null, operation: { command: 'install' } })).toEqual({ app: null, operation: undefined });
+  });
+
   it('leaves the custom-domain listing alone on other lifecycle events', () => {
     handleAppSseEvent(queryClient as unknown as QueryClient, {
       event: 'restart_success',

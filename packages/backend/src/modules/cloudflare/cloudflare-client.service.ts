@@ -7,6 +7,7 @@ import { DockerService } from '../docker/docker.service';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
 import type { AvailableCustomDomain, AvailableDomain, AvailableDomainsResponse, TunnelCustomDomain } from '@ci-hub/common/types';
 import { parseAvailableCustomDomains, parseTunnelCustomDomains } from '@ci-hub/common/types';
+import type { PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
 import axios, { AxiosInstance, type AxiosResponse } from 'axios';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
@@ -15,7 +16,7 @@ import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
 import { describeNetworkError } from '@/common/helpers/network-error';
 import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
 import { PortalClientService } from '@/core/portal/portal-client.service';
-import { type DnsAvailability, readDnsAvailability } from './dns-availability';
+import { type PortalDnsAvailability, readDnsAvailability } from './dns-availability';
 
 /** How long `getDeviceApplications` waits for the Portal before it counts as no answer. */
 const DEVICE_APPLICATIONS_TIMEOUT_MS = 15_000;
@@ -97,6 +98,14 @@ export interface AppInfo {
    * routes follow desktop port remapping.
    */
   hubListenPort?: number;
+  /**
+   * Marks an app made with "Expose a port", with the port on this machine it
+   * forwards to. `localPort` is Traefik's port for every app, so without these
+   * Companion Portal cannot tell a reinstalled Hub what to put back (#2131).
+   * A Portal that predates them ignores them.
+   */
+  kind?: typeof PORT_EXPOSE_KIND;
+  upstreamPort?: number;
 }
 
 /**
@@ -188,6 +197,23 @@ export interface PortalDeviceApplication {
   slug: string;
   port: number;
   publicDomain: string | null;
+  /**
+   * The registry wrote the row: a port exposed This Machine Only or on the
+   * Private VPN. The tunnel sync never releases such a row, so a Hub that does
+   * not get the app back removes it itself (#2134). Absent from a Portal that
+   * predates it, like the three fields below.
+   */
+  pinned?: boolean;
+  /** `port-expose` for an app made with "Expose a port", else null. */
+  kind?: string | null;
+  /** The port on the Hub machine an exposed port forwards to. */
+  upstreamPort?: number | null;
+  /**
+   * Where an exposed port was reachable. The Portal records it from the route
+   * that wrote the row: `cloudflare` only from the tunnel sync, `local` or
+   * `tailscale` only from the registry.
+   */
+  exposureMode?: string | null;
 }
 
 @Injectable()
@@ -736,7 +762,7 @@ export class CloudflareClientService {
     }
   }
 
-  async checkDnsAvailability(subdomain: string, domain?: string): Promise<DnsAvailability> {
+  async checkDnsAvailability(subdomain: string, domain?: string): Promise<PortalDnsAvailability> {
     try {
       const response = await this.client.get('cloudflare/check-dns-availability', {
         ...this.getRequestConfig(),

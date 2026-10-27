@@ -163,6 +163,17 @@ describe('PortExposeService', () => {
       ).rejects.toMatchObject({ message: 'CUSTOM_APP_ERROR_DUPLICATE_NAME' });
     });
 
+    // `my-workload` here is `my-workload-_user`, the id of app `my` from a store `workload-_user`.
+    it('refuses a name whose app id an installed app already has, before anything is written', async () => {
+      appsRepository.getApps.mockResolvedValue([{ appName: 'my', appStoreSlug: 'workload-_user' }] as any);
+
+      await expect(service.createPortExposeApp({ name: 'my-workload', port: 8080, exposureMode: 'local' })).rejects.toMatchObject({
+        message: 'APP_ERROR_APP_ID_IN_USE',
+      });
+      expect(filesystem.createDirectories).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
     it('does not publish a port the Hub cannot open', async () => {
       vi.mocked(assertHubCanReachPort).mockRejectedValueOnce(
         new TranslatableError('PORT_EXPOSE_PORT_UNREACHABLE', { port: '18765', host: 'host.docker.internal' }, 400),
@@ -241,7 +252,12 @@ describe('PortExposeService', () => {
       ).rejects.toMatchObject({ message: 'APP_ERROR_PORT_ALREADY_IN_USE' });
     });
 
-    it('removes portal registry entry when switching from local to cloudflare', async () => {
+    /*
+     * Switching to Public Web under the same subdomain: the tunnel sync claims the very row the registry
+     * pinned, so a registry `remove` sent after it released the row and the record the sync had just
+     * made (#2144). The old entry has to go first.
+     */
+    it('removes the This Machine Only entry before the public sync claims its name', async () => {
       deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
 
       await service.updatePortExposeApp('my-workload:_user', {
@@ -251,10 +267,100 @@ describe('PortExposeService', () => {
         publicDomain: 'example.com',
       });
 
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledTimes(1);
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith({
+        organizationId: 'org-1',
+        apps: [{ name: 'my-workload', slug: 'my-workload', port: 8080, publicDomain: undefined, remove: true }],
+      });
+      expect(portalClient.postDeviceApplicationsRegistry.mock.invocationCallOrder[0]).toBeLessThan(
+        exposureSyncService.syncExposurePublic.mock.invocationCallOrder[0] ?? 0,
+      );
+    });
+
+    // Built from the updated row, the `remove` named the new subdomain and the old entry stayed (#2144).
+    it('removes the old entry under its old subdomain when the switch picks a new one', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      const updatedApp = { ...existingApp, exposureMode: 'cloudflare', localSubdomain: 'my-workload-web', publicDomain: 'example.com' };
+      appsRepository.getAppByUrn.mockResolvedValueOnce(existingApp as any).mockResolvedValue(updatedApp as any);
+
+      await service.updatePortExposeApp('my-workload:_user', {
+        port: 8080,
+        exposureMode: 'cloudflare',
+        localSubdomain: 'my-workload-web',
+        publicDomain: 'example.com',
+      });
+
+      const posted = portalClient.postDeviceApplicationsRegistry.mock.calls.map(([payload]) => payload.apps[0]);
+      expect(posted).toEqual([expect.objectContaining({ slug: 'my-workload', remove: true })]);
+    });
+
+    // The registry removes by slug, so a public app on the old subdomain would lose its address with it.
+    it('leaves the old entry alone when a public app here still serves on its subdomain', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      appsRepository.getAppByUrn.mockResolvedValueOnce(existingApp as any).mockResolvedValue({ ...existingApp, localSubdomain: 'renamed' } as any);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([{ appName: 'public-app' }] as any);
+
+      await service.updatePortExposeApp('my-workload:_user', { port: 8080, exposureMode: 'local', localSubdomain: 'renamed' });
+
+      expect(appsRepository.getAppsByLocalSubdomain).toHaveBeenCalledWith('my-workload', 7);
+      const posted = portalClient.postDeviceApplicationsRegistry.mock.calls.map(([payload]) => payload.apps[0]);
+      expect(posted).toEqual([expect.objectContaining({ slug: 'renamed', exposureMode: 'local' })]);
+    });
+
+    // A subdomain that sanitizes to nothing is stored empty and registered under the app's name.
+    it('removes nothing when the subdomain sanitizes to nothing and the entry keeps the app name', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      const unnamedApp = { ...existingApp, localSubdomain: '' };
+      appsRepository.getAppByUrn.mockResolvedValue(unnamedApp as any);
+
+      await service.updatePortExposeApp('my-workload:_user', { port: 8080, exposureMode: 'local', localSubdomain: '---' });
+
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledTimes(1);
       expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith(
-        expect.objectContaining({
-          apps: [expect.objectContaining({ remove: true })],
-        }),
+        expect.objectContaining({ apps: [expect.objectContaining({ slug: 'my-workload', exposureMode: 'local' })] }),
+      );
+    });
+
+    it('updates the entry in place when a This Machine Only port moves to the Private VPN', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      appsRepository.getAppByUrn.mockResolvedValueOnce(existingApp as any).mockResolvedValue({ ...existingApp, exposureMode: 'tailscale' } as any);
+
+      await service.updatePortExposeApp('my-workload:_user', { port: 8080, exposureMode: 'tailscale' });
+
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledTimes(1);
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith({
+        organizationId: 'org-1',
+        apps: [{ name: 'my-workload', slug: 'my-workload', port: 8080, publicDomain: undefined, kind: PORT_EXPOSE_KIND, exposureMode: 'tailscale' }],
+      });
+    });
+
+    it('moves the entry when a This Machine Only port changes subdomain', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      appsRepository.getAppByUrn.mockResolvedValueOnce(existingApp as any).mockResolvedValue({ ...existingApp, localSubdomain: 'renamed' } as any);
+
+      await service.updatePortExposeApp('my-workload:_user', { port: 8080, exposureMode: 'local', localSubdomain: 'renamed' });
+
+      const posted = portalClient.postDeviceApplicationsRegistry.mock.calls.map(([payload]) => payload.apps[0]);
+      expect(posted).toEqual([
+        expect.objectContaining({ slug: 'my-workload', remove: true }),
+        expect.objectContaining({ slug: 'renamed', exposureMode: 'local' }),
+      ]);
+    });
+
+    // Public to This Machine Only: the sync releases the public row, then the registry pins the new one.
+    it('registers a public port that moves to This Machine Only after the sync, removing nothing', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      const publicApp = { ...existingApp, exposureMode: 'cloudflare', localSubdomain: 'my-workload', publicDomain: 'example.com' };
+      appsRepository.getAppByUrn.mockResolvedValueOnce(publicApp as any).mockResolvedValue(existingApp as any);
+
+      await service.updatePortExposeApp('my-workload:_user', { port: 8080, exposureMode: 'local' });
+
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledTimes(1);
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith(
+        expect.objectContaining({ apps: [expect.not.objectContaining({ remove: true })] }),
+      );
+      expect(exposureSyncService.syncExposurePublic.mock.invocationCallOrder[0]).toBeLessThan(
+        portalClient.postDeviceApplicationsRegistry.mock.invocationCallOrder[0] ?? 0,
       );
     });
   });
@@ -277,6 +383,148 @@ describe('PortExposeService', () => {
           apps: [expect.objectContaining({ remove: true })],
         }),
       );
+    });
+  });
+
+  /*
+   * A port exposed This Machine Only or on the Private VPN reaches Companion Portal only through the
+   * registry, so that is where its kind and mode go for a reinstalled Hub to put it back (#2131).
+   */
+  describe('registry entries for exposed ports', () => {
+    const portExposeRow = (appName: string, exposureMode: string, port: number | null = 8091, extra: Record<string, unknown> = {}) =>
+      ({
+        appName,
+        appStoreSlug: '_user',
+        localSubdomain: appName,
+        exposureMode,
+        port,
+        publicDomain: null,
+        config: { kind: PORT_EXPOSE_KIND },
+        ...extra,
+      }) as any;
+
+    beforeEach(() => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+    });
+
+    it('sends the kind and mode when a This Machine Only port is exposed', async () => {
+      appsRepository.getAppByUrn.mockResolvedValueOnce(null as any).mockResolvedValue(portExposeRow('notes', 'local'));
+
+      await service.createPortExposeApp({ name: 'notes', port: 8091, exposureMode: 'local' });
+
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith({
+        organizationId: 'org-1',
+        apps: [{ name: 'notes', slug: 'notes', port: 8091, publicDomain: undefined, kind: PORT_EXPOSE_KIND, exposureMode: 'local' }],
+      });
+    });
+
+    it('names the row and nothing more when it removes one', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(portExposeRow('notes', 'tailscale'));
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(null as any);
+
+      await service.beforePortExposeUninstall('notes:_user');
+
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith({
+        organizationId: 'org-1',
+        apps: [{ name: 'notes', slug: 'notes', port: 8091, publicDomain: undefined, remove: true }],
+      });
+    });
+
+    it('sends every This Machine Only and Private VPN port at once and nothing else', async () => {
+      appsRepository.getApps.mockResolvedValue([
+        portExposeRow('notes', 'tailscale'),
+        portExposeRow('dev', 'local', 8092),
+        portExposeRow('game', 'cloudflare', 3080),
+        portExposeRow('broken', 'local', null),
+        // Its entry was removed when the uninstall began. Sent again, it would stay pinned once the app is gone.
+        portExposeRow('gone', 'local', 8093, { status: 'uninstalling' }),
+        { ...portExposeRow('wordpress', 'local', 8080), appStoreSlug: 'ci-marketplace', config: {} },
+      ]);
+
+      await service.syncAllPortalRegistryEntries();
+
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledTimes(1);
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith({
+        organizationId: 'org-1',
+        apps: [
+          { name: 'notes', slug: 'notes', port: 8091, publicDomain: undefined, kind: PORT_EXPOSE_KIND, exposureMode: 'tailscale' },
+          { name: 'dev', slug: 'dev', port: 8092, publicDomain: undefined, kind: PORT_EXPOSE_KIND, exposureMode: 'local' },
+        ],
+      });
+    });
+
+    // A save through the generic config route rewrites the stored form without `kind`.
+    it('finds an exposed port by its config.json when its stored form lost the kind', async () => {
+      appsRepository.getApps.mockResolvedValue([{ ...portExposeRow('notes', 'tailscale'), config: {} }]);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ kind: PORT_EXPOSE_KIND } as any);
+
+      await service.syncAllPortalRegistryEntries();
+
+      expect(appFilesManager.getInstalledAppInfo).toHaveBeenCalledWith('notes:_user');
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith(
+        expect.objectContaining({ apps: [expect.objectContaining({ name: 'notes', kind: PORT_EXPOSE_KIND, exposureMode: 'tailscale' })] }),
+      );
+    });
+
+    it('sends nothing when there is nothing to send, or the Hub is not registered', async () => {
+      await service.syncAllPortalRegistryEntries();
+
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null as any);
+      appsRepository.getApps.mockResolvedValue([portExposeRow('notes', 'tailscale')]);
+      await service.syncAllPortalRegistryEntries();
+
+      expect(portalClient.postDeviceApplicationsRegistry).not.toHaveBeenCalled();
+    });
+  });
+
+  /*
+   * The tunnel sync never releases a row the registry pinned, so after a reinstall the entry for a port
+   * the restore could not bring back stayed on the Portal for good (#2134).
+   */
+  describe('releaseUnrestoredRegistryEntries', () => {
+    const portalEntry = (name: string, extra: Record<string, unknown> = {}) =>
+      ({ id: `id-${name}`, name, slug: name, port: 8091, publicDomain: null, pinned: true, ...extra }) as any;
+
+    beforeEach(() => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+    });
+
+    it('removes the pinned entries this Hub has no app for, in one request', async () => {
+      appsRepository.getApps.mockResolvedValue([{ appName: 'wordpress', appStoreSlug: 'ci-marketplace', localSubdomain: null } as any]);
+
+      const released = await service.releaseUnrestoredRegistryEntries([
+        portalEntry('notes'),
+        portalEntry('old', { port: 8092 }),
+        portalEntry('game', { pinned: false }),
+        portalEntry('legacy', { pinned: undefined }),
+      ]);
+
+      expect(released).toEqual(['notes', 'old']);
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith({
+        organizationId: 'org-1',
+        apps: [
+          { name: 'notes', slug: 'notes', port: 8091, remove: true },
+          { name: 'old', slug: 'old', port: 8092, remove: true },
+        ],
+      });
+    });
+
+    // The registry removes by slug. A public app on the same subdomain shares the row: removing it would take that app's address.
+    it('leaves an entry whose name or slug an app here uses', async () => {
+      appsRepository.getApps.mockResolvedValue([
+        { appName: 'notes', appStoreSlug: '_user', localSubdomain: 'notes' } as any,
+        { appName: 'blog', appStoreSlug: 'ci-marketplace', localSubdomain: 'myblog' } as any,
+        { appName: 'wiki', appStoreSlug: 'ci-marketplace', localSubdomain: null } as any,
+      ]);
+
+      const released = await service.releaseUnrestoredRegistryEntries([
+        portalEntry('notes'),
+        portalEntry('blogpin', { slug: 'myblog' }),
+        portalEntry('wikipin', { slug: 'wiki-ci-marketplace' }),
+      ]);
+
+      expect(released).toEqual([]);
+      expect(portalClient.postDeviceApplicationsRegistry).not.toHaveBeenCalled();
     });
   });
 });

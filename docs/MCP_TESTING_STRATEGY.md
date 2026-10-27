@@ -123,10 +123,10 @@ The curated set, each **verified `→ok` against the live container** (2026-06-1
 
 | Probe class | Apps (tool) | Runs |
 |-------------|-------------|------|
-| **offline, read-only, no-cred** | `filesystem-mcp` (`list_directory`), `chess-mcp` (`new_game`), `brewers-almanack-mcp` (`search_styles`), `git-mcp` (`git_status` on the boot-`git init`'d scratch repo), `sqlite-mcp` (`list_tables`), `n8n-mcp` (`tools_documentation`) | every sweep |
-| **network-touching** (`net:true`) | `fetch-mcp` (`fetch`), `youtube-transcript-mcp` (`get_video_info`), `lego-oracle-mcp` (`browse_themes`) | only with `QA_MCP_PROBE_NET=1` |
+| **offline, read-only, no-cred** | `filesystem-mcp` (`list_directory`), `chess-mcp` (`new_game`), `brewers-almanack-mcp` (`search_styles`), `git-mcp` (`git_status` on the boot-`git init`'d scratch repo), `sqlite-mcp` (`list_tables`), `n8n-mcp` (`tools_documentation`), `memory-mcp` (`read_graph`), `sequential-thinking-mcp` (`sequentialthinking`), `time-mcp` (`get_current_time`), `everything-mcp` (`echo`) | every sweep |
+| **network-touching** (`net:true`) | `fetch-mcp` (`fetch`), `youtube-transcript-mcp` (`get_video_info`), `lego-oracle-mcp` (`browse_themes`), `brave-search-mcp` (`brave_web_search`) | only with `QA_MCP_PROBE_NET=1` |
 | **backing-service** (`BACKING_SERVICES`) | `postgres-mcp` (`query "SELECT 1"` against a `postgres:16-alpine` sidecar) | every sweep, self-gates to backing-up |
-| **no probe — every tool needs creds** | `reddit-mcp` (all tools hit the authed Reddit API → only `tool-error` without keys), plus the secret/host-gated apps below | handshake is the ceiling |
+| **no probe — every tool needs creds** | `reddit-mcp`, `slack-mcp` (all tools hit authed APIs → only `tool-error` without keys), plus the secret/host-gated apps below | handshake is the ceiling |
 
 > The probe args are chosen against each tool's **real** `inputSchema.required` (read live, not
 > from the stripped manifest schema). Regression guard: the previous `brewers-almanack-mcp` probe
@@ -222,10 +222,10 @@ live `tools/list` is a superset of its declared manifest — i.e. **no manifest 
 catalog** (the `github-mcp` refresh was the last). Re-run it after any catalog bump; it's the
 coverage signal.
 
-**19 pass** — boots + handshake + manifest ⊇ declared:
-`brewers-almanack` · `chess` · `doordash` · `excalidraw` · `fetch` · `filesystem` · `git` ·
-`github` (67 tools) · `lego-oracle` · `n8n` · `notion` (22) · `obsidian` · `onlyoffice` (23) ·
-`playwright` (25) · `postgres` · `reddit` · `sqlite` · `unreal-engine` (35) · `youtube-transcript`.
+**25 pass** — boots + handshake + manifest ⊇ declared:
+`brave-search` (2) · `brewers-almanack` · `chess` · `doordash` · `everything` (16) · `excalidraw` · `fetch` · `filesystem` · `git` ·
+`github` (67 tools) · `lego-oracle` · `memory` (9) · `n8n` · `notion` (22) · `obsidian` · `onlyoffice` (23) ·
+`playwright` (25) · `postgres` · `reddit` · `sequential-thinking` (1) · `slack` (8) · `sqlite` · `time` (2) · `unreal-engine` (35) · `youtube-transcript`.
 
 **6 skip** — un-testable headless, correctly classified (not failures):
 

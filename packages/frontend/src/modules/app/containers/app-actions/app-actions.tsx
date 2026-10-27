@@ -1082,7 +1082,12 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       <StopDialog isOpen={stopDisclosure.isOpen} onClose={stopDisclosure.close} info={info} />
       <ForceStopDialog isOpen={forceStopDisclosure.isOpen} onClose={forceStopDisclosure.close} info={info} />
       <RestartDialog isOpen={restartDisclosure.isOpen} onClose={restartDisclosure.close} info={info} />
-      <UninstallDialog isOpen={uninstallDisclosure.isOpen} onClose={uninstallDisclosure.close} info={info} />
+      <UninstallDialog
+        isOpen={uninstallDisclosure.isOpen}
+        onClose={uninstallDisclosure.close}
+        info={info}
+        canReset={shownSecondaryActions.some((action) => action.key === 'reset')}
+      />
       <ResetDialog isOpen={resetAppDisclosure.isOpen} onClose={resetAppDisclosure.close} info={info} />
       <DisconnectMemoryDialog
         isOpen={disconnectMemoryDisclosure.isOpen}

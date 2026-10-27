@@ -139,13 +139,13 @@
     },
     "test": {
       "cache": true,
-      "dependsOn": ["^test"],
+      "dependsOn": ["^test", "^build"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
       "outputs": []
     },
     // `test` is cached, so a test that reads a file outside its package must declare it, or turbo replays
     // a stale green after that file changes. backend: the root and desktop-resource compose files (the
-    // edge, Traefik and storage guard tests), the favicon under packages/frontend/brand, and the scripts/
+    // edge, Traefik and storage guard tests), the favicon under packages/frontend/hub-brand, and the scripts/
     // and e2e/ modules it imports. frontend: the desktop capabilities and the mobile Tauri project. Both:
     // the root tsconfig.json (backend's extends it; vite-tsconfig-paths and esbuild read it) and, for
     // frontend, the sibling packages' tsconfig.json. Found by tracing fs reads over a full run
@@ -159,7 +159,7 @@
         "$TURBO_ROOT$/tsconfig.json",
         "$TURBO_ROOT$/docker-compose*.yml",
         "$TURBO_ROOT$/packages/desktop/src-tauri/resources/**",
-        "$TURBO_ROOT$/packages/frontend/brand/**",
+        "$TURBO_ROOT$/packages/frontend/hub-brand/**",
         "$TURBO_ROOT$/scripts/*.ts",
         "$TURBO_ROOT$/scripts/lib/**",
         "$TURBO_ROOT$/e2e/helpers/**",

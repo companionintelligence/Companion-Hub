@@ -23,7 +23,15 @@ describe('Memory connect with two Hub people', () => {
   let service: MemoryConnectService;
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
   const exchange = { exchange: vi.fn(), revoke: vi.fn(), rotate: vi.fn(), isKeyValid: vi.fn() };
-  const lifecycle = { restartApp: vi.fn(), restartAppAndWait: vi.fn(), regenerateAppEnv: vi.fn() };
+  // A connect or disconnect holds the app first and restarts it under that hold.
+  const held = { restart: vi.fn(), restartAndWait: vi.fn() };
+  const lifecycle = {
+    restartApp: vi.fn(),
+    restartAppAndWait: vi.fn(),
+    regenerateAppEnv: vi.fn(),
+    withAppHeld: vi.fn(async (_appUrn: string, run: (app: typeof held) => Promise<unknown>) => run(held)),
+    withAppHeldUnlessBusy: vi.fn(async (_appUrn: string, run: (app: typeof held) => Promise<unknown>) => ({ result: await run(held) })),
+  };
   const pending = { create: vi.fn(), consume: vi.fn(), recordOutcome: vi.fn() };
 
   beforeAll(async () => {
@@ -59,8 +67,8 @@ describe('Memory connect with two Hub people', () => {
     vi.clearAllMocks();
     exchange.revoke.mockResolvedValue(true);
     exchange.isKeyValid.mockResolvedValue(true);
-    lifecycle.restartApp.mockResolvedValue({ requestId: 'r' });
-    lifecycle.restartAppAndWait.mockResolvedValue(true);
+    held.restart.mockResolvedValue({ requestId: 'r' });
+    held.restartAndWait.mockResolvedValue(true);
   });
 
   /** The consent round trip as the callback sees it: CI Memory hands back a code for `key`. */
@@ -89,8 +97,8 @@ describe('Memory connect with two Hub people', () => {
     expect(ui).toMatchObject({ state: 'unconfigured', connectedByOther: true });
     expect(gate.state).toBe('unconfigured');
     expect(exchange.revoke).not.toHaveBeenCalled();
-    expect(lifecycle.restartApp).not.toHaveBeenCalled();
-    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
+    expect(held.restart).not.toHaveBeenCalled();
+    expect(held.restartAndWait).not.toHaveBeenCalled();
     expect((await rowOf(2)).state).toBe('connected');
 
     // "Not now" on OpenClaw's gate makes person 1's row the app's newest. The app keeps person 2's key.
@@ -132,7 +140,7 @@ describe('Memory connect with two Hub people', () => {
     expect(result).toEqual({ next: '/?memoryConnect=previous_removed', error: true });
     expect(await rowOf(2)).toMatchObject({ state: 'unconfigured', encryptedKey: null });
     expect(await connections.getInjectableCreds(APP)).toBeNull();
-    expect(lifecycle.restartApp).toHaveBeenCalled();
+    expect(held.restart).toHaveBeenCalled();
   });
 
   it("treats a connection with no Hub person on it as nobody's", async () => {

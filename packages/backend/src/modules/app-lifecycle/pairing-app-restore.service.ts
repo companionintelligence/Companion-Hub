@@ -1,4 +1,5 @@
 import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppStoreService } from '@/modules/app-stores/app-store.service';
@@ -7,7 +8,7 @@ import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { isOperational } from '@/modules/registration/registration-state';
-import { IN_FLIGHT_STATUSES } from './app-rehydration';
+import { CatalogStillDownloadingError, IN_FLIGHT_STATUSES, restoreRanSince } from './app-rehydration';
 import { AppRehydrationService } from './app-rehydration.service';
 import { DeviceKeyRefreshService } from './device-key-refresh.service';
 import { ExposureSyncService } from './exposure-sync.service';
@@ -18,6 +19,7 @@ import {
   hasRestoreIntent,
   readPairingAppCheck,
   readRehydrationState,
+  startRestoreNotice,
   writePairingAppCheck,
   writeRestoreIntent,
 } from './registration-recovery-state';
@@ -71,9 +73,12 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
   /** How long a restore's installs may hold app sync before it runs anyway. */
   static readonly SETTLE_DEADLINE_MS = 2 * 60 * 60_000;
   static readonly CATALOG_PULL_COOLDOWN_MS = 10 * 60_000;
+  /** The least time between two passes asked for by someone waiting on the answer (`requestCheck`). */
+  static readonly REQUEST_MIN_INTERVAL_MS = 5_000;
 
   private timer: NodeJS.Timeout | null = null;
   private checkInFlight: Promise<PairingAppCheckOutcome> | null = null;
+  private lastRequestedAt = 0;
   private failures = 0;
   private retryAt = 0;
   /** Bumped by {@link forget}. A pass that began before it neither writes a check nor builds a backoff. */
@@ -95,6 +100,7 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
     private readonly appRehydrationService: AppRehydrationService,
     private readonly exposureSyncService: ExposureSyncService,
     private readonly deviceKeyRefreshService: DeviceKeyRefreshService,
+    private readonly moduleRef: ModuleRef,
   ) {}
 
   onApplicationBootstrap() {
@@ -135,12 +141,15 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
   /**
    * Drop the backoff an earlier pairing's check built up, for a factory reset that removed that check.
    * Left in place, it held the next pairing's check for up to five minutes. A pass still waiting on the
-   * Portal when the reset ran would otherwise write the check back, naming the old device's apps.
+   * Portal when the reset ran would otherwise write the check back, naming the old device's apps. The
+   * catalog download's cooldown goes too: the reset emptied `repos/`. A pairing within ten minutes of the
+   * last download found the catalog empty and could not start another.
    */
   forget(): void {
     this.generation++;
     this.failures = 0;
     this.retryAt = 0;
+    this.lastCatalogPullAt = 0;
   }
 
   /** One pass over the pending check. Concurrent callers share the pass under way. */
@@ -152,6 +161,23 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
     }
 
     return this.checkInFlight;
+  }
+
+  /**
+   * A pass now, for someone signed in and waiting on the answer, rather than at the next timer pass.
+   * At most one every `REQUEST_MIN_INTERVAL_MS`: an open restore page asks every 2 s, and a check that
+   * waits on apps to settle reads the device's apps from the Portal on every pass.
+   */
+  requestCheck(): void {
+    const now = Date.now();
+    if (now - this.lastRequestedAt < PairingAppRestoreService.REQUEST_MIN_INTERVAL_MS) {
+      return;
+    }
+    this.lastRequestedAt = now;
+
+    void this.runCheck().catch((error) => {
+      this.logger.error(`[PairingAppRestore] Check failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
   }
 
   private async check(): Promise<PairingAppCheckOutcome> {
@@ -191,9 +217,7 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
     }
 
     const rehydration = await readRehydrationState();
-    const ranForThisPairing = Boolean(rehydration?.completedAt && Date.parse(rehydration.completedAt) >= Date.parse(pending.markedAt));
-
-    if (!ranForThisPairing) {
+    if (!restoreRanSince(rehydration, pending.markedAt)) {
       try {
         const result = await this.appRehydrationService.executeRehydrate({
           // A finished run left from an earlier pairing is not this one's.
@@ -217,7 +241,16 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
         }
 
         this.logger.info(`[PairingAppRestore] ${result.message}`);
+
+        // A factory reset (`forget`) came while the restore ran, which can wait a minute on a catalog
+        // download. Releasing now would clear the next pairing's check and sync before its own restore.
+        if (this.checkGeneration !== this.generation) {
+          return 'none';
+        }
       } catch (error) {
+        if (error instanceof CatalogStillDownloadingError) {
+          return this.hold('the apps could not be restored', error, false);
+        }
         await this.pullCatalogIfEmpty();
         return this.hold('the apps could not be restored', error);
       }
@@ -236,9 +269,47 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
       );
     }
 
+    await this.releaseUnrestoredExposedPorts();
+    // That asked the Portal twice. A factory reset (`forget`) meanwhile leaves the next pairing's check
+    // to its own pass: releasing now would clear it and let a sync out before its restore.
+    if (this.checkGeneration !== this.generation) {
+      return 'none';
+    }
+
     // The restore this intent asked for is done. Left in place, it would restore again on a later pairing.
     await clearRestoreIntent();
     return this.release();
+  }
+
+  /**
+   * Removes the Portal's entries for ports exposed This Machine Only or on the Private VPN that the
+   * restore did not bring back, before app sync runs again (#2134). The sync releases every other app
+   * the Hub no longer has, but never these, so without this they stayed on the Portal's home page and
+   * held a public subdomain until the device was deleted.
+   *
+   * Reads the device's apps again rather than reusing the list the restore began with: a port put back
+   * since then has re-registered itself. A failure is logged and holds nothing. An entry left behind
+   * costs less than app sync held back.
+   */
+  private async releaseUnrestoredExposedPorts(): Promise<void> {
+    if (this.checkGeneration !== this.generation) {
+      return;
+    }
+
+    try {
+      const { PortExposeService } = await import('@/modules/custom-apps/port-expose.service');
+      const portExpose = this.moduleRef.get(PortExposeService, { strict: false });
+      const released = await portExpose.releaseUnrestoredRegistryEntries(await this.cloudflareClientService.getDeviceApplications());
+      if (released.length > 0) {
+        this.logger.info(
+          `[PairingAppRestore] Removed CI Portal's entries for ${released.length} exposed port(s) the restore did not bring back: ${released.join(', ')}`,
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        `[PairingAppRestore] Could not remove CI Portal's entries for exposed ports the restore did not bring back: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   /**
@@ -287,6 +358,8 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
       restore: { startedAt: new Date().toISOString(), portalAppNames: portalApps.map((app) => app.name) },
     };
     await writeRestoreIntent();
+    // Before the run: whoever signs in while it is under way is shown it, not the setup wizard.
+    await startRestoreNotice();
     await writePairingAppCheck(withRestore);
 
     return withRestore;
@@ -319,12 +392,20 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
     return 'released';
   }
 
-  private hold(reason: string, error?: unknown): PairingAppCheckOutcome {
+  /**
+   * With `backoff` false the wait is one that ends on its own (a catalog download under way), so it does
+   * not count as a failure: counted, it pushed the restore out to minutes after the download ended.
+   */
+  private hold(reason: string, error?: unknown, backoff = true): PairingAppCheckOutcome {
     if (this.checkGeneration !== this.generation) {
       return 'held';
     }
-    this.failures += 1;
-    const delay = Math.min(PairingAppRestoreService.MAX_RETRY_DELAY_MS, PairingAppRestoreService.POLL_MS * 2 ** (this.failures - 1));
+    if (backoff) {
+      this.failures += 1;
+    }
+    const delay = backoff
+      ? Math.min(PairingAppRestoreService.MAX_RETRY_DELAY_MS, PairingAppRestoreService.POLL_MS * 2 ** (this.failures - 1))
+      : PairingAppRestoreService.REQUEST_MIN_INTERVAL_MS;
     this.retryAt = Date.now() + delay;
 
     const cause = error === undefined ? '' : `: ${error instanceof Error ? error.message : String(error)}`;
@@ -333,14 +414,24 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
     return 'held';
   }
 
-  /** A Hub that has not downloaded its app catalog cannot match any app to an install, so fetch it now. */
+  /**
+   * A Hub that has not downloaded its app catalog cannot match any app to an install, so fetch it now.
+   * Not while a download is under way already (the one a factory reset or a start began): the two wrote
+   * the same folders at once.
+   */
   private async pullCatalogIfEmpty(): Promise<void> {
     if (Date.now() - this.lastCatalogPullAt < PairingAppRestoreService.CATALOG_PULL_COOLDOWN_MS) {
       return;
     }
 
     try {
-      if ((await this.marketplaceService.getAvailableAppUrns()).length > 0) {
+      if (this.appStoreService.isDownloadingCatalog() || (await this.marketplaceService.getAvailableAppUrns()).length > 0) {
+        return;
+      }
+
+      // A pass that began before a factory reset (`forget`) can find the catalog the reset emptied. Its
+      // download could run before the reset puts the store back, fetch nothing and set the cooldown again.
+      if (this.checkGeneration !== this.generation) {
         return;
       }
 

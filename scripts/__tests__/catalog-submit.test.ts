@@ -116,6 +116,53 @@ describe('submit directory', () => {
     expect(tarball.byteLength).toBeGreaterThan(100);
     expect(readFileSync(join(dir, 'docker-compose.json'), 'utf8')).toContain('photos:local');
   });
+
+  it('rejects placeholder container images before submission', async () => {
+    const dir = fixtureDir();
+    writeFileSync(
+      join(dir, 'docker-compose.json'),
+      JSON.stringify({
+        services: [{ name: 'web', image: '<image>', isMain: true }],
+      }),
+    );
+    const plan = await prepareSubmitPlan(dir, 'acme', 'hub.ci.computer');
+    expect(plan.ok).toBe(false);
+    if (!plan.ok) {
+      expect(plan.error).toContain('contains placeholder image');
+    }
+  });
+
+  it('rejects sensitive host mounts without host_access grant', async () => {
+    const dir = fixtureDir();
+    writeFileSync(
+      join(dir, 'docker-compose.json'),
+      JSON.stringify({
+        services: [
+          {
+            name: 'web',
+            image: 'my-app:1.0',
+            isMain: true,
+            volumes: [{ hostPath: '/var/run/docker.sock', containerPath: '/var/run/docker.sock' }],
+          },
+        ],
+      }),
+    );
+    const plan = await prepareSubmitPlan(dir, 'acme', 'hub.ci.computer');
+    expect(plan.ok).toBe(false);
+    if (!plan.ok) {
+      expect(plan.error).toContain("mounts sensitive host path '/var/run/docker.sock'");
+    }
+  });
+
+  it('emits a privacy warning when config lacks a privacy declaration', async () => {
+    const dir = fixtureDir();
+    const plan = await prepareSubmitPlan(dir, 'acme', 'hub.ci.computer');
+    expect(plan.ok).toBe(true);
+    if (plan.ok) {
+      expect(plan.warnings).toBeDefined();
+      expect(plan.warnings.some((w) => w.includes('privacy'))).toBe(true);
+    }
+  });
 });
 
 describe('submit portal origin', () => {

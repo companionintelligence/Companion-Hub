@@ -15,6 +15,7 @@ import { type CustomDomainForm, type CustomDomainState, requestsCustomDomainChan
 import { customDomainAuditLine } from './custom-domain-audit';
 import validator from 'validator';
 import { AppFilesManager } from '../apps/app-files-manager';
+import { assertAppIdFree } from '../apps/app-id.helpers';
 import { AppRuntimeMonitorService } from '../apps/app-runtime-monitor.service';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppsService } from '../apps/apps.service';
@@ -30,7 +31,13 @@ import { AppStoreService } from '../app-stores/app-store.service';
 import { AppEventsQueue, appEventResultSchema, appEventSchema } from '../queue/entities/app-events';
 import { QUEUE_UNAVAILABLE_CODE } from '../queue/queue.constants';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
-import { AppOperationRegistry, type CancellabilityTier, type OperationCommand, type PreparingInstall } from './app-operation-registry';
+import {
+  AppOperationRegistry,
+  type CancellabilityTier,
+  type OperationClaim,
+  type OperationCommand,
+  type PreparingInstall,
+} from './app-operation-registry';
 import type { AppStatus, LifecycleJob } from '@/core/database/drizzle/types';
 import { LifecycleJobService } from './lifecycle-job.service';
 import { toAppCommandFailureResult } from './commands/app-lifecycle-errors';
@@ -53,7 +60,7 @@ import { DATA_DIR } from '@/common/constants';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
 import type { HubAction } from '@/core/portal/hub-actions';
-import type { ActorCheckContext, LifecycleActor } from '@/core/portal/lifecycle-actor';
+import type { ActorCheckContext, LifecycleActor, SystemLifecycleReason } from '@/core/portal/lifecycle-actor';
 import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
@@ -80,6 +87,82 @@ type AppOutcomeSseEvent = Extract<Extract<SSE, { topic: 'app' }>['data'], { appU
  * treating them as stopped would take them down and leave them there.
  */
 const STATUSES_MEANING_NOT_RUNNING: ReadonlySet<string> = new Set(['stopped', 'stopping', 'missing', 'install_failed', 'uninstalling']);
+
+/** What a command refused for an app with another operation under way tells the caller, by that operation. */
+const OPERATION_BUSY_MESSAGES: Record<OperationCommand, keyof typeof messages> = {
+  install: 'APP_ERROR_INSTALL_IN_PROGRESS',
+  uninstall: 'APP_ERROR_UNINSTALL_IN_PROGRESS',
+  start: 'APP_ERROR_START_IN_PROGRESS',
+  stop: 'APP_ERROR_STOP_IN_PROGRESS',
+  restart: 'APP_ERROR_RESTART_IN_PROGRESS',
+  update: 'APP_ERROR_UPDATE_IN_PROGRESS',
+  reset: 'APP_ERROR_RESET_IN_PROGRESS',
+  backup: 'APP_ERROR_BACKUP_IN_PROGRESS',
+  restore: 'APP_ERROR_RESTORE_IN_PROGRESS',
+  generate_env: 'APP_ERROR_EVENT_IN_PROGRESS',
+};
+
+/**
+ * System restarts that wait for an operation under way instead of taking its 409: a caller that
+ * cannot redo the restart, or that already changed what the restart is to apply (wrote its env,
+ * saved its settings). Not the restarts a sync or a sweep makes, which run inside other lifecycle
+ * work and would wait on the very command running them. Nor a credential change, such as a Hub
+ * access rotate or a Memory connect: that holds the app before it changes anything
+ * ({@link AppLifecycleService.withAppHeld}).
+ */
+export const RESTARTS_THAT_WAIT_FOR_THE_APP: ReadonlySet<SystemLifecycleReason> = new Set(['device-key-refresh', 'restart-after-config-update']);
+
+/** How often a waiting command looks at the app again, besides being woken when its slot empties. */
+const OPERATION_WAIT_POLL_MS = 5_000;
+
+/**
+ * The restart a caller of {@link AppLifecycleService.withAppHeld} applies its change with, under the
+ * claim it already holds. One restart per hold: the restart takes the claim over, and once it has
+ * settled the app is free again.
+ */
+export interface HeldApp {
+  /** Queue the restart; resolves once it is queued, as `restartApp` does. */
+  restart(params: { skipPull?: boolean; reason: SystemLifecycleReason }): Promise<{ requestId: string }>;
+  /** Restart and resolve with whether the app came back, as `restartAppAndWait` does. */
+  restartAndWait(params: { skipPull?: boolean }): Promise<boolean>;
+}
+
+type ArchitectureCheck = Awaited<ReturnType<ImageSizeService['verifyAppArchitecture']>>;
+
+/** Whether two compose image lists name the same images. Two unreadable lists count as the same. */
+function sameImages(a: string[] | null | undefined, b: string[] | null | undefined): boolean {
+  if (!a || !b) {
+    return !a && !b;
+  }
+
+  const left = new Set(a);
+  return left.size === new Set(b).size && b.every((image) => left.has(image));
+}
+
+/** The claim `installApp` takes on the app right before it writes anything, for its `finally` to hand back. */
+type InstallSlot = { claim: symbol | null };
+
+/**
+ * Times the checks an install runs before it registers, for one log line per install call, so a
+ * slow one (WhoIs, the bundle download, a registry) shows which it was.
+ */
+class InstallCheckTimings {
+  private readonly startedAt = Date.now();
+  private readonly steps: string[] = [];
+
+  async time<T>(step: string, work: Promise<T>): Promise<T> {
+    const startedAt = Date.now();
+    try {
+      return await work;
+    } finally {
+      this.steps.push(`${step} ${Date.now() - startedAt} ms`);
+    }
+  }
+
+  summary(): string {
+    return `${Date.now() - this.startedAt} ms (${this.steps.join(', ') || 'no checks'})`;
+  }
+}
 
 function hasUpdateAvailableForInstalledApp(item: {
   app: { version: number | string; ignoredVersion?: number | string | null; status: string };
@@ -711,14 +794,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (job) {
           await this.lifecycleJobService?.completeJob(job.id).catch(() => null);
         }
-        this.logger.debug('Command executed successfully, triggering Cloudflare sync...');
-        // Trigger sync to ensure cloud state matches local state (exposed apps)
-        await this.syncExposure();
         // Install success is finalized worker-side (markInstallSucceeded); the publisher-side
-        // handler only performs optional follow-up work.
+        // handler only performs optional follow-up work. Cleared before the sync below: the app is
+        // `running` already, and an entry left over the Portal round trips refused every command
+        // sent to it as "already being installed", the sync's own custom-domain restart included.
         if (isInstall) {
           this.operationRegistry.clear(data.appUrn, data.requestId);
         }
+        this.logger.debug('Command executed successfully, triggering Cloudflare sync...');
+        // Trigger sync to ensure cloud state matches local state (exposed apps)
+        await this.syncExposure();
       } else {
         if (job) {
           await this.lifecycleJobService?.failJob(job.id, result.message || 'Operation failed').catch(() => null);
@@ -1004,8 +1089,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     await this.assertActorMay(params.actor, appUrn, 'stop');
     const entry = this.operationRegistry.get(appUrn);
     if (!entry) {
-      // An install still in its checks has not registered; `installApp` applies the cancel before writing anything.
-      if (!requestId && this.operationRegistry.holdPreparingCancel(appUrn)) {
+      // An install still in its checks has not registered; `installApp` applies the cancel before
+      // writing anything, also when it comes while the install is still checking the caller's grant.
+      if (!requestId && (this.operationRegistry.holdPreparingCancel(appUrn) || this.operationRegistry.holdGrantCheckCancel(appUrn))) {
         return { outcome: 'cancelling', message: 'Cancellation requested' };
       }
       return { outcome: 'not_found', message: 'No operation in progress for this app' };
@@ -1067,10 +1153,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   async startApp(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean; actor: LifecycleActor }) {
-    const { appUrn, skipPull, onlyRecreateChanged } = params;
-
     // Before the app is even read — see `assertActorMay`.
-    await this.assertActorMay(params.actor, appUrn, 'start');
+    await this.assertActorMay(params.actor, params.appUrn, 'start');
+    return this.withOperationClaim(params.appUrn, 'start', () => this.dispatchStart(params));
+  }
+
+  /** `startApp` past its grant check, with the app claimed: by this start, or by the install it is part of. */
+  private async dispatchStart(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean }) {
+    const { appUrn, skipPull, onlyRecreateChanged } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -1083,8 +1173,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'start');
-    this.appEventsQueue
-      .publish({ appUrn, command: 'start', requestId, form: this.startCommandForm(app.config, { skipPull, onlyRecreateChanged }) })
+    this.publishRegistered(appUrn, requestId, {
+      appUrn,
+      command: 'start',
+      requestId,
+      form: this.startCommandForm(app.config, { skipPull, onlyRecreateChanged }),
+    })
       .then(async (raw) => {
         const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
@@ -1099,6 +1193,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
               status: 'running',
               event: 'start_success',
               clearPendingRestart: true,
+              configAtDispatch: app.config,
               afterApply: async () => {
                 /*
                  * NOT GATED ON `isProduction`, and that is the fix.
@@ -1376,60 +1471,136 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   /**
-   * Refuse an install that would land on an install or uninstall of the same app that is still
-   * running. Taken as a reinstall, it patches the row and queues a Start, which replaces that
-   * operation in the registry: a second install restarts the app as soon as the first one finishes,
-   * and an uninstall never completes, leaving a row that "starts" with no containers behind it.
+   * The image check `installAppWhilePreparing` started beside the bundle download, or a new one when
+   * the downloaded compose names other images than those it checked.
    */
-  private refuseInstallWhileBusy(appUrn: AppUrn, status: AppStatus | undefined): void {
-    const { appName } = extractAppUrn(appUrn);
-
-    if (status === 'uninstalling') {
-      throw new TranslatableError('APP_ERROR_UNINSTALL_IN_PROGRESS', { id: appName }, HttpStatus.CONFLICT);
+  private async settleArchitectureCheck(
+    appUrn: AppUrn,
+    architecture: string,
+    started: { imagesBeforeDownload: string[] | null; earlyArchCheck: Promise<ArchitectureCheck> },
+    timings: InstallCheckTimings,
+  ): Promise<ArchitectureCheck> {
+    const imagesNow = await this.imageSizeService.listAppImages(appUrn);
+    if (sameImages(started.imagesBeforeDownload, imagesNow)) {
+      return started.earlyArchCheck;
     }
 
-    if (status === 'installing') {
-      throw new TranslatableError('APP_ERROR_INSTALL_IN_PROGRESS', { id: appName }, HttpStatus.CONFLICT);
+    return timings.time('architecture of the new images', this.imageSizeService.verifyAppArchitecture(appUrn, architecture, imagesNow));
+  }
+
+  /**
+   * Refuse an install that would land on another operation for the same app. Taken as a reinstall,
+   * it patched the row and queued a Start, which took over that operation's slot in the registry: a
+   * second install restarted the app as soon as the first one finished, and an uninstall never
+   * completed, leaving a row that "starts" with no containers behind it.
+   *
+   * A row left `installing` with no operation under way is not refused: the install that wrote it
+   * is gone (its worker died, or the Hub restarted before it finished), and this one retries it. A
+   * row left `uninstalling` is refused all the same, as that app is half removed and an install
+   * would start what is left of it.
+   */
+  private refuseInstallWhileBusy(appUrn: AppUrn, status: AppStatus | undefined): void {
+    const live = this.operationRegistry.liveOperation(appUrn);
+    if (live) {
+      throw this.operationBusyError(appUrn, live.command);
+    }
+
+    if (status === 'uninstalling') {
+      throw this.operationBusyError(appUrn, 'uninstall');
+    }
+
+    // An install queued behind others outlives the stale window from the time it registered, and its
+    // worker still runs it. The status sync and the boot recovery treat it as live the same way.
+    if (
+      status === 'installing' &&
+      (this.operationRegistry.get(appUrn)?.command === 'install' || this.installPipelineTracker.getActive() === appUrn)
+    ) {
+      throw this.operationBusyError(appUrn, 'install');
     }
   }
 
   async installApp(params: { appUrn: AppUrn; form: unknown; skipRun?: boolean; actor: LifecycleActor }) {
+    const timings = new InstallCheckTimings();
+
+    // Before anything is fetched, written or queued, and before the busy refusals below, so a caller
+    // without the grant is refused for that whatever the app is doing (see `assertActorMay`). The
+    // HTTP route leaves the check to here, so an install asks WhoIs once. A cancel sent while the
+    // check runs (the page offers Cancel from the click) is held and applied once it passes.
+    this.operationRegistry.beginInstallGrantCheck(params.appUrn);
+    let cancelHeldDuringGrant = false;
+    try {
+      await timings.time('grant', this.assertActorMayApplyForm(params.actor, params.appUrn, params.form, 'install'));
+    } finally {
+      cancelHeldDuringGrant = this.operationRegistry.endInstallGrantCheck(params.appUrn);
+    }
+
     // A second install sent while the first is still in here gets past the status checks below: a
     // fresh install has no row yet, and a reinstall's row says `running` until its Start. Checked and
     // begun in one synchronous step, so two requests cannot both get through.
     if (!this.operationRegistry.beginInstallCall(params.appUrn)) {
-      throw new TranslatableError('APP_ERROR_INSTALL_IN_PROGRESS', { id: extractAppUrn(params.appUrn).appName }, HttpStatus.CONFLICT);
+      throw this.operationBusyError(params.appUrn, 'install');
     }
+
+    // Every open page of the app shows the install from here, not only the one that clicked.
+    this.sseService.emit('app', { event: 'operation_change', appUrn: params.appUrn, operation: 'install' });
 
     // The page offers Cancel as soon as Install is clicked, but the operation registers only after
     // the checks below, which take seconds. A cancel in that window is held and applied here.
     const preparing = this.operationRegistry.beginPreparingInstall(params.appUrn);
+    preparing.cancelRequested = cancelHeldDuringGrant;
+    const slot: InstallSlot = { claim: null };
     try {
-      return await this.installAppWhilePreparing(params, preparing);
+      return await this.installAppWhilePreparing(params, preparing, slot, timings);
     } finally {
+      if (slot.claim) {
+        this.operationRegistry.releaseClaim(params.appUrn, slot.claim);
+      }
       this.operationRegistry.endPreparingInstall(params.appUrn, preparing);
       this.operationRegistry.endInstallCall(params.appUrn);
+      // The install now queued, or what else holds the app, or nothing when this install gave up.
+      const operation = this.operationRegistry.liveOperation(params.appUrn)?.command ?? null;
+      this.sseService.emit('app', { event: 'operation_change', appUrn: params.appUrn, operation });
+      this.logger.info(`[install] ${params.appUrn} took ${timings.summary()}`);
     }
   }
 
   private async installAppWhilePreparing(
     params: { appUrn: AppUrn; form: unknown; skipRun?: boolean; actor: LifecycleActor },
     preparing: PreparingInstall,
+    slot: InstallSlot,
+    timings: InstallCheckTimings,
   ) {
     const { appUrn, form, skipRun } = params;
-
-    // Before anything is fetched, written or queued — see `assertActorMay`.
-    await this.assertActorMayApplyForm(params.actor, appUrn, form, 'install');
     const { demoMode, architecture } = this.config.getConfig();
 
     // Check if we need to download files from Companion Portal
     const { appStoreId, appName } = extractAppUrn(appUrn);
     const store = await this.appStoreService.getAppStoreBySlug(appStoreId);
+    const downloadsBundle = store?.type === 'ci_cloud_api';
 
-    if (store && store.type === 'ci_cloud_api') {
+    if (downloadsBundle) {
       // Before the Portal download, which rewrites the app's store files and takes seconds.
       this.refuseInstallWhileBusy(appUrn, (await this.appRepository.getAppByUrn(appUrn))?.status);
-      const result = await this.repoHelpers.downloadAppFiles(store.url, store.slug, appName);
+    }
+
+    // Before the download and the image checks too: the refusal needs only the installed apps.
+    const apps = await this.appRepository.getApps();
+    assertAppIdFree(appUrn, apps);
+
+    /*
+     * The image check asks each image's registry, the bundle download asks Companion Portal, and on a
+     * slow link each took seconds, one after the other. The check starts here, on the compose the
+     * store already holds (the catalog sync keeps it for every free app), and runs beside the
+     * download. If the downloaded compose names other images, they are checked once it is in.
+     */
+    const imagesBeforeDownload = await this.imageSizeService.listAppImages(appUrn);
+    // On exactly the images read here: a second read of the compose could land on the download's writes.
+    const earlyArchCheck = timings
+      .time('architecture', this.imageSizeService.verifyAppArchitecture(appUrn, architecture, imagesBeforeDownload))
+      .catch(() => null);
+
+    if (store && downloadsBundle) {
+      const result = await timings.time('bundle', this.repoHelpers.downloadAppFiles(store.url, store.slug, appName));
       if (!result.success) {
         const failure = this.describePortalBundleFailure(appUrn, 'install', result);
         this.sseService.emit('app', {
@@ -1446,13 +1617,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     const existingApp = await this.appRepository.getAppByUrn(appUrn);
-    // For an install or uninstall under way, including one that began during the download.
+    // For an operation under way, including one that began during the download.
     this.refuseInstallWhileBusy(appUrn, existingApp?.status);
+    // A failed install, or one that left its row `installing` and is gone (see `refuseInstallWhileBusy`).
+    const retrying = existingApp?.status === 'install_failed' || existingApp?.status === 'installing';
 
     // Reinstalling an app that is already there restarts it below, which nothing can cancel. Its
     // window ends here, and a cancel held for it is dropped: applying it would send
     // `install_cancelled` for an app that is still installed.
-    const reinstall = !!existingApp && existingApp.status !== 'install_failed';
+    const reinstall = !!existingApp && !retrying;
     if (reinstall) {
       this.operationRegistry.endPreparingInstall(appUrn, preparing);
       if (preparing.cancelRequested) {
@@ -1460,8 +1633,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
     }
     const cancelHeld = () => preparing.cancelRequested && !reinstall;
-    // A retry of a failed install, which a cancel puts back to failed rather than deleting.
-    const retriedRow = existingApp?.status === 'install_failed' ? { rowId: existingApp.id, rewritten: false } : null;
+    // A retry of a failed install, which a cancel puts back to failed rather than deleting. A row left
+    // `installing` is written back too: the cancel tells every page it failed, and a reload must agree.
+    const retriedRow = existingApp && retrying ? { rowId: existingApp.id, rewritten: existingApp.status === 'installing' } : null;
 
     if (cancelHeld()) {
       return this.endInstallCancelledBeforeQueue(appUrn, retriedRow);
@@ -1480,7 +1654,6 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     const { exposed, exposedLocal, openPort, domain, isVisibleOnGuestDashboard, enableAuth, port } = parsedForm;
-    const apps = await this.appRepository.getApps();
 
     if (demoMode && apps.length >= 6) {
       throw new TranslatableError('SYSTEM_ERROR_DEMO_MODE_LIMIT');
@@ -1518,7 +1691,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     // "no matching manifest for linux/arm64/v8" mid-pull that previously
     // cascaded into an install_failed crash. Best-effort: a null result
     // (registry/network couldn't be inspected) does not block the install.
-    const archCheck = await this.imageSizeService.verifyAppArchitecture(appUrn, architecture);
+    const archCheck = await this.settleArchitectureCheck(appUrn, architecture, { imagesBeforeDownload, earlyArchCheck }, timings);
     if (archCheck && !archCheck.ok) {
       const canEmulateAmd64 = architecture === 'arm64' && archCheck.available.includes('amd64') && appInfo.supported_architectures?.includes('amd64');
 
@@ -1612,21 +1785,31 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
      * afterwards would park the operator's domain for a reinstall they were told
      * had failed.
      */
+    /*
+     * Once more before anything is written, for a fresh install, a reinstall and a retry alike. The
+     * checks since the last look reach the image registry and Companion Portal, and an operation that
+     * began meanwhile would lose its outcome to this install's Start or its queued install. A row
+     * that is gone was removed by an uninstall that finished. The app is claimed in the same step,
+     * so nothing else can begin on it until this install has registered or given up. Before the
+     * release, which must follow every refusal.
+     */
+    const current = existingApp ? await this.appRepository.getAppByUrn(appUrn) : undefined;
+    this.refuseInstallWhileBusy(appUrn, existingApp && !current ? 'uninstalling' : current?.status);
+    const claim = this.operationRegistry.claim(appUrn, 'install');
+    if (!claim.claimed) {
+      throw this.operationBusyError(appUrn, claim.busy.command);
+    }
+    slot.claim = claim.token;
+
     if (existingApp) {
-      // Once more before anything is written, for a reinstall and a retry alike. The checks since the
-      // last look reach the image registry and Companion Portal, and an uninstall that began meanwhile
-      // would lose its outcome to this install's Start or its queued install. Before the release,
-      // which must follow every refusal. A row that is gone was removed by an uninstall that finished.
-      const current = await this.appRepository.getAppByUrn(appUrn);
-      this.refuseInstallWhileBusy(appUrn, current ? current.status : 'uninstalling');
       await this.releaseClearedCustomDomain(appUrn, parsedForm, existingApp);
     }
 
-    if (existingApp && existingApp.status !== 'install_failed') {
+    if (existingApp && !retrying) {
       await this.appRepository.updateAppById(existingApp.id, buildInstallRowPatch(parsedForm));
       await this.claimCustomDomainIntent(existingApp.id, parsedForm.customDomain);
-      // Part of the install the caller was authorized for, not a new decision.
-      return this.startApp({ appUrn, actor: { kind: 'system', reason: 'reinstall-start' } });
+      // Part of the install the caller was authorized for, not a new decision. Under this install's claim.
+      return this.dispatchStart({ appUrn });
     }
 
     // min_hub_version enforcement intentionally disabled until Hub semver stabilizes (post-CIHub migration).
@@ -1634,6 +1817,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     let installRecord: InstallRow | undefined = existingApp
       ? { id: existingApp.id, status: existingApp.status, port: existingApp.port, exposedLocal: existingApp.exposedLocal }
       : undefined;
+    // A row this install did not create: a failed install, or one gone with its row left `installing`.
+    let retriesRow = !!existingApp;
     if (!installRecord) {
       try {
         const created = await this.appRepository.createApp({
@@ -1686,17 +1871,20 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           throw createError;
         }
 
-        this.refuseInstallWhileBusy(appUrn, raced.status);
+        if (raced.status === 'uninstalling') {
+          throw this.operationBusyError(appUrn, 'uninstall');
+        }
 
-        if (raced.status !== 'install_failed') {
+        if (raced.status !== 'install_failed' && raced.status !== 'installing') {
           // A reinstall after all, which nothing can cancel (see `reinstall` above).
           this.operationRegistry.endPreparingInstall(appUrn, preparing);
           await this.appRepository.updateAppById(raced.id, buildInstallRowPatch(parsedForm));
           await this.claimCustomDomainIntent(raced.id, parsedForm.customDomain);
-          return this.startApp({ appUrn, actor: { kind: 'system', reason: 'reinstall-start' } });
+          return this.dispatchStart({ appUrn });
         }
 
         installRecord = { id: raced.id, status: raced.status, port: raced.port, exposedLocal: raced.exposedLocal };
+        retriesRow = true;
       }
     }
 
@@ -1704,7 +1892,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new Error(`Failed to create or load install record for ${appUrn}`);
     }
 
-    if (existingApp || installRecord.status === 'install_failed') {
+    if (retriesRow) {
       await this.appRepository.updateAppById(installRecord.id, {
         status: 'installing',
         config: toStoredConfig(parsedForm),
@@ -1742,8 +1930,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     // A cancel that came while the row was being written. Nothing is queued yet, so settle it here.
     if (cancelHeld()) {
-      // `installRecord.status` is the row's status from before this install rewrote it.
-      const retry = installRecord.status === 'install_failed' ? { rowId: installRecord.id, rewritten: true } : null;
+      // A row this install retried goes back to failed; one it created is deleted.
+      const retry = retriesRow ? { rowId: installRecord.id, rewritten: true } : null;
       return this.endInstallCancelledBeforeQueue(appUrn, retry, requestId);
     }
 
@@ -1812,10 +2000,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Stop an app by its ID
    */
   public async stopApp(params: { appUrn: AppUrn; actor: LifecycleActor }) {
-    const { appUrn } = params;
-
     // Marked as stopping the app, which a managed key at `write` may do to any app; see `managedKeyMayOperate`.
-    await this.assertActorMay(params.actor, appUrn, 'stop', { stopsApp: true });
+    await this.assertActorMay(params.actor, params.appUrn, 'stop', { stopsApp: true });
+    return this.withOperationClaim(params.appUrn, 'stop', () => this.dispatchStop(params.appUrn));
+  }
+
+  private async dispatchStop(appUrn: AppUrn) {
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -1833,8 +2023,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'stop');
-    this.appEventsQueue
-      .publish({ command: 'stop', appUrn, requestId, form: app.config })
+    this.publishRegistered(appUrn, requestId, { command: 'stop', appUrn, requestId, form: app.config })
       .then(async (raw) => {
         const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
@@ -1889,6 +2078,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return { requestId };
   }
 
+  /**
+   * Not claimed like every other command: this is the way out of a stop hung on Docker, so it must
+   * get through while that stop still holds the app. It registers over it.
+   */
   public async forceStopApp(params: { appUrn: AppUrn }) {
     const { appUrn } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
@@ -1904,7 +2097,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const release = await this.mutex.acquire(appUrn);
     const requestId = crypto.randomUUID();
-    this.registerDispatchedCommand(appUrn, requestId, 'stop');
+    // Over a live entry, as the way out of a stop hung on Docker, but not over another caller's claim.
+    this.registerDispatchedCommand(appUrn, requestId, 'stop', { takesOverClaim: false });
 
     try {
       await this.appRepository.updateAppById(app.id, { status: 'stopping' });
@@ -1959,13 +2153,23 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Restart an app by its ID
    */
   public async restartApp(params: { appUrn: AppUrn; skipPull?: boolean; actor: LifecycleActor }) {
-    const { appUrn, skipPull } = params;
+    await this.assertActorMay(params.actor, params.appUrn, 'restart');
+    const waitForApp = params.actor.kind === 'system' && RESTARTS_THAT_WAIT_FOR_THE_APP.has(params.actor.reason);
+    return this.withOperationClaim(params.appUrn, 'restart', (waited) => this.dispatchRestart({ ...params, onlyIfUp: waited }), { waitForApp });
+  }
 
-    await this.assertActorMay(params.actor, appUrn, 'restart');
+  /** `onlyIfUp`: a Hub restart that waited for another operation; see {@link stoppedWhileWaiting}. */
+  private async dispatchRestart(params: { appUrn: AppUrn; skipPull?: boolean; actor: LifecycleActor; onlyIfUp?: boolean }) {
+    const { appUrn, skipPull } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
+    }
+
+    if (params.onlyIfUp && this.stoppedWhileWaiting(appUrn, app.status)) {
+      // Names no operation: nothing was queued.
+      return { requestId: crypto.randomUUID() };
     }
 
     /*
@@ -1989,8 +2193,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'restart');
-    this.appEventsQueue
-      .publish({ command: 'restart', appUrn, requestId, form: { ...app.config, skipPull } })
+    this.publishRegistered(appUrn, requestId, { command: 'restart', appUrn, requestId, form: { ...app.config, skipPull } })
       .then(async (raw) => {
         const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
@@ -2005,6 +2208,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
               status: 'running',
               event: 'restart_success',
               clearPendingRestart: true,
+              configAtDispatch: app.config,
             },
           });
         } else {
@@ -2043,7 +2247,17 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * `onlyRecreateChanged` leaves containers whose definition is unchanged running instead of
    * recreating them (see `startComposeCommand`).
    */
-  public async startAppAndWait(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean }): Promise<boolean> {
+  /** `waitForApp`: wait for an operation under way rather than be refused, as the restarts in `RESTARTS_THAT_WAIT_FOR_THE_APP` do. */
+  public async startAppAndWait(params: {
+    appUrn: AppUrn;
+    skipPull?: boolean;
+    onlyRecreateChanged?: boolean;
+    waitForApp?: boolean;
+  }): Promise<boolean> {
+    return this.withOperationClaim(params.appUrn, 'start', () => this.startAndWaitClaimed(params), { waitForApp: params.waitForApp });
+  }
+
+  private async startAndWaitClaimed(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean }): Promise<boolean> {
     const { appUrn, skipPull, onlyRecreateChanged } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
@@ -2056,7 +2270,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'start');
-    const raw = await this.appEventsQueue.publish({
+    const raw = await this.publishRegistered(appUrn, requestId, {
       appUrn,
       command: 'start',
       requestId,
@@ -2076,6 +2290,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           status: 'running',
           event: 'start_success',
           clearPendingRestart: true,
+          configAtDispatch: app.config,
           afterApply: async () => {
             /*
              * NOT GATED ON `isProduction`, and that is the fix.
@@ -2133,7 +2348,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * memory-connect key rotation strands an app on a retired key if it does not).
    * Returns whether the restart succeeded; the status/SSE bookkeeping is identical.
    */
-  public async restartAppAndWait(params: { appUrn: AppUrn; skipPull?: boolean }): Promise<boolean> {
+  /** `waitForApp`: wait for an operation under way rather than be refused, as the restarts in `RESTARTS_THAT_WAIT_FOR_THE_APP` do. */
+  public async restartAppAndWait(params: { appUrn: AppUrn; skipPull?: boolean; waitForApp?: boolean }): Promise<boolean> {
+    return this.withOperationClaim(params.appUrn, 'restart', (waited) => this.restartAndWaitClaimed({ ...params, onlyIfUp: waited }), {
+      waitForApp: params.waitForApp,
+    });
+  }
+
+  private async restartAndWaitClaimed(params: { appUrn: AppUrn; skipPull?: boolean; onlyIfUp?: boolean }): Promise<boolean> {
     const { appUrn, skipPull } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
@@ -2141,12 +2363,17 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
     }
 
+    // Nothing is owed to an app stopped meanwhile: it applies the change when it next starts.
+    if (params.onlyIfUp && this.stoppedWhileWaiting(appUrn, app.status)) {
+      return true;
+    }
+
     await this.appRepository.updateAppById(app.id, { status: 'restarting' });
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'restarting' });
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'restart');
-    const raw = await this.appEventsQueue.publish({
+    const raw = await this.publishRegistered(appUrn, requestId, {
       command: 'restart',
       appUrn,
       requestId,
@@ -2166,6 +2393,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           status: 'running',
           event: 'restart_success',
           clearPendingRestart: true,
+          configAtDispatch: app.config,
         },
       });
 
@@ -2277,9 +2505,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Uninstall an app by its ID
    */
   public async uninstallApp(params: { appUrn: AppUrn; deleteAllData: boolean; force?: boolean; actor: LifecycleActor }) {
-    const { appUrn, deleteAllData, force } = params;
+    await this.assertActorMay(params.actor, params.appUrn, 'uninstall');
+    return this.withOperationClaim(params.appUrn, 'uninstall', () => this.dispatchUninstall(params));
+  }
 
-    await this.assertActorMay(params.actor, appUrn, 'uninstall');
+  private async dispatchUninstall(params: { appUrn: AppUrn; deleteAllData: boolean; force?: boolean }) {
+    const { appUrn, deleteAllData, force } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -2328,8 +2559,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'uninstall');
-    this.appEventsQueue
-      .publish({ command: 'uninstall', appUrn, requestId, form: app.config, deleteAllData })
+    this.publishRegistered(appUrn, requestId, { command: 'uninstall', appUrn, requestId, form: app.config, deleteAllData })
       .then(async (result) => {
         const { success, message, errorCode, errorDetail, settingsPath } = result as z.output<typeof appEventResultSchema>;
         if (success) {
@@ -2421,9 +2651,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Reset an app by its ID
    */
   public async resetApp(params: { appUrn: AppUrn; force?: boolean; actor: LifecycleActor }) {
-    const { appUrn, force } = params;
+    await this.assertActorMay(params.actor, params.appUrn, 'reset');
+    return this.withOperationClaim(params.appUrn, 'reset', () => this.dispatchReset(params));
+  }
 
-    await this.assertActorMay(params.actor, appUrn, 'reset');
+  private async dispatchReset(params: { appUrn: AppUrn; force?: boolean }) {
+    const { appUrn, force } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -2439,8 +2672,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'reset');
-    this.appEventsQueue
-      .publish({ command: 'reset', appUrn, requestId, form: app.config })
+    this.publishRegistered(appUrn, requestId, { command: 'reset', appUrn, requestId, form: app.config })
       .then(async (raw) => {
         const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
@@ -2803,9 +3035,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   public async updateApp(params: { appUrn: AppUrn; performBackup: boolean; actor: LifecycleActor }) {
-    const { appUrn, performBackup } = params;
+    await this.assertActorMay(params.actor, params.appUrn, 'update');
+    return this.withOperationClaim(params.appUrn, 'update', () => this.dispatchUpdate(params));
+  }
 
-    await this.assertActorMay(params.actor, appUrn, 'update');
+  private async dispatchUpdate(params: { appUrn: AppUrn; performBackup: boolean }) {
+    const { appUrn, performBackup } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -2836,16 +3071,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'update');
-    this.appEventsQueue
-      .publish({
-        command: 'update',
-        appUrn,
-        requestId,
-        statusBeforeUpdate: appStatusBeforeUpdate,
-        form: app.config,
-        performBackup,
-        wasRunning,
-      })
+    this.publishRegistered(appUrn, requestId, {
+      command: 'update',
+      appUrn,
+      requestId,
+      statusBeforeUpdate: appStatusBeforeUpdate,
+      form: app.config,
+      performBackup,
+      wasRunning,
+    })
       .then(async (raw) => {
         const { success, message, errorCode, errorDetail, settingsPath, rolledBack, cancelled } = raw as z.output<typeof appEventResultSchema>;
         if (cancelled) {
@@ -2857,14 +3091,24 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             return;
           }
 
-          const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
+          // The update still holds the app while it reapplies the config, in the same step it settled
+          // its entry: a command sent meanwhile took the app and the start below was refused, leaving
+          // the updated app stopped. Handed back right before that start claims the app itself.
+          const followUp = this.operationRegistry.claim(appUrn, 'update');
           const restoredStatus = wasRunning ? 'stopped' : appStatusBeforeUpdate;
+          try {
+            const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
 
-          // Part of the update the caller was already authorized for; not a new decision.
-          await this.updateAppConfig({ appUrn, form: app.config, actor: { kind: 'system', reason: 'update-reapply' } });
-          await this.appRepository.updateAppById(app.id, { version: appInfo?.cihub_app_version, status: restoredStatus });
-          this.sseService.emit('app', { event: 'update_success', appUrn, appStatus: restoredStatus });
-          this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
+            // Part of the update the caller was already authorized for; not a new decision.
+            await this.updateAppConfig({ appUrn, form: app.config, actor: { kind: 'system', reason: 'update-reapply' } });
+            await this.appRepository.updateAppById(app.id, { version: appInfo?.cihub_app_version, status: restoredStatus });
+            this.sseService.emit('app', { event: 'update_success', appUrn, appStatus: restoredStatus });
+            this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
+          } finally {
+            if (followUp.claimed) {
+              this.operationRegistry.releaseClaim(appUrn, followUp.token);
+            }
+          }
 
           if (wasRunning) {
             // The update command already started the new version and waited for its health check, so
@@ -3142,12 +3386,152 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return errorCode === QUEUE_UNAVAILABLE_CODE && settled ? statusBefore : statusOnFailure;
   }
 
-  private registerDispatchedCommand(appUrn: AppUrn, requestId: string, command: OperationCommand): void {
-    this.operationRegistry.register(appUrn, {
-      requestId,
-      command,
-      tier: this.cancellabilityTierFor(command),
+  /**
+   * Run a lifecycle command's dispatch with the app claimed for it, or refuse the command with a 409
+   * that says what the app is busy with.
+   *
+   * The one place every command (and `BackupsService`) goes through after its grant check. Each
+   * entry method used to register over whatever held the app: a start, stop, restart, reset or update
+   * sent during an uninstall took the uninstall's slot, its completion was dropped as superseded and
+   * the row stayed behind with no containers.
+   */
+  async withOperationClaim<T>(
+    appUrn: AppUrn,
+    command: OperationCommand,
+    run: (waited: boolean) => Promise<T>,
+    options: { waitForApp?: boolean } = {},
+  ): Promise<T> {
+    let claim = this.operationRegistry.claim(appUrn, command);
+    let waited = false;
+    if (!claim.claimed && options.waitForApp) {
+      waited = true;
+      claim = await this.waitForOperationClaim(appUrn, command, claim.busy.command);
+    }
+    if (!claim.claimed) {
+      this.logger.info(`[lifecycle] ${command} for ${appUrn} refused: ${claim.busy.command} is still under way`);
+      throw this.operationBusyError(appUrn, claim.busy.command);
+    }
+
+    try {
+      return await run(waited);
+    } finally {
+      this.operationRegistry.releaseClaim(appUrn, claim.token);
+    }
+  }
+
+  /**
+   * Hold an app for a change that only reaches it through a restart, such as revoking its
+   * credentials: the app is claimed before `run` changes anything, and the restart `run` is handed
+   * applies the change under that claim. While another operation holds the app this is refused with
+   * the usual 409 and nothing is changed.
+   *
+   * Revoking first and then waiting for the app to restart onto the change left it running on the
+   * revoked credentials for as long as the operation holding it lasted, and kept the request open as
+   * long: past about 100 s the public address answered 524 while the Hub went on rotating.
+   */
+  async withAppHeld<T>(appUrn: AppUrn, run: (app: HeldApp) => Promise<T>): Promise<T> {
+    return this.withOperationClaim(appUrn, 'restart', () => run(this.heldApp(appUrn)));
+  }
+
+  /**
+   * {@link withAppHeld} for work that can wait for its next round, such as a sweep's key rotation:
+   * `{ busy }` while another operation holds the app, with nothing run.
+   */
+  async withAppHeldUnlessBusy<T>(appUrn: AppUrn, run: (app: HeldApp) => Promise<T>): Promise<{ result: T } | { busy: OperationCommand }> {
+    const claim = this.operationRegistry.claim(appUrn, 'restart');
+    if (!claim.claimed) {
+      return { busy: claim.busy.command };
+    }
+    try {
+      return { result: await run(this.heldApp(appUrn)) };
+    } finally {
+      this.operationRegistry.releaseClaim(appUrn, claim.token);
+    }
+  }
+
+  private heldApp(appUrn: AppUrn): HeldApp {
+    let restarted = false;
+    const once = () => {
+      if (restarted) {
+        // The first restart took the claim over: a second would register over it.
+        throw new Error(`${appUrn} was already restarted under this hold`);
+      }
+      restarted = true;
+    };
+    return {
+      restart: async ({ skipPull, reason }) => {
+        once();
+        const actor: LifecycleActor = { kind: 'system', reason };
+        await this.assertActorMay(actor, appUrn, 'restart');
+        return this.dispatchRestart({ appUrn, skipPull, actor });
+      },
+      restartAndWait: async ({ skipPull }) => {
+        once();
+        return this.restartAndWaitClaimed({ appUrn, skipPull });
+      },
+    };
+  }
+
+  /**
+   * Whether an app a Hub restart waited for is no longer up. The restart was decided while the app
+   * ran, and what it waited behind may have stopped it: a person's Stop, or a start that failed.
+   * Restarting it then brought back an app someone had just stopped. Its env is regenerated when it
+   * next starts, so the change the restart was for is not lost.
+   */
+  private stoppedWhileWaiting(appUrn: AppUrn, status: AppStatus): boolean {
+    if (!STATUSES_MEANING_NOT_RUNNING.has(status)) {
+      return false;
+    }
+    this.logger.info(`[lifecycle] restart for ${appUrn} not run: it is ${status} now, and picks the change up when it next starts`);
+    return true;
+  }
+
+  /**
+   * Claim the app for `command` once the operation that holds it lets go, waking whenever its slot
+   * empties and at least every few seconds. Bounded by the time an operation can hold an app at all
+   * (`staleAfterMs`): past that the holder no longer counts and the claim goes through.
+   */
+  private async waitForOperationClaim(appUrn: AppUrn, command: OperationCommand, busy: OperationCommand): Promise<OperationClaim> {
+    this.logger.info(`[lifecycle] ${command} for ${appUrn} waits for the ${busy} under way`);
+    const deadline = Date.now() + this.operationRegistry.staleAfterMs();
+    for (;;) {
+      const remaining = deadline - Date.now();
+      if (remaining > 0) {
+        await this.operationRegistry.whenMaybeFree(appUrn, Math.min(remaining, OPERATION_WAIT_POLL_MS));
+      }
+      const claim = this.operationRegistry.claim(appUrn, command);
+      if (claim.claimed || remaining <= 0) {
+        return claim;
+      }
+    }
+  }
+
+  /**
+   * Publish a command the registry already holds the app for. A publish that rejects (an event the
+   * queue's schema refuses) reaches no worker and no completion handler, so nothing would settle the
+   * entry and it held the app for the whole stale window. It is cleared here and the error goes on.
+   */
+  private publishRegistered(appUrn: AppUrn, requestId: string, event: z.input<typeof appEventSchema>) {
+    return this.appEventsQueue.publish(event).catch((error: unknown) => {
+      this.operationRegistry.clear(appUrn, requestId);
+      throw error;
     });
+  }
+
+  private operationBusyError(appUrn: AppUrn, busy: OperationCommand): TranslatableError {
+    return new TranslatableError(OPERATION_BUSY_MESSAGES[busy], { id: extractAppUrn(appUrn).appName }, HttpStatus.CONFLICT);
+  }
+
+  private registerDispatchedCommand(appUrn: AppUrn, requestId: string, command: OperationCommand, options?: { takesOverClaim?: boolean }): void {
+    this.operationRegistry.register(
+      appUrn,
+      {
+        requestId,
+        command,
+        tier: this.cancellabilityTierFor(command),
+      },
+      options,
+    );
   }
 
   private cancellabilityTierFor(command: OperationCommand): CancellabilityTier {
@@ -3182,6 +3566,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       status: AppStatus;
       event: AppOutcomeSseEvent;
       clearPendingRestart?: boolean;
+      /**
+       * The config the command was dispatched with. A restart owed for settings saved after that
+       * (while the app was starting, say) is still owed, so it is not cleared then.
+       */
+      configAtDispatch?: unknown;
       afterApply?: () => Promise<void>;
     };
     failureOutcome?: {
@@ -3192,21 +3581,31 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       notifySeverity?: 'high' | 'info';
     };
   }): Promise<boolean> {
-    if (!this.operationRegistry.claimCompletion(params.appUrn, params.requestId)) {
+    // The app stays claimed while the outcome is written: a command waiting for it (see
+    // `waitForOperationClaim`) would otherwise write its own status before this one lands.
+    const settling = this.operationRegistry.settleCompletion(params.appUrn, params.requestId);
+    if (!settling) {
       this.logger.debug(`[lifecycle] Superseded ${params.command} completion for ${params.appUrn} (req=${params.requestId})`);
       return false;
     }
 
     if (params.success && params.successOutcome) {
-      await this.appRepository.updateAppById(params.appId, {
-        status: params.successOutcome.status,
-        ...(params.successOutcome.clearPendingRestart ? { pendingRestart: false } : {}),
-      });
-      this.sseService.emit('app', {
-        event: params.successOutcome.event,
-        appUrn: params.appUrn,
-        appStatus: params.successOutcome.status,
-      });
+      try {
+        const clearPendingRestart =
+          params.successOutcome.clearPendingRestart && (await this.configUnchangedSince(params.appId, params.successOutcome.configAtDispatch));
+        await this.appRepository.updateAppById(params.appId, {
+          status: params.successOutcome.status,
+          ...(clearPendingRestart ? { pendingRestart: false } : {}),
+        });
+        this.sseService.emit('app', {
+          event: params.successOutcome.event,
+          appUrn: params.appUrn,
+          appStatus: params.successOutcome.status,
+        });
+      } finally {
+        // Before `afterApply`, whose own restarts (a custom domain bound meanwhile) need the app.
+        this.operationRegistry.releaseClaim(params.appUrn, settling);
+      }
       if (params.successOutcome.afterApply) {
         await params.successOutcome.afterApply();
       }
@@ -3214,7 +3613,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     if (!params.success && params.failureOutcome) {
-      await this.appRepository.updateAppById(params.appId, { status: params.failureOutcome.status });
+      try {
+        await this.appRepository.updateAppById(params.appId, { status: params.failureOutcome.status });
+      } finally {
+        this.operationRegistry.releaseClaim(params.appUrn, settling);
+      }
       this.sseService.emit('app', {
         event: params.failureOutcome.event,
         appUrn: params.appUrn,
@@ -3229,7 +3632,26 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       return true;
     }
 
+    this.operationRegistry.releaseClaim(params.appUrn, settling);
     return true;
+  }
+
+  /**
+   * Whether the app's stored config is still the one a command was dispatched with. Settings saved
+   * while a start ran were not in it, so the restart they asked for is still owed.
+   */
+  private async configUnchangedSince(appId: number, configAtDispatch: unknown): Promise<boolean> {
+    if (configAtDispatch === undefined) {
+      return true;
+    }
+
+    try {
+      const current = await this.appRepository.getAppById(appId);
+      return !current || JSON.stringify(current.config ?? null) === JSON.stringify(configAtDispatch ?? null);
+    } catch {
+      // Unknown: clear it, as before this check existed.
+      return true;
+    }
   }
   /**
    * Record a custom-domain choice, and take it off any app that held it before.

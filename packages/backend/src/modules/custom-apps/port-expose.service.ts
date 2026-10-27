@@ -11,15 +11,19 @@ import { buildOriginServerName, deriveAppSlug, RESERVED_APP_NAMES, sanitizeAppSu
 import { isPortExposeApp, PORT_EXPOSE_KIND, type AppInfo } from '@ci-hub/common/schemas';
 import path from 'node:path';
 import { AppsRepository } from '../apps/apps.repository';
+import { assertAppIdFree } from '../apps/app-id.helpers';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { publishesCloudflarePublicRoute } from '../apps/app-public-routing.helpers';
 import { ExposureSyncService } from '../app-lifecycle/exposure-sync.service';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
+import type { PortalDeviceApplication } from '../cloudflare/cloudflare-client.service';
 import { TraefikConfigService, type PortExposeRoute } from '../docker/traefik-config.service';
 import type { CreatePortExposeAppDto, UpdatePortExposeAppDto } from './dto/custom-apps.dto';
 import { assertHubCanReachPort } from './port-expose-reachability';
 
 const APPS_FOLDER = '_user';
+
+type AppFromDb = Awaited<ReturnType<AppsRepository['getApps']>>[number];
 
 @Injectable()
 export class PortExposeService {
@@ -65,6 +69,8 @@ export class PortExposeService {
     if (existingApp) {
       throw new TranslatableError('CUSTOM_APP_ERROR_DUPLICATE_NAME', { name: displayName }, HttpStatus.CONFLICT);
     }
+    // Its Traefik router and service are named by its id too (`syncPortExposeRoutes`).
+    assertAppIdFree(appUrn, await this.appsRepository.getApps());
 
     const appsWithSamePort = await this.appsRepository.getAppsByPort(port);
     if (appsWithSamePort.length > 0) {
@@ -163,6 +169,9 @@ export class PortExposeService {
 
     const { appName } = extractAppUrn(appUrn);
     const routingSubdomain = sanitizeAppSubdomain(localSubdomain?.trim() || appName);
+    // The entry CI Portal holds for this port now, if it is This Machine Only or Private VPN. Read
+    // before the row changes: built afterwards, it names the new subdomain, not the one registered.
+    const previousRegistryRemoval = portExposeNeedsPortalRegistry(previousExposureMode) ? registryRemovalFor(app) : null;
     if (exposureMode === 'cloudflare') {
       const appsWithSameLocalSubdomain = await this.appsRepository.getAppsByLocalSubdomain(routingSubdomain, app.id);
       if (appsWithSameLocalSubdomain.length > 0) {
@@ -201,15 +210,28 @@ export class PortExposeService {
         status: 'running',
       });
 
+      /*
+       * ⚠ THE OLD REGISTRY ENTRY GOES FIRST, UNDER THE NAME IT WAS REGISTERED WITH (#2144).
+       *
+       * Switched to Public Web under the same subdomain, the tunnel sync claims the row the registry
+       * pinned. A `remove` sent after it released that row with the DNS record the sync had just made.
+       * Built from the updated row, a `remove` named the new subdomain and the old entry stayed.
+       *
+       * Right after the row changes: a later save reads the new row and can no longer name the old entry.
+       */
+      const nextNeedsPortal = portExposeNeedsPortalRegistry(exposureMode);
+      if (previousRegistryRemoval && (!nextNeedsPortal || previousRegistryRemoval.slug !== (routingSubdomain || appName))) {
+        // A public app here on the same subdomain shares the row: the remove would take its address down.
+        const publicAppsOnSlug = await this.appsRepository.getAppsByLocalSubdomain(previousRegistryRemoval.slug, app.id);
+        if (publicAppsOnSlug.length === 0) {
+          await this.postPortalRegistry(appUrn, previousRegistryRemoval);
+        }
+      }
+
       await this.syncPortExposeRoutes();
       await this.exposureSyncService.syncExposurePublic();
 
-      const previousNeedsPortal = portExposeNeedsPortalRegistry(previousExposureMode);
-      const nextNeedsPortal = portExposeNeedsPortalRegistry(exposureMode);
-
-      if (previousNeedsPortal && !nextNeedsPortal) {
-        await this.syncPortalRegistry(appUrn, 'remove');
-      } else if (nextNeedsPortal) {
+      if (nextNeedsPortal) {
         await this.syncPortalRegistry(appUrn, 'upsert');
       }
 
@@ -297,34 +319,111 @@ export class PortExposeService {
   }
 
   private async syncPortalRegistry(appUrn: AppUrn, action: 'upsert' | 'remove'): Promise<void> {
-    const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
-    if (!org?.id) {
-      this.logger.debug('[Portal] Skipping workload registry sync — device not registered');
-      return;
-    }
-
-    const { appName } = extractAppUrn(appUrn);
     const app = await this.appsRepository.getAppByUrn(appUrn);
     if (!app) {
       return;
     }
 
-    try {
-      await this.portalClient.postDeviceApplicationsRegistry({
-        organizationId: org.id,
-        apps: [
-          {
-            name: appName,
-            slug: app.localSubdomain || appName,
-            port: app.port ?? 0,
-            publicDomain: app.publicDomain ?? undefined,
-            remove: action === 'remove',
-          },
-        ],
-      });
-    } catch (error) {
-      this.logger.warn(`[Portal] Failed to ${action} workload registry entry for ${appUrn}: ${describeNetworkError(error)}`);
+    await this.postPortalRegistry(appUrn, action === 'remove' ? registryRemovalFor(app) : registryEntryFor(app));
+  }
+
+  /** Posts one registry entry for `appUrn`. A failure is logged: the registry never holds up the change that wrote it. */
+  private async postPortalRegistry(appUrn: AppUrn, entry: RegistryEntry): Promise<void> {
+    const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+    if (!org?.id) {
+      this.logger.debug('[Portal] Skipping workload registry sync: device not registered');
+      return;
     }
+
+    try {
+      await this.portalClient.postDeviceApplicationsRegistry({ organizationId: org.id, apps: [entry] });
+    } catch (error) {
+      this.logger.warn(
+        `[Portal] Failed to ${entry.remove ? 'remove' : 'upsert'} workload registry entry for ${appUrn}: ${describeNetworkError(error)}`,
+      );
+    }
+  }
+
+  /**
+   * Sends Companion Portal every port this Hub exposes This Machine Only or on the Private VPN, in one
+   * request. `ExposureSyncService` calls it once per start, after its first sync the Portal answered.
+   *
+   * The registry is otherwise written only when such a port is created or changed. A port exposed
+   * before the registry carried its kind and mode would never get them. A reinstall could not put it
+   * back (#2131).
+   *
+   * Not a port being uninstalled. Its entry was removed before the uninstall began
+   * (`beforePortExposeUninstall`) but its row goes only once the uninstall ends. Sent in between, it
+   * was pinned again for good.
+   */
+  async syncAllPortalRegistryEntries(): Promise<void> {
+    const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+    if (!org?.id) {
+      return;
+    }
+
+    const apps: AppFromDb[] = [];
+    for (const app of await this.appsRepository.getApps()) {
+      if (app.status === 'uninstalling' || !portExposeNeedsPortalRegistry(app.exposureMode) || !isRegistryPort(app.port)) {
+        continue;
+      }
+      // A save through the generic config route rewrites the stored form without `kind`, so config.json is asked too.
+      if (
+        isPortExposeApp(app.config) ||
+        isPortExposeApp(await this.appFilesManager.getInstalledAppInfo(createAppUrn(app.appName, app.appStoreSlug)))
+      ) {
+        apps.push(app);
+      }
+    }
+    if (apps.length === 0) {
+      return;
+    }
+
+    await this.portalClient.postDeviceApplicationsRegistry({ organizationId: org.id, apps: apps.map((app) => registryEntryFor(app)) });
+  }
+
+  /**
+   * Removes Companion Portal's entries for ports exposed This Machine Only or on the Private VPN that
+   * this Hub does not have. Returns their names (#2134). `PairingAppRestoreService` calls it once
+   * the restore after a pairing has settled, with the device's apps read from the Portal after it.
+   *
+   * ⚠ ONLY THE HUB CAN DO THIS. The tunnel sync releases every row of the device it does not name,
+   * except the pinned ones the registry writes, so an entry for a port the restore could not bring back
+   * stayed on the Portal's home page and held a public subdomain until the device was deleted.
+   *
+   * ⚠ NOT A ROW ANY APP HERE NAMES. The registry removes by slug. A public app that took the same
+   * subdomain shares the row: the tunnel sync never clears `pinned`. An entry whose name or slug any app
+   * here uses is left alone.
+   */
+  async releaseUnrestoredRegistryEntries(portalApps: ReadonlyArray<PortalDeviceApplication>): Promise<string[]> {
+    const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+    if (!org?.id) {
+      return [];
+    }
+
+    const heldNames = new Set<string>();
+    for (const app of await this.appsRepository.getApps()) {
+      heldNames.add(app.appName.toLowerCase());
+      heldNames.add(`${app.appName}-${app.appStoreSlug}`.toLowerCase());
+      if (app.localSubdomain) {
+        heldNames.add(app.localSubdomain.toLowerCase());
+      }
+    }
+
+    const leftovers = portalApps.filter(
+      (entry) =>
+        entry.pinned === true && isRegistryPort(entry.port) && !heldNames.has(entry.name.toLowerCase()) && !heldNames.has(entry.slug.toLowerCase()),
+    );
+    if (leftovers.length === 0) {
+      return [];
+    }
+
+    await this.portalClient.postDeviceApplicationsRegistry({
+      organizationId: org.id,
+      apps: leftovers.map((entry) => ({ name: entry.name, slug: entry.slug, port: entry.port, remove: true })),
+    });
+
+    return leftovers.map((entry) => entry.name);
   }
 
   private async createAppDirectories(appUrn: AppUrn): Promise<void> {
@@ -438,6 +537,36 @@ export class PortExposeService {
 
 export function portExposeNeedsPortalRegistry(exposureMode: string | null | undefined): boolean {
   return exposureMode === 'local' || exposureMode === 'tailscale';
+}
+
+/** A port the registry takes: it refuses the whole request over one outside 1 to 65535. */
+function isRegistryPort(port: number | null | undefined): port is number {
+  return typeof port === 'number' && Number.isInteger(port) && port >= 1 && port <= 65535;
+}
+
+type RegistryApp = Pick<AppFromDb, 'appName' | 'localSubdomain' | 'port' | 'publicDomain' | 'exposureMode'>;
+type RegistryEntry = Parameters<PortalClientService['postDeviceApplicationsRegistry']>[0]['apps'][number];
+
+/**
+ * One app's registry entry. An upsert for a port exposed This Machine Only or on the Private VPN carries
+ * its kind and mode, so Companion Portal can tell a reinstalled Hub to put it back there (#2131). A
+ * removal names the row and nothing more.
+ */
+function registryEntryFor(app: RegistryApp, { withKind = true }: { withKind?: boolean } = {}): RegistryEntry {
+  const exposureMode: RegistryEntry['exposureMode'] =
+    withKind && (app.exposureMode === 'local' || app.exposureMode === 'tailscale') ? app.exposureMode : undefined;
+  return {
+    name: app.appName,
+    slug: app.localSubdomain || app.appName,
+    port: app.port ?? 0,
+    publicDomain: app.publicDomain ?? undefined,
+    ...(exposureMode ? { kind: PORT_EXPOSE_KIND, exposureMode } : {}),
+  };
+}
+
+/** The entry that removes `app`'s row. */
+function registryRemovalFor(app: RegistryApp): RegistryEntry {
+  return { ...registryEntryFor(app, { withKind: false }), remove: true };
 }
 
 export function portExposePublishesCloudflare(exposureMode: string | null | undefined): boolean {

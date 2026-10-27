@@ -1,7 +1,7 @@
 <div align="center">
 
 <a href="https://ci.computer/hub">
-  <img src="packages/frontend/public/2024_CI__LogoMark_Color_med.svg" alt="Companion Intelligence logo" width="128" height="128">
+  <img src="packages/frontend/hub-brand/logos/mark-tight.svg" alt="Companion Hub logo" width="128" height="128">
 </a>
 
 # Companion Hub

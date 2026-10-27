@@ -5,7 +5,7 @@ import { HUB_FAVICON_LINK_TAG, HUB_FAVICON_PATH, HUB_FAVICON_PNG } from '../hub-
 // The shared test setup mocks `fs`; these assertions are ABOUT the real files on disk.
 const { readFileSync } = await vi.importActual<typeof import('node:fs')>('node:fs');
 
-const BRAND_PNG = path.join(__dirname, '../../../../../frontend/brand/icons/png/favicon-96.png');
+const BRAND_PNG = path.join(__dirname, '../../../../../frontend/hub-brand/icons/png/favicon-96.png');
 
 describe('hub favicon', () => {
   it('is the brand icon, byte for byte, so the tab matches the app', () => {

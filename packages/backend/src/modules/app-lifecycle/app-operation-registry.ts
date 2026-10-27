@@ -1,9 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
+import type { lifecycleOperationSchema } from '@ci-hub/common/schemas';
+import type { z } from 'zod';
+import { appEventsQueueTimeoutMs } from '@/common/helpers/app-command-deadline';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 
 /** Lifecycle commands that can flow through the operation registry. */
-export type OperationCommand = 'install' | 'start' | 'stop' | 'restart' | 'update' | 'uninstall' | 'reset' | 'backup' | 'restore' | 'generate_env';
+export type OperationCommand = z.infer<typeof lifecycleOperationSchema>;
 
 /**
  * Coarse cancellability tier, derived from the command when the op is registered.
@@ -46,6 +50,26 @@ export interface OperationEntry {
   createdAt: number;
 }
 
+/**
+ * How long a lifecycle operation holds its app: as long as the queue waits for a command, which is
+ * the events timeout or the image pull timeout, whichever is longer. Past that its caller has given
+ * up on it, and an entry that never clears (a stop hung on Docker, say) must not hold the app for
+ * good. The status sync judges a transitional row by the same window.
+ */
+export function operationStaleAfterMs(eventsTimeoutMinutes: number): number {
+  return appEventsQueueTimeoutMs(eventsTimeoutMinutes);
+}
+
+/** The operation an app has under way, as {@link AppOperationRegistry.liveOperation} reports it. */
+export interface LiveOperation {
+  command: OperationCommand;
+  /** `claimed`: an entry method is still on its way to dispatching it. `dispatched`: the queue has it. */
+  stage: 'claimed' | 'dispatched';
+}
+
+/** A claim on an app's slot, from {@link AppOperationRegistry.claim}. */
+export type OperationClaim = { claimed: true; token: symbol } | { claimed: false; busy: LiveOperation };
+
 /** An install still in the checks `AppLifecycleService.installApp` runs before it registers. */
 export interface PreparingInstall {
   /** Set by a cancel that arrived during the checks; `installApp` stops before its next write. */
@@ -84,7 +108,142 @@ export class AppOperationRegistry {
    */
   private readonly installCalls = new Set<AppUrn>();
 
-  constructor(private readonly logger: LoggerService) {}
+  /**
+   * Commands an entry method has claimed the app for and not dispatched yet. The method reads and
+   * writes the row between its busy check and `register`, so without a claim a second command sent
+   * in that time passed the check too, and the one that registered last took the slot.
+   */
+  private readonly claims = new Map<AppUrn, { command: OperationCommand; token: symbol; claimedAt: number }>();
+
+  /** Callers waiting for an app to be free again (`whenMaybeFree`), woken whenever its slot empties. */
+  private readonly freeWaiters = new Map<AppUrn, Set<() => void>>();
+
+  /**
+   * Install calls still in their grant check, before `beginInstallCall`, and whether a cancel came
+   * for them meanwhile. A cancel in that window found neither an entry nor a preparing install and
+   * was answered "nothing to cancel" while the install went on.
+   */
+  private readonly installGrantChecks = new Map<AppUrn, { calls: number; cancelRequested: boolean }>();
+
+  constructor(
+    private readonly logger: LoggerService,
+    @Optional() private readonly configuration?: ConfigurationService,
+  ) {}
+
+  staleAfterMs(): number {
+    return operationStaleAfterMs(this.configuration?.get('userSettings')?.eventsTimeout ?? 0);
+  }
+
+  /**
+   * The lifecycle operation this app has under way, or `undefined` when it has none: a command an
+   * entry method has claimed, or one dispatched to the queue that has not settled. An entry older
+   * than {@link operationStaleAfterMs} no longer counts. An install still in its checks is not an
+   * operation yet; see {@link isInstallCallUnderWay}.
+   */
+  liveOperation(appUrn: AppUrn, now = Date.now()): LiveOperation | undefined {
+    const staleAfterMs = this.staleAfterMs();
+    const entry = this.ops.get(appUrn);
+    if (entry && now - entry.createdAt < staleAfterMs) {
+      return { command: entry.command, stage: 'dispatched' };
+    }
+
+    const claim = this.claims.get(appUrn);
+    if (claim && now - claim.claimedAt < staleAfterMs) {
+      return { command: claim.command, stage: 'claimed' };
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Claim the app for `command`, or name the operation that already holds it. Checked and taken in
+   * one synchronous step, so two callers cannot both get it. `register` takes the claim over; a
+   * method that fails before it gets there hands it back with {@link releaseClaim}.
+   */
+  claim(appUrn: AppUrn, command: OperationCommand, now = Date.now()): OperationClaim {
+    const busy = this.liveOperation(appUrn, now);
+    if (busy) {
+      return { claimed: false, busy };
+    }
+
+    const token = Symbol(command);
+    this.claims.set(appUrn, { command, token, claimedAt: now });
+    return { claimed: true, token };
+  }
+
+  /** Hand back a claim that was never dispatched. A claim `register` already took over is left alone. */
+  releaseClaim(appUrn: AppUrn, token: symbol): void {
+    if (this.claims.get(appUrn)?.token === token) {
+      this.claims.delete(appUrn);
+      this.wakeFreeWaiters(appUrn);
+    }
+  }
+
+  /**
+   * Resolves once something may have freed the app (an entry cleared or claimed, a claim handed
+   * back), or after `timeoutMs`. A wake-up is not a claim: the caller claims again, and may have to
+   * wait again if another caller claimed first.
+   */
+  whenMaybeFree(appUrn: AppUrn, timeoutMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      const waiters = this.freeWaiters.get(appUrn) ?? new Set<() => void>();
+      this.freeWaiters.set(appUrn, waiters);
+      const wake = () => {
+        clearTimeout(timer);
+        waiters.delete(wake);
+        if (waiters.size === 0 && this.freeWaiters.get(appUrn) === waiters) {
+          this.freeWaiters.delete(appUrn);
+        }
+        resolve();
+      };
+      const timer = setTimeout(wake, timeoutMs);
+      waiters.add(wake);
+    });
+  }
+
+  private wakeFreeWaiters(appUrn: AppUrn): void {
+    for (const wake of [...(this.freeWaiters.get(appUrn) ?? [])]) {
+      wake();
+    }
+  }
+
+  /** An `installApp` call for this app begins its grant check. */
+  beginInstallGrantCheck(appUrn: AppUrn): void {
+    const checks = this.installGrantChecks.get(appUrn) ?? { calls: 0, cancelRequested: false };
+    checks.calls += 1;
+    this.installGrantChecks.set(appUrn, checks);
+  }
+
+  /** The grant check is over. True, once, when a cancel came for the install during it. */
+  endInstallGrantCheck(appUrn: AppUrn): boolean {
+    const checks = this.installGrantChecks.get(appUrn);
+    if (!checks) {
+      return false;
+    }
+    const cancelRequested = checks.cancelRequested;
+    checks.cancelRequested = false;
+    checks.calls -= 1;
+    if (checks.calls <= 0) {
+      this.installGrantChecks.delete(appUrn);
+    }
+    return cancelRequested;
+  }
+
+  /** Hold a cancel for an install still in its grant check. False when none is. */
+  holdGrantCheckCancel(appUrn: AppUrn): boolean {
+    const checks = this.installGrantChecks.get(appUrn);
+    if (!checks) {
+      return false;
+    }
+    checks.cancelRequested = true;
+    this.logger.info(`[op-registry] cancel held for install ${appUrn}, which is still checking the caller's grant`);
+    return true;
+  }
+
+  /** True from the start of an `installApp` call for this app until it answers. */
+  isInstallCallUnderWay(appUrn: AppUrn): boolean {
+    return this.installCalls.has(appUrn);
+  }
 
   /** Begin an install call for this app. False, and nothing begun, while another one is under way. */
   beginInstallCall(appUrn: AppUrn): boolean {
@@ -139,9 +298,16 @@ export class AppOperationRegistry {
   /**
    * Record a new operation for an app. Called by the service immediately before publishing the
    * command to the queue so that a cancel arriving during the publish→dequeue window can still be
-   * honoured (tier-A). Replaces any existing entry for the app (the per-app mutex prevents real overlap).
+   * honoured (tier-A). Replaces any existing entry for the app, so callers claim the app first
+   * ({@link claim}); only a force stop, the way out of a stop hung on Docker, registers over a live one.
+   * It does so with `takesOverClaim: false`, so a command another caller has claimed and not yet
+   * dispatched keeps its claim.
    */
-  register(appUrn: AppUrn, params: { requestId: string; command: OperationCommand; tier: CancellabilityTier }): OperationEntry {
+  register(
+    appUrn: AppUrn,
+    params: { requestId: string; command: OperationCommand; tier: CancellabilityTier },
+    options: { takesOverClaim?: boolean } = {},
+  ): OperationEntry {
     const entry: OperationEntry = {
       requestId: params.requestId,
       command: params.command,
@@ -152,6 +318,10 @@ export class AppOperationRegistry {
       createdAt: Date.now(),
     };
     this.ops.set(appUrn, entry);
+    // The command now holds the slot itself.
+    if (options.takesOverClaim !== false) {
+      this.claims.delete(appUrn);
+    }
     this.logger.info(`[op-registry] register ${params.command} ${appUrn} req=${params.requestId} tier=${params.tier}`);
     return entry;
   }
@@ -209,12 +379,30 @@ export class AppOperationRegistry {
     if (entry && entry.requestId === requestId) {
       this.ops.delete(appUrn);
       this.logger.debug(`[op-registry] clear ${appUrn} req=${requestId}`);
+      this.wakeFreeWaiters(appUrn);
     }
   }
 
   /** True when this requestId is still the latest dispatched command for the app. */
   ownsOutcome(appUrn: AppUrn, requestId: string): boolean {
     return this.ops.get(appUrn)?.requestId === requestId;
+  }
+
+  /**
+   * Claim a command's completion and keep the app claimed while the caller writes the outcome, in
+   * one step, so a command waiting for the app is not let in between. `null` when a newer command
+   * superseded this one. The caller hands the claim back with {@link releaseClaim}.
+   */
+  settleCompletion(appUrn: AppUrn, requestId: string): symbol | null {
+    const entry = this.ops.get(appUrn);
+    if (!entry || entry.requestId !== requestId) {
+      return null;
+    }
+    this.ops.delete(appUrn);
+    const token = Symbol(entry.command);
+    this.claims.set(appUrn, { command: entry.command, token, claimedAt: Date.now() });
+    this.logger.debug(`[op-registry] settle ${appUrn} req=${requestId} command=${entry.command}`);
+    return token;
   }
 
   /**
@@ -228,6 +416,7 @@ export class AppOperationRegistry {
     }
     this.ops.delete(appUrn);
     this.logger.debug(`[op-registry] claim ${appUrn} req=${requestId} command=${entry.command}`);
+    this.wakeFreeWaiters(appUrn);
     return true;
   }
 }

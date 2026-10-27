@@ -39,13 +39,14 @@ import { OllamaInstallerService } from './ollama-installer.service';
 import { RocmInstallerService } from './rocm-installer.service';
 import { AppContainerOriginGuard } from './app-container-origin.guard';
 import { AppCredentialsService } from './app-credentials.service';
+import { onboardingTier, recommendedInferenceBackend } from './default-chat-model-handout';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { InferenceAccessGuard } from '@/modules/auth/inference-access.guard';
 import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import type { CloudProviderStatus, CloudProviderType, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
+import type { CloudProviderStatus, CloudProviderType } from '@ci-hub/common/types';
 import {
   LoadModelBody,
   UnloadModelBody,
@@ -122,33 +123,6 @@ export class InferenceController {
     @Inject(forwardRef(() => PoolProxyService)) private readonly poolProxy: PoolProxyService,
     @Inject(forwardRef(() => HubPoolPeerService)) private readonly poolPeers: HubPoolPeerService,
   ) {}
-
-  private getRecommendedBackend(profile: HardwareProfile): InferenceBackendType {
-    // NVIDIA with a usable runtime: vLLM. Apple Silicon: oMLX. An NPU: Lemonade.
-    // Everything else, including AMD without a cited vLLM ROCm path: Ollama.
-    return profile.npu.available
-      ? 'lemonade'
-      : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable
-        ? 'vllm'
-        : profile.gpu.vendor === 'apple'
-          ? 'omlx'
-          : 'ollama';
-  }
-
-  private getOnboardingTier(profile: HardwareProfile, recommendedBackend: InferenceBackendType): HardwareTier {
-    if (
-      recommendedBackend === 'ollama' &&
-      profile.gpu.available &&
-      !profile.gpu.unifiedMemory &&
-      !profile.gpu.runtimeAvailable &&
-      (profile.gpu.vendor === 'nvidia' || profile.gpu.vendor === 'amd') &&
-      profile.gpu.vramMb > 0
-    ) {
-      return this.hardwareInspector.computeTier({ ...profile.gpu, runtimeAvailable: true }, profile.ram);
-    }
-
-    return profile.tier;
-  }
 
   /**
    * Bring running AI apps up to date after an inference config change, through the same service
@@ -761,9 +735,11 @@ export class InferenceController {
     @Headers(OMLX_PROBE_API_KEY_HEADER) omlxApiKey?: string,
   ) {
     const profile = await this.hardwareInspector.getProfile();
-    const recommendedBackend = this.getRecommendedBackend(profile);
+    const recommendedBackend = recommendedInferenceBackend(profile);
     const installBackend = query?.backend ?? recommendedBackend;
-    const tier = this.getOnboardingTier(profile, recommendedBackend);
+    // The tier the Hub's own handouts read too (`installedDefaultChatModel`), so the wizard's Default and
+    // the model apps get with none chosen come from the same list.
+    const tier = onboardingTier(profile, (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram));
     // Probed before the model lists, not after: the probe reads Lemonade's registry, which decides
     // which Lemonade rows the lists below may offer (ModelRegistryService.getModelsForTier).
     const lemonadeHealth =

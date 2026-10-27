@@ -26,6 +26,8 @@
  *   APP_STORE_DIR   path to CI-Marketplace/apps  (default: ~/devel/CI-Marketplace/apps
  *                   with fallback to ~/devel/CI-App-Store/apps)
  *   RESULTS_DIR     local results output dir      (default: ~/qa-results)
+ *   QA_MIN_FREE_MB  minimum free space to keep before accepting another app (default: 4096)
+ *   QA_MIN_FREE_PERCENT  minimum free percentage to keep before accepting another app (default: 5)
  *   SKIP_SCREENSHOT set to "1" to skip Playwright screenshot
  *   QA_ENV_FILE     set to "1" to attach a production-style app.env (system variables + form fields) to every service, as the
  *                   Hub does. Off by default. Safe at any QA_CONCURRENCY: each app's form-field specs and manifest are passed
@@ -33,6 +35,8 @@
  *   QA_NO_PROXY_HEADERS  set to "1" to stop the readiness probe sending X-Forwarded-Proto/Port (the Hub's Traefik adds them)
  *   QA_NO_TEMPLATES set to "1" to seed the .template files under an app's data/ as they are. By default each is rendered into the
  *                   mount without the suffix, from the app.env map, as the Hub's copyDataDir does.
+ *   QA_RUN_PID_FILE optional run-specific marker path. The runner writes its PID there and drains active apps on SIGTERM/SIGINT,
+ *                   allowing a fleet controller to stop only its own remote run.
  *
  * Restart policy and host ports (an app is started here as the Hub starts it):
  *   - Each service runs under its manifest's `restart` (no | always | unless-stopped | on-failure), else `unless-stopped`: the Hub's
@@ -46,12 +50,27 @@
  *   - Teardown and the stale-container cleanup stop and force-remove: a restart policy brings back a container that is only stopped.
  *   - The host port is reserved before the start and published as that exact port. If the bind loses a race for it ("address
  *     already in use" / "failed to bind host port" / "port is already allocated", e.g. a peer app at QA_CONCURRENCY=2) the start is retried with a fresh
- *     reservation, at most 2 times (`bindRetries` on the result), then scored as before. Other start failures are not retried.
+ *     reservation, at most 2 times (`bindRetries` on the result), then scored as before.
+ *   - A compose stack whose dependency healthcheck races first boot is retried once after a clean teardown. The first attempt's
+ *     score, failure kind, notes, and compact `docker compose ps -a` snapshot stay on the final row, so a recovered start is visible
+ *     and a persistent failure is still actionable. Other start failures are not retried.
  */
 
 import { exec, execSync, spawnSync } from 'node:child_process';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
-import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statfsSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import { connect } from 'node:net';
 import { EOL, homedir } from 'node:os';
@@ -67,6 +86,48 @@ const SKIP_SCREENSHOT = process.env.SKIP_SCREENSHOT === '1';
 const QA_ENV_FILE = process.env.QA_ENV_FILE === '1';
 const QA_NO_PROXY_HEADERS = process.env.QA_NO_PROXY_HEADERS === '1';
 const QA_NO_TEMPLATES = process.env.QA_NO_TEMPLATES === '1';
+/** A per-run marker used by the fleet controller to request a graceful remote stop. */
+const QA_RUN_PID_FILE = process.env.QA_RUN_PID_FILE?.trim() ?? '';
+// The fleet command intentionally uses `~/...` so the remote shell expands its home directory.
+// Node's filesystem APIs do not perform shell expansion, so normalize that spelling before the
+// marker is written or removed; otherwise Stop would signal a path the runner never created.
+const RUN_PID_PATH = QA_RUN_PID_FILE.startsWith('~/') ? join(home, QA_RUN_PID_FILE.slice(2)) : QA_RUN_PID_FILE;
+
+// A fleet Stop closes the work feed and then signals this process through its own marker file.
+// Do not call process.exit() from the signal handler: active qaApp() calls still own Docker
+// teardown and need to finish their finally blocks. The worker pool sees the flag and drains only
+// the apps already in flight.
+let stopRequested = false;
+let stopWake: (() => void) | null = null;
+
+function requestGracefulStop(): void {
+  if (stopRequested) return;
+  stopRequested = true;
+  const wake = stopWake;
+  stopWake = null;
+  wake?.();
+}
+
+function installRunControl(): void {
+  if (!RUN_PID_PATH) return;
+  try {
+    mkdirSync(dirname(RUN_PID_PATH), { recursive: true });
+    writeFileSync(RUN_PID_PATH, `${process.pid}\n`);
+  } catch (error) {
+    // The runner can still complete without the marker. Keep this visible on stderr so the
+    // controller records why a later Stop may have to fall back to closing the SSH session.
+    process.stderr.write(`run control marker unavailable: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+  process.once('SIGTERM', requestGracefulStop);
+  process.once('SIGINT', requestGracefulStop);
+  process.once('exit', () => {
+    try {
+      if (readFileSync(RUN_PID_PATH, 'utf8').trim() === String(process.pid)) unlinkSync(RUN_PID_PATH);
+    } catch {
+      /* best effort: the results directory may be gone or full */
+    }
+  });
+}
 
 // Durable results — qa-aggregate.ts SCPs results.json (an array of QAResult) and
 // batch-<N>-summary.json off each node. We append every app result here as it finishes
@@ -85,10 +146,124 @@ const QA_CONCURRENCY = Math.max(1, Number(process.env.QA_CONCURRENCY) || 2);
 // runaway app from starving its neighbours once apps run concurrently.
 const QA_MEM_LIMIT = process.env.QA_MEM_LIMIT?.trim() || ''; // e.g. "1g", "512m"
 const QA_CPU_LIMIT = process.env.QA_CPU_LIMIT?.trim() || ''; // e.g. "1.5", "2"
+function nonNegativeEnvNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+const QA_MIN_FREE_MB = Math.floor(nonNegativeEnvNumber('QA_MIN_FREE_MB', 4096));
+const QA_MIN_FREE_PERCENT = Math.min(100, nonNegativeEnvNumber('QA_MIN_FREE_PERCENT', 5));
 
 [RESULTS_DIR, SCREENSHOTS_DIR].forEach((d) => {
-  if (!existsSync(d)) mkdirSync(d, { recursive: true });
+  try {
+    if (!existsSync(d)) mkdirSync(d, { recursive: true });
+  } catch (error) {
+    // A full filesystem must be reported through the NDJSON control channel below, not as an
+    // unhandled module-load exception that the fleet server can only misclassify as SSH failure.
+    process.stderr.write(`results directory setup failed for ${d}: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
 });
+
+// <capacity-guard>
+/** Decide whether a results/docker filesystem has enough headroom for another app. */
+function capacityDecision(input: { availableBytes: number; totalBytes: number; minFreeMb: number; minFreePercent: number }) {
+  const availableMb = Math.floor(input.availableBytes / (1024 * 1024));
+  const totalMb = Math.floor(input.totalBytes / (1024 * 1024));
+  const freePercent = input.totalBytes > 0 ? (input.availableBytes / input.totalBytes) * 100 : null;
+  const percentFloorMb = totalMb > 0 ? Math.ceil((totalMb * input.minFreePercent) / 100) : 0;
+  const thresholdMb = Math.max(Math.floor(input.minFreeMb), percentFloorMb);
+  return {
+    ok: availableMb >= thresholdMb,
+    availableMb,
+    totalMb,
+    freePercent,
+    thresholdMb,
+  };
+}
+// </capacity-guard>
+
+type CapacitySnapshot = {
+  ok: boolean;
+  availableMb?: number;
+  totalMb?: number;
+  freePercent?: number | null;
+  thresholdMb?: number;
+  unavailable?: boolean;
+  reason?: string;
+  path: string;
+  probePath?: string;
+};
+
+/**
+ * Read the filesystem that backs the QA scratch/results directory. A missing output directory is
+ * probed through its nearest existing parent. Once the requested path exists, probe failures are
+ * fail-closed: launching Docker without knowing whether results/scratch can be written is unsafe.
+ */
+function diskCapacitySnapshot(): CapacitySnapshot {
+  let probePath = RESULTS_DIR;
+  let stats: ReturnType<typeof statfsSync> | null = null;
+  let lastError: unknown = null;
+
+  // mkdir can fail on a full filesystem before the stream reaches its main IIFE. Walk to an
+  // existing ancestor so the node can still emit a structured capacity event.
+  const requestedPathExists = existsSync(RESULTS_DIR);
+  for (;;) {
+    try {
+      stats = statfsSync(probePath);
+      break;
+    } catch (error) {
+      lastError = error;
+      if (requestedPathExists) break;
+      const parent = dirname(probePath);
+      if (parent === probePath) break;
+      probePath = parent;
+    }
+  }
+
+  if (!stats) {
+    return {
+      ok: false,
+      unavailable: true,
+      reason: `filesystem capacity probe unavailable: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+      path: RESULTS_DIR,
+      probePath,
+    };
+  }
+
+  const blockSize = Number(stats.bsize);
+  const availableBytes = Number(stats.bavail) * blockSize;
+  const totalBytes = Number(stats.blocks) * blockSize;
+  if (!Number.isFinite(blockSize) || blockSize <= 0 || !Number.isFinite(availableBytes) || !Number.isFinite(totalBytes)) {
+    return {
+      ok: false,
+      unavailable: true,
+      reason: 'filesystem capacity probe returned invalid counters',
+      path: RESULTS_DIR,
+      probePath,
+    };
+  }
+  return {
+    ...capacityDecision({ availableBytes, totalBytes, minFreeMb: QA_MIN_FREE_MB, minFreePercent: QA_MIN_FREE_PERCENT }),
+    unavailable: false,
+    path: RESULTS_DIR,
+    probePath,
+  };
+}
+
+function capacityEvent(capacity: CapacitySnapshot, context: string, appId?: string): Record<string, unknown> {
+  const free = capacity.availableMb === undefined ? (capacity.reason ?? 'free space could not be measured') : `${capacity.availableMb} MiB free`;
+  const reserve = capacity.thresholdMb === undefined ? '' : `; ${capacity.thresholdMb} MiB reserved`;
+  return {
+    event: 'node_capacity',
+    ...(appId ? { appId } : {}),
+    reason: capacity.unavailable ? 'capacity-probe-unavailable' : 'low-disk',
+    message: `${context}: ${free}${reserve}`,
+    ...capacity,
+    ts: Date.now(),
+  };
+}
 
 /**
  * Locate a usable Chromium binary from the Playwright browser cache directly,
@@ -110,7 +285,29 @@ const BLANK_SCREENSHOT_FALLBACK_BYTES = 4714;
 /** A page with even one line of text is hundreds of bytes bigger than a white page (observed: +955 to +1,875); this is the encoder's wobble. */
 const BLANK_SCREENSHOT_SLACK_BYTES = 128;
 
-const CHROME_SHOT_FLAGS = ['--headless=new', '--no-sandbox', '--disable-gpu', '--hide-scrollbars', '--window-size=1280,800'];
+/**
+ * Keep the screenshot browser focused on the app under test.  Chromium's default profile starts
+ * background services (component updates, push registration, sync and extensions) that can keep a
+ * websocket-heavy app's page load open indefinitely.  On a fleet node that looks like a random
+ * SIGKILL because the old runner only reported the signal used by its timeout.  These flags are
+ * supported by the Playwright-managed Chromium builds we copy to the nodes and do not change the
+ * rendered page itself.
+ */
+const CHROME_SHOT_FLAGS = [
+  '--headless=new',
+  '--no-sandbox',
+  '--disable-gpu',
+  '--disable-dev-shm-usage',
+  '--disable-background-networking',
+  '--disable-component-update',
+  '--disable-default-apps',
+  '--disable-extensions',
+  '--disable-sync',
+  '--no-first-run',
+  '--no-default-browser-check',
+  '--hide-scrollbars',
+  '--window-size=1280,800',
+];
 
 /**
  * How big a genuinely blank screenshot is, measured with THIS binary and THESE flags: a screenshot of about:blank. The
@@ -149,6 +346,25 @@ function isBlankScreenshot(path: string, chromeBin: string): boolean {
   }
 }
 
+// <screenshot-diagnostics>
+/** Keep timeout diagnostics distinct from an external SIGKILL or a normal browser failure. */
+function screenshotDiagnostic(input: {
+  blank: boolean;
+  timedOut: boolean;
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  stderr: string;
+  elapsedMs: number;
+}): string {
+  const errTail = input.stderr.replace(/\s+/g, ' ').trim().slice(-160);
+  if (input.blank) return 'screenshot blank (page load timed out before paint)';
+  if (input.timedOut) {
+    return `screenshot timed out after ${Math.round(input.elapsedMs / 1000)}s (browser process killed)${errTail ? ` | ${errTail}` : ''}`;
+  }
+  return `screenshot failed: exit=${input.status ?? 'null'}${input.signal ? ` signal=${input.signal}` : ''}${errTail ? ` | ${errTail}` : ''}`;
+}
+// </screenshot-diagnostics>
+
 function captureScreenshot(
   chromeBin: string,
   screenshotPath: string,
@@ -159,6 +375,7 @@ function captureScreenshot(
   // Whatever is at this path is from an EARLIER run (the directory is reused). If this capture is killed before it writes, an old file
   // would be judged as if it were this attempt's: jellyfin's "blank" in 2026-10 was a 4,714-byte PNG from June.
   rmSync(screenshotPath, { force: true });
+  const startedAt = Date.now();
   const ss = spawnSync(
     chromeBin,
     [
@@ -171,13 +388,20 @@ function captureScreenshot(
     ],
     { timeout: opts.spawnTimeoutMs, killSignal: 'SIGKILL', stdio: 'pipe' },
   );
+  const elapsedMs = Date.now() - startedAt;
+  const spawnError = ss.error as NodeJS.ErrnoException | undefined;
+  const timedOut = spawnError?.code === 'ETIMEDOUT' || /timed out|ETIMEDOUT/i.test(spawnError?.message ?? '');
   const wrote = ss.status === 0 && existsSync(screenshotPath);
   const blank = wrote && isBlankScreenshot(screenshotPath, chromeBin);
   if (wrote && !blank) return { ok: true, diag: '' };
-  const errTail = (ss.stderr?.toString() ?? '').replace(/\s+/g, ' ').trim().slice(-160);
-  const diag = blank
-    ? 'screenshot blank (page load timed out before paint)'
-    : `screenshot failed: exit=${ss.status ?? 'null'}${ss.signal ? ` signal=${ss.signal}` : ''}${errTail ? ` | ${errTail}` : ''}`;
+  const diag = screenshotDiagnostic({
+    blank,
+    timedOut,
+    status: ss.status,
+    signal: ss.signal,
+    stderr: ss.stderr?.toString() ?? '',
+    elapsedMs,
+  });
   return { ok: false, diag };
 }
 
@@ -253,6 +477,9 @@ function toQAResult(result: Record<string, unknown>): Record<string, unknown> {
     retried: result.retried ?? false,
     attempts: result.attempts ?? 1,
     failKind: result.failKind ?? null,
+    ...(result.firstAttemptScore ? { firstAttemptScore: result.firstAttemptScore } : {}),
+    ...(result.firstAttemptFailKind ? { firstAttemptFailKind: result.firstAttemptFailKind } : {}),
+    ...(result.firstAttemptNotes ? { firstAttemptNotes: result.firstAttemptNotes } : {}),
     mcp: result.mcp ?? false, // true for MCP protocol-smoke verdicts (lets triage bucket drift correctly)
     timestamp: new Date(ts).toISOString(),
   };
@@ -333,7 +560,9 @@ function registryFailureSignals(text: string): { rateLimited: boolean; notFound:
       /manifest unknown|name unknown|repository does not exist|no such image|manifest for \S+ not found|: not found\b|\b404 not found\b|status(?: code)?:? 404\b/i.test(
         text,
       ),
-    auth: /failed to authorize|unauthorized|authentication required|\bdenied\b/i.test(text),
+    auth: /failed to authorize|unauthorized|authentication required|permission[_ ]denied|token provided does not match expected scopes|\bdenied\b/i.test(
+      text,
+    ),
   };
 }
 
@@ -348,6 +577,25 @@ function headTail(text: string, max = 600): string {
   return `${t.slice(0, head)} […] ${t.slice(t.length - (max - head))}`;
 }
 // </registry-failure>
+
+// <compose-transient>
+// (Extracted by scripts/__tests__/qa-stream-compose-retry.test.ts: keep this function self-contained.)
+/**
+ * A compose dependency can be reported as unhealthy while its first boot is still converging. This
+ * is deliberately narrower than "compose failed": registry/auth/missing-image/port/config failures
+ * are not made slower or less truthful by an automatic retry. The caller records the first attempt
+ * regardless of whether the second attempt recovers.
+ */
+function isRetryableComposeFailure(text: string): boolean {
+  return /dependency(?: .*?)?failed to start|container .*\bis unhealthy\b|health ?check .*\b(?:unhealthy|starting)\b|context deadline exceeded|network is unreachable|connection (?:timed out|reset by peer)|i\/o timeout|temporary failure in name resolution|tls handshake timeout/i.test(
+    text,
+  );
+}
+
+function isDockerStartTimeout(text: string): boolean {
+  return /spawn(?:sync)?\/bin\/sh\s+etimedout|docker(?: run)?[^\n]{0,80}\b(?:timed out|timeout)\b|\bETIMEDOUT\b/i.test(text);
+}
+// </compose-transient>
 
 /**
  * Async, non-blocking variant of execQuiet — and the reason the per-app watchdog can actually fire.
@@ -415,6 +663,20 @@ async function forceTeardown(o: {
       /* best-effort — a wipe failure must never block dispatch */
     }
   }
+}
+
+/**
+ * Preserve enough compose state to explain a failed dependency without copying container logs or
+ * environment values into the result stream. `docker compose up` often reports only the dependent
+ * service's error (for example, "dependency cap-mysql failed to start"); the `ps -a` snapshot names
+ * the actual unhealthy/exited service and its exit code. It is bounded and best-effort so diagnosis
+ * can never turn a start failure into a stuck QA slot.
+ */
+async function composeFailureSnapshot(project: string, ymlPath: string): Promise<string> {
+  const r = await execAsync(`docker compose -p ${shq(project)} -f ${shq(ymlPath)} ps -a --format json`, 20_000);
+  if (!r.ok) return `compose status unavailable: ${headTail(r.err, 320)}`;
+  const status = headTail(r.out, 1000);
+  return status ? `compose status: ${status}` : 'compose status: no containers';
 }
 
 interface AppConfig {
@@ -950,6 +1212,12 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
           result.notes = `needs a host device the node does not have: ${run.err.slice(-240)}`;
           return result;
         }
+        if (isDockerStartTimeout(run.err)) {
+          result.score = 'timeout';
+          result.failKind = 'timeout';
+          result.notes = `container start timed out${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${run.err.slice(-300)}`;
+          return result;
+        }
         result.score = 'error';
         result.failKind = 'start';
         result.notes = `Container start failed${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${run.err.slice(-300)}`;
@@ -1305,14 +1573,19 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
 
 /**
  * Per-app entry point used by the worker pool. Runs attemptApp, and on a transient failure
- * (cold-pull `error` from a `pull` failKind, or a readiness `timeout`) retries ONCE — attemptApp
+ * (cold-pull `error` from a `pull` failKind, a readiness `timeout`, or a narrow compose dependency
+ * healthcheck race) retries ONCE — attemptApp
  * tears down its own containers in `finally`, so the retry starts clean and hits the now-warm
  * image cache. Emits exactly one app_result (the pool/server count `done` off it), so a retry
  * never double-counts. Real app crashes (`fail`), missing/404 images (`skip`), and structural
  * harness errors (port-map, dir-vs-file mount) are NOT retried.
  */
 function isRetryableTransient(result: Record<string, unknown>): boolean {
-  return result.failKind === 'pull' || result.failKind === 'timeout';
+  return (
+    result.failKind === 'pull' ||
+    result.failKind === 'timeout' ||
+    (result.failKind === 'compose' && isRetryableComposeFailure(String(result.notes ?? '')))
+  );
 }
 
 /** attemptApp + the single transient-failure retry, split out so qaApp can race it against the watchdog. */
@@ -1321,10 +1594,13 @@ async function attemptWithRetry(appId: string): Promise<Record<string, unknown>>
   if (isRetryableTransient(result)) {
     const firstScore = String(result.score);
     const firstNotes = String(result.notes ?? '');
+    const firstFailKind = String(result.failKind ?? '');
+    if (firstFailKind === 'compose') phase(appId, 'starting', 'Transient compose dependency failure; retrying once after clean teardown');
     const retry = await attemptApp(appId);
     retry.retried = true;
     retry.attempts = 2;
     retry.firstAttemptScore = firstScore;
+    retry.firstAttemptFailKind = firstFailKind;
     retry.firstAttemptNotes = firstNotes;
     result = retry;
   } else {
@@ -1435,6 +1711,10 @@ function slotWeightFor(appId: string): number {
   return 1;
 }
 
+// A low-capacity node is a runner condition, not an app verdict. The fleet dispatcher receives
+// node_capacity, requeues buffered ids, and removes this node from the active work-stealing pool.
+let capacityBlocked = false;
+
 /**
  * Run qaApp over every appId with bounded intra-node concurrency (QA_CONCURRENCY total slots).
  * Each app consumes slotWeightFor(app) slots (multi-service=2, single=1) — a weighted semaphore —
@@ -1453,6 +1733,11 @@ async function runWithConcurrency(next: () => Promise<string | null>): Promise<v
   // `next` may BLOCK (stdin work-stealing mode waits for the server to feed the next id), which is
   // fine — awaiting it yields to in-flight apps' finalizers.
   const fetchNext = async (): Promise<string | null> => {
+    if (stopRequested) {
+      ended = true;
+      lookahead = null;
+      return null;
+    }
     if (lookahead !== null) {
       const v = lookahead;
       lookahead = null;
@@ -1469,6 +1754,16 @@ async function runWithConcurrency(next: () => Promise<string | null>): Promise<v
     while (available > 0) {
       const appId = await fetchNext();
       if (appId === null) break; // source drained — let in-flight finish
+      const capacity = diskCapacitySnapshot();
+      if (!capacity.ok) {
+        capacityBlocked = true;
+        emit(capacityEvent(capacity, 'capacity guard stopped dispatch', appId));
+        // The server has not observed app_start for this id. It requeues this id and every other
+        // id already buffered for this node, then lets the in-flight apps drain before the runner
+        // exits with a distinct capacity code.
+        ended = true;
+        break;
+      }
       const weight = Math.min(slotWeightFor(appId), total); // clamp so an over-budget app can't deadlock
       if (weight > available && inflight.size > 0) {
         lookahead = appId; // no room right now — stash and wait for a finisher
@@ -2350,7 +2645,10 @@ async function composeUp(
   // `spawnSync /bin/sh ETIMEDOUT` (notesnook's 7-service stack, hermes-agent, n8n). The per-app watchdog
   // stays the real backstop for a genuinely-stuck stack (force-fails to `timeout`, not `error`).
   const up = await execAsync(`docker compose -p ${project} -f ${ymlPath} up -d --quiet-pull`, 1_200_000);
-  if (!up.ok) return { ok: false, hostPort: 0, statsName: '', project, err: up.err.slice(-600) };
+  if (!up.ok) {
+    const snapshot = await composeFailureSnapshot(project, ymlPath);
+    return { ok: false, hostPort: 0, statsName: '', project, err: `${up.err.slice(-600)}\n${snapshot}` };
+  }
   // docker compose port may fail if service exited before port was bound — retry briefly
   let portMap = await execAsync(`docker compose -p ${project} -f ${ymlPath} port ${main?.name} ${mainPort}`);
   if (!portMap.ok) {
@@ -2497,6 +2795,7 @@ if (!STDIN_MODE && appIds.length === 0) {
   process.stderr.write('Usage: qa-stream.ts <app-id> [app-id...]   (or QA_STDIN=1 to read ids from stdin)\n');
   process.exit(1);
 }
+installRunControl();
 
 /**
  * Stdin line reader for work-stealing mode. Buffers partial chunks, hands out one whole app id per
@@ -2506,7 +2805,7 @@ if (!STDIN_MODE && appIds.length === 0) {
  */
 function makeStdinReader(): () => Promise<string | null> {
   const queue: string[] = [];
-  let closed = false;
+  let closed = stopRequested;
   let wake: (() => void) | null = null;
   let buf = '';
   const pump = () => {
@@ -2533,12 +2832,15 @@ function makeStdinReader(): () => Promise<string | null> {
   });
   return async function nextFromStdin(): Promise<string | null> {
     for (;;) {
+      if (stopRequested) return null;
       const id = queue.shift();
       if (id !== undefined) return id;
       if (closed) return null;
       await new Promise<void>((res) => {
         wake = res;
+        stopWake = res;
       });
+      stopWake = null;
     }
   };
 }
@@ -2603,10 +2905,35 @@ void (async () => {
     ts: batchStart,
   });
 
+  // Check capacity before touching the durable result file. On a full node, even truncating an
+  // existing file can fail with ENOSPC; emit a structured control event before returning so the
+  // fleet server can requeue buffered ids instead of treating the runner as a generic SSH error.
+  const initialCapacity = diskCapacitySnapshot();
+  if (!initialCapacity.ok) {
+    capacityBlocked = true;
+    emit(capacityEvent(initialCapacity, 'capacity guard stopped before results reset'));
+    emit({ event: 'batch_done', total: 0, capacityBlocked: true, ts: Date.now() });
+    process.exitCode = 75;
+    return;
+  }
+
   // Start results.json fresh so it holds exactly THIS run's results (qa-aggregate.ts expects a
   // per-run array). Each qaApp appends to it as it finishes, so a dropped SSH pipe still leaves a
-  // complete file behind for the aggregator.
-  writeFileSync(RESULTS_JSON, '[]');
+  // complete file behind for the aggregator. A write race is still best-effort: stdout remains
+  // authoritative, and a newly-low filesystem is reported as a capacity condition.
+  try {
+    writeFileSync(RESULTS_JSON, '[]');
+  } catch (error) {
+    const afterWriteCapacity = diskCapacitySnapshot();
+    if (!afterWriteCapacity.ok) {
+      capacityBlocked = true;
+      emit(capacityEvent(afterWriteCapacity, 'capacity guard stopped after results reset failed'));
+      emit({ event: 'batch_done', total: 0, capacityBlocked: true, ts: Date.now() });
+      process.exitCode = 75;
+      return;
+    }
+    process.stderr.write(`results.json reset failed: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
 
   // Build the app source for the worker pool: a blocking stdin queue (work-stealing) or a cursor
   // over the fixed argv list.
@@ -2629,7 +2956,8 @@ void (async () => {
   // Persist the batch summary alongside results.json for qa-aggregate.ts to SCP.
   writeBatchSummary(batchStart);
 
-  emit({ event: 'batch_done', total: countResults(), ts: Date.now() });
+  emit({ event: 'batch_done', total: countResults(), stopped: stopRequested, ts: Date.now() });
+  if (capacityBlocked) process.exitCode = 75;
   // Let any background watchdog teardowns finish (bounded grace) so we don't leak their containers.
   await drainTeardowns(15_000);
   // runWithConcurrency has awaited every TRACKED qaApp, so in the normal case the event loop now
@@ -2638,7 +2966,7 @@ void (async () => {
   // abandoned attemptApp lingering as a dangling coroutine (its readiness-loop setTimeout). Arm an
   // UNREF'd fallback: it never keeps the process alive itself, but if something else is pinning the
   // loop it fires shortly after (stdout long since flushed) and force-exits — the node never hangs.
-  setTimeout(() => process.exit(0), 2000).unref();
+  setTimeout(() => process.exit(capacityBlocked ? 75 : 0), 2000).unref();
 })().catch((err) => {
   process.stderr.write(`qa-stream fatal: ${err?.stack || err}\n`);
   process.exit(1);

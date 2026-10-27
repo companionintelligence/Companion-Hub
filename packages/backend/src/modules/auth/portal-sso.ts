@@ -24,6 +24,79 @@ export interface PortalSsoState {
    * 'packaged', which is the safe default (see resolvePortalDesktopDeepLinkScheme).
    */
   desktopChannel?: DesktopChannel;
+  /**
+   * Ties this sign-in to the browser that started it. `/start` mints this value,
+   * stores it here and also drops it as a short-lived httpOnly cookie. `/callback`
+   * only completes the sign-in when the request carries the same value back, so a
+   * callback opened in a different browser cannot finish this flow or take over the
+   * initiating browser's session. Optional because states issued before this field
+   * existed may still be in flight; those fail closed at the callback.
+   */
+  binding?: string;
+}
+
+/**
+ * Prefix of the httpOnly cookie that binds a Portal sign-in to its initiating browser. Each
+ * sign-in gets its own cookie, named after its `state`, so two sign-ins started in one browser
+ * (two tabs, or a desktop sign-in button clicked twice, which opens two browser tabs) do not
+ * overwrite each other's binding.
+ */
+const PORTAL_SSO_BINDING_COOKIE_PREFIX = 'ci_hub_portal_sso_';
+
+/** The plain-http name of one sign-in's binding cookie. Only called with a `state` this Hub minted. */
+export function portalBindingCookieName(state: string): string {
+  return `${PORTAL_SSO_BINDING_COOKIE_PREFIX}${state}`;
+}
+
+/**
+ * Where the plain-http binding cookie is sent: the callback, the only route that reads it. `/start`
+ * may set a cookie for another path, and a wider scope would send every in-flight binding along with
+ * the polled `/api/auth/portal/*` routes (session-hint, desktop-handoff-status).
+ */
+const PORTAL_SSO_COOKIE_PATH = '/api/auth/portal/callback';
+
+/**
+ * Name, Path and Secure of one sign-in's binding cookie, for a request that is (`secure`) or is not
+ * served over https. `/start` sets it and the callback reads and clears it with the same answer.
+ *
+ * Over https the cookie is a `__Host-` cookie: Secure, Path=/ and no Domain. A browser stores a
+ * cookie with that prefix only when the host that is answering sets it that way, so no other host
+ * under the same parent domain (another Hub or app in a shared zone, which can set cookies for that
+ * zone) can put one in the browser with this name. The prefix requires Path=/, so over https the
+ * cookie goes with every request to this host until the callback clears it or it expires. Plain http
+ * cannot use the prefix, because it requires Secure, so there the name is unprefixed and the cookie
+ * stays on the callback path.
+ *
+ * The callback reads only the name its own scheme gives and never falls back to the other one. A
+ * `/start` and callback that disagree on the scheme (a proxy that forwards the protocol for one and
+ * not the other) therefore find no cookie and are refused like any other mismatch: accepting the
+ * plain name on an https callback would accept a cookie that any host under the parent can set.
+ */
+export function portalBindingCookie(state: string, secure: boolean): { name: string; path: string; secure: boolean } {
+  if (secure) {
+    return { name: `__Host-${portalBindingCookieName(state)}`, path: '/', secure: true };
+  }
+  return { name: portalBindingCookieName(state), path: PORTAL_SSO_COOKIE_PATH, secure: false };
+}
+
+/** Lifetime of a Portal sign-in state and its binding cookie. Keep both in step. */
+export const PORTAL_SSO_STATE_TTL_SECONDS = 10 * 60;
+
+/**
+ * Constant-time check that the browser presented the same binding the `/start` state stored.
+ * Returns false when either side is missing so a state without a stored binding fails closed.
+ * Both sides are `unknown` because cookie-parser turns a `j:`-prefixed cookie into an object.
+ */
+export function portalBindingMatches(stored: unknown, presented: unknown): boolean {
+  if (typeof stored !== 'string' || typeof presented !== 'string' || !stored || !presented) {
+    return false;
+  }
+  const storedBytes = Buffer.from(stored);
+  const presentedBytes = Buffer.from(presented);
+  if (storedBytes.length !== presentedBytes.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(storedBytes, presentedBytes);
 }
 
 export interface PortalDesktopExchange {

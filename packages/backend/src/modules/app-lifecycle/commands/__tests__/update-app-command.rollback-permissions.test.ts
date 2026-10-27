@@ -14,10 +14,11 @@ import { DockerService } from '@/modules/docker/docker.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import type { AppUrn } from '@ci-hub/common/types';
 
-vi.mock('@ci-hub/common/schemas', async (importOriginal) => ({
-  ...((await importOriginal()) as object),
-  parseComposeJson: vi.fn().mockReturnValue({ services: [], overrides: [] }),
-}));
+// An installed compose is read with parseInstalledComposeJson: one stub stands for both parses.
+vi.mock('@ci-hub/common/schemas', async (importOriginal) => {
+  const parse = vi.fn().mockReturnValue({ services: [], overrides: [] });
+  return { ...((await importOriginal()) as object), parseComposeJson: parse, parseInstalledComposeJson: parse };
+});
 
 // Real files with real permission bits: the suite's memfs mock cannot refuse a delete, which is how a
 // rollback that could not put a root container's data back went unnoticed.
@@ -91,6 +92,7 @@ describe.skipIf(!canEnforcePermissions)('UpdateAppCommand rollback over data the
     const configuration = mock<ConfigurationService>();
     configuration.get.mockReturnValue({ maxBackups: 0 } as never);
     const appsRepository = mock<AppsRepository>();
+    appsRepository.getApps.mockResolvedValue([]);
     appsRepository.getAppByUrn.mockResolvedValue({ maxBackups: null } as never);
 
     docker = mock<DockerService>();

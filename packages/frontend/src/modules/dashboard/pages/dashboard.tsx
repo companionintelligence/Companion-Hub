@@ -19,7 +19,7 @@ import { HorizontalAppList } from '../components/horizontal-app-list';
 import { PoolSetupCard } from '../components/pool-setup-card';
 import { QueuedInstallsIndicator } from '../components/queued-installs-indicator';
 import { useInstallQueue } from '@/modules/app/helpers/use-install-queue';
-import { memoryConnectResultToastKey } from '@/modules/app/helpers/memory-provider';
+import { memoryConnectResultApp, memoryConnectResultToast, memoryConnectResultToastKey } from '@/modules/app/helpers/memory-provider';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 import { Button } from '@/components/ui/Button';
 import { diskStatCopy } from './disk-stat';
@@ -45,22 +45,6 @@ export default () => {
 
     navigate({ pathname: location.pathname, search: location.search, hash: location.hash }, { replace: true, state: null });
   }, [location.hash, location.pathname, location.search, location.state, navigate, t]);
-
-  // Surface the outcome of a memory-connect attempt that bounced back here (the
-  // Hub's memory-connect start/callback redirect to `/?memoryConnect=…`, preserved
-  // across the root redirect). Toast once with a stable id (idempotent under
-  // StrictMode's double-invoke), then strip the marker so a refresh doesn't repeat it.
-  useEffect(() => {
-    const marker = searchParams.get('memoryConnect');
-    const messageKey = memoryConnectResultToastKey(marker);
-    if (!messageKey) return;
-
-    toast.error(t(messageKey), { id: 'memory-connect-result' });
-
-    const next = new URLSearchParams(searchParams);
-    next.delete('memoryConnect');
-    setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams, t]);
 
   const {
     data: systemData,
@@ -90,6 +74,27 @@ export default () => {
   const installedApps = appsData?.installed ?? [];
   const runningCount = installedApps.filter(({ app }) => app.status === 'running').length;
   const stoppedCount = installedApps.filter(({ app }) => app.status === 'stopped').length;
+
+  // Surface the outcome of a memory-connect attempt that bounced back here (the
+  // Hub's memory-connect start/callback redirect to `/?memoryConnect=…`, preserved
+  // across the root redirect). Toast once with a stable id (idempotent under
+  // StrictMode's double-invoke), then strip the marker so a refresh doesn't repeat it.
+  // A `busy` result names its app, so it waits for the installed list to say what that app is called.
+  useEffect(() => {
+    const marker = searchParams.get('memoryConnect');
+    if (!memoryConnectResultToastKey(marker)) return;
+    if (memoryConnectResultApp(marker, searchParams.get('app')) && appsPending) return;
+
+    const result = memoryConnectResultToast(marker, searchParams.get('app'), installedApps);
+    if (result) {
+      toast.error(t(result.key, result.params), { id: 'memory-connect-result' });
+    }
+
+    const next = new URLSearchParams(searchParams);
+    next.delete('memoryConnect');
+    if (marker === 'busy') next.delete('app');
+    setSearchParams(next, { replace: true });
+  }, [appsPending, installedApps, searchParams, setSearchParams, t]);
 
   /*
    * The installed-apps payload carries `pendingRestart`, which is enough for the

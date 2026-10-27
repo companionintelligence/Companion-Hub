@@ -1,5 +1,5 @@
 import { Test, type TestingModule } from '@nestjs/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -615,10 +615,12 @@ describe('InferenceEnvResolver', () => {
     it('hands out a smaller installed model for background calls when it fits beside the chat model, else the chat model', async () => {
       const chat = {
         ...makeLlm('qwen3-8-27b-lemonade', 'Qwen3.8-27B-GGUF', false, 'lemonade'),
+        parameterScale: 27,
         requirements: { minVramMb: 18000, recommendedVramMb: 18000, minRamMb: 0, diskMb: 0 },
       } as CuratedModel;
       const small = {
         ...makeLlm('gemma-4-e4b-lemonade', 'Gemma-4-E4B-it-GGUF', false, 'lemonade'),
+        parameterScale: 4,
         requirements: { minVramMb: 3500, recommendedVramMb: 3500, minRamMb: 0, diskMb: 0 },
       } as CuratedModel;
       modelRegistry.getRecommendedModelsForHardware.mockReturnValue([chat, small]);
@@ -960,6 +962,21 @@ describe('InferenceEnvResolver', () => {
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('hermes-agent: the context cap (16384) is below its 64000-token floor'));
     });
 
+    it("sizes the window against the chat model's own ceiling, asked of its own engine", async () => {
+      setCap(null);
+      const memoryManager = {
+        modelCeilingMb: vi.fn().mockResolvedValue(1_000),
+        footprintSighting: vi.fn().mockResolvedValue(null),
+      };
+      Object.assign(service, { memoryManager });
+
+      const env = await service.resolve({ appSlug: 'openclaw' });
+
+      expect(memoryManager.modelCeilingMb).toHaveBeenCalledWith(baseProfile, 'ollama', 'qwen3-coder:30b');
+      // 1 GB holds no 30B window: the handout falls to the floor, where the node's 24 GB gave 65536.
+      expect(env.CI_LLM_NUM_CTX).toBe('4096');
+    });
+
     it('sizes exactly as before when no cap is set — the default is the old behaviour', async () => {
       setCap(null);
 
@@ -1110,6 +1127,126 @@ describe('InferenceEnvResolver', () => {
 
         expect(env.CI_LLM_NUM_CTX).toBe('32768');
       });
+    });
+  });
+
+  /*
+   * Until someone chooses a model, apps run on the model the setup wizard marks Default: of the models
+   * the engine has, the highest on the wizard's recommended list, else the first in catalog order. A
+   * Hub restored after pairing skips the wizard. Before #2113 the Default was the first in catalog
+   * order, which made Qwen 3.5 0.8B the Default over the recommended Qwen 3.5 4B.
+   */
+  describe('with no model chosen', () => {
+    const minimax = makeCapableLlm('minimax-m2-community-230b', 'gabegoodhart/minimax-m2:230b', { tools: true, contextWindow: 196608 });
+    const qwen = makeCapableLlm('qwen3-6-35b', 'qwen3.6:35b', { tools: true, contextWindow: 262144 });
+    const gemmaE2b = makeCapableLlm('gemma4-e2b', 'gemma4:e2b', { tools: true, contextWindow: 131072 });
+    const gemmaE4b = makeCapableLlm('gemma4-e4b', 'gemma4:e4b', { tools: true, contextWindow: 131072 });
+    const unifiedAmd: HardwareProfile = {
+      gpu: { available: true, vendor: 'amd', model: 'Radeon 8060S', vramMb: 0, unifiedMemory: true, driverVersion: '', runtimeAvailable: true },
+      npu: { available: false, model: '' },
+      ram: { totalMb: 125747, availableMb: 110000 },
+      cpu: { arch: 'x86_64', cores: 32, model: 'AMD Ryzen AI Max+ 395' },
+      effectiveInferenceMemoryMb: 88000,
+      tier: 'high',
+    };
+
+    beforeEach(() => {
+      hardwareInspector.getProfile.mockResolvedValue(unifiedAmd);
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([minimax, qwen]);
+      // Catalog order, which is the order the wizard falls back to among what the engine has.
+      modelRegistry.getModelsForHardware.mockReturnValue([gemmaE2b, gemmaE4b, qwen, minimax]);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3.6:35b', 'gemma4:e4b'] });
+    });
+
+    it("hands out the installed model highest on the wizard's list, not the first in catalog order", async () => {
+      const env = await service.resolve({ appSlug: 'ci-memory' });
+
+      expect(env.CI_CHAT_MODEL).toBe('qwen3.6:35b');
+      expect(modelRegistry.getModelsForHardware).toHaveBeenCalledWith('high', unifiedAmd, { includeRemoteHostBackends: true });
+      expect(logger.info).toHaveBeenCalledWith(
+        "[InferenceEnvResolver] ci-memory: no chat model chosen yet; handing out the setup wizard's default qwen3.6:35b",
+      );
+    });
+
+    it('hands out MiniMax M2 on 128 GB once the engine has it, ahead of a Gemma 4 E4B the list leaves out', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gabegoodhart/minimax-m2:230b', 'gemma4:e4b'] });
+
+      const env = await service.resolve({ appSlug: 'ci-memory' });
+
+      expect(env.CI_CHAT_MODEL).toBe('gabegoodhart/minimax-m2:230b');
+    });
+
+    it('hands out the first installed model in catalog order when the engine has none of the recommended ones', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma4:e4b', 'gemma4:e2b'] });
+
+      const env = await service.resolve({ appSlug: 'ci-memory' });
+
+      expect(env.CI_CHAT_MODEL).toBe('gemma4:e2b');
+    });
+
+    it('passes over a default the app cannot use for the next model in the same order', async () => {
+      const qwenNoTools = makeCapableLlm('qwen3-6-35b', 'qwen3.6:35b', { tools: false, contextWindow: 262144 });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([minimax, qwenNoTools]);
+      modelRegistry.getModelsForHardware.mockReturnValue([gemmaE2b, gemmaE4b, qwenNoTools, minimax]);
+
+      const env = await service.resolve({ appSlug: 'openclaw' });
+
+      expect(env.CI_CHAT_MODEL).toBe('gemma4:e4b');
+    });
+
+    it('ranks by the list the wizard shows, read at the onboarding tier, on a card the container runtime cannot reach yet', async () => {
+      const laptop: HardwareProfile = {
+        gpu: {
+          available: true,
+          vendor: 'nvidia',
+          model: 'RTX 3080 Mobile',
+          vramMb: 8192,
+          unifiedMemory: false,
+          driverVersion: '580',
+          runtimeAvailable: false,
+        },
+        npu: { available: false, model: '' },
+        ram: { totalMb: 63180, availableMb: 33000 },
+        cpu: { arch: 'x86_64', cores: 16, model: 'Intel Core i7-10875H' },
+        effectiveInferenceMemoryMb: 7680,
+        tier: 'cpu-only',
+      };
+      const qwen08b = makeCapableLlm('qwen3-5-0-8b', 'qwen3.5:0.8b', { tools: true, contextWindow: 262144 });
+      const qwen4b = makeCapableLlm('qwen3-5-4b', 'qwen3.5:4b', { tools: true, contextWindow: 262144 });
+      const qwen8b = makeCapableLlm('qwen3-8b', 'qwen3:8b', { tools: true, contextWindow: 40960 });
+      hardwareInspector.getProfile.mockResolvedValue(laptop);
+      hardwareInspector.computeTier.mockReturnValue('medium');
+      modelRegistry.getRecommendedModelsForHardware.mockImplementation((tier) => (tier === 'medium' ? [qwen4b, qwen8b] : [qwen8b, qwen4b]));
+      modelRegistry.getModelsForHardware.mockReturnValue([qwen08b, qwen4b, qwen8b]);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3.5:0.8b', 'qwen3.5:4b', 'qwen3:8b'] });
+
+      const env = await service.resolve({ appSlug: 'ci-memory' });
+
+      expect(env.CI_CHAT_MODEL).toBe('qwen3.5:4b');
+      expect(modelRegistry.getRecommendedModelsForHardware).toHaveBeenCalledWith('medium', laptop);
+    });
+
+    it('keeps the recommendation list when the engine has none of the models the wizard could mark', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gabegoodhart/minimax-m2:230b'] });
+      modelRegistry.getModelsForHardware.mockReturnValue([gemmaE2b, gemmaE4b]);
+
+      const env = await service.resolve({ appSlug: 'ci-memory' });
+
+      expect(env.CI_CHAT_MODEL).toBe('gabegoodhart/minimax-m2:230b');
+    });
+
+    it('hands out the model someone chose', async () => {
+      config.getInferencePreferences.mockReturnValue({
+        preferredBackend: null,
+        preferredModel: 'qwen3-6-35b',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === 'qwen3-6-35b' ? qwen : undefined));
+
+      const env = await service.resolve({ appSlug: 'ci-memory' });
+
+      expect(env.CI_CHAT_MODEL).toBe('qwen3.6:35b');
     });
   });
 

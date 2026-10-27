@@ -6,6 +6,7 @@ import {
   type ServiceInput,
   serviceSchema,
   collectServiceSecurityViolations,
+  collectTraefikLabelIssues,
   isReservedHubLabel,
   LOOPBACK_HOST_PORT_INTERFACE,
   TRUSTED_APP_SECURITY_ALLOWLIST,
@@ -13,7 +14,7 @@ import {
 import type { AppUrn } from '@ci-hub/common/types';
 import * as yaml from 'yaml';
 import { type BuiltService, ServiceBuilder } from './service.builder';
-import { TraefikLabelsBuilder, withAppStartingPage } from './traefik-labels.builder';
+import { labelsOfRoutersLosingTheirChain, TraefikLabelsBuilder, withAppStartingPage, withHubMiddlewaresFirst } from './traefik-labels.builder';
 import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
 import { requiresHubLoginOnPublicRoute } from '@/modules/apps/app-public-routing.helpers';
 import { isOfficialStoreApp } from '@/modules/apps/official-store.predicate';
@@ -72,6 +73,18 @@ export interface ComposeBuilderOptions {
    * host-sized recommendation: see the limits in `buildService`.
    */
   defaultAppCpuLimit?: string;
+  /**
+   * The ids of the apps the Hub knows about: installed ones and the ones its enabled stores list.
+   * An app's Traefik label names a router, service or middleware of its own only when no longer id
+   * among these covers the name (`collectTraefikLabelIssues`).
+   */
+  knownAppIds?: Iterable<string>;
+  /**
+   * Which of `APP_DOMAIN`, `APP_LOCAL_DOMAIN` and `APP_BASE_HOST` the Hub set in the app's env. An
+   * app's router rule may name only those (`collectTraefikLabelIssues`). Left out, a rule may name
+   * all three, as when the caller can't tell.
+   */
+  hostVariables?: Iterable<string>;
 }
 
 interface Network {
@@ -159,6 +172,8 @@ export class DockerComposeBuilder {
   private loopbackHostPort = false;
   private manifest?: Parameters<typeof requiresHubLoginOnPublicRoute>[1];
   private defaultAppCpuLimit?: string;
+  private knownAppIds: string[] = [];
+  private hostVariables?: string[];
 
   /**
    * @param posixPermissionsSupported Whether the app-data filesystem can carry POSIX
@@ -240,6 +255,12 @@ export class DockerComposeBuilder {
     }
     if (options.defaultAppCpuLimit !== undefined) {
       this.defaultAppCpuLimit = options.defaultAppCpuLimit.trim() || undefined;
+    }
+    if (options.knownAppIds !== undefined) {
+      this.knownAppIds = [...options.knownAppIds];
+    }
+    if (options.hostVariables !== undefined) {
+      this.hostVariables = [...options.hostVariables];
     }
     return this;
   }
@@ -487,11 +508,11 @@ export class DockerComposeBuilder {
       service.setEnvFile([envFile]);
     }
 
-    if ((params.isMain || params.addToMainNetwork) && !isolation?.disableMainNetwork) {
-      hubAppNetworkNames().forEach((networkName, index) => {
-        service.setNetwork(networkName, index === 0 ? 1 : 0);
-      });
-    }
+    // The Hub networks this service's container is on, which its labels may pin Traefik to.
+    const hubNetworks = (params.isMain || params.addToMainNetwork) && !isolation?.disableMainNetwork ? hubAppNetworkNames() : [];
+    hubNetworks.forEach((networkName, index) => {
+      service.setNetwork(networkName, index === 0 ? 1 : 0);
+    });
 
     const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
 
@@ -530,13 +551,39 @@ export class DockerComposeBuilder {
       traefikLabels = traefikBuilder.build();
     }
 
-    // The Hub's own labels go last so nothing an app declares replaces them, and its extra labels lose
-    // any reserved key: the v2 schema refuses those, but a v1 compose never meets that check.
-    const extraLabels = Object.fromEntries(Object.entries(params.extraLabels ?? {}).filter(([key]) => !isReservedHubLabel(key)));
+    // The Hub's own labels go last so nothing an app declares replaces them. Its extra labels lose any
+    // reserved key and any Traefik label that reaches past the app itself. A save refuses those, but
+    // a v1 compose never meets that check, and an installed compose saved before a rule existed is
+    // read with them kept (`parseInstalledComposeJson`), so this is where they are left out.
+    const appId = `${appName}-${appStoreId}`;
+    const leftOutLabels = new Map(
+      collectTraefikLabelIssues(params.extraLabels, appId, {
+        hubNetworks,
+        knownAppIds: this.knownAppIds,
+        hostVariables: this.hostVariables,
+      }).map((issue) => [issue.label, issue.params.owner ? `${issue.message}, it is ${issue.params.owner}'s` : issue.message]),
+    );
+    for (const key of Object.keys(params.extraLabels ?? {})) {
+      if (isReservedHubLabel(key)) {
+        leftOutLabels.set(key, 'CUSTOM_APP_ERROR_LABEL_RESERVED');
+      }
+    }
+    // A router left without the chain it asked for would serve without the Hub login that chain may
+    // have held, so the rest of that router goes too.
+    for (const [label, chainLabel] of labelsOfRoutersLosingTheirChain(leftOutLabels.keys(), params.extraLabels ?? {}, appId)) {
+      if (!leftOutLabels.has(label)) {
+        leftOutLabels.set(label, `${leftOutLabels.get(chainLabel)} on ${chainLabel}`);
+      }
+    }
+    for (const [label, rule] of leftOutLabels) {
+      console.warn(`! App "${appName}" service "${params.name}": label ${label} was left out [${rule}]`);
+    }
+    const extraLabels = Object.fromEntries(Object.entries(params.extraLabels ?? {}).filter(([key]) => !leftOutLabels.has(key)));
     service
       .setLabels({ ...traefikLabels, ...extraLabels, ...defaultLabels })
-      .interpolateVariables(`${appName}-${appStoreId}`, localDomain)
+      .interpolateVariables(appId, localDomain)
       // After interpolation, so a manifest's `{{CI_HUB_APP_ID}}` router is the same router as ours.
+      .transformLabels((labels) => withHubMiddlewaresFirst(labels, traefikLabels))
       .transformLabels(withAppStartingPage);
 
     return service.build();

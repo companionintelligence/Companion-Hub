@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-10-21 (Memory connect: page views are read-only, a finished connect takes over)
+> **Last updated:** 2026-10-26 (a stopped Public Web app stays in the Cloudflare sync)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -266,6 +266,11 @@ is set, so the source-address check alone passed public tunnel traffic with no c
   inside the appliance when its resolved address is private, none of `TUNNEL_MARKER_HEADERS` is
   present, and every hop of `x-forwarded-for` is private. An internal request is admitted before
   `Authorization` is read, so an app sending `Bearer ollama` on every turn costs no key-store lookup.
+  The tailnet (100.64.0.0/10, `fd7a:115c:a1e0::/48`) counts as private, so a tailnet caller is admitted
+  here by default. With `HUB_INFERENCE_TAILNET_AUTH=require-key` the guard passes
+  `{ tailnetIsOutside: true }` and `internalOriginRefusal` answers `tailnet-address` for a resolved
+  address or forwarded hop on the tailnet, which sends the caller to leg 2. Only this guard asks; the
+  app-only guards (`InternalOriginGuard`, `AppContainerOriginGuard`) and Portal SSO keep the default.
 - **Leg 2, key.** Otherwise the request needs `Authorization: Bearer <key>` where the token is
   64 lowercase hex (`HUB_API_KEY_SHAPE` in `api-key.service.ts` — the one definition `AuthMiddleware`
   screens `qa:read` tokens with too) and resolves with the `inference` scope. The guard sets
@@ -318,6 +323,41 @@ What cancelling an install (`AppLifecycleService.cancelOperation`) does depends 
 - A running install's abort reaches the pull or `compose up`, and the worker compensates and sends
   `install_cancelled`. From `finalizing` on, the cancel is refused.
 
+## One lifecycle operation per app
+
+Every lifecycle command (install, start, stop, restart, update, uninstall, reset, backup and
+restore) claims its app in `AppOperationRegistry` right after its grant check
+(`AppLifecycleService.withOperationClaim`) in one synchronous step. `register` takes the claim over
+once the command is queued. While another command holds the app, a new one is refused with a
+409 that names what holds it (`APP_ERROR_UNINSTALL_IN_PROGRESS`, `APP_ERROR_UPDATE_IN_PROGRESS` and
+the rest) before it reads or writes the row. An entry older than `operationStaleAfterMs`, the window
+the status sync also uses, no longer holds the app. A force stop registers over a live entry
+without dropping another command's claim. It still takes the per-app lock first, so it waits behind a
+command that holds it.
+
+The restarts the Hub owes an app after a settings save or a device key change
+(`RESTARTS_THAT_WAIT_FOR_THE_APP`) wait for the operation holding the app instead of taking its 409,
+and leave alone an app that operation left stopped. A credential change (a Hub access rotate, a
+Memory connect, disconnect or key rotation) holds the app first through
+`AppLifecycleService.withAppHeld`, so it is refused before anything is revoked and its restart runs
+under the same claim. The Memory connect callback, the key rotation sweep and the Memory status
+poll use `withAppHeldUnlessBusy`: the callback lands on `/?memoryConnect=busy&app=<urn>` and the
+other two try a busy app again on their next round. In `MemoryConnectService` the order is always
+the grant and an ownership read, then the app's hold, then the connection lock for the revoke and
+the rows, then the restart after the lock. Nothing waits for the app while holding that lock.
+
+`installApp` checks the grant first, then refuses a second install call for the same app
+(`beginInstallCall`), then reads the row. A row left `installing` with no operation under way is
+retried like a failed install; a row left `uninstalling` is refused. It claims the app right before
+it writes anything. `GET /api/apps/:urn` reports the operation under way in `operation`, an install
+still in its checks included. The `operation_change` event carries it to every open page.
+
+Before it registers, an install runs the bundle download and the image architecture check side by
+side. The check starts on the compose the store already holds and runs again only when the
+downloaded compose names other images. Each image's registry is asked at once. One
+`[install] <urn> took N ms (grant ..., bundle ..., architecture ...)` line per install call says how
+long each check took.
+
 ## Install lifecycle recovery
 
 The UI "install queue" is derived from DB rows with `status = 'installing'`, not a durable job table.
@@ -353,8 +393,9 @@ only CI-Cloud knows whether a hostname really routes here.
 - `reconcileCustomDomains` (`modules/app-lifecycle/exposure-sync.service.ts`) joins each delivered
   `targetHostname` against the app's own platform hostname and writes `app.custom_domain`. It runs
   last in the sync and in its own try/catch, so a DB error cannot swallow the per-app DNS reporting
-  above it. Apps absent from the payload (stopped, or excluded for a release pass) keep their
-  binding — "not asked about" is not "unbound".
+  above it. Apps absent from the payload (still installing, a failed install or excluded for a
+  release pass) keep their binding: "not asked about" is not "unbound". A stopped app is in the
+  payload (`CLOUDFLARE_PUBLISHED_STATUSES`), so its binding follows what CI-Cloud delivers.
   A domain CI-Cloud reports against two targets is a rebind in flight: it is dropped from both,
   and an app already serving on it **holds** its binding rather than being unbound by the drop.
 - `generateEnvFile` emits the bound hostname for `APP_PUBLIC_URL` / `APP_PUBLIC_HOSTNAME` /
@@ -538,6 +579,19 @@ waiting or loading when the reset runs is refused once its load ends
 and drops the backoff of that apps check (`PairingAppRestoreService.forget()`).
 `state/inference-footprint-sightings.json` and `state/tailscale-serve-ownership.json` stay: one
 describes this hardware and the other names the Tailscale Serve listeners this Hub published.
+
+The truncate takes `app_store` too, so the stores a person added go for good. Only boot writes the
+CI Marketplace row (`AppStoreService.registerCloudAppStore`), so `restoreCloudAppStore` writes it
+again right after the reset and rebuilds the marketplace from the table. The catalog it downloads
+then (`pullRepositories`, in the background as at boot) is what the restore after the next pairing
+installs from. A full download writes the folder of every app Portal lists, a dozen at a time, so a
+pairing soon after the reset can meet it half done. Read half done, the catalog lacked the apps the
+download had not reached, the restore skipped them as unlisted and the next sync released them. So the
+restore waits up to a minute for a download under way to end (`ReposHelpers.waitForCatalogDownloads`)
+before it reads the catalog. One still running then holds the apps check, which asks again 5 s later
+without backing off. `PairingAppRestoreService.forget()` also drops the cooldown of its own
+catalog download, which would otherwise keep a pairing within ten minutes of the last one from
+downloading the catalog the reset emptied.
 
 ## The four engines, or two endpoints
 

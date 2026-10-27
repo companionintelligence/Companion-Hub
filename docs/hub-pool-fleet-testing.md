@@ -822,6 +822,29 @@ without holding its token must still fail.
 **FAIL** anything other than 401. Being on the tailnet must not by itself grant use of a peer-facing
 route; only a device this Hub has explicitly paired with can.
 
+### 9.3 A tailnet device needs a key, when the Hub is set to ask for one
+
+Only meaningful with `HUB_INFERENCE_TAILNET_AUTH=require-key` in the Hub's environment (restart the Hub
+after setting it). Without it the tailnet is inside the appliance by design and the first command
+returns 200. Mint a key first with `cihub api-key create --scope inference`.
+
+```bash
+$ curl -s -o /dev/null -w '%{http_code}\n' https://<core-node>/api/inference/pool/v1/models
+$ curl -s -o /dev/null -w '%{http_code}\n' https://<core-node>/api/inference/pool/v1/models \
+  -H 'Authorization: Bearer <inference-key>'
+core$ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:5002/api/inference/pool/v1/models
+```
+
+**Expected** with the setting on: `401`, `200`, `200`. The refusal body names the tailnet
+(`"code":"missing_api_key"`, message "…requires an API key from callers on the tailnet…") and the log line
+says `origin=tailnet-address`. The third is a call from the node itself, which stays inside.
+
+**PASS** `401`, `200`, `200`; and the pool still routes (`cihub pool log` keeps gaining rows from a paired
+peer, whose traffic is signed and never touches this guard).
+**FAIL** the first returns 200 (the proxy did not see the tailnet client: check that `tailscale serve`
+forwards `X-Forwarded-For`, or that the caller's tailnet address is the request's source) or the third
+returns 401 (a container or local caller was counted as tailnet).
+
 ---
 
 ## 10. Teardown

@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException, type OnApplicationShutdown, Optional } from '@nestjs/common';
 import { probeLocalSizing } from './context-cost.util';
-import { MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
+import { handoutCeilingMb, MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
@@ -27,6 +27,7 @@ import {
 } from './app-model-handout';
 import { handoutRecord, readHandoutRecords, removeHandoutRecords, writeHandoutRecords, type RecordedHandout } from './app-handout-record';
 import { catalogEmbedsOn, embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
+import { installedDefaultChatModel } from './default-chat-model-handout';
 
 // Only Hub-managed sibling apps use the bootstrap credentials endpoints.
 // Standalone services (for example companion-memory / CI-Server) receive
@@ -324,8 +325,26 @@ export class AppCredentialsService implements OnApplicationShutdown {
           });
     const ollamaEndpointReady = !!(ollamaHealth.running && ollamaHealth.healthy);
 
-    const candidates = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile).filter((m) => m.backend === backendType);
     const preferredModelId = preferences.preferredModel;
+    const recommended = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile).filter((m) => m.backend === backendType);
+    // With no model chosen, the setup wizard's Default leads while the engine has it, as on the app.env
+    // path (`InferenceEnvResolver`). It is ranked by the lists the wizard shows on this Hub, read at the
+    // onboarding tier: `recommended` above is read at `profile.tier`, which for a card the container
+    // runtime cannot reach yet is another tier than the wizard's.
+    const wizardDefault = preferredModelId
+      ? undefined
+      : installedDefaultChatModel({
+          registry: this.modelRegistry,
+          profile,
+          computeTier: (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram),
+          backend: backendType,
+          isInstalled: (model) => this.isCuratedModelAvailable(model, endpointHealth.modelsLoaded, backendType, endpointReady),
+          accept: (model) => checkModelRequirements(model, requirements).verdict !== 'fails',
+        });
+    if (wizardDefault) {
+      this.logger.info(`[AppCredentials] ${slug}: no chat model chosen yet; handing out the setup wizard's default ${wizardDefault.backendModelId}`);
+    }
+    const candidates = wizardDefault ? [wizardDefault, ...recommended.filter((m) => m.id !== wizardDefault.id)] : recommended;
     const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier, profile, slug, requirements);
     // The same engine the app.env resolver picks (`embeddingBackendFor`), so an app is never handed one
     // embedder here and another there: this path used to hand Ollama's `nomic-embed-text` to a
@@ -491,7 +510,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
       // Same measured-first sizing as InferenceEnvResolver; see `probeLocalSizing`. Only a
       // model this node serves can be measured, so a pool-served one keeps the heuristic.
       const askOllama = chatServedLocally && backendType === 'ollama';
-      const [sizing, residentContextLength, servedContextLength] = await Promise.all([
+      const [sizing, residentContextLength, servedContextLength, ceilingMb] = await Promise.all([
         chatServedLocally
           ? probeLocalSizing({
               backendType,
@@ -504,6 +523,9 @@ export class AppCredentialsService implements OnApplicationShutdown {
           : null,
         askOllama ? this.ollamaBackend.residentContextLength(chatModel.backendModelId) : null,
         chatServedLocally ? Promise.resolve(backend.servedContextLength?.(chatModel.backendModelId) ?? null).catch(() => null) : null,
+        // Not counting what the model itself holds now, or a resident model is sized against itself.
+        // Asked of the model's own engine: a pool model served here need not be on the active one.
+        chatServedLocally ? handoutCeilingMb(this.memoryManager, profile, chatModel) : modelMemoryCeilingMb(profile),
       ]);
       // Same cap as the resolver: through the pool, the largest cap among the nodes serving the
       // model (placement keeps the request off the smaller ones — see `poolContextCap`); this
@@ -513,7 +535,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
       const sized = handoutContextLength({
         model: chatModel,
         servedLocally: chatServedLocally,
-        effectiveInferenceMemoryMb: modelMemoryCeilingMb(profile),
+        effectiveInferenceMemoryMb: ceilingMb,
         minContextLength: requirements.minContextLength,
         kvMbPerToken: sizing?.kvMbPerToken ?? null,
         weightMb: sizing?.weightMb ?? null,

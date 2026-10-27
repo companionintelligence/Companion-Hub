@@ -1,5 +1,6 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
+import { assertAppIdFree } from '@/modules/apps/app-id.helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -69,6 +70,7 @@ export class CustomAppService {
     if (existingApp) {
       throw new TranslatableError('CUSTOM_APP_ERROR_DUPLICATE_NAME', { name: displayName }, HttpStatus.CONFLICT);
     }
+    assertAppIdFree(appUrn, await this.appsRepository.getApps());
 
     const hubPorts = hubHostPorts(this.configService.get('userSettings'));
     const mappings = mappedHostPorts(config.services);

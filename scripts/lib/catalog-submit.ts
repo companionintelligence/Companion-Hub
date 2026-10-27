@@ -59,6 +59,7 @@ export function loginScope(login: Pick<PortalLogin, 'scope'> | null | undefined)
 export type CatalogSubmitOptions = {
   dir?: string;
   dryRun?: boolean;
+  validateOnly?: boolean;
   token?: string;
   orgId?: string;
   portalOrigin?: string;
@@ -375,6 +376,28 @@ function defaultDocker(args: string[], options?: { input?: string }) {
   return { status: result.status ?? 1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
+const DENIED_HOST_PATHS = [
+  '/',
+  '/var/run/docker.sock',
+  '/run',
+  '/var/run',
+  '/var/lib/docker',
+  '/var/lib/containerd',
+  '/proc',
+  '/sys',
+  '/dev',
+  '/root',
+  '/etc',
+  '/boot',
+  '/usr',
+  '/bin',
+  '/sbin',
+  '/lib',
+  '/lib64',
+];
+
+const ALWAYS_ALLOWED_HOST_PATHS = new Set(['/etc/localtime', '/etc/timezone']);
+
 export async function prepareSubmitPlan(dir: string, orgSlug: string, registryHost: string) {
   const { config, compose, missing } = validateSubmitDir(dir);
   if (missing.length > 0) {
@@ -388,28 +411,119 @@ export async function prepareSubmitPlan(dir: string, orgSlug: string, registryHo
   if (catalogId.length > MAX_CATALOG_ID_LENGTH) {
     return { ok: false as const, error: `Catalog id exceeds ${MAX_CATALOG_ID_LENGTH} characters` };
   }
+
+  const services = Array.isArray(compose.services) ? compose.services : [];
+  for (const service of services) {
+    const sName = service.name ?? 'service';
+    const img = typeof service.image === 'string' ? service.image.trim() : '';
+    if (!img) {
+      return { ok: false as const, error: `Service '${sName}' has an empty image property` };
+    }
+    if (/^<[^>]+>$/.test(img) || img === '<image>') {
+      return {
+        ok: false as const,
+        error: `Service '${sName}' contains placeholder image '${img}'. Set your container image in docker-compose.json before submitting.`,
+      };
+    }
+    if (typeof (service as Record<string, unknown>).internalPort === 'string') {
+      const portStr = String((service as Record<string, unknown>).internalPort).trim();
+      if (/^<[^>]+>$/.test(portStr)) {
+        return {
+          ok: false as const,
+          error: `Service '${sName}' contains placeholder internalPort '${portStr}'. Set a valid port number in docker-compose.json.`,
+        };
+      }
+    }
+
+    if (service.privileged === true && config.host_access !== true) {
+      return {
+        ok: false as const,
+        error: `Service '${sName}' sets privileged: true without 'host_access: true' declared in config.json.`,
+      };
+    }
+    if ((service as Record<string, unknown>).network_mode === 'host' && config.host_access !== true) {
+      return {
+        ok: false as const,
+        error: `Service '${sName}' sets network_mode: host without 'host_access: true' declared in config.json.`,
+      };
+    }
+
+    const volumes = Array.isArray((service as Record<string, unknown>).volumes)
+      ? ((service as Record<string, unknown>).volumes as Array<{ hostPath?: string }>)
+      : [];
+    for (const vol of volumes) {
+      if (vol && typeof vol === 'object' && typeof vol.hostPath === 'string') {
+        const hp = vol.hostPath.trim();
+        if (ALWAYS_ALLOWED_HOST_PATHS.has(hp)) continue;
+        for (const denied of DENIED_HOST_PATHS) {
+          if (hp === denied || hp.startsWith(`${denied}/`)) {
+            if (config.host_access !== true) {
+              return {
+                ok: false as const,
+                error: `Service '${sName}' mounts sensitive host path '${hp}' without 'host_access: true' declared in config.json.`,
+              };
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const warnings: string[] = [];
+  if (!config.privacy) {
+    warnings.push(
+      "Missing 'privacy' block in config.json. The app will submit as pending, but production promotion requires an affirmative privacy declaration.",
+    );
+  }
+
   const rewritten = rewriteComposeImages(compose, catalogId, registryHost);
-  return { ok: true as const, catalogId, bundleId, rewritten };
+  return { ok: true as const, catalogId, bundleId, rewritten, warnings };
 }
 
 export async function runCatalogSubmit(rawArgs: string[], options: CatalogSubmitOptions = {}): Promise<void> {
   const args = [...rawArgs];
+  const validateOnly = options.validateOnly || args.includes('--validate') || args.includes('--validate-only');
   const dryRun = options.dryRun || args.includes('--dry-run');
   const skipPush = options.skipPush === true;
   const tokenFlag = takeFlag(args, '--token');
   const orgFlag = takeFlag(args, '--org');
   const portalFlag = takeFlag(args, '--portal');
   const orgSlugFlag = takeFlag(args, '--org-slug');
-  args.splice(0, args.length, ...args.filter((arg) => arg !== '--dry-run'));
+  args.splice(0, args.length, ...args.filter((arg) => arg !== '--dry-run' && arg !== '--validate' && arg !== '--validate-only'));
   const dir = options.dir || args.find((arg) => !arg.startsWith('--'));
   if (!dir) {
-    printMessageBox('Usage', ['cihub submit [--dry-run] [--token <cio_>] [--org <orgId>] [--org-slug <slug>] <dir>'], 'red');
+    printMessageBox('Usage', ['cihub submit [--validate-only] [--dry-run] [--token <cio_>] [--org <orgId>] [--org-slug <slug>] <dir>'], 'red');
     process.exit(2);
   }
 
   const stored = readStoredLogin();
   const portalOrigin = portalOriginFromEnv(process.env, options.portalOrigin || portalFlag, stored?.portalOrigin);
   const registryHost = registryHostFromOrigin(portalOrigin);
+
+  if (validateOnly) {
+    const targetOrgSlug = orgSlugFlag || stored?.orgSlug || 'preview-org';
+    const plan = await prepareSubmitPlan(path.resolve(dir), targetOrgSlug, registryHost);
+    if (!plan.ok) {
+      printMessageBox('Validation failed', [plan.error], 'red');
+      process.exit(1);
+    }
+    const statusLines = [
+      `Bundle ID    ${plan.bundleId}`,
+      `Catalog ID   ${plan.catalogId}`,
+      `Registry     ${registryHost}`,
+      'Files        config.json, docker-compose.json, metadata/description.md, logo',
+      `Services (${plan.rewritten.compose.services?.length ?? 0})  Images verified (no placeholder values)`,
+      'Sandbox      Compliant with container sandbox policy',
+      `Privacy      ${plan.warnings.length > 0 ? 'Not declared (warning)' : 'Declared'}`,
+      ...plan.rewritten.images.map((image) => `Mapping:     ${image.service}: ${image.source} → ${image.target}`),
+    ];
+    if (plan.warnings.length > 0) {
+      statusLines.push('', ...plan.warnings);
+    }
+    printMessageBox('cihub submit --validate-only: PASSED', statusLines, 'green');
+    return;
+  }
+
   const credentials = resolveSubmitCredentials({
     token: options.token || tokenFlag,
     orgId: options.orgId || orgFlag,
@@ -439,7 +553,9 @@ export async function runCatalogSubmit(rawArgs: string[], options: CatalogSubmit
       [
         `Catalog id  ${plan.catalogId}`,
         `Registry    ${registryHost}`,
+        `Privacy     ${plan.warnings.length > 0 ? 'Not declared (warning)' : 'Declared'}`,
         ...plan.rewritten.images.map((image) => `${image.service}: ${image.source} → ${image.target}`),
+        ...(plan.warnings.length > 0 ? ['', ...plan.warnings] : []),
       ],
       'cyan',
     );
@@ -454,6 +570,21 @@ export async function runCatalogSubmit(rawArgs: string[], options: CatalogSubmit
   const docker = options.docker ?? defaultDocker;
 
   if (!skipPush) {
+    for (const image of plan.rewritten.images) {
+      const inspect = docker(['image', 'inspect', image.source]);
+      if (inspect.status !== 0) {
+        printMessageBox(
+          'Local image not found',
+          [
+            `Docker image '${image.source}' was not found locally.`,
+            `Please build or pull '${image.source}' before running 'cihub submit', or pass --skip-push if already pushed.`,
+          ],
+          'red',
+        );
+        process.exit(1);
+      }
+    }
+
     const mint = await fetchImpl(
       `${portalOrigin}/api/organizations/${encodeURIComponent(credentials.orgId)}/apps/${encodeURIComponent(plan.catalogId)}/registry-token`,
       {
@@ -502,8 +633,12 @@ export async function runCatalogSubmit(rawArgs: string[], options: CatalogSubmit
     printMessageBox('Ingest failed', [await ingest.text()], 'red');
     process.exit(1);
   }
-  const result = (await ingest.json()) as { id: string; status: string };
-  printMessageBox('Submitted', [`id ${result.id}`, `status ${result.status}`], 'green');
+  const result = (await ingest.json()) as { id: string; status: string; warnings?: string[] };
+  const lines = [`id ${result.id}`, `status ${result.status}`];
+  if (result.warnings && result.warnings.length > 0) {
+    lines.push(...result.warnings.map((w) => `warning: ${w}`));
+  }
+  printMessageBox('Submitted', lines, 'green');
 }
 
 export async function runCatalogLogout(options: { fetchImpl?: typeof fetch; filePath?: string } = {}): Promise<void> {

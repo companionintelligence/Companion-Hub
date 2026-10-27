@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { HttpStatus, NotFoundException } from '@nestjs/common';
 import type { ModuleRef } from '@nestjs/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fromPartial } from '@total-typescript/shoehorn';
@@ -9,7 +9,8 @@ import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { ForwardAuthSecretResolver } from '@/modules/auth/forward-auth-secret.resolver';
 import { EnvUtils } from '@/modules/env/env.utils';
-import { AppLifecycleService } from '../app-lifecycle.service';
+import { TranslatableError } from '@/common/error/translatable-error';
+import { AppLifecycleService, type HeldApp, RESTARTS_THAT_WAIT_FOR_THE_APP } from '../app-lifecycle.service';
 import { HubAccessService } from '../hub-access.service';
 
 /** Per-app operator surface for Hub trust material: status view + the rotation lever (#74). */
@@ -20,6 +21,7 @@ describe('HubAccessService', () => {
   let appLifecycle: MockProxy<AppLifecycleService>;
   let forwardAuthResolver: MockProxy<ForwardAuthSecretResolver>;
   let moduleRef: MockProxy<ModuleRef>;
+  let held: MockProxy<HeldApp>;
 
   const urn = 'importer:ci-marketplace' as AppUrn;
   const managedKey = fromPartial<Awaited<ReturnType<ApiKeyService['list']>>[number]>({
@@ -47,7 +49,9 @@ describe('HubAccessService', () => {
     );
     appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: 'CI_HUB_FORWARD_AUTH_SECRET=s3cret\nOTHER=1\n' });
     apiKeys.findManagedByApp.mockResolvedValue(managedKey);
-    appLifecycle.restartApp.mockResolvedValue({ requestId: 'req-1' });
+    held = mock<HeldApp>();
+    held.restart.mockResolvedValue({ requestId: 'req-1' });
+    appLifecycle.withAppHeld.mockImplementation(async (_appUrn, run) => run(held));
   });
 
   describe('getStatus', () => {
@@ -123,10 +127,28 @@ describe('HubAccessService', () => {
       const written = appFilesManager.writeAppEnv.mock.calls[0]?.[1] as string;
       expect(written).not.toContain('CI_HUB_FORWARD_AUTH_SECRET');
       expect(written).toContain('OTHER=1');
-      // The restart is what regenerates env + reloads the container in one event.
-      // As the Hub: the rotation was the authorized act, and a refused restart would strand the app.
-      expect(appLifecycle.restartApp).toHaveBeenCalledWith({ appUrn: urn, actor: { kind: 'system', reason: 'hub-access-rotate' } });
+      // The restart is what regenerates env + reloads the container in one event, under the hold
+      // taken before the revoke. As the Hub: the rotation was the authorized act.
+      expect(appLifecycle.withAppHeld).toHaveBeenCalledWith(urn, expect.any(Function));
+      expect(held.restart).toHaveBeenCalledWith({ reason: 'hub-access-rotate' });
+      expect(appLifecycle.restartApp).not.toHaveBeenCalled();
       expect(res).toEqual({ requestId: 'req-1' });
+    });
+
+    // Revoking and then waiting for the app left it on revoked credentials for as long as the
+    // operation holding it lasted, and kept the request open as long.
+    it('is refused with the 409 of the operation holding the app, and revokes nothing', async () => {
+      appLifecycle.withAppHeld.mockRejectedValue(new TranslatableError('APP_ERROR_START_IN_PROGRESS', { id: 'importer' }, HttpStatus.CONFLICT));
+
+      await expect(service.rotate(urn)).rejects.toMatchObject({ status: HttpStatus.CONFLICT });
+
+      expect(apiKeys.revokeManagedByApp).not.toHaveBeenCalled();
+      expect(appFilesManager.writeAppEnv).not.toHaveBeenCalled();
+      expect(forwardAuthResolver.invalidateApp).not.toHaveBeenCalled();
+    });
+
+    it('is not one of the restarts that wait for the app', () => {
+      expect(RESTARTS_THAT_WAIT_FOR_THE_APP.has('hub-access-rotate')).toBe(false);
     });
 
     it("clears Companion Memory's own forward-auth key too, so the restart mints a fresh one", async () => {
@@ -153,7 +175,7 @@ describe('HubAccessService', () => {
       });
       const res = await service.rotate(urn);
       expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(urn);
-      expect(appLifecycle.restartApp).toHaveBeenCalled();
+      expect(held.restart).toHaveBeenCalled();
       expect(res).toEqual({ requestId: 'req-1' });
     });
 
@@ -162,19 +184,20 @@ describe('HubAccessService', () => {
       await service.rotate(urn);
       expect(appFilesManager.writeAppEnv).not.toHaveBeenCalled();
       expect(apiKeys.revokeManagedByApp).toHaveBeenCalled();
-      expect(appLifecycle.restartApp).toHaveBeenCalled();
+      expect(held.restart).toHaveBeenCalled();
     });
 
     it('404s for an unknown app without revoking anything', async () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue(null as never);
       await expect(service.rotate(urn)).rejects.toThrow(NotFoundException);
       expect(apiKeys.revokeManagedByApp).not.toHaveBeenCalled();
+      expect(appLifecycle.withAppHeld).not.toHaveBeenCalled();
     });
 
     it('propagates a restart failure so the operator learns the app is left holding revoked credentials', async () => {
       // Credentials are already gone by the time the restart is dispatched; a swallowed failure
       // would report success while the app authenticates against nothing until a manual restart.
-      appLifecycle.restartApp.mockRejectedValue(new Error('queue offline'));
+      held.restart.mockRejectedValue(new Error('queue offline'));
       await expect(service.rotate(urn)).rejects.toThrow('queue offline');
       expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(urn);
     });

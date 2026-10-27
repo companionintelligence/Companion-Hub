@@ -110,6 +110,78 @@ describe('MarketplaceService', () => {
       expect(portalCatalog.warmCacheInBackground).toHaveBeenCalled();
       expect(appStoreService.pullRepositories).not.toHaveBeenCalled();
     });
+
+    // One runs whenever a catalog download ends, such as the one a factory reset starts. The map was
+    // emptied before the table was read. A lookup in between found no store at all.
+    it('keeps answering from the stores it had while it reads the table again', async () => {
+      await service.initialize();
+      let answer: (rows: unknown) => void = () => undefined;
+      appStoreService.getAllAppStores.mockReturnValueOnce(
+        new Promise((resolve) => {
+          answer = resolve;
+        }) as never,
+      );
+
+      const again = service.initialize();
+      await expect(service.getAvailableAppUrns()).resolves.toEqual(['app-1:store-1']);
+
+      answer([{ slug: 'store-1', name: 'Store 1', url: 'http://store1.com', enabled: true, type: 'git', branch: 'main' }]);
+      await again;
+      await expect(service.getAvailableAppUrns()).resolves.toEqual(['app-1:store-1']);
+    });
+
+    // A store added while a download's `initialize` was still reading the table went missing until the next one.
+    it('keeps the newer table when an earlier call reads the table last', async () => {
+      let answerOlder: (rows: unknown) => void = () => undefined;
+      appStoreService.getAllAppStores
+        .mockReturnValueOnce(
+          new Promise((resolve) => {
+            answerOlder = resolve;
+          }) as never,
+        )
+        .mockResolvedValueOnce([]);
+
+      const older = service.initialize();
+      await service.initialize();
+      answerOlder([{ slug: 'store-1', name: 'Store 1', url: 'http://store1.com', enabled: true, type: 'git', branch: 'main' }]);
+      await older;
+
+      await expect(service.getAvailableAppUrns()).resolves.toEqual([]);
+    });
+
+    it('drops a store the table no longer has', async () => {
+      await service.initialize();
+      appStoreService.getAllAppStores.mockResolvedValueOnce([]);
+
+      await service.initialize();
+
+      await expect(service.getAvailableAppUrns()).resolves.toEqual([]);
+    });
+  });
+
+  // The compose builder checks an app's Traefik names against every app the stores list.
+  describe('listedAppUrns', () => {
+    const official = { slug: 'ci-marketplace', name: 'CI Marketplace', url: 'https://portal.example.com/api', type: 'ci_cloud_api', branch: 'main' };
+
+    it('lists each enabled store’s apps and the official catalog Portal last returned, without fetching it', async () => {
+      appStoreService.getAllAppStores.mockResolvedValue([
+        { slug: 'store-1', name: 'Store 1', url: 'http://store1.com', enabled: true, type: 'git', branch: 'main' },
+        { ...official, enabled: true },
+      ] as any);
+      portalCatalog.heldCatalogSlugs.mockReturnValue(['app-new', 'app-1']);
+      await service.initialize();
+
+      await expect(service.listedAppUrns()).resolves.toEqual(['app-1:store-1', 'app-new:ci-marketplace', 'app-1:ci-marketplace']);
+      expect(portalCatalog.getCatalogEntries).not.toHaveBeenCalled();
+    });
+
+    it('leaves out the official catalog when the official store is turned off', async () => {
+      appStoreService.getAllAppStores.mockResolvedValue([{ ...official, enabled: false }] as any);
+      portalCatalog.heldCatalogSlugs.mockReturnValue(['app-new']);
+      await service.initialize();
+
+      await expect(service.listedAppUrns()).resolves.toEqual([]);
+    });
   });
 
   describe('refreshPortalCatalog', () => {

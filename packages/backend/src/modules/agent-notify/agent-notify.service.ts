@@ -1,6 +1,6 @@
 import { Injectable, type OnApplicationBootstrap, type OnModuleDestroy } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { parseComposeJson } from '@ci-hub/common/schemas';
+import { parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -115,7 +115,7 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
     try {
       const composeJson = await appFilesManager.getDockerComposeJson(appUrn as AppUrn);
       if (composeJson.content) {
-        const parsed = parseComposeJson(composeJson.content);
+        const parsed = parseInstalledComposeJson(composeJson.content);
         const mainService = parsed.services.find((s) => s.isMain) || parsed.services[0];
         if (mainService?.name) {
           serviceName = mainService.name;

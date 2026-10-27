@@ -4731,8 +4731,36 @@
         "operationId": "getRehydrateStatus",
         "parameters": [],
         "responses": {
-          "200": {
-            "description": ""
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RehydrateStatusDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "AppLifecycle"
+        ]
+      }
+    },
+    "/api/app-lifecycle/rehydrate/acknowledge": {
+      "post": {
+        "operationId": "acknowledgeRestore",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcknowledgeRestoreResponseDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -11780,6 +11808,31 @@
             ],
             "additionalProperties": false
           },
+          "operation": {
+            "nullable": true,
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "enum": [
+                  "install",
+                  "start",
+                  "stop",
+                  "restart",
+                  "update",
+                  "uninstall",
+                  "reset",
+                  "backup",
+                  "restore",
+                  "generate_env"
+                ]
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
           "info": {
             "type": "object",
             "properties": {
@@ -13814,6 +13867,192 @@
         "required": [
           "nodeUuid",
           "publicKey"
+        ],
+        "additionalProperties": false
+      },
+      "RehydrateStatusDto": {
+        "type": "object",
+        "properties": {
+          "completed": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "object",
+            "properties": {
+              "completedAt": {
+                "type": "string"
+              },
+              "queuedUrns": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "startedUrns": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "skipped": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "appUrn": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "already_running",
+                        "busy",
+                        "unlisted",
+                        "no_target",
+                        "refused",
+                        "failed"
+                      ]
+                    },
+                    "params": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "reason"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "completedAt",
+              "queuedUrns",
+              "startedUrns",
+              "skipped"
+            ],
+            "additionalProperties": false
+          },
+          "restoreIntent": {
+            "type": "boolean"
+          },
+          "checking": {
+            "type": "boolean"
+          },
+          "noticePending": {
+            "type": "boolean"
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "completedAt": {
+                "type": "string"
+              },
+              "restored": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "urn": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "usesAi": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "urn",
+                    "status",
+                    "usesAi"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "notRestored": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "urn": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "already_running",
+                        "busy",
+                        "unlisted",
+                        "no_target",
+                        "refused",
+                        "failed"
+                      ]
+                    },
+                    "params": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "reason"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "aiModelChosen": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "completedAt",
+              "restored",
+              "notRestored",
+              "aiModelChosen"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "completed",
+          "restoreIntent",
+          "checking",
+          "noticePending"
+        ],
+        "additionalProperties": false
+      },
+      "AcknowledgeRestoreResponseDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success"
         ],
         "additionalProperties": false
       },

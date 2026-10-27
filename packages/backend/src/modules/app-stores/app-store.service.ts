@@ -124,6 +124,16 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
     return { success: true };
   }
 
+  /** Whether a CI Marketplace catalog download is under way, from any caller (`ReposHelpers.isDownloadingCatalog`). */
+  public isDownloadingCatalog(): boolean {
+    return this.repoHelpers.isDownloadingCatalog();
+  }
+
+  /** Wait until no CI Marketplace catalog download is under way (`ReposHelpers.waitForCatalogDownloads`). */
+  public waitForCatalogDownloads(timeoutMs: number): Promise<boolean> {
+    return this.repoHelpers.waitForCatalogDownloads(timeoutMs);
+  }
+
   public async registerCloudAppStore() {
     const { ciCloudUrl } = this.config.getConfig();
 

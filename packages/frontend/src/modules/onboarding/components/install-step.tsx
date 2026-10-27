@@ -69,6 +69,16 @@ interface AiPhaseState {
   modelErrors: Record<string, string>;
   modelsDone: boolean;
   runnerResults: AutomaticInferenceRunnerResult[];
+  /**
+   * Set once the pins were asked for: each chosen model that was not pinned, with the reason. Absent when the
+   * step ended before it got to the pins, which is not a pin that happened either.
+   */
+  pinFailures?: Record<string, string>;
+  /**
+   * Set when the Hub refused more than one model and gave each the same reason, which is then said once above the
+   * list. A GPU whose memory the Hub does not know refuses every pin with one long sentence.
+   */
+  pinRefusal?: string;
   error?: string;
 }
 
@@ -420,20 +430,44 @@ export const InstallStep = ({
             }
 
             setAiPhase((prev) => ({ ...prev, status: 'pinning-models', modelErrors }));
-            const pinTracked = await fetchTrackedModels();
+            let pinTracked: TrackedModel[] = [];
+            try {
+              pinTracked = await fetchTrackedModels();
+            } catch {
+              // What the engine listed when the wizard opened still says which models are there.
+            }
             if (cancelled()) return;
-            const pinableIds = new Set(
-              pinTracked.filter((m) => m.state === 'pulled' || m.state === 'loaded' || m.state === 'pinned').map((m) => m.catalogId),
-            );
+            /*
+             * ⚠ A MODEL THE ENGINE HAS IS PINNABLE WHETHER OR NOT THIS HUB TRACKS IT. The Hub tracks a
+             * model once it pulls or loads one, in memory. After a reset, a reinstall or a restart that
+             * list is empty while every model is still in Ollama, so pinning only tracked models pinned
+             * nothing. The row showed its check mark anyway. `installedCatalogIds` is the engine's
+             * own list from when the wizard opened. The Hub's pin loads a model that is on disk
+             * but untracked (`InferenceRouterService.pinTrackedModel`).
+             */
+            const onDisk = new Set([
+              ...installedCatalogIds,
+              ...pinTracked.filter((m) => m.state === 'pulled' || m.state === 'loaded' || m.state === 'pinned').map((m) => m.catalogId),
+            ]);
+            const pinFailures: Record<string, string> = {};
+            const hubRefusals: string[] = [];
 
             for (const modelId of ollamaSelected) {
-              if (!pinableIds.has(modelId)) continue;
+              if (cancelled()) return;
+              if (!onDisk.has(modelId)) {
+                pinFailures[modelId] = modelErrors[modelId] ? t('ONBOARDING_PIN_NOT_DOWNLOADED') : t('ONBOARDING_PIN_STILL_DOWNLOADING');
+                continue;
+              }
               try {
                 await pinInferenceModel(modelId);
-              } catch {
-                // Non-fatal
+              } catch (pinError) {
+                const refusal = (pinError as Error)?.message;
+                if (refusal) hubRefusals.push(refusal);
+                pinFailures[modelId] = refusal || t('ONBOARDING_PIN_FAILED');
               }
             }
+            const pinRefusal = hubRefusals.length > 1 && new Set(hubRefusals).size === 1 ? hubRefusals[0] : undefined;
+            setAiPhase((prev) => ({ ...prev, pinFailures, pinRefusal }));
           }
         } catch {
           // A failed read ends the wait and the pins early. The apps are already requested, and the
@@ -585,6 +619,19 @@ export const InstallStep = ({
   const processedCount = runningCount + failedCount + incompleteCount;
   const progress = apps.length > 0 ? Math.round((processedCount / apps.length) * 100) : 0;
   const hasAiWork = aiPhase.status !== 'skipped';
+  // The models the pin step asks for. A host-served model (vLLM, oMLX) is the server's to keep loaded.
+  const pinnableSelection = aiSetupConfig?.ollamaSelectedModelIds ?? aiSetupConfig?.selectedModels ?? [];
+  const pinFailureEntries = Object.entries(aiPhase.pinFailures ?? {});
+  // A check mark only for pins that happened: a step that ended before the pins, or a pin that was
+  // refused or skipped, is marked failed and says which model and why.
+  const pinMark: 'waiting' | 'working' | 'done' | 'failed' =
+    aiPhase.status === 'pinning-models'
+      ? 'working'
+      : aiPhase.status === 'done'
+        ? aiPhase.pinFailures && pinFailureEntries.length === 0
+          ? 'done'
+          : 'failed'
+        : 'waiting';
   const aiInProgress = hasAiWork && aiPhase.status !== 'done';
   const unavailableRunnerCount = aiPhase.runnerResults.filter((result) => result.state === 'failed' || result.state === 'skipped').length;
 
@@ -713,10 +760,31 @@ export const InstallStep = ({
               {aiPhase.error}
             </div>
           )}
-          {aiSetupConfig?.selectedModels && aiSetupConfig.selectedModels.length > 0 && (
-            <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
-              {aiMark(aiPhase.status === 'done' ? 'done' : aiPhase.status === 'pinning-models' ? 'working' : 'waiting')}
-              <span>{t('ONBOARDING_PIN_MODELS')}</span>
+          {pinnableSelection.length > 0 && (
+            <div className="px-3 py-1.5 text-sm" data-testid="pin-models-row">
+              <div className="flex items-center gap-2">
+                {aiMark(pinMark)}
+                <span>{t('ONBOARDING_PIN_MODELS')}</span>
+              </div>
+              {pinFailureEntries.length > 0 && (
+                <div className="ml-6 mt-1 space-y-0.5 text-xs text-destructive" data-testid="pin-models-failures">
+                  {aiPhase.pinRefusal && <p data-testid="pin-models-refusal">{aiPhase.pinRefusal}</p>}
+                  <ul className="space-y-0.5">
+                    {pinFailureEntries.map(([modelId, reason]) => (
+                      <li key={modelId}>
+                        {reason === aiPhase.pinRefusal
+                          ? t('ONBOARDING_PIN_NOT_PINNED_SAME_REASON', { model: modelId })
+                          : t('ONBOARDING_PIN_NOT_PINNED', { model: modelId, reason })}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {pinMark === 'failed' && !aiPhase.pinFailures && (
+                <p className="ml-6 mt-1 text-xs text-destructive" data-testid="pin-models-failures">
+                  {t('ONBOARDING_PIN_NOT_ATTEMPTED')}
+                </p>
+              )}
             </div>
           )}
           {aiPhase.status !== 'done' && aiPhase.status !== 'pending' && <div className="h-px bg-border my-2" />}

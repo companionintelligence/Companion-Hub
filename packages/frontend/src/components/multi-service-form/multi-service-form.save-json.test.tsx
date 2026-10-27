@@ -97,6 +97,36 @@ describe('MultiServiceForm Save JSON', () => {
       { services: [{ name: 'web', image: 'nginx:alpine', isMain: true, internalPort: 80, extraLabels: { 'ci-hub.appurn': 'n8n:ci-marketplace' } }] },
       'Service web: Labels that start with ci-hub. or ci-os-hub. belong to the Hub, which uses them to tell apps apart. Remove ci-hub.appurn.',
     ],
+    [
+      'a router sent to another app’s service',
+      {
+        services: [
+          {
+            name: 'web',
+            image: 'nginx:alpine',
+            isMain: true,
+            internalPort: 80,
+            extraLabels: { 'traefik.http.routers.{{CI_HUB_APP_ID}}.service': 'n8n-ci-marketplace' },
+          },
+        ],
+      },
+      "Service web: traefik.http.routers.{{CI_HUB_APP_ID}}.service sends traffic to n8n-ci-marketplace, which isn't one of this app's services. Use a service whose name starts with {{CI_HUB_APP_ID}}.",
+    ],
+    [
+      'a router rule for another host',
+      {
+        services: [
+          {
+            name: 'web',
+            image: 'nginx:alpine',
+            isMain: true,
+            internalPort: 80,
+            extraLabels: { 'traefik.http.routers.{{CI_HUB_APP_ID}}-admin.rule': 'Host(`n8n.example.com`)' },
+          },
+        ],
+      },
+      "Service web: A router's rule must name this app's own address with Host(`${APP_DOMAIN}`), Host(`${APP_LOCAL_DOMAIN}`) or Host(`${APP_BASE_HOST}`) and no other host. Change traefik.http.routers.{{CI_HUB_APP_ID}}-admin.rule.",
+    ],
   ])('names the rule %s breaks and saves nothing', async (_label, compose, message) => {
     const onSubmit = vi.fn();
     render(<MultiServiceForm onSubmit={onSubmit} />);

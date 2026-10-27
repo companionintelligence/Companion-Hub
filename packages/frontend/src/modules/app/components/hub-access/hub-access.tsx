@@ -2,6 +2,7 @@ import { client } from '@/api-client/client.gen';
 import { formatHubDateTime } from '@/components/ui/dense/dense';
 import { ScopeBadge } from '@/components/scope-badge/scope-badge';
 import { Button } from '@/components/ui/Button';
+import { formatApiError, isConflictError } from '@/lib/format-api-error';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { KeyRound, ShieldCheck, ShieldOff } from 'lucide-react';
 import { useState } from 'react';
@@ -65,7 +66,8 @@ export const HubAccess = ({ appUrn, hasUnsavedChanges = false }: HubAccessProps)
       toast.success(t('APP_SETTINGS_HUB_ACCESS_ROTATED'));
       await queryClient.invalidateQueries({ queryKey: hubAccessQueryKey(appUrn) });
     },
-    onError: () => toast.error(t('APP_SETTINGS_HUB_ACCESS_ROTATE_ERROR')),
+    // A 409 names the operation holding the app ("still starting, try again"); nothing was rotated.
+    onError: (error) => toast.error(isConflictError(error) ? formatApiError(error, t, 409) : t('APP_SETTINGS_HUB_ACCESS_ROTATE_ERROR')),
   });
 
   const status = query.data ?? null;

@@ -8,8 +8,31 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
-import { appInfoSchema, parseComposeJson } from '@ci-hub/common/schemas';
+import { parseInstalledAppInfo, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
+
+/** What was last logged as left out of each app's installed manifest. */
+const loggedLeftOut = new Map<string, string>();
+
+/** Store folders the Hub could not close, so every prepare of every app in one does not warn again. */
+const storeDirsLeftOpen = new Set<string>();
+
+/**
+ * Logs what `parseInstalledAppInfo` left out of an app's installed manifest, once until that changes.
+ * The manifest is read on every app list, status check and env build, and it says the same thing
+ * until the app is updated.
+ */
+export function warnHubOwnedEnvLeftOut(logger: Pick<LoggerService, 'warn'>, appUrn: AppUrn, leftOut: readonly string[], file: string): void {
+  if (leftOut.length === 0) {
+    return;
+  }
+  const said = leftOut.join(', ');
+  if (loggedLeftOut.get(appUrn) === said) {
+    return;
+  }
+  loggedLeftOut.set(appUrn, said);
+  logger.warn(`App ${appUrn}: its ${file} names values the Hub sets for every app, read without ${said}`);
+}
 
 /** Single-quote a path for `sh`. */
 function shellQuotePath(value: string): string {
@@ -89,7 +112,8 @@ export class AppFilesManager {
         const configFile = await this.filesystem.readTextFile(path.join(appInstalledDir, 'config.json'));
 
         const config = JSON.parse(configFile ?? '{}');
-        const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
+        const { parsed: parsedConfig, leftOut } = parseInstalledAppInfo({ ...config, urn: appUrn });
+        warnHubOwnedEnvLeftOut(this.logger, appUrn, leftOut, 'config.json');
 
         if (!parsedConfig.success) {
           this.logger.error(`App ${appUrn} config error:`);
@@ -116,6 +140,24 @@ export class AppFilesManager {
     }
 
     return null;
+  }
+
+  /**
+   * The defaults the installed manifest gave its fields that write `APP_BASE_URL`, by the field's
+   * variable, which `getInstalledAppInfo` reads it without (`parseInstalledAppInfo`). Empty when the
+   * manifest gives none or can't be read.
+   */
+  public async getInstalledBaseUrlDefaults(appUrn: AppUrn): Promise<ReadonlyMap<string, string>> {
+    try {
+      const configPath = path.join(this.getAppPaths(appUrn).appInstalledDir, 'config.json');
+      if (await this.filesystem.pathExists(configPath)) {
+        const config = JSON.parse((await this.filesystem.readTextFile(configPath)) ?? '{}');
+        return new Map(Object.entries(parseInstalledAppInfo({ ...config, urn: appUrn }).baseUrlDefaults));
+      }
+    } catch {
+      // Read as having none, as `getInstalledAppInfo` reads a manifest it can't parse as no manifest.
+    }
+    return new Map();
   }
 
   /**
@@ -246,9 +288,9 @@ export class AppFilesManager {
     if (!content) {
       return [];
     }
-    let services: ReturnType<typeof parseComposeJson>['services'];
+    let services: ReturnType<typeof parseInstalledComposeJson>['services'];
     try {
-      ({ services } = parseComposeJson(content));
+      ({ services } = parseInstalledComposeJson(content));
     } catch (error) {
       this.logger.debug(`Could not read the volumes of ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
       return [];
@@ -357,6 +399,16 @@ export class AppFilesManager {
    *    service can still mount and read a subdirectory the root service
    *    created.
    *
+   * Nor may "writable by everyone" reach the other accounts on the computer.
+   * The folder that holds the store's apps (`app-data/<store>`) is set to 0700,
+   * so no other local account can reach any app's data, however open the sweep
+   * leaves it below. That costs the containers nothing, for the reason above:
+   * Docker resolves a bind mount's host path as root, and a container only sees
+   * the folder that is mounted. That takes a Docker whose root is root on the
+   * app-data file system: on an NFS export with root_squash it is not, and no
+   * app in the store could mount its data, as Memory's private folder already
+   * could not.
+   *
    * See {@link buildPermissionsCommand} for the exact shell.
    *
    * Skipped when the app-data mount cannot carry POSIX permissions (a Windows
@@ -374,7 +426,8 @@ export class AppFilesManager {
       return;
     }
 
-    if (!(await supportsPosixPermissions(this.configuration.getConfig().directories.appDataDir))) {
+    const appDataRoot = this.configuration.getConfig().directories.appDataDir;
+    if (!(await supportsPosixPermissions(appDataRoot))) {
       this.logger.debug(`Skipped the permission sweep for ${appUrn}: the app-data mount cannot carry POSIX permissions`);
       return;
     }
@@ -390,12 +443,36 @@ export class AppFilesManager {
     // Best effort, and only for what exists: a missing app.env is normal before
     // the first env generation, and a mount that rejects chmod (drvfs) is the
     // case `supportsPosixPermissions` already routes around.
-    for (const [target, mode] of [[appEnvPath, 0o600] as const, ...privateRoots.map((root) => [root, 0o700] as const)]) {
+    // The store folder is closed only when it sits directly under the app-data root, so a URN that
+    // resolves elsewhere can never close the root or a folder above it.
+    const storeDir = path.dirname(appDataDir);
+    const closesStore = path.dirname(storeDir) === path.resolve(appDataRoot);
+    const targets = [[appEnvPath, 0o600] as const, ...privateRoots.map((root) => [root, 0o700] as const)];
+    if (closesStore) {
+      targets.push([storeDir, 0o700] as const);
+    }
+    for (const [target, mode] of targets) {
       try {
+        // chmod follows a link, and a container that mounts the whole data folder can put one where
+        // app.env or a private folder was. The store folder is above every mount, so no container can.
+        if (target !== storeDir && (await fs.promises.lstat(target)).isSymbolicLink()) {
+          this.logger.warn(`Not setting mode ${mode.toString(8)} on ${target}: it is a symbolic link`);
+          continue;
+        }
         await fs.promises.chmod(target, mode);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-          this.logger.debug(`Could not set mode ${mode.toString(8)} on ${target}: ${error instanceof Error ? error.message : String(error)}`);
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') {
+          continue;
+        }
+        const reason = error instanceof Error ? error.message : String(error);
+        if (target === storeDir && !storeDirsLeftOpen.has(storeDir)) {
+          storeDirsLeftOpen.add(storeDir);
+          this.logger.warn(
+            `Could not close ${storeDir} to other local accounts (${reason}). The data of every app in it stays reachable by them until the Hub's user owns the folder.`,
+          );
+        } else {
+          this.logger.debug(`Could not set mode ${mode.toString(8)} on ${target}: ${reason}`);
         }
       }
     }

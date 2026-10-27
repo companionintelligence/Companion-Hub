@@ -8,7 +8,9 @@ import {
   isReservedHubLabel,
   TRUSTED_APP_SECURITY_ALLOWLIST,
 } from './dynamic-compose.js';
-import { parseComposeJson } from './utils/convert-legacy-schema.js';
+import { parseComposeJson, parseInstalledComposeJson } from './utils/convert-legacy-schema.js';
+import { collectTraefikLabelIssues, HUB_APP_NETWORK_NAMES, HUB_FORWARD_AUTH_MIDDLEWARES, HUB_TRAEFIK_NAMES } from './traefik-labels.js';
+import { BUILDER_ENFORCED_LABEL_REFUSALS, isBuilderEnforcedLabelIssue, safeParseKeepingBuilderEnforcedLabels } from './builder-enforced-labels.js';
 import type { AppSecurityGrants, DependsOn, DynamicCompose, Service, ServiceInput, ServiceSecurityViolation } from './dynamic-compose.js';
 
 import {
@@ -26,6 +28,10 @@ import {
   formFieldSchema,
   frontmatterSchema,
   hubIntegrationSchema,
+  HUB_OWNED_APP_ENV_VARS,
+  hubIntegrationMayWrite,
+  parseInstalledAppInfo,
+  writesAppBaseUrl,
   inferenceEnvMappingSchema,
   inferenceProviderSchema,
   INFERENCE_VARIABLES,
@@ -80,7 +86,7 @@ import type {
   AgentSkillConfig,
 } from './agent-config.js';
 
-import { type SSE, type Topic, type UpdatePhase, sseSchema } from './sse.js';
+import { type SSE, type Topic, type UpdatePhase, lifecycleOperationSchema, sseSchema } from './sse.js';
 
 import { toJsonSchema } from './utils/to-json-schema.js';
 
@@ -88,10 +94,18 @@ export {
   dynamicComposeSchema,
   dynamicComposeFormSchema,
   parseComposeJson,
+  parseInstalledComposeJson,
   serviceSchema,
   toJsonSchema,
   collectServiceSecurityViolations,
   isReservedHubLabel,
+  collectTraefikLabelIssues,
+  HUB_APP_NETWORK_NAMES,
+  HUB_FORWARD_AUTH_MIDDLEWARES,
+  HUB_TRAEFIK_NAMES,
+  BUILDER_ENFORCED_LABEL_REFUSALS,
+  isBuilderEnforcedLabelIssue,
+  safeParseKeepingBuilderEnforcedLabels,
   TRUSTED_APP_SECURITY_ALLOWLIST,
   MIN_SCHEMA_VERSION,
   CURRENT_SCHEMA_VERSION,
@@ -116,6 +130,10 @@ export {
   agentOpenApiConfigSchema,
   agentSkillConfigSchema,
   hubIntegrationSchema,
+  HUB_OWNED_APP_ENV_VARS,
+  hubIntegrationMayWrite,
+  parseInstalledAppInfo,
+  writesAppBaseUrl,
   inferenceEnvMappingSchema,
   inferenceProviderSchema,
   INFERENCE_VARIABLES,
@@ -131,6 +149,7 @@ export {
   type MarketplaceMcp,
   type McpTransport,
   sseSchema,
+  lifecycleOperationSchema,
   frontmatterSchema,
   isPortExposeApp,
   PORT_EXPOSE_KIND,

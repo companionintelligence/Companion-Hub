@@ -10,6 +10,7 @@ import { AppHelpers } from '@/modules/apps/app.helpers';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
+import { AppsRepository } from '@/modules/apps/apps.repository';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
 import { TranslatableError } from '@/common/error/translatable-error';
@@ -36,10 +37,11 @@ vi.mock('node:fs', async () => ({
   },
 }));
 
-vi.mock('@ci-hub/common/schemas', async (importOriginal) => ({
-  ...((await importOriginal()) as any),
-  parseComposeJson: vi.fn().mockReturnValue({ services: [], overrides: [] }),
-}));
+// An installed compose is read with parseInstalledComposeJson: one stub stands for both parses.
+vi.mock('@ci-hub/common/schemas', async (importOriginal) => {
+  const parse = vi.fn().mockReturnValue({ services: [], overrides: [] });
+  return { ...((await importOriginal()) as any), parseComposeJson: parse, parseInstalledComposeJson: parse };
+});
 
 vi.mock('@/modules/inference/host-rocm-availability', () => ({
   isRocmKfdPassthroughAvailable: vi.fn().mockResolvedValue(true),
@@ -95,6 +97,10 @@ describe('RestartAppCommand — pull policy', () => {
     traefikConfigService.regenerateTraefikConfig.mockResolvedValue();
 
     const marketplaceService = mock<MarketplaceService>();
+
+    marketplaceService.listedAppUrns.mockResolvedValue([]);
+    const appsRepository = mock<AppsRepository>();
+    appsRepository.getApps.mockResolvedValue([]);
     marketplaceService.copyAppFromRepoToInstalled.mockResolvedValue();
 
     entitlements = mock<MarketplaceEntitlementService>();
@@ -117,6 +123,7 @@ describe('RestartAppCommand — pull policy', () => {
         if (token === AppHelpers) return appHelpers;
         if (token === TraefikConfigService) return traefikConfigService;
         if (token === MarketplaceService) return marketplaceService;
+        if (token === AppsRepository) return appsRepository;
         if (token === SubnetManagerService) return subnetManager;
         if (token === EnvUtils) return new EnvUtils();
         if (token === MarketplaceEntitlementService) return entitlements;

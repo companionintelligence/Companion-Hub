@@ -48,6 +48,8 @@ const hoisted = vi.hoisted(() => ({
    */
   updateSettingsProps: undefined as undefined | Record<string, unknown>,
   installDialogProps: undefined as undefined | Record<string, unknown>,
+  /** Props the uninstall dialog was last rendered with. */
+  uninstallDialogProps: undefined as undefined | { canReset?: boolean },
   /** What the install progress bar reads, as the SSE progress ticks leave it. */
   installationProgress: null as null | { percent: number; downloadedBytes?: number; totalBytes?: number },
   /** Props the cancel-install confirmation was last rendered with. */
@@ -211,7 +213,10 @@ vi.mock('../../components/dialogs/restart-dialog/restart-dialog', () => ({
   RestartDialog: () => null,
 }));
 vi.mock('../../components/dialogs/uninstall-dialog/uninstall-dialog', () => ({
-  UninstallDialog: () => null,
+  UninstallDialog: (props: { canReset?: boolean }) => {
+    hoisted.uninstallDialogProps = props;
+    return null;
+  },
 }));
 vi.mock('../../components/dialogs/reset-dialog/reset-dialog', () => ({
   ResetDialog: () => null,
@@ -327,6 +332,7 @@ describe('AppActions', () => {
     hoisted.forgetInstallIntent.mockReset();
     hoisted.updateSettingsProps = undefined;
     hoisted.installDialogProps = undefined;
+    hoisted.uninstallDialogProps = undefined;
     hoisted.installationProgress = null;
     hoisted.cancelInstallProps = undefined;
     disclosureOpen.mockReset();
@@ -755,6 +761,20 @@ describe('AppActions', () => {
       for (const testId of CHANGES) {
         expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
       }
+    });
+
+    // The uninstall dialog points at Reset app, so it may only do that where the page shows Reset.
+    it('lets the uninstall dialog point at Reset app only where Reset is offered', () => {
+      const { unmount } = renderCustom('stopped');
+      expect(hoisted.uninstallDialogProps?.canReset).toBe(true);
+      unmount();
+
+      const failed = renderCustom('install_failed');
+      expect(hoisted.uninstallDialogProps?.canReset).toBe(false);
+      failed.unmount();
+
+      renderCustom('running', ['view', 'uninstall']);
+      expect(hoisted.uninstallDialogProps?.canReset).toBe(false);
     });
 
     it('shows an organization owner or admin everything, as when the page passes nothing', () => {

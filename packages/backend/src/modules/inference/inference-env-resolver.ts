@@ -16,10 +16,11 @@ import {
   handoutContextLength,
   selectPoolChatModel,
 } from './app-model-handout';
-import { MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
+import { handoutCeilingMb, MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
 import { appBearerFor } from './engine-credential-scope';
 import { catalogEmbedsOn, embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
 import { pickUtilityModel } from './utility-handout';
+import { installedDefaultChatModel } from './default-chat-model-handout';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 
 /**
@@ -47,7 +48,7 @@ export interface StandardizedAiEnv {
   CI_VISION_MODEL?: string;
   /**
    * The model for an app's background calls (extraction, classification, titling): a smaller
-   * installed model that fits beside the chat model, else the chat model itself. See
+   * installed model of at least 3B that fits beside the chat model, else the chat model itself. See
    * `pickUtilityModel`. Always set when a chat model is.
    */
   CI_UTILITY_MODEL?: string;
@@ -325,7 +326,7 @@ export class InferenceEnvResolver {
       // same three sources against the same ceiling; it differs by the app's floor and cap, and it
       // asks the model's own engine where this asks the active one.
       const askOllama = chatServedLocally && backendType === 'ollama';
-      const [sizing, residentContextLength, servedContextLength] = await Promise.all([
+      const [sizing, residentContextLength, servedContextLength, ceilingMb] = await Promise.all([
         chatServedLocally
           ? probeLocalSizing({
               backendType,
@@ -338,6 +339,9 @@ export class InferenceEnvResolver {
           : null,
         askOllama ? this.ollamaBackend.residentContextLength(chatCurated.backendModelId) : null,
         chatServedLocally ? Promise.resolve(backend.servedContextLength?.(chatCurated.backendModelId) ?? null).catch(() => null) : null,
+        // Not counting what the model itself holds now, or a resident model is sized against itself.
+        // Asked of the model's own engine: a pool model served here need not be on the active one.
+        chatServedLocally ? handoutCeilingMb(this.memoryManager, profile, chatCurated) : modelMemoryCeilingMb(profile),
       ]);
       // Through the pool, the largest cap among the nodes serving the model — the proxy places a
       // request only on nodes whose cap can take its window, so no smaller node binds (see
@@ -347,7 +351,7 @@ export class InferenceEnvResolver {
       const sized = handoutContextLength({
         model: chatCurated,
         servedLocally: chatServedLocally,
-        effectiveInferenceMemoryMb: modelMemoryCeilingMb(profile),
+        effectiveInferenceMemoryMb: ceilingMb,
         minContextLength: requirements.minContextLength,
         kvMbPerToken: sizing?.kvMbPerToken ?? null,
         weightMb: sizing?.weightMb ?? null,
@@ -465,7 +469,19 @@ export class InferenceEnvResolver {
     if (backendPreferredCurated && this.isInstalled(backendPreferredCurated, modelsLoaded, listedBy) && suitable(backendPreferredCurated)) {
       chatCurated = backendPreferredCurated;
     } else {
-      chatCurated = llmCandidates.find((m) => this.isInstalled(m, modelsLoaded, listedBy) && suitable(m));
+      /*
+       * ⚠ WITH NO MODEL CHOSEN, THE SETUP WIZARD'S DEFAULT, RANKED BY THE LIST THE WIZARD SHOWS.
+       * `llmCandidates` is read at `profile.tier` while the wizard reads the onboarding tier: for a card
+       * the container runtime cannot reach yet, those differ. A Hub restored after pairing skips the
+       * wizard, so its apps run on what the wizard would have marked (`installedDefaultChatModel`).
+       */
+      const wizardDefault = preferredId ? undefined : this.wizardDefault(backendType, modelsLoaded, listedBy, profile, suitable);
+      if (wizardDefault) {
+        this.logger.info(
+          `[InferenceEnvResolver] ${appLabel}: no chat model chosen yet; handing out the setup wizard's default ${wizardDefault.backendModelId}`,
+        );
+      }
+      chatCurated = wizardDefault ?? llmCandidates.find((m) => this.isInstalled(m, modelsLoaded, listedBy) && suitable(m));
     }
     if (!chatCurated) {
       chatCurated = [backendPreferredCurated, ...llmCandidates].find((m) => suitable(m));
@@ -497,6 +513,24 @@ export class InferenceEnvResolver {
       return { error: describeNoSuitableChatModel({ appSlug: appLabel, requirements, rejected, scope: 'local' }) };
     }
     return { curated: chatCurated, engineId };
+  }
+
+  /** The setup wizard's Default among the models this backend has, skipping ones `suitable` rules out. */
+  private wizardDefault(
+    backendType: InferenceBackendType,
+    modelsLoaded: string[],
+    listedBy: InferenceBackendType | null,
+    profile: Awaited<ReturnType<HardwareInspectorService['getProfile']>>,
+    suitable: (model: CuratedModel) => boolean,
+  ): CuratedModel | undefined {
+    return installedDefaultChatModel({
+      registry: this.modelRegistry,
+      profile,
+      computeTier: (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram),
+      backend: backendType,
+      isInstalled: (model) => this.isInstalled(model, modelsLoaded, listedBy),
+      accept: suitable,
+    });
   }
 
   /** The catalog's verdict on a host-served engine id, or `unverified` when no catalog row matches it. */

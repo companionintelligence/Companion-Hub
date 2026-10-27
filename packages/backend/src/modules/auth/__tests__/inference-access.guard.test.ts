@@ -18,13 +18,13 @@ import { HttpStatus, RequestMethod, ServiceUnavailableException, UnauthorizedExc
 import type { ExecutionContext } from '@nestjs/common';
 import { GUARDS_METADATA, METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { createHash } from 'node:crypto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiKeyStoreUnavailableError } from '@/modules/api-keys/api-key.errors';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { HubPoolOllamaCompatController } from '@/modules/hub-pool/hub-pool-ollama-compat.controller';
 import { HubPoolController } from '@/modules/hub-pool/hub-pool.controller';
 import { InferenceController } from '@/modules/inference/inference.controller';
-import { InferenceAccessGuard, type InferenceAuthenticatedRequest } from '../inference-access.guard';
+import { InferenceAccessGuard, type InferenceAuthenticatedRequest, inferenceTailnetAuth } from '../inference-access.guard';
 
 const INFERENCE_KEY = 'a'.repeat(64);
 const MCP_KEY = 'b'.repeat(64);
@@ -219,6 +219,112 @@ describe('InferenceAccessGuard', () => {
       const req = request('172.18.0.2', { 'x-forwarded-for': '203.0.113.10, 172.18.0.2', ...bearer(INFERENCE_KEY) });
       await expect(guard.canActivate(contextFor(req, fakeResponse()))).resolves.toBe(true);
       expect(repo.findByHash).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  /**
+   * Finding 2 of the 2026-10-23 fleet pass: a tailnet caller with no credential was answered 200 on every
+   * Hub, because the tailnet is inside the appliance by design (`isPrivateOrLocalIp`, and the test
+   * "a tailnet peer behind the Docker bridge" above). `HUB_INFERENCE_TAILNET_AUTH=require-key` is the
+   * opt-in for a fleet whose tailnet carries devices that should not spend its GPUs for free.
+   */
+  describe('HUB_INFERENCE_TAILNET_AUTH', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('reads the setting: trust unless it says require-key, whatever its case or padding', () => {
+      expect(inferenceTailnetAuth({})).toBe('trust');
+      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: '' })).toBe('trust');
+      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: 'trust' })).toBe('trust');
+      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: 'yes please' })).toBe('trust');
+      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: 'require-key' })).toBe('require-key');
+      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: '  Require-Key ' })).toBe('require-key');
+    });
+
+    it('unset (the default) admits a tailnet caller by origin and never asks the key store', async () => {
+      for (const req of [request('100.101.102.103'), request('172.18.0.2', { 'x-forwarded-for': '100.101.102.103' })]) {
+        await expect(guard.canActivate(contextFor(req, fakeResponse()))).resolves.toBe(true);
+      }
+      expect(repo.findByHash).not.toHaveBeenCalled();
+    });
+
+    describe('require-key', () => {
+      beforeEach(() => {
+        vi.stubEnv('HUB_INFERENCE_TAILNET_AUTH', 'require-key');
+      });
+
+      it.each([
+        ['the tailnet address is the caller', () => request('100.101.102.103')],
+        ['the caller is a tailnet client behind the Docker bridge', () => request('172.18.0.2', { 'x-forwarded-for': '100.101.102.103' })],
+        ['the caller is a tailnet client over IPv6', () => request('172.18.0.2', { 'x-forwarded-for': 'fd7a:115c:a1e0::7' })],
+      ])('refuses a keyless caller when %s, 401 in the OpenAI shape, naming the tailnet', async (_label, make) => {
+        const { error, res } = await refusalOf(make());
+
+        expect(error).toBeInstanceOf(UnauthorizedException);
+        expect(res.statusCode).toBe(HttpStatus.UNAUTHORIZED);
+        expect(res.headers['WWW-Authenticate']).toBe('Bearer realm="ci-hub-inference"');
+        expect(res.body).toEqual({
+          error: {
+            message: expect.stringContaining('from callers on the tailnet'),
+            type: 'authentication_error',
+            code: 'missing_api_key',
+          },
+        });
+        expect((res.body as { error: { message: string } }).error.message).toContain('cihub api-key create --scope inference');
+        expect(repo.findByHash).not.toHaveBeenCalled();
+      });
+
+      it('admits a tailnet caller with a valid inference key, which the handler can then read, after one lookup', async () => {
+        const req = request('100.101.102.103', bearer(INFERENCE_KEY));
+        const res = fakeResponse();
+
+        await expect(guard.canActivate(contextFor(req, res))).resolves.toBe(true);
+
+        expect(repo.findByHash).toHaveBeenCalledTimes(1);
+        expect(req.inferenceApiKey).toMatchObject({ id: 1, name: 'laptop-zed' });
+        expect(res.headersSent).toBe(false);
+      });
+
+      it('refuses a tailnet caller whose key is an mcp key, a key this Hub never minted, or a placeholder', async () => {
+        const mcp = await refusalOf(request('100.101.102.103', bearer(MCP_KEY)));
+        expect((mcp.res.body as { error: { code: string } }).error.code).toBe('invalid_api_key');
+        const unknown = await refusalOf(request('100.101.102.103', bearer(UNKNOWN_KEY)));
+        expect((unknown.res.body as { error: { code: string } }).error.code).toBe('invalid_api_key');
+        repo.findByHash.mockClear();
+        const placeholder = await refusalOf(request('100.101.102.103', bearer('ollama')));
+        expect((placeholder.res.body as { error: { code: string } }).error.code).toBe('invalid_api_key');
+        expect(repo.findByHash).not.toHaveBeenCalled();
+      });
+
+      it('leaves the appliance itself alone: a container, loopback and an app subnet are still admitted with no lookup', async () => {
+        for (const req of [
+          request('172.18.0.5', { host: 'ci-hub:3000', ...bearer('ollama') }),
+          request('127.0.0.1'),
+          request('::1'),
+          request('10.128.12.5', { host: 'ci-hub:5002' }),
+          request('172.18.0.2', { 'x-forwarded-for': '172.18.0.2, 10.128.1.9' }),
+        ]) {
+          await expect(guard.canActivate(contextFor(req, fakeResponse()))).resolves.toBe(true);
+        }
+        expect(repo.findByHash).not.toHaveBeenCalled();
+      });
+
+      it('logs the reason as origin=tailnet-address, and never the token', async () => {
+        await refusalOf(request('100.101.102.103'));
+        await refusalOf(request('100.101.102.103', bearer(UNKNOWN_KEY)));
+
+        const logged = JSON.stringify(logger.warn.mock.calls);
+        expect(logged).toContain('origin=tailnet-address');
+        expect(logged).not.toContain(UNKNOWN_KEY);
+      });
+
+      it('changes nothing for a tunnel or public caller: the old refusals and their messages stand', async () => {
+        const tunnel = await refusalOf(request('172.18.0.2', { 'cf-ray': '8f1a-LHR' }));
+        expect((tunnel.res.body as { error: { message: string } }).error.message).toContain('from outside the appliance network');
+        const admitted = request('203.0.113.10', bearer(INFERENCE_KEY));
+        await expect(guard.canActivate(contextFor(admitted, fakeResponse()))).resolves.toBe(true);
+      });
     });
   });
 

@@ -250,7 +250,7 @@ packages/desktop/
     ├── tauri.conf.json   # App config, CSP, window settings
     ├── capabilities/     # Tauri v2 permission model
     │   └── default.json  # Window mgmt, shell, store, notification, OS permissions
-    ├── icons/            # CI globe branding — all sizes
+    ├── icons/            # Companion Hub mark, all sizes (generated from packages/frontend/hub-brand)
     └── src/
         ├── main.rs       # Entry point, plugin registration, window geometry persistence
         ├── lib.rs        # Library re-export

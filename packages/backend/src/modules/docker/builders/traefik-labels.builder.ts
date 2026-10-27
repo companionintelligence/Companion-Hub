@@ -1,4 +1,5 @@
 import { hubNetworkName } from '@/common/constants';
+import { HUB_FORWARD_AUTH_MIDDLEWARES } from '@ci-hub/common/schemas';
 
 export type ExposureMode = 'local' | 'cloudflare' | 'tailscale';
 
@@ -15,6 +16,20 @@ interface TraefikLabelsArgs {
   httpsBackend?: boolean;
 }
 
+/** The app's router on the `web` entry point, which the Cloudflare tunnel connects to: `<app id>-insecure`. */
+const INSECURE_ROUTER_SUFFIX = '-insecure';
+/** The app's Private VPN router: `<app id>-tailscale`. */
+const TAILSCALE_ROUTER_SUFFIX = '-tailscale';
+/** The app's middleware that sets the forwarded public host: `<app id>-public-host`. */
+const PUBLIC_HOST_MIDDLEWARE_SUFFIX = '-public-host';
+
+/**
+ * What the builder adds to an app's id for its other routers and its public-host middleware. An app
+ * whose id is another app's id plus one of these would get a router or middleware of the same name
+ * as that app's.
+ */
+export const HUB_ROUTE_NAME_SUFFIXES: readonly string[] = [INSECURE_ROUTER_SUFFIX, TAILSCALE_ROUTER_SUFFIX, PUBLIC_HOST_MIDDLEWARE_SUFFIX];
+
 /** The file-provider middleware that strips visitor-set forwarded headers from tunnel requests. */
 export const EDGE_HEADERS_MIDDLEWARE = 'ci-hub-edge-headers@file';
 
@@ -27,34 +42,101 @@ export const APP_STARTING_MIDDLEWARE = 'ci-hub-app-starting@file';
 /** `traefik.http.routers.<router>.<option>`. Traefik reads option names without regard to case. */
 const HTTP_ROUTER_LABEL = /^traefik\.http\.routers\.([^.]+)\.(.+)$/i;
 
+function middlewareChain(value: string | boolean | undefined): string[] {
+  return typeof value === 'string'
+    ? value
+        .split(',')
+        .map((name) => name.trim())
+        .filter(Boolean)
+    : [];
+}
+
+/**
+ * Puts the middlewares this builder gave each of its routers at the head of that router's chain,
+ * whatever chain an app's `extraLabels` set there, so a manifest can't drop the edge header strip or
+ * the Hub login. Donetick, Firefly III and OnlyOffice set chains on these routers: theirs now follow
+ * ours, and their forward auth under the other provider counts as ours, so it isn't run twice.
+ * Runs after interpolation and compares keys without regard to case, as Traefik reads them. A chain
+ * under another spelling of our key is folded into ours: Traefik would read only one of the two and
+ * TraefikConfigService only ours.
+ */
+export function withHubMiddlewaresFirst(
+  labels: Record<string, string | boolean>,
+  hubLabels: Record<string, string | boolean>,
+): Record<string, string | boolean> {
+  const hubChains = new Map<string, { key: string; chain: string[]; hasForwardAuth: boolean }>();
+  for (const [key, value] of Object.entries(hubLabels)) {
+    if (HTTP_ROUTER_LABEL.exec(key)?.[2]?.toLowerCase() === 'middlewares') {
+      const chain = middlewareChain(value);
+      hubChains.set(key.toLowerCase(), { key, chain, hasForwardAuth: chain.some((name) => HUB_FORWARD_AUTH_MIDDLEWARES.has(name.toLowerCase())) });
+    }
+  }
+
+  const result = { ...labels };
+  const chains = new Map<string, string[]>();
+  for (const [key, value] of Object.entries(labels)) {
+    const hub = hubChains.get(key.toLowerCase());
+    if (!hub) {
+      continue;
+    }
+    let chain = chains.get(hub.key);
+    if (!chain) {
+      chain = [...hub.chain];
+      chains.set(hub.key, chain);
+    }
+    for (const name of middlewareChain(value)) {
+      const lower = name.toLowerCase();
+      const known = chain.some((existing) => existing.toLowerCase() === lower);
+      if (!known && !(hub.hasForwardAuth && HUB_FORWARD_AUTH_MIDDLEWARES.has(lower))) {
+        chain.push(name);
+      }
+    }
+    if (key !== hub.key) {
+      delete result[key];
+    }
+  }
+  for (const [key, chain] of chains) {
+    result[key] = chain.join(',');
+  }
+  return result;
+}
+
 /**
  * Ends every HTTP router in an app container's labels with {@link APP_STARTING_MIDDLEWARE}.
  *
  * Every router, whoever declared it. The ones this builder adds are only some of them: a manifest's
- * `extraLabels` can replace a router's whole middleware chain (Donetick does), add a host to one
- * (Kimai's LAN name) or declare routers of its own, and each of those showed the same bare page
- * while the app started. So this runs on the merged labels, after the app id is interpolated into
- * their keys: run before, a manifest's `{{CI_HUB_APP_ID}}` router would get a chain of its own that
- * then overwrote this builder's, forward auth included.
+ * `extraLabels` can add middlewares to a router's chain (Donetick does), add a host to one (Kimai's
+ * LAN name) or declare routers of its own, and each of those showed the same bare page while the
+ * app started. So this runs on the merged labels, after the app id is interpolated into their keys:
+ * run before, a manifest's `{{CI_HUB_APP_ID}}` router would get a chain of its own that then
+ * overwrote this builder's.
  *
  * Last in the chain, so it only ever sees the app's own answer. Forward auth runs before it, and its
  * 401s, redirects and 5xx reach the visitor untouched: someone who is not signed in gets the login,
  * never the page. The visitor-set headers the edge middleware strips are also gone by then, and
  * Traefik copies the request's headers into its request for the page.
+ *
+ * Routers are told apart without regard to case, as Traefik tells them apart. A router spelled two
+ * ways is one router with one chain: a second chain key, here or added here, would leave Traefik to
+ * read only one of the two, which could be the one without the Hub login.
  */
 export function withAppStartingPage(labels: Record<string, string | boolean>): Record<string, string | boolean> {
-  const routers = new Set<string>();
-  // An existing chain under the spelling it was given, so it is extended rather than doubled.
-  const chainKeys = new Map<string, string>();
+  // Each router under the first spelling seen, with every key that sets its chain, so an existing
+  // chain is extended rather than doubled.
+  const routers = new Map<string, { name: string; chainKeys: string[] }>();
   for (const key of Object.keys(labels)) {
     const match = HTTP_ROUTER_LABEL.exec(key);
     const [, router, option] = match ?? [];
     if (!router || !option) {
       continue;
     }
-    routers.add(router);
+    let entry = routers.get(router.toLowerCase());
+    if (!entry) {
+      entry = { name: router, chainKeys: [] };
+      routers.set(router.toLowerCase(), entry);
+    }
     if (option.toLowerCase() === 'middlewares') {
-      chainKeys.set(router, key);
+      entry.chainKeys.push(key);
     }
   }
 
@@ -63,20 +145,63 @@ export function withAppStartingPage(labels: Record<string, string | boolean>): R
   }
 
   const result = { ...labels };
-  for (const router of routers) {
-    const key = chainKeys.get(router) ?? `traefik.http.routers.${router}.middlewares`;
-    const current = result[key];
-    const chain =
-      typeof current === 'string'
-        ? current
-            .split(',')
-            .map((name) => name.trim())
-            .filter(Boolean)
-        : [];
+  for (const { name, chainKeys } of routers.values()) {
+    // One chain under the spelling TraefikConfigService reads for its file-provider copy.
+    const key = `traefik.http.routers.${name}.middlewares`;
+    const chain: string[] = [];
+    for (const chainKey of chainKeys) {
+      for (const middleware of middlewareChain(result[chainKey])) {
+        if (!chain.some((existing) => existing.toLowerCase() === middleware.toLowerCase())) {
+          chain.push(middleware);
+        }
+      }
+      delete result[chainKey];
+    }
     if (!chain.includes(APP_STARTING_MIDDLEWARE)) {
       chain.push(APP_STARTING_MIDDLEWARE);
     }
     result[key] = chain.join(',');
+  }
+  return result;
+}
+
+/** The app id placeholders `ServiceBuilder.interpolateVariables` writes the app id into. */
+const APP_ID_PLACEHOLDER = /\{\{\s*(?:CI_HUB_APP_ID|RUNTIPI_APP_ID|RUNCIHUB_APP_ID)\s*\}\}/g;
+
+/** The router a label sets, as Traefik names it once `appId` is written in, and the option's last part. */
+function routerOption(label: string, appId: string): { router: string; option: string } | undefined {
+  const [, router, option] = HTTP_ROUTER_LABEL.exec(label) ?? [];
+  if (!router || !option) {
+    return undefined;
+  }
+  const lowerOption = option.toLowerCase();
+  return { router: router.replace(APP_ID_PLACEHOLDER, appId).toLowerCase(), option: lowerOption.slice(lowerOption.lastIndexOf('.') + 1) };
+}
+
+/**
+ * The other labels in `labels` of each router whose `middlewares` label is in `leftOut`, each with
+ * that `middlewares` label. Without its chain such a router still serves, with no Hub login in front
+ * of it when the chain held one, so the builder leaves the whole router out. The Hub's own labels
+ * for a router of its own are not in `labels`, so its router keeps its chain.
+ */
+export function labelsOfRoutersLosingTheirChain(leftOut: Iterable<string>, labels: Record<string, unknown>, appId: string): Map<string, string> {
+  const chainLabels = new Map<string, string>();
+  for (const label of leftOut) {
+    const parsed = routerOption(label, appId);
+    if (parsed?.option === 'middlewares' && !chainLabels.has(parsed.router)) {
+      chainLabels.set(parsed.router, label);
+    }
+  }
+  const result = new Map<string, string>();
+  if (chainLabels.size === 0) {
+    return result;
+  }
+  for (const label of Object.keys(labels)) {
+    const router = routerOption(label, appId)?.router;
+    const chainLabel = router === undefined ? undefined : chainLabels.get(router);
+    if (chainLabel !== undefined && chainLabel !== label) {
+      result.set(label, chainLabel);
+    }
   }
   return result;
 }
@@ -107,7 +232,7 @@ export class TraefikLabelsBuilder {
     }
 
     const hostRule = `Host(\`${this.params.cloudflareOriginHostname}\`)`;
-    const publicHostMiddleware = `${this.params.appId}-${this.params.storeId}-public-host`;
+    const publicHostMiddleware = `${this.params.appId}-${this.params.storeId}${PUBLIC_HOST_MIDDLEWARE_SUFFIX}`;
     // First, auth or not: drops the forwarded headers a tunnel visitor can set and no edge hop
     // replaces (X-Real-Ip and the rest), which Traefik keeps because it trusts cloudflared's
     // forwarded headers. See `ci-hub-edge-headers` in assets/traefik/dynamic/dynamic.yml.
@@ -132,9 +257,9 @@ export class TraefikLabelsBuilder {
 
     Object.assign(this.labels, {
       'traefik.enable': true,
-      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.rule`]: hostRule,
-      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.entrypoints`]: 'web',
-      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.service`]: `${this.params.appId}-${this.params.storeId}`,
+      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${INSECURE_ROUTER_SUFFIX}.rule`]: hostRule,
+      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${INSECURE_ROUTER_SUFFIX}.entrypoints`]: 'web',
+      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${INSECURE_ROUTER_SUFFIX}.service`]: `${this.params.appId}-${this.params.storeId}`,
       [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.rule`]: hostRule,
       [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.entrypoints`]: 'websecure',
       [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.service`]: `${this.params.appId}-${this.params.storeId}`,
@@ -153,7 +278,7 @@ export class TraefikLabelsBuilder {
       const middlewareChain = middlewares.join(',');
       Object.assign(this.labels, {
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.middlewares`]: middlewareChain,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.middlewares`]: middlewareChain,
+        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${INSECURE_ROUTER_SUFFIX}.middlewares`]: middlewareChain,
       });
     }
 
@@ -166,9 +291,9 @@ export class TraefikLabelsBuilder {
 
       Object.assign(this.labels, {
         'traefik.enable': true,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-tailscale.rule`]: `Host(\`${hostname}\`)`,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-tailscale.entrypoints`]: 'web',
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-tailscale.service`]: `${this.params.appId}-${this.params.storeId}`,
+        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${TAILSCALE_ROUTER_SUFFIX}.rule`]: `Host(\`${hostname}\`)`,
+        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${TAILSCALE_ROUTER_SUFFIX}.entrypoints`]: 'web',
+        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${TAILSCALE_ROUTER_SUFFIX}.service`]: `${this.params.appId}-${this.params.storeId}`,
       });
     }
     return this;

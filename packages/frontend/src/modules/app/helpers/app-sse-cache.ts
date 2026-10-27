@@ -24,6 +24,8 @@ import { setUpdatePhase } from './use-update-phase';
 // those queries are keyed by the CONSUMER's urn, so ci-memory's own SSE event
 // never touches them on its own.
 
+type LiveCommand = NonNullable<GetAppDto['operation']>['command'];
+
 export type AppInstallErrorCache = {
   message: string;
   ts: number;
@@ -46,6 +48,8 @@ export type AppSsePayload = {
   settingsPath?: string;
   /** `public_domain_changed` only: the hostname CI-Cloud serves the app at now. */
   hostname?: string;
+  /** `operation_change` only: the lifecycle command the Hub has under way for the app, `null` for none. */
+  operation?: string | null;
   /** `tailscale_serve_permission` only: whether tailscaled now refuses the Hub's Tailscale Serve changes. */
   denied?: boolean;
   /** Identifier for a non-fatal caveat on an otherwise-successful op; the client maps it to a warning toast. */
@@ -312,6 +316,17 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
     queryClient.setQueryData(['app-install-error', urn], null);
     updateInstallationProgress(urn, null);
     clearUninstalledAppCaches(queryClient, appUrn);
+    invalidateAppQueries(queryClient, appUrn);
+    return;
+  }
+
+  // An install began or ended its checks, which run before the app has a row. Every open page of the
+  // app follows it at once, not only the one that clicked; the read that follows brings the rest.
+  if (event === 'operation_change') {
+    const { operation } = data;
+    queryClient.setQueryData(getAppQueryKey({ path: { urn: appUrn } }), (current: GetAppDto | undefined) =>
+      current ? { ...current, operation: operation ? { command: operation as LiveCommand } : undefined } : current,
+    );
     invalidateAppQueries(queryClient, appUrn);
     return;
   }

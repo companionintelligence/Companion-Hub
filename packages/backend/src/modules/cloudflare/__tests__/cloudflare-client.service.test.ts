@@ -497,6 +497,27 @@ describe('CloudflareClientService', () => {
       expect(result).toEqual({ available: false, message: 'not available' });
     });
 
+    // The flag that a taken name is this device's own is kept for the Hub's own decision (#2133).
+    it("keeps Portal's note that a taken name is this device's own, and nothing else", async () => {
+      const message = 'DNS record already exists for game-core-2-acme.ci0.pw';
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: { available: false, reason: 'hostname_taken', message, heldByCaller: true } });
+      await expect(service.checkDnsAvailability('game', 'ci0.pw')).resolves.toEqual({
+        available: false,
+        reason: 'hostname_taken',
+        message,
+        heldByCaller: true,
+      });
+
+      for (const data of [
+        { available: false, reason: 'hostname_taken', message, heldByCaller: 'yes' },
+        { available: false, reason: 'zone_unreachable', message, heldByCaller: true },
+        { available: true, heldByCaller: true },
+      ]) {
+        mockAxiosInstance.get.mockResolvedValueOnce({ data });
+        await expect(service.checkDnsAvailability('game', 'ci0.pw')).resolves.not.toHaveProperty('heldByCaller');
+      }
+    });
+
     it('carries no reason on an available answer', async () => {
       mockAxiosInstance.get.mockResolvedValue({ data: { available: true, reason: 'zone_unreachable' } });
 
