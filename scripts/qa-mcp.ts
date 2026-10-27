@@ -96,11 +96,19 @@ export const SAFE_PROBES: Record<string, { tool: string; args: Record<string, un
   'sqlite-mcp': { tool: 'list_tables', args: {} }, // lists user tables in the freshly-opened db (empty is fine)
   'n8n-mcp': { tool: 'tools_documentation', args: {} }, // bundled node docs, no n8n instance needed
   'postgres-mcp': { tool: 'query', args: { sql: 'SELECT 1' } }, // executes against the BACKING_SERVICES sidecar
+  'memory-mcp': { tool: 'read_graph', args: {} }, // in-memory/JSON knowledge graph read
+  'sequential-thinking-mcp': {
+    tool: 'sequentialthinking',
+    args: { thought: 'Initial analysis', thoughtNumber: 1, totalThoughts: 1, nextThoughtNeeded: false },
+  }, // pure in-memory reasoning
+  'time-mcp': { tool: 'get_current_time', args: { timezone: 'UTC' } }, // timezone lookup
+  'everything-mcp': { tool: 'echo', args: { message: 'hello' } }, // echo test tool
   // ── network-touching execution proofs — only with QA_MCP_PROBE_NET=1 ──
   'fetch-mcp': { tool: 'fetch', args: { url: 'https://example.com/' }, net: true },
   'youtube-transcript-mcp': { tool: 'get_video_info', args: { url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' }, net: true },
-  // reddit-mcp deliberately has NO probe: every reddit tool requires Reddit API creds, so the only
-  // verdict a no-cred call yields is tool-error — handshake + manifest assertion is its real ceiling.
+  'brave-search-mcp': { tool: 'brave_web_search', args: { query: 'test' }, net: true },
+  // reddit-mcp, slack-mcp, gitlab-mcp, and google-maps-mcp deliberately have NO probe:
+  // their tools require live external API creds, so handshake + manifest assertion is their real ceiling without keys.
   'lego-oracle-mcp': { tool: 'browse_themes', args: {}, net: true }, // API-backed catalog
   'smartest-tv-mcp': { tool: 'list_devices', args: {} }, // local discovery (app skips headless anyway)
 };
@@ -190,7 +198,10 @@ export function resolveEnv(e: McpEnv, scratch: string, secrets: Record<string, s
   const k = e.key ?? '';
   const provided = secrets[k] ?? process.env[k];
   if (provided) return { value: provided };
-  if (!e.secret && /PATH|DIR|ROOT/i.test(k)) return { value: '/qa', mount: scratch }; // path-like arg
+  if (!e.secret && /PATH|DIR|ROOT/i.test(k)) {
+    const val = /FILE/i.test(k) ? '/qa/data.json' : '/qa';
+    return { value: val, mount: scratch };
+  }
   if (e.required && /URL|URI|DSN|CONNECTION/i.test(k)) return { value: dummyUrl(k) }; // parseable connection string
   if (e.required) return { value: PLACEHOLDER }; // boot it anyway; auth is enforced at tools/call
   return {};
@@ -224,7 +235,10 @@ export function buildDockerArgs(
     if (r.value === undefined) continue;
     if (e.required && e.secret && r.value === PLACEHOLDER) needsSecret = e.key; // flag — may still boot
     env[e.key] = r.value;
-    if (r.mount) mounts.push('-v', `${r.mount}:${r.value}`);
+    if (r.mount) {
+      const target = r.mountContainer ?? (r.value.endsWith('.json') || r.value.endsWith('.db') ? '/qa' : r.value);
+      if (!mounts.includes(target)) mounts.push('-v', `${r.mount}:${target}`);
+    }
   }
   Object.assign(env, opts.envOverride ?? {}); // backing-service / explicit overrides win
   const envFlags = Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
