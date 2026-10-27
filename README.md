@@ -255,6 +255,18 @@ Engineering notes for this repository live in [`docs/`](docs/). Start with the d
 - **Hub and Portal.** Open-source Hub is an untrusted client of Companion Portal. Marketplace installs and registry tag lists need a Portal-issued device key, so pair first (`cihub register` or the onboarding UI). An unpaired Hub gets `401` on those calls, and the catalog can look slow or empty instead of obviously unauthorized. See [`docs/security/hub-portal-trust.md`](docs/security/hub-portal-trust.md).
 - **Telemetry.** Distributed builds report crashes to Sentry by default. `CI_TELEMETRY=off` or `CI_LOCAL_ONLY=true` in the Hub `.env` stops it, as does the switch in **Settings → General**. What is collected, and what is not, is in [`docs/telemetry.md`](docs/telemetry.md).
 
+<!-- companion-hub-readme-deep-review -->
+
+## Supported desktop installers
+
+| Platform | Install route | Update route |
+|---|---|---|
+| macOS (Apple silicon and Intel) | Homebrew Cask or release DMG | `brew upgrade --cask companion-hub` or install the new DMG |
+| Windows x64 | Scoop bucket or release installer | `scoop update companion-hub` or install the new release |
+| Linux | Download the Linux release from the website | Install the newer release package |
+
+The package-manager repositories track Hub releases. See [Homebrew](https://github.com/companionintelligence/homebrew-tap) and [Scoop](https://github.com/companionintelligence/scoop-bucket) for their platform-specific behavior.
+
 ## Contributing
 
 ```bash
