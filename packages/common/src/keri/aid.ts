@@ -1,6 +1,6 @@
 import { createPrivateKey, createPublicKey, generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify, type KeyObject } from 'node:crypto';
-import { computeCesrDigest, decodeCesrPublicKey, decodeCesrSignature, encodeCesrPublicKey, encodeCesrSignature } from './cesr';
-import { canonicalStringify, computeSaid, verifySaid } from './said';
+import { computeCesrDigest, decodeCesrPublicKey, decodeCesrSignature, encodeCesrPublicKey, encodeCesrSignature } from './cesr.js';
+import { canonicalStringify, computeSaid, verifySaid } from './said.js';
 
 export interface Ed25519Keypair {
   publicKeyBytes: Buffer;
@@ -160,7 +160,7 @@ export function createRotationEvent(params: {
     a: [],
   };
 
-  const finalEvent = computeSaid(rawEvent as Record<string, unknown>) as RotationEvent;
+  const finalEvent = computeSaid(rawEvent as Record<string, unknown>) as unknown as RotationEvent;
   const sig = signKeyEvent(finalEvent, params.newPrivateKey);
 
   return { event: finalEvent, signatures: [sig] };
@@ -185,7 +185,7 @@ export function createInteractionEvent(params: {
     a: params.seals,
   };
 
-  const finalEvent = computeSaid(rawEvent as Record<string, unknown>) as InteractionEvent;
+  const finalEvent = computeSaid(rawEvent as Record<string, unknown>) as unknown as InteractionEvent;
   const sig = signKeyEvent(finalEvent, params.privateKey);
 
   return { event: finalEvent, signatures: [sig] };
@@ -209,8 +209,17 @@ export function verifyKeyEventLog(kel: SignedKeyEvent[]): { valid: boolean; keyS
   }
 
   const first = kel[0];
+  if (!first) {
+    return { valid: false, error: 'KEL is empty' };
+  }
   if (first.event.t !== 'icp') {
     return { valid: false, error: 'First KEL event must be an inception (icp) event' };
+  }
+  const inceptionKey = first.event.k[0];
+  const nextCommitmentValue = first.event.n[0];
+  const inceptionSignature = first.signatures[0];
+  if (!inceptionKey || !nextCommitmentValue || !inceptionSignature) {
+    return { valid: false, error: 'Inception event is missing its key, next-key commitment, or signature' };
   }
 
   const placeholder = '#'.repeat(44);
@@ -221,17 +230,20 @@ export function verifyKeyEventLog(kel: SignedKeyEvent[]): { valid: boolean; keyS
     return { valid: false, error: 'Inception event SAID or identifier digest verification failed' };
   }
 
-  let currentKey = first.event.k[0];
-  let nextCommitment = first.event.n[0];
+  let currentKey = inceptionKey;
+  let nextCommitment = nextCommitmentValue;
   let lastDigest = first.event.d;
   let currentSeq = 0;
 
-  if (!verifyKeyEventSignature(first.event, first.signatures[0], currentKey)) {
+  if (!verifyKeyEventSignature(first.event, inceptionSignature, currentKey)) {
     return { valid: false, error: 'Inception event signature verification failed' };
   }
 
   for (let idx = 1; idx < kel.length; idx++) {
     const item = kel[idx];
+    if (!item) {
+      return { valid: false, error: `KEL event at index ${idx} is missing` };
+    }
     const event = item.event;
 
     if (!verifySaid(event as unknown as Record<string, unknown>)) {
@@ -243,12 +255,17 @@ export function verifyKeyEventLog(kel: SignedKeyEvent[]): { valid: boolean; keyS
       return { valid: false, error: `Invalid sequence at index ${idx}: expected ${currentSeq + 1}, got ${eventSeq}` };
     }
 
-    if (event.p !== lastDigest) {
+    if ('p' in event && event.p !== lastDigest) {
       return { valid: false, error: `Broken digest hash chain at index ${idx}: prior digest does not match` };
     }
 
     if (event.t === 'rot') {
       const revealedKey = event.k[0];
+      const nextCommitmentValue = event.n[0];
+      const signature = item.signatures[0];
+      if (!revealedKey || !nextCommitmentValue || !signature) {
+        return { valid: false, error: `Rotation event at index ${idx} is missing its key, next-key commitment, or signature` };
+      }
       const revealedCommitment = computePreRotationCommitment(revealedKey);
       if (revealedCommitment !== nextCommitment) {
         return {
@@ -258,13 +275,17 @@ export function verifyKeyEventLog(kel: SignedKeyEvent[]): { valid: boolean; keyS
       }
 
       currentKey = revealedKey;
-      nextCommitment = event.n[0];
+      nextCommitment = nextCommitmentValue;
 
-      if (!verifyKeyEventSignature(event, item.signatures[0], currentKey)) {
+      if (!verifyKeyEventSignature(event, signature, currentKey)) {
         return { valid: false, error: `Rotation event signature verification failed at index ${idx}` };
       }
     } else if (event.t === 'ixn') {
-      if (!verifyKeyEventSignature(event, item.signatures[0], currentKey)) {
+      const signature = item.signatures[0];
+      if (!signature) {
+        return { valid: false, error: `Interaction event at index ${idx} is missing its signature` };
+      }
+      if (!verifyKeyEventSignature(event, signature, currentKey)) {
         return { valid: false, error: `Interaction event signature verification failed at index ${idx}` };
       }
     } else {

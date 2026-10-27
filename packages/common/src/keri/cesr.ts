@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 
 /**
  * CESR (Composable Event Streaming Representation) primitives for KERI.

@@ -1,4 +1,4 @@
-import { computeCesrDigest } from './cesr';
+import { computeCesrDigest } from './cesr.js';
 
 /** The standard 44-character placeholder for a 256-bit SHA-256 SAID in CESR encoding. */
 export const SAID_PLACEHOLDER_44 = '#'.repeat(44);

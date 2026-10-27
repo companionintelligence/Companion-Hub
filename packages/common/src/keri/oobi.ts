@@ -33,7 +33,11 @@ export function parseOobiUrl(oobiUrl: string): OobiMetadata {
     throw new Error(`Invalid OOBI URL format: missing /oobi/<aid> path in ${oobiUrl}`);
   }
 
-  const aid = decodeURIComponent(pathParts[oobiIndex + 1]);
+  const aidPart = pathParts[oobiIndex + 1];
+  if (!aidPart) {
+    throw new Error(`Invalid OOBI URL format: missing AID in ${oobiUrl}`);
+  }
+  const aid = decodeURIComponent(aidPart);
   const role = url.searchParams.get('role') as OobiMetadata['role'] | undefined;
   const name = url.searchParams.get('name') ?? undefined;
 
