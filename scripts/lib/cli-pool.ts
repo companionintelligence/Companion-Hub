@@ -36,6 +36,7 @@ import {
   setInferenceOllamaSlots,
   setPoolEnabledSetting,
   setPoolMaxPromptTokens,
+  setPoolRequireSignedPeers,
   setPoolPeerEnabled,
   setPoolPin,
   unpairPoolPeer,
@@ -76,6 +77,8 @@ export const POOL_SUBCOMMANDS = [
   'log',
   'enable',
   'disable',
+  'require-signed',
+  'allow-bearer',
   'peer-enable',
   'peer-disable',
   'pin',
@@ -512,6 +515,11 @@ export async function runPoolCommand(args: string[]) {
       return;
     }
 
+    if (parsed.subcommand === 'require-signed' || parsed.subcommand === 'allow-bearer') {
+      await runPoolPeerAuthCommand(ctx, parsed);
+      return;
+    }
+
     if (parsed.subcommand === 'pin' || parsed.subcommand === 'unpin') {
       await runPoolPinCommand(ctx, parsed);
       return;
@@ -770,6 +778,101 @@ async function runPoolEnableCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
     );
   }
   printMessageBox(enable ? `${axis.label} enabled` : `${axis.label} disabled`, lines, enable ? 'green' : 'yellow');
+}
+
+/**
+ * Roll the legacy bearer path off only after every paired peer is visibly signed.
+ *
+ * This is intentionally an explicit command rather than an automatic doctor repair: flipping the
+ * setting on one old peer cuts both directions of that pairing off. --yes is required for the
+ * state change, and the post-write GET is part of success so a Hub that silently strips the field
+ * cannot be reported as hardened.
+ */
+async function runPoolPeerAuthCommand(ctx: HubContext, parsed: ParsedPoolArgs): Promise<void> {
+  const requireSigned = parsed.subcommand === 'require-signed';
+  const status = await fetchPoolStatus(ctx.envFile);
+  const stored = status.settings.poolRequireSignedPeers;
+  if (stored === undefined) {
+    printMessageBox(
+      'Signed peer policy unavailable',
+      [
+        'This Hub predates poolRequireSignedPeers, so no setting was changed.',
+        `${BASE_COMMAND} pool ${requireSigned ? 'require-signed' : 'allow-bearer'} --yes`,
+      ],
+      'red',
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  const paired = status.peers.filter((peer) => peer.status !== 'pending');
+  const bearer = paired.filter((peer) => peer.authMode !== 'signed');
+  if (requireSigned && bearer.length > 0) {
+    printMessageBox(
+      'Signed peer rollout blocked',
+      [
+        `No setting was changed: ${bearer.length} paired peer${bearer.length === 1 ? '' : 's'} still use the legacy bearer path.`,
+        `  ${bearer.map((peer) => sanitizeForBox(peer.nodeFqdn)).join(', ')}`,
+        '',
+        'Wait for those peers to upgrade and appear as signed in cihub pool status on this Hub.',
+        `Then retry: ${BASE_COMMAND} pool require-signed --yes`,
+      ],
+      'yellow',
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  if (stored === requireSigned) {
+    printMessageBox(
+      requireSigned ? 'Signed peer policy already enabled' : 'Legacy bearer policy already allowed',
+      [
+        `poolRequireSignedPeers=${stored}`,
+        requireSigned
+          ? 'Every paired peer is required to use its pinned identity.'
+          : 'Signed peers remain supported, but legacy bearer peers are still accepted.',
+      ],
+      requireSigned ? 'green' : 'yellow',
+    );
+    return;
+  }
+
+  const confirmed = await confirmDestructiveAction(
+    requireSigned ? 'Requiring signed pool peers' : 'Allowing legacy bearer pool peers',
+    parsed.yes,
+    `${requireSigned ? 'Require' : 'Allow'} signed peer authentication on this Hub? [y/N]: `,
+    'a state change',
+  );
+  if (!confirmed) {
+    printMessageBox('Cancelled', ['Left pool peer authentication policy untouched.'], 'yellow');
+    return;
+  }
+
+  await setPoolRequireSignedPeers(ctx.envFile, requireSigned);
+  const verified = await fetchPoolStatus(ctx.envFile);
+  if (verified.settings.poolRequireSignedPeers !== requireSigned) {
+    printMessageBox(
+      'Signed peer policy not verified',
+      [
+        `The PATCH returned, but pool status still reports poolRequireSignedPeers=${String(verified.settings.poolRequireSignedPeers)}.`,
+        'No success claim was made. Inspect the Hub image and retry after it supports this setting.',
+      ],
+      'red',
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  printMessageBox(
+    requireSigned ? 'Signed peer policy enabled' : 'Legacy bearer policy allowed',
+    [
+      `Verified poolRequireSignedPeers=${requireSigned}`,
+      requireSigned
+        ? 'Every paired peer was signed before the write; future bearer-only peers are refused.'
+        : 'The legacy bearer path is available again for recovery; return to signed-only after all peers upgrade.',
+    ],
+    requireSigned ? 'green' : 'yellow',
+  );
 }
 
 /**

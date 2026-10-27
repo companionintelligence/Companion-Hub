@@ -217,6 +217,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         command: `${BASE_COMMAND} pool enable|disable [env] [--outbound|--inbound] [--yes]`,
         description: 'Flip the persisted pool kill switch, or just one direction (the .env override wins)',
       },
+      {
+        command: `${BASE_COMMAND} pool require-signed|allow-bearer [env] [--yes]`,
+        description: 'Safely roll pinned peer authentication on or off; require-signed refuses while any paired peer is legacy',
+      },
     ],
   },
   {

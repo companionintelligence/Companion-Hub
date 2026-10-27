@@ -39,6 +39,7 @@ import {
   setInferenceOllamaSlots,
   peerContextCap,
   setPoolEnabledSetting,
+  setPoolRequireSignedPeers,
   setPoolMaxPromptTokens,
   summariseContextCaps,
   unpairPoolPeer,
@@ -114,6 +115,16 @@ describe('hub-pool-cli formatters', () => {
     expect(text).toContain('hub-b.example-tailnet.ts.net');
     expect(text).toContain('2026-09-05 10:00:01Z');
     expect(text).toContain('ollama ✓ 2');
+  });
+
+  it('reports the signed-only rollout as safe only when every paired peer is signed', () => {
+    const signed = formatPeerAuthModeLines([peer({ authMode: 'signed' })], false).join('\n');
+    expect(signed).toContain('every peer has upgraded');
+    expect(signed).toContain('poolRequireSignedPeers');
+
+    const bearer = formatPeerAuthModeLines([peer({ authMode: 'bearer' })], false).join('\n');
+    expect(bearer).toContain('legacy bearer token');
+    expect(bearer).toContain('Do not set poolRequireSignedPeers');
   });
 
   it('renders each direction and names the switch actually holding it off', () => {
@@ -684,12 +695,17 @@ describe('hub-pool-cli requests', () => {
 
     await unpairPoolPeer('.env.local', 'peer-1');
     await setPoolEnabledSetting('.env.local', false);
+    await setPoolRequireSignedPeers('.env.local', true);
 
     expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/pool/peers/peer-1');
     expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit | undefined)?.method).toBe('DELETE');
     expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit | undefined)?.signal).toBeInstanceOf(AbortSignal);
     expect(hubApiFetch.mock.calls[1]?.[1]).toBe('/inference/pool/settings');
     expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit | undefined)?.body).toBe('{"poolEnabled":false}');
+    expect(hubApiFetch.mock.calls[2]?.[1]).toBe('/inference/pool/settings');
+    expect((hubApiFetch.mock.calls[2]?.[2] as RequestInit | undefined)?.method).toBe('PATCH');
+    expect((hubApiFetch.mock.calls[2]?.[2] as RequestInit | undefined)?.body).toBe('{"poolRequireSignedPeers":true}');
+    expect((hubApiFetch.mock.calls[2]?.[2] as RequestInit | undefined)?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it('encodes the peer id into the path', async () => {
