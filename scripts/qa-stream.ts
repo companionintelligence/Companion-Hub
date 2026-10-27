@@ -110,7 +110,29 @@ const BLANK_SCREENSHOT_FALLBACK_BYTES = 4714;
 /** A page with even one line of text is hundreds of bytes bigger than a white page (observed: +955 to +1,875); this is the encoder's wobble. */
 const BLANK_SCREENSHOT_SLACK_BYTES = 128;
 
-const CHROME_SHOT_FLAGS = ['--headless=new', '--no-sandbox', '--disable-gpu', '--hide-scrollbars', '--window-size=1280,800'];
+/**
+ * Keep the screenshot browser focused on the app under test.  Chromium's default profile starts
+ * background services (component updates, push registration, sync and extensions) that can keep a
+ * websocket-heavy app's page load open indefinitely.  On a fleet node that looks like a random
+ * SIGKILL because the old runner only reported the signal used by its timeout.  These flags are
+ * supported by the Playwright-managed Chromium builds we copy to the nodes and do not change the
+ * rendered page itself.
+ */
+const CHROME_SHOT_FLAGS = [
+  '--headless=new',
+  '--no-sandbox',
+  '--disable-gpu',
+  '--disable-dev-shm-usage',
+  '--disable-background-networking',
+  '--disable-component-update',
+  '--disable-default-apps',
+  '--disable-extensions',
+  '--disable-sync',
+  '--no-first-run',
+  '--no-default-browser-check',
+  '--hide-scrollbars',
+  '--window-size=1280,800',
+];
 
 /**
  * How big a genuinely blank screenshot is, measured with THIS binary and THESE flags: a screenshot of about:blank. The
@@ -149,6 +171,25 @@ function isBlankScreenshot(path: string, chromeBin: string): boolean {
   }
 }
 
+// <screenshot-diagnostics>
+/** Keep timeout diagnostics distinct from an external SIGKILL or a normal browser failure. */
+function screenshotDiagnostic(input: {
+  blank: boolean;
+  timedOut: boolean;
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  stderr: string;
+  elapsedMs: number;
+}): string {
+  const errTail = input.stderr.replace(/\s+/g, ' ').trim().slice(-160);
+  if (input.blank) return 'screenshot blank (page load timed out before paint)';
+  if (input.timedOut) {
+    return `screenshot timed out after ${Math.round(input.elapsedMs / 1000)}s (browser process killed)${errTail ? ` | ${errTail}` : ''}`;
+  }
+  return `screenshot failed: exit=${input.status ?? 'null'}${input.signal ? ` signal=${input.signal}` : ''}${errTail ? ` | ${errTail}` : ''}`;
+}
+// </screenshot-diagnostics>
+
 function captureScreenshot(
   chromeBin: string,
   screenshotPath: string,
@@ -159,6 +200,7 @@ function captureScreenshot(
   // Whatever is at this path is from an EARLIER run (the directory is reused). If this capture is killed before it writes, an old file
   // would be judged as if it were this attempt's: jellyfin's "blank" in 2026-10 was a 4,714-byte PNG from June.
   rmSync(screenshotPath, { force: true });
+  const startedAt = Date.now();
   const ss = spawnSync(
     chromeBin,
     [
@@ -171,13 +213,20 @@ function captureScreenshot(
     ],
     { timeout: opts.spawnTimeoutMs, killSignal: 'SIGKILL', stdio: 'pipe' },
   );
+  const elapsedMs = Date.now() - startedAt;
+  const spawnError = ss.error as NodeJS.ErrnoException | undefined;
+  const timedOut = spawnError?.code === 'ETIMEDOUT' || /timed out|ETIMEDOUT/i.test(spawnError?.message ?? '');
   const wrote = ss.status === 0 && existsSync(screenshotPath);
   const blank = wrote && isBlankScreenshot(screenshotPath, chromeBin);
   if (wrote && !blank) return { ok: true, diag: '' };
-  const errTail = (ss.stderr?.toString() ?? '').replace(/\s+/g, ' ').trim().slice(-160);
-  const diag = blank
-    ? 'screenshot blank (page load timed out before paint)'
-    : `screenshot failed: exit=${ss.status ?? 'null'}${ss.signal ? ` signal=${ss.signal}` : ''}${errTail ? ` | ${errTail}` : ''}`;
+  const diag = screenshotDiagnostic({
+    blank,
+    timedOut,
+    status: ss.status,
+    signal: ss.signal,
+    stderr: ss.stderr?.toString() ?? '',
+    elapsedMs,
+  });
   return { ok: false, diag };
 }
 
