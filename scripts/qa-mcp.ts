@@ -310,6 +310,25 @@ interface SmokeResult {
   probe?: ProbeResult;
 }
 
+/**
+ * Keep MCP startup failures actionable without copying an app's stderr (which can contain an
+ * injected API key or password) into the fleet result stream. Docker/bootstrap failures are most
+ * useful at the tail, and the result row only needs a compact bounded hint.
+ */
+export function compactMcpDiagnostic(text: string, max = 360): string {
+  const redacted = text
+    .replace(/(authorization|api[_ -]?key|token|secret|password|credential)(\s*[:=]\s*|\s+)[^\s,;]+/gi, '$1=[redacted]')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (redacted.length <= max) return redacted;
+  return `[…] ${redacted.slice(-max)}`;
+}
+
+function mcpFailureDetail(reason: string, stderr: string): string {
+  const detail = compactMcpDiagnostic(stderr);
+  return detail ? `${reason} | stderr: ${detail}` : reason;
+}
+
 /** Drive the MCP smoke over a child's stdio: initialize → notifications/initialized → tools/list →
  *  (optional) one read-only tools/call probe. Newline-delimited JSON-RPC per the stdio transport.
  *  The probe runs in the SAME process after tools/list, under its own short timer, so a hung probe
@@ -562,7 +581,7 @@ export async function qaMcpApp(appId: string, options: QaMcpOptions = {}): Promi
       } else if (/no such image|manifest unknown|not found|pull access denied|error response from daemon/.test(err)) {
         result.score = 'error';
         result.failKind = 'pull';
-        result.notes = `image pull/run failed: ${hs.reason}`;
+        result.notes = `image pull/run failed: ${mcpFailureDetail(hs.reason, hs.stderr)}`;
       } else if (/econnrefused|connection refused|could not connect|connection terminated|getaddrinfo|enotfound|:5432|:3306|:27017|:6379/.test(err)) {
         // The server boots only with a live backing service (DB/cache) the no-deps smoke can't
         // provide — not an app bug. Skip, like needs-secret. (Reached once a valid dummy URL gets
@@ -576,7 +595,7 @@ export async function qaMcpApp(appId: string, options: QaMcpOptions = {}): Promi
       } else {
         result.score = 'fail';
         result.failKind = 'handshake';
-        result.notes = `${hs.reason}${hs.stderr ? ` | ${hs.stderr.replace(/\s+/g, ' ').slice(0, 200)}` : ''}`;
+        result.notes = mcpFailureDetail(hs.reason, hs.stderr);
       }
       return result;
     }

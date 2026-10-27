@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
   BACKING_SERVICES,
+  compactMcpDiagnostic,
   type McpConfig,
   SAFE_PROBES,
   buildDockerArgs,
@@ -42,6 +43,15 @@ describe('resolveEnv', () => {
     expect(() => new URL(pg.value as string)).not.toThrow();
     // a generic *_URI still gets a valid URL, not the bare placeholder
     expect(() => new URL(resolveEnv({ key: 'SERVICE_URI', required: true, secret: false }, scratch, {}).value as string)).not.toThrow();
+  });
+});
+
+describe('compactMcpDiagnostic', () => {
+  it('clips to the useful tail and redacts secret-shaped values', () => {
+    const detail = compactMcpDiagnostic(`${'prefix '.repeat(100)} DOORDASH_SIGNING_SECRET=super-secret-value`, 100);
+    expect(detail.length).toBeLessThanOrEqual(104);
+    expect(detail).toContain('DOORDASH_SIGNING_SECRET=[redacted]');
+    expect(detail).not.toContain('super-secret-value');
   });
 });
 
