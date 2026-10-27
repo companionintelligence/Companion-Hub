@@ -101,7 +101,13 @@ const QA_MIN_FREE_MB = Math.floor(nonNegativeEnvNumber('QA_MIN_FREE_MB', 4096));
 const QA_MIN_FREE_PERCENT = Math.min(100, nonNegativeEnvNumber('QA_MIN_FREE_PERCENT', 5));
 
 [RESULTS_DIR, SCREENSHOTS_DIR].forEach((d) => {
-  if (!existsSync(d)) mkdirSync(d, { recursive: true });
+  try {
+    if (!existsSync(d)) mkdirSync(d, { recursive: true });
+  } catch (error) {
+    // A full filesystem must be reported through the NDJSON control channel below, not as an
+    // unhandled module-load exception that the fleet server can only misclassify as SSH failure.
+    process.stderr.write(`results directory setup failed for ${d}: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
 });
 
 // <capacity-guard>
@@ -122,29 +128,85 @@ function capacityDecision(input: { availableBytes: number; totalBytes: number; m
 }
 // </capacity-guard>
 
-/** Read the filesystem that backs the QA scratch/results directory. Fail open only when the probe itself is unavailable. */
-function diskCapacitySnapshot() {
-  try {
-    const fs = statfsSync(RESULTS_DIR);
-    const blockSize = Number(fs.bsize);
-    const availableBytes = Number(fs.bavail) * blockSize;
-    const totalBytes = Number(fs.blocks) * blockSize;
-    if (!Number.isFinite(blockSize) || blockSize <= 0 || !Number.isFinite(availableBytes) || !Number.isFinite(totalBytes)) {
-      return { ok: true, unavailable: true, reason: 'filesystem capacity probe returned invalid counters' };
+type CapacitySnapshot = {
+  ok: boolean;
+  availableMb?: number;
+  totalMb?: number;
+  freePercent?: number | null;
+  thresholdMb?: number;
+  unavailable?: boolean;
+  reason?: string;
+  path: string;
+  probePath?: string;
+};
+
+/**
+ * Read the filesystem that backs the QA scratch/results directory. A missing output directory is
+ * probed through its nearest existing parent. Once the requested path exists, probe failures are
+ * fail-closed: launching Docker without knowing whether results/scratch can be written is unsafe.
+ */
+function diskCapacitySnapshot(): CapacitySnapshot {
+  let probePath = RESULTS_DIR;
+  let stats: ReturnType<typeof statfsSync> | null = null;
+  let lastError: unknown = null;
+
+  // mkdir can fail on a full filesystem before the stream reaches its main IIFE. Walk to an
+  // existing ancestor so the node can still emit a structured capacity event.
+  const requestedPathExists = existsSync(RESULTS_DIR);
+  for (;;) {
+    try {
+      stats = statfsSync(probePath);
+      break;
+    } catch (error) {
+      lastError = error;
+      if (requestedPathExists) break;
+      const parent = dirname(probePath);
+      if (parent === probePath) break;
+      probePath = parent;
     }
+  }
+
+  if (!stats) {
     return {
-      ...capacityDecision({ availableBytes, totalBytes, minFreeMb: QA_MIN_FREE_MB, minFreePercent: QA_MIN_FREE_PERCENT }),
-      unavailable: false,
-      path: RESULTS_DIR,
-    };
-  } catch (error) {
-    return {
-      ok: true,
+      ok: false,
       unavailable: true,
-      reason: `filesystem capacity probe unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      reason: `filesystem capacity probe unavailable: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
       path: RESULTS_DIR,
+      probePath,
     };
   }
+
+  const blockSize = Number(stats.bsize);
+  const availableBytes = Number(stats.bavail) * blockSize;
+  const totalBytes = Number(stats.blocks) * blockSize;
+  if (!Number.isFinite(blockSize) || blockSize <= 0 || !Number.isFinite(availableBytes) || !Number.isFinite(totalBytes)) {
+    return {
+      ok: false,
+      unavailable: true,
+      reason: 'filesystem capacity probe returned invalid counters',
+      path: RESULTS_DIR,
+      probePath,
+    };
+  }
+  return {
+    ...capacityDecision({ availableBytes, totalBytes, minFreeMb: QA_MIN_FREE_MB, minFreePercent: QA_MIN_FREE_PERCENT }),
+    unavailable: false,
+    path: RESULTS_DIR,
+    probePath,
+  };
+}
+
+function capacityEvent(capacity: CapacitySnapshot, context: string, appId?: string): Record<string, unknown> {
+  const free = capacity.availableMb === undefined ? (capacity.reason ?? 'free space could not be measured') : `${capacity.availableMb} MiB free`;
+  const reserve = capacity.thresholdMb === undefined ? '' : `; ${capacity.thresholdMb} MiB reserved`;
+  return {
+    event: 'node_capacity',
+    ...(appId ? { appId } : {}),
+    reason: capacity.unavailable ? 'capacity-probe-unavailable' : 'low-disk',
+    message: `${context}: ${free}${reserve}`,
+    ...capacity,
+    ts: Date.now(),
+  };
 }
 
 /**
@@ -1585,14 +1647,7 @@ async function runWithConcurrency(next: () => Promise<string | null>): Promise<v
       const capacity = diskCapacitySnapshot();
       if (!capacity.ok) {
         capacityBlocked = true;
-        emit({
-          event: 'node_capacity',
-          appId,
-          reason: 'low-disk',
-          message: `capacity guard stopped dispatch: ${capacity.availableMb} MiB free; ${capacity.thresholdMb} MiB reserved`,
-          ...capacity,
-          ts: Date.now(),
-        });
+        emit(capacityEvent(capacity, 'capacity guard stopped dispatch', appId));
         // The server has not observed app_start for this id. It requeues this id and every other
         // id already buffered for this node, then lets the in-flight apps drain before the runner
         // exits with a distinct capacity code.
@@ -2736,10 +2791,35 @@ void (async () => {
     ts: batchStart,
   });
 
+  // Check capacity before touching the durable result file. On a full node, even truncating an
+  // existing file can fail with ENOSPC; emit a structured control event before returning so the
+  // fleet server can requeue buffered ids instead of treating the runner as a generic SSH error.
+  const initialCapacity = diskCapacitySnapshot();
+  if (!initialCapacity.ok) {
+    capacityBlocked = true;
+    emit(capacityEvent(initialCapacity, 'capacity guard stopped before results reset'));
+    emit({ event: 'batch_done', total: 0, capacityBlocked: true, ts: Date.now() });
+    process.exitCode = 75;
+    return;
+  }
+
   // Start results.json fresh so it holds exactly THIS run's results (qa-aggregate.ts expects a
   // per-run array). Each qaApp appends to it as it finishes, so a dropped SSH pipe still leaves a
-  // complete file behind for the aggregator.
-  writeFileSync(RESULTS_JSON, '[]');
+  // complete file behind for the aggregator. A write race is still best-effort: stdout remains
+  // authoritative, and a newly-low filesystem is reported as a capacity condition.
+  try {
+    writeFileSync(RESULTS_JSON, '[]');
+  } catch (error) {
+    const afterWriteCapacity = diskCapacitySnapshot();
+    if (!afterWriteCapacity.ok) {
+      capacityBlocked = true;
+      emit(capacityEvent(afterWriteCapacity, 'capacity guard stopped after results reset failed'));
+      emit({ event: 'batch_done', total: 0, capacityBlocked: true, ts: Date.now() });
+      process.exitCode = 75;
+      return;
+    }
+    process.stderr.write(`results.json reset failed: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
 
   // Build the app source for the worker pool: a blocking stdin queue (work-stealing) or a cursor
   // over the fixed argv list.

@@ -57,7 +57,8 @@ describe('capacityDecision', () => {
 describe('qa-stream capacity wiring', () => {
   it('emits a node condition and uses a distinct exit code instead of an app error', () => {
     expect(source).toContain("event: 'node_capacity'");
-    expect(source).toContain('message: `capacity guard stopped dispatch');
+    expect(source).toContain("capacityEvent(capacity, 'capacity guard stopped dispatch', appId)");
+    expect(source).toContain("capacityEvent(initialCapacity, 'capacity guard stopped before results reset')");
     expect(source).toContain('process.exitCode = 75');
     expect(source).toContain('process.exit(capacityBlocked ? 75 : 0)');
   });
