@@ -8,6 +8,7 @@ import { RegistrationModule } from '@/modules/registration/registration.module';
 import { UserModule } from '@/modules/user/user.module';
 import { Module, forwardRef } from '@nestjs/common';
 import { AuthController } from './auth.controller';
+import { OobiController } from './oobi.controller';
 import { AuthRateLimiter } from './auth-rate-limiter';
 import { AuthService } from './auth.service';
 import { ForwardAuthIdentityResolver } from './forward-auth-identity.resolver';
@@ -21,7 +22,7 @@ import { SessionManager } from './session.manager';
   // SessionUserCache is provided by the global CacheModule — declaring it here too would mint a
   // second instance, so writes invalidated on one would still be served stale by the other.
   imports: [UserModule, EncryptionModule, PasswordModule, RegistrationModule, forwardRef(() => PortalModule), AppsModule, EnvModule, ApiKeyModule],
-  controllers: [AuthController],
+  controllers: [AuthController, OobiController],
   providers: [AuthService, AuthRateLimiter, SessionManager, ForwardAuthSecretResolver, ForwardAuthIdentityResolver, BearerOrgMembershipCache],
   exports: [AuthService, SessionManager, BearerOrgMembershipCache],
 })

@@ -25,6 +25,11 @@
       "types": "./dist/validation/index.d.ts",
       "default": "./dist/validation/index.js"
     },
+    "./keri": {
+      "import": "./dist/keri/index.js",
+      "types": "./dist/keri/index.d.ts",
+      "default": "./dist/keri/index.js"
+    },
     "./i18n/translations/*": "./i18n/translations/*"
   },
   "typesVersions": {
@@ -37,6 +42,9 @@
       ],
       "validation": [
         "dist/validation/index.d.ts"
+      ],
+      "keri": [
+        "dist/keri/index.d.ts"
       ]
     }
   },

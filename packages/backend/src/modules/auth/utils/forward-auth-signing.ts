@@ -48,6 +48,9 @@ export const FORWARD_AUTH_USER_ISSUER_HEADER = 'X-CI-Hub-User-Issuer';
 export const FORWARD_AUTH_USER_ID_HEADER = 'X-CI-Hub-User-Id';
 export const FORWARD_AUTH_USER_ID_SIGNATURE_HEADER = 'X-CI-Hub-User-Id-Signature';
 export const FORWARD_AUTH_ASSERTION_HEADER = 'X-CI-Hub-User-Assertion';
+export const FORWARD_AUTH_USER_AID_HEADER = 'X-CI-Hub-User-AID';
+export const FORWARD_AUTH_HUB_AID_HEADER = 'X-CI-Hub-AID';
+export const FORWARD_AUTH_KEL_DIGEST_HEADER = 'X-CI-Hub-KEL-Digest';
 
 /** The bound assertion's format version, the first field of its header. */
 export const FORWARD_AUTH_ASSERTION_VERSION = '2';
@@ -61,6 +64,12 @@ export interface ForwardAuthStableId {
   issuer: string;
   /** The person's `user.public_id`. */
   userId: string;
+  /** KERI Autonomic Identifier (`did:keri:<user-aid>`). */
+  userAid?: string;
+  /** Appliance Autonomic Identifier (`did:keri:<hub-aid>`). */
+  hubAid?: string;
+  /** KEL latest event digest. */
+  kelDigest?: string;
 }
 
 export interface SignedForwardAuthHeaders {
@@ -70,6 +79,9 @@ export interface SignedForwardAuthHeaders {
   [FORWARD_AUTH_USER_ISSUER_HEADER]?: string;
   [FORWARD_AUTH_USER_ID_HEADER]?: string;
   [FORWARD_AUTH_USER_ID_SIGNATURE_HEADER]?: string;
+  [FORWARD_AUTH_USER_AID_HEADER]?: string;
+  [FORWARD_AUTH_HUB_AID_HEADER]?: string;
+  [FORWARD_AUTH_KEL_DIGEST_HEADER]?: string;
 }
 
 /** Everything forward auth may answer with. Only the username is always present. */
@@ -81,6 +93,9 @@ export interface ForwardAuthIdentityHeaders {
   [FORWARD_AUTH_USER_ID_HEADER]?: string;
   [FORWARD_AUTH_USER_ID_SIGNATURE_HEADER]?: string;
   [FORWARD_AUTH_ASSERTION_HEADER]?: string;
+  [FORWARD_AUTH_USER_AID_HEADER]?: string;
+  [FORWARD_AUTH_HUB_AID_HEADER]?: string;
+  [FORWARD_AUTH_KEL_DIGEST_HEADER]?: string;
 }
 
 /** The keys forward auth may sign one app's headers with. */
@@ -147,6 +162,15 @@ export function buildSignedForwardAuthHeaders(
     headers[FORWARD_AUTH_USER_ISSUER_HEADER] = stableId.issuer;
     headers[FORWARD_AUTH_USER_ID_HEADER] = stableId.userId;
     headers[FORWARD_AUTH_USER_ID_SIGNATURE_HEADER] = signForwardAuthUserId(secret, stableId.issuer, stableId.userId, username, now);
+    if (stableId.userAid) {
+      headers[FORWARD_AUTH_USER_AID_HEADER] = stableId.userAid;
+    }
+    if (stableId.hubAid) {
+      headers[FORWARD_AUTH_HUB_AID_HEADER] = stableId.hubAid;
+    }
+    if (stableId.kelDigest) {
+      headers[FORWARD_AUTH_KEL_DIGEST_HEADER] = stableId.kelDigest;
+    }
   }
 
   return headers;
@@ -211,6 +235,15 @@ export function buildForwardAuthIdentityHeaders(
     if (stableId) {
       headers[FORWARD_AUTH_USER_ISSUER_HEADER] = stableId.issuer;
       headers[FORWARD_AUTH_USER_ID_HEADER] = stableId.userId;
+      if (stableId.userAid) {
+        headers[FORWARD_AUTH_USER_AID_HEADER] = stableId.userAid;
+      }
+      if (stableId.hubAid) {
+        headers[FORWARD_AUTH_HUB_AID_HEADER] = stableId.hubAid;
+      }
+      if (stableId.kelDigest) {
+        headers[FORWARD_AUTH_KEL_DIGEST_HEADER] = stableId.kelDigest;
+      }
     }
     const signature = signForwardAuthAssertion(
       keys.assertion.secret,
@@ -255,6 +288,9 @@ export function verifyForwardAuthHeaders(
     issuer?: string | null;
     userId?: string | null;
     userIdSignature?: string | null;
+    userAid?: string | null;
+    hubAid?: string | null;
+    kelDigest?: string | null;
   },
   opts: { now?: number; maxSkewMs?: number } = {},
 ): ForwardAuthVerifyResult {
@@ -296,5 +332,16 @@ export function verifyForwardAuthHeaders(
     return { ok: false, reason: 'bad_signature' };
   }
 
-  return { ok: true, username, stableId: { issuer, userId } };
+  const { userAid, hubAid, kelDigest } = headers;
+  return {
+    ok: true,
+    username,
+    stableId: {
+      issuer,
+      userId,
+      ...(userAid ? { userAid } : {}),
+      ...(hubAid ? { hubAid } : {}),
+      ...(kelDigest ? { kelDigest } : {}),
+    },
+  };
 }
