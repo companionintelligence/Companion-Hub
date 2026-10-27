@@ -7,6 +7,7 @@ import { UserRepository } from '@/modules/user/user.repository';
 import { Inject, Injectable } from '@nestjs/common';
 import { eq } from 'drizzle-orm/sql';
 import { loadSessionUser } from './auth.middleware';
+import { computeCesrDigest } from '@ci-hub/common/keri';
 import { type ForwardAuthStableId, HUB_ISSUER_PREFIX } from './utils/forward-auth-signing';
 
 /** How long a Portal subject's Hub person is remembered on the Bearer path. */
@@ -57,7 +58,12 @@ export class ForwardAuthIdentityResolver {
   public async stableIdFor(userId: number): Promise<ForwardAuthStableId | null> {
     try {
       const [issuer, publicId] = await Promise.all([this.getIssuer(), this.getPublicId(userId)]);
-      return publicId ? { issuer, userId: publicId } : null;
+      if (!publicId) {
+        return null;
+      }
+      const userAid = `did:keri:${computeCesrDigest(Buffer.from(`ci-hub-user:${issuer}:${publicId}`, 'utf8'))}`;
+      const hubAid = `did:keri:${computeCesrDigest(Buffer.from(`ci-hub-appliance:${issuer}`, 'utf8'))}`;
+      return { issuer, userId: publicId, userAid, hubAid };
     } catch (error) {
       this.logger.warn(`Forward auth could not read the stable id of user ${userId}; signing the username alone: ${describe(error)}`);
       return null;
