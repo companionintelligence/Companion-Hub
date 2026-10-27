@@ -49,3 +49,8 @@ The private fleet QA controller may copy `scripts/qa-stream.ts` to a node and se
 app checks when it receives `SIGTERM` or `SIGINT`, and removes the marker on exit. This is a
 scoped stop contract: operators and controllers must close the work feed or signal the recorded
 PID, never use a fleet-wide `pkill` that could terminate another QA session.
+
+When that marker contains a fleet run token, the runner also namespaces its Docker container names
+and Compose project names with the token. This keeps an orphaned resource from an earlier run from
+blocking a later run for the same app. Direct `qa-stream.ts` CLI use without `QA_RUN_PID_FILE`
+keeps the legacy names for compatibility.
