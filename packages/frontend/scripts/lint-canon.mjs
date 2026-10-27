@@ -1,14 +1,34 @@
 #!/usr/bin/env node
-// vendored-from: @companionintelligence/config@1.1.0 packages/config/bin/lint-canon.mjs
-// CI design-canon lint gate (v6). Usage: npx ci-lint-canon [targetDir] [--tokens <tokens.json>]
+// vendored-from: @companionintelligence/config@1.6.0 packages/config/bin/lint-canon.ts
+// CI design-canon lint gate (v7). Usage: npx ci-lint-canon [targetDir] [--tokens <tokens.json>]
 //  FAIL: any `--primary` custom property that is not the canon primary (any notation) — in
 //        CSS/markup AND inside JS/TS template literals (CSS-in-JS, generated stylesheets);
 //        any JS/TS brand-primary property (`primary`, `brandTeal`, `brandPrimary`, ...) whose
-//        literal colour is not canon; scanning a directory target and finding ZERO scannable
-//        files (see the v5 note below).
-//  WARN (non-blocking): CI-token `var(--X)` used but never defined (partial-swap bug);
+//        literal colour is not canon; a `font-family` / `fontFamily` / Google Fonts `family=`
+//        whose first family is a RETIRED face (Montserrat) — v7; scanning a directory target
+//        and finding ZERO scannable files (see the v5 note below).
+//  WARN (non-blocking): CI-token `var(--X)` used but defined neither by the canon (tokens.json) nor
+//        in the scanned files (partial-swap bug, or a typo);
 //        enriched token used as a Tailwind utility but not mapped in `@theme` (v4 fallback-to-default bug);
+//        a canon `--ci-*` token REDEFINED outside the package (v7); an off-canon `--ci-*` declared
+//        without a `lint-canon.config.json` `extensions` entry — the namespace is reserved (v7);
 //        hardcoded hex in component source.
+//
+//  v7: the `--ci-` prefix is the canon app-surface namespace, and nothing had ever said so. Three
+//  repos had grown 64 local `--ci-*` tokens between them (a full shadow-alias of the shadcn set in
+//  one, a `--ci-mint` that exists nowhere in canon in another), and one redefined four canon tokens
+//  after importing the package. Both are now warnings that name the fix (a repo prefix, or an
+//  `extensions` entry in lint-canon.config.json); they become FAILs in the next config major.
+//  Retired fonts had been "documented as gated" without a rule that read font-family at all.
+//  `warnIgnore` (path prefixes) lets a repo silence the non-blocking warnings for rendered
+//  artefacts and vendored preview pages without losing the FAIL checks on them.
+//  v7 also closes an undef blind spot: `defined` was built only from the scanned files, and
+//  node_modules is IGNOREd, so a repo that consumed the canon correctly — `@import
+//  '@companionintelligence/tokens/globals.css'`, or a <link> to tokens.css — was warned for every
+//  canon var it used (CI-Portal: 38 of them, masked until it deleted a hand-copied --ci-* block).
+//  Every custom property tokens.json defines (CANON_NAMES, derived the way gen-css.mjs emits them)
+//  now counts as defined. The `redefine` check keeps using the --ci-* subset (CANON_CI): a
+//  consumer that re-declares a canon --ci-* is still forking it.
 //
 //  v6: THE CANON IS READ FROM tokens.json, NOT HARDCODED HERE. Eleven repos carried copy-pasted
 //  forks of this script in four variants, three of which still hardcoded the RETIRED teal as canon
@@ -19,8 +39,10 @@
 //    2. `tokens` in a `lint-canon.config.json` found in the target directory (or cwd)
 //    3. the installed @companionintelligence/tokens package (config depends on it)
 //    4. this repo's own styles/tokens/src/tokens.json (when run from a CI-Common checkout)
-//  `lint-canon.config.json` may also add `ignore` (extra directory names to skip) and `retired`
-//  (extra {hex, name, replacedBy, since} entries) — the two things the forks had extended.
+//  `lint-canon.config.json` may also add `ignore` (extra directory names to skip), `retired`
+//  (extra {hex, name, replacedBy, since} entries) — the two things the forks had extended — plus
+//  `extensions` (local `--ci-*` names this repo owns, v7) and `warnIgnore` (path prefixes where
+//  non-blocking warnings are suppressed, v7).
 //
 //  v4 exists because v3 scanned ZERO files in packages/video-kit and exited 0 reporting "canon OK".
 //  Every source file there is `.mjs`, which was in neither CSS_EXT nor COMP_EXT, so the product-video
@@ -72,9 +94,40 @@ const CANON_LABEL = `${CANON[0].hex} / ${CANON[1].hex}`;
 // Retired brand values. lint-canon still FAILs on these (they are not canon), but names the
 // replacement instead of just reporting "not canon" — the whole point is telling a drifted value
 // apart from a typo. The list lives in tokens.json (`retired`); a repo may extend it in its config.
-const RETIRED = [...(TOKENS.retired ?? []), ...(CONFIG.retired ?? [])]
+const RETIRED_ALL = [...(TOKENS.retired ?? []), ...(CONFIG.retired ?? [])];
+const RETIRED = RETIRED_ALL
   .filter((r) => r.hex)
   .map((r) => ({ rgb: hexRgb(r.hex), hex: r.hex, name: `${r.name}${r.token ? ` (${r.token} pre-${r.since})` : ''}`, replacedBy: r.replacedBy, since: r.since?.startsWith('v') ? `@companionintelligence/tokens ${r.since}` : r.since }));
+// Retired typefaces (a `retired` entry with no hex, e.g. Montserrat). Matched against the FIRST
+// family in a font-family / fontFamily stack and against Google Fonts `family=` URLs.
+const RETIRED_FONTS = RETIRED_ALL.filter((r) => !r.hex && r.name).map((r) => ({ name: r.name, lower: r.name.toLowerCase(), replacedBy: r.replacedBy, since: r.since?.startsWith('v') ? `@companionintelligence/tokens ${r.since}` : r.since }));
+// Canon --ci-* names: the `surfaces` in tokens.json, plus the five typography vars that
+// @companionintelligence/fonts declares (its stylesheets are the other canon source).
+const FONTS_CI = ['--ci-font-sans', '--ci-font-display', '--ci-font-mono', '--ci-font-letter-spacing', '--ci-font-word-spacing'];
+const CANON_CI = new Set([...Object.keys(TOKENS.surfaces?.light ?? {}).filter((k) => !k.startsWith('$')).map((k) => `--ci-${k}`), ...FONTS_CI]);
+// Every custom property the canon stylesheets declare, derived from tokens.json the same way
+// styles/tokens/scripts/gen-css.mjs emits them: the semantic set, heat, the teal ramp + accents,
+// level / category / qr, status, gradients (aurora is one mode-switched var), radius, shadow +
+// elevation, the four --font-* vars, and CANON_CI. A consumer gets these from the package, whose
+// files live in node_modules (IGNOREd), so they can never appear in `defined` — treat them as
+// defined for the undef check. Only the --ci-* subset is a "redefine" when re-declared locally.
+const tokenKeys = (o) => Object.keys(o ?? {}).filter((k) => !k.startsWith('$'));
+const CANON_NAMES = new Set([
+  ...CANON_CI,
+  ...[...tokenKeys(TOKENS.light), ...tokenKeys(TOKENS.heat), ...tokenKeys(TOKENS.ramp), ...tokenKeys(TOKENS.accent), ...tokenKeys(TOKENS.status?.light)].map((k) => `--${k}`),
+  ...tokenKeys(TOKENS.level).map((k) => `--level-${k}`),
+  ...tokenKeys(TOKENS.category).map((k) => `--category-${k}`),
+  ...tokenKeys(TOKENS.qr).map((k) => `--qr-${k}`),
+  ...tokenKeys(TOKENS.gradient).map((k) => `--gradient-${k.replace(/-(light|dark)$/, '')}`),
+  ...tokenKeys(TOKENS.radius).map((k) => (k === 'base' ? '--radius' : `--radius-${k}`)),
+  ...tokenKeys(TOKENS.shadow?.light).map((k) => `--shadow-${k}`),
+  ...tokenKeys(TOKENS.shadow?.elev?.light).map((k) => `--shadow-elev-${k}`),
+  '--font-sans', '--font-display', '--font-letter-spacing', '--font-word-spacing',
+]);
+const EXTENSIONS = new Set((CONFIG.extensions ?? []).map((n) => (n.startsWith('--') ? n : `--ci-${n}`).toLowerCase()));
+// Path prefixes (relative to the target) where the NON-BLOCKING warnings are suppressed. FAILs
+// still run there — a rendered plate with a wrong --primary is still a failure.
+const WARN_IGNORE = (CONFIG.warnIgnore ?? []).map((p) => p.replace(/^\.\//, '').replace(/\/?$/, '/'));
 const TOL = 14;
 // __fixtures__ deliberately included: lint-canon.test.mjs's fixtures contain intentional
 // non-canon values (that's the point of the retired-primary fixture), and would otherwise
@@ -83,7 +136,7 @@ const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', 'out', '.next',
   // the deck reaches assets/graphics/* through symlinks of these names; the origin is scanned once
   'common-svg-graphic-assets', ...(CONFIG.ignore ?? [])]);
 // CI design-token namespace the transition manages — undefined uses of these are real bugs.
-const CI_TOKENS = /^--(primary|secondary|muted|accent|destructive|success|warning|info|border|input|ring|card|popover|background|foreground|sidebar|chart-\d|teal-\d{2,3}|aqua|aqua-light|teal-accent|teal-mid|gradient-\w+|shadow-(sm|md|lg)|radius-\w+)(-foreground)?$/;
+const CI_TOKENS = /^--(primary|secondary|muted|accent|destructive|success|warning|info|border|input|ring|card|popover|background|foreground|sidebar|chart-\d|teal-\d{2,3}|aqua|aqua-light|teal-accent|teal-mid|phthalo(-deep|-hover)?|mist(-deep)?|heat(-deep|-glow)?|level-\w+|category-\w+|qr-\w+|ci-[\w-]+|gradient-\w+|shadow-(sm|md|lg|elev-\d)|radius-\w+)(-foreground)?$/;
 // standard/framework vars that are legitimately defined elsewhere (never flag as undefined)
 const FRAMEWORK_VAR = /^--(tw-|radix-|swiper-|leaflet-|vp-|shiki|nextra|fd-|chakra-|mantine-|ck-)/;
 
@@ -124,7 +177,20 @@ const VARRE = /var\(\s*(--[a-z0-9-]+)/gi;
 const THEME = /@theme[^{]*\{([\s\S]*?)\}/gi;
 const HEX = /(?:bg-\[|text-\[|border-\[|from-\[|to-\[|fill=["']?|stroke=["']?|(?:background|color|fill|stroke)\s*[:=]\s*["']?)#([0-9a-fA-F]{3,8})\b/g;
 // enriched Tailwind utilities whose token must be in @theme (else v4 falls back to default)
-const UTIL = /\b(?:bg|text|border|ring|from|to|fill|stroke)-(teal-(?:50|100|200|300|400|500|600|700|800|900|950)|success|warning|info|aqua)\b|\b(shadow-(?:sm|md|lg))\b/g;
+const UTIL = /\b(?:bg|text|border|ring|from|to|fill|stroke)-(teal-(?:50|100|200|300|400|500|600|700|800|900|950)|success|warning|info|aqua(?:-light)?|heat(?:-deep|-foreground)?|phthalo(?:-deep|-hover)?|mist(?:-deep)?|level-[a-z]+|category-[a-z]+|qr-(?:plate|module)|ci-[a-z0-9-]+)\b|\b(shadow-(?:sm|md|lg))\b/g;
+// font-family (and the --font-sans / --font-display / --ci-font-* custom properties that carry the
+// stack) in CSS, fontFamily in JS/TS objects, and Google Fonts css2 URLs
+const FONT_CSS = /(?:font-family|--(?:ci-)?font-(?:sans|display|mono))\s*:\s*([^;}\n]+)/gi;
+const FONT_JS = /(?:^|[^\w$.-])fontFamily\s*:\s*(['"`])([^'"`]+)\1/g;
+const FONT_URL = /fonts\.googleapis\.com\/css2?\?[^'"`\s)]*?family=([A-Za-z+ ]+)/g;
+const firstFamily = (stack) => stack.replace(/\/\*[\s\S]*?\*\//g, '').split(',')[0].trim().replace(/^['"]|['"]$/g, '').toLowerCase();
+const retiredFont = (family) => RETIRED_FONTS.find((r) => r.lower === family.replace(/\+/g, ' ').toLowerCase());
+// The canon stylesheets themselves (tokens' globals.css / tokens.css, fonts' @font-face sheets)
+// declare the canon --ci-*; never flag a source of truth for defining what it defines.
+const IS_CANON_SHEET = (raw) => /@companionintelligence\/(tokens — (globals|tokens)\.css|fonts — )/.test(raw.slice(0, 400));
+// warnIgnore prefixes are relative to the TARGET directory (the repo root in CI), not to cwd.
+const TARGET_DIR = statSync(TARGET).isDirectory() ? resolve(TARGET) : dirname(resolve(TARGET));
+const warnIgnored = (rel) => WARN_IGNORE.some((p) => relative(TARGET_DIR, resolve(rel)).replace(/\\/g, '/').startsWith(p));
 // A brand primary declared as a JS/TS object property — a `brandTeal` key holding the retired
 // #0F717A, say — is the same canon violation as the equivalent `--primary` declaration, and is
 // exactly how the video kit drifted. The leading character class excludes `.primary` (member
@@ -145,9 +211,17 @@ const JS_PRIMARY_GENERIC = /(?:^|[^\w$.-])(primary|primaryColor|primaryColour)\s
 
 for (const f of files) {
   const x = extname(f).toLowerCase(); const rel = relative(process.cwd(), f) || f;
+  const minified = /\.min\.[a-z]+$/i.test(f);
   if (CSS_EXT.has(x)) { cssN++; const t = cssText(f, x);
     for (const m of t.matchAll(PRIMARY)) { const rgb = parseColor(m[1].trim()); if (rgb && !isTeal(rgb)) fails.push({ rel, line: lineOf(t, m.index), val: m[1].trim(), rgb, what: '--primary' }); }
-    for (const m of t.matchAll(DEFRE)) defined.add(m[1].toLowerCase());
+    if (!minified) for (const m of t.matchAll(FONT_CSS)) { const r = retiredFont(firstFamily(m[1])); if (r) fails.push({ rel, line: lineOf(t, m.index), val: m[1].trim(), font: r, what: 'font-family' }); }
+    const canonSheet = IS_CANON_SHEET(t);
+    for (const m of t.matchAll(DEFRE)) { const name = m[1].toLowerCase(); defined.add(name);
+      if (name.startsWith('--ci-') && !canonSheet && !warnIgnored(rel)) {
+        if (CANON_CI.has(name)) warns.push({ type: 'redefine', rel, line: lineOf(t, m.index), msg: `${name} is a canon token — redefining it here forks the canon; consume it from @companionintelligence/tokens` });
+        else if (!EXTENSIONS.has(name)) warns.push({ type: 'namespace', rel, line: lineOf(t, m.index), msg: `${name} is not a canon token — the --ci-* namespace is reserved; use a repo prefix (--<repo>-…) or list it under "extensions" in lint-canon.config.json` });
+      }
+    }
     for (const m of t.matchAll(VARRE)) uses.push({ name: m[1].toLowerCase(), rel, line: lineOf(t, m.index) });
     for (const th of t.matchAll(THEME)) for (const dm of th[1].matchAll(DEFRE)) themeMapped.add(dm[1].toLowerCase());
   }
@@ -157,15 +231,21 @@ for (const f of files) {
     if (!CSS_EXT.has(x)) for (const m of raw.matchAll(PRIMARY)) { const rgb = parseColor(m[1].trim()); if (rgb && !isTeal(rgb)) fails.push({ rel, line: lineOf(raw, m.index), val: m[1].trim(), rgb, what: '--primary' }); }
     for (const m of raw.matchAll(JS_PRIMARY_BRANDED)) { const rgb = parseColor(m[3]); if (rgb && !isTeal(rgb)) fails.push({ rel, line: lineOf(raw, m.index), val: m[3], rgb, what: m[1] }); }
     for (const m of raw.matchAll(JS_PRIMARY_GENERIC)) { const rgb = parseColor(m[3]); if (rgb && !isTeal(rgb) && retiredMatch(rgb)) fails.push({ rel, line: lineOf(raw, m.index), val: m[3], rgb, what: m[1] }); }
-    for (const m of raw.matchAll(HEX)) warns.push({ type: 'hex', rel, line: lineOf(raw, m.index), msg: '#' + m[1] });
+    if (!minified) {
+      if (!CSS_EXT.has(x)) for (const m of raw.matchAll(FONT_CSS)) { const r = retiredFont(firstFamily(m[1])); if (r) fails.push({ rel, line: lineOf(raw, m.index), val: m[1].trim(), font: r, what: 'font-family' }); }
+      for (const m of raw.matchAll(FONT_JS)) { const r = retiredFont(firstFamily(m[2])); if (r) fails.push({ rel, line: lineOf(raw, m.index), val: m[2], font: r, what: 'fontFamily' }); }
+      for (const m of raw.matchAll(FONT_URL)) { const r = retiredFont(m[1]); if (r) fails.push({ rel, line: lineOf(raw, m.index), val: `family=${m[1]}`, font: r, what: 'Google Fonts href' }); }
+    }
+    if (!warnIgnored(rel)) for (const m of raw.matchAll(HEX)) warns.push({ type: 'hex', rel, line: lineOf(raw, m.index), msg: '#' + m[1] });
     for (const m of raw.matchAll(UTIL)) { const tok = (m[1] || m[2]); if (!utilUse.has(tok)) utilUse.set(tok, `${rel}:${lineOf(raw, m.index)}`); }
   }
 }
 
-// undefined CI-token var uses (partial-swap bug)
+// undefined CI-token var uses (partial-swap bug). A canon name is defined by the package the repo
+// imports, whether or not that import is visible to this scan — see CANON_NAMES.
 const seenUndef = new Set();
-for (const u of uses) { if (!CI_TOKENS.test(u.name) || defined.has(u.name) || FRAMEWORK_VAR.test(u.name)) continue; if (seenUndef.has(u.name)) continue; seenUndef.add(u.name);
-  warns.push({ type: 'undef', rel: u.rel, line: u.line, msg: `var(${u.name}) used but --${u.name.slice(2)} is never defined` }); }
+for (const u of uses) { if (!CI_TOKENS.test(u.name) || CANON_NAMES.has(u.name) || defined.has(u.name) || EXTENSIONS.has(u.name) || FRAMEWORK_VAR.test(u.name) || warnIgnored(u.rel)) continue; if (seenUndef.has(u.name)) continue; seenUndef.add(u.name);
+  warns.push({ type: 'undef', rel: u.rel, line: u.line, msg: `var(${u.name}) used but ${u.name} is never defined (not canon, not declared in this repo)` }); }
 
 // @theme completeness (v4 fallback-to-default bug) — only if the repo uses @theme
 const hasTheme = themeMapped.size > 0;
@@ -181,7 +261,7 @@ if (hasTheme) for (const [tok, at] of utilUse) {
 // caller error, not a gate hole.
 const isDirTarget = statSync(TARGET).isDirectory();
 if (isDirTarget && cssN === 0 && compN === 0) {
-  console.log('CI design-canon lint (v6)');
+  console.log('CI design-canon lint (v7)');
   console.log(`  target: ${TARGET}\n  canon: ${CANON_LABEL} (${relative(process.cwd(), TOKENS_PATH)})\n  scanned: 0 css/markup, 0 component file(s)\n`);
   console.log(`✖ scanned 0 files under ${TARGET} — that is a broken gate, not a clean one.`);
   console.log('  Check TARGET is correct and that CSS_EXT/COMP_EXT cover the file types in this repo.');
@@ -190,21 +270,22 @@ if (isDirTarget && cssN === 0 && compN === 0) {
 }
 
 // report
-console.log('CI design-canon lint (v6)');
+console.log('CI design-canon lint (v7)');
 console.log(`  target: ${TARGET}\n  canon: ${CANON_LABEL} (${relative(process.cwd(), TOKENS_PATH) || TOKENS_PATH})\n  scanned: ${cssN} css/markup, ${compN} component file(s)\n`);
 const grp = (t) => warns.filter((w) => w.type === t);
-for (const [t, label] of [['undef', 'undefined CI-token var (likely a partial token swap)'], ['theme', 'missing @theme mapping (Tailwind v4 falls back to its default)'], ['hex', 'hardcoded hex in component source']]) {
+for (const [t, label] of [['undef', 'undefined CI-token var (likely a partial token swap)'], ['theme', 'missing @theme mapping (Tailwind v4 falls back to its default)'], ['redefine', 'canon --ci-* token redefined outside @companionintelligence/tokens (a fork of the canon)'], ['namespace', 'off-canon --ci-* declared (the namespace is reserved for canon)'], ['hex', 'hardcoded hex in component source']]) {
   const g = grp(t); if (!g.length) continue;
   console.log(`⚠ ${g.length} ${label}:`);
   for (const w of g.slice(0, 30)) console.log(`  warn ${w.rel}:${w.line}  ${w.msg}`);
   if (g.length > 30) console.log(`  … and ${g.length - 30} more`); console.log('');
 }
-if (fails.length) { console.log(`✖ ${fails.length} non-canon brand-primary value(s):`);
+if (fails.length) { console.log(`✖ ${fails.length} non-canon brand value(s):`);
   for (const x of fails) {
+    if (x.font) { console.log(`  FAIL ${x.rel}:${x.line}  ${x.what}: ${x.val}  — ${x.font.name} is retired, replaced by ${x.font.replacedBy} in ${x.font.since}`); continue; }
     const retired = retiredMatch(x.rgb);
     const note = retired ? `  — this is ${retired.name}, replaced by ${retired.replacedBy} in ${retired.since}` : '';
     console.log(`  FAIL ${x.rel}:${x.line}  ${x.what}: ${x.val} -> rgb(${x.rgb.join(',')})${note}`);
   }
-  console.log(`\n  The brand primary must be the canon ${CANON_LABEL} (any notation).\nlint-canon: FAILED`); process.exit(1); }
+  console.log(`\n  The brand primary must be the canon ${CANON_LABEL} (any notation) and the typeface must not be a retired face.\nlint-canon: FAILED`); process.exit(1); }
 console.log('✔ lint-canon: canon OK (every brand primary is the canon ' + CANON_LABEL + ')' + (warns.length ? ` — ${warns.length} non-blocking warning(s) above` : ''));
 process.exit(0);

@@ -1,8 +1,10 @@
-/* vendored-from: @companionintelligence/tokens@1.1.0 styles/tokens/src/globals.css */
+/* vendored-from: @companionintelligence/tokens@1.6.0 styles/tokens/src/globals.css */
 
 /*
  * @companionintelligence/tokens — globals.css
  * ==========================================================================
+ * GENERATED from ./tokens.json by scripts/gen-css.mjs — do not edit; edit tokens.json and rerun.
+ *
  * Tailwind v4 / shadcn TOKEN layer for the Companion Intelligence canonical
  * design system. This file ships ONLY design tokens — the @theme inline color
  * mappings, the :root/.dark custom properties, the dark @custom-variant, and a
@@ -21,32 +23,31 @@
  * `@plugin "@tailwindcss/typography";` for `prose` — are the consumer's to
  * declare; this token layer no longer bundles them.
  *
- * The token blocks below (:root, .dark, @theme inline, @custom-variant dark,
- * and the @layer base) carry the values in ./tokens.json — the one hand-edited
- * source — and are contract-tested against it (tokens.contract.test.ts). Every
- * repo, CI-Hub included, consumes this package; none of them is a source.
+ * Every repo, CI-Hub included, consumes this package; none of them is a source.
+ * App-shell variables (a Tauri titlebar offset, a Tabler override) are not
+ * tokens and belong in the app that needs them.
  *
  * Consumers that do NOT run Tailwind (static HTML, vanilla CSS) should import
- * ./tokens.css (raw hex custom properties) or read ./tokens.json instead.
+ * ./tokens.css (raw custom properties) or read ./tokens.json instead.
  * ==========================================================================
  */
 @custom-variant dark (&:is(.dark *));
 
-/* Titlebar offset — set to 40px by the Tauri Titlebar component, 0px otherwise */
-:root {
-  --titlebar-height: 0px;
-}
-
 @theme inline {
   --font-sans: "Manrope", system-ui, sans-serif;
   --font-display: "Archivo Black", "Manrope", system-ui, sans-serif;
+  --font-heading: var(--font-sans);
 
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
   --radius-2xl: calc(var(--radius) + 10px);
+  --radius-control: 3px;
+  --radius-card: 5px;
+  --radius-media: 3px;
 
+  /* Semantic set */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -66,9 +67,6 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --color-heat: var(--heat);
-  --color-heat-foreground: var(--heat-foreground);
-  --color-heat-deep: var(--heat-deep);
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);
@@ -83,13 +81,20 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
 
-  /* CI enriched palette v0.2.0 — status + brand teal ramp + accents */
+  /* Heat */
+  --color-heat: var(--heat);
+  --color-heat-foreground: var(--heat-foreground);
+  --color-heat-deep: var(--heat-deep);
+
+  /* Semantic status */
   --color-success: var(--success);
   --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
   --color-info: var(--info);
   --color-info-foreground: var(--info-foreground);
+
+  /* Brand teal ramp + accent hues */
   --color-teal-50: var(--teal-50);
   --color-teal-100: var(--teal-100);
   --color-teal-200: var(--teal-200);
@@ -103,6 +108,58 @@
   --color-teal-950: var(--teal-950);
   --color-aqua: var(--aqua);
   --color-aqua-light: var(--aqua-light);
+  --color-teal-accent: var(--teal-accent);
+  --color-teal-mid: var(--teal-mid);
+  --color-phthalo: var(--phthalo);
+  --color-phthalo-deep: var(--phthalo-deep);
+  --color-phthalo-hover: var(--phthalo-hover);
+  --color-mist: var(--mist);
+  --color-mist-deep: var(--mist-deep);
+
+  /* Logo mark ring colours, accent call to action, primary button, ground-dependent roles */
+  --color-mark-deep: var(--mark-deep);
+  --color-mark-mid: var(--mark-mid);
+  --color-mark-light: var(--mark-light);
+  --color-cream-ground: var(--cream-ground);
+  --color-cta: var(--cta);
+  --color-cta-foreground: var(--cta-foreground);
+  --color-cta-hover: var(--cta-hover);
+  --color-button-primary: var(--button-primary);
+  --color-button-primary-foreground: var(--button-primary-foreground);
+  --color-button-primary-hover: var(--button-primary-hover);
+  --color-button-primary-shadow: var(--button-primary-shadow);
+  --color-button-primary-shadow-hover: var(--button-primary-shadow-hover);
+  --color-button-primary-lift-hover: var(--button-primary-lift-hover);
+  --color-link: var(--link);
+  --color-link-hover: var(--link-hover);
+  --color-label-ink: var(--label-ink);
+  --color-hairline: var(--hairline);
+
+  /* Type scale (text-display, text-title, text-lede, text-body, text-label, text-stat) */
+  --text-display: var(--type-display);
+  --text-display--line-height: var(--type-display-leading);
+  --text-display--font-weight: var(--type-display-weight);
+  --text-display--letter-spacing: var(--type-display-tracking);
+  --text-title: var(--type-title);
+  --text-title--line-height: var(--type-title-leading);
+  --text-title--font-weight: var(--type-title-weight);
+  --text-title--letter-spacing: var(--type-title-tracking);
+  --text-lede: var(--type-lede);
+  --text-lede--line-height: var(--type-lede-leading);
+  --text-lede--font-weight: var(--type-lede-weight);
+  --text-card-title: var(--type-card-title);
+  --text-card-title--line-height: var(--type-card-title-leading);
+  --text-card-title--font-weight: var(--type-card-title-weight);
+  --text-body: var(--type-body);
+  --text-body--line-height: var(--type-body-leading);
+  --text-body--font-weight: var(--type-body-weight);
+  --text-label: var(--type-label);
+  --text-label--font-weight: var(--type-label-weight);
+  --text-label--letter-spacing: var(--type-label-tracking);
+  --text-stat: var(--type-stat);
+  --text-stat--line-height: var(--type-stat-leading);
+  --text-stat--font-weight: var(--type-stat-weight);
+  --text-stat--letter-spacing: var(--type-stat-tracking);
 
   /* Level scale (ordinal rank) + category scale (unrelated-group differentiation) */
   --color-level-red: var(--level-red);
@@ -125,19 +182,55 @@
   --color-qr-plate: var(--qr-plate);
   --color-qr-module: var(--qr-module);
 
-  /* CI extension tokens — shared app surfaces (Portal, Hub, etc.) */
+  /* CI app-surface extension tokens — every colour-valued --ci-* surface */
   --color-ci-bg: var(--ci-bg);
+  --color-ci-bg-deep: var(--ci-bg-deep);
   --color-ci-surface: var(--ci-surface);
+  --color-ci-surface-recess: var(--ci-surface-recess);
+  --color-ci-surface-1: var(--ci-surface-1);
+  --color-ci-surface-1-raised: var(--ci-surface-1-raised);
+  --color-ci-surface-2: var(--ci-surface-2);
+  --color-ci-surface-2-hover: var(--ci-surface-2-hover);
+  --color-ci-surface-3: var(--ci-surface-3);
   --color-ci-card: var(--ci-card);
-  --color-ci-accent: var(--ci-accent);
-  --color-ci-accent-2: var(--ci-accent-2);
-  --color-ci-success: var(--ci-success);
-  --color-ci-warning: var(--ci-warning);
-  --color-ci-danger: var(--ci-danger);
-  --color-ci-offline: var(--ci-offline);
+  --color-ci-card-hover: var(--ci-card-hover);
+  --color-ci-border-0: var(--ci-border-0);
+  --color-ci-border-1: var(--ci-border-1);
+  --color-ci-border-2: var(--ci-border-2);
+  --color-ci-border-3: var(--ci-border-3);
+  --color-ci-border: var(--ci-border);
+  --color-ci-border-strong: var(--ci-border-strong);
   --color-ci-text: var(--ci-text);
   --color-ci-text-muted: var(--ci-text-muted);
   --color-ci-text-soft: var(--ci-text-soft);
+  --color-ci-accent: var(--ci-accent);
+  --color-ci-accent-2: var(--ci-accent-2);
+  --color-ci-accent-glow: var(--ci-accent-glow);
+  --color-ci-success: var(--ci-success);
+  --color-ci-success-bg: var(--ci-success-bg);
+  --color-ci-success-border: var(--ci-success-border);
+  --color-ci-warning: var(--ci-warning);
+  --color-ci-warning-bg: var(--ci-warning-bg);
+  --color-ci-warning-border: var(--ci-warning-border);
+  --color-ci-danger: var(--ci-danger);
+  --color-ci-danger-bg: var(--ci-danger-bg);
+  --color-ci-danger-border: var(--ci-danger-border);
+  --color-ci-offline: var(--ci-offline);
+  --color-ci-offline-bg: var(--ci-offline-bg);
+  --color-ci-offline-border: var(--ci-offline-border);
+  --color-ci-control-bg: var(--ci-control-bg);
+  --color-ci-control-bg-hover: var(--ci-control-bg-hover);
+  --color-ci-panel-muted-bg: var(--ci-panel-muted-bg);
+  --color-ci-panel-bg: var(--ci-panel-bg);
+  --color-ci-icon-border: var(--ci-icon-border);
+  --color-ci-button-start: var(--ci-button-start);
+  --color-ci-button-end: var(--ci-button-end);
+  --color-ci-button-border: var(--ci-button-border);
+  --color-ci-button-foreground: var(--ci-button-foreground);
+  --color-ci-link: var(--ci-link);
+  --color-ci-phthalo-green: var(--ci-phthalo-green);
+  --color-ci-phthalo-green-deep: var(--ci-phthalo-green-deep);
+  --color-ci-shadow-color: var(--ci-shadow-color);
 
   /* Brand elevation — map the teal-tinted --shadow-* vars into the Tailwind v4
    * shadow namespace so shadow-sm/md/lg use the CI brand shadows instead of
@@ -159,13 +252,9 @@
   --font-word-spacing: 0.4pt;
   --font-sans: "Manrope", system-ui, sans-serif;
   --font-display: "Archivo Black", "Manrope", system-ui, sans-serif;
+  --font-heading: var(--font-sans);
 
-  /* Heat — theme-stable burned orange. Rare: orb, one CTA, marks. Not --primary. */
-  --heat: #ff3f00;
-  --heat-foreground: #070707;
-  --heat-deep: #c43000;
-  --heat-glow: color-mix(in srgb, var(--heat) 42%, transparent);
-
+  /* Semantic set (shadcn names) — light */
   --background: #f3faf7;
   --foreground: #0a222e;
   --card: #f0f9f5;
@@ -180,16 +269,16 @@
   --muted-foreground: #3a524b;
   --accent: #edf6f0;
   --accent-foreground: #0a222e;
-  --destructive: #ee3533;
+  --destructive: #da302f;
   --destructive-foreground: #f8fafc;
   --border: #dfece6;
   --input: #dfece6;
   --ring: #0a6358;
-  --chart-1: var(--heat);
-  --chart-2: #0a6358;
+  --chart-1: #0a6358;
+  --chart-2: #00a9a7;
   --chart-3: #066c80;
   --chart-4: #ffb900;
-  --chart-5: #00a9a7;
+  --chart-5: var(--heat);
   --sidebar: #f3faf7;
   --sidebar-foreground: #0a222e;
   --sidebar-primary: #0a6358;
@@ -199,7 +288,13 @@
   --sidebar-border: #dfece6;
   --sidebar-ring: #0a6358;
 
-  /* CI enriched palette v0.2.0 — brand teal ramp + accent hues + radius scale (mode-independent) */
+  /* Heat — theme-stable burned orange. Rare: orb, one CTA, marks. Not --primary. */
+  --heat: #ff3f00;
+  --heat-foreground: #070707;
+  --heat-deep: #c43000;
+  --heat-glow: color-mix(in srgb, var(--heat) 42%, transparent);
+
+  /* Brand teal ramp + accent hues (mode-independent) */
   --teal-50: #eef7f8;
   --teal-100: #d3e9ec;
   --teal-200: #abd4d8;
@@ -211,8 +306,8 @@
   --teal-800: #0e4a52;
   --teal-900: #0a222e;
   --teal-950: #041620;
-  --aqua: #00a9a7;
-  --aqua-light: #72ddd4;
+  --aqua: #1fa89e;
+  --aqua-light: #3ae7ba;
   --teal-accent: #2c676d;
   --teal-mid: #409b9b;
   --phthalo: #0a6358;
@@ -220,6 +315,27 @@
   --phthalo-hover: #0d7a6e;
   --mist: #f3faf7;
   --mist-deep: #e8f2ec;
+
+  /* Logo mark ring colours, outer to inner (mode-independent) — links, labels and the primary fill */
+  --mark-deep: #066c80;
+  --mark-mid: #1fa89e;
+  --mark-light: #3ae7ba;
+
+  /* Light page ground for marketing and docs surfaces (white panels sit on it) */
+  --cream-ground: #f7f9fa;
+
+  /* Accent call to action (mode-independent) — one per view, weight 600 */
+  --cta: #069b5b;
+  --cta-foreground: #ffffff;
+  --cta-hover: #05824c;
+
+  /* Primary button (mode-independent): flat fill, soft shadow, 1px lift on hover; no gradient, glass or blur */
+  --button-primary: var(--mark-deep);
+  --button-primary-foreground: #ffffff;
+  --button-primary-hover: color-mix(in srgb, var(--mark-deep) 84%, white);
+  --button-primary-shadow: var(--shadow-sm);
+  --button-primary-shadow-hover: var(--shadow-md);
+  --button-primary-lift-hover: translateY(-1px);
 
   /* Level scale — ordinal rank (red = worst/heaviest .. blue = best/coolest). Not semantic
    * status; see tokens.json "level" for the full explanation. */
@@ -233,35 +349,34 @@
    * as categories are added; see tokens.json "category". */
   --category-ai: #22d3ee;
   --category-automation: #818cf8;
-  --category-data: #34d399;
+  --category-data: #2dd4bf;
   --category-development: #fb7185;
-  --category-finance: #fbbf24;
+  --category-finance: #fb923c;
   --category-media: #a78bfa;
   --category-photography: #e879f9;
-  --category-security: #fbbf24;
-  --category-social: #38bdf8;
+  --category-security: #a3e635;
+  --category-social: #3b82f6;
   --category-utilities: #94a3b8;
 
   /*
    * QR code surfaces — the one place the CI palette deliberately does NOT
    * follow the theme. Decoders expect dark modules on a light ground, so a QR
    * is never inverted for dark mode and its modules are never tinted with the
-   * brand teal; both changes cost contrast a camera needs. These two values
-   * are therefore declared ONLY here, in :root, and are intentionally absent
-   * from the `.dark` block below — do not add them there. Brand color belongs
-   * on the QR's frame, border and caption instead.
+   * brand teal. Declared ONLY here, in :root, and intentionally absent from
+   * the `.dark` block below — do not add them there. Brand color belongs on
+   * the QR's frame, border and caption instead.
    */
   --qr-plate: #ffffff;
   --qr-module: #041620;
 
-  /* enriched — semantic status + gradients + elevation (light) */
+  /* Semantic status + gradients + elevation — light */
   --success: #0f5132;
   --success-foreground: #ffffff;
   --warning: #855500;
   --warning-foreground: #ffffff;
-  --info: #0284c7;
+  --info: #0272ad;
   --info-foreground: #ffffff;
-  --gradient-brand: linear-gradient(135deg, #0a6358, #00a9a7);
+  --gradient-brand: linear-gradient(135deg, #0a6358, #1fa89e);
   --gradient-hero: linear-gradient(135deg, #f3faf7, #abd4d8);
   --gradient-button: linear-gradient(135deg, #0e766a, #064741);
   --gradient-aurora: radial-gradient(1200px circle at 50% -20%, rgba(232, 242, 236, 0.65), transparent 52%),
@@ -270,7 +385,7 @@
   --shadow-md: 0 1px 3px rgba(4, 22, 32, 0.05), 0 6px 18px -6px rgba(10, 99, 88, 0.07);
   --shadow-lg: 0 2px 4px rgba(4, 22, 32, 0.05), 0 10px 24px -8px rgba(10, 99, 88, 0.08);
 
-  /* CI extension tokens — app surfaces (Portal home, device groups, cards) */
+  /* CI app-surface extension tokens (--ci-*) — light. Reserved namespace: canon only. */
   --ci-bg: var(--mist);
   --ci-bg-deep: #e8f2ec;
   --ci-surface: #f4fdfa;
@@ -294,15 +409,15 @@
   --ci-accent: #0a6358;
   --ci-accent-2: #0d7a6e;
   --ci-accent-glow: rgba(226, 239, 232, 0.95);
-  --ci-success: #0f5132;
+  --ci-success: var(--success);
   --ci-success-bg: #dceee4;
   --ci-success-border: #b8dcc8;
-  --ci-warning: #855500;
+  --ci-warning: var(--warning);
   --ci-warning-bg: #f5e6cc;
   --ci-warning-border: #e0c99a;
-  --ci-danger: #ea7260;
-  --ci-danger-bg: rgba(234, 114, 96, 0.12);
-  --ci-danger-border: rgba(234, 114, 96, 0.22);
+  --ci-danger: var(--destructive);
+  --ci-danger-bg: color-mix(in srgb, var(--destructive) 12%, transparent);
+  --ci-danger-border: color-mix(in srgb, var(--destructive) 22%, transparent);
   --ci-offline: #4a5c62;
   --ci-offline-bg: #e5eaec;
   --ci-offline-border: #c8d2d6;
@@ -317,12 +432,10 @@
   --ci-button-end: #064741;
   --ci-button-border: rgba(6, 71, 65, 0.32);
   --ci-button-foreground: #f0fdf4;
-  --ci-button-shadow:
-    0 1px 4px rgba(4, 22, 32, 0.12),
+  --ci-button-shadow: 0 1px 4px rgba(4, 22, 32, 0.12),
     0 0 0 1px rgba(10, 99, 88, 0.14),
     inset 0 1px 0 rgba(255, 255, 255, 0.12);
-  --ci-button-shadow-hover:
-    0 2px 8px rgba(4, 22, 32, 0.16),
+  --ci-button-shadow-hover: 0 2px 8px rgba(4, 22, 32, 0.16),
     0 0 0 1px rgba(10, 99, 88, 0.18),
     inset 0 1px 0 rgba(255, 255, 255, 0.14);
   --ci-link: #085952;
@@ -333,6 +446,49 @@
   --shadow-elev-1: var(--shadow-sm);
   --shadow-elev-2: var(--shadow-md);
   --shadow-elev-3: var(--shadow-lg);
+
+  /* Ground-dependent roles — light: links and labels in mark-deep, hover to the foreground */
+  --link: var(--mark-deep);
+  --link-hover: var(--foreground);
+  --label-ink: var(--mark-deep);
+  --hairline: color-mix(in srgb, var(--foreground) 12%, transparent);
+  --button-ghost-foreground: var(--foreground);
+  --button-ghost-border: color-mix(in srgb, var(--foreground) 30%, transparent);
+  --button-ghost-border-hover: var(--foreground);
+  --button-ghost-hover: color-mix(in srgb, var(--foreground) 5%, transparent);
+
+  /* Type scale: --type-<role> is the size; weight, tracking, leading and (label) transform follow */
+  --type-display: clamp(2.2rem, 3.5vw + 0.5rem, 3.55rem);
+  --type-display-weight: 500;
+  --type-display-tracking: -0.025em;
+  --type-display-leading: 1.04;
+  --type-title: clamp(1.6rem, 1.9vw + 0.55rem, 2.12rem);
+  --type-title-weight: 500;
+  --type-title-tracking: -0.02em;
+  --type-title-leading: 1.12;
+  --type-lede: clamp(1.05rem, 0.2vw + 0.95rem, 1.12rem);
+  --type-lede-weight: 400;
+  --type-lede-leading: 1.5;
+  --type-card-title: 1.1rem;
+  --type-card-title-weight: 600;
+  --type-card-title-leading: 1.3;
+  --type-body: 17px;
+  --type-body-weight: 400;
+  --type-body-leading: 1.45;
+  --type-body-list-leading: 1.3;
+  --type-label: 13px;
+  --type-label-weight: 600;
+  --type-label-tracking: 0.12em;
+  --type-label-transform: uppercase;
+  --type-stat: clamp(2rem, 1.9vw + 1rem, 2.6rem);
+  --type-stat-weight: 300;
+  --type-stat-tracking: -0.03em;
+  --type-stat-leading: 0.95;
+
+  /* 12-column grid: --grid-margin is one column plus one gutter, so content sits in columns 2 to 11 */
+  --grid-columns: 12;
+  --grid-gutter: 24px;
+  --grid-margin: calc((100vw - 11 * var(--grid-gutter)) / 12 + var(--grid-gutter));
 }
 
 /*
@@ -340,39 +496,31 @@
  * Navy shell #041620; surface stack grows teal → phthalo → sage in opacity.
  */
 .dark {
+  /* Semantic set — dark */
   --background: #041620;
   --foreground: #e8f2f4;
-
   --card: #0c323c;
   --card-foreground: #e8f2f4;
   --popover: #143e48;
   --popover-foreground: #e8f2f4;
-
   --primary: #c5e8dc;
   --primary-foreground: #041620;
-
   --secondary: #073038;
   --secondary-foreground: #e8f2f4;
-
   --muted: #073038;
   --muted-foreground: #a3babf;
-
   --accent: #0a2e38;
   --accent-foreground: #e8f2f4;
-
   --destructive: #ef7070;
-  --destructive-foreground: #f5f8fa;
-
+  --destructive-foreground: #041620;
   --border: #073038;
   --input: #0a2e38;
   --ring: #c5e8dc;
-
   --chart-1: #c5e8dc;
   --chart-2: #409b9b;
   --chart-3: #079d99;
   --chart-4: #70a6af;
   --chart-5: #066c80;
-
   --sidebar: #041620;
   --sidebar-foreground: #e8f2f4;
   --sidebar-primary: #c5e8dc;
@@ -382,7 +530,7 @@
   --sidebar-border: #073038;
   --sidebar-ring: #c5e8dc;
 
-  /* enriched — semantic status + gradients + elevation (dark) */
+  /* Semantic status + gradients + elevation — dark */
   --success: #34d399;
   --success-foreground: #052e16;
   --warning: #fbbf24;
@@ -395,7 +543,7 @@
   --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.24), 0 6px 18px -8px rgba(0, 0, 0, 0.32);
   --shadow-lg: 0 2px 4px rgba(0, 0, 0, 0.26), 0 10px 24px -10px rgba(0, 0, 0, 0.36);
 
-  /* CI extension tokens (dark) */
+  /* CI app-surface extension tokens (--ci-*) — dark */
   --ci-bg: #041620;
   --ci-bg-deep: #021018;
   --ci-surface: #143e48;
@@ -417,17 +565,17 @@
   --ci-text-muted: #a3babf;
   --ci-text-soft: #b5cdc2;
   --ci-accent: #c5e8dc;
-  --ci-accent-2: #c5e8dc;
+  --ci-accent-2: #daf2ea;
   --ci-accent-glow: rgba(200, 230, 217, 0.14);
-  --ci-success: #34d399;
+  --ci-success: var(--success);
   --ci-success-bg: #0f3d32;
   --ci-success-border: #1a5248;
-  --ci-warning: #fbbf24;
+  --ci-warning: var(--warning);
   --ci-warning-bg: #3d3010;
   --ci-warning-border: #5c4818;
-  --ci-danger: #ea7260;
-  --ci-danger-bg: rgba(234, 114, 96, 0.12);
-  --ci-danger-border: rgba(234, 114, 96, 0.22);
+  --ci-danger: var(--destructive);
+  --ci-danger-bg: color-mix(in srgb, var(--destructive) 12%, transparent);
+  --ci-danger-border: color-mix(in srgb, var(--destructive) 22%, transparent);
   --ci-offline: #a8bcc4;
   --ci-offline-bg: #1a2a30;
   --ci-offline-border: #2a3c42;
@@ -442,12 +590,10 @@
   --ci-button-end: #064741;
   --ci-button-border: rgba(184, 221, 208, 0.26);
   --ci-button-foreground: #f0fdf4;
-  --ci-button-shadow:
-    0 1px 6px rgba(0, 0, 0, 0.24),
+  --ci-button-shadow: 0 1px 6px rgba(0, 0, 0, 0.24),
     0 0 0 1px rgba(14, 118, 106, 0.22),
     inset 0 1px 0 rgba(255, 255, 255, 0.12);
-  --ci-button-shadow-hover:
-    0 2px 10px rgba(0, 0, 0, 0.3),
+  --ci-button-shadow-hover: 0 2px 10px rgba(0, 0, 0, 0.3),
     0 0 0 1px rgba(184, 221, 208, 0.24),
     inset 0 1px 0 rgba(255, 255, 255, 0.14);
   --ci-link: #dceee4;
@@ -457,12 +603,24 @@
   --ci-background-lift: var(--gradient-aurora);
   --shadow-elev-1: var(--shadow-sm);
   --shadow-elev-2: var(--shadow-md);
-  --shadow-elev-3:
-    var(--shadow-lg),
-    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-elev-3: var(--shadow-lg), inset 0 1px 0 rgba(255, 255, 255, 0.04);
 
-  --tblr-bg-surface: #1d293d;
-  --tblr-border-color: #2c676d;
+  /* Ground-dependent roles — dark: links and labels in mark-light, hover to the foreground */
+  --link: var(--mark-light);
+  --link-hover: var(--foreground);
+  --label-ink: var(--mark-light);
+  --hairline: color-mix(in srgb, var(--foreground) 12%, transparent);
+  --button-ghost-foreground: var(--foreground);
+  --button-ghost-border: color-mix(in srgb, var(--foreground) 30%, transparent);
+  --button-ghost-border-hover: var(--foreground);
+  --button-ghost-hover: color-mix(in srgb, var(--foreground) 5%, transparent);
+}
+
+@media (max-width: 900px) {
+  :root {
+    --grid-gutter: 16px;
+    --grid-margin: 16px;
+  }
 }
 
 @layer base {
@@ -522,12 +680,7 @@
     word-spacing: var(--font-word-spacing);
   }
 
-  .dark body {
-    background-image: var(--ci-background-lift);
-    background-attachment: fixed;
-    background-repeat: no-repeat;
-  }
-
+  .dark body,
   html:not(.dark) body {
     background-image: var(--ci-background-lift);
     background-attachment: fixed;

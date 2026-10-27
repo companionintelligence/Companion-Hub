@@ -25,8 +25,13 @@ the copies from a checkout:
 
 ```bash
 node scripts/vendor-ci-common.mjs --from ../ci-common --ref <tag>
+node packages/frontend/scripts/sync-brand.mjs   # refresh the two company-logo mirrors in public/
 node scripts/vendor-ci-common.mjs --check
 ```
+
+Pass a commit or a tag that exists in your checkout (`git -C ../ci-common fetch --tags`), not `HEAD`: the script reads files with `git show <ref>:<path>`, and a stale local `main` has none of the newest files. CI Common tags each package on its own, so one `--ref` carries all three only when they were released together; check that the `version` it writes for `tokens`, `config` and `assets` is the one you meant.
+
+CI Common keeps its lint gate as `packages/config/bin/lint-canon.ts`, which `tsup` builds. The file has no type syntax, so the manifest vendors it byte for byte into `packages/frontend/scripts/lint-canon.mjs` and `lint:canon` runs it with plain `node`. If a later release adds real TypeScript to it, `lint:canon` fails to parse the copy; vendor the built `dist/lint-canon.js` instead.
 
 The Hub's own mark is not vendored. It lives in [`packages/frontend/hub-brand`](../packages/frontend/hub-brand/README.md), which is the origin for the favicons, app icons, and header logo; `pnpm --filter frontend brand:sync` mirrors it into place.
 
