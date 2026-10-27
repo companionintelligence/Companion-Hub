@@ -109,6 +109,10 @@ STAGE_MQ_NAME="hub-video-mq"
 # Set when this script created the marketplace worktree, so stage_down knows to
 # remove it and never removes one the operator supplied.
 STAGE_OWNS_MARKETPLACE=0
+# The network every app's compose declares external. Created by the Hub's own compose stack in
+# production; here the stage makes it for the Immich install — see _stage_immich_install.
+STAGE_HUB_NETWORKS="ci-hub_network ci-os-hub_network"
+STAGE_NETWORK_LABEL="ci-hub.video-stage"
 # running-app's Immich. The port is in the stage's own band and is not in the
 # frame. The project name is DockerReadFacade.getComposeProjectName's for this
 # URN — the same on EVERY Hub, which is why ownership below is decided by where
@@ -392,6 +396,20 @@ _stage_immich_install() {
     || die "could not clear the last run's Immich data under $CI_HUB_APP_DATA_DIR/ci-marketplace/immich
      (on Linux, files Immich's containers wrote are root-owned)"
 
+  # Every app's compose file declares the Hub's networks external — `ci-hub_network` and, for apps
+  # installed under the old topology, `ci-os-hub_network` (hubAppNetworkNames) — and it is the Hub's
+  # OWN compose stack that creates them (docker-compose.local.yml). This stage runs the backend
+  # natively, so nothing has: the install pulls four images and then fails with "network
+  # ci-hub_network declared as external, but could not be found", and again for the second name.
+  # Make each if it is absent, and label it so stage_down removes only a network this stage made —
+  # a developer's own Hub may hold the names.
+  for net in $STAGE_HUB_NETWORKS; do
+    if ! docker network inspect "$net" >/dev/null 2>&1; then
+      docker network create --label "$STAGE_NETWORK_LABEL=1" "$net" >/dev/null \
+        || die "could not create the $net network the Hub's apps join"
+    fi
+  done
+
   expected="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).services.length)' "$compose")"
   port="$(pick_port 9196)"
 
@@ -546,6 +564,12 @@ stage_down() {
   # After the backend is gone, so nothing is left to restart them. Only the
   # stage's own — see _stage_immich_containers.
   _stage_immich_remove
+  # After Immich's containers, which are on them. Only a network carrying this stage's label.
+  for net in $STAGE_HUB_NETWORKS; do
+    if [ "$(docker network inspect -f "{{index .Labels \"$STAGE_NETWORK_LABEL\"}}" "$net" 2>/dev/null)" = 1 ]; then
+      docker network rm "$net" >/dev/null 2>&1 || true
+    fi
+  done
   docker rm -f "$STAGE_PG_NAME" "$STAGE_MQ_NAME" >/dev/null 2>&1 || true
   # Only a worktree this script created. One the operator supplied is theirs.
   if [ "$STAGE_OWNS_MARKETPLACE" = 1 ] && [ -n "${CI_MARKETPLACE_DIR:-}" ]; then
