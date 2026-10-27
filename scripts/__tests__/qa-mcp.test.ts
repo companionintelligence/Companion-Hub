@@ -195,7 +195,25 @@ describe('SAFE_PROBES', () => {
     expect(SAFE_PROBES['sqlite-mcp']).toEqual({ tool: 'list_tables', args: {} });
     expect(SAFE_PROBES['n8n-mcp']).toEqual({ tool: 'tools_documentation', args: {} });
     expect(SAFE_PROBES['chess-mcp']).toEqual({ tool: 'new_game', args: {} });
-    for (const id of ['filesystem-mcp', 'chess-mcp', 'brewers-almanack-mcp', 'git-mcp', 'sqlite-mcp', 'n8n-mcp']) {
+    expect(SAFE_PROBES['memory-mcp']).toEqual({ tool: 'read_graph', args: {} });
+    expect(SAFE_PROBES['sequential-thinking-mcp']).toEqual({
+      tool: 'sequentialthinking',
+      args: { thought: 'Initial analysis', thoughtNumber: 1, totalThoughts: 1, nextThoughtNeeded: false },
+    });
+    expect(SAFE_PROBES['time-mcp']).toEqual({ tool: 'get_current_time', args: { timezone: 'UTC' } });
+    expect(SAFE_PROBES['everything-mcp']).toEqual({ tool: 'echo', args: { message: 'hello' } });
+    for (const id of [
+      'filesystem-mcp',
+      'chess-mcp',
+      'brewers-almanack-mcp',
+      'git-mcp',
+      'sqlite-mcp',
+      'n8n-mcp',
+      'memory-mcp',
+      'sequential-thinking-mcp',
+      'time-mcp',
+      'everything-mcp',
+    ]) {
       expect(SAFE_PROBES[id].net).toBeFalsy(); // offline → default sweep
     }
   });
@@ -207,14 +225,17 @@ describe('SAFE_PROBES', () => {
   });
 
   it('gates network-touching execution proofs behind net:true (skipped unless QA_MCP_PROBE_NET=1)', () => {
-    for (const id of ['fetch-mcp', 'youtube-transcript-mcp', 'lego-oracle-mcp']) {
+    for (const id of ['fetch-mcp', 'youtube-transcript-mcp', 'lego-oracle-mcp', 'brave-search-mcp']) {
       expect(SAFE_PROBES[id].net).toBe(true);
     }
   });
 
   it('does NOT probe apps whose every tool requires credentials (no clean no-cred verdict)', () => {
-    // reddit-mcp: get_trending_subreddits → tool-error without Reddit API creds; handshake is its ceiling.
+    // reddit-mcp, slack-mcp, gitlab-mcp, google-maps-mcp: tools require API creds; handshake is their ceiling.
     expect(SAFE_PROBES['reddit-mcp']).toBeUndefined();
+    expect(SAFE_PROBES['slack-mcp']).toBeUndefined();
+    expect(SAFE_PROBES['gitlab-mcp']).toBeUndefined();
+    expect(SAFE_PROBES['google-maps-mcp']).toBeUndefined();
   });
 });
 
