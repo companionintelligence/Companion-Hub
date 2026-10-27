@@ -339,7 +339,9 @@ function registryFailureSignals(text: string): { rateLimited: boolean; notFound:
       /manifest unknown|name unknown|repository does not exist|no such image|manifest for \S+ not found|: not found\b|\b404 not found\b|status(?: code)?:? 404\b/i.test(
         text,
       ),
-    auth: /failed to authorize|unauthorized|authentication required|\bdenied\b/i.test(text),
+    auth: /failed to authorize|unauthorized|authentication required|permission[_ ]denied|token provided does not match expected scopes|\bdenied\b/i.test(
+      text,
+    ),
   };
 }
 

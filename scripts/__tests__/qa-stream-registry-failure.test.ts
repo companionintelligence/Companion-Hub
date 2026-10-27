@@ -73,6 +73,7 @@ describe('registryFailureSignals', () => {
         'failed to authorize: failed to fetch oauth token: unexpected status from GET request to https://ghcr.io/token?scope=x: 401 Unauthorized',
       ).auth,
     ).toBe(true);
+    expect(registryFailureSignals('error from registry: permission_denied: The token provided does not match expected scopes.').auth).toBe(true);
   });
 
   it('says nothing for an ordinary failure', () => {
