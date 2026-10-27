@@ -370,6 +370,10 @@ function isRetryableComposeFailure(text: string): boolean {
     text,
   );
 }
+
+function isDockerStartTimeout(text: string): boolean {
+  return /spawn(?:sync)?\/bin\/sh\s+etimedout|docker(?: run)?[^\n]{0,80}\b(?:timed out|timeout)\b|\bETIMEDOUT\b/i.test(text);
+}
 // </compose-transient>
 
 /**
@@ -985,6 +989,12 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         if (/error gathering device information|no such device|cannot access .*\/dev\//i.test(run.err)) {
           result.score = 'skip' as Score;
           result.notes = `needs a host device the node does not have: ${run.err.slice(-240)}`;
+          return result;
+        }
+        if (isDockerStartTimeout(run.err)) {
+          result.score = 'timeout';
+          result.failKind = 'timeout';
+          result.notes = `container start timed out${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${run.err.slice(-300)}`;
           return result;
         }
         result.score = 'error';

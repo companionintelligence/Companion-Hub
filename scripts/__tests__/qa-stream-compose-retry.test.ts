@@ -9,8 +9,9 @@ const source = readFileSync(join(import.meta.dirname, '..', 'qa-stream.ts'), 'ut
 const block = /\/\/ <compose-transient>([\s\S]*?)\/\/ <\/compose-transient>/.exec(source);
 if (!block) throw new Error('the <compose-transient> block is missing from scripts/qa-stream.ts');
 const js = ts.transpileModule(block[1], { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
-const { isRetryableComposeFailure } = new Function(`${js}\nreturn { isRetryableComposeFailure };`)() as {
+const { isRetryableComposeFailure, isDockerStartTimeout } = new Function(`${js}\nreturn { isRetryableComposeFailure, isDockerStartTimeout };`)() as {
   isRetryableComposeFailure: (text: string) => boolean;
+  isDockerStartTimeout: (text: string) => boolean;
 };
 
 describe('isRetryableComposeFailure', () => {
@@ -31,6 +32,12 @@ describe('isRetryableComposeFailure', () => {
     expect(isRetryableComposeFailure('failed to authorize: 429 Too Many Requests')).toBe(false);
     expect(isRetryableComposeFailure('manifest unknown: image not found')).toBe(false);
     expect(isRetryableComposeFailure('invalid compose file: service has no image')).toBe(false);
+  });
+
+  it('turns a detached docker-start timeout into a retryable timeout, not an app start error', () => {
+    expect(isDockerStartTimeout('spawnSync /bin/sh ETIMEDOUT')).toBe(true);
+    expect(isDockerStartTimeout('docker run timed out while waiting for the daemon')).toBe(true);
+    expect(isDockerStartTimeout('container exited with code 1')).toBe(false);
   });
 });
 
