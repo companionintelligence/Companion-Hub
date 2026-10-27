@@ -9,6 +9,7 @@ import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
+import { LocalAiBackend } from '../backends/localai.backend';
 import { OmlxBackend } from '../backends/omlx.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -57,6 +58,7 @@ describe('InferenceRouterService', () => {
   let vllmBackend: MockProxy<VllmBackend>;
   let lemonadeBackend: MockProxy<LemonadeBackend>;
   let omlxBackend: MockProxy<OmlxBackend>;
+  let localaiBackend: MockProxy<LocalAiBackend>;
   let configuration: MockProxy<ConfigurationService>;
   /** Real: what the pool records as generating is exactly what a load must not evict. */
   let poolLoad: HubPoolLoadService;
@@ -82,6 +84,7 @@ describe('InferenceRouterService', () => {
     vllmBackend = mock<VllmBackend>();
     lemonadeBackend = mock<LemonadeBackend>();
     omlxBackend = mock<OmlxBackend>();
+    localaiBackend = mock<LocalAiBackend>();
     configuration = mock<ConfigurationService>();
     poolLoad = new HubPoolLoadService();
     // No operator preference by default, so every existing case resolves exactly as before.
@@ -109,6 +112,8 @@ describe('InferenceRouterService', () => {
     lemonadeBackend.getBaseUrl.mockReturnValue('http://ci-hub-lemonade:13305');
     omlxBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+    localaiBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+    localaiBackend.getBaseUrl.mockReturnValue('http://localhost:8080');
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -123,6 +128,7 @@ describe('InferenceRouterService', () => {
         { provide: VllmBackend, useValue: vllmBackend },
         { provide: LemonadeBackend, useValue: lemonadeBackend },
         { provide: OmlxBackend, useValue: omlxBackend },
+        { provide: LocalAiBackend, useValue: localaiBackend },
         { provide: ConfigurationService, useValue: configuration },
         { provide: HubPoolLoadService, useValue: poolLoad },
         InferenceBackendRegistry,
@@ -248,7 +254,7 @@ describe('InferenceRouterService', () => {
       const status = await service.getStatus();
 
       expect(status.backends).toHaveLength(INFERENCE_BACKEND_TYPES.length);
-      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend]) {
+      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend, localaiBackend]) {
         expect(backend.healthCheck).toHaveBeenCalledTimes(1);
       }
     });
@@ -257,7 +263,7 @@ describe('InferenceRouterService', () => {
       const STALL_MS = 40;
       let inFlight = 0;
       let peakInFlight = 0;
-      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend]) {
+      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend, localaiBackend]) {
         backend.healthCheck.mockImplementation(async () => {
           inFlight += 1;
           peakInFlight = Math.max(peakInFlight, inFlight);
@@ -296,7 +302,7 @@ describe('InferenceRouterService', () => {
 
       await service.routeChatCompletion({ model: 'auto', messages: [] }).catch(() => undefined);
 
-      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend]) {
+      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend, localaiBackend]) {
         expect(backend.healthCheck.mock.calls.length).toBeLessThanOrEqual(1);
       }
     });
@@ -1447,6 +1453,100 @@ describe('InferenceRouterService', () => {
       const sttConfig = await transcribe();
       expect(sttConfig?.headers?.Authorization).toBeUndefined();
     });
+
+    it('routes TTS to LocalAI when Lemonade is unhealthy but LocalAI is healthy', async () => {
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      localaiBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['tts-1'] });
+      localaiBackend.getBaseUrl.mockReturnValue('http://ci-hub-localai:8080');
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: new ArrayBuffer(8), headers: {} });
+
+      const result = await service.routeTts({ model: 'tts-1', input: 'hello from localai' });
+      expect(result.backend).toBe('localai');
+      expect(axios.post).toHaveBeenCalledWith('http://ci-hub-localai:8080/v1/audio/speech', expect.anything(), expect.anything());
+    });
+
+    it('routes STT to LocalAI when Lemonade is unhealthy but LocalAI is healthy', async () => {
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      localaiBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['whisper-1'] });
+      localaiBackend.getBaseUrl.mockReturnValue('http://ci-hub-localai:8080');
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { text: 'transcribed audio' }, headers: {} });
+
+      const result = await service.routeStt(new FormData());
+      expect(result.backend).toBe('localai');
+      expect(axios.post).toHaveBeenCalledWith('http://ci-hub-localai:8080/v1/audio/transcriptions', expect.any(FormData), expect.anything());
+    });
+  });
+
+  // ─── Image generation and media pool routing ────────────
+  describe('Image generation and media pool routing', () => {
+    it('routes image generation to LocalAI and tracks media in HubPoolLoadService', async () => {
+      localaiBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['stablediffusion'] });
+      localaiBackend.getBaseUrl.mockReturnValue('http://ci-hub-localai:8080');
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { created: 1234, data: [{ url: 'http://ci-hub-localai:8080/image.png' }] }, headers: {} });
+
+      const acquireSpy = vi.spyOn(poolLoad, 'acquireMedia');
+      const releaseSpy = vi.spyOn(poolLoad, 'releaseMedia');
+
+      const result = await service.routeImageGen({ prompt: 'a cute cat', model: 'stablediffusion' });
+      expect(result.backend).toBe('localai');
+      expect(result.data).toEqual({ created: 1234, data: [{ url: 'http://ci-hub-localai:8080/image.png' }] });
+      expect(axios.post).toHaveBeenCalledWith(
+        'http://ci-hub-localai:8080/v1/images/generations',
+        expect.objectContaining({ prompt: 'a cute cat' }),
+        expect.anything(),
+      );
+
+      expect(acquireSpy).toHaveBeenCalledWith({ kind: 'image', model: 'stablediffusion' });
+      expect(releaseSpy).toHaveBeenCalledWith({ kind: 'image', model: 'stablediffusion' });
+      expect(poolLoad.activeMediaWork()).toBe(0);
+    });
+
+    it('releases media work even if LocalAI image generation fails', async () => {
+      localaiBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['stablediffusion'] });
+      localaiBackend.getBaseUrl.mockReturnValue('http://ci-hub-localai:8080');
+      vi.mocked(axios.post).mockRejectedValueOnce(new Error('GPU OOM'));
+
+      const acquireSpy = vi.spyOn(poolLoad, 'acquireMedia');
+      const releaseSpy = vi.spyOn(poolLoad, 'releaseMedia');
+
+      await expect(service.routeImageGen({ prompt: 'heavy render', model: 'stablediffusion' })).rejects.toThrow(
+        'No image generation backend available',
+      );
+      expect(acquireSpy).toHaveBeenCalled();
+      expect(releaseSpy).toHaveBeenCalled();
+      expect(poolLoad.activeMediaWork()).toBe(0);
+    });
+
+    it('falls back to cloud provider when LocalAI is unhealthy', async () => {
+      localaiBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      cloudFallback.getEnabledProviders.mockReturnValue([{ provider: 'openai', apiKey: 'sk-test' } as any]);
+      cloudFallback.proxyImageGeneration.mockResolvedValueOnce({ data: { data: [{ url: 'cloud.png' }] }, headers: {} });
+
+      const result = await service.routeImageGen({ prompt: 'cloud render' });
+      expect(result.backend).toBe('cloud:openai');
+      expect(result.data).toEqual({ data: [{ url: 'cloud.png' }] });
+      expect(cloudFallback.proxyImageGeneration).toHaveBeenCalled();
+    });
+
+    it('throws when no image generation backend is available', async () => {
+      localaiBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      cloudFallback.getEnabledProviders.mockReturnValue([]);
+
+      await expect(service.routeImageGen({ prompt: 'render' })).rejects.toThrow('No image generation backend available');
+    });
+
+    it('tracks external media workloads via acquireMediaWork and releaseMediaWork', () => {
+      expect(service.activeMediaWork()).toBe(0);
+      expect(poolLoad.localInFlight()).toBe(0);
+
+      service.acquireMediaWork({ kind: 'comfyui' });
+      expect(service.activeMediaWork()).toBe(1);
+      expect(poolLoad.localInFlight()).toBe(1);
+
+      service.releaseMediaWork({ kind: 'comfyui' });
+      expect(service.activeMediaWork()).toBe(0);
+      expect(poolLoad.localInFlight()).toBe(0);
+    });
   });
 
   // ─── Tool-calling error preservation ─────────────────
@@ -1634,7 +1734,7 @@ describe('InferenceRouterService', () => {
 
     it('has nothing to set on an engine without a per-request keep_alive', () => {
       expect(typeof OllamaBackend.prototype.setResidentKeepAlive).toBe('function');
-      for (const engine of [LemonadeBackend, VllmBackend, OmlxBackend]) {
+      for (const engine of [LemonadeBackend, VllmBackend, OmlxBackend, LocalAiBackend]) {
         expect((engine.prototype as unknown as Record<string, unknown>).setResidentKeepAlive).toBeUndefined();
       }
     });

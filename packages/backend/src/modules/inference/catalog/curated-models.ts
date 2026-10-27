@@ -356,6 +356,7 @@ function defaultSupportedPlatforms(backend: InferenceBackendType): HostPlatform[
       return ['darwin'];
     case 'ollama':
     case 'lemonade':
+    case 'localai':
       return [...ALL_HOST_PLATFORMS];
   }
 }

@@ -307,6 +307,35 @@ export class InferenceController {
     }
   }
 
+  @UseGuards(InferenceAccessGuard)
+  @Post('v1/images/generations')
+  @HttpCode(200)
+  async v1ImagesGenerations(@Body() body: Record<string, unknown>, @Res() res: Response) {
+    const clientClosed = abortWhenClientCloses(res);
+    try {
+      const result = await this.router.routeImageGen(body, clientClosed);
+      res.json(result.data);
+    } catch (err) {
+      await sendRouteError(res, err);
+    }
+  }
+
+  @UseGuards(InferenceAccessGuard)
+  @Post('media/acquire')
+  @HttpCode(200)
+  async mediaAcquire(@Body() body: { kind?: 'image' | 'video' | 'comfyui'; model?: string }) {
+    this.router.acquireMediaWork({ kind: body?.kind ?? 'comfyui', model: body?.model });
+    return { ok: true, activeMediaWork: this.router.activeMediaWork() };
+  }
+
+  @UseGuards(InferenceAccessGuard)
+  @Post('media/release')
+  @HttpCode(200)
+  async mediaRelease(@Body() body: { kind?: 'image' | 'video' | 'comfyui'; model?: string }) {
+    this.router.releaseMediaWork({ kind: body?.kind ?? 'comfyui', model: body?.model });
+    return { ok: true, activeMediaWork: this.router.activeMediaWork() };
+  }
+
   // ─── Health ───────────────────────────────────────────────────────────
 
   @Get('health')
@@ -334,20 +363,20 @@ export class InferenceController {
   @UseGuards(AuthGuard, HubManagerGuard)
   @Patch('preferences')
   async updatePreferences(@Body() body: UpdateInferencePreferencesBody) {
-    const result = await this.configurationService.setInferencePreferences(
-      body.backend,
-      body.model,
-      body.embeddingModel,
-      body.visionModel,
-      this.vllmApiKeyToSave(body),
-      body.vllmUrl,
-      body.omlxUrl,
-      body.decodeEndpoint,
-      body.encodeEndpoint,
-      body.maxNumCtx,
-      body.ollamaSlots,
-      body.ollamaKeepAlive,
-    );
+    const result = await this.configurationService.setInferencePreferences({
+      backend: body.backend,
+      model: body.model,
+      embeddingModel: body.embeddingModel,
+      visionModel: body.visionModel,
+      vllmApiKey: this.vllmApiKeyToSave(body),
+      vllmUrl: body.vllmUrl,
+      omlxUrl: body.omlxUrl,
+      decodeEndpoint: body.decodeEndpoint,
+      encodeEndpoint: body.encodeEndpoint,
+      maxNumCtx: body.maxNumCtx,
+      ollamaSlots: body.ollamaSlots,
+      ollamaKeepAlive: body.ollamaKeepAlive,
+    });
 
     this.scheduleAiAppRestart('inference preferences changed');
 

@@ -634,6 +634,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       const inventory = await this.getOwnInventory();
       return {
         inFlightRequests,
+        mediaInFlight: this.loadService.activeMediaWork(),
         hardwareTier: inventory.hardwareTier,
         backends: inventory.backends,
         capabilitiesError: null,
@@ -645,7 +646,15 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       // of this payload are exactly what an operator needs while inference is broken.
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`[HubPool] could not build local capabilities for pool status: ${message}`);
-      return { inFlightRequests, hardwareTier: null, backends: [], capabilitiesError: message, gpuPressure, gpuPressureSource };
+      return {
+        inFlightRequests,
+        mediaInFlight: this.loadService.activeMediaWork(),
+        hardwareTier: null,
+        backends: [],
+        capabilitiesError: message,
+        gpuPressure,
+        gpuPressureSource,
+      };
     }
   }
 

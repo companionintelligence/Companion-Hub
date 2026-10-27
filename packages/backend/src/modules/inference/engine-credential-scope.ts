@@ -23,6 +23,7 @@ export const BACKEND_API_KEY: Record<InferenceBackendType, string> = {
   vllm: 'vllm',
   lemonade: 'lemonade',
   omlx: 'omlx',
+  localai: 'localai',
 };
 
 /**

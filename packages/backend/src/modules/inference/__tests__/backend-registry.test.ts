@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { InferenceBackendRegistry, UnknownInferenceBackendError } from '../backends/backend-registry';
 import type { InferenceBackend } from '../backends/backend.interface';
+import { LocalAiBackend } from '../backends/localai.backend';
 import { OmlxBackend } from '../backends/omlx.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { OllamaBackend } from '../backends/ollama.backend';
@@ -29,6 +30,7 @@ const makeBackends = (make: (name: InferenceBackendType) => InferenceBackend = s
   vllm: make('vllm'),
   lemonade: make('lemonade'),
   omlx: make('omlx'),
+  localai: make('localai'),
 });
 
 /**
@@ -39,7 +41,13 @@ const makeBackends = (make: (name: InferenceBackendType) => InferenceBackend = s
  * re-imported against a mocked `INFERENCE_BACKEND_TYPES`.
  */
 const buildRegistry = (backends: BackendsByType, Registry = InferenceBackendRegistry): InferenceBackendRegistry =>
-  new Registry(backends.ollama as OllamaBackend, backends.vllm as VllmBackend, backends.lemonade as LemonadeBackend, backends.omlx as OmlxBackend);
+  new Registry(
+    backends.ollama as OllamaBackend,
+    backends.vllm as VllmBackend,
+    backends.lemonade as LemonadeBackend,
+    backends.omlx as OmlxBackend,
+    backends.localai as LocalAiBackend,
+  );
 
 describe('InferenceBackendRegistry', () => {
   describe('get', () => {
@@ -146,7 +154,7 @@ describe('InferenceBackendRegistry', () => {
       // indistinguishable from the real walk under the real tuple. Only a tuple that disagrees with
       // the record can tell the two implementations apart, and a frozen `as const` export cannot be
       // reordered in place. Hence the re-import under a mock.
-      const reordered = ['omlx', 'lemonade', 'vllm', 'ollama'] as const;
+      const reordered = ['localai', 'omlx', 'lemonade', 'vllm', 'ollama'] as const;
 
       vi.resetModules();
       vi.doMock('@ci-hub/common/types', async (importOriginal) => ({
@@ -239,6 +247,7 @@ describe('InferenceBackendRegistry', () => {
           { provide: VllmBackend, useValue: backends.vllm },
           { provide: LemonadeBackend, useValue: backends.lemonade },
           { provide: OmlxBackend, useValue: backends.omlx },
+          { provide: LocalAiBackend, useValue: backends.localai },
         ],
       }).compile();
 

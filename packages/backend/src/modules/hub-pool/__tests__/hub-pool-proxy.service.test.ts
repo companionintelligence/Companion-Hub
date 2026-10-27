@@ -874,7 +874,7 @@ describe('PoolProxyService', () => {
       expect(res.status).toHaveBeenCalledWith(502);
       const body = vi.mocked(res.json).mock.calls[0]?.[0] as { error: string; localBackends: unknown[] };
       expect(body.error).toContain('local omlx at http://host.docker.internal:8000 answered but was left out: The server names itself "vllm"');
-      expect(body.error).toContain('local vllm, lemonade not reachable from inside the Hub container');
+      expect(body.error).toContain('local vllm, lemonade, localai not reachable from inside the Hub container');
       expect(body.localBackends).toEqual(
         expect.arrayContaining([
           {
