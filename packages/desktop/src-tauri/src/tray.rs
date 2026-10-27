@@ -215,9 +215,11 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     // Load the tray icon defensively: prefer the packaged file, fall back to the
     // embedded bytes, and if both fail (corrupt asset / unusual packaging) build
     // the tray without an icon instead of panicking. A missing tray icon must
-    // never abort startup.
-    let tray_icon = Image::from_path("icons/icon.png")
-        .or_else(|_| Image::from_bytes(include_bytes!("../icons/icon.png")))
+    // never abort startup. The image is the small Hub mark (packages/frontend/hub-brand),
+    // not icon.png: macOS draws a template icon from its alpha channel alone, and the full
+    // mark's thin gaps close up at menu-bar size and leave a solid disc.
+    let tray_icon = Image::from_path("icons/tray.png")
+        .or_else(|_| Image::from_bytes(include_bytes!("../icons/tray.png")))
         .map_err(|error| log::warn!("Tray icon unavailable, continuing without one: {error}"))
         .ok();
 

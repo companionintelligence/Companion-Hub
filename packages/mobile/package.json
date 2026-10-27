@@ -15,7 +15,7 @@
     "android:init": "tauri android init",
     "android:dev": "tauri android dev",
     "android:build": "tauri android build",
-    "icons": "tauri icon ../frontend/brand/logos/app-icon-source.png"
+    "icons": "tauri icon ../frontend/hub-brand/logos/app-icon-source.png --ios-color \"#041620\" && python3 ../frontend/hub-brand/scripts/post_tauri_icons.py"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.3"

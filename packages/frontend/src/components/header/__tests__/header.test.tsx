@@ -144,7 +144,7 @@ describe('Header', () => {
     renderHeader(true);
 
     await userEvent.click(screen.getByTestId('mobile-app-menu-btn'));
-    const logoLink = screen.getByAltText('CI Logo Icon').closest('a');
+    const logoLink = screen.getByAltText('Companion Hub logo').closest('a');
     expect(logoLink).not.toBeNull();
     await userEvent.click(logoLink as HTMLAnchorElement);
 
