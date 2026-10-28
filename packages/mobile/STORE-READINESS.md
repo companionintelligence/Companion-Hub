@@ -4,13 +4,16 @@ Delivery checklist for shipping `packages/mobile` to the **App Store** and
 **Google Play**, from a review of the app against current (2025-26) store
 requirements.
 
-**Status: Companion Hub is listed in App Store Connect and has an internal
-TestFlight build.** Version 1.0 is awaiting Apple review; build `0.1.1
-(20261027)` is available to the `teamtesting` internal group. The iOS release
-workflow is being wired to the existing production signing environment. A
-provisioning profile is still needed for signed CI builds, and an App Store
-Connect API key is needed for automatic TestFlight upload. Store review and
-Play release have separate remaining gates below.
+**Status (2026-10-28):** the mobile build workflow can produce a debug APK and
+an iOS Simulator app. Its signed Android AAB and iOS IPA jobs are wired, but
+currently skip because the Play upload keystore and Apple provisioning profile
+are not configured in the production GitHub Environment. App Store Connect and
+Play Console submission status must be confirmed by the release owner.
+
+The Companion Portal already has self-serve account deletion in production.
+This PR adds a direct account-settings link in the shared Hub settings UI so a
+mobile user can reach that flow. App-review access, store metadata, privacy
+disclosures, signing, and physical-device validation remain separate gates.
 
 - App: **Companion Hub** · iOS/Tauri id **`computer.ci.app.hub`** · Android Play id **`com.companionintelligence.hub`** · version **0.1.0**
 - Roadmap for post-v1 capabilities: [`ROADMAP.md`](./ROADMAP.md)
@@ -21,12 +24,12 @@ Play release have separate remaining gates below.
 
 | # | Gate | Why | Owner |
 |---|------|-----|-------|
-| 1 | **App Store provisioning profile** | The app record and distribution certificate/team are already configured. Add an App Store profile for `computer.ci.app.hub` to the production GitHub Environment as `APPLE_PROVISIONING_PROFILE_BASE64`. | Ops |
-| 2 | **Play Console account** (use an **organization** account) | New *personal* accounts must run a 14-day / 12-tester closed test before production; org accounts are exempt. `applicationId` is permanent once uploaded. | Ops |
-| 3 | **Play upload keystore** + App Signing enrollment | `keytool` an upload key, enroll in Play App Signing, add the 4 secrets below. The gradle loader is already wired — it just needs the key. | Ops |
-| 4 | **Privacy policy URL** | Hard-required by both stores for an app with sign-in. Must cover: email+password sent to `hub.ci.computer`, the Hub session stored on-device, traffic to the user's own Hub appliances. | Legal/Ops |
+| 1 | **App Store provisioning profile** | The distribution certificate and team are configured. Add an App Store profile for `computer.ci.app.hub` to the production GitHub Environment as `APPLE_PROVISIONING_PROFILE_BASE64`. | Ops |
+| 2 | **Play Console account** (use an **organization** account) | Confirm the organization account and listing. New *personal* accounts must run a 14-day / 12-tester closed test before production; org accounts are exempt. `applicationId` is permanent once uploaded. | Ops |
+| 3 | **Play upload keystore** + App Signing enrollment | Create the upload key, enroll in Play App Signing, and add the 4 secrets below. The workflow already skips the release AAB when these secrets are absent. | Ops |
+| 4 | **Privacy disclosures** | The published [privacy policy](https://ci.computer/privacy-policy) is live and includes Companion data retention and deletion. Legal/Ops must confirm its mobile disclosures cover email/password authentication, the on-device session, traffic to the user's own Hub appliances, and Sentry diagnostics. | Legal/Ops |
 | 5 | **App Review demo access** (Apple 2.1) | ⚠️ **The most likely rejection.** The app is unusable without a CI cloud account *and* a registered Hub appliance — a reviewer with zero devices hits a dead end. See §4. | Product |
-| 6 | **Account deletion** (Apple 5.1.1(v) / Play data-deletion) | No self-serve deletion exists on the Portal (better-auth has no `deleteUser` plugin). Cross-repo CI-Portal work + an in-app link. See §4. | CI-Portal |
+| 6 | **Account deletion entry point and Play URL** | CI-Portal main already has account-deletion preview, deletion, and User Settings. This PR adds a direct link from Hub Settings. Verify it in the mobile build and enter a public deletion-request URL in Play Console. Apple requires an in-app deletion path; Play requires both an in-app entry and an external web resource. | CI-Hub / Ops |
 
 **Android signing secrets** (used by the `android-release` job):
 `ANDROID_KEY_BASE64`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`, `ANDROID_KEY_STORE_PASSWORD`
@@ -74,6 +77,9 @@ Fixed as part of this prep — no action needed:
 - Fixed the infinite "Connecting…" trap when a stored Hub is unreachable.
 - Sentry enabled + correctly tagged (`ios-web`/`android-web`) on mobile.
 - a11y: input labels, real 44px touch targets, pill contrast.
+- Companion Account settings and the published privacy policy are reachable
+  from the shared Hub Settings UI; the account link opens the Portal and does
+  not delete anything until the user completes the Portal confirmation flow.
 
 ---
 
@@ -88,7 +94,9 @@ Fixed as part of this prep — no action needed:
 **Play Console**
 - Data safety: Email (collected, required, account management, encrypted in transit, not shared, not sold); password transmitted but never persisted; on-device: Hub URL + session id. No analytics/ads SDKs.
 - Content rating (IARC — utility, no UGC, no ads → Everyone/PEGI 3), target audience **18+ / not child-directed**, store listing assets (512 icon, 1024×500 feature graphic, ≥2 phone screenshots).
-- Account deletion URL (§1.6).
+- Account deletion URL: configure a public web resource that clearly explains
+  how to request deletion and links to Companion Account settings. Test it
+  while signed out and confirm it remains usable without installing the app.
 
 ---
 
