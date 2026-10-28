@@ -1,69 +1,29 @@
-import { createOobiDiscoveryResponse } from '@ci-hub/common/keri/oobi';
-import { Controller, Get, Param, Req } from '@nestjs/common';
-import { ApiOperation, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
-import type { Request } from 'express';
-import { ForwardAuthIdentityResolver } from './forward-auth-identity.resolver';
-
-class OobiDiscoveryResponseDto {
-  @ApiProperty()
-  aid!: string;
-
-  @ApiProperty()
-  role!: string;
-
-  @ApiProperty({ type: [String] })
-  urls!: string[];
-
-  @ApiProperty()
-  currentKey!: string;
-
-  @ApiProperty()
-  kelDigest!: string;
-
-  @ApiProperty({ type: [String] })
-  witnesses!: string[];
-}
+import { BadRequestException, Controller, Get, Param, ServiceUnavailableException } from '@nestjs/common';
+import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 
 @ApiTags('KERI / Trust Over IP')
 @Controller()
 export class OobiController {
-  constructor(private readonly forwardAuthResolver: ForwardAuthIdentityResolver) {}
-
   @Get('.well-known/keri/oobi')
   @ApiOperation({ summary: 'KERI Out-Of-Band Introduction (OOBI) metadata for the Hub appliance' })
-  @ApiResponse({ status: 200, description: 'OOBI discovery document for peer pairing', type: OobiDiscoveryResponseDto })
-  async getHubOobi(@Req() req: Request) {
-    const protocol = req.protocol || 'https';
-    const host = req.get('host') || 'localhost';
-    const url = `${protocol}://${host}`;
-
-    // Appliance AID is bound to the directory
-    const stable = await this.forwardAuthResolver.stableIdFor(1);
-    const aid = stable?.hubAid ?? 'did:keri:EHubSovereignRoot_0000000000000000000000';
-
-    return createOobiDiscoveryResponse({
-      aid,
-      role: 'hub',
-      urls: [url],
-      currentPublicKey: 'BActiveEd25519HubKey_000000000000000000000000',
-      latestKelDigest: 'ELatestKelDigest_00000000000000000000000000000',
-    });
+  @ApiResponse({
+    status: 503,
+    description: 'The Hub cannot publish a verifiable OOBI until a persisted KERI key event log is configured.',
+  })
+  getHubOobi(): never {
+    throw new ServiceUnavailableException('KERI OOBI publication is unavailable until this Hub has a persisted key event log.');
   }
 
   @Get('.well-known/keri/oobi/:aid')
   @ApiOperation({ summary: 'Resolve OOBI for a specific AID' })
-  @ApiResponse({ status: 200, description: 'OOBI record', type: OobiDiscoveryResponseDto })
-  async getOobiForAid(@Param('aid') aid: string, @Req() req: Request) {
-    const protocol = req.protocol || 'https';
-    const host = req.get('host') || 'localhost';
-    const url = `${protocol}://${host}`;
-
-    return createOobiDiscoveryResponse({
-      aid,
-      role: 'peer',
-      urls: [url],
-      currentPublicKey: 'BActiveEd25519PeerKey_00000000000000000000000',
-      latestKelDigest: 'ELatestKelDigest_00000000000000000000000000000',
-    });
+  @ApiResponse({
+    status: 503,
+    description: 'The Hub cannot resolve OOBIs until it can verify and serve persisted KERI key event logs.',
+  })
+  getOobiForAid(@Param('aid') aid: string): never {
+    if (!aid.trim()) {
+      throw new BadRequestException('AID is required.');
+    }
+    throw new ServiceUnavailableException('KERI OOBI resolution is unavailable until this Hub can verify and serve persisted key event logs.');
   }
 }

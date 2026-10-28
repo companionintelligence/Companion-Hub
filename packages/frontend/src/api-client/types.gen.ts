@@ -481,15 +481,6 @@ export type PasswordResetCompleteDto = {
     message: string;
 };
 
-export type OobiDiscoveryResponseDto = {
-    aid: string;
-    role: string;
-    urls: Array<string>;
-    currentKey: string;
-    kelDigest: string;
-    witnesses: Array<string>;
-};
-
 export type MyAppsDto = {
     installed: Array<{
         app: {
@@ -3793,14 +3784,12 @@ export type GetHubOobiData = {
     url: '/api/.well-known/keri/oobi';
 };
 
-export type GetHubOobiResponses = {
+export type GetHubOobiErrors = {
     /**
-     * OOBI discovery document for peer pairing
+     * The Hub cannot publish a verifiable OOBI until a persisted KERI key event log is configured.
      */
-    200: OobiDiscoveryResponseDto;
+    503: unknown;
 };
-
-export type GetHubOobiResponse = GetHubOobiResponses[keyof GetHubOobiResponses];
 
 export type GetOobiForAidData = {
     body?: never;
@@ -3811,14 +3800,12 @@ export type GetOobiForAidData = {
     url: '/api/.well-known/keri/oobi/{aid}';
 };
 
-export type GetOobiForAidResponses = {
+export type GetOobiForAidErrors = {
     /**
-     * OOBI record
+     * The Hub cannot resolve OOBIs until it can verify and serve persisted KERI key event logs.
      */
-    200: OobiDiscoveryResponseDto;
+    503: unknown;
 };
-
-export type GetOobiForAidResponse = GetOobiForAidResponses[keyof GetOobiForAidResponses];
 
 export type GetInstalledAppsData = {
     body?: never;
