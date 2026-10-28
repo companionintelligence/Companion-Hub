@@ -1,6 +1,6 @@
 import { createPublicKey, sign as cryptoSign, verify as cryptoVerify, type KeyObject } from 'node:crypto';
-import { decodeCesrPublicKey, decodeCesrSignature, encodeCesrSignature } from './cesr';
-import { canonicalStringify, computeSaid, verifySaid } from './said';
+import { decodeCesrPublicKey, decodeCesrSignature, encodeCesrSignature } from './cesr.js';
+import { canonicalStringify, computeSaid, verifySaid } from './said.js';
 
 export interface TelIssuanceEvent {
   v: string;
@@ -77,7 +77,7 @@ export function createTelIssuance(params: {
     },
   };
 
-  const event = computeSaid(rawEvent as Record<string, unknown>) as TelIssuanceEvent;
+  const event = computeSaid(rawEvent as Record<string, unknown>) as unknown as TelIssuanceEvent;
   const signature = signTelEvent(event, params.privateKey);
   return { event, signature };
 }
@@ -100,7 +100,7 @@ export function createTelRevocation(params: { priorTelEvent: TelEvent; credentia
     },
   };
 
-  const event = computeSaid(rawEvent as Record<string, unknown>) as TelRevocationEvent;
+  const event = computeSaid(rawEvent as Record<string, unknown>) as unknown as TelRevocationEvent;
   const signature = signTelEvent(event, params.privateKey);
   return { event, signature };
 }
@@ -123,6 +123,9 @@ export function evaluateTelStatus(
 
   for (let i = 0; i < tel.length; i++) {
     const item = tel[i];
+    if (!item) {
+      return { status: 'unissued', reason: `TEL event ${i} is missing` };
+    }
     const event = item.event;
 
     if (!verifySaid(event as unknown as Record<string, unknown>)) {

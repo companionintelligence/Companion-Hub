@@ -4,11 +4,13 @@ Delivery checklist for shipping `packages/mobile` to the **App Store** and
 **Google Play**, from a review of the app against current (2025-26) store
 requirements.
 
-**Status: code and both release pipelines are ready; the remaining gates are
-account/ops work.** Everything that could be fixed in the repo has been,
-including the signed-IPA lane (`ios-release`) and the ASC build-number
-stamping. What's left needs an Apple Developer account, a Play Console
-account, and a decision about how App Review signs in.
+**Status: Companion Hub is listed in App Store Connect and has an internal
+TestFlight build.** Version 1.0 is awaiting Apple review; build `0.1.1
+(20261027)` is available to the `teamtesting` internal group. The iOS release
+workflow is being wired to the existing production signing environment. A
+provisioning profile is still needed for signed CI builds, and an App Store
+Connect API key is needed for automatic TestFlight upload. Store review and
+Play release have separate remaining gates below.
 
 - App: **Companion Hub** · iOS/Tauri id **`computer.ci.app.hub`** · Android Play id **`com.companionintelligence.hub`** · version **0.1.0**
 - Roadmap for post-v1 capabilities: [`ROADMAP.md`](./ROADMAP.md)
@@ -19,7 +21,7 @@ account, and a decision about how App Review signs in.
 
 | # | Gate | Why | Owner |
 |---|------|-----|-------|
-| 1 | **Apple Developer Program** enrollment | Nothing ships without it. Then: register `computer.ci.app.hub`, create the App Store Connect record, generate a Distribution cert + App Store provisioning profile (or an ASC API key for cloud signing). Store as repo secrets and set `bundle.iOS.developmentTeam`. | Ops |
+| 1 | **App Store provisioning profile** | The app record and distribution certificate/team are already configured. Add an App Store profile for `computer.ci.app.hub` to the production GitHub Environment as `APPLE_PROVISIONING_PROFILE_BASE64`. | Ops |
 | 2 | **Play Console account** (use an **organization** account) | New *personal* accounts must run a 14-day / 12-tester closed test before production; org accounts are exempt. `applicationId` is permanent once uploaded. | Ops |
 | 3 | **Play upload keystore** + App Signing enrollment | `keytool` an upload key, enroll in Play App Signing, add the 4 secrets below. The gradle loader is already wired — it just needs the key. | Ops |
 | 4 | **Privacy policy URL** | Hard-required by both stores for an app with sign-in. Must cover: email+password sent to `hub.ci.computer`, the Hub session stored on-device, traffic to the user's own Hub appliances. | Legal/Ops |
@@ -29,17 +31,17 @@ account, and a decision about how App Review signs in.
 **Android signing secrets** (used by the `android-release` job):
 `ANDROID_KEY_BASE64`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`, `ANDROID_KEY_STORE_PASSWORD`
 
-**iOS signing secrets** (used by the `ios-release` job — the lane is wired, it
-just needs the values from blocker §1.1):
+**iOS signing secrets** (the certificate, password, and team ID are already in
+the GitHub `production` Environment; add the missing profile):
 
 | Secret | What it is |
 |---|---|
-| `APPLE_CERTIFICATE_BASE64` | Distribution cert `.p12`, base64'd (`base64 -i cert.p12`) |
+| `APPLE_CERTIFICATE` | Distribution cert `.p12`, base64'd (`base64 -i cert.p12`) |
 | `APPLE_CERTIFICATE_PASSWORD` | Password you set when exporting the `.p12` |
 | `APPLE_PROVISIONING_PROFILE_BASE64` | App Store provisioning profile, base64'd |
-| `APPLE_DEVELOPMENT_TEAM` | 10-char Team ID from developer.apple.com ▸ Membership |
+| `APPLE_TEAM_ID` | 10-char Team ID from developer.apple.com ▸ Membership |
 
-Optional — only to push straight to TestFlight (otherwise the `.ipa` is a
+Optional — required to push straight to TestFlight (otherwise the `.ipa` is a
 downloadable artifact you can send with Transporter):
 `APPSTORE_API_KEY_ID`, `APPSTORE_API_ISSUER_ID`, `APPSTORE_API_PRIVATE_KEY_BASE64`
 (App Store Connect ▸ Users and Access ▸ Integrations).
@@ -120,17 +122,10 @@ whether Replay stays on for store builds, not whether PII is sent.
 # Both lanes are secrets-gated and skip cleanly when the secrets are absent.
 gh workflow run mobile-build.yml
 #   → companion-hub-android-release-aab   (needs the 4 Android secrets)
-#   → companion-hub-ios-release-ipa       (needs the 4 Apple secrets)
+#   → companion-hub-ios-release-ipa       (needs production cert/password/team and profile)
 ```
 
-> ⚠️ **The iOS build-number stamping is currently a no-op** (verified
-> 2026-09-05). `scripts/set-ios-version.mjs` writes only `project.yml`, but
-> `gen/apple/…/Info.plist` is committed and is what ships — xcodegen does **not**
-> regenerate it during `tauri ios build`. Until the script also writes the plist,
-> assume every upload carries the committed `CFBundleVersion`, and ASC will
-> reject the second one. See the README's "Generated Apple files are committed".
-
-- **Versioning:** bump `version` in `tauri.conf.json` — it is the single source for both platforms. Android `versionName`/`versionCode` derive from it (`major*1e6 + minor*1e3 + patch`); iOS gets it via `scripts/set-ios-version.mjs`, which stamps `CFBundleShortVersionString` from that same field and sets `CFBundleVersion` to `$IOS_BUILD_NUMBER` (CI passes `github.run_number`, which is monotonic). Run `node scripts/set-ios-version.mjs --check` to catch marketing-version drift.
+- **Versioning:** bump `version` in `tauri.conf.json` — it is the single source for both platforms. Android `versionName`/`versionCode` derive from it (`major*1e6 + minor*1e3 + patch`); iOS gets it via `scripts/set-ios-version.mjs`, which synchronizes Tauri config, `project.yml`, and the committed `Info.plist`. CI stamps a date + workflow run + attempt build number, then checks all three sources. Run `node scripts/set-ios-version.mjs --check` to catch drift.
 
 > ⚠️ **Do not use tauri's `--build-number` flag for App Store builds.** It
 > *appends* to the app version rather than replacing the build number, so
@@ -139,6 +134,6 @@ gh workflow run mobile-build.yml
 > Verified 2026-08-03 by inspecting the resulting `.xcarchive`. The
 > `set-ios-version.mjs` step in the `ios-release` job exists precisely because
 > the built-in flag can't be used here.
-- **Ship-blocking caveat:** the app has only ever been verified on the **iOS Simulator + Android emulator**. Deep links from the system browser (`cihub://auth` SSO), App Intents via Siri, and the local-network prompt all need a **signed device build via TestFlight** before submission. The `ios-release` lane now produces that build — it is the *account*, not the pipeline, that is missing.
+- **Device-validation caveat:** the current TestFlight build is available to internal testers. Deep links from the system browser (`cihub://auth` SSO), App Intents via Siri, and the local-network prompt still need device testing and feedback before claiming those paths verified.
 - **Last simulator verification:** 2026-08-03, Xcode 27.0 / iOS 27.0 sim (iPhone 17 Pro), against `dev` after the mobile PR merged. App installs, launches, stays alive, loads all webview assets over the `tauri://` scheme with no failed loads or JS errors, and boots the SPA (confirmed by the `i18nextLng` key appearing in the app's WebKit `localstorage.sqlite3` — React/i18next only writes it after mount). `cihub` is registered in the built bundle's `CFBundleURLTypes`, and the app survives an incoming `cihub://` deep link. Note `simctl io screenshot` renders the WKWebView layer **black** — that is a simulator capture artifact, not a blank screen; verify via the storage/log evidence above or Safari ▸ Develop.
 - **iOS + Xcode 27:** local device builds currently need the vendored `swift-rs` workarounds in [`README.md`](./README.md). CI's stable Xcode doesn't (verified), so CI is the reliable iOS build path today.

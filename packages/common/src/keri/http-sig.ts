@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, sign as cryptoSign, verify as cryptoVerify, type KeyObject } from 'node:crypto';
-import { type SignedKeyEvent, verifyKeyEventLog } from './aid';
-import { decodeCesrPublicKey, decodeCesrSignature, encodeCesrSignature } from './cesr';
+import { type SignedKeyEvent, verifyKeyEventLog } from './aid.js';
+import { decodeCesrPublicKey, decodeCesrSignature, encodeCesrSignature } from './cesr.js';
 
 export interface HttpSignatureHeaders {
   'signature-input': string;
@@ -103,6 +103,9 @@ export function verifyHttpRequestWithKeri(params: VerifyHttpSignatureParams): Ht
     return { ok: false, reason: 'Malformed signature-input header' };
   }
   const sigParamsStr = match[1];
+  if (!sigParamsStr) {
+    return { ok: false, reason: 'Malformed signature-input header' };
+  }
 
   const createdMatch = sigParamsStr.match(/created=(\d+)/);
   const expiresMatch = sigParamsStr.match(/expires=(\d+)/);
@@ -112,9 +115,14 @@ export function verifyHttpRequestWithKeri(params: VerifyHttpSignatureParams): Ht
     return { ok: false, reason: 'Missing created, expires, or keyid in signature-input' };
   }
 
-  const created = Number.parseInt(createdMatch[1], 10);
-  const expires = Number.parseInt(expiresMatch[1], 10);
+  const createdValue = createdMatch[1];
+  const expiresValue = expiresMatch[1];
   const keyid = keyidMatch[1];
+  if (!createdValue || !expiresValue || !keyid) {
+    return { ok: false, reason: 'Malformed created, expires, or keyid value in signature-input' };
+  }
+  const created = Number.parseInt(createdValue, 10);
+  const expires = Number.parseInt(expiresValue, 10);
   const now = params.now ?? Math.floor(Date.now() / 1000);
 
   // Check clock skew (30s) and expiration (max 300s)
@@ -148,6 +156,9 @@ export function verifyHttpRequestWithKeri(params: VerifyHttpSignatureParams): Ht
     return { ok: false, reason: 'Malformed signature header format' };
   }
   const rawSig = sigMatch[1];
+  if (!rawSig) {
+    return { ok: false, reason: 'Malformed signature header format' };
+  }
 
   // 5. Reconstruct base and verify signature against KEL current key
   const signatureBase = buildHttpSignatureBase({

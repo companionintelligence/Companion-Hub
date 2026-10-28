@@ -1,7 +1,7 @@
 import { createPublicKey, sign as cryptoSign, verify as cryptoVerify, type KeyObject } from 'node:crypto';
-import { decodeCesrPublicKey, decodeCesrSignature, encodeCesrSignature } from './cesr';
-import { canonicalStringify, computeSaid, verifySaid } from './said';
-import { type SignedTelEvent, evaluateTelStatus } from './tel';
+import { decodeCesrPublicKey, decodeCesrSignature, encodeCesrSignature } from './cesr.js';
+import { canonicalStringify, computeSaid, verifySaid } from './said.js';
+import { type SignedTelEvent, evaluateTelStatus } from './tel.js';
 
 export type DisclosureCeiling = 'none' | 'boolean' | 'count' | 'summary' | 'redacted' | 'full';
 export type AskGrantMode = 'auto' | 'review' | 'block';
@@ -63,7 +63,7 @@ export function verifyAcdcSignature<T>(credential: AcdcCredential<T>, cesrSignat
 }
 
 /** Issues an Authentic Chained Data Container (ACDC) verifiable credential. */
-export function issueAcdc<T extends Record<string, unknown>>(params: {
+export function issueAcdc<T>(params: {
   issuerAid: string;
   schemaSaid: string;
   attributes: T;
@@ -79,7 +79,7 @@ export function issueAcdc<T extends Record<string, unknown>>(params: {
     ...(params.edges ? { e: params.edges } : {}),
   };
 
-  const credential = computeSaid(rawCred as Record<string, unknown>) as AcdcCredential<T>;
+  const credential = computeSaid(rawCred as Record<string, unknown>) as unknown as AcdcCredential<T>;
   const signature = signAcdcCredential(credential, params.privateKey);
 
   return { credential, signature };
