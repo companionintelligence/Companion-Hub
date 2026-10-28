@@ -58,7 +58,7 @@
  *     and a persistent failure is still actionable. Other start failures are not retried.
  */
 
-import { exec, execSync, spawnSync } from 'node:child_process';
+import { exec, execSync, spawn, spawnSync } from 'node:child_process';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import {
   chmodSync,
@@ -826,17 +826,18 @@ function shQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-function execQuiet(cmd: string, timeoutMs = 120_000): { ok: boolean; out: string; err: string; ms: number } {
+function execQuiet(cmd: string, timeoutMs = 120_000): { ok: boolean; out: string; err: string; ms: number; timedOut: boolean; interrupted: boolean } {
   const t = Date.now();
   try {
     // killSignal SIGKILL (not the default SIGTERM): a `docker` CLI blocked on a wedged daemon
     // socket ignores SIGTERM, which would let the call hang past `timeoutMs` and freeze the whole
     // node's pool. SIGKILL force-reaps it so the timeout is a real wall.
     const out = execSync(cmd, { encoding: 'utf-8', stdio: 'pipe', timeout: timeoutMs, killSignal: 'SIGKILL' }).trim();
-    return { ok: true, out, err: '', ms: Date.now() - t };
+    return { ok: true, out, err: '', ms: Date.now() - t, timedOut: false, interrupted: false };
   } catch (e: unknown) {
     const err = e instanceof Error ? e.message : String(e);
-    return { ok: false, out: '', err, ms: Date.now() - t };
+    const timedOut = typeof e === 'object' && e !== null && 'code' in e && e.code === 'ETIMEDOUT';
+    return { ok: false, out: '', err, ms: Date.now() - t, timedOut, interrupted: commandWasInterrupted(e, timedOut) };
   }
 }
 
@@ -891,7 +892,8 @@ function headTail(text: string, max = 600): string {
  * A compose dependency can be reported as unhealthy while its first boot is still converging. This
  * is deliberately narrower than "compose failed": registry/auth/missing-image/port/config failures
  * are not made slower or less truthful by an automatic retry. The caller records the first attempt
- * regardless of whether the second attempt recovers.
+ * regardless of whether the second attempt recovers, and retries readiness/compose failures only
+ * after the daemon confirms that the prior run's resources are gone.
  */
 function isRetryableComposeFailure(text: string): boolean {
   return /dependency(?: .*?)?failed to start|container .*\bis unhealthy\b|health ?check .*\b(?:unhealthy|starting)\b|\bhealth(?:check)?\s*[:=]\s*(?:unhealthy|starting)\b|context deadline exceeded|network is unreachable|connection (?:timed out|reset by peer)|i\/o timeout|temporary failure in name resolution|tls handshake timeout/i.test(
@@ -900,7 +902,218 @@ function isRetryableComposeFailure(text: string): boolean {
 }
 
 function isDockerStartTimeout(text: string): boolean {
-  return /spawn(?:sync)?\/bin\/sh\s+etimedout|docker(?: run)?[^\n]{0,80}\b(?:timed out|timeout)\b|\bETIMEDOUT\b/i.test(text);
+  return /spawn(?:sync)?\s+\/bin\/sh\s+etimedout|docker run\b[^\n]{0,80}\b(?:timed out|timeout)\b/i.test(text);
+}
+
+/** Docker's documented host-port bind race wordings. */
+function isPortBindRace(err: string): boolean {
+  return /address already in use|failed to bind host port|port is already allocated/i.test(err);
+}
+
+function commandWasInterrupted(error: unknown, timedOut: boolean): boolean {
+  if (timedOut) return true;
+  if (typeof error !== 'object' || error === null) return false;
+  const metadata = error as { code?: unknown; signal?: unknown; status?: unknown };
+  return (
+    (typeof metadata.signal === 'string' && metadata.signal.length > 0) ||
+    (typeof metadata.status === 'number' && metadata.status >= 128) ||
+    metadata.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+  );
+}
+
+/** True when a failed docker start can safely be retried after reserving another host port. */
+function isRetryableHostPortBindRace(text: string, interrupted = false): boolean {
+  return !interrupted && !isDockerStartTimeout(text) && isPortBindRace(text);
+}
+
+function classifyComposeStartFailure(
+  err: string,
+  out: string,
+  timedOut: boolean,
+  interrupted = timedOut,
+): { startTimedOut: boolean; retryableBindRace: boolean } {
+  const diagnostics = `${err}\n${out}`;
+  // Only the process runner knows whether its command was interrupted. ETIMEDOUT text can describe
+  // a normally-exited Compose dependency or registry failure, which remains eligible for retry.
+  const startTimedOut = timedOut;
+  return { startTimedOut, retryableBindRace: isRetryableHostPortBindRace(diagnostics, interrupted) };
+}
+
+function cleanupVerificationPassed(result: { ok: boolean; out: string }): boolean {
+  return result.ok && result.out.trim().length === 0;
+}
+
+/**
+ * Single-quote a string for the HOST shell. JSON.stringify is the wrong tool here: it emits DOUBLE
+ * quotes, so the host shell expands `$4`/`$2` inside an awk script before the command reaches a container.
+ */
+function shq(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+async function verifyQaResourceCleanup(
+  run: (command: string, timeoutMs: number) => Promise<{ ok: boolean; out: string }>,
+  project: string,
+  containerName: string,
+): Promise<boolean> {
+  const projectFilter = shq(`label=com.docker.compose.project=${project}`);
+  const checks = [
+    `docker ps -aq --filter ${projectFilter}`,
+    `docker network ls -q --filter ${projectFilter}`,
+    `docker volume ls -q --filter ${projectFilter}`,
+    `docker ps -aq --filter ${shq(`name=^/${containerName}$`)}`,
+  ];
+  for (const command of checks) {
+    if (!cleanupVerificationPassed(await run(command, 15_000))) return false;
+  }
+  return true;
+}
+
+function makeExecAsync(spawnImpl: typeof spawn) {
+  return (
+    cmd: string,
+    timeoutMs = 120_000,
+  ): Promise<{ ok: boolean; out: string; err: string; ms: number; timedOut: boolean; interrupted: boolean }> => {
+    const startedAt = Date.now();
+    return new Promise((resolve) => {
+      let timedOut = false;
+      let interrupted = false;
+      let settled = false;
+      let out = '';
+      let stderr = '';
+      let outBytes = 0;
+      let stderrBytes = 0;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (result: { ok: boolean; err: string; timedOut: boolean; interrupted: boolean }) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        resolve({ ...result, out: out.trim(), ms: Date.now() - startedAt });
+      };
+      const child = spawnImpl(cmd, {
+        shell: true,
+        detached: process.platform !== 'win32',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const killProcessGroup = () => {
+        let groupKilled = false;
+        if (process.platform !== 'win32' && child.pid) {
+          try {
+            process.kill(-child.pid, 'SIGKILL');
+            groupKilled = true;
+          } catch {
+            // The process group may already be gone; fall back to the direct child below.
+          }
+        }
+        if (!groupKilled) {
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            // The command may have exited between the deadline and the kill.
+          }
+        }
+      };
+      const stopForOutputLimit = () => {
+        if (settled) return;
+        killProcessGroup();
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        interrupted = true;
+        finish({ ok: false, err: `${stderr}Command output exceeded 16 MiB`, timedOut: false, interrupted: true });
+      };
+      child.stdout?.setEncoding('utf8').on('data', (chunk: string) => {
+        if (settled) return;
+        outBytes += Buffer.byteLength(chunk, 'utf8');
+        if (outBytes > 16 * 1024 * 1024) {
+          stopForOutputLimit();
+          return;
+        }
+        out += chunk;
+      });
+      child.stderr?.setEncoding('utf8').on('data', (chunk: string) => {
+        if (settled) return;
+        stderrBytes += Buffer.byteLength(chunk, 'utf8');
+        if (stderrBytes > 16 * 1024 * 1024) {
+          stopForOutputLimit();
+          return;
+        }
+        stderr += chunk;
+      });
+      child.on('error', (error) => {
+        finish({ ok: false, err: `${stderr}${error.message}`, timedOut, interrupted });
+      });
+      child.on('close', (code, signal) => {
+        if (timedOut) {
+          finish({ ok: false, err: `${stderr}Command timed out after ${timeoutMs}ms`, timedOut: true, interrupted: true });
+        } else if (signal !== null || (code !== null && code >= 128)) {
+          const detail = signal ? `Command interrupted by ${signal}` : `Command exited with signal-style code ${code}`;
+          finish({ ok: false, err: `${stderr}${detail}`, timedOut: false, interrupted: true });
+        } else if (code === 0) {
+          finish({ ok: true, err: '', timedOut: false, interrupted: false });
+        } else {
+          const detail = signal ? `Command failed: ${cmd} (signal ${signal})` : `Command failed: ${cmd} (exit code ${code})`;
+          finish({ ok: false, err: `${stderr}${detail}`, timedOut: false, interrupted: false });
+        }
+      });
+      timer = setTimeout(
+        () => {
+          // A shell can exit while a descendant still holds stdout/stderr open. Do not wait for
+          // `close`: kill the whole process group and settle independently of inherited pipes.
+          if (settled) return;
+          timedOut = true;
+          interrupted = true;
+          killProcessGroup();
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          finish({ ok: false, err: `${stderr}Command timed out after ${timeoutMs}ms`, timedOut: true, interrupted: true });
+        },
+        Math.max(1, timeoutMs),
+      );
+    });
+  };
+}
+
+/** A timed-out `docker run` may have created the named container before its CLI was killed. */
+function isRetryableTimeout(text: string): boolean {
+  return !/^container start timed out\b/i.test(text);
+}
+
+function isRetryableTransient(result: Record<string, unknown>): boolean {
+  const notes = String(result.notes ?? '');
+  if (result.interrupted === true || result.retrySuppressed === true) return false;
+  return (
+    result.failKind === 'pull' ||
+    (result.failKind === 'timeout' && isRetryableTimeout(notes) && result.cleanupConfirmed === true) ||
+    (result.failKind === 'compose' && isRetryableComposeFailure(notes) && result.cleanupConfirmed === true)
+  );
+}
+
+async function attemptOnceWithRetry(
+  attempt: () => Promise<Record<string, unknown>>,
+  onRetry?: (first: Record<string, unknown>) => void,
+): Promise<Record<string, unknown>> {
+  let result = await attempt();
+  if (isRetryableTransient(result)) {
+    const firstScore = String(result.score);
+    const firstNotes = String(result.notes ?? '');
+    const firstFailKind = String(result.failKind ?? '');
+    onRetry?.(result);
+    const retry = await attempt();
+    retry.retried = true;
+    retry.attempts = 2;
+    retry.firstAttemptScore = firstScore;
+    retry.firstAttemptFailKind = firstFailKind;
+    retry.firstAttemptNotes = firstNotes;
+    result = retry;
+  } else {
+    result.attempts = 1;
+    if (result.retrySuppressed === true) {
+      result.notes = `${String(result.notes ?? '')} | retry suppressed because the command was interrupted`;
+    } else if ((result.failKind === 'timeout' || result.failKind === 'compose') && result.cleanupConfirmed === false) {
+      result.notes = `${String(result.notes ?? '')} | retry suppressed because Docker cleanup could not be confirmed`;
+    }
+  }
+  return result;
 }
 // </compose-transient>
 
@@ -911,25 +1124,18 @@ function isDockerStartTimeout(text: string): boolean {
  * backend health, stats, teardown) runs through this instead, keeping the event loop free so the
  * watchdog timer and the readiness deadline check stay live. SIGKILL on timeout (see execQuiet).
  */
-function execAsync(cmd: string, timeoutMs = 120_000): Promise<{ ok: boolean; out: string; err: string; ms: number }> {
-  const t = Date.now();
-  return new Promise((resolve) => {
-    exec(cmd, { encoding: 'utf-8', timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 }, (e, stdout, stderr) => {
-      const out = (stdout ?? '').toString().trim();
-      if (e) resolve({ ok: false, out, err: `${(stderr ?? '').toString()}${e.message ?? ''}`, ms: Date.now() - t });
-      else resolve({ ok: true, out, err: '', ms: Date.now() - t });
-    });
-  });
-}
+const execAsync = makeExecAsync(spawn);
 
 // Teardowns the watchdog kicks off in the background (it must NOT block dispatch). Tracked so the
 // process can give them a bounded grace to finish before it force-exits — otherwise process.exit(0)
 // races the `docker rm -f` and leaks the container.
 const pendingTeardowns = new Set<Promise<void>>();
-function trackTeardown(p: Promise<void>): void {
-  const tracked = p.catch(() => {
-    /* best-effort */
-  });
+function trackTeardown(p: Promise<unknown>): void {
+  const tracked = p
+    .then(() => undefined)
+    .catch(() => {
+      /* best-effort */
+    });
   pendingTeardowns.add(tracked);
   void tracked.finally(() => pendingTeardowns.delete(tracked));
 }
@@ -942,9 +1148,10 @@ async function drainTeardowns(graceMs: number): Promise<void> {
 /**
  * Tear an app's containers down without ever blocking — called from attemptApp's `finally` AND from
  * the per-app watchdog (which only knows the appId/containerName, not the live compose handles).
- * Best-effort and SIGKILL-bounded: a wedged daemon can't stall it. Idempotent — `docker rm -f` and
- * `compose down` on a nonexistent container/project are fast no-ops — so it's safe to call from both
- * paths (and twice for one app: watchdog + the abandoned attempt's finally).
+ * SIGKILL-bounded: a wedged daemon can't stall it. Idempotent — `docker rm -f` and `compose down` on
+ * a nonexistent container/project are fast no-ops — so it's safe to call from both paths (and twice
+ * for one app: watchdog + the abandoned attempt's finally). Optional verification ensures transient
+ * retries do not reuse a name while old resources may remain.
  */
 async function forceTeardown(o: {
   appId: string;
@@ -952,7 +1159,8 @@ async function forceTeardown(o: {
   composeProject?: string;
   composeYml?: string;
   scratchDirs?: string[];
-}): Promise<void> {
+  verify?: boolean;
+}): Promise<boolean> {
   const project = (o.composeProject || qaProjectName(o.appId)).toLowerCase().replace(/[^a-z0-9-]/g, '-');
   const ymlRef = o.composeYml ? `-f ${o.composeYml}` : '';
   // Compose teardown (operates on the project by name when we have no yml — compose v2 matches the
@@ -970,6 +1178,12 @@ async function forceTeardown(o: {
       /* best-effort — a wipe failure must never block dispatch */
     }
   }
+  if (!o.verify) return true;
+  // A readiness/compose retry reuses the run-scoped name and project. Do not retry if the daemon
+  // could not confirm removal of the project containers, networks, volumes, and named container;
+  // otherwise the second attempt can reuse stale resources or overwrite the real timeout with a
+  // misleading container-name conflict.
+  return verifyQaResourceCleanup(execAsync, project, o.containerName);
 }
 
 /**
@@ -1396,9 +1610,13 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       // `compose up` can lose the race for the host port composeUp reserved (a peer app, QA_CONCURRENCY > 1). Take down whatever it
       // did start and build the stack afresh: composeUp wipes the scratch tree, reserves a new port and mints new secrets, so the
       // retry is a clean start rather than a stack half-initialised under the old port.
-      for (let bindTry = 1; !up.ok && bindTry <= BIND_RETRIES && isPortBindRace(up.err); bindTry++) {
+      for (let bindTry = 1; !up.ok && bindTry <= BIND_RETRIES && up.retryableBindRace; bindTry++) {
+        const cleanupConfirmed = await forceTeardown({ appId, containerName, composeProject, composeYml, verify: true });
+        if (!cleanupConfirmed) {
+          result.bindRetrySuppressed = true;
+          break;
+        }
         phase(appId, 'starting', `Host port was taken before compose could bind it; retrying with a new reservation (${bindTry}/${BIND_RETRIES})`);
-        await forceTeardown({ appId, containerName, composeProject, composeYml });
         up = await composeUp(appId, services, scratchBase, composeYml, config as unknown as Record<string, unknown>);
         result.bindRetries = bindTry;
       }
@@ -1410,6 +1628,20 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         // the operator with an opaque tail of a serialized compose error (seen in the fleet Pixelfed
         // run). Keep both channels in the same bounded diagnostic; never persist the full output.
         const composeOutput = commandOutput(up.err, up.out);
+        if (up.startTimedOut) {
+          result.score = 'timeout';
+          result.failKind = 'timeout';
+          result.retrySuppressed = up.interrupted;
+          result.notes = `container start timed out during compose: ${headTail(composeOutput, 600)}`;
+          return result;
+        }
+        if (up.interrupted) {
+          result.score = 'error';
+          result.failKind = 'compose';
+          result.retrySuppressed = true;
+          result.notes = `compose command was interrupted before a complete result: ${headTail(composeOutput, 600)}`;
+          return result;
+        }
         const sig = registryFailureSignals(composeOutput);
         // A rate limit first: it is neither a missing image nor missing credentials, and its text contains both of those words.
         if (sig.rateLimited) {
@@ -1430,7 +1662,9 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         }
         result.score = 'error';
         result.failKind = 'compose';
-        result.notes = `compose up failed${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${headTail(composeOutput, 600)}`;
+        result.notes =
+          `compose up failed${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${headTail(composeOutput, 600)}` +
+          (result.bindRetrySuppressed ? ' | bind retry suppressed because Docker cleanup could not be confirmed' : '');
         return result;
       }
       hostPort = up.hostPort;
@@ -1507,14 +1741,18 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
           `docker run -d --name ${containerName} --restart ${restartPolicy} -p ${publishFlag}${capFlags}${envFileFlag}${runFlags} ${result.image}${cmdSuffix}`,
           60_000,
         );
-        if (run.ok || bindTry >= BIND_RETRIES || !isPortBindRace(run.err)) break;
+        if (run.ok || bindTry >= BIND_RETRIES || !isRetryableHostPortBindRace(run.err, run.interrupted)) break;
+        // `docker run` creates the container before it binds, so the failed one still holds the name.
+        const cleanupConfirmed = await forceTeardown({ appId, containerName, verify: true });
+        if (!cleanupConfirmed) {
+          result.bindRetrySuppressed = true;
+          break;
+        }
         phase(
           appId,
           'starting',
           `Host port :${reserved} was taken before docker could bind it; retrying with a new reservation (${bindTry + 1}/${BIND_RETRIES})`,
         );
-        // `docker run` creates the container before it binds, so the failed one still holds the name.
-        execQuiet(`docker rm -f -v ${containerName}`, 30_000);
         result.bindRetries = bindTry + 1;
       }
       if (!run.ok) {
@@ -1524,15 +1762,19 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
           result.notes = `needs a host device the node does not have: ${run.err.slice(-240)}`;
           return result;
         }
-        if (isDockerStartTimeout(run.err)) {
+        if (run.timedOut || isDockerStartTimeout(run.err)) {
           result.score = 'timeout';
           result.failKind = 'timeout';
-          result.notes = `container start timed out${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${run.err.slice(-300)}`;
+          result.notes =
+            `container start timed out${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${run.err.slice(-300)}` +
+            (result.bindRetrySuppressed ? ' | bind retry suppressed because Docker cleanup could not be confirmed' : '');
           return result;
         }
         result.score = 'error';
         result.failKind = 'start';
-        result.notes = `Container start failed${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${run.err.slice(-300)}`;
+        result.notes =
+          `Container start failed${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${run.err.slice(-300)}` +
+          (result.bindRetrySuppressed ? ' | bind retry suppressed because Docker cleanup could not be confirmed' : '');
         return result;
       }
       // Resolve the host port. When reserveHostPort() succeeded above, `publishFlag` already asked
@@ -1909,7 +2151,11 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
   } finally {
     // Non-blocking, SIGKILL-bounded teardown (see forceTeardown) — a wedged daemon here used to
     // hang the app's promise forever, which wedged the node's pool and the whole fleet run.
-    await forceTeardown({ appId, containerName, composeProject, composeYml, scratchDirs });
+    const notes = String(result.notes ?? '');
+    const verifyCleanup =
+      (result.failKind === 'timeout' && isRetryableTimeout(notes)) || (result.failKind === 'compose' && isRetryableComposeFailure(notes));
+    const cleanupConfirmed = await forceTeardown({ appId, containerName, composeProject, composeYml, scratchDirs, verify: verifyCleanup });
+    if (verifyCleanup) result.cleanupConfirmed = cleanupConfirmed;
   }
 
   return result;
@@ -1918,39 +2164,23 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
 /**
  * Per-app entry point used by the worker pool. Runs attemptApp, and on a transient failure
  * (cold-pull `error` from a `pull` failKind, a readiness `timeout`, or a narrow compose dependency
- * healthcheck race) retries ONCE — attemptApp
- * tears down its own containers in `finally`, so the retry starts clean and hits the now-warm
+ * healthcheck race) retries ONCE, after verified cleanup for readiness/compose failures. A timeout
+ * while the Docker start command is running is not retried:
+ * the daemon may have created the container even after the local CLI timed out, so reusing its name
+ * can turn a timeout into a misleading name conflict. attemptApp tears down its own containers in
+ * `finally`, and the daemon must confirm the resources are gone before the retry hits the warm
  * image cache. Emits exactly one app_result (the pool/server count `done` off it), so a retry
  * never double-counts. Real app crashes (`fail`), missing/404 images (`skip`), and structural
  * harness errors (port-map, dir-vs-file mount) are NOT retried.
  */
-function isRetryableTransient(result: Record<string, unknown>): boolean {
-  return (
-    result.failKind === 'pull' ||
-    result.failKind === 'timeout' ||
-    (result.failKind === 'compose' && isRetryableComposeFailure(String(result.notes ?? '')))
-  );
-}
-
 /** attemptApp + the single transient-failure retry, split out so qaApp can race it against the watchdog. */
 async function attemptWithRetry(appId: string): Promise<Record<string, unknown>> {
-  let result = await attemptApp(appId);
-  if (isRetryableTransient(result)) {
-    const firstScore = String(result.score);
-    const firstNotes = String(result.notes ?? '');
-    const firstFailKind = String(result.failKind ?? '');
-    if (firstFailKind === 'compose') phase(appId, 'starting', 'Transient compose dependency failure; retrying once after clean teardown');
-    const retry = await attemptApp(appId);
-    retry.retried = true;
-    retry.attempts = 2;
-    retry.firstAttemptScore = firstScore;
-    retry.firstAttemptFailKind = firstFailKind;
-    retry.firstAttemptNotes = firstNotes;
-    result = retry;
-  } else {
-    result.attempts = 1;
-  }
-  return result;
+  return attemptOnceWithRetry(
+    () => attemptApp(appId),
+    (first) => {
+      if (first.failKind === 'compose') phase(appId, 'starting', 'Transient compose dependency failure; retrying once after clean teardown');
+    },
+  );
 }
 
 /**
@@ -2375,16 +2605,6 @@ function hexOfLength(chars: number): string {
 }
 
 /**
- * Single-quote a string for the HOST shell. JSON.stringify is the wrong tool here: it emits DOUBLE
- * quotes, so the host shell expands `$4`/`$2` inside an awk script to empty before the command ever
- * reaches the container — which silently broke the /proc listener probe and made every genuinely
- * non-HTTP app (mysql, mongodb, geth) look dead.
- */
-function shq(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
-
-/**
  * Is anything actually LISTENING on `port` inside the container? Guards the raw-TCP readiness
  * branch, which docker-proxy would otherwise satisfy for a container serving nothing at all.
  * Tries ss, then netstat, then /proc/net/tcp{,6} — many images ship none of the first two, so the
@@ -2731,15 +2951,6 @@ function restartPolicyOf(s: DockerService | undefined): string {
 /** How many times a start that lost the race for its reserved host port is retried with a fresh reservation. */
 const BIND_RETRIES = 2;
 
-/**
- * True when `docker run` / `compose up` failed because the host port it was asked to publish was taken in the meantime. Those are
- * the daemon's own wordings: "failed to bind host port ...: address already in use" (current engines) and "Bind for ...: port is
- * already allocated" (older ones). Nothing else counts, so any other start failure is scored on the first try.
- */
-function isPortBindRace(err: string): boolean {
-  return /address already in use|failed to bind host port|port is already allocated/i.test(err);
-}
-
 /** Reserve a host port via Docker so ${APP_BASE_URL} can include the mapped port before compose up. */
 async function reserveHostPort(): Promise<number> {
   const name = `qa-port-reserve-${randomBytes(4).toString('hex')}`;
@@ -2768,7 +2979,17 @@ async function composeUp(
   scratchBase: string,
   ymlPath: string,
   config: Record<string, unknown>,
-): Promise<{ ok: boolean; hostPort: number; statsName: string; project: string; err: string; out: string }> {
+): Promise<{
+  ok: boolean;
+  hostPort: number;
+  statsName: string;
+  project: string;
+  err: string;
+  out: string;
+  startTimedOut: boolean;
+  retryableBindRace: boolean;
+  interrupted: boolean;
+}> {
   const project = qaProjectName(appId);
   const specs = loadFieldSpecs(config);
   // Start from a clean scratch tree (scoped to THIS app's scratchBase). Postgres only applies
@@ -2990,11 +3211,21 @@ async function composeUp(
   // stays the real backstop for a genuinely-stuck stack (force-fails to `timeout`, not `error`).
   const up = await execAsync(`docker compose -p ${project} -f ${ymlPath} up -d --quiet-pull`, 1_200_000);
   if (!up.ok) {
+    const startFailure = classifyComposeStartFailure(up.err, up.out, up.timedOut, up.interrupted);
     const snapshot = await composeFailureSnapshot(project, ymlPath);
     // Compose writes progress and some daemon diagnostics to stdout while the shell error is on
     // stderr. Preserve both channels: the caller classifies the combined text and bounds it for
     // the result row. Dropping stdout hid useful health/registry lines behind a `ps` tail.
-    return { ok: false, hostPort: 0, statsName: '', project, err: `${up.err.slice(-600)}\n${snapshot}`, out: up.out };
+    return {
+      ok: false,
+      hostPort: 0,
+      statsName: '',
+      project,
+      err: `${up.err.slice(-600)}\n${snapshot}`,
+      out: up.out,
+      interrupted: up.interrupted,
+      ...startFailure,
+    };
   }
   // docker compose port may fail if service exited before port was bound — retry briefly
   let portMap = await execAsync(`docker compose -p ${project} -f ${ymlPath} port ${main?.name} ${mainPort}`);
@@ -3003,13 +3234,19 @@ async function composeUp(
     portMap = await execAsync(`docker compose -p ${project} -f ${ymlPath} port ${main?.name} ${mainPort}`);
   }
   const hostPort = reservedHostPort > 0 ? reservedHostPort : portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
+  const startFailure =
+    hostPort > 0
+      ? { startTimedOut: false, retryableBindRace: false }
+      : classifyComposeStartFailure(portMap.err, portMap.out, portMap.timedOut, portMap.interrupted);
   return {
     ok: hostPort > 0,
     hostPort,
     statsName: `${project}-${main?.name}-1`,
     project,
-    err: hostPort > 0 ? '' : 'no host port mapping',
+    err: hostPort > 0 ? '' : portMap.err || 'no host port mapping',
     out: up.out,
+    interrupted: portMap.interrupted,
+    ...startFailure,
   };
 }
 

@@ -11,6 +11,10 @@
 
 - [ ] **drive-llamacpp-lmstudio** — run a real `llama-server` and a real LM Studio against the conformance harness; replace the `unmeasured` SPEC_DECODE rows and the "not measured" conformance skips with findings, and move either engine out of `chatOnly()` if it proves `/v1/completions` or `/v1/embeddings`
 
+## In Progress
+
+- [ ] **qa-start-timeout-cleanup** — avoid retrying a Docker start timeout when the daemon may still own the run-scoped container name; cover the retry policy with tests and document the rule.
+
 ---
 
 ## Done (recent)
