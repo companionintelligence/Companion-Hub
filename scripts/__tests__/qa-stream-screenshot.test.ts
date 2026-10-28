@@ -24,9 +24,14 @@ const { screenshotDiagnostic, screenshotFailureKind } = new Function(`${js}\nret
 const captureBlock = /\/\/ <playwright-screenshot-capture>([\s\S]*?)\/\/ <\/playwright-screenshot-capture>/.exec(source);
 if (!captureBlock) throw new Error('the <playwright-screenshot-capture> block is missing from scripts/qa-stream.ts');
 const captureJs = ts.transpileModule(captureBlock[1], { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
-const makeCapture = new Function('CHROME_SHOT_FLAGS', 'isBlankScreenshot', `${captureJs}\nreturn captureScreenshotWithPlaywright;`);
-const captureScreenshotWithPlaywright = (blank = false) =>
-  makeCapture(['--headless=new', '--no-sandbox', '--disable-background-networking'], () => blank);
+const makeCapture = new Function(
+  'CHROME_SHOT_FLAGS',
+  'isBlankScreenshot',
+  `${captureJs}\nreturn { captureScreenshotWithPlaywright, withinCaptureDeadline };`,
+);
+const captureHelpers = (blank = false) => makeCapture(['--headless=new', '--no-sandbox', '--disable-background-networking'], () => blank);
+const captureScreenshotWithPlaywright = (blank = false) => captureHelpers(blank).captureScreenshotWithPlaywright;
+const withinCaptureDeadline = captureHelpers().withinCaptureDeadline;
 
 const input = (overrides: Partial<Parameters<typeof screenshotDiagnostic>[0]> = {}) => ({
   blank: false,
@@ -292,6 +297,22 @@ describe('qa-stream screenshot browser flags', () => {
       expect(state.browserCloseCalled).toBe(true);
       expect(state.serverCloseCalled).toBe(true);
       expect(state.killSignal).toBe('SIGKILL');
+    });
+
+    it('consumes a late operation rejection when its deadline has already expired', async () => {
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on('unhandledRejection', onUnhandled);
+      try {
+        const lateRejection = new Promise<void>((_, reject) => setTimeout(() => reject(new Error('late operation rejection')), 0));
+        await expect(withinCaptureDeadline(lateRejection, Date.now() - 1, 'expired operation')).rejects.toThrow(
+          'expired operation exceeded the screenshot deadline',
+        );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off('unhandledRejection', onUnhandled);
+      }
     });
   });
 });

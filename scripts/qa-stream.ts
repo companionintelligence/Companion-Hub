@@ -455,7 +455,12 @@ function screenshotFailureKind(input: {
 // <playwright-screenshot-capture>
 function withinCaptureDeadline<T>(operation: Promise<T>, deadline: number, label: string): Promise<T> {
   const remainingMs = deadline - Date.now();
-  if (remainingMs <= 0) return Promise.reject(new Error(`${label} exceeded the screenshot deadline`));
+  if (remainingMs <= 0) {
+    // The operation was evaluated before this helper received it. Consume a later rejection even
+    // though the caller only receives the deadline error, or Node may report an unhandled rejection.
+    void operation.catch(() => undefined);
+    return Promise.reject(new Error(`${label} exceeded the screenshot deadline`));
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([
     operation,
