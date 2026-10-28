@@ -19,16 +19,16 @@ overrides:
   '@protobufjs/utf8': 1.1.1
   'axios@<1.20.0': '^1.20.0'
   baseline-browser-mapping: 2.11.13
-  body-parser: 2.3.0
+  body-parser: 2.4.0
   'brace-expansion@<5.0.12': '^5.0.12'
   browserslist: 4.28.9
   'dompurify@<3.4.17': '^3.4.17'
   drizzle-orm: 0.45.2
   esbuild: 0.25.0
-  'fast-uri@<3.1.8': '^3.1.8'
+  'fast-uri@<3.1.9': '^3.1.9'
   fflate: 0.8.3
   file-type: 21.3.2
-  follow-redirects: 1.16.0
+  follow-redirects: 1.16.1
   form-data: 4.0.6
   'handlebars@<4.7.10': '^4.7.10'
   'hono@<4.13.11': '^4.13.11'
@@ -37,7 +37,8 @@ overrides:
   'ip-address@<10.7.1': '^10.7.1'
   'js-yaml@^3': 3.15.2
   'js-yaml@^4': 4.3.2
-  'multer@<2.4.0': '^2.4.0'
+  'launch-editor@<2.14.2': '^2.14.2'
+  'multer@<2.5.0': '^2.5.0'
   'nanoid@^3': 3.3.18
   'piscina@<4.9.4': '^4.9.4'
   postcss: 8.5.23
@@ -45,7 +46,7 @@ overrides:
   # frontend's built CSS is byte-identical on 7.x.
   'postcss-selector-parser@<7.1.6': '^7.1.6'
   protobufjs: 7.6.5
-  qs: 6.16.0
+  qs: 6.16.1
   react-router: 8.4.0
   'shell-quote@>=1.8.4 <1.11.0': '^1.11.0'
   'smol-toml@<1.9.0': '^1.9.0'
@@ -54,7 +55,8 @@ overrides:
   turbo: 2.9.14
   uuid: 11.1.1
   valibot: 1.4.2
-  vite: 8.3.1
+  vite: 8.3.3
+  'zod@<4.6.6': '^4.6.6'
   ws: 8.21.0
 
 allowBuilds:
