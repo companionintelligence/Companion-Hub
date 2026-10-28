@@ -46,7 +46,7 @@ Make the QA runner report local command deadlines reliably, avoid retrying Docke
 ## Tests run
 
 - [x] Focused retry and timeout tests: 21 passed, including a real shell with a background child holding inherited pipes and signal/output interruption cases.
-- [x] Full `scripts` Vitest suite: 130 files passed; 3,141 passed and 32 skipped. (Rerun after the final signal-interruption change is in progress.)
+- [x] Full `scripts` Vitest suite: 130 files passed; 3,145 passed and 32 skipped.
 - [x] Changed-file Biome check.
 - [x] `git diff --check`.
 - [ ] Full `bin/agent-validate-shift`: stopped at the workspace package-manager guard because pnpm refused to replace the shared `node_modules` symlink in a non-interactive worktree. The symlink was preserved.
@@ -55,7 +55,7 @@ Make the QA runner report local command deadlines reliably, avoid retrying Docke
 
 ## Open items / handoff
 
-- Open the follow-up PR against `dev`, then move this task to Done with the PR reference.
+- Follow-up PR [#2171](https://github.com/companionintelligence/Companion-Hub/pull/2171) is open against `dev`; CI status had not populated at the last check.
 - Keep active fleet checkouts on `dev`, per the user's direction.
 - The campaign that reported `tldraw`, `xyops`, and `bytebase` start/name conflicts used the old runner. Those results remain historical failures; retest those IDs with the revised runner after the current campaigns complete.
 - Other fleet campaigns still have many selected IDs idle, plus screenshot warnings and declared skips. This change alone does not establish Marketplace promotion readiness.
@@ -64,4 +64,4 @@ Make the QA runner report local command deadlines reliably, avoid retrying Docke
 
 | Phase | Persona | Model | Notes |
 |-------|---------|-------|-------|
-| Wrap | Retry and cleanup reliability | Tesla | Initial review identified deadline reporting, Compose `ETIMEDOUT` classification, and cleanup-query coverage gaps; all were addressed. Follow-up review requested for process-group timeout behavior. |
+| Wrap | Retry and cleanup reliability | Tesla | Review identified deadline reporting, output bounds, retry suppression for interrupted commands, and cleanup verification gaps; all were addressed. Final review found no remaining actionable issues. |
