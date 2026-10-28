@@ -2214,6 +2214,45 @@
         ]
       }
     },
+    "/api/.well-known/keri/oobi": {
+      "get": {
+        "operationId": "getHubOobi",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OOBI discovery document for peer pairing"
+          }
+        },
+        "summary": "KERI Out-Of-Band Introduction (OOBI) metadata for the Hub appliance",
+        "tags": [
+          "KERI / Trust Over IP"
+        ]
+      }
+    },
+    "/api/.well-known/keri/oobi/{aid}": {
+      "get": {
+        "operationId": "getOobiForAid",
+        "parameters": [
+          {
+            "name": "aid",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OOBI record"
+          }
+        },
+        "summary": "Resolve OOBI for a specific AID",
+        "tags": [
+          "KERI / Trust Over IP"
+        ]
+      }
+    },
     "/api/apps/installed": {
       "get": {
         "operationId": "getInstalledApps",
@@ -15214,6 +15253,10 @@
                     },
                     "platform": {
                       "type": "string"
+                    },
+                    "runtime": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_.-]+$"
                     }
                   },
                   "required": [
@@ -15797,6 +15840,10 @@
                           },
                           "platform": {
                             "type": "string"
+                          },
+                          "runtime": {
+                            "type": "string",
+                            "pattern": "^[a-zA-Z0-9_.-]+$"
                           }
                         },
                         "additionalProperties": false
@@ -16429,6 +16476,10 @@
                     },
                     "platform": {
                       "type": "string"
+                    },
+                    "runtime": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_.-]+$"
                     }
                   },
                   "required": [
@@ -17012,6 +17063,10 @@
                           },
                           "platform": {
                             "type": "string"
+                          },
+                          "runtime": {
+                            "type": "string",
+                            "pattern": "^[a-zA-Z0-9_.-]+$"
                           }
                         },
                         "additionalProperties": false

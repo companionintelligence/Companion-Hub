@@ -1834,6 +1834,7 @@ export type CreateCustomAppDto = {
             };
             dns?: string | Array<string>;
             platform?: string;
+            runtime?: string;
         }>;
         overrides?: Array<{
             architecture?: 'arm64' | 'amd64';
@@ -1951,6 +1952,7 @@ export type CreateCustomAppDto = {
                 };
                 dns?: string | Array<string>;
                 platform?: string;
+                runtime?: string;
             }>;
         }>;
     };
@@ -2080,6 +2082,7 @@ export type UpdateCustomAppDto = {
             };
             dns?: string | Array<string>;
             platform?: string;
+            runtime?: string;
         }>;
         overrides?: Array<{
             architecture?: 'arm64' | 'amd64';
@@ -2197,6 +2200,7 @@ export type UpdateCustomAppDto = {
                 };
                 dns?: string | Array<string>;
                 platform?: string;
+                runtime?: string;
             }>;
         }>;
     };
@@ -3770,6 +3774,36 @@ export type EdgeSsoData = {
 };
 
 export type EdgeSsoResponses = {
+    200: unknown;
+};
+
+export type GetHubOobiData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/.well-known/keri/oobi';
+};
+
+export type GetHubOobiResponses = {
+    /**
+     * OOBI discovery document for peer pairing
+     */
+    200: unknown;
+};
+
+export type GetOobiForAidData = {
+    body?: never;
+    path: {
+        aid: string;
+    };
+    query?: never;
+    url: '/api/.well-known/keri/oobi/{aid}';
+};
+
+export type GetOobiForAidResponses = {
+    /**
+     * OOBI record
+     */
     200: unknown;
 };
 
