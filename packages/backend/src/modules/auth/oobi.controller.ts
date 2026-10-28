@@ -1,8 +1,28 @@
-import { createOobiDiscoveryResponse } from '@ci-hub/common/keri';
+import { createOobiDiscoveryResponse } from '@ci-hub/common/keri/oobi';
 import { Controller, Get, Param, Req } from '@nestjs/common';
-import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiOperation, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { ForwardAuthIdentityResolver } from './forward-auth-identity.resolver';
+
+class OobiDiscoveryResponseDto {
+  @ApiProperty()
+  aid!: string;
+
+  @ApiProperty()
+  role!: string;
+
+  @ApiProperty({ type: [String] })
+  urls!: string[];
+
+  @ApiProperty()
+  currentKey!: string;
+
+  @ApiProperty()
+  kelDigest!: string;
+
+  @ApiProperty({ type: [String] })
+  witnesses!: string[];
+}
 
 @ApiTags('KERI / Trust Over IP')
 @Controller()
@@ -11,7 +31,7 @@ export class OobiController {
 
   @Get('.well-known/keri/oobi')
   @ApiOperation({ summary: 'KERI Out-Of-Band Introduction (OOBI) metadata for the Hub appliance' })
-  @ApiResponse({ status: 200, description: 'OOBI discovery document for peer pairing' })
+  @ApiResponse({ status: 200, description: 'OOBI discovery document for peer pairing', type: OobiDiscoveryResponseDto })
   async getHubOobi(@Req() req: Request) {
     const protocol = req.protocol || 'https';
     const host = req.get('host') || 'localhost';
@@ -32,7 +52,7 @@ export class OobiController {
 
   @Get('.well-known/keri/oobi/:aid')
   @ApiOperation({ summary: 'Resolve OOBI for a specific AID' })
-  @ApiResponse({ status: 200, description: 'OOBI record' })
+  @ApiResponse({ status: 200, description: 'OOBI record', type: OobiDiscoveryResponseDto })
   async getOobiForAid(@Param('aid') aid: string, @Req() req: Request) {
     const protocol = req.protocol || 'https';
     const host = req.get('host') || 'localhost';

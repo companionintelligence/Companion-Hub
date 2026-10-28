@@ -152,7 +152,7 @@
     // (2026-10-13); add a path when a test starts reading a new one.
     "backend#test": {
       "cache": true,
-      "dependsOn": ["^test"],
+      "dependsOn": ["^test", "^build"],
       "inputs": [
         "$TURBO_DEFAULT$",
         ".env*",
@@ -169,7 +169,7 @@
     },
     "frontend#test": {
       "cache": true,
-      "dependsOn": ["^test"],
+      "dependsOn": ["^test", "^build"],
       "inputs": [
         "$TURBO_DEFAULT$",
         ".env*",
@@ -188,7 +188,7 @@
     },
     "test:integration": {
       "cache": false,
-      "dependsOn": ["^test:integration"],
+      "dependsOn": ["^test:integration", "^build"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
       "outputs": ["coverage/"]
     }

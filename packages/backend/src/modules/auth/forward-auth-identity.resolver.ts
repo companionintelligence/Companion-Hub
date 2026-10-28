@@ -7,7 +7,7 @@ import { UserRepository } from '@/modules/user/user.repository';
 import { Inject, Injectable } from '@nestjs/common';
 import { eq } from 'drizzle-orm/sql';
 import { loadSessionUser } from './auth.middleware';
-import { computeCesrDigest } from '@ci-hub/common/keri';
+import { computeCesrDigest } from '@ci-hub/common/keri/cesr';
 import { type ForwardAuthStableId, HUB_ISSUER_PREFIX } from './utils/forward-auth-signing';
 
 /** How long a Portal subject's Hub person is remembered on the Bearer path. */
