@@ -182,9 +182,6 @@ importers:
       cookie-parser:
         specifier: ^1.4.7
         version: 1.4.7
-      deepmerge:
-        specifier: ^4.3.1
-        version: 4.3.1
       dockerode:
         specifier: ^5.0.1
         version: 5.0.1
@@ -4205,10 +4202,6 @@ packages:
     peerDependenciesMeta:
       babel-plugin-macros:
         optional: true
-
-  deepmerge@4.3.1:
-    resolution: {integrity: sha512-3sUqbMEc77XqpdNO7FRyRog+eW3ph+GYCbj+rK+uYyRMuwsVy0rMiVtPn+QJlKFvWP/1PYpapqYn0Me2knFn+A==}
-    engines: {node: '>=0.10.0'}
 
   default-browser-id@5.0.1:
     resolution: {integrity: sha512-x1VCxdX4t+8wVfd1so/9w+vQ4vx7lKd2Qp5tDRutErwmR85OgmfX7RlLRMWafRMY7hbEiXIbudNrjOAPa/hL8Q==}
@@ -10392,8 +10385,6 @@ snapshots:
   dedent@1.7.2(babel-plugin-macros@3.1.0):
     optionalDependencies:
       babel-plugin-macros: 3.1.0
-
-  deepmerge@4.3.1: {}
 
   default-browser-id@5.0.1: {}
 
