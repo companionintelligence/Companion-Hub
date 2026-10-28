@@ -54,3 +54,9 @@ When that marker contains a fleet run token, the runner also namespaces its Dock
 and Compose project names with the token. This keeps an orphaned resource from an earlier run from
 blocking a later run for the same app. Direct `qa-stream.ts` CLI use without `QA_RUN_PID_FILE`
 keeps the legacy names for compatibility.
+
+Fleet screenshots use the Playwright Chromium API and stop navigation at `DOMContentLoaded`, so
+long-lived app requests do not block capture. They wait a bounded interval for SPA content to render,
+and enforce capture and browser-cleanup deadlines. The fleet command passes `QA_HUB_ROOT` for
+resolving the installed `@playwright/test`; nodes without that module use the existing Chromium CLI
+fallback.

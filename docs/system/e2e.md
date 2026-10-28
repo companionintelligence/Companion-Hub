@@ -59,6 +59,15 @@ Baselines: `e2e/results/benchmarks/baseline.json`
 
 Fleet QA orchestration (private ops) lives in companionintelligence/CI-Engineering `tools/fleet-qa/` (issue #211) — inventories and multi-node runners are not in this tree.
 
+The copied `scripts/qa-stream.ts` captures app pages with the Hub checkout's `@playwright/test`
+Chromium API. It stops navigation at `DOMContentLoaded`, then gives client-rendered apps a bounded
+wait for visible text or a visual surface before taking a viewport screenshot. It does not wait for
+`load` or `networkidle`, because apps with WebSockets and event streams can keep those conditions
+open. Each attempt has a deadline; shutdown has its own short bound and kills the launched Chromium
+process if graceful cleanup hangs. `QA_HUB_ROOT` points at the checkout that supplies Playwright;
+older nodes without the package retain the Chromium CLI fallback. These captures verify app rendering
+during real container boot, while visual regression remains a separate baseline-based lane.
+
 ## Agent notes
 
 - App Explorer (`e2e/app-explorer.spec.ts`) is for marketplace QA — see FLYWHEEL.md
