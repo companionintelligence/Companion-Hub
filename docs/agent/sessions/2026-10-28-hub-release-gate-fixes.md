@@ -20,6 +20,7 @@ Make the current Hub `dev` branch pass its local release gates, correct the CI a
 3. Kept the settled custom-domain transfer assertion and added separate coverage for duplicate stored bindings.
 4. Added an OOBI response DTO and regenerated Swagger plus the frontend API client.
 5. Ran the end-of-shift validation and requested independent security and code-quality reviews.
+6. The first remote integration run exposed two stale identity expectations; updated the database-backed integration tests to assert the same CESR-derived fields as the unit tests.
 
 ## Decisions
 
@@ -43,7 +44,7 @@ Make the current Hub `dev` branch pass its local release gates, correct the CI a
 - [x] `pnpm tsx scripts/verify-keri-toip.ts` — all seven checks passed.
 - [x] `pnpm run knip:ci` — completed without errors; reported seven configuration hints.
 - [ ] App run — not available because the local Colima Docker socket is absent.
-- [ ] Container-backed integration tests — run through GitHub Actions after push.
+- [ ] Container-backed integration tests — the first GitHub Actions run found two stale integration expectations; they are fixed in a follow-up commit and need a rerun.
 
 ## Open items / handoff
 
