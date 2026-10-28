@@ -25,6 +25,7 @@
  * Env vars:
  *   APP_STORE_DIR   path to CI-Marketplace/apps  (default: ~/devel/CI-Marketplace/apps
  *                   with fallback to ~/devel/CI-App-Store/apps)
+ *   QA_HUB_ROOT     Hub checkout used to resolve @playwright/test (default: ~/devel/CI-Hub)
  *   RESULTS_DIR     local results output dir      (default: ~/qa-results)
  *   QA_MIN_FREE_MB  minimum free space to keep before accepting another app (default: 4096)
  *   QA_MIN_FREE_PERCENT  minimum free percentage to keep before accepting another app (default: 5)
@@ -73,11 +74,13 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
+import { createRequire } from 'node:module';
 import { connect } from 'node:net';
 import { EOL, homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const home = homedir();
+const QA_HUB_ROOT = process.env.QA_HUB_ROOT?.trim() || join(home, 'devel/CI-Hub');
 const APP_STORE_DIR =
   process.env.APP_STORE_DIR ??
   (existsSync(join(home, 'devel/CI-Marketplace/apps')) ? join(home, 'devel/CI-Marketplace/apps') : join(home, 'devel/CI-App-Store/apps'));
@@ -108,6 +111,58 @@ function qaProjectName(appId: string): string {
 // Node's filesystem APIs do not perform shell expansion, so normalize that spelling before the
 // marker is written or removed; otherwise Stop would signal a path the runner never created.
 const RUN_PID_PATH = QA_RUN_PID_FILE.startsWith('~/') ? join(home, QA_RUN_PID_FILE.slice(2)) : QA_RUN_PID_FILE;
+
+interface PlaywrightPage {
+  goto(url: string, options: { waitUntil: 'domcontentloaded'; timeout: number }): Promise<unknown>;
+  url(): string;
+  waitForFunction(fn: () => boolean, arg?: undefined, options?: { timeout: number; polling: number }): Promise<PlaywrightJSHandle>;
+  screenshot(options: { path: string; fullPage: boolean; timeout: number; animations: 'disabled'; caret: 'hide' }): Promise<Uint8Array>;
+}
+interface PlaywrightJSHandle {
+  dispose(): Promise<void>;
+}
+interface PlaywrightContext {
+  newPage(): Promise<PlaywrightPage>;
+}
+interface PlaywrightBrowser {
+  newContext(options: { ignoreHTTPSErrors: boolean; viewport: { width: number; height: number } }): Promise<PlaywrightContext>;
+  close(): Promise<void>;
+}
+interface PlaywrightBrowserProcess {
+  exitCode: number | null;
+  kill(signal?: 'SIGKILL'): boolean;
+}
+interface PlaywrightBrowserServer {
+  wsEndpoint(): string;
+  process(): PlaywrightBrowserProcess;
+  close(): Promise<void>;
+}
+interface PlaywrightChromium {
+  launchServer(options: { executablePath: string; headless: boolean; args: string[]; timeout: number }): Promise<PlaywrightBrowserServer>;
+  connect(wsEndpoint: string, options: { timeout: number }): Promise<PlaywrightBrowser>;
+}
+
+let _playwrightChromium: PlaywrightChromium | null | undefined;
+/** Resolve the Hub's installed Playwright from the same checkout that provides the remote tsx binary. */
+function resolvePlaywrightChromium(): PlaywrightChromium | null {
+  if (_playwrightChromium !== undefined) return _playwrightChromium;
+  _playwrightChromium = null;
+  const roots = [...new Set([QA_HUB_ROOT, join(home, 'devel/CI-Hub'), process.cwd()])];
+  for (const root of roots) {
+    const packageJson = resolve(root, 'package.json');
+    if (!existsSync(packageJson)) continue;
+    try {
+      const module = createRequire(packageJson)('@playwright/test') as { chromium?: PlaywrightChromium };
+      if (module.chromium && typeof module.chromium.launchServer === 'function' && typeof module.chromium.connect === 'function') {
+        _playwrightChromium = module.chromium;
+        break;
+      }
+    } catch {
+      // Some nodes have the Chromium CLI but not the Playwright package; keep the CLI fallback below.
+    }
+  }
+  return _playwrightChromium;
+}
 
 // A fleet Stop closes the work feed and then signals this process through its own marker file.
 // Do not call process.exit() from the signal handler: active qaApp() calls still own Docker
@@ -333,30 +388,35 @@ const CHROME_SHOT_FLAGS = [
  * process; null when it cannot be taken, and the caller falls back to BLANK_SCREENSHOT_FALLBACK_BYTES.
  */
 let _blankReference: number | null | undefined;
-function blankReferenceBytes(chromeBin: string): number | null {
+function blankReferenceBytes(chromeBin: string, timeoutMs = 30_000): number | null {
   if (_blankReference !== undefined) return _blankReference;
-  _blankReference = null;
   const refPath = join(SCREENSHOTS_DIR, '.blank-reference.png');
+  let blankBytes: number | null = null;
+  let timedOut = false;
   try {
     rmSync(refPath, { force: true });
     const r = spawnSync(chromeBin, [...CHROME_SHOT_FLAGS, `--screenshot=${refPath}`, 'about:blank'], {
-      timeout: 30_000,
+      timeout: Math.max(1, timeoutMs),
       killSignal: 'SIGKILL',
       stdio: 'pipe',
     });
-    if (r.status === 0 && existsSync(refPath)) _blankReference = statSync(refPath).size;
+    if (r.error?.code === 'ETIMEDOUT') timedOut = true;
+    else if (r.status === 0 && existsSync(refPath)) blankBytes = statSync(refPath).size;
   } catch {
     /* no reference: the fallback constant applies */
   } finally {
     rmSync(refPath, { force: true });
   }
-  return _blankReference;
+  // Do not cache a short capture deadline as a permanent browser failure; a later app may have
+  // enough budget to measure the actual blank-page size before falling back to the calibrated limit.
+  if (!timedOut) _blankReference = blankBytes;
+  return timedOut ? null : _blankReference;
 }
 
 /** True only for a file that is as small as an empty white page. A missing file is not blank: the capture produced nothing. */
-function isBlankScreenshot(path: string, chromeBin: string): boolean {
+function isBlankScreenshot(path: string, chromeBin: string, timeoutMs = 30_000): boolean {
   try {
-    return statSync(path).size <= (blankReferenceBytes(chromeBin) ?? BLANK_SCREENSHOT_FALLBACK_BYTES) + BLANK_SCREENSHOT_SLACK_BYTES;
+    return statSync(path).size <= (blankReferenceBytes(chromeBin, timeoutMs) ?? BLANK_SCREENSHOT_FALLBACK_BYTES) + BLANK_SCREENSHOT_SLACK_BYTES;
   } catch {
     return false;
   }
@@ -392,16 +452,190 @@ function screenshotFailureKind(input: {
 }
 // </screenshot-diagnostics>
 
-function captureScreenshot(
+// <playwright-screenshot-capture>
+function withinCaptureDeadline<T>(operation: Promise<T>, deadline: number, label: string): Promise<T> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    // The operation was evaluated before this helper received it. Consume a later rejection even
+    // though the caller only receives the deadline error, or Node may report an unhandled rejection.
+    void operation.catch(() => undefined);
+    return Promise.reject(new Error(`${label} exceeded the screenshot deadline`));
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    operation,
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} exceeded the screenshot deadline`)), remainingMs);
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+async function closePlaywrightServer(browser: PlaywrightBrowser | null, server: PlaywrightBrowserServer | null, timeoutMs: number): Promise<void> {
+  const closes: Promise<void>[] = [];
+  if (browser) closes.push(browser.close());
+  if (server) closes.push(server.close());
+  if (!closes.length) return;
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const closeResults = await Promise.race([
+    Promise.allSettled(closes).then((results) => results.every((result) => result.status === 'fulfilled')),
+    new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), Math.max(1, timeoutMs));
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+  if (closeResults) return;
+
+  // BrowserServer exposes the launched child process. If Playwright's graceful close wedges,
+  // terminate Chromium itself so an app worker cannot keep a fleet run open indefinitely.
+  try {
+    const child = server?.process();
+    if (child && child.exitCode === null) child.kill('SIGKILL');
+  } catch {
+    // The process can exit between the timeout and the kill; cleanup is best-effort after that.
+  }
+}
+
+async function captureScreenshotWithPlaywright(
+  chromium: PlaywrightChromium,
+  chromeBin: string,
+  screenshotPath: string,
+  url: string,
+  opts: {
+    captureTimeoutMs: number;
+    cleanupTimeoutMs: number;
+    domContentLoadedTimeoutMs: number;
+    contentWaitTimeoutMs: number;
+    screenshotTimeoutMs: number;
+  },
+  insecureTls: boolean,
+): Promise<{ ok: boolean; diag: string; fallback: boolean }> {
+  const deadline = Date.now() + opts.captureTimeoutMs;
+  const remainingMs = () => Math.max(0, deadline - Date.now());
+  let server: PlaywrightBrowserServer | null = null;
+  let browser: PlaywrightBrowser | null = null;
+  try {
+    server = await withinCaptureDeadline(
+      chromium.launchServer({
+        executablePath: chromeBin,
+        headless: true,
+        // Playwright supplies its own headless switch. Keep the rest of the fleet's browser flags.
+        args: CHROME_SHOT_FLAGS.filter((flag) => flag !== '--headless=new'),
+        timeout: Math.max(1, remainingMs()),
+      }),
+      deadline,
+      'Chromium launch',
+    );
+    browser = await withinCaptureDeadline(
+      chromium.connect(server.wsEndpoint(), { timeout: Math.max(1, remainingMs()) }),
+      deadline,
+      'Chromium connection',
+    );
+    const context = await withinCaptureDeadline(
+      browser.newContext({
+        ignoreHTTPSErrors: insecureTls,
+        viewport: { width: 1280, height: 800 },
+      }),
+      deadline,
+      'browser context creation',
+    );
+    const page = await withinCaptureDeadline(context.newPage(), deadline, 'page creation');
+    let navigationFailed = false;
+    try {
+      // `load` waits for every request, including websocket and event-stream apps. DOMContentLoaded
+      // is enough to capture their first usable frame and does not wait for those connections.
+      await withinCaptureDeadline(
+        page.goto(url, { waitUntil: 'domcontentloaded', timeout: Math.min(opts.domContentLoadedTimeoutMs, Math.max(1, remainingMs())) }),
+        deadline,
+        'DOM content load',
+      );
+    } catch {
+      // A response may have committed and painted useful content even if a slow script delayed the
+      // event. Keep the partial page and capture it instead of turning a navigation timeout into a
+      // blank-page false negative.
+      navigationFailed = true;
+    }
+    if (page.url() === 'about:blank') {
+      return { ok: false, diag: 'Playwright navigation did not reach the app document', fallback: true };
+    }
+
+    // Many SPA shells fire DOMContentLoaded before their first API response renders the UI. Wait
+    // briefly for actual text or a visible visual/application surface before deciding that the
+    // screenshot is blank. This wait does not depend on `load`, WebSockets, or event streams.
+    let visibleContent = false;
+    const contentWaitMs = Math.min(opts.contentWaitTimeoutMs, remainingMs());
+    if (contentWaitMs > 0) {
+      try {
+        const content = await withinCaptureDeadline(
+          page.waitForFunction(
+            () => {
+              const body = document.body;
+              if (!body) return false;
+              if (body.innerText.trim()) return true;
+              return Array.from(body.querySelectorAll('canvas, img, svg, video, iframe, [role="img"], [role="application"]')).some((element) => {
+                const rect = element.getBoundingClientRect();
+                const style = window.getComputedStyle(element);
+                return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) > 0;
+              });
+            },
+            undefined,
+            { timeout: contentWaitMs, polling: 100 },
+          ),
+          deadline,
+          'rendered-content wait',
+        );
+        visibleContent = true;
+        await withinCaptureDeadline(content.dispose(), deadline, 'rendered-content handle cleanup');
+      } catch {
+        // No visible content before the bounded wait expired; capture the partial document and
+        // use the calibrated blank-page check below.
+      }
+    }
+
+    const screenshotTimeoutMs = Math.min(opts.screenshotTimeoutMs, remainingMs());
+    if (screenshotTimeoutMs <= 0) throw new Error('screenshot deadline expired before capture');
+    await withinCaptureDeadline(
+      page.screenshot({
+        path: screenshotPath,
+        fullPage: false,
+        timeout: screenshotTimeoutMs,
+        animations: 'disabled',
+        caret: 'hide',
+      }),
+      deadline,
+      'screenshot capture',
+    );
+    // DOM content avoids treating small valid pages as blank; the calibrated image-size check still
+    // catches an empty SPA root that has not painted anything.
+    const blank = !visibleContent && isBlankScreenshot(screenshotPath, chromeBin, Math.max(1, remainingMs()));
+    if (blank) {
+      return {
+        ok: false,
+        diag: navigationFailed ? 'screenshot blank after DOMContentLoaded wait expired' : 'screenshot blank after rendered-content wait',
+        fallback: false,
+      };
+    }
+    return { ok: true, diag: '', fallback: false };
+  } catch {
+    // Old or partially provisioned nodes may have Chromium but no usable Playwright module/browser.
+    // Preserve the CLI path as a fallback for those nodes.
+    return { ok: false, diag: 'Playwright capture failed; trying Chromium CLI', fallback: true };
+  } finally {
+    await closePlaywrightServer(browser, server, opts.cleanupTimeoutMs);
+  }
+}
+// </playwright-screenshot-capture>
+
+function captureScreenshotWithCli(
   chromeBin: string,
   screenshotPath: string,
   url: string,
   opts: { virtualTimeBudgetMs: number; timeoutMs: number; spawnTimeoutMs: number },
   insecureTls = false, // an httpsBackend app serves a self-signed certificate
 ): { ok: boolean; diag: string } {
-  // Whatever is at this path is from an EARLIER run (the directory is reused). If this capture is killed before it writes, an old file
-  // would be judged as if it were this attempt's: jellyfin's "blank" in 2026-10 was a 4,714-byte PNG from June.
-  rmSync(screenshotPath, { force: true });
   const startedAt = Date.now();
   const ss = spawnSync(
     chromeBin,
@@ -430,6 +664,47 @@ function captureScreenshot(
     elapsedMs,
   });
   return { ok: false, diag };
+}
+
+async function captureScreenshot(
+  chromeBin: string,
+  screenshotPath: string,
+  url: string,
+  opts: {
+    virtualTimeBudgetMs: number;
+    timeoutMs: number;
+    spawnTimeoutMs: number;
+    captureTimeoutMs: number;
+    cleanupTimeoutMs: number;
+    domContentLoadedTimeoutMs: number;
+    contentWaitTimeoutMs: number;
+    screenshotTimeoutMs: number;
+  },
+  insecureTls = false, // an httpsBackend app serves a self-signed certificate
+): Promise<{ ok: boolean; diag: string }> {
+  // Whatever is at this path is from an EARLIER run (the directory is reused). If this capture is killed before it writes, an old file
+  // would be judged as if it were this attempt's: jellyfin's "blank" in 2026-10 was a 4,714-byte PNG from June.
+  rmSync(screenshotPath, { force: true });
+  const chromium = resolvePlaywrightChromium();
+  if (chromium) {
+    const shot = await captureScreenshotWithPlaywright(
+      chromium,
+      chromeBin,
+      screenshotPath,
+      url,
+      {
+        captureTimeoutMs: opts.captureTimeoutMs,
+        cleanupTimeoutMs: opts.cleanupTimeoutMs,
+        domContentLoadedTimeoutMs: opts.domContentLoadedTimeoutMs,
+        contentWaitTimeoutMs: opts.contentWaitTimeoutMs,
+        screenshotTimeoutMs: opts.screenshotTimeoutMs,
+      },
+      insecureTls,
+    );
+    if (shot.ok || !shot.fallback) return { ok: shot.ok, diag: shot.diag };
+    rmSync(screenshotPath, { force: true });
+  }
+  return captureScreenshotWithCli(chromeBin, screenshotPath, url, opts, insecureTls);
 }
 
 function computeChromiumBinary(): string | null {
@@ -1512,19 +1787,45 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         // Let a just-became-ready app settle before shooting: heavy SPAs serve their first request
         // mid-bootstrap, and a request that hangs >45s gets the chromium SIGKILLed → no PNG → false warn.
         await new Promise((r) => setTimeout(r, 4000));
-        // Two-tier capture: Playwright's bundled headless Chromium on Linux fleet nodes often hits
-        // "Page load timed out" at the old 12s/20s budget and writes a 4714-byte white PNG that
-        // looked like a pass (hasScreenshot=true). A longer second attempt fixes gitea/arkanum and
-        // similar SSR/redirect apps without raising the default ceiling for websocket-hanging SPAs.
+        // Playwright waits for DOMContentLoaded, not the `load` event, so open websocket/event-stream
+        // connections do not hold capture until the timeout. A second, longer DOM wait gives slow
+        // client-rendered apps another chance before the calibrated blank-page check warns.
         const shotUrl = `${httpsBackend ? 'https' : 'http'}://localhost:${hostPort}${uiPath}`;
-        const shotAttempts: Array<{ virtualTimeBudgetMs: number; timeoutMs: number; spawnTimeoutMs: number }> = [
-          { virtualTimeBudgetMs: 30_000, timeoutMs: 45_000, spawnTimeoutMs: 55_000 },
-          { virtualTimeBudgetMs: 60_000, timeoutMs: 60_000, spawnTimeoutMs: 70_000 },
+        const shotAttempts: Array<{
+          virtualTimeBudgetMs: number;
+          timeoutMs: number;
+          spawnTimeoutMs: number;
+          captureTimeoutMs: number;
+          cleanupTimeoutMs: number;
+          domContentLoadedTimeoutMs: number;
+          contentWaitTimeoutMs: number;
+          screenshotTimeoutMs: number;
+        }> = [
+          {
+            virtualTimeBudgetMs: 30_000,
+            timeoutMs: 45_000,
+            spawnTimeoutMs: 55_000,
+            captureTimeoutMs: 35_000,
+            cleanupTimeoutMs: 2_000,
+            domContentLoadedTimeoutMs: 15_000,
+            contentWaitTimeoutMs: 10_000,
+            screenshotTimeoutMs: 15_000,
+          },
+          {
+            virtualTimeBudgetMs: 60_000,
+            timeoutMs: 60_000,
+            spawnTimeoutMs: 70_000,
+            captureTimeoutMs: 60_000,
+            cleanupTimeoutMs: 2_000,
+            domContentLoadedTimeoutMs: 30_000,
+            contentWaitTimeoutMs: 20_000,
+            screenshotTimeoutMs: 15_000,
+          },
         ];
         let ssDiag = '';
         for (const attempt of shotAttempts) {
           if (result.hasScreenshot) break;
-          const shot = captureScreenshot(chromeBin, screenshotPath, shotUrl, attempt, httpsBackend);
+          const shot = await captureScreenshot(chromeBin, screenshotPath, shotUrl, attempt, httpsBackend);
           result.hasScreenshot = shot.ok;
           if (!shot.ok) ssDiag = shot.diag;
         }
