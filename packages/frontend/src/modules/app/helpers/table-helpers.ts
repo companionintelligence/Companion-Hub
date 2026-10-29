@@ -13,6 +13,7 @@ import {
   Plug,
   Radio,
   ShieldCheck,
+  Sparkles,
   Star,
   Users,
   Waypoints,
@@ -37,6 +38,7 @@ export const colorSchemeForCategory: Record<string, string> = {
   ai: 'muted',
   agents: 'violet',
   mcp: 'violet',
+  'companion-intelligence': 'teal',
 };
 
 type AppCategoryEntry = {
@@ -46,6 +48,7 @@ type AppCategoryEntry = {
 
 export const iconForCategory: AppCategoryEntry[] = [
   { id: 'featured', icon: Star },
+  { id: 'companion-intelligence', icon: Sparkles },
   // Waypoints, not a Bot variant: Automation already owns Bot and AI owns Brain,
   // and the bot-family glyphs are indistinguishable at the 16px sidebar size.
   { id: 'agents', icon: Waypoints },

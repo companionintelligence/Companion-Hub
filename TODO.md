@@ -13,4 +13,5 @@
 
 ## Done (recent)
 
+- [x] **store-experience-alignment** — Align Hub and Portal catalog, featured shelves, app detail data, changelog, and organization library (2026-10-29)
 - [x] **agentic-workflow-toolchain** — Bootstrap agent router, workflow docs, skills, bin scripts, visual/benchmark gates (2026-07-12)

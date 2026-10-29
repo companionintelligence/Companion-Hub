@@ -21,6 +21,50 @@ import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-ban
 import { McpAccessCard } from '../components/mcp-access-card/mcp-access-card';
 import { MemoryStatusBadge } from '../components/memory-status-badge/memory-status-badge';
 import { useAppUrlAvailability } from '../helpers/use-app-url-availability';
+import type { HubStoreAppDetails, HubStoreReview } from '@/lib/portal-store';
+import { apiFetch } from '@/lib/api-fetch';
+
+function formatReviewDate(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
+}
+
+function StoreReviews({ reviews, isLoading, isError }: { reviews: HubStoreReview[]; isLoading: boolean; isError: boolean }) {
+  return (
+    <section className="space-y-4 rounded-lg border border-border/60 bg-card/50 p-4 sm:p-6" data-testid="store-reviews">
+      <div>
+        <h2 className="text-xl font-semibold">Ratings & reviews</h2>
+        <p className="text-sm text-muted-foreground">Feedback from CI-Portal app users.</p>
+      </div>
+      {isLoading ? (
+        <div className="space-y-3" aria-busy="true">
+          <div className="h-16 animate-pulse rounded-md bg-muted/40" />
+          <div className="h-16 animate-pulse rounded-md bg-muted/40" />
+        </div>
+      ) : isError ? (
+        <p className="text-sm text-muted-foreground">Reviews aren't available right now.</p>
+      ) : reviews.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No reviews yet.</p>
+      ) : (
+        <div className="space-y-3">
+          {reviews.map((review) => (
+            <article key={review.id} className="rounded-md border border-border/50 bg-background/40 p-3 sm:p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-medium">{review.user?.name ?? 'CI-Portal user'}</p>
+                <div className="flex items-center gap-1 text-sm text-amber-400">
+                  <Star className="h-4 w-4 fill-current" />
+                  <span>{review.rating}/5</span>
+                  <span className="text-xs text-muted-foreground">{formatReviewDate(review.createdAt)}</span>
+                </div>
+              </div>
+              {review.comment ? <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">{review.comment}</p> : null}
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
 
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   const { storeId } = params;
@@ -33,13 +77,34 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
 }
 
 export default () => {
-  const { appId, storeId } = useParams<{ appId: string; storeId: string }>();
+  const { appId = '', storeId = '' } = useParams<{ appId: string; storeId: string }>();
   const appUrn = `${appId}:${storeId}`;
   const { t } = useTranslation();
 
   const getApp = useQuery({
     ...getAppOptions({ path: { urn: appUrn } }),
     staleTime: 30_000,
+  });
+  const portalStoreApp = useQuery({
+    queryKey: ['portal-store-app', appId],
+    queryFn: async () => {
+      const response = await apiFetch(`/api/store/app-details/${encodeURIComponent(appId)}`);
+      if (!response.ok) throw new Error(`CI-Portal returned HTTP ${response.status} for app details.`);
+      return (await response.json()) as HubStoreAppDetails | null;
+    },
+    enabled: storeId === 'ci-marketplace',
+    staleTime: 5 * 60_000,
+  });
+  const portalStoreReviews = useQuery({
+    queryKey: ['portal-store-app-reviews', appId],
+    queryFn: async () => {
+      const response = await apiFetch(`/api/store/app-details/${encodeURIComponent(appId)}/reviews`);
+      if (!response.ok) throw new Error(`CI-Portal returned HTTP ${response.status} for app reviews.`);
+      const body: unknown = await response.json();
+      return Array.isArray(body) ? (body as HubStoreReview[]) : [];
+    },
+    enabled: storeId === 'ci-marketplace',
+    staleTime: 5 * 60_000,
   });
   const runtimeHealthEnabled = Boolean(getApp.data?.app && getApp.data.app.status !== 'uninstalling');
 
@@ -92,16 +157,18 @@ export default () => {
   const logoUrn = info?.urn ?? appUrn;
   const logoUrl = metadata?.iconUrl ?? getMarketplaceAppImageUrl(logoUrn);
   const primaryCategory = info?.categories?.[0];
+  const rating = portalStoreApp.data?.rating;
+  const ratingCount = rating?.count ?? 0;
   const headerStats = [
     {
       key: 'rating',
       value: (
         <span className="flex items-center gap-1.5">
-          <span className="text-sm font-semibold">0.0</span>
+          <span className="text-sm font-semibold">{ratingCount > 0 ? rating?.average?.toFixed(1) : '—'}</span>
           <Star className="h-3.5 w-3.5 fill-yellow-500 text-yellow-500" />
         </span>
       ),
-      label: t('APP_DETAILS_ZERO_RATINGS'),
+      label: ratingCount > 0 ? `${ratingCount} ${ratingCount === 1 ? 'rating' : 'ratings'}` : t('APP_DETAILS_ZERO_RATINGS'),
     },
     ...(primaryCategory
       ? [
@@ -125,6 +192,22 @@ export default () => {
       label: t('APP_DETAILS_DOWNLOAD_SIZE'),
     },
   ];
+  const storePriceModel = portalStoreApp.data?.priceModel;
+  const storePrice = portalStoreApp.data?.price;
+  const hasPortalStoreData = storeId === 'ci-marketplace' && portalStoreApp.data !== undefined && portalStoreApp.data !== null;
+  const isFreePrice = storeId !== 'ci-marketplace' || storePriceModel === 'free';
+  let priceLabel = t('APP_PRICE_FREE');
+  if (storeId === 'ci-marketplace') {
+    if (!hasPortalStoreData) {
+      priceLabel = '—';
+    } else if (isFreePrice) {
+      priceLabel = t('APP_PRICE_FREE');
+    } else if (storePrice == null) {
+      priceLabel = 'Paid';
+    } else {
+      priceLabel = `$${(storePrice / 100).toFixed(2)}`;
+    }
+  }
 
   return (
     <div className="mx-auto max-w-6xl space-y-4 px-0 pb-20 sm:space-y-8">
@@ -151,8 +234,12 @@ export default () => {
                     {info?.author ? <p className="text-base font-medium text-emerald-800 dark:text-emerald-400 sm:text-lg">{info.author}</p> : null}
                   </div>
                   <div className="flex shrink-0 flex-col items-end gap-2">
-                    <span className="rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-semibold uppercase tracking-wide text-emerald-950 shadow-sm">
-                      {t('APP_PRICE_FREE')}
+                    <span
+                      className={`rounded-md px-3 py-1.5 text-sm font-semibold uppercase tracking-wide shadow-sm ${
+                        isFreePrice ? 'bg-emerald-500 text-emerald-950' : 'bg-primary/15 text-primary'
+                      }`}
+                    >
+                      {priceLabel}
                     </span>
                     <MemoryStatusBadge appUrn={appUrn} />
                   </div>
@@ -220,6 +307,10 @@ export default () => {
         imageSizeFormatted={imageSize.data?.formatted ?? null}
         imageSizeLoading={imageSize.isLoading}
       />
+
+      {storeId === 'ci-marketplace' ? (
+        <StoreReviews reviews={portalStoreReviews.data ?? []} isLoading={portalStoreReviews.isLoading} isError={portalStoreReviews.isError} />
+      ) : null}
     </div>
   );
 };

@@ -14,24 +14,176 @@ import { FeaturedStoreView } from '@/modules/app/components/featured-store-view/
 import { AlternativesCatalog } from '@/modules/app/components/alternatives-catalog/alternatives-catalog';
 import { AppStoreSearchInput } from '@/modules/app/components/app-store-search-input/app-store-search-input';
 import { useRegistrationStatus } from '@/lib/hooks/use-registration-status';
+import { useAppContext } from '@/context/app-context';
 import { AppCard } from '@/modules/app/components/app-card/app-card';
 import { getCategoryLabel } from '@/modules/app/helpers/category-label';
 import { iconForCategory } from '@/modules/app/helpers/table-helpers';
 import { filterAlternativesBySearch } from '@/lib/store-search';
+import type { HubStoreApp, HubStoreChangelogEntry, HubStoreLibrary } from '@/lib/portal-store';
+import { apiFetch } from '@/lib/api-fetch';
 import { useAppStoreState } from '@/stores/app-store';
 import { keepPreviousData, useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
-import { ArrowLeftRight, LayoutGrid, Loader2, RefreshCw, Store } from 'lucide-react';
+import { ArrowLeftRight, BookOpen, LayoutGrid, Library, Loader2, RefreshCw, Rss, Store } from 'lucide-react';
 import { useCallback, useEffect, useState, useMemo, useRef } from 'react';
-import { Navigate, useParams, useSearchParams } from 'react-router';
+import { Link, Navigate, useParams, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 
 const SKELETONS = Array.from({ length: CATALOG_PAGE_SIZE }, (_, i) => `skeleton-${i}`);
 const MARKETPLACE_SEARCH_STALE_MS = 5 * 60_000;
+const CHANGELOG_SKELETONS = ['changelog-skeleton-1', 'changelog-skeleton-2', 'changelog-skeleton-3'];
 
 const ALTERNATIVES_VIEW = '__alternatives__';
+const CHANGELOG_VIEW = '__changelog__';
+const LIBRARY_VIEW = '__library__';
 const DEFAULT_STORE_CATEGORY = 'featured';
+
+function formatActivityDate(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleDateString();
+}
+
+function StoreChangelogView({
+  items,
+  isLoading,
+  isError,
+  onRetry,
+}: {
+  items: HubStoreChangelogEntry[];
+  isLoading: boolean;
+  isError: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <section className="space-y-4 pb-8">
+      <div>
+        <h2 className="text-2xl font-semibold">What's New</h2>
+        <p className="text-sm text-muted-foreground">Recent app releases and updates from CI-Portal.</p>
+      </div>
+      {isLoading ? (
+        <div className="space-y-3" aria-busy="true">
+          {CHANGELOG_SKELETONS.map((key) => (
+            <div key={key} className="h-20 animate-pulse rounded-lg bg-muted/40" />
+          ))}
+        </div>
+      ) : isError ? (
+        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          Couldn't load What's New.{' '}
+          <button type="button" className="font-medium underline" onClick={onRetry}>
+            Retry
+          </button>
+        </div>
+      ) : items.length === 0 ? (
+        <p className="rounded-lg border border-border/60 bg-card/50 p-6 text-sm text-muted-foreground">No recent app activity.</p>
+      ) : (
+        <div className="divide-y divide-border/60 overflow-hidden rounded-lg border border-border/60 bg-card/50">
+          {items.map((item) => (
+            <Link
+              key={item.id}
+              to={`/store/ci-marketplace/${item.id}`}
+              className="flex items-start gap-4 p-4 transition-colors hover:bg-muted/30 sm:p-5"
+            >
+              {item.icon ? (
+                <img src={item.icon} alt="" className="h-12 w-12 shrink-0 rounded-md object-cover" loading="lazy" />
+              ) : (
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-primary/10 text-lg font-semibold text-primary">
+                  {item.title.charAt(0)}
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-baseline gap-x-2">
+                  <h3 className="font-semibold text-foreground">{item.title}</h3>
+                  {item.version && <span className="text-xs text-muted-foreground">v{item.version}</span>}
+                  <span className="text-xs text-muted-foreground">{formatActivityDate(item.activityAt)}</span>
+                </div>
+                <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{item.description}</p>
+              </div>
+              <BookOpen className="mt-1 h-4 w-4 shrink-0 text-muted-foreground" />
+            </Link>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function OrganizationLibraryView({
+  library,
+  catalogApps,
+  organizationName,
+  installedAppUrns,
+  isLoading,
+  isError,
+  onRetry,
+}: {
+  library: HubStoreLibrary | undefined;
+  catalogApps: Map<string, HubStoreApp>;
+  organizationName?: string;
+  installedAppUrns: Set<string>;
+  isLoading: boolean;
+  isError: boolean;
+  onRetry: () => void;
+}) {
+  const entitlements = library?.entitlements ?? [];
+  const title = organizationName ? `${organizationName} Library` : 'Organization Library';
+
+  return (
+    <section className="space-y-4 pb-8">
+      <div>
+        <h2 className="text-2xl font-semibold">{title}</h2>
+        <p className="text-sm text-muted-foreground">Apps this organization is entitled to run.</p>
+      </div>
+      {isLoading ? (
+        <div className="h-32 animate-pulse rounded-lg bg-muted/40" aria-busy="true" />
+      ) : isError ? (
+        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          Couldn't load this organization's library.{' '}
+          <button type="button" className="font-medium underline" onClick={onRetry}>
+            Retry
+          </button>
+        </div>
+      ) : library?.organizationId ? (
+        entitlements.length === 0 ? (
+          <div className="rounded-lg border border-border/60 bg-card/50 p-8 text-center">
+            <p className="font-medium">This organization has no paid or granted apps yet.</p>
+            <p className="mt-1 text-sm text-muted-foreground">Free apps can be installed from the store.</p>
+          </div>
+        ) : (
+          <div className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {entitlements.map((entitlement) => {
+              const app = catalogApps.get(entitlement.appId);
+              if (app) {
+                return <AppCard key={entitlement.appId} app={app} isInstalled={installedAppUrns.has(app.urn)} />;
+              }
+
+              return (
+                <div
+                  key={entitlement.appId}
+                  className="flex min-h-36 items-center justify-between gap-4 rounded-lg border border-border/60 bg-card/50 p-4"
+                >
+                  <div className="min-w-0">
+                    <h3 className="truncate font-semibold">{entitlement.appId}</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">Available to this organization</p>
+                  </div>
+                  <Link to={`/store/ci-marketplace/${entitlement.appId}`} className="shrink-0 text-sm font-medium text-primary hover:underline">
+                    View
+                  </Link>
+                </div>
+              );
+            })}
+          </div>
+        )
+      ) : (
+        <div className="rounded-lg border border-border/60 bg-card/50 p-8 text-center">
+          <Library className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
+          <p className="font-medium">No organization is connected to this Hub yet.</p>
+          <p className="mt-1 text-sm text-muted-foreground">Pair this Hub with an organization to see its app entitlements.</p>
+        </div>
+      )}
+    </section>
+  );
+}
 
 export const AppStorePageSuspense = () => {
   return (
@@ -48,6 +200,7 @@ export const AppStorePageSuspense = () => {
 
 export default () => {
   const { t } = useTranslation();
+  const { userSettings } = useAppContext();
   const params = useParams<{ storeId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const { setCategory, category, storeId, setStoreId, search, setSearch, setSearchImmediate } = useAppStoreState();
@@ -106,12 +259,36 @@ export default () => {
 
   const isAlternativesView = category === ALTERNATIVES_VIEW;
   const isFeaturedView = category === 'featured';
-  const effectiveCategory = isAlternativesView || isFeaturedView ? undefined : category;
+  const isChangelogView = category === CHANGELOG_VIEW;
+  const isLibraryView = category === LIBRARY_VIEW;
+  const effectiveCategory = isAlternativesView || isFeaturedView || isChangelogView || isLibraryView ? undefined : category;
   const catalogSearchQuery = useMemo(
     () => ({ search, category: effectiveCategory, pageSize: CATALOG_PAGE_SIZE, storeId }),
     [search, effectiveCategory, storeId],
   );
-  const catalogSearchEnabled = !isAlternativesView && !isFeaturedView;
+  const catalogSearchEnabled = !isAlternativesView && !isFeaturedView && !isChangelogView && !isLibraryView;
+
+  const changelogQuery = useQuery({
+    queryKey: ['portal', 'store-changelog'],
+    queryFn: async () => {
+      const response = await apiFetch('/api/store/changelog');
+      if (!response.ok) throw new Error(`CI-Portal returned HTTP ${response.status} for the changelog.`);
+      return (await response.json()) as { items: HubStoreChangelogEntry[] };
+    },
+    enabled: isChangelogView,
+    staleTime: 5 * 60_000,
+  });
+
+  const libraryQuery = useQuery({
+    queryKey: ['portal', 'store-library'],
+    queryFn: async () => {
+      const response = await apiFetch('/api/store/library');
+      if (!response.ok) throw new Error(`CI-Portal returned HTTP ${response.status} for the library.`);
+      return (await response.json()) as HubStoreLibrary;
+    },
+    enabled: isLibraryView,
+    staleTime: 60_000,
+  });
 
   useEffect(() => {
     if (!catalogSearchEnabled) {
@@ -147,7 +324,7 @@ export default () => {
     {},
     {
       enableConfig: false,
-      enableListings: isAlternativesView,
+      enableListings: true,
       enableAlternatives: isAlternativesView || Boolean(search.trim()),
     },
   );
@@ -158,6 +335,7 @@ export default () => {
     () => new Set((portalListings ?? []).map((app) => app.urn.split(':')[0]).filter((slug): slug is string => Boolean(slug))),
     [portalListings],
   );
+  const portalListingsById = useMemo(() => new Map((portalListings ?? []).map((app) => [app.urn.split(':')[0] ?? app.urn, app])), [portalListings]);
 
   // Redirect whenever the backend reports the hub is not operational
   // (`registered === false`, e.g. paired/provisioning/unregistered).
@@ -228,7 +406,7 @@ export default () => {
     (value: string) => {
       setLocalSearch(value);
       // Featured is curated; route searching users into the exhaustive "All" query.
-      if (category === 'featured' && value.trim().length > 0) {
+      if ((category === 'featured' || category === CHANGELOG_VIEW || category === LIBRARY_VIEW) && value.trim().length > 0) {
         setCategory(undefined);
       }
       setSearch(value);
@@ -263,7 +441,8 @@ export default () => {
 
   const filteredAlts = useMemo(() => filterAlternativesBySearch(alternativesData ?? {}, search), [search, alternativesData]);
   const hasAlternativeMatches = Object.keys(filteredAlts).length > 0;
-  const showSearchAlternatives = Boolean(search.trim()) && !isFeaturedView && !isAlternativesView && hasAlternativeMatches;
+  const showSearchAlternatives =
+    Boolean(search.trim()) && !isFeaturedView && !isAlternativesView && !isChangelogView && !isLibraryView && hasAlternativeMatches;
 
   if (params.storeId) {
     return <Navigate to={`/store?store=${params.storeId}`} />;
@@ -278,7 +457,9 @@ export default () => {
 
   return (
     <div className="min-w-0 overflow-x-hidden">
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div
+        className={clsx('mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between', (isChangelogView || isLibraryView) && 'hidden')}
+      >
         <div className="min-w-0">
           {appStores?.appStores && appStores.appStores.length > 1 ? (
             <div className="flex flex-wrap items-center gap-1" data-testid="store-switcher">
@@ -336,6 +517,30 @@ export default () => {
             <ArrowLeftRight className="h-3.5 w-3.5 mr-1.5" />
             {t('APP_STORE_ALTERNATIVES')}
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className={clsx(
+              'rounded-full whitespace-nowrap',
+              isChangelogView ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-border',
+            )}
+            onClick={() => setCategory(CHANGELOG_VIEW)}
+          >
+            <Rss className="mr-1.5 h-3.5 w-3.5" />
+            What's New
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className={clsx(
+              'rounded-full whitespace-nowrap',
+              isLibraryView ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-border',
+            )}
+            onClick={() => setCategory(LIBRARY_VIEW)}
+          >
+            <Library className="mr-1.5 h-3.5 w-3.5" />
+            Library
+          </Button>
           {iconForCategory.map((cat) => {
             const Icon = cat.icon;
             const isSelected = category === cat.id;
@@ -360,6 +565,23 @@ export default () => {
 
       {isFeaturedView ? (
         <FeaturedStoreView storeId={ciCloudStore?.slug ?? 'ci-marketplace'} installedAppUrns={installedAppUrns} />
+      ) : isChangelogView ? (
+        <StoreChangelogView
+          items={changelogQuery.data?.items ?? []}
+          isLoading={changelogQuery.isLoading}
+          isError={changelogQuery.isError}
+          onRetry={() => void changelogQuery.refetch()}
+        />
+      ) : isLibraryView ? (
+        <OrganizationLibraryView
+          library={libraryQuery.data}
+          catalogApps={portalListingsById}
+          organizationName={userSettings.ciHubOrganizationLabel}
+          installedAppUrns={installedAppUrns}
+          isLoading={libraryQuery.isLoading}
+          isError={libraryQuery.isError}
+          onRetry={() => void libraryQuery.refetch()}
+        />
       ) : isAlternativesView ? (
         <div className="min-w-0 space-y-6">
           <div>
@@ -419,9 +641,31 @@ export default () => {
                   ))
                 : apps.map((app, i) => {
                     const isLastElement = apps.length === i + 1;
+                    const slug = app.urn.split(':')[0] ?? app.urn;
+                    const portalApp = marketplaceSlug === 'ci-marketplace' ? portalListingsById.get(slug) : undefined;
                     return (
                       <div ref={isLastElement ? lastElementRef : null} key={app.urn}>
-                        <AppCard app={app} isLoading={false} isInstalled={installedAppUrns.has(app.urn)} />
+                        <AppCard
+                          app={
+                            portalApp
+                              ? {
+                                  ...app,
+                                  name: portalApp.name,
+                                  short_desc: portalApp.short_desc,
+                                  icon: portalApp.iconUrl,
+                                  priceModel: portalApp.priceModel,
+                                  price: portalApp.price,
+                                  rating: portalApp.rating,
+                                  supported_architectures: portalApp.supported_architectures,
+                                  host_access: portalApp.host_access,
+                                  gpu_requirements: portalApp.gpu_requirements,
+                                }
+                              : app
+                          }
+                          imageUrlOverride={portalApp?.iconUrl}
+                          isLoading={false}
+                          isInstalled={installedAppUrns.has(app.urn)}
+                        />
                       </div>
                     );
                   })}

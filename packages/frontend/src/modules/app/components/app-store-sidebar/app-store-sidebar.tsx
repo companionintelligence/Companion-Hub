@@ -5,12 +5,14 @@ import { iconForCategory } from '@/modules/app/helpers/table-helpers';
 import { buildStoreIndexPath } from '@/lib/store-browse-params';
 import { useAppStoreState } from '@/stores/app-store';
 import clsx from 'clsx';
-import { ArrowLeftRight, LayoutGrid } from 'lucide-react';
+import { ArrowLeftRight, Library, LayoutGrid, Rss } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router';
 
 const ALTERNATIVES_VIEW = '__alternatives__' as const;
+const CHANGELOG_VIEW = '__changelog__' as const;
+const LIBRARY_VIEW = '__library__' as const;
 const STORE_INDEX_PATTERN = /^\/store\/?$/;
 
 export const AppStoreSidebar = () => {
@@ -21,27 +23,35 @@ export const AppStoreSidebar = () => {
   const location = useLocation();
 
   const isAlternativesView = category === ALTERNATIVES_VIEW;
+  const isChangelogView = category === CHANGELOG_VIEW;
+  const isLibraryView = category === LIBRARY_VIEW;
 
   useEffect(() => {
     setLocalSearch(search);
   }, [search]);
 
-  const navigatePreservingBrowseContext = useCallback(() => {
-    if (!STORE_INDEX_PATTERN.test(location.pathname)) {
-      navigate(buildStoreIndexPath({ q: search.trim() ? search : undefined, category, store: storeId }));
-    }
-  }, [navigate, location.pathname, search, category, storeId]);
+  const navigatePreservingBrowseContext = useCallback(
+    (categoryOverride?: { category: typeof category }) => {
+      if (!STORE_INDEX_PATTERN.test(location.pathname)) {
+        const nextCategory = categoryOverride ? categoryOverride.category : category;
+        navigate(buildStoreIndexPath({ q: search.trim() ? search : undefined, category: nextCategory, store: storeId }));
+      }
+    },
+    [navigate, location.pathname, search, category, storeId],
+  );
 
   const onSearch = useCallback(
     (value: string) => {
       setLocalSearch(value);
       // Featured is a curated feed, not an exhaustive searchable catalog.
       // When a user starts searching there, switch to "All" to show full results.
-      if (category === 'featured' && value.trim().length > 0) {
+      const nextCategory =
+        (category === 'featured' || category === CHANGELOG_VIEW || category === LIBRARY_VIEW) && value.trim().length > 0 ? undefined : category;
+      if (nextCategory !== category) {
         setCategory(undefined);
       }
       setSearch(value);
-      navigatePreservingBrowseContext();
+      navigatePreservingBrowseContext({ category: nextCategory });
     },
     [category, setCategory, setSearch, navigatePreservingBrowseContext],
   );
@@ -49,7 +59,7 @@ export const AppStoreSidebar = () => {
   const handleCategoryClick = useCallback(
     (cat?: typeof category) => {
       setCategory(cat);
-      navigatePreservingBrowseContext();
+      navigatePreservingBrowseContext({ category: cat });
     },
     [setCategory, navigatePreservingBrowseContext],
   );
@@ -95,6 +105,28 @@ export const AppStoreSidebar = () => {
           >
             <ArrowLeftRight className="h-4 w-4" />
             <span className="truncate">{t('APP_STORE_ALTERNATIVES')}</span>
+          </Button>
+          <Button
+            variant="ghost"
+            className={clsx(
+              'w-full justify-start font-normal text-sm gap-3 px-4 py-2 h-auto',
+              isChangelogView ? 'bg-primary/10 text-primary font-medium hover:bg-primary/20' : 'text-muted-foreground hover:bg-muted/50',
+            )}
+            onClick={() => handleCategoryClick(CHANGELOG_VIEW)}
+          >
+            <Rss className="h-4 w-4" />
+            <span className="truncate">What's New</span>
+          </Button>
+          <Button
+            variant="ghost"
+            className={clsx(
+              'w-full justify-start font-normal text-sm gap-3 px-4 py-2 h-auto',
+              isLibraryView ? 'bg-primary/10 text-primary font-medium hover:bg-primary/20' : 'text-muted-foreground hover:bg-muted/50',
+            )}
+            onClick={() => handleCategoryClick(LIBRARY_VIEW)}
+          >
+            <Library className="h-4 w-4" />
+            <span className="truncate">Library</span>
           </Button>
           <div className="my-2 mx-3 border-t border-border/50" />
 

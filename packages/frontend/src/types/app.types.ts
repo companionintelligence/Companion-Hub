@@ -9,6 +9,7 @@ export type FormField = CommonFormField;
 export type AppInfo = GetAppDto['info'] & {
   hub_integration?: HubIntegration;
   privacy?: AppPrivacy;
+  host_access?: boolean;
   gpu_requirements?: GpuRequirements;
 };
 export type AppMetadata = GetAppDto['metadata'];

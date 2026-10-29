@@ -20,6 +20,15 @@ export type PortalStoreApp = {
   icon?: string | null;
   tags?: string[];
   categories?: string[];
+  priceModel?: string;
+  price?: number | null;
+  minPrice?: number | null;
+  suggestedPrice?: number | null;
+  currency?: string | null;
+  rating?: { average?: number; count?: number } | null;
+  supported_architectures?: string[];
+  host_access?: boolean;
+  gpu_requirements?: unknown;
 };
 
 export type PortalStoreListingsParams = {
@@ -34,6 +43,52 @@ export const CI_MARKETPLACE_STORE_ID = 'ci-marketplace';
 /** Portal-sourced listing shape used by AppCard and featured store sections. */
 export type HubStoreApp = Pick<AppInfoSimple, 'urn' | 'name' | 'short_desc' | 'categories'> & {
   iconUrl?: string | null;
+  priceModel?: string;
+  price?: number | null;
+  minPrice?: number | null;
+  suggestedPrice?: number | null;
+  currency?: string | null;
+  rating?: { average?: number; count?: number } | null;
+  supported_architectures?: string[];
+  host_access?: boolean;
+  gpu_requirements?: unknown;
+};
+
+export type HubStoreAppDetails = PortalStoreApp & {
+  priceModel?: string;
+  price?: number | null;
+  rating?: { average?: number; count?: number } | null;
+  versions?: { version: string; createdAt?: string }[];
+};
+
+export type HubStoreReview = {
+  id: string;
+  rating: number;
+  comment?: string | null;
+  createdAt: string;
+  user?: { id: string; name: string; image?: string | null } | null;
+};
+
+export type HubStoreChangelogEntry = {
+  id: string;
+  title: string;
+  description: string;
+  version?: string | null;
+  icon?: string | null;
+  link?: string;
+  activityAt: string;
+};
+
+export type HubStoreLibrary = {
+  organizationId: string | null;
+  entitlements: Array<{
+    appId: string;
+    status: string;
+    entitlementType: string;
+    source: string;
+    grantedAt: number;
+    expiresAt: number | null;
+  }>;
 };
 
 function hubAppSlug(app: HubStoreApp): string {
@@ -53,6 +108,18 @@ export function mapPortalStoreAppToHub(app: PortalStoreApp, storeId = CI_MARKETP
     short_desc,
     categories,
     iconUrl: app.icon ?? null,
+    priceModel: app.priceModel,
+    price: typeof app.price === 'number' ? app.price : null,
+    minPrice: typeof app.minPrice === 'number' ? app.minPrice : null,
+    suggestedPrice: typeof app.suggestedPrice === 'number' ? app.suggestedPrice : null,
+    currency: app.currency ?? null,
+    rating:
+      app.rating && typeof app.rating.average === 'number' && typeof app.rating.count === 'number'
+        ? { average: app.rating.average, count: app.rating.count }
+        : null,
+    supported_architectures: app.supported_architectures,
+    host_access: app.host_access === true,
+    gpu_requirements: app.gpu_requirements,
   };
 }
 

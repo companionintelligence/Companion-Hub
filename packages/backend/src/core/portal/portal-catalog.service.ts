@@ -36,6 +36,8 @@ type PortalCatalogApp = {
   tags?: string[];
   deprecated?: boolean;
   supported_architectures?: string[];
+  host_access?: boolean;
+  gpu_requirements?: unknown;
   available?: boolean;
   cihub_app_version?: number;
   cihub_version?: number;
@@ -360,6 +362,8 @@ export class PortalCatalogService {
       source: typeof app.source === 'string' ? app.source : 'https://companionintelligence.com',
       website: typeof app.website === 'string' ? app.website : undefined,
       supported_architectures: app.supported_architectures?.length ? app.supported_architectures : ['amd64', 'arm64'],
+      host_access: app.host_access === true ? true : undefined,
+      gpu_requirements: app.gpu_requirements,
       runtime_platform: typeof app.runtime_platform === 'string' ? app.runtime_platform : undefined,
       // Prefer explicit catalog flags; default MCP listings to non-exposable.
       exposable: typeof app.exposable === 'boolean' ? app.exposable : !isMcpListing,

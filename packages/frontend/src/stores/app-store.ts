@@ -1,7 +1,7 @@
 import type { AppCategory } from '@/types/app.types';
 import { create } from 'zustand';
 
-export type StoreCategoryFilter = AppCategory | '__alternatives__';
+export type StoreCategoryFilter = AppCategory | '__alternatives__' | '__changelog__' | '__library__';
 
 type Store = {
   search: string;

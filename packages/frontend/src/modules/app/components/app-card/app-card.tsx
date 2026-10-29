@@ -1,18 +1,27 @@
 import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { GlassContainer } from '@/components/ui/glass-container';
+import { gpuRequirementsSchema } from '@ci-hub/common/schemas';
 import { limitText } from '@/lib/helpers/text-helpers';
 import { getMarketplaceAppImageUrl } from '@/lib/marketplace-image-url';
 import { storeBrowseQueryString } from '@/lib/store-browse-params';
 import { useAppStoreState } from '@/stores/app-store';
 import type { AppInfoSimple } from '@/types/app.types';
-import { Check, Download } from 'lucide-react';
+import { Check, Cpu, Download, ShieldAlert, Star } from 'lucide-react';
 import type React from 'react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 
-type AppCardApp = Pick<AppInfoSimple, 'urn' | 'name' | 'short_desc'> & { icon?: string | null };
+type AppCardApp = Pick<AppInfoSimple, 'urn' | 'name' | 'short_desc'> & {
+  icon?: string | null;
+  priceModel?: string;
+  price?: number | null;
+  rating?: { average?: number; count?: number } | null;
+  supported_architectures?: string[];
+  host_access?: boolean;
+  gpu_requirements?: unknown;
+};
 
 interface AppCardProps {
   app: AppCardApp;
@@ -36,6 +45,22 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, i
   });
   const detailPath = browseQuery ? `/store/${storeId}/${appId}?${browseQuery}` : `/store/${storeId}/${appId}`;
   const logoUrl = resolveAppCardImageUrl(app, imageUrlOverride);
+  const ratingCount = app.rating?.count ?? 0;
+  const hasRatings = ratingCount > 0;
+  const gpu = gpuRequirementsSchema.safeParse(app.gpu_requirements);
+  const architectures = ['amd64', 'arm64'].filter((architecture) => app.supported_architectures?.includes(architecture));
+  const architectureLabel = architectures.map((architecture) => (architecture === 'amd64' ? 'x86' : 'ARM')).join(' + ');
+  const architectureDescription = architectures.length ? `Supports linux/${architectures.join(' and linux/')}` : '';
+  const hasPriceModel = typeof app.priceModel === 'string';
+  const showPrice = hasPriceModel || storeId === 'ci-marketplace';
+  const isFree = app.priceModel === 'free';
+  const priceLabel = hasPriceModel
+    ? isFree
+      ? t('APP_PRICE_FREE')
+      : app.price == null
+        ? 'Paid'
+        : `$${(app.price / 100).toFixed(2)}`
+    : 'Price unavailable';
   const [imgSrc, setImgSrc] = useState(logoUrl);
   const [showAvatarFallback, setShowAvatarFallback] = useState(false);
 
@@ -91,7 +116,11 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, i
             />
           )}
 
-          <span className="px-2 py-1 rounded-full bg-success/20 text-success text-xs font-semibold">{t('APP_PRICE_FREE')}</span>
+          {showPrice && (
+            <span className={`px-2 py-1 rounded-full text-xs font-semibold ${isFree ? 'bg-success/20 text-success' : 'bg-primary/15 text-primary'}`}>
+              {priceLabel}
+            </span>
+          )}
         </div>
 
         {/*
@@ -103,7 +132,48 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, i
         </h3>
         <p className="text-sm text-muted-foreground line-clamp-2 mb-4 flex-grow">{limitText(app.short_desc, 80)}</p>
 
-        <div className="flex items-center justify-end mt-auto">
+        {(architectureLabel || app.host_access || gpu.success) && (
+          <div className="mb-3 mt-3 flex flex-wrap gap-1.5" data-testid="app-trust-badges">
+            {architectureLabel && (
+              <span
+                className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-muted/40 px-2 py-1 text-[11px] font-medium text-muted-foreground"
+                title={architectureDescription}
+              >
+                <Cpu className="h-3 w-3" aria-hidden="true" />
+                <span>{architectureLabel}</span>
+                <span className="sr-only">architecture support</span>
+              </span>
+            )}
+            {app.host_access && (
+              <span
+                className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-700 dark:text-amber-300"
+                title="This app needs specific host access to function"
+              >
+                <ShieldAlert className="h-3 w-3" aria-hidden="true" />
+                <span>Host access</span>
+              </span>
+            )}
+            {gpu.success && (
+              <span
+                className="inline-flex items-center gap-1 rounded-md border border-violet-500/40 bg-violet-500/10 px-2 py-1 text-[11px] font-medium text-violet-700 dark:text-violet-300"
+                title={`GPU ${gpu.data.type.toUpperCase()} ${gpu.data.optional ? 'optional' : 'required'} on ${gpu.data.host_platforms.join(', ')}`}
+              >
+                <Cpu className="h-3 w-3" aria-hidden="true" />
+                <span>GPU {gpu.data.type.toUpperCase()}</span>
+                <span className="sr-only">{gpu.data.optional ? 'optional' : 'required'}</span>
+              </span>
+            )}
+          </div>
+        )}
+
+        <div className={`flex items-center mt-auto ${hasRatings ? 'justify-between' : 'justify-end'}`}>
+          {hasRatings && (
+            <div className="flex items-center gap-1 text-sm text-amber-400">
+              <Star className="h-4 w-4 fill-current" />
+              <span>{app.rating?.average?.toFixed(1)}</span>
+              <span className="text-xs text-muted-foreground">({ratingCount})</span>
+            </div>
+          )}
           {isInstalled ? (
             <div className="h-8 w-8 rounded-full flex items-center justify-center bg-success/20">
               <Check className="w-4 h-4 text-success" />
