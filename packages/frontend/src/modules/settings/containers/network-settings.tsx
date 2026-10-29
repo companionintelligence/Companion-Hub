@@ -21,7 +21,6 @@ import { HubPoolSection } from './hub-pool-settings';
 interface CloudflareStatus {
   tunnelEnabled: boolean;
   tunnelId: string | null;
-  message: string;
 }
 
 interface TailscaleApiStatus {
@@ -166,6 +165,7 @@ const TailscaleSidecarSection = () => {
       <SectionHeader
         icon={Shield}
         title={t('SETTINGS_NETWORK_PRIVATE_VPN_TITLE')}
+        description={t('SETTINGS_NETWORK_PRIVATE_VPN_SUBTITLE')}
         badge={<StatusBadge connected={!!active} label={active ? t('SETTINGS_NETWORK_ACTIVE') : t('SETTINGS_NETWORK_INACTIVE')} />}
         actions={
           active ? (
@@ -197,8 +197,8 @@ const TailscaleSidecarSection = () => {
       <CardContent className="space-y-3">
         {(data?.ip || data?.hostname || data?.backendState) && (
           <DetailGrid>
-            {data?.ip && <Detail label={t('COMMON_TAILSCALE_IP')} value={data.ip} />}
-            {data?.hostname && <Detail label={t('COMMON_HOSTNAME')} value={data.hostname} />}
+            {data?.ip && <Detail label={t('COMMON_TAILSCALE_IP')} value={data.ip} mono />}
+            {data?.hostname && <Detail label={t('COMMON_HOSTNAME')} value={data.hostname} mono />}
             {data?.backendState && <Detail label={t('SETTINGS_NETWORK_TAILSCALE_STATE')} value={data.backendState} />}
           </DetailGrid>
         )}
@@ -260,6 +260,7 @@ const CloudflareSection = () => {
       <SectionHeader
         icon={Globe}
         title={t('SETTINGS_NETWORK_CLOUDFLARE_TUNNEL')}
+        description={t('SETTINGS_NETWORK_CLOUDFLARE_SUBTITLE')}
         badge={
           <StatusBadge
             connected={!!status?.tunnelEnabled}
@@ -270,13 +271,16 @@ const CloudflareSection = () => {
       <CardContent className="space-y-3">
         {status?.tunnelId && (
           <DetailGrid>
-            <Detail label={t('SETTINGS_NETWORK_TUNNEL_ID')} value={status.tunnelId} />
+            <Detail label={t('SETTINGS_NETWORK_TUNNEL_ID')} value={status.tunnelId} mono />
           </DetailGrid>
         )}
-        {/* The tunnel's own message replaces the static section description: when the
-            tunnel is fine it says so in a few words, and when it is not it says why —
-            which the removed boilerplate never did. */}
-        {status?.message && <p className="text-xs text-muted-foreground">{status.message}</p>}
+        {/* The status route's `message` is one fixed sentence whatever the state ("managed by
+            CI-Cloud"), so the card says what to do when there is no tunnel instead. */}
+        {status?.tunnelEnabled ? null : (
+          <p className="text-sm text-muted-foreground" data-testid="cloudflare-tunnel-none">
+            {t('SETTINGS_NETWORK_CLOUDFLARE_NONE')}
+          </p>
+        )}
       </CardContent>
     </Card>
   );
