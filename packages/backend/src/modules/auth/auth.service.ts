@@ -456,7 +456,8 @@ export class AuthService {
   }
 
   /**
-   * Hourly check-in sweep: WhoIs every active federated operator. Definitive removal revokes.
+   * Check-in sweep, after every accepted check-in (at least every 15 minutes): WhoIs every active
+   * federated operator. Definitive removal revokes.
    * A Portal blip (`unknown`) leaves the row alone.
    */
   public async reconcileOperatorMemberships() {

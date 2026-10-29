@@ -1,5 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { PORTAL_REJECTION_CONFIRM_MS, PUBLIC_UNREACHABLE_CONFIRM_MS, RegistrationService } from '../registration.service';
+import {
+  PERIODIC_VALIDATION_INTERVAL_MS,
+  PORTAL_REJECTION_CONFIRM_MS,
+  PUBLIC_UNREACHABLE_CONFIRM_MS,
+  RegistrationService,
+} from '../registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DatabaseService } from '@/core/database/database.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -1770,6 +1775,61 @@ describe('RegistrationService', () => {
       const status = service.getRegistrationStatus();
       expect(status.phase).toBe('publicly_ready');
       expect(status.degradedReasons).toEqual([]);
+    });
+  });
+
+  describe('periodic check-in (CI-Portal#953)', () => {
+    const MINUTE = 60 * 1000;
+    const checkIns = () => mockedAxios.post.mock.calls.filter(([url]) => String(url).includes('/api/devices/check-in')).length;
+
+    beforeEach(async () => {
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        ciHubApiKey: 'test-api-key',
+        userSettings: { domain: 'example.com' },
+      } as any);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      vi.spyOn(service as any, 'checkPublicReachability').mockResolvedValue(undefined);
+      mockedAxios.post.mockResolvedValue({ status: 200, data: {} } as any);
+      vi.useFakeTimers();
+      (service as any).startPeriodicValidation();
+    });
+
+    afterEach(() => {
+      service.onApplicationShutdown();
+      vi.useRealTimers();
+    });
+
+    it('checks in every 15 minutes when nothing else does', async () => {
+      expect(PERIODIC_VALIDATION_INTERVAL_MS).toBe(15 * MINUTE);
+
+      await vi.advanceTimersByTimeAsync(15 * MINUTE);
+      expect(checkIns()).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(15 * MINUTE);
+      expect(checkIns()).toBe(2);
+    });
+
+    it('sends nothing on a tick when a status read checked in within the last 14 minutes', async () => {
+      // The 15-minute status report checks in through a status read, so on most Hubs the timer is the spare.
+      await vi.advanceTimersByTimeAsync(10 * MINUTE);
+      await service.getLiveRegistrationStatus();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(checkIns()).toBe(1);
+
+      // The tick at 15 minutes comes 5 minutes after that check-in.
+      await vi.advanceTimersByTimeAsync(5 * MINUTE);
+      expect(checkIns()).toBe(1);
+
+      // The tick at 30 minutes comes 20 minutes after it.
+      await vi.advanceTimersByTimeAsync(15 * MINUTE);
+      expect(checkIns()).toBe(2);
     });
   });
 
