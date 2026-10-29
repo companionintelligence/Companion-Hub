@@ -13,6 +13,7 @@ import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
+import { ImageSizeService } from '@/modules/marketplace/image-size.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
@@ -100,6 +101,7 @@ describe('withMovedPort', () => {
 describe('InstallAppCommand — pull policy', () => {
   let command: InstallAppCommand;
   let dockerService: any;
+  let imageSizeService: ReturnType<typeof mock<ImageSizeService>>;
   let dockerReadFacade: any;
   let composeArgs: string[] = [];
   let appFilesManager: ReturnType<typeof mock<AppFilesManager>>;
@@ -184,6 +186,7 @@ describe('InstallAppCommand — pull policy', () => {
     appsRepository.getApps.mockResolvedValue([]);
 
     const cloudflareService = mock<CloudflareClientService>();
+    imageSizeService = mock<ImageSizeService>();
 
     const dockerode = mock<Dockerode>();
     // @ts-expect-error
@@ -204,6 +207,7 @@ describe('InstallAppCommand — pull policy', () => {
         if (token === PortManagerService) return portManager;
         if (token === AppsRepository) return appsRepository;
         if (token === CloudflareClientService) return cloudflareService;
+        if (token === ImageSizeService) return imageSizeService;
         return mock();
       }),
     } as unknown as ModuleRef;
@@ -851,6 +855,43 @@ describe('InstallAppCommand — pull policy', () => {
       const percents = progressTicks().map((tick) => tick.progress);
       expect(percents).toContain(98);
       expect(percents.lastIndexOf(98)).toBeLessThan(percents.indexOf(99));
+    });
+
+    it('holds the size under the bar back until the total is final (#2177)', async () => {
+      const now = vi.spyOn(Date, 'now');
+      dockerService.pullImages = vi.fn(async (_images: string[], options: { onProgress: (event: unknown) => void }) => {
+        // ZeroNote's first layer on its own: the total is still growing.
+        now.mockReturnValue(1_000_000);
+        options.onProgress({ ...pullTick(3 * MB, 3.7 * MB), totalBytesKnown: false });
+        now.mockReturnValue(1_003_000);
+        options.onProgress({ ...pullTick(10 * MB, 26 * MB), totalBytesKnown: true });
+      });
+
+      try {
+        await command.execute(appUrn, {});
+      } finally {
+        now.mockRestore();
+      }
+
+      const sizes = progressTicks()
+        .filter((tick) => typeof tick.progress === 'number' && tick.progress >= 60 && tick.progress < 99)
+        .map((tick) => tick.totalBytes);
+      expect(sizes).not.toContain(3.7 * MB);
+      expect(sizes).toContain(26 * MB);
+    });
+
+    it("asks the registry for each image's layer sizes while it downloads", async () => {
+      const sizes = new Map([['sha256:abc', 1_000]]);
+      imageSizeService.getImageLayerSizes.mockResolvedValue(sizes);
+      let asked: Promise<unknown> | undefined;
+      dockerService.pullImages = vi.fn(async (_images: string[], options: { layerSizes?: (image: string) => Promise<unknown> }) => {
+        asked = options.layerSizes?.('ghcr.io/example/app:latest');
+      });
+
+      await command.execute(appUrn, {});
+
+      await expect(asked).resolves.toBe(sizes);
+      expect(imageSizeService.getImageLayerSizes).toHaveBeenCalledWith('ghcr.io/example/app:latest');
     });
 
     it('does not rewrite the job when only the downloaded size moved', async () => {

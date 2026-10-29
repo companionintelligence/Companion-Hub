@@ -8,6 +8,7 @@ import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
+import { ImageSizeService } from '@/modules/marketplace/image-size.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { extractConflictingHostBinding } from '@/modules/network/docker-port-errors';
 import { PortManagerService, type PortAllocation } from '@/modules/network/port-manager.service';
@@ -87,6 +88,14 @@ export class InstallAppCommand extends AppLifecycleCommand {
     const envUtils = this.moduleRef.get(EnvUtils, { strict: false });
     const sseService = this.moduleRef.get(SSEService, { strict: false });
     const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
+    // Only for the download's size under the progress bar: an install never fails for want of it.
+    const imageSizeService = (() => {
+      try {
+        return this.moduleRef.get(ImageSizeService, { strict: false });
+      } catch {
+        return undefined;
+      }
+    })();
 
     // The job's last recorded percent. A tick that only moves the download size leaves it alone.
     let jobProgress: number | undefined;
@@ -355,7 +364,8 @@ export class InstallAppCommand extends AppLifecycleCommand {
           ? await dockerService.pullImages(appImages, {
               forcePull,
               signal: ctx?.signal,
-              onProgress: ({ completedBytes, totalBytes, completedImages, totalImages }) => {
+              layerSizes: (image) => imageSizeService?.getImageLayerSizes?.(image) ?? Promise.resolve(null),
+              onProgress: ({ completedBytes, totalBytes, totalBytesKnown, completedImages, totalImages }) => {
                 const nextProgress =
                   totalBytes > 0
                     ? mapPullProgressToInstallProgress(completedBytes, totalBytes)
@@ -370,11 +380,15 @@ export class InstallAppCommand extends AppLifecycleCommand {
                     nextProgress >= DOWNLOAD_PROGRESS_MAX_DURING_PULL);
                 const sizeMoved = completedBytes !== lastPullBytes && now - lastPullProgressAt >= DOWNLOAD_SIZE_EMIT_INTERVAL_MS;
                 if (percentRose || sizeMoved) {
-                  // The total grows as Docker reports more layers, so the percentage can dip; the bar never goes back.
+                  // Without the registry's layer sizes the total grows as Docker reports more layers, so the
+                  // percentage can dip; the bar never goes back.
                   lastPullProgress = Math.max(lastPullProgress, nextProgress);
                   lastPullProgressAt = now;
                   lastPullBytes = completedBytes;
-                  void emitProgress(lastPullProgress, totalBytes > 0 ? { downloadedBytes: completedBytes, totalBytes } : undefined);
+                  // The size under the bar waits for a final total: "3.0 MB / 3.7 MB" for a 26 MB download
+                  // was a total still growing (CI-Hub#2177). Until then the page says only "Downloading".
+                  const showSize = totalBytes > 0 && totalBytesKnown !== false;
+                  void emitProgress(lastPullProgress, showSize ? { downloadedBytes: completedBytes, totalBytes } : undefined);
                 }
               },
             })

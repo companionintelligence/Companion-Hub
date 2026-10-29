@@ -237,6 +237,78 @@ describe('ImageSizeService.getAppImageSize', () => {
   });
 });
 
+describe('ImageSizeService.getImageLayerSizes', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const ghcr = 'https://ghcr.io/v2/besoeasy/zeronote/manifests';
+  const layered = (layers: Array<[string, number]>): StoredManifest => ({
+    mediaType: OCI_MANIFEST,
+    body: { schemaVersion: 2, mediaType: OCI_MANIFEST, config: { size: 1_000 }, layers: layers.map(([digest, size]) => ({ digest, size })) },
+  });
+
+  it("gives each layer's size, by digest, for the Hub's own platform", async () => {
+    vi.stubGlobal(
+      'fetch',
+      fakeRegistries({
+        [`${ghcr}/1.0.12`]: {
+          mediaType: OCI_INDEX,
+          body: {
+            schemaVersion: 2,
+            mediaType: OCI_INDEX,
+            manifests: [
+              { digest: 'sha256:arm', platform: { architecture: 'arm64', os: 'linux' } },
+              { digest: 'sha256:amd', platform: { architecture: 'amd64', os: 'linux' } },
+            ],
+          },
+        },
+        [`${ghcr}/sha256:amd`]: layered([
+          ['sha256:6a0ac1617861', 3_864_189],
+          ['sha256:612c0c1df4c5', 20_248_489],
+        ]),
+        [`${ghcr}/sha256:arm`]: layered([['sha256:ffffffffffff', 1]]),
+      }),
+    );
+
+    const sizes = await sizeServiceFor('unused').getImageLayerSizes('ghcr.io/besoeasy/zeronote:1.0.12');
+
+    expect(sizes).toEqual(
+      new Map([
+        ['sha256:6a0ac1617861', 3_864_189],
+        ['sha256:612c0c1df4c5', 20_248_489],
+      ]),
+    );
+  });
+
+  // Every manifest request to Docker Hub counts against its anonymous pull limit.
+  it('does not ask Docker Hub', async () => {
+    const fetch = fakeRegistries({});
+    vi.stubGlobal('fetch', fetch);
+
+    expect(await sizeServiceFor('unused').getImageLayerSizes('wordpress:6')).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('gives up within its time limit when the registry does not answer', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_input: unknown, init?: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            // Like fetch: a signal that has already fired rejects at once.
+            if (init?.signal?.aborted) reject(init.signal.reason);
+            init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+          }),
+      ),
+    );
+
+    const started = Date.now();
+    expect(await sizeServiceFor('unused').getImageLayerSizes('ghcr.io/besoeasy/zeronote:1.0.12', 50)).toBeNull();
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+});
+
 // #2102: the registries an install asks before it registers, which took seconds each on a slow link.
 describe('ImageSizeService.verifyAppArchitecture', () => {
   function serviceWithImages(images: string[]) {

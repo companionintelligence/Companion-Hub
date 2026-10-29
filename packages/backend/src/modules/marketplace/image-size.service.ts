@@ -4,6 +4,12 @@ import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import { MarketplaceService } from './marketplace.service';
 
+/** The parts of a single-platform image manifest the size lookups read. */
+interface RegistryImageManifest {
+  config?: { size?: number };
+  layers?: Array<{ digest?: string; size?: number }>;
+}
+
 interface CachedSize {
   totalBytes: number;
   fetchedAt: number;
@@ -299,6 +305,42 @@ export class ImageSizeService {
    * Query the Docker registry v2 API for the compressed size of an image
    */
   private async getImageSize(image: string): Promise<number | null> {
+    const manifest = await this.fetchPlatformManifest(image, () => AbortSignal.timeout(10000));
+    return manifest ? this.sumManifestSize(manifest) : null;
+  }
+
+  /**
+   * The compressed size of each layer of the image this Hub pulls, by layer digest. Read while an
+   * install's download runs, so its progress shows the whole download from the start (CI-Hub#2177).
+   * `null` when the registry can't be read within `timeoutMs`.
+   *
+   * Not for Docker Hub. There every manifest request counts against the anonymous pull limit, and
+   * the pull itself makes the same requests straight after, so this would spend two more per image.
+   * The pull's own events give a Docker Hub image its total once every layer has reported.
+   */
+  async getImageLayerSizes(image: string, timeoutMs = 5000): Promise<Map<string, number> | null> {
+    if (this.parseImageRef(image).registry === DEFAULT_REGISTRY) {
+      return null;
+    }
+
+    const deadline = AbortSignal.timeout(timeoutMs);
+    const manifest = await this.fetchPlatformManifest(image, () => deadline);
+    const sizes = new Map<string, number>();
+    for (const layer of manifest?.layers ?? []) {
+      if (layer.digest && typeof layer.size === 'number') {
+        sizes.set(layer.digest, layer.size);
+      }
+    }
+    return sizes.size > 0 ? sizes : null;
+  }
+
+  /**
+   * The manifest of the image this Hub pulls: for a manifest list or OCI index, the entry for its own
+   * architecture on Linux. An arm64 Hub runs an amd64-only image under emulation, so amd64 comes
+   * next. Attestation entries carry os `unknown` and fall out here. `signal` gives each request its
+   * time limit.
+   */
+  private async fetchPlatformManifest(image: string, signal: () => AbortSignal): Promise<RegistryImageManifest | null> {
     const { registry, repository, tag } = this.parseImageRef(image);
 
     try {
@@ -307,7 +349,7 @@ export class ImageSizeService {
         Accept: MANIFEST_ACCEPT,
       };
 
-      const token = await this.getAuthToken(registry, repository);
+      const token = await this.getAuthToken(registry, repository, signal());
       if (token) {
         headers.Authorization = `Bearer ${token}`;
       }
@@ -315,23 +357,17 @@ export class ImageSizeService {
       const registryUrl = registryBaseUrl(registry);
 
       const manifestUrl = `${registryUrl}/v2/${repository}/manifests/${tag}`;
-      const response = await fetch(manifestUrl, { headers, signal: AbortSignal.timeout(10000) });
+      const response = await fetch(manifestUrl, { headers, signal: signal() });
 
       if (!response.ok) {
         this.logger.warn(`Failed to fetch manifest for ${image}: ${response.status}`);
         return null;
       }
 
-      const manifest = (await response.json()) as {
-        schemaVersion?: number;
-        config?: { size?: number };
-        layers?: Array<{ size?: number }>;
+      const manifest = (await response.json()) as RegistryImageManifest & {
         manifests?: Array<{ digest?: string; platform?: { architecture?: string; os?: string } }>;
       };
 
-      // Manifest list / OCI index: size the image this Hub pulls, its own architecture on Linux. An
-      // arm64 Hub runs an amd64-only image under emulation, so amd64 comes next. Attestation entries
-      // carry os `unknown` and fall out here.
       if (manifest.manifests) {
         const { architecture } = this.configuration.getConfig();
         const linux = manifest.manifests.filter((m) => (m.platform?.os ?? 'linux') === 'linux');
@@ -342,22 +378,21 @@ export class ImageSizeService {
           manifest.manifests[0];
         if (target?.digest) {
           const subManifestUrl = `${registryUrl}/v2/${repository}/manifests/${target.digest}`;
-          const subResponse = await fetch(subManifestUrl, { headers, signal: AbortSignal.timeout(10000) });
+          const subResponse = await fetch(subManifestUrl, { headers, signal: signal() });
           if (!subResponse.ok) return null;
-          const subManifest = (await subResponse.json()) as { config?: { size?: number }; layers?: Array<{ size?: number }> };
-          return this.sumManifestSize(subManifest);
+          return (await subResponse.json()) as RegistryImageManifest;
         }
         return null;
       }
 
-      return this.sumManifestSize(manifest);
+      return manifest;
     } catch (error) {
-      this.logger.warn(`Error fetching image size for ${image}: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.warn(`Error fetching image manifest for ${image}: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     }
   }
 
-  private sumManifestSize(manifest: { config?: { size?: number }; layers?: Array<{ size?: number }> }): number {
+  private sumManifestSize(manifest: RegistryImageManifest): number {
     let total = 0;
     if (manifest.config?.size) total += manifest.config.size;
     if (manifest.layers) {
@@ -371,21 +406,17 @@ export class ImageSizeService {
   /**
    * Get an auth token for the registry
    */
-  private async getAuthToken(registry: string, repository: string): Promise<string | null> {
+  private async getAuthToken(registry: string, repository: string, signal: AbortSignal = AbortSignal.timeout(10000)): Promise<string | null> {
     try {
       if (registry === DEFAULT_REGISTRY) {
-        const response = await fetch(`https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repository}:pull`, {
-          signal: AbortSignal.timeout(10000),
-        });
+        const response = await fetch(`https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repository}:pull`, { signal });
         if (!response.ok) return null;
         const data = (await response.json()) as { token?: string };
         return data.token ?? null;
       }
 
       if (registry === 'ghcr.io') {
-        const response = await fetch(`https://ghcr.io/token?service=ghcr.io&scope=repository:${repository}:pull`, {
-          signal: AbortSignal.timeout(10000),
-        });
+        const response = await fetch(`https://ghcr.io/token?service=ghcr.io&scope=repository:${repository}:pull`, { signal });
         if (!response.ok) return null;
         const data = (await response.json()) as { token?: string };
         return data.token ?? null;
