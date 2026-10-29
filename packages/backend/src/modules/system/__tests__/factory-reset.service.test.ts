@@ -284,18 +284,42 @@ describe('FactoryResetService', () => {
 
   describe('the apps Companion Portal lists for this device', () => {
     let releaseAllAppsFromPortal: ReturnType<typeof vi.fn>;
+    let resumeExposureSync: ReturnType<typeof vi.fn>;
+    let holdForFactoryReset: ReturnType<typeof vi.fn>;
 
     beforeEach(() => {
       releaseAllAppsFromPortal = vi.fn(async () => 'released');
-      const exposureSync = { releaseAllAppsFromPortal };
+      resumeExposureSync = vi.fn();
+      holdForFactoryReset = vi.fn(() => resumeExposureSync);
+      const exposureSync = { releaseAllAppsFromPortal, holdForFactoryReset };
       moduleRefMock.get.mockImplementation(
         (token: unknown) =>
           (token === BearerOrgMembershipCache ? bearerOrgMembership : token === ExposureSyncService ? exposureSync : undefined) as never,
       );
     });
 
+    // Until the database goes the Hub is still paired, with fewer app rows after each teardown. A sync
+    // in that window released the apps the person chose to keep.
+    it('holds the app sync from before the first app goes until the reset is done', async () => {
+      db.query.app.findMany.mockResolvedValueOnce([{ id: 1, appName: 'wordpress', appStoreSlug: 'ci-marketplace' }]);
+
+      await service.execute();
+
+      expect(holdForFactoryReset).toHaveBeenCalledTimes(1);
+      expect(holdForFactoryReset.mock.invocationCallOrder[0]).toBeLessThan(uninstallExecute.mock.invocationCallOrder[0] ?? 0);
+      expect(resumeExposureSync).toHaveBeenCalledTimes(1);
+      expect(resumeExposureSync.mock.invocationCallOrder[0]).toBeGreaterThan(db.execute.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY);
+    });
+
+    it('lifts the hold when the reset stops partway', async () => {
+      db.execute.mockRejectedValueOnce(new Error('TRUNCATE failed'));
+
+      await expect(service.execute()).rejects.toThrow('TRUNCATE failed');
+      expect(resumeExposureSync).toHaveBeenCalledTimes(1);
+    });
+
     // Kept by default: pairing this Hub again reinstalls them from that list.
-    it('keeps them listed, and asks the Portal nothing, unless the person asked', async () => {
+    it('keeps them listed and asks the Portal nothing unless the person asked', async () => {
       const result = await service.execute();
 
       expect(result.portalApps).toBe('kept');
@@ -318,7 +342,7 @@ describe('FactoryResetService', () => {
       await expect(service.execute({ removeAppsFromPortal: true })).resolves.toMatchObject({ portalApps: 'not_paired' });
     });
 
-    it('still resets when the Portal refuses, and says the apps are still listed', async () => {
+    it('still resets when the Portal refuses and says the apps are still listed', async () => {
       releaseAllAppsFromPortal.mockRejectedValueOnce(new Error('Companion Portal answered 503'));
 
       const result = await service.execute({ removeAppsFromPortal: true });

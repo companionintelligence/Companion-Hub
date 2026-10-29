@@ -168,7 +168,7 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   const setFactoryResetDialogOpen = useCallback(
     (open: boolean) => {
       // The Hub is already reset when the dialog is only left open to say the Portal still lists its
-      // apps, so closing it goes on to sign in, as a reset that needed no warning does.
+      // apps. Closing it goes on to sign in, as a reset that needed no warning does.
       if (!open && factoryResetPortalAppsLeft) {
         window.location.href = '/login';
         return;
@@ -202,11 +202,13 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
         throw result.error instanceof Error ? result.error : new Error(String(result.error));
       }
       clearClientHubState();
-      // Asked to take the apps off the Portal, and it couldn't be reached: say so before leaving, since a
-      // toast would go with the page.
+      // Asked to take the apps off the Portal and it couldn't be reached: say so before leaving, since a
+      // toast would go with the page. The X, Escape and a click outside can close the dialog while the
+      // reset runs, so it opens again to say it. Closed, it left the page on a Hub that was reset.
       if ((result.data as { portalApps?: string } | undefined)?.portalApps === 'failed') {
         setFactoryResetting(false);
         setFactoryResetPortalAppsLeft(true);
+        setFactoryResetOpen(true);
         return;
       }
       toast.success(t('SETTINGS_FACTORY_RESET_SUCCESS'));

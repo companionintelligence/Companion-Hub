@@ -90,7 +90,7 @@ const FACTORY_RESET_TABLES = [
 /**
  * What became of the apps Companion Portal lists for this device.
  *
- * - `kept`: the person didn't ask to remove them. They stay listed, and pairing this Hub again
+ * - `kept`: the person didn't ask to remove them. They stay listed and pairing this Hub again
  *   reinstalls them (`PairingAppRestoreService`).
  * - `removed`: the Portal took the empty app list and released them.
  * - `not_paired`: the Hub had no tunnel registration, so there was nothing to tell.
@@ -107,7 +107,7 @@ export interface FactoryResetOptions {
 export class FactoryResetService {
   /**
    * How long the reset waits for the Portal to take the empty app list. A Portal that is down or slow
-   * must never hold the reset; the apps then stay listed, and the result says so.
+   * must never hold the reset. The apps then stay listed and the result says so.
    */
   static readonly PORTAL_RELEASE_TIMEOUT_MS = 8_000;
 
@@ -241,22 +241,30 @@ export class FactoryResetService {
 
     this.logger.warn('Factory reset requested — tearing down apps, wiping data mounts, and clearing Hub state');
 
-    await this.tearDownApps();
-    // Asked as this device, so before `wipeDatabase` takes the registration and `resetRegistration` the key.
-    const portalApps: FactoryResetPortalApps = options.removeAppsFromPortal ? await this.releaseAppsFromPortal() : 'kept';
-    await this.wipeDataMounts();
-    await this.wipeDatabase();
-    await this.clearRegistrationArtifacts();
-    // `resetSettings` takes the device key, so a pairing this stops keeps none that Portal issued it.
-    await this.registrationService.resetRegistration({ reason: 'manual', removesDeviceKey: true });
-    // After the pairing under way is stopped, which may have written its apps check meanwhile.
-    await this.clearOldHubRequests();
-    await this.resetSettings();
-    await this.forgetSettingsInMemory();
-    await this.forgetInferenceState();
-    await this.restoreCloudAppStore();
-    this.cache.clear();
-    await this.clearBearerOrgMembership();
+    // Until the database goes, the Hub is still paired while its app rows go one by one. A sync then
+    // released the apps from the Portal whatever the person chose.
+    const resumeExposureSync = this.holdExposureSync();
+    let portalApps: FactoryResetPortalApps;
+    try {
+      await this.tearDownApps();
+      // Asked as this device, so before `wipeDatabase` takes the registration and `resetRegistration` the key.
+      portalApps = options.removeAppsFromPortal ? await this.releaseAppsFromPortal() : 'kept';
+      await this.wipeDataMounts();
+      await this.wipeDatabase();
+      await this.clearRegistrationArtifacts();
+      // `resetSettings` takes the device key, so a pairing this stops keeps none that Portal issued it.
+      await this.registrationService.resetRegistration({ reason: 'manual', removesDeviceKey: true });
+      // After the pairing under way is stopped, which may have written its apps check meanwhile.
+      await this.clearOldHubRequests();
+      await this.resetSettings();
+      await this.forgetSettingsInMemory();
+      await this.forgetInferenceState();
+      await this.restoreCloudAppStore();
+      this.cache.clear();
+      await this.clearBearerOrgMembership();
+    } finally {
+      resumeExposureSync();
+    }
 
     this.logger.warn('Factory reset complete — Hub is ready for first-operator setup');
 
@@ -271,10 +279,27 @@ export class FactoryResetService {
   }
 
   /**
+   * Hold the Cloudflare sync for the length of the reset (`ExposureSyncService.holdForFactoryReset`).
+   * Returns the function that lifts the hold. A sync service that is missing costs a warning, never
+   * the reset.
+   */
+  private holdExposureSync(): () => void {
+    try {
+      const resume = this.moduleRef.get(ExposureSyncService, { strict: false })?.holdForFactoryReset();
+      if (resume) {
+        return resume;
+      }
+    } catch (error) {
+      this.logger.warn(`Factory reset could not hold the app sync: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return () => undefined;
+  }
+
+  /**
    * Tell the Portal this Hub serves no apps, so it releases every app it lists for the device. Only
    * when the person asked for it: by default the list stays, so pairing again restores the apps.
-   * Never fails the reset. A Portal that is down, slow or refuses leaves the apps listed, and the
-   * result says so.
+   * Never fails the reset. A Portal that is down, slow or refuses leaves the apps listed. The result
+   * says so.
    */
   private async releaseAppsFromPortal(): Promise<FactoryResetPortalApps> {
     try {

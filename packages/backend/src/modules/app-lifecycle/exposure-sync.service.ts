@@ -350,6 +350,9 @@ export class ExposureSyncService implements OnModuleDestroy {
   private cloudflareRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private cloudflareRetryAttempt = 0;
 
+  /** Factory resets under way. No Cloudflare pass goes out while one runs; see {@link holdForFactoryReset}. */
+  private factoryResetHolds = 0;
+
   /**
    * Reserves HTTPS port 443 for the Hub on the tailnet.
    *
@@ -872,15 +875,36 @@ export class ExposureSyncService implements OnModuleDestroy {
   }
 
   /**
-   * Tell Companion Portal this Hub serves no apps, so it releases every app it lists for the device:
-   * their rows and DNS records go, and a custom domain bound to one of them is parked, kept by the
+   * Hold every Cloudflare pass until the returned function is called. A factory reset deletes each
+   * app's row as it tears the app down but keeps the device registration until it wipes the database.
+   * A pass in between (the 5-minute poll, a retry) named only the apps left. The Portal released the
+   * rest, though the person had chosen to keep them listed for the next pairing to reinstall.
+   * `releaseAllAppsFromPortal` doesn't go through this hold.
+   */
+  public holdForFactoryReset(): () => void {
+    this.factoryResetHolds += 1;
+    let resumed = false;
+    return () => {
+      if (resumed) return;
+      resumed = true;
+      this.factoryResetHolds -= 1;
+    };
+  }
+
+  /**
+   * Tell Companion Portal this Hub serves no apps, so it releases every app it lists for the device.
+   * Their rows and DNS records go. A custom domain bound to one of them is parked, kept by the
    * organization until it is bound again. A factory reset sends this when the person asks for the
-   * apps to come off the Portal too. Otherwise the list stays, and pairing this Hub again reinstalls
+   * apps to come off the Portal too. Otherwise the list stays and pairing this Hub again reinstalls
    * them (`PairingAppRestoreService`).
    *
    * Not `triggerCloudflareSync`: that one names the apps in the table and waits while a pairing check
-   * or a restore holds it, and both holds exist to stop exactly this release. Only the Hub's own entry
-   * goes out, so its tunnel route stays. No custom-domain report, which the Portal reads as no news.
+   * or a restore holds it. Both holds exist to stop this very release. Only the Hub's own entry goes
+   * out, so its tunnel route stays. No custom-domain report, which the Portal reads as no news.
+   *
+   * The tunnel sync leaves the ports exposed This Machine Only or on the Private VPN, whose rows the
+   * registry pins. Only the Hub removes those (`PortExposeService.releaseUnrestoredRegistryEntries`),
+   * so they are removed here too. Left, the next pairing put them back.
    *
    * Throws when the Portal didn't take it, so the caller can say the apps are still listed.
    */
@@ -895,6 +919,16 @@ export class ExposureSyncService implements OnModuleDestroy {
     if (!result.ok) {
       throw new Error(result.errorMessage ?? `Companion Portal answered ${result.errorStatus ?? 'with an error'}`);
     }
+
+    const { PortExposeService } = await import('../custom-apps/port-expose.service');
+    const portExpose = this.moduleRef.get(PortExposeService, { strict: false });
+    if (portExpose) {
+      const released = await portExpose.releaseUnrestoredRegistryEntries(await this.cloudflareClientService.getDeviceApplications());
+      if (released.length > 0) {
+        this.logger.info(`[Portal] Removed Companion Portal's entries for ${released.length} exposed port(s): ${released.join(', ')}`);
+      }
+    }
+
     this.logger.info(`[Cloudflare] Told Companion Portal this Hub serves no apps; it releases every app it listed for organization ${orgInfo.id}`);
     return 'released';
   }
@@ -902,6 +936,11 @@ export class ExposureSyncService implements OnModuleDestroy {
   public async triggerCloudflareSync(options?: ExposureSyncOptions) {
     this.cloudflareSyncDepth += 1;
     try {
+      if (this.factoryResetHolds > 0) {
+        this.logger.debug('[Cloudflare] Skipping sync while a factory reset runs');
+        return;
+      }
+
       /*
        * ⚠ THE FIRST SYNC AFTER A PAIRING CAN RELEASE EVERY APP ON THE DEVICE. Companion Portal releases
        * each app on the device that a sync leaves out, and a Hub reinstalled and paired back onto its

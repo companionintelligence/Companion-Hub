@@ -1123,7 +1123,7 @@ describe('GeneralActionsContainer', () => {
       await userEvent.type(screen.getByTestId('factory-reset-confirmation-input'), 'core');
     }
 
-    it('keeps them listed by default, and says so', async () => {
+    it('keeps them listed by default and says so', async () => {
       mockFactoryReset.mockResolvedValue({ data: { success: true, portalApps: 'kept' } } as Awaited<ReturnType<typeof factoryReset>>);
       await openAndConfirmName();
 
@@ -1159,6 +1159,22 @@ describe('GeneralActionsContainer', () => {
       expect(await screen.findByTestId('factory-reset-portal-apps-left')).toHaveTextContent('delete this device in the Portal');
       expect(screen.getByTestId('factory-reset-continue-btn')).toHaveTextContent('Continue to sign in');
       expect(screen.queryByTestId('factory-reset-confirm-btn')).not.toBeInTheDocument();
+    });
+
+    // The X, Escape and a click outside still close the dialog while the reset runs.
+    it('opens again to say so when the dialog was closed while the reset ran', async () => {
+      let answer: (value: Awaited<ReturnType<typeof factoryReset>>) => void = () => undefined;
+      mockFactoryReset.mockImplementation(() => new Promise((resolve) => (answer = resolve)) as unknown as ReturnType<typeof factoryReset>);
+      await openAndConfirmName();
+
+      await userEvent.click(screen.getByLabelText("Also remove this Hub's apps from Companion Portal"));
+      await userEvent.click(screen.getByTestId('factory-reset-confirm-btn'));
+      await userEvent.keyboard('{Escape}');
+      await waitFor(() => expect(screen.queryByTestId('factory-reset-confirm-btn')).not.toBeInTheDocument());
+
+      answer({ data: { success: true, portalApps: 'failed' } } as Awaited<ReturnType<typeof factoryReset>>);
+
+      expect(await screen.findByTestId('factory-reset-portal-apps-left')).toBeInTheDocument();
     });
 
     it('starts unticked again after the dialog is closed', async () => {
