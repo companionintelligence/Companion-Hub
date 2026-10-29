@@ -155,3 +155,58 @@ describe('DockerService.pullImages: what it logs', () => {
     expect(infoLines()).toContainEqual(expect.stringMatching(/0 of 1 images done, 1 of 2 layers, 1\.0 of 4\.0 MB/));
   });
 });
+
+describe('DockerService.pullImages: the download size it reports (#2177)', () => {
+  const MB = 1024 * 1024;
+  const A = 'aaaaaaaaaaaa';
+  const B = 'bbbbbbbbbbbb';
+  const C = 'cccccccccccc';
+  const digest = (id: string) => `sha256:${id}${'0'.repeat(52)}`;
+
+  /** Three layers announced, then the first starts downloading, then the pull finishes. */
+  const threeLayerPull: FollowProgress = (_stream, onFinished, onProgress) => {
+    for (const id of [A, B, C]) onProgress?.({ id, status: 'Pulling fs layer' });
+    onProgress?.({ id: A, status: 'Downloading', progressDetail: { current: MB, total: 4 * MB } });
+    setTimeout(() => onFinished(null, []), 5);
+  };
+
+  it('says the total is not known while layers are still waiting to report their size', async () => {
+    const { service } = serviceWithPull(threeLayerPull);
+    const ticks: Array<{ totalBytes: number; totalBytesKnown: boolean }> = [];
+
+    await service.pullImages([IMAGE], { forcePull: true, onProgress: (event) => ticks.push(event) });
+
+    const downloading = ticks.find((tick) => tick.totalBytes === 4 * MB);
+    expect(downloading?.totalBytesKnown).toBe(false);
+    expect(ticks.at(-1)?.totalBytesKnown).toBe(true);
+  });
+
+  it('reports the whole download once the registry has given the layer sizes', async () => {
+    const { service } = serviceWithPull(threeLayerPull);
+    const ticks: Array<{ totalBytes: number; totalBytesKnown: boolean }> = [];
+    const sizes = new Map([
+      [digest(A), 4 * MB],
+      [digest(B), 2 * MB],
+      [digest(C), 20 * MB],
+    ]);
+
+    await service.pullImages([IMAGE], {
+      forcePull: true,
+      layerSizes: async () => sizes,
+      onProgress: (event) => ticks.push(event),
+    });
+
+    expect(ticks.filter((tick) => tick.totalBytesKnown).map((tick) => tick.totalBytes)).toContain(26 * MB);
+    expect(ticks.some((tick) => tick.totalBytesKnown && tick.totalBytes < 26 * MB)).toBe(false);
+  });
+
+  it('pulls without waiting for the registry, and a lookup that fails changes nothing', async () => {
+    const { service } = serviceWithPull(threeLayerPull);
+    const never = new Promise<ReadonlyMap<string, number>>(() => {});
+
+    await expect(service.pullImages([IMAGE], { forcePull: true, layerSizes: () => never })).resolves.toBeUndefined();
+    await expect(
+      service.pullImages([IMAGE], { forcePull: true, layerSizes: () => Promise.reject(new Error('registry down')) }),
+    ).resolves.toBeUndefined();
+  });
+});
