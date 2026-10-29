@@ -12,6 +12,7 @@ const fixtures = vi.hoisted(() => ({
   tailscaleStatus: { installed: false, connected: false, ip: null, hostname: null, backendState: null } as Record<string, unknown>,
   tailscaleFails: false,
   cloudflareFails: false,
+  tunnelEnabled: true,
   hardware: { gpu: { containerHostKind: 'docker-desktop' } } as Record<string, unknown>,
 }));
 
@@ -45,7 +46,9 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
     queryKey: ['cf'],
     queryFn: async () => {
       if (fixtures.cloudflareFails) throw new Error('tunnel status failed');
-      return { tunnelEnabled: true, tunnelId: 'fe950a10-8659', message: 'Tunnel is managed by CI-Cloud.' };
+      return fixtures.tunnelEnabled
+        ? { tunnelEnabled: true, tunnelId: 'fe950a10-8659', message: 'Tunnel is managed by CI-Cloud.' }
+        : { tunnelEnabled: false, tunnelId: null, message: 'Tunnel is managed by CI-Cloud.' };
     },
   }),
   getStatus3QueryKey: () => ['ts'],
@@ -107,6 +110,7 @@ describe('NetworkSettingsContainer', () => {
     fixtures.tailscaleStatus = { installed: false, connected: false, ip: null, hostname: null, backendState: null };
     fixtures.tailscaleFails = false;
     fixtures.cloudflareFails = false;
+    fixtures.tunnelEnabled = true;
     fixtures.hardware = { gpu: { containerHostKind: 'docker-desktop' } };
   });
 
@@ -138,6 +142,24 @@ describe('NetworkSettingsContainer', () => {
 
     await waitFor(() => expect(within(screen.getByTestId('private-vpn-card')).getByText('SETTINGS_NETWORK_INACTIVE')).toBeTruthy());
     expect(within(screen.getByTestId('private-vpn-card')).queryByTestId('tailscale-status-error')).toBeNull();
+  });
+
+  it("says what to do when there is no tunnel, and never shows the status route's fixed message", async () => {
+    fixtures.tunnelEnabled = false;
+    renderContainer();
+
+    const card = await screen.findByTestId('cloudflare-tunnel-card');
+    await waitFor(() => expect(within(card).getByTestId('cloudflare-tunnel-none').textContent).toBe('SETTINGS_NETWORK_CLOUDFLARE_NONE'));
+    expect(within(card).getByText('SETTINGS_NETWORK_INACTIVE')).toBeTruthy();
+    expect(within(card).queryByText('Tunnel is managed by CI-Cloud.')).toBeNull();
+  });
+
+  it('shows no "no tunnel" line while the tunnel is up', async () => {
+    renderContainer();
+
+    const card = await screen.findByTestId('cloudflare-tunnel-card');
+    await waitFor(() => expect(within(card).getByText('fe950a10-8659')).toBeTruthy());
+    expect(within(card).queryByTestId('cloudflare-tunnel-none')).toBeNull();
   });
 
   it('shows an error and a retry when the tunnel status cannot be loaded, not Inactive', async () => {
