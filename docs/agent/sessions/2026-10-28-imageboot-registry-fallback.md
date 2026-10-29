@@ -39,12 +39,12 @@ Avoid treating a transient registry failure as a Hub image boot failure while ke
 
 - [x] `bash -n scripts/smoke-boot-image.sh`
 - [x] Mocked Docker CLI: verified primary pull failures use the ECR fallback for both dependencies and the smoke script completes.
-- [ ] GitHub Actions image-boot workflow — run on the PR branch; must pass before merge.
+- [x] GitHub Actions image-boot workflow — run `40797149232` passed on the PR branch; Docker Hub supplied both images and the Hub stayed healthy for the 15-second settle period.
 - [ ] `bin/agent-validate-shift` — not run; the local Docker daemon is stopped and the GitHub image-boot workflow provides the end-to-end container check.
 
 ## Open items / handoff
 
-The current Hub release image-boot run failed twice while fetching Postgres from public ECR. This follow-up needs its own image-boot workflow run against the PR branch. The user's production `v0.3.8` release workflow is already running against the merged dev SHA and should not be restarted for this smoke-test-only improvement.
+The current Hub release image-boot run failed twice while fetching Postgres from public ECR; this PR's end-to-end run passed using Docker Hub. The user's production `v0.3.8` release workflow is already running against the merged dev SHA and should not be restarted for this smoke-test-only improvement.
 
 ## Reviews run
 
