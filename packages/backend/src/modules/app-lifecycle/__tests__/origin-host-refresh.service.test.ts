@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import type { ConfigurationService } from '@/core/config/configuration.service';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { AppFilesManager } from '@/modules/apps/app-files-manager';
 import type { AppsRepository } from '@/modules/apps/apps.repository';
@@ -40,8 +39,7 @@ describe('OriginHostRefreshService', () => {
     files.getDockerComposeYaml.mockImplementation((async (appUrn: string) => ({ path: '', content: composes[appUrn] ?? null })) as never);
     lifecycle = mock<AppLifecycleService>();
     lifecycle.restartApp.mockResolvedValue({ requestId: 'r' } as never);
-    const config = { getConfig: () => ({ localDomain: 'localhost' }) } as unknown as ConfigurationService;
-    service = new OriginHostRefreshService(mock<LoggerService>(), config, registration, apps, files, lifecycle);
+    service = new OriginHostRefreshService(mock<LoggerService>(), registration, apps, files, lifecycle);
   });
 
   it('restarts a running Public Web app whose router still names the old device', async () => {
@@ -63,6 +61,23 @@ describe('OriginHostRefreshService', () => {
 
     await expect(service.refreshStaleOriginHosts()).resolves.toEqual([]);
     expect(lifecycle.restartApp).not.toHaveBeenCalled();
+  });
+
+  it('leaves an app routed under the current device on another local domain, which a restart would not change', async () => {
+    // The compose file takes its local domain from the app's env first, so it can differ from the Hub setting.
+    apps.getApps.mockResolvedValue([publicApp('wordpress')]);
+    composes['wordpress:ci-marketplace'] = composeFor('wordpress-ci-marketplace-office-acme.ci.lan');
+
+    await expect(service.refreshStaleOriginHosts()).resolves.toEqual([]);
+    expect(lifecycle.restartApp).not.toHaveBeenCalled();
+  });
+
+  it('restarts an app whose rule only starts with the current name', async () => {
+    apps.getApps.mockResolvedValue([publicApp('wordpress')]);
+    composes['wordpress:ci-marketplace'] = composeFor('wordpress-ci-marketplace-office-acme2.localhost');
+    registration.getDeviceRegistrationInfo.mockResolvedValue({ hubSubdomain: 'office-acme', slug: 'acme' } as never);
+
+    await expect(service.refreshStaleOriginHosts()).resolves.toEqual(['wordpress:ci-marketplace']);
   });
 
   it('leaves stopped apps, apps without a public route, apps just restarted for another reason and apps with no compose file', async () => {
