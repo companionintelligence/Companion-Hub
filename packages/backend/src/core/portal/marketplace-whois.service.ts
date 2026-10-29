@@ -478,7 +478,7 @@ export class MarketplaceWhoIsService {
 
   /**
    * {@link hubManageVerdict} from the Hub's own records, with no Portal call. The claiming operator is
-   * read from the database. Anyone else's role is the one the Hub stored at sign-in or at the hourly
+   * read from the database. Anyone else's role is the one the Hub stored at sign-in or at the
    * membership check (`user.orgRole`), as for {@link customAppActionsHint}. A stored owner or admin role
    * counts only where the routes can read one: a linked person on a paired Hub. `unknown` when no role is
    * stored for someone the Portal could be asked about, or when the records can't be read.
@@ -749,7 +749,7 @@ export class MarketplaceWhoIsService {
 
   /**
    * What the UI should offer the person behind a request on a custom app, answered without a Portal
-   * call. A linked operator's role is the one the Hub stored at sign-in and refreshes with the hourly
+   * call. A linked operator's role is the one the Hub stored at sign-in and refreshes with the
    * membership check (`user.orgRole`); asking the Portal fresh took one to five seconds, and the custom
    * app page waited on it. When no role is stored, the Portal is asked now ({@link customAppActions}).
    *

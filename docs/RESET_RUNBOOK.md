@@ -106,7 +106,7 @@ Best when the Hub is healthy but auth/setup is stuck after a partial reset.
 - Opens CI Portal at `/home?remove_device=<device id>`, where an owner or admin confirms deleting the device
 - Deleting the device in CI Portal removes its web addresses and apps from the account
 - While the page stays open, the Hub checks in about every 30 seconds for up to 15 minutes. When CI Portal answers `DEVICE_NOT_ACTIVE`, the Hub resets and opens the pairing screen
-- If the page closes first, the hourly check-in resets the Hub the same way
+- If the page closes first, the next check-in resets the Hub the same way, within 30 minutes
 
 The Hub cannot remove itself from CI Portal. Its device key is also held by first-party apps, so CI Portal accepts removal only from a signed-in owner or admin.
 

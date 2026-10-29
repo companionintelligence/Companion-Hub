@@ -75,8 +75,21 @@ import { AuthService } from '@/modules/auth/auth.service';
 import { PortalPushKeyService } from './portal-push-key.service';
 import { describePublicReachability, probePublicHostname } from './public-reachability';
 
-const PERIODIC_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const CLOUD_VALIDATION_THROTTLE_MS = 30 * 1000;
+/**
+ * How often the check-in timer ticks. The Portal trusts a Hub's last check-in for an hour
+ * (CI-Portal#953). A tick that comes just inside the skip window below sends nothing and the next one
+ * does, so the longest gap between check-ins is just under 30 minutes.
+ */
+export const PERIODIC_VALIDATION_INTERVAL_MS = 15 * 60 * 1000;
+/**
+ * A periodic tick sends nothing when a check-in ran this recently. Status reads check in too: the
+ * status report every 15 minutes (`write_status_report`), the status page and the registration
+ * guard. Without this the timer added a second, unaligned stream of check-ins on top of them. The
+ * window stops one status-read throttle short of the interval, so a report that lands just after a
+ * tick that did check in is throttled instead of sending a second one.
+ */
+const PERIODIC_VALIDATION_SKIP_WITHIN_MS = PERIODIC_VALIDATION_INTERVAL_MS - CLOUD_VALIDATION_THROTTLE_MS;
 const BOOTSTRAP_VALIDATION_TIMEOUT_MS = 10 * 1000;
 const PHASE_READ_CACHE_TTL_MS = 30 * 1000;
 /** Per step of each registration-time probe, which retries every second for a minute. */
@@ -470,14 +483,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     if (isOperational(this._currentPhase)) {
+      // The shared check-in. A status read that comes in while this one is slow joins it instead of
+      // sending a second. The time it finished is recorded for the throttle.
       await Promise.race([
-        this.validateRegistrationWithCloud(),
+        this.runSharedCloudValidation(),
         new Promise<void>((resolve) => {
           setTimeout(resolve, BOOTSTRAP_VALIDATION_TIMEOUT_MS);
         }),
-      ]).catch((e) => this.logger.error('Initial registration validation failed', e));
+      ]);
 
-      this.lastCloudValidationAt = Date.now();
       this.startPeriodicValidation();
     } else {
       this.pollRegistration();
@@ -680,12 +694,25 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       return this.cloudValidationInFlight;
     }
 
-    const now = Date.now();
-    if (this.lastCloudValidationAt > 0 && now - this.lastCloudValidationAt < CLOUD_VALIDATION_THROTTLE_MS) {
+    if (this.checkedInWithin(CLOUD_VALIDATION_THROTTLE_MS)) {
       return null;
     }
 
-    this.cloudValidationInFlight = this.validateRegistrationWithCloud()
+    return this.runSharedCloudValidation();
+  }
+
+  /**
+   * Whether the last check-in finished less than `ms` ago. A wall clock stepped back past it (NTP
+   * correcting a fast clock) counts as long ago, or every check-in would wait for the clock to catch up.
+   */
+  private checkedInWithin(ms: number): boolean {
+    const elapsed = Date.now() - this.lastCloudValidationAt;
+    return this.lastCloudValidationAt > 0 && elapsed >= 0 && elapsed < ms;
+  }
+
+  /** The check-in in flight, or a new one. Callers share it. It records when the last one ran. */
+  private runSharedCloudValidation(): Promise<CheckInOutcome> {
+    this.cloudValidationInFlight ??= this.validateRegistrationWithCloud()
       .catch((e): CheckInOutcome => {
         this.logger.error('Registration validation check failed', e);
         return 'failed';
@@ -1021,8 +1048,22 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     this.periodicValidationInterval = setInterval(() => {
-      this.validateRegistrationWithCloud().catch((e) => this.logger.error('Registration validation check failed', e));
+      this.runPeriodicValidation();
     }, PERIODIC_VALIDATION_INTERVAL_MS);
+  }
+
+  /**
+   * The timer's check-in, unless another ran in the last 14½ minutes. On a Hub whose status report
+   * runs, that one is the check-in and the timer sends nothing; the timer keeps the cadence when the
+   * report stops (its queue is down, say). It doesn't need `CI_CLOUD_URL` to run: the check-in also
+   * restarts a tunnel whose boot-time read failed.
+   */
+  private runPeriodicValidation(): void {
+    if (this.checkedInWithin(PERIODIC_VALIDATION_SKIP_WITHIN_MS)) {
+      return;
+    }
+
+    void this.runSharedCloudValidation();
   }
 
   /**
@@ -1062,7 +1103,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       const deviceId = await this.getDeviceId();
 
       // Best-effort: piggyback what this node knows about itself on the check-in this method
-      // already sends every hour, rather than adding a second round trip to Portal. See
+      // already sends at least every 15 minutes, rather than adding a second round trip to Portal. See
       // `check-in-payload.ts` for the rules that govern the body, and `CheckIn.ts` on the Portal
       // side for the field-absent-vs-blank contract they follow.
       const diagnostics = await this.collectCheckInDiagnostics();
@@ -1870,7 +1911,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   // Cache device-ID resolution because app lifecycle commands, bootstrap, and
-  // hourly validation all use the same environment, `dmidecode`,
+  // periodic check-ins all use the same environment, `dmidecode`,
   // `systeminformation`, sysfs, machine ID, and generated UUID chain. Resolve and
   // log those probes once per process.
   private deviceIdPromise?: Promise<string>;
@@ -2018,6 +2059,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           clearInterval(this.checkInterval);
           this.checkInterval = null;
         }
+        // Registered while this loop waited (restored from the database by a status read, say).
+        this.startPeriodicValidation();
         return;
       }
 
@@ -2145,6 +2188,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         throw error;
       }
       await this.undoOvertakenPairing(organizationId);
+    }
+
+    // Pairing by code or by Portal callback stops the registration loop before it starts the
+    // check-in timer. Nothing else would start it until the next boot.
+    if (!pairing.aborted && isOperational(this._currentPhase)) {
+      this.startPeriodicValidation();
     }
   }
 

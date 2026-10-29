@@ -33,7 +33,7 @@ packages/backend/
 | `tailscale` / `cloudflare` | Optional sidecar integrations |
 | `inference` | Backend registry, model resolution, routing to a local engine. The OpenAI-compatible `/api/inference/v1/*` routes carry `InferenceAccessGuard`; `apps/:slug/credentials*` carries `InternalOriginGuard` (origin only, no key — see [App inference handout](#app-inference-handout)). |
 | `hub-pool` | Multi-Hub inference pooling: peer identity, pairing, discovery, ranking, and the proxy. The app-facing `v1/*` and `api/*` proxy routes (and the root-level `/api/version`, `/api/tags`) carry `InferenceAccessGuard`; `local/*` carries `PoolPeerGuard`. |
-| `registration` | Portal pairing, device ID, and registration-state drift. `check-in-response.ts` maps Portal's check-in answers to Hub responses, and `GET /registration/phase` reports the phase and last check-in without sending one — see [`portal-check-in.md`](../portal-check-in.md). The hourly check-in also carries this Hub's own status (phase, degraded reasons, tunnel health, Tailscale connectivity, version) for Portal's org fleet report — see `check-in-payload.ts`; every field is optional and absent means "no report this time", never "the value is gone". |
+| `registration` | Portal pairing, device ID, and registration-state drift. `check-in-response.ts` maps Portal's check-in answers to Hub responses, and `GET /registration/phase` reports the phase and last check-in without sending one — see [`portal-check-in.md`](../portal-check-in.md). The check-in also carries this Hub's own status (phase, degraded reasons, tunnel health, Tailscale connectivity, version) for Portal's org fleet report — see `check-in-payload.ts`; every field is optional and absent means "no report this time", never "the value is gone". |
 
 ## App volumes
 
@@ -1016,10 +1016,10 @@ about the signed-in person.
 
 `tools/list` leaves these tools out for a key they would refuse. It reads the Hub's own records
 (`storedHubManageVerdictFor`): the claimer, the creator's revoked access and the role stored for the
-creator at sign-in or at the hourly membership check. Listing never asks the Portal; with no role stored,
+creator at sign-in or at the membership check after each accepted check-in. Listing never asks the Portal; with no role stored,
 the tools are listed and the call decides. The 2026-07-28 handler builds a server per request with only
 the tools the key may list, so there a left-out tool is unknown to `tools/call` too. A creator promoted
-since their role was stored waits there for their next sign-in or the hourly membership check. The key
+since their role was stored waits there for their next sign-in or the next membership check. The key
 list in Security settings marks the keys these tools refuse (`hubWideBlocked` on `GET /api/api-keys`),
 from the same records.
 

@@ -6,7 +6,7 @@ A registered Hub checks in with Companion Portal to confirm that Portal still ac
 
 The Hub sends `POST /api/devices/check-in` with its device key in `x-device-key`:
 
-- About 10 seconds after boot, then every hour.
+- About 10 seconds after boot, then every 15 minutes. A tick sends nothing when another check-in ran in the last 14½ minutes, so on a Hub whose status report runs the report's check-in is the only one. The longest gap between check-ins is just under 30 minutes.
 - Whenever something reads the live registration status, at most once every 30 seconds. That includes `GET /api/registration/status`, the marketplace routes behind `RegistrationGuard`, the MCP registration tool, app rehydration, and the status report that writes `CI_HUB_STATUS.md`. On the fleet, check-ins landed every 15 minutes, in step with that report.
 
 Each accepted check-in updates the device's `last_seen` in Portal. Portal's organization status report marks a device stale after 3 hours without one.

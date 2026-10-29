@@ -1086,7 +1086,7 @@ describe('MarketplaceWhoIsService', () => {
       });
 
       /*
-       * The hourly membership sweep revokes the claimer too when the Portal removes them. They can't
+       * The membership sweep revokes the claimer too when the Portal removes them. They can't
        * sign in, so the routes never see them, but a key they created asks about them by id.
        */
       it('loses the pass once their access is revoked, and follows the Portal like anyone else', async () => {
