@@ -1104,7 +1104,70 @@ describe('GeneralActionsContainer', () => {
 
     await userEvent.click(confirm);
     await waitFor(() => {
-      expect(mockFactoryReset).toHaveBeenCalledWith({ body: { confirmation: 'core' } });
+      expect(mockFactoryReset).toHaveBeenCalledWith({ body: { confirmation: 'core', removeAppsFromPortal: false } });
+    });
+  });
+
+  describe('the apps Companion Portal lists for this Hub', () => {
+    beforeEach(() => {
+      mockUseAppContext.mockReturnValue({
+        version: { current: '4.7.0', latest: '4.7.0', body: '', releases: [] },
+        refreshAppContext: vi.fn(),
+        userSettings: { ciHubDeviceSlug: 'core' },
+      } as unknown as ReturnType<typeof useAppContext>);
+    });
+
+    async function openAndConfirmName() {
+      render(<GeneralActionsContainer />);
+      await userEvent.click(await screen.findByTestId('factory-reset-btn'));
+      await userEvent.type(screen.getByTestId('factory-reset-confirmation-input'), 'core');
+    }
+
+    it('keeps them listed by default, and says so', async () => {
+      mockFactoryReset.mockResolvedValue({ data: { success: true, portalApps: 'kept' } } as Awaited<ReturnType<typeof factoryReset>>);
+      await openAndConfirmName();
+
+      expect(screen.getByLabelText("Also remove this Hub's apps from Companion Portal")).not.toBeChecked();
+      expect(screen.getByTestId('factory-reset-portal-apps-kept')).toHaveTextContent('Your apps stay listed in Companion Portal.');
+
+      await userEvent.click(screen.getByTestId('factory-reset-confirm-btn'));
+      await waitFor(() => {
+        expect(mockFactoryReset).toHaveBeenCalledWith({ body: { confirmation: 'core', removeAppsFromPortal: false } });
+      });
+    });
+
+    it('asks the Hub to remove them when the box is ticked', async () => {
+      mockFactoryReset.mockResolvedValue({ data: { success: true, portalApps: 'removed' } } as Awaited<ReturnType<typeof factoryReset>>);
+      await openAndConfirmName();
+
+      await userEvent.click(screen.getByLabelText("Also remove this Hub's apps from Companion Portal"));
+      expect(screen.queryByTestId('factory-reset-portal-apps-kept')).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByTestId('factory-reset-confirm-btn'));
+      await waitFor(() => {
+        expect(mockFactoryReset).toHaveBeenCalledWith({ body: { confirmation: 'core', removeAppsFromPortal: true } });
+      });
+    });
+
+    it('stays open to say the Portal still lists them when it could not be told', async () => {
+      mockFactoryReset.mockResolvedValue({ data: { success: true, portalApps: 'failed' } } as Awaited<ReturnType<typeof factoryReset>>);
+      await openAndConfirmName();
+
+      await userEvent.click(screen.getByLabelText("Also remove this Hub's apps from Companion Portal"));
+      await userEvent.click(screen.getByTestId('factory-reset-confirm-btn'));
+
+      expect(await screen.findByTestId('factory-reset-portal-apps-left')).toHaveTextContent('delete this device in the Portal');
+      expect(screen.getByTestId('factory-reset-continue-btn')).toHaveTextContent('Continue to sign in');
+      expect(screen.queryByTestId('factory-reset-confirm-btn')).not.toBeInTheDocument();
+    });
+
+    it('starts unticked again after the dialog is closed', async () => {
+      await openAndConfirmName();
+      await userEvent.click(screen.getByLabelText("Also remove this Hub's apps from Companion Portal"));
+      await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+      await userEvent.click(await screen.findByTestId('factory-reset-btn'));
+      expect(screen.getByLabelText("Also remove this Hub's apps from Companion Portal")).not.toBeChecked();
     });
   });
 

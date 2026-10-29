@@ -38,6 +38,6 @@ export class FactoryResetController {
       throw new BadRequestException('Confirmation does not match this device name');
     }
 
-    return this.factoryResetService.execute();
+    return this.factoryResetService.execute({ removeAppsFromPortal: body.removeAppsFromPortal === true });
   }
 }
