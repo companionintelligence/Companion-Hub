@@ -8547,6 +8547,9 @@
           "confirmation": {
             "type": "string",
             "minLength": 1
+          },
+          "removeAppsFromPortal": {
+            "type": "boolean"
           }
         },
         "required": [

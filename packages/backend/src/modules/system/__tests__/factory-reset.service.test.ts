@@ -16,6 +16,7 @@ import { RegistrationService } from '@/modules/registration/registration.service
 import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
 import { AuthMiddleware } from '@/modules/auth/auth.middleware';
 import { PairingAppRestoreService } from '@/modules/app-lifecycle/pairing-app-restore.service';
+import { ExposureSyncService } from '@/modules/app-lifecycle/exposure-sync.service';
 import { clearPairingAppCheck } from '@/modules/app-lifecycle/registration-recovery-state';
 import { APP_DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
@@ -279,6 +280,95 @@ describe('FactoryResetService', () => {
     expect(db.query.app.findMany).toHaveBeenCalled();
     expect(uninstallExecute).toHaveBeenCalled();
     expect(uninstallExecute.mock.invocationCallOrder[0]).toBeLessThan(filesystem.createDirectory.mock.invocationCallOrder[0] ?? 0);
+  });
+
+  describe('the apps Companion Portal lists for this device', () => {
+    let releaseAllAppsFromPortal: ReturnType<typeof vi.fn>;
+    let resumeExposureSync: ReturnType<typeof vi.fn>;
+    let holdForFactoryReset: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      releaseAllAppsFromPortal = vi.fn(async () => 'released');
+      resumeExposureSync = vi.fn();
+      holdForFactoryReset = vi.fn(() => resumeExposureSync);
+      const exposureSync = { releaseAllAppsFromPortal, holdForFactoryReset };
+      moduleRefMock.get.mockImplementation(
+        (token: unknown) =>
+          (token === BearerOrgMembershipCache ? bearerOrgMembership : token === ExposureSyncService ? exposureSync : undefined) as never,
+      );
+    });
+
+    // Until the database goes the Hub is still paired, with fewer app rows after each teardown. A sync
+    // in that window released the apps the person chose to keep.
+    it('holds the app sync from before the first app goes until the reset is done', async () => {
+      db.query.app.findMany.mockResolvedValueOnce([{ id: 1, appName: 'wordpress', appStoreSlug: 'ci-marketplace' }]);
+
+      await service.execute();
+
+      expect(holdForFactoryReset).toHaveBeenCalledTimes(1);
+      expect(holdForFactoryReset.mock.invocationCallOrder[0]).toBeLessThan(uninstallExecute.mock.invocationCallOrder[0] ?? 0);
+      expect(resumeExposureSync).toHaveBeenCalledTimes(1);
+      expect(resumeExposureSync.mock.invocationCallOrder[0]).toBeGreaterThan(db.execute.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY);
+    });
+
+    it('lifts the hold when the reset stops partway', async () => {
+      db.execute.mockRejectedValueOnce(new Error('TRUNCATE failed'));
+
+      await expect(service.execute()).rejects.toThrow('TRUNCATE failed');
+      expect(resumeExposureSync).toHaveBeenCalledTimes(1);
+    });
+
+    // Kept by default: pairing this Hub again reinstalls them from that list.
+    it('keeps them listed and asks the Portal nothing unless the person asked', async () => {
+      const result = await service.execute();
+
+      expect(result.portalApps).toBe('kept');
+      expect(releaseAllAppsFromPortal).not.toHaveBeenCalled();
+    });
+
+    it('releases them when asked, before the database and the device key go', async () => {
+      const result = await service.execute({ removeAppsFromPortal: true });
+
+      expect(result.portalApps).toBe('removed');
+      expect(releaseAllAppsFromPortal).toHaveBeenCalledTimes(1);
+      const released = releaseAllAppsFromPortal.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY;
+      expect(released).toBeLessThan(db.execute.mock.invocationCallOrder[0] ?? 0);
+      expect(released).toBeLessThan(registrationService.resetRegistration.mock.invocationCallOrder[0] ?? 0);
+    });
+
+    it('says when the Hub had no tunnel registration to tell the Portal about', async () => {
+      releaseAllAppsFromPortal.mockResolvedValueOnce('not_paired');
+
+      await expect(service.execute({ removeAppsFromPortal: true })).resolves.toMatchObject({ portalApps: 'not_paired' });
+    });
+
+    it('still resets when the Portal refuses and says the apps are still listed', async () => {
+      releaseAllAppsFromPortal.mockRejectedValueOnce(new Error('Companion Portal answered 503'));
+
+      const result = await service.execute({ removeAppsFromPortal: true });
+
+      expect(result.success).toBe(true);
+      expect(result.portalApps).toBe('failed');
+      expect(result.message).toMatch(/still lists this Hub's apps/);
+      expect(registrationService.resetRegistration).toHaveBeenCalledWith({ reason: 'manual', removesDeviceKey: true });
+      expect(db.execute).toHaveBeenCalled();
+    });
+
+    it('does not wait on a Portal that never answers', async () => {
+      releaseAllAppsFromPortal.mockImplementationOnce(() => new Promise(() => undefined));
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+      try {
+        const pending = service.execute({ removeAppsFromPortal: true });
+        await vi.advanceTimersByTimeAsync(FactoryResetService.PORTAL_RELEASE_TIMEOUT_MS);
+        const result = await pending;
+
+        expect(result.portalApps).toBe('failed');
+        expect(registrationService.resetRegistration).toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });
 

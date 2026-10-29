@@ -30,7 +30,7 @@ describe('FactoryResetController', () => {
     controller = moduleRef.get(FactoryResetController);
     factoryResetService = moduleRef.get(FactoryResetService);
     registrationService = moduleRef.get(RegistrationService);
-    factoryResetService.execute.mockResolvedValue({ success: true, message: 'done' });
+    factoryResetService.execute.mockResolvedValue({ success: true, message: 'done', portalApps: 'kept' });
     registrationService.getDeviceRegistrationInfo.mockResolvedValue({
       slug: 'acme',
       hubSubdomain: 'hub-core-acme',
@@ -65,5 +65,14 @@ describe('FactoryResetController', () => {
 
     expect(factoryResetService.execute).toHaveBeenCalled();
     expect(result.success).toBe(true);
+  });
+
+  // Off when the body doesn't say, so a caller that predates the flag keeps the apps listed for the next pairing.
+  it("keeps the Portal's apps unless the body asks to remove them", async () => {
+    await controller.factoryReset({ user: { id: 1, operator: true } } as any, { confirmation: 'core' });
+    expect(factoryResetService.execute).toHaveBeenLastCalledWith({ removeAppsFromPortal: false });
+
+    await controller.factoryReset({ user: { id: 1, operator: true } } as any, { confirmation: 'core', removeAppsFromPortal: true });
+    expect(factoryResetService.execute).toHaveBeenLastCalledWith({ removeAppsFromPortal: true });
   });
 });

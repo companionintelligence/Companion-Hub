@@ -343,6 +343,7 @@ export type HostEventLogDto = {
 
 export type FactoryResetDto = {
     confirmation: string;
+    removeAppsFromPortal?: boolean;
 };
 
 export type LoginBody = {

@@ -239,6 +239,33 @@ const HELD_BY_ANOTHER_HUB_BIND_REFUSAL = 'DOMAIN_BOUND_TO_ANOTHER_DEVICE';
 /** Where a domain another Hub holds is moved, named by every log line that gives one up. */
 const MOVE_IN_PORTAL_REMEDY = 'To serve it here, move it to this Hub from the portal: organization settings → domains.';
 
+/**
+ * The Hub's own entry in a sync. Include it in every sync so Companion Portal preserves its tunnel
+ * route. `device_registration.hubSubdomain` is the canonical route identity. `DOMAIN` and
+ * `userSettings.domain` provide the app-hostname root, not the Hub prefix. None when older records
+ * have no `hubSubdomain`.
+ */
+function hubSyncEntry(orgInfo: { hubSubdomain?: string | null; slug: string }, defaultPublicDomain: string | null | undefined): AppInfo | null {
+  const hubSub = orgInfo.hubSubdomain;
+  if (!hubSub || !defaultPublicDomain) {
+    return null;
+  }
+  const orgSuffix = `-${orgInfo.slug}`;
+  const deviceName = hubSub.endsWith(orgSuffix) ? hubSub.slice(0, -orgSuffix.length) : hubSub;
+  const hubListenPort = Number.parseInt(process.env.API_PORT || '5002', 10) || 5002;
+  return {
+    name: 'OS Hub',
+    subdomain: deviceName,
+    publicDomain: defaultPublicDomain,
+    localPort: 80,
+    protocol: 'http' as const,
+    hostname: 'traefik',
+    originServerName: `${hubSub}.${defaultPublicDomain}`,
+    privilegedKind: 'hub',
+    hubListenPort,
+  };
+}
+
 @Injectable()
 export class ExposureSyncService implements OnModuleDestroy {
   private lastPublicDnsFailureReportAt = 0;
@@ -322,6 +349,9 @@ export class ExposureSyncService implements OnModuleDestroy {
   private static readonly CLOUDFLARE_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000, 120_000];
   private cloudflareRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private cloudflareRetryAttempt = 0;
+
+  /** Factory resets under way. No Cloudflare pass goes out while one runs; see {@link holdForFactoryReset}. */
+  private factoryResetHolds = 0;
 
   /**
    * Reserves HTTPS port 443 for the Hub on the tailnet.
@@ -844,9 +874,73 @@ export class ExposureSyncService implements OnModuleDestroy {
     this.cloudflareRetryTimer.unref?.();
   }
 
+  /**
+   * Hold every Cloudflare pass until the returned function is called. A factory reset deletes each
+   * app's row as it tears the app down but keeps the device registration until it wipes the database.
+   * A pass in between (the 5-minute poll, a retry) named only the apps left. The Portal released the
+   * rest, though the person had chosen to keep them listed for the next pairing to reinstall.
+   * `releaseAllAppsFromPortal` doesn't go through this hold.
+   */
+  public holdForFactoryReset(): () => void {
+    this.factoryResetHolds += 1;
+    let resumed = false;
+    return () => {
+      if (resumed) return;
+      resumed = true;
+      this.factoryResetHolds -= 1;
+    };
+  }
+
+  /**
+   * Tell Companion Portal this Hub serves no apps, so it releases every app it lists for the device.
+   * Their rows and DNS records go. A custom domain bound to one of them is parked, kept by the
+   * organization until it is bound again. A factory reset sends this when the person asks for the
+   * apps to come off the Portal too. Otherwise the list stays and pairing this Hub again reinstalls
+   * them (`PairingAppRestoreService`).
+   *
+   * Not `triggerCloudflareSync`: that one names the apps in the table and waits while a pairing check
+   * or a restore holds it. Both holds exist to stop this very release. Only the Hub's own entry goes
+   * out, so its tunnel route stays. No custom-domain report, which the Portal reads as no news.
+   *
+   * The tunnel sync leaves the ports exposed This Machine Only or on the Private VPN, whose rows the
+   * registry pins. Only the Hub removes those (`PortExposeService.releaseUnrestoredRegistryEntries`),
+   * so they are removed here too. Left, the next pairing put them back.
+   *
+   * Throws when the Portal didn't take it, so the caller can say the apps are still listed.
+   */
+  public async releaseAllAppsFromPortal(): Promise<'released' | 'not_paired'> {
+    const orgInfo = await this.registrationService.getDeviceRegistrationInfo();
+    if (!orgInfo?.tunnelId) {
+      return 'not_paired';
+    }
+
+    const hubEntry = hubSyncEntry(orgInfo, resolveHubPublicDomainRoot(this.config.getConfig()));
+    const result = await this.cloudflareClientService.syncState(orgInfo.id, hubEntry ? [hubEntry] : [], orgInfo.tunnelId);
+    if (!result.ok) {
+      throw new Error(result.errorMessage ?? `Companion Portal answered ${result.errorStatus ?? 'with an error'}`);
+    }
+
+    const { PortExposeService } = await import('../custom-apps/port-expose.service');
+    const portExpose = this.moduleRef.get(PortExposeService, { strict: false });
+    if (portExpose) {
+      const released = await portExpose.releaseUnrestoredRegistryEntries(await this.cloudflareClientService.getDeviceApplications());
+      if (released.length > 0) {
+        this.logger.info(`[Portal] Removed Companion Portal's entries for ${released.length} exposed port(s): ${released.join(', ')}`);
+      }
+    }
+
+    this.logger.info(`[Cloudflare] Told Companion Portal this Hub serves no apps; it releases every app it listed for organization ${orgInfo.id}`);
+    return 'released';
+  }
+
   public async triggerCloudflareSync(options?: ExposureSyncOptions) {
     this.cloudflareSyncDepth += 1;
     try {
+      if (this.factoryResetHolds > 0) {
+        this.logger.debug('[Cloudflare] Skipping sync while a factory reset runs');
+        return;
+      }
+
       /*
        * ⚠ THE FIRST SYNC AFTER A PAIRING CAN RELEASE EVERY APP ON THE DEVICE. Companion Portal releases
        * each app on the device that a sync leaves out, and a Hub reinstalled and paired back onto its
@@ -954,29 +1048,9 @@ export class ExposureSyncService implements OnModuleDestroy {
         }),
       );
 
-      // Include the Hub in every sync so Companion Portal preserves its tunnel
-      // route. `device_registration.hubSubdomain` is the canonical route identity.
-      // `DOMAIN` and `userSettings.domain` provide the app-hostname root, not the
-      // Hub prefix. Omit the Hub entry when older records have no `hubSubdomain`.
-      const hubSub = orgInfo.hubSubdomain;
-      if (hubSub && defaultPublicDomain) {
-        const orgSlug = orgInfo.slug;
-        const orgSuffix = `-${orgSlug}`;
-        const deviceName = hubSub.endsWith(orgSuffix) ? hubSub.slice(0, -orgSuffix.length) : hubSub;
-        const hubHostname = `${hubSub}.${defaultPublicDomain}`;
-
-        const hubListenPort = Number.parseInt(process.env.API_PORT || '5002', 10) || 5002;
-        exposedApps.unshift({
-          name: 'OS Hub',
-          subdomain: deviceName,
-          publicDomain: defaultPublicDomain,
-          localPort: 80,
-          protocol: 'http' as const,
-          hostname: 'traefik',
-          originServerName: hubHostname,
-          privilegedKind: 'hub',
-          hubListenPort,
-        });
+      const hubEntry = hubSyncEntry(orgInfo, defaultPublicDomain);
+      if (hubEntry) {
+        exposedApps.unshift(hubEntry);
       }
 
       // Derive each public record name from its database row in one place so the
