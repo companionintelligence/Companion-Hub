@@ -118,6 +118,8 @@ describe('RegistrationService', () => {
   });
 
   afterEach(() => {
+    // A pairing starts the check-in timer; stop it so it cannot fire into a later test.
+    service.onApplicationShutdown();
     vi.clearAllMocks();
   });
 
@@ -620,6 +622,29 @@ describe('RegistrationService', () => {
       const status = service.getRegistrationStatus();
       expect(['locally_ready', 'publicly_ready']).toContain(status.phase);
       expect(status.registered).toBe(true);
+    });
+
+    it('starts the check-in timer once the pairing has set the Hub up', async () => {
+      // Pairing by code or by callback stops the registration loop, which is what started it before.
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(null as any);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-new' } as any);
+      cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 't1', token: 'tok1' } as any);
+      configService.setDomain.mockResolvedValue(undefined);
+      mockedProbe.mockResolvedValue({ reachable: true, via: 'system', status: 200 });
+      await service.setPhase('paired');
+      const startTimer = vi.spyOn(service as any, 'startPeriodicValidation');
+
+      await (service as any).setupOrganizationInfrastructure('org-new', {
+        organization_name: 'New Org',
+        tunnel_id: 't1',
+        tunnel_token: 'tok1',
+        subdomain: 'device1-neworg',
+        slug: 'neworg',
+        domain: 'example.com',
+      });
+
+      expect(startTimer).toHaveBeenCalled();
+      expect((service as any).periodicValidationInterval).not.toBeNull();
     });
 
     describe('the registration probe', () => {
@@ -1813,6 +1838,34 @@ describe('RegistrationService', () => {
       expect(checkIns()).toBe(1);
 
       await vi.advanceTimersByTimeAsync(15 * MINUTE);
+      expect(checkIns()).toBe(2);
+    });
+
+    it('joins a status read check-in still in flight instead of sending a second', async () => {
+      let answer!: (value: unknown) => void;
+      mockedAxios.post.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)) as any);
+
+      await vi.advanceTimersByTimeAsync(15 * MINUTE - 10_000);
+      await service.getLiveRegistrationStatus();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(checkIns()).toBe(1);
+
+      answer({ status: 200, data: {} });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(checkIns()).toBe(1);
+    });
+
+    it('leaves the status report as the only check-in when a tick lands a little before it', async () => {
+      // Reports at 0:50 and 15:50. The tick at 15:00 comes 14:10 after the first one: a check-in
+      // there would be under a minute before the second report, which the 30 s throttle lets through.
+      await vi.advanceTimersByTimeAsync(50_000);
+      await service.getLiveRegistrationStatus();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(checkIns()).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(15 * MINUTE);
+      await service.getLiveRegistrationStatus();
+      await vi.advanceTimersByTimeAsync(0);
       expect(checkIns()).toBe(2);
     });
 
