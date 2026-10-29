@@ -45,7 +45,7 @@ Align Hub catalog cards and categories with Portal, make Portal's featured store
 ## Open items / handoff
 
 - A side-by-side store screenshot was not delivered: the local preview is unregistered and only shows device setup. No device pairing or restore action was taken.
-- CI-Hub and CI-Portal pull requests should be opened from the task branches after the independent review.
+- Pull requests are open: [CI-Hub #2185](https://github.com/companionintelligence/Companion-Hub/pull/2185) depends on [CI-Portal #958](https://github.com/companionintelligence/CI-Portal/pull/958) for catalog ratings and device entitlements.
 
 ## Reviews run
 
