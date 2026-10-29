@@ -36,6 +36,14 @@ Multi-node Tailscale fleet runners and host inventories are **not published** in
 (companionintelligence/CI-Hub#1210 / companionintelligence/CI-Engineering#211). Use local
 `scripts/qa-stream.ts` against a single machine, or the private ops mirror for fleet orchestration.
 
+For local no-GUI service checks, the runner uses the main compose service's declared TCP
+`internalPort` for readiness and suppresses screenshots; no-GUI MCP apps continue through the
+stdio protocol lane. Portless and UDP-only services are skipped. A silent TCP endpoint is never
+passed on the Docker proxy handshake alone: the runner verifies an in-container listener and a
+supported protocol signal. If the TCP procfs snapshot is unreadable or incomplete, that evidence
+is unknown and the app is skipped as unsupported rather than passed or reported as definitely
+closed. A present but unreadable IPv4 or IPv6 table also makes the result unknown.
+
 ## Agent notes
 
 - Status server: `agent/status-server.ts` (port 3099)

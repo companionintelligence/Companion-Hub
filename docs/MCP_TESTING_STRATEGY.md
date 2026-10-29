@@ -169,22 +169,29 @@ of the backend-degraded `warn`: the thing technically runs but isn't what the ca
 
 ## Integration into the harness (implemented)
 
-`qa-stream.ts`'s `no_gui` branch routes MCP apps to the protocol smoke via a **guarded dynamic
-import** (so a node missing the sibling file degrades only MCP apps, never the whole run):
+`qa-stream.ts` routes MCP apps to the protocol smoke via a **guarded dynamic import** (so a node
+missing the sibling file degrades only MCP apps, never the whole run). For non-MCP apps, `no_gui`
+suppresses screenshots but does not suppress service testing: the regular HTTP/TCP readiness path
+runs when the main compose service declares a probe port. Services without a probe port and
+UDP-only services are reported as skips with a specific reason. A silent TCP service that does not
+match a supported wire-protocol probe is also reported as unsupported rather than passed or timed
+out.
 
 ```ts
-if (config.no_gui) {
-  if (config.mcp) {
-    try {
-      const { qaMcpApp } = await import('./qa-mcp.ts');
-      return await qaMcpApp(appId, { emit, containerName, result }); // qa-stream-${appId} → watchdog covers it
-    } catch (e) {
-      result.score = 'skip'; result.failKind = 'mcp-module';
-      result.notes = `MCP app but qa-mcp module unavailable: ${e}`; return result;
-    }
+const route = classifyQaRoute(config, config.no_gui && !config.mcp ? loadComposeConfig() : undefined);
+if (route.kind === 'mcp') {
+  try {
+    const { qaMcpApp } = await import('./qa-mcp.ts');
+    return await qaMcpApp(appId, { emit, containerName, result });
+  } catch (e) {
+    result.score = 'skip'; result.failKind = 'mcp-module';
+    result.notes = `MCP app but qa-mcp module unavailable: ${e}`; return result;
   }
-  result.score = 'skip'; result.notes = 'no_gui: non-MCP CLI service, no HTTP to verify'; return result;
 }
+if (route.kind === 'skip') {
+  result.score = 'skip'; result.notes = `no_gui: ${route.reason}`; return result;
+}
+// `route.kind === 'headless'` continues through the normal HTTP/TCP probe and skips screenshots.
 ```
 
 `qaMcpApp` (in `scripts/qa-mcp.ts`) returns the `result` record — it does **not** emit its own

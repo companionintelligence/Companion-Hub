@@ -1233,6 +1233,7 @@ interface DockerService {
   image?: string;
   isMain?: boolean;
   internalPort?: number;
+  addPorts?: { containerPort?: number | string; tcp?: boolean; udp?: boolean }[];
   httpsBackend?: boolean; // the upstream only speaks TLS (self-signed): the Hub's Traefik dials it over https, so the probe must too
   user?: string; // run-as user (uid[:gid] or name) — honored by the real Hub builder (service.builder.ts setUser); mirrored here
   command?: string[] | string; // entrypoint override; carries DB migration/predeploy steps for some apps
@@ -1271,6 +1272,74 @@ interface ComposeJson {
   qaReadyTimeoutMs?: number; // optional QA hint: raise the readiness ceiling for a legit-slow app
   qaSkip?: unknown; // optional QA hint: non-empty string = why the app cannot run headless; scores skip. Anything else is ignored (see declaredQaSkip)
 }
+
+// <qa-route-policy>
+type QaRoute = { kind: 'mcp' } | { kind: 'http' } | { kind: 'headless'; port: number } | { kind: 'skip'; reason: string };
+
+function qaPortNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65_535) return value;
+  if (typeof value !== 'string') return null;
+  const literal = value.trim().match(/^(\d+)$/)?.[1];
+  const fallback = value.trim().match(/^\$\{[A-Z0-9_]+:-([0-9]+)\}$/)?.[1];
+  const port = Number(literal ?? fallback);
+  return Number.isInteger(port) && port >= 1 && port <= 65_535 ? port : null;
+}
+
+/**
+ * `no_gui` disables screenshots; it does not mean a network service cannot be probed. No-GUI MCP
+ * apps use their stdio protocol lane, while other headless network services need a declared
+ * main-service port that supports TCP.
+ */
+function classifyQaRoute(
+  config: { no_gui?: boolean; mcp?: unknown },
+  compose?: {
+    services?: Array<{
+      isMain?: boolean;
+      internalPort?: number;
+      addPorts?: { containerPort?: number | string; tcp?: boolean; udp?: boolean }[];
+    } | null>;
+  },
+): QaRoute {
+  if (!config.no_gui) return { kind: 'http' };
+  if (config.mcp) return { kind: 'mcp' };
+
+  const services = compose?.services ?? [];
+  const main = services.find((service) => service?.isMain) ?? services[0];
+  const port = typeof main?.internalPort === 'number' ? qaPortNumber(main.internalPort) : null;
+  if (!port) return { kind: 'skip', reason: 'no declared main-service probe port' };
+
+  const matchingMappings = (main?.addPorts ?? []).filter((mapping) => qaPortNumber(mapping.containerPort) === port);
+  const udpOnly = matchingMappings.length > 0 && matchingMappings.every((mapping) => mapping.udp === true && mapping.tcp !== true);
+  if (udpOnly) return { kind: 'skip', reason: `main-service port ${port} is declared UDP-only` };
+
+  return { kind: 'headless', port };
+}
+
+/** A headless service has no screenshot requirement; a degraded backend still warns. */
+function scoreReadyQaApp(hasScreenshot: boolean, noGui: boolean, backendHealthy: boolean): 'pass' | 'warn' {
+  return backendHealthy && (hasScreenshot || noGui) ? 'pass' : 'warn';
+}
+
+function isUnsupportedSilentHeadlessTcp(
+  noGui: boolean,
+  httpStatus: number,
+  listener: 'listening' | 'not-listening' | 'unknown',
+  greeted: boolean,
+  knownWireProtocol: boolean,
+): boolean {
+  const noSupportedProbe = listener === 'unknown' || (listener === 'listening' && !knownWireProtocol);
+  return noGui && httpStatus === 0 && !greeted && noSupportedProbe;
+}
+
+function hasValidTcpProcSnapshot(output: string): boolean {
+  const sections = output.split(/^__PROC__:/m).slice(1);
+  if (sections.length === 0) return false;
+  return sections.every((section) => {
+    const [path, header] = section.split(/\r?\n/);
+    return /^\/proc\/net\/tcp6?$/.test(path?.trim() ?? '') && /^\s*sl\s+local_address\s+rem_address\s+st\b/.test(header ?? '');
+  });
+}
+// </qa-route-policy>
 
 /**
  * True if ANY service in the stack requires a GPU — either it reserves an nvidia/gpu device via
@@ -1389,6 +1458,18 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     result.hostAccess = !!config.host_access;
     result.formFieldsCount = Array.isArray(config.form_fields) ? config.form_fields.length : 0;
 
+    const composeJsonPath = join(APP_STORE_DIR, appId, 'docker-compose.json');
+    const composeYmlPath = join(APP_STORE_DIR, appId, 'docker-compose.yml');
+    let composeConfig: ComposeJson | undefined;
+    let composeConfigLoaded = false;
+    const loadComposeConfig = (): ComposeJson | undefined => {
+      if (!composeConfigLoaded) {
+        composeConfigLoaded = true;
+        if (existsSync(composeJsonPath)) composeConfig = JSON.parse(readFileSync(composeJsonPath, 'utf-8')) as ComposeJson;
+      }
+      return composeConfig;
+    };
+
     // The manifest's own verdict that the app cannot run headless by nature. Decided before anything is pulled or started, and
     // before the no_gui/MCP routing below so it holds for every kind of app. A malformed hint is noted, never fatal.
     const declared = declaredQaSkip(appId);
@@ -1404,35 +1485,32 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       return result;
     }
 
-    // Non-HTTP apps have no web surface to check. MCP-server apps (a `.mcp` block) speak JSON-RPC
-    // over stdio — route them to the protocol smoke (boot → initialize → tools/list → manifest
-    // assertion + read-only exec probe) so they get a real verdict instead of a blind skip. The
-    // dynamic import is GUARDED: if qa-mcp.ts isn't shipped alongside this file (manual partial scp),
-    // only MCP apps degrade to skip — every web app still runs. Reusing `containerName`
-    // (the run-namespaced qa-stream container name) means the per-app watchdog + forceTeardown already cover the MCP container.
-    if (config.no_gui) {
-      if (config.mcp) {
-        try {
-          const { qaMcpApp } = await import('./qa-mcp.ts');
-          return await qaMcpApp(appId, { emit, containerName, result });
-        } catch (e) {
-          result.score = 'skip' as Score;
-          result.failKind = 'mcp-module';
-          result.notes = `MCP app but qa-mcp module unavailable: ${e instanceof Error ? e.message : String(e)}`;
-          return result;
-        }
+    // MCP apps use JSON-RPC over stdio. Other no-GUI apps still get the normal HTTP/TCP service
+    // readiness smoke when their main service declares a testable port; no_gui only suppresses the
+    // screenshot. Reuse `containerName` so the per-app watchdog and forceTeardown cover MCP too.
+    const route = classifyQaRoute(config, config.no_gui && !config.mcp ? loadComposeConfig() : undefined);
+    if (route.kind === 'mcp') {
+      try {
+        const { qaMcpApp } = await import('./qa-mcp.ts');
+        return await qaMcpApp(appId, { emit, containerName, result });
+      } catch (e) {
+        result.score = 'skip' as Score;
+        result.failKind = 'mcp-module';
+        result.notes = `MCP app but qa-mcp module unavailable: ${e instanceof Error ? e.message : String(e)}`;
+        return result;
       }
+    }
+    if (route.kind === 'skip') {
       result.score = 'skip' as Score;
-      result.notes = 'no_gui: non-MCP CLI service, no HTTP to verify';
+      result.notes = `no_gui: ${route.reason}`;
       return result;
     }
+    if (route.kind === 'headless') result.port = route.port;
 
     // Image from docker-compose.json (Hub V2 format) or .yml
-    const composeJsonPath = join(APP_STORE_DIR, appId, 'docker-compose.json');
-    const composeYmlPath = join(APP_STORE_DIR, appId, 'docker-compose.yml');
-
     if (existsSync(composeJsonPath)) {
-      const compose: ComposeJson = JSON.parse(readFileSync(composeJsonPath, 'utf-8'));
+      const compose = loadComposeConfig();
+      if (!compose) throw new Error('docker-compose.json must contain an object');
       services = compose.services ?? [];
       isMulti = services.length > 1;
       composeReadyTimeoutMs = compose.qaReadyTimeoutMs;
@@ -1865,6 +1943,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     let httpStatus = 0;
     let ready = false;
     let readyVia = '';
+    let unsupportedHeadlessTcp = false;
     let deadReason = '';
 
     while (!ready && Date.now() - readyStart < maxWaitMs) {
@@ -1957,14 +2036,15 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         //       indistinguishable from a stalled web app. An explicit list is a heuristic, but it is
         //       auditable and wrong in a bounded way — whereas accepting every silent listener is
         //       what manufactured ~12 false passes per run.
-        const listening = await hasInternalListener(statsName, result.port);
+        const listener = await inspectInternalListener(statsName, result.port);
+        const listening = listener === 'listening';
         const img = (result.image || '').toLowerCase();
         const knownWireProtocol =
           /(^|\/)(mongo|redis|memcached|postgres|mariadb|mysql|percona|cassandra|clickhouse|elasticsearch|opensearch|rabbitmq|nats|etcd|valkey)(:|$|\/)/.test(
             img.split('@')[0],
           );
         const greets = listening && (await serverGreets(hostPort));
-        if (listening && (greets || knownWireProtocol)) {
+        if (httpStatus === 0 && listening && (greets || knownWireProtocol)) {
           ready = true;
           readyVia = 'tcp';
           // Name the evidence that ACTUALLY applied. The old note asserted "no HTTP listener
@@ -1980,11 +2060,14 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
             .filter(Boolean)
             .join(' | ');
         } else {
+          unsupportedHeadlessTcp = isUnsupportedSilentHeadlessTcp(config.no_gui === true, httpStatus, listener, greets, knownWireProtocol);
           result.notes = [
             result.notes,
-            listening
-              ? `:${result.port} is listening but never served HTTP and sends no protocol greeting — treated as not ready, not as a non-HTTP service`
-              : `port :${hostPort} accepts TCP but nothing is listening on :${result.port} inside the container (docker-proxy artifact)`,
+            listener === 'listening'
+              ? `:${result.port} is listening but never served HTTP or identified a supported wire protocol`
+              : listener === 'not-listening'
+                ? `port :${hostPort} accepts TCP but nothing is listening on :${result.port} inside the container (docker-proxy artifact)`
+                : `could not verify whether anything is listening on :${result.port} inside the container`,
           ]
             .filter(Boolean)
             .join(' | ');
@@ -2005,6 +2088,13 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       const bh = await captureBackendHealth({ composeProject, composeYml, containerName, mainService });
       result.backendErrors = bh.errors;
       const waited = Math.round((Date.now() - readyStart) / 1000);
+      if (unsupportedHeadlessTcp && bh.healthy && !deadReason) {
+        result.score = 'skip' as Score;
+        result.failKind = 'unsupported-probe';
+        const unsupportedNotes = String(result.notes ?? '');
+        result.notes = `no_gui service has no supported protocol-specific readiness probe${unsupportedNotes.includes('could not verify') ? '; container listener could not be verified' : `; TCP listener on :${result.port} is live`}`;
+        return result;
+      }
       // Container exited / restart-looped after a clean start = a real app FAIL; never becoming
       // ready with no death signal = an infra TIMEOUT (retryable on a warm second attempt).
       result.score = deadReason ? 'fail' : 'timeout';
@@ -2135,7 +2225,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
 
     // ── Score ─────────────────────────────────────────────────
     // httpOk is guaranteed true here (the !httpOk early-return is above)
-    result.score = result.hasScreenshot ? 'pass' : 'warn';
+    result.score = scoreReadyQaApp(result.hasScreenshot === true, config.no_gui === true, result.backendHealthy !== false);
     // A served frontend with a crashed/restarting backend is NOT a pass — flag it as a
     // degraded warn with the failing service + error excerpt so it's fixable, not hidden.
     if (result.backendHealthy === false) {
@@ -2604,30 +2694,22 @@ function hexOfLength(chars: number): string {
     .slice(0, chars);
 }
 
-/**
- * Is anything actually LISTENING on `port` inside the container? Guards the raw-TCP readiness
- * branch, which docker-proxy would otherwise satisfy for a container serving nothing at all.
- * Tries ss, then netstat, then /proc/net/tcp{,6} — many images ship none of the first two, so the
- * /proc parse is the one that works on distroless/alpine. Returns false only when we positively
- * determine there is no listener; an image where every probe is unavailable returns true rather
- * than manufacturing a failure we cannot substantiate.
- */
-async function hasInternalListener(container: string, port: number): Promise<boolean> {
+/** Inspect /proc directly so an unavailable `ss`/`netstat` binary cannot masquerade as a listener. */
+async function inspectInternalListener(container: string, port: number): Promise<'listening' | 'not-listening' | 'unknown'> {
   const hex = port.toString(16).toUpperCase().padStart(4, '0');
-  // /proc/net/tcp col 2 is local_address (HEX_IP:HEX_PORT), col 4 is st; 0A = TCP_LISTEN. Both files
-  // are read because a container may bind v4, v6, or both (mysql listens on tcp6 only).
-  const procProbe = `cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$4=="0A"{split($2,a,":"); if (a[2]=="${hex}") found=1} END{exit found?0:1}'`;
-  const probes = [`ss -ltn 2>/dev/null | grep -q ':${port}[^0-9]'`, `netstat -ltn 2>/dev/null | grep -q ':${port}[^0-9]'`, procProbe];
-  for (const p of probes) {
-    const r = await execAsync(`docker exec ${container} sh -c ${shq(p)}`, 8_000);
-    // exit 0 => listener found. A non-zero exit can mean "no listener" OR "tool missing"; only the
-    // /proc probe can distinguish, so treat it as authoritative and the others as best-effort.
-    if (r.ok) return true;
+  // /proc/net/tcp col 2 is local_address (HEX_IP:HEX_PORT), col 4 is st; 0A = TCP_LISTEN. Read both
+  // families because a container may bind v4, v6, or both. If procfs is unavailable, preserve that
+  // uncertainty instead of treating the Docker proxy's host-side handshake as container evidence.
+  const script =
+    'found=0; for file in /proc/net/tcp /proc/net/tcp6; do if [ -e "$file" ]; then [ -r "$file" ] || exit 44; found=1; printf "__PROC__:%s\\n" "$file"; cat "$file" || exit 43; fi; done; [ "$found" -eq 1 ] || exit 42';
+  const proc = await execAsync(`docker exec ${container} sh -c ${shq(script)}`, 8_000);
+  if (!proc.ok || !hasValidTcpProcSnapshot(proc.out)) return 'unknown';
+
+  for (const line of proc.out.split(/\r?\n/)) {
+    const columns = line.trim().split(/\s+/);
+    if (columns.length >= 4 && columns[3] === '0A' && columns[1]?.endsWith(`:${hex}`)) return 'listening';
   }
-  const proc = await execAsync(`docker exec ${container} sh -c ${shq('cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | wc -l')}`, 8_000);
-  // If we could not even read /proc/net/tcp, we have no evidence either way — do not fail on a guess.
-  if (!proc.ok || Number((proc.out || '0').trim()) === 0) return true;
-  return false;
+  return 'not-listening';
 }
 
 /** Split a command string into argv the way Docker Compose does (shlex: quotes and backslashes, NO shell). The single-container path used to run a string `command` as `sh -c '<cmd>'`, which an image whose ENTRYPOINT is not a shell receives as `-c` (openbooks: 'unknown shorthand flag: c' while compose starts it fine). */
