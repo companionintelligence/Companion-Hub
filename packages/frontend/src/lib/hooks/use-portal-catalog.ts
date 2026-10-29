@@ -22,6 +22,7 @@ export function usePortalCatalog(listingsParams: PortalStoreListingsParams = {},
   return {
     portalConfig: configQuery.data,
     listings: listingsQuery.data ?? [],
+    hasListingsData: listingsQuery.data !== undefined,
     alternatives: alternativesQuery.data ?? {},
     isLoading:
       (enableConfig && configQuery.isLoading) || (enableListings && listingsQuery.isLoading) || (enableAlternatives && alternativesQuery.isLoading),

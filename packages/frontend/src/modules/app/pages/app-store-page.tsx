@@ -136,12 +136,28 @@ export default () => {
   });
 
   const {
+    listings: portalListings,
+    hasListingsData,
     alternatives: alternativesData,
-    isLoading: isAlternativesDataLoading,
-    isError: isAlternativesDataError,
+    isLoading: isPortalCatalogLoading,
     alternativesError: alternativesDataError,
+    listingsError: portalListingsError,
     refetchAlternatives,
-  } = usePortalCatalog({}, { enableConfig: false, enableListings: false, enableAlternatives: isAlternativesView || Boolean(search.trim()) });
+  } = usePortalCatalog(
+    {},
+    {
+      enableConfig: false,
+      enableListings: isAlternativesView,
+      enableAlternatives: isAlternativesView || Boolean(search.trim()),
+    },
+  );
+  const isAlternativesDataLoading = isPortalCatalogLoading;
+  const isAlternativesDataError = Boolean(alternativesDataError);
+  const trustAppSlugs = !isAlternativesView || (Boolean(portalListingsError) && !hasListingsData);
+  const catalogSlugs = useMemo(
+    () => new Set((portalListings ?? []).map((app) => app.urn.split(':')[0]).filter((slug): slug is string => Boolean(slug))),
+    [portalListings],
+  );
 
   // Redirect whenever the backend reports the hub is not operational
   // (`registered === false`, e.g. paired/provisioning/unregistered).
@@ -365,22 +381,29 @@ export default () => {
               </button>
             </div>
           )}
-          {!isAlternativesDataLoading && !isAlternativesDataError && !hasAlternativeMatches ? (
-            <EmptyPage title="APP_STORE_NO_RESULTS" subtitle="APP_STORE_NO_RESULTS_SUBTITLE" />
-          ) : !isAlternativesDataLoading && !isAlternativesDataError ? (
-            <AlternativesCatalog alternatives={filteredAlts} marketplaceSlug={marketplaceSlug} />
+          {!isAlternativesDataLoading && !isAlternativesDataError ? (
+            <AlternativesCatalog
+              alternatives={alternativesData ?? {}}
+              marketplaceSlug={marketplaceSlug}
+              query={search}
+              catalogSlugs={catalogSlugs}
+              trustAppSlugs={trustAppSlugs}
+            />
           ) : null}
         </div>
       ) : !apps?.length && !isLoading && !showSearchAlternatives ? (
         <EmptyPage title="APP_STORE_NO_RESULTS" subtitle="APP_STORE_NO_RESULTS_SUBTITLE" />
       ) : (
         <div className="space-y-8">
-          {showSearchAlternatives ? (
+          {showSearchAlternatives && !isAlternativesDataLoading ? (
             <AlternativesCatalog
-              alternatives={filteredAlts}
+              alternatives={alternativesData ?? {}}
               marketplaceSlug={marketplaceSlug}
               title={t('APP_STORE_ALTERNATIVES')}
               subtitle={t('APP_STORE_ALTERNATIVES_SUBTITLE')}
+              query={search}
+              catalogSlugs={catalogSlugs}
+              trustAppSlugs={trustAppSlugs}
             />
           ) : null}
           {apps.length > 0 || isLoading ? (
