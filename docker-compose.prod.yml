@@ -387,7 +387,7 @@ services:
   # Cloudflare tunnel — opt-in. Requires a token file at ./tunnel/token.
   # Enable with: docker compose --profile cloudflare up -d cloudflared
   cloudflared:
-    image: cloudflare/cloudflared:2026.2.0
+    image: cloudflare/cloudflared:2026.10.5
     pull_policy: if_not_present
     container_name: cloudflared
     logging: *default-logging

@@ -37,6 +37,10 @@ when the MCP surface, its auth, or the connect docs change. Run it with
 `gh workflow run e2e-mcp.yml --ref <branch>`, or `pnpm e2e:mcp` locally for the full 18-test lane
 including the Docker-heavy install layer.
 
+The image-boot smoke test pulls Postgres and RabbitMQ from Docker Hub first, then falls back to
+public ECR if a registry is unavailable. `SMOKE_POSTGRES_IMAGE` / `SMOKE_RABBITMQ_IMAGE` override
+the primary images; the corresponding `*_FALLBACK_IMAGE` variables override the fallbacks.
+
 ## Visual regression
 
 - Specs: `e2e/visual/`

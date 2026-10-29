@@ -3784,11 +3784,11 @@ export type GetHubOobiData = {
     url: '/api/.well-known/keri/oobi';
 };
 
-export type GetHubOobiResponses = {
+export type GetHubOobiErrors = {
     /**
-     * OOBI discovery document for peer pairing
+     * The Hub cannot publish a verifiable OOBI until a persisted KERI key event log is configured.
      */
-    200: unknown;
+    503: unknown;
 };
 
 export type GetOobiForAidData = {
@@ -3800,11 +3800,11 @@ export type GetOobiForAidData = {
     url: '/api/.well-known/keri/oobi/{aid}';
 };
 
-export type GetOobiForAidResponses = {
+export type GetOobiForAidErrors = {
     /**
-     * OOBI record
+     * The Hub cannot resolve OOBIs until it can verify and serve persisted KERI key event logs.
      */
-    200: unknown;
+    503: unknown;
 };
 
 export type GetInstalledAppsData = {

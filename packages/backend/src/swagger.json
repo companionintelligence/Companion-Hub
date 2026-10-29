@@ -2219,8 +2219,8 @@
         "operationId": "getHubOobi",
         "parameters": [],
         "responses": {
-          "200": {
-            "description": "OOBI discovery document for peer pairing"
+          "503": {
+            "description": "The Hub cannot publish a verifiable OOBI until a persisted KERI key event log is configured."
           }
         },
         "summary": "KERI Out-Of-Band Introduction (OOBI) metadata for the Hub appliance",
@@ -2243,8 +2243,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "OOBI record"
+          "503": {
+            "description": "The Hub cannot resolve OOBIs until it can verify and serve persisted KERI key event logs."
           }
         },
         "summary": "Resolve OOBI for a specific AID",

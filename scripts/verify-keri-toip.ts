@@ -5,26 +5,20 @@ import {
   decodeCesrSignature,
   encodeCesrPublicKey,
   encodeCesrSignature,
-  computeSaid,
-  verifySaid,
-  generateEd25519Keypair,
+} from '../packages/common/src/keri/cesr';
+import { computeSaid, verifySaid } from '../packages/common/src/keri/said';
+import {
   computePreRotationCommitment,
   createInceptionEvent,
-  createRotationEvent,
   createInteractionEvent,
+  createRotationEvent,
+  generateEd25519Keypair,
   verifyKeyEventLog,
-  createTelIssuance,
-  createTelRevocation,
-  evaluateTelStatus,
-  issueAskGrantAcdc,
-  evaluateAcdcGrant,
-  buildOobiUrl,
-  parseOobiUrl,
-  createOobiDiscoveryResponse,
-  signHttpRequest,
-  verifyHttpRequestWithKeri,
-  type AskGrantAttributes,
-} from '../packages/common/src/keri';
+} from '../packages/common/src/keri/aid';
+import { createTelIssuance, createTelRevocation, evaluateTelStatus } from '../packages/common/src/keri/tel';
+import { evaluateAcdcGrant, issueAskGrantAcdc, type AskGrantAttributes } from '../packages/common/src/keri/acdc';
+import { buildOobiUrl, createOobiDiscoveryResponse, parseOobiUrl } from '../packages/common/src/keri/oobi';
+import { signHttpRequest, verifyHttpRequestWithKeri } from '../packages/common/src/keri/http-sig';
 
 import {
   FORWARD_AUTH_HUB_AID_HEADER,
@@ -150,8 +144,10 @@ const evalActive = evaluateAcdcGrant({
   grant: signedGrant,
   issuerPublicKey: responder.cesrPublicKey,
 });
-assert.strictEqual(evalActive.decision, 'auto');
-assert.strictEqual((evalActive as any).maxDisclosure, 'boolean');
+if (evalActive.decision !== 'auto') {
+  throw new Error(`Expected the active grant to be automatic, got ${evalActive.decision}`);
+}
+assert.strictEqual(evalActive.maxDisclosure, 'boolean');
 
 // Revoke via TEL
 const grantSaid = signedGrant.credential.d;
@@ -175,8 +171,10 @@ const evalRevoked = evaluateAcdcGrant({
   issuerPublicKey: responder.cesrPublicKey,
   telEvents: [telIss, telRev],
 });
-assert.strictEqual(evalRevoked.decision, 'deny');
-assert.strictEqual((evalRevoked as any).reason.includes('revoked in TEL'), true);
+if (evalRevoked.decision !== 'deny') {
+  throw new Error(`Expected the revoked grant to be denied, got ${evalRevoked.decision}`);
+}
+assert.match(evalRevoked.reason, /revoked in TEL/);
 console.log('   ✓ ACDC grant issuance and TEL revocation passed');
 
 // 5. OOBI (Out-Of-Band Introduction)
@@ -232,8 +230,10 @@ const verifyHttp = verifyHttpRequestWithKeri({
   rawBody: body,
   senderKel: [senderIcp],
 });
-assert.strictEqual(verifyHttp.ok, true, `HTTP signature verification failed: ${(verifyHttp as any).reason}`);
-assert.strictEqual((verifyHttp as any).senderAid, senderAid);
+if (!verifyHttp.ok) {
+  throw new Error(`HTTP signature verification failed: ${verifyHttp.reason}`);
+}
+assert.strictEqual(verifyHttp.senderAid, senderAid);
 
 // Tampered body must fail
 const verifyTampered = verifyHttpRequestWithKeri({
@@ -243,8 +243,10 @@ const verifyTampered = verifyHttpRequestWithKeri({
   rawBody: JSON.stringify({ query: 'Tampered prompt', queryType: 'availability' }),
   senderKel: [senderIcp],
 });
-assert.strictEqual(verifyTampered.ok, false);
-assert.strictEqual((verifyTampered as any).reason.includes('Content-digest mismatch'), true);
+if (verifyTampered.ok) {
+  throw new Error('Tampered HTTP body unexpectedly passed signature verification');
+}
+assert.match(verifyTampered.reason, /Content-digest mismatch/);
 console.log('   ✓ RFC 9421 HTTP Signatures with KERI AIDs passed');
 
 // 7. Hub Forward-Auth with KERI Headers
@@ -279,9 +281,11 @@ const fwdVerify = verifyForwardAuthHeaders(
   { now },
 );
 
-assert.strictEqual(fwdVerify.ok, true);
-assert.strictEqual((fwdVerify as any).stableId?.userAid, stableId.userAid);
-assert.strictEqual((fwdVerify as any).stableId?.hubAid, stableId.hubAid);
+if (!fwdVerify.ok) {
+  throw new Error(`Forward-auth signature verification failed: ${fwdVerify.reason}`);
+}
+assert.strictEqual(fwdVerify.stableId?.userAid, stableId.userAid);
+assert.strictEqual(fwdVerify.stableId?.hubAid, stableId.hubAid);
 console.log('   ✓ Hub Forward-Auth with KERI AID Headers passed');
 
 console.log('\n======================================================');

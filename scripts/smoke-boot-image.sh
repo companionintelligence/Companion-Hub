@@ -28,8 +28,10 @@
 # Env (all optional):
 #   SMOKE_BOOT_TIMEOUT       seconds to wait for the Hub to become healthy        (default 240)
 #   SMOKE_SETTLE_SECONDS     seconds it must then stay up and healthy             (default 15)
-#   SMOKE_POSTGRES_IMAGE     default public.ecr.aws/docker/library/postgres:14
-#   SMOKE_RABBITMQ_IMAGE     default public.ecr.aws/docker/library/rabbitmq:4-alpine
+#   SMOKE_POSTGRES_IMAGE          primary Postgres image (default docker.io/library/postgres:14)
+#   SMOKE_POSTGRES_FALLBACK_IMAGE fallback Postgres image (default public ECR)
+#   SMOKE_RABBITMQ_IMAGE          primary RabbitMQ image (default docker.io/library/rabbitmq:4-alpine)
+#   SMOKE_RABBITMQ_FALLBACK_IMAGE fallback RabbitMQ image (default public ECR)
 #   SMOKE_KEEP=1             leave containers, network and volumes behind for inspection
 #   DOCKER_DEFAULT_PLATFORM  honoured by docker itself, e.g. linux/amd64
 set -euo pipefail
@@ -37,8 +39,10 @@ set -euo pipefail
 IMAGE="${1:?usage: smoke-boot-image.sh <image>}"
 BOOT_TIMEOUT="${SMOKE_BOOT_TIMEOUT:-240}"
 SETTLE_SECONDS="${SMOKE_SETTLE_SECONDS:-15}"
-POSTGRES_IMAGE="${SMOKE_POSTGRES_IMAGE:-public.ecr.aws/docker/library/postgres:14}"
-RABBITMQ_IMAGE="${SMOKE_RABBITMQ_IMAGE:-public.ecr.aws/docker/library/rabbitmq:4-alpine}"
+POSTGRES_IMAGE="${SMOKE_POSTGRES_IMAGE:-docker.io/library/postgres:14}"
+POSTGRES_FALLBACK_IMAGE="${SMOKE_POSTGRES_FALLBACK_IMAGE:-public.ecr.aws/docker/library/postgres:14}"
+RABBITMQ_IMAGE="${SMOKE_RABBITMQ_IMAGE:-docker.io/library/rabbitmq:4-alpine}"
+RABBITMQ_FALLBACK_IMAGE="${SMOKE_RABBITMQ_FALLBACK_IMAGE:-public.ecr.aws/docker/library/rabbitmq:4-alpine}"
 
 # A log line that means the bundle asked for a module the image does not have. `PackageLoader` is
 # Nest's "The "<pkg>" package is missing" error, `Cannot find module` is a CommonJS require, and the
@@ -118,20 +122,40 @@ wait_until() {
 
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image ${IMAGE} is not available locally; build or pull it first"
 
-# public.ecr.aws and Docker Hub both throttle anonymous pulls ("toomanyrequests"). That is a flake in
-# the registry, not a verdict on the Hub image, so retry before giving up.
+# Either public registry can throttle or be temporarily unreachable. Retry the primary, then try the
+# other registry before calling the Hub image unhealthy. Keep docker's error output visible so a
+# failure still says whether it was DNS, transport, authentication or a missing tag.
 pull_with_retry() {
   local image="$1" attempt
   docker image inspect "$image" >/dev/null 2>&1 && return 0
   for attempt in 1 2 3; do
-    docker pull -q "$image" >/dev/null 2>&1 && return 0
+    if docker pull -q "$image"; then
+      return 0
+    fi
     log "pulling ${image} failed (attempt ${attempt}/3)"
     sleep $((attempt * 10))
   done
-  fail "could not pull ${image}"
+  return 1
 }
-pull_with_retry "$POSTGRES_IMAGE"
-pull_with_retry "$RABBITMQ_IMAGE"
+
+resolve_image() {
+  local primary="$1" fallback="$2"
+  if pull_with_retry "$primary"; then
+    RESOLVED_IMAGE="$primary"
+    return 0
+  fi
+  if [ "$fallback" != "$primary" ] && pull_with_retry "$fallback"; then
+    log "using fallback image ${fallback}"
+    RESOLVED_IMAGE="$fallback"
+    return 0
+  fi
+  fail "could not pull primary image ${primary} or fallback image ${fallback}"
+}
+
+resolve_image "$POSTGRES_IMAGE" "$POSTGRES_FALLBACK_IMAGE"
+POSTGRES_IMAGE="$RESOLVED_IMAGE"
+resolve_image "$RABBITMQ_IMAGE" "$RABBITMQ_FALLBACK_IMAGE"
+RABBITMQ_IMAGE="$RESOLVED_IMAGE"
 
 log "Booting ${IMAGE} against ${POSTGRES_IMAGE} and ${RABBITMQ_IMAGE}"
 docker network create "$NETWORK" >/dev/null
