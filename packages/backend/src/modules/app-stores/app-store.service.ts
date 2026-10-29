@@ -161,6 +161,22 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
     return this.portalClient.fetchStoreListings(params);
   }
 
+  public async fetchCiCloudStoreAppDetails(slug: string): Promise<unknown | null> {
+    return this.portalClient.fetchStoreCatalogApp(slug);
+  }
+
+  public async fetchCiCloudStoreAppReviews(slug: string): Promise<unknown> {
+    return this.portalClient.fetchStoreAppReviews(slug);
+  }
+
+  public async fetchCiCloudStoreChangelog(): Promise<unknown> {
+    return this.portalClient.fetchStoreChangelog();
+  }
+
+  public async fetchCiCloudStoreLibrary(): Promise<unknown> {
+    return this.portalClient.fetchDeviceAppEntitlements();
+  }
+
   /** One round-trip for the featured store view (four listing queries in parallel). */
   public async fetchFeaturedBundle(): Promise<{
     firstParty: unknown;

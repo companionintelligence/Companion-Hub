@@ -568,6 +568,8 @@ export const appInfoObjectSchema = z.object({
   https: z.boolean().optional().default(false),
   exposable: z.boolean().optional().default(true),
   no_gui: z.boolean().optional().default(false),
+  /** Whether the app needs direct access to host resources to function. */
+  host_access: z.boolean().optional(),
   supported_architectures: z.enum(ARCHITECTURES).array().default(['amd64', 'arm64']),
   /** Optional accelerator requirements from the Marketplace manifest. */
   gpu_requirements: gpuRequirementsSchema.optional(),

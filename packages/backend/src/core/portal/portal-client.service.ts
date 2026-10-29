@@ -190,6 +190,27 @@ export class PortalClientService {
     }
   }
 
+  async fetchStoreCatalogApp(slug: string): Promise<unknown | null> {
+    if (!this.publicPortalUrl) return null;
+    try {
+      return await this.fetchJson(`/store/${encodeURIComponent(slug)}`);
+    } catch {
+      return null;
+    }
+  }
+
+  async fetchStoreAppReviews(slug: string): Promise<unknown> {
+    return this.fetchJson(`/store/${encodeURIComponent(slug)}/reviews`);
+  }
+
+  async fetchStoreChangelog(): Promise<unknown> {
+    return this.fetchJson('/store/changelog');
+  }
+
+  async fetchDeviceAppEntitlements(): Promise<unknown> {
+    return this.fetchJson('/devices/app-entitlements', { authenticated: true });
+  }
+
   async fetchAppInstall(slug: string): Promise<unknown> {
     return this.fetchJson(`/store/${encodeURIComponent(slug)}/install`, { authenticated: true });
   }

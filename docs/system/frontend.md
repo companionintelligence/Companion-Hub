@@ -137,6 +137,19 @@ the rows, and published alternatives link to their Hub store detail page. Keep t
 global App Store search independent: the picker lists products from the complete dataset while the search
 narrows the comparison rows.
 
+## CI Marketplace store alignment
+
+The CI Marketplace catalog and featured shelves are Portal-sourced. Store cards preserve Portal's price,
+rating, architecture, host-access, and GPU declarations; the category list includes the same Companion
+Intelligence category as Portal. App detail pages keep Hub's runtime, architecture, and GPU information,
+and fetch Portal's current price, aggregate rating, and public reviews through the Hub API. Host access is
+shown as a disclosure when the Portal manifest declares it.
+
+The store's **What's New** page reads Portal's public app changelog. **Library** reads only active,
+unexpired entitlements for the organization registered to the authenticated Hub. The Hub never supplies
+an organization id: Portal derives it from the device key, returns an empty library when no organization
+is registered, and fails closed when multiple registrations make the organization ambiguous.
+
 ## Custom domains
 
 When CI-Cloud has wired a customer hostname to an app, `app.customDomain` carries it and that is the

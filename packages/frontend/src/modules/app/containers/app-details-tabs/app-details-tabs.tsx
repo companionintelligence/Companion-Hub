@@ -213,6 +213,15 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
                   </div>
                 </>
               )}
+              {info.host_access && (
+                <>
+                  <div className="border-t border-border/40" />
+                  <div className="flex justify-between items-start" data-testid="app-host-access">
+                    <span className="text-sm text-muted-foreground">Host access</span>
+                    <span className="text-sm font-medium text-right">Needed to function</span>
+                  </div>
+                </>
+              )}
               {info.gpu_requirements && (
                 <>
                   <div className="border-t border-border/40" />

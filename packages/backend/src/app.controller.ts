@@ -2,7 +2,7 @@ import { resolveAppDataHostRoot } from '@/common/helpers/app-data-path.helper';
 import { SESSION_COOKIE_NAME } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { UserRepository } from '@/modules/user/user.repository';
-import { Body, Controller, Get, Patch, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { AcknowledgeWelcomeBody, AppContextDto, UserSettingsBody, UserContextDto } from './app.dto';
 import { AppService } from './app.service';
@@ -209,6 +209,35 @@ export class AppController {
     @Query('q') q?: string,
   ) {
     return this.appStoreService.fetchCiCloudStoreListings({ tags, sort, category, q });
+  }
+
+  @Get('store/changelog')
+  @ApiOperation({ summary: 'Recently added and updated CI Marketplace apps' })
+  @ApiResponse({ status: 200, description: 'Store changelog entries proxied from CI-Portal' })
+  async getStoreChangelog() {
+    return this.appStoreService.fetchCiCloudStoreChangelog();
+  }
+
+  @Get('store/app-details/:slug/reviews')
+  @ApiOperation({ summary: 'CI Marketplace app reviews' })
+  @ApiResponse({ status: 200, description: 'App reviews proxied from CI-Portal' })
+  async getStoreAppReviews(@Param('slug') slug: string) {
+    return this.appStoreService.fetchCiCloudStoreAppReviews(slug);
+  }
+
+  @Get('store/app-details/:slug')
+  @ApiOperation({ summary: 'CI Marketplace app details' })
+  @ApiResponse({ status: 200, description: 'App details proxied from CI-Portal' })
+  async getStoreAppDetails(@Param('slug') slug: string) {
+    return this.appStoreService.fetchCiCloudStoreAppDetails(slug);
+  }
+
+  @Get('store/library')
+  @UseGuards(AuthGuard)
+  @ApiOperation({ summary: 'App entitlements for the organization paired to this Hub' })
+  @ApiResponse({ status: 200, description: 'Organization app entitlements proxied from CI-Portal' })
+  async getStoreLibrary() {
+    return this.appStoreService.fetchCiCloudStoreLibrary();
   }
 
   @Get('store/featured-bundle')
