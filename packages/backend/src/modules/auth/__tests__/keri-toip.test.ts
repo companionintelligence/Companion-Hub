@@ -1,30 +1,17 @@
+import { computeCesrDigest, decodeCesrPublicKey, decodeCesrSignature, encodeCesrPublicKey, encodeCesrSignature } from '@ci-hub/common/keri/cesr';
+import { computeSaid, verifySaid } from '@ci-hub/common/keri/said';
 import {
-  computeCesrDigest,
-  decodeCesrPublicKey,
-  decodeCesrSignature,
-  encodeCesrPublicKey,
-  encodeCesrSignature,
-  canonicalStringify,
-  computeSaid,
-  verifySaid,
-  generateEd25519Keypair,
   computePreRotationCommitment,
   createInceptionEvent,
-  createRotationEvent,
   createInteractionEvent,
+  createRotationEvent,
+  generateEd25519Keypair,
   verifyKeyEventLog,
-  createTelIssuance,
-  createTelRevocation,
-  evaluateTelStatus,
-  issueAskGrantAcdc,
-  evaluateAcdcGrant,
-  buildOobiUrl,
-  parseOobiUrl,
-  createOobiDiscoveryResponse,
-  signHttpRequest,
-  verifyHttpRequestWithKeri,
-  type AskGrantAttributes,
-} from '@ci-hub/common/keri';
+} from '@ci-hub/common/keri/aid';
+import { createTelIssuance, createTelRevocation, evaluateTelStatus } from '@ci-hub/common/keri/tel';
+import { evaluateAcdcGrant, issueAskGrantAcdc, type AskGrantAttributes } from '@ci-hub/common/keri/acdc';
+import { buildOobiUrl, createOobiDiscoveryResponse, parseOobiUrl } from '@ci-hub/common/keri/oobi';
+import { signHttpRequest, verifyHttpRequestWithKeri } from '@ci-hub/common/keri/http-sig';
 import { describe, expect, it } from 'vitest';
 import {
   FORWARD_AUTH_HUB_AID_HEADER,

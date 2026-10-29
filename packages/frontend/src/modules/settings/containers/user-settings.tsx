@@ -1,17 +1,21 @@
 import { updateUserSettingsMutation, updateAdvancedModeMutation } from '@/api-client/@tanstack/react-query.gen';
+import { Button } from '@/components/ui/Button';
 import { useAppContext } from '@/context/app-context';
+import { openExternal } from '@/lib/helpers/open-external';
+import { portalAccountSettingsUrl } from '@/lib/hub-removal-watch';
 import type { Locale } from '@/lib/i18n/locales';
+import { portalConfigQueryOptions } from '@/lib/portal-config';
 import { refreshTelemetryConsent } from '@/lib/telemetry-consent';
 import type { TranslatableError } from '@/types/error.types';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import i18next from 'i18next';
+import { ExternalLink, Sparkles } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { type SettingsFormValues, UserSettingsForm } from '../components/user-settings-form/user-settings-form';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Switch } from '@/components/ui/Switch';
-import { Sparkles } from 'lucide-react';
 import { SettingsHint } from '../components/settings-hint';
 
 type Props = {
@@ -26,6 +30,7 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname, manage
   const currentLocale = i18next.language;
   const { t } = useTranslation();
   const { refreshAppContext, user } = useAppContext();
+  const { data: portalConfig } = useQuery(portalConfigQueryOptions());
   const [requireRestart, setRequireRestart] = useState(initialValues?.advancedSettings);
   const [advancedModeDraft, setAdvancedModeDraft] = useState<boolean | null>(null);
 
@@ -103,6 +108,31 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname, manage
         publicHubHostname={publicHubHostname}
         manageHub={manageHub}
       />
+
+      <Card data-testid="companion-account-settings">
+        <CardHeader>
+          <CardTitle className="text-xl">{t('SETTINGS_COMPANION_ACCOUNT_TITLE')}</CardTitle>
+          <p className="text-sm text-muted-foreground">{t('SETTINGS_COMPANION_ACCOUNT_DESC')}</p>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full sm:w-auto"
+            onClick={() => void openExternal(portalAccountSettingsUrl(portalConfig?.portalUrl))}
+          >
+            {t('SETTINGS_COMPANION_ACCOUNT_OPEN')}
+            <ExternalLink className="ml-2 h-4 w-4" aria-hidden="true" />
+          </Button>
+          <button
+            type="button"
+            className="text-left text-sm text-primary underline-offset-2 hover:underline sm:text-right"
+            onClick={() => void openExternal('https://ci.computer/privacy-policy')}
+          >
+            {t('SETTINGS_COMPANION_ACCOUNT_PRIVACY')}
+          </button>
+        </CardContent>
+      </Card>
     </div>
   );
 };

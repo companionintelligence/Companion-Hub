@@ -1,18 +1,23 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { openExternal } from '@/lib/helpers/open-external';
 import { UserSettingsContainer } from './user-settings';
 
 const pending = vi.hoisted(() => ({ settings: false, mode: false, modeMutate: vi.fn() }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
+  getPortalConfigOptions: () => ({ queryKey: ['portal-config'] }),
   updateUserSettingsMutation: () => ({ mutationKey: ['settings'] }),
   updateAdvancedModeMutation: () => ({ mutationKey: ['mode'] }),
 }));
 
 vi.mock('@tanstack/react-query', () => ({
+  useQuery: () => ({ data: { portalUrl: 'https://portal.example.com' } }),
   useMutation: (options: { mutationKey?: string[] }) =>
     options.mutationKey?.[0] === 'mode' ? { mutate: pending.modeMutate, isPending: pending.mode } : { mutate: vi.fn(), isPending: pending.settings },
 }));
+
+vi.mock('@/lib/helpers/open-external', () => ({ openExternal: vi.fn().mockResolvedValue(true) }));
 
 vi.mock('@/context/app-context', () => ({
   useAppContext: () => ({ refreshAppContext: vi.fn(), user: { advancedMode: false } }),
@@ -48,5 +53,15 @@ describe('UserSettingsContainer pending state', () => {
     pending.mode = true;
     rerender(<UserSettingsContainer />);
     expect(screen.getByRole('switch')).toBeDisabled();
+  });
+
+  it('opens the Companion Portal account deletion settings and privacy policy', () => {
+    render(<UserSettingsContainer />);
+
+    fireEvent.click(screen.getByRole('button', { name: /manage or delete account/i }));
+    expect(openExternal).toHaveBeenCalledWith('https://portal.example.com/user-settings');
+
+    fireEvent.click(screen.getByRole('button', { name: /privacy policy/i }));
+    expect(openExternal).toHaveBeenCalledWith('https://ci.computer/privacy-policy');
   });
 });

@@ -999,13 +999,11 @@ describe('App lifecycle', () => {
       expect(report).toContainEqual({ domain: 'blocked.acme.com', targetHostname: platformHostname, state: 'blocked', autoRestart: false });
     });
 
-    it('names each app holding a domain by its own hostname', async () => {
+    it('reports a moved domain only for the app that currently owns it', async () => {
       /*
-       * A stopped app keeps the domain it had while another app is bound to it, so
-       * one domain can be reported twice. Keyed by domain alone, whichever entry
-       * Companion Portal wrote last decided the row — a stopped app's "picks it up
-       * when it starts" could hide the running app's pending restart. The hostname
-       * says which binding each entry is about.
+       * When Companion Portal moves the domain, reconciliation clears the previous
+       * app's binding and records the new owner. The report should therefore name
+       * only the target that currently owns the domain.
        */
       const previous = await installExposed('cdoldapp');
       await installExposed('cdnewapp');
@@ -1014,13 +1012,35 @@ describe('App lifecycle', () => {
 
       await syncReporting([{ id: 'cd_1', domain: 'moved.acme.com', targetHostname: oldHost }]);
       await appsRepository.updateAppById(await rowIdOf(previous.urn), { status: 'stopped' });
-      // Pointed at the other app while the first is stopped: it binds, and the stopped one keeps it.
+      // Pointed at the other app while the first is stopped: ownership moves to the new app.
       await syncReporting([{ id: 'cd_1', domain: 'moved.acme.com', targetHostname: newHost }]);
       await syncReporting([{ id: 'cd_1', domain: 'moved.acme.com', targetHostname: newHost }]);
 
       const report = cloudflareClientService.syncState.mock.calls.at(-1)?.[3];
-      expect(report).toContainEqual({ domain: 'moved.acme.com', targetHostname: oldHost, state: 'pending-start', autoRestart: false });
+      expect(report).not.toContainEqual(expect.objectContaining({ domain: 'moved.acme.com', targetHostname: oldHost }));
       expect(report).toContainEqual({ domain: 'moved.acme.com', targetHostname: newHost, state: 'pending-restart', autoRestart: false });
+    });
+
+    it('reports duplicate bindings against each app hostname while Portal resolves the conflict', async () => {
+      const first = await installExposed('cdduplicatefirst');
+      const second = await installExposed('cdduplicatesecond');
+      const domain = 'duplicate.acme.com';
+      const firstHost = 'cdduplicatefirst-test-core2-acme.ci.test';
+      const secondHost = 'cdduplicatesecond-test-core2-acme.ci.test';
+
+      // A transient Portal rebind can leave both stored rows holding the domain
+      // until a later reconciliation settles on one target. The report must keep
+      // the target hostname on each row so the conflict is visible and attributable.
+      await appsRepository.updateAppById(await rowIdOf(first.urn), { customDomain: domain, pendingRestart: true });
+      await appsRepository.updateAppById(await rowIdOf(second.urn), { customDomain: domain, pendingRestart: true });
+      await syncReporting([
+        { id: 'cd_1', domain, targetHostname: firstHost },
+        { id: 'cd_2', domain, targetHostname: secondHost },
+      ]);
+
+      const report = cloudflareClientService.syncState.mock.calls.at(-1)?.[3];
+      expect(report).toContainEqual(expect.objectContaining({ domain, targetHostname: firstHost }));
+      expect(report).toContainEqual(expect.objectContaining({ domain, targetHostname: secondHost }));
     });
 
     it('applies a binding the operator asked for, instead of waiting to be restarted by hand', async () => {

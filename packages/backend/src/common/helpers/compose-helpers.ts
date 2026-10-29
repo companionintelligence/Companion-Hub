@@ -1,6 +1,33 @@
 import type { Architecture } from '@/common/constants';
 import { type DynamicCompose, type ServiceInput } from '@ci-hub/common/schemas';
-import deepmerge from 'deepmerge';
+
+const UNSAFE_MERGE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function mergeComposeOverride(base: unknown, override: unknown): unknown {
+  if (Array.isArray(override)) return override;
+  if (!isPlainObject(override)) return override;
+
+  const merged: Record<string, unknown> = {};
+  if (isPlainObject(base)) {
+    for (const [key, value] of Object.entries(base)) {
+      if (!UNSAFE_MERGE_KEYS.has(key)) merged[key] = value;
+    }
+  }
+
+  for (const [key, value] of Object.entries(override)) {
+    if (UNSAFE_MERGE_KEYS.has(key)) continue;
+    const baseValue = isPlainObject(base) && Object.hasOwn(base, key) ? base[key] : undefined;
+    merged[key] = mergeComposeOverride(baseValue, value);
+  }
+
+  return merged;
+}
 
 /**
  * Merges architecture-specific overrides with the base configuration
@@ -34,12 +61,7 @@ export const mergeArchitectureOverrides = (
 
     const baseService = servicesMap.get(override.name);
     if (baseService) {
-      // Special case for arrays that should be replaced rather than merged
-      const arrayMode = {
-        arrayMerge: (_target: unknown[], source: unknown[]) => source,
-      };
-
-      servicesMap.set(override.name, deepmerge(baseService, override, arrayMode) as ServiceInput);
+      servicesMap.set(override.name, mergeComposeOverride(baseService, override) as ServiceInput);
     }
   }
 
