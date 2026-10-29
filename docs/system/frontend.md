@@ -129,6 +129,14 @@ yellow, amber, green, or emerald ramps or dark-mode shade overrides for these ro
 appropriate only for non-status meaning such as model score tiers, recommendation categories, ratings,
 and user-selectable theme colors.
 
+## App Store Alternatives
+
+The Alternatives view reads Portal's alternatives catalog and presents searchable proprietary-product
+choices, popular picks, category jump links, and responsive comparison rows. Selecting a product filters
+the rows, and published alternatives link to their Hub store detail page. Keep the catalog picker and the
+global App Store search independent: the picker lists products from the complete dataset while the search
+narrows the comparison rows.
+
 ## Custom domains
 
 When CI-Cloud has wired a customer hostname to an app, `app.customDomain` carries it and that is the
