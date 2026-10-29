@@ -66,6 +66,7 @@ export type SystemLifecycleReason =
   | 'memory-connect' // a Companion Memory connection change reaches the app holding it
   | 'device-key-refresh' // pairing issued a new Portal device key; the app that calls Portal as this device picks it up
   | 'trusted-proxy-refresh' // Traefik moved on the Hub network; an app still trusting its old address as a proxy is recreated
+  | 'origin-host-refresh' // pairing renamed the device or organization; a running app still routed under the old name is recreated onto the new one
   // The debug routes:
   | 'debug-seed'
   | 'debug-start-all'

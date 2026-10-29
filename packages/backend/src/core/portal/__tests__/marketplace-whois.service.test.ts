@@ -134,6 +134,22 @@ describe('MarketplaceWhoIsService', () => {
     expect(cacheRows).toEqual([]);
   });
 
+  it("asks WhoIs about the paired Portal's subject, not an old Portal's, after the Hub moves (#2178)", async () => {
+    portal.getPublicPortalUrl.mockReturnValue('https://staging.example.com');
+    federatedIdentities.findByUserId.mockResolvedValue([
+      { issuer: 'https://prod.example.com/api/auth', subject: 'prod-sub' },
+      { issuer: 'https://staging.example.com/api/auth', subject: SUBJECT },
+    ] as never);
+    portal.whoisApps.mockResolvedValue({
+      status: 200,
+      body: { organizations: [{ organizationId: 'org-hub', version: 1, apps: [{ appId: 'immich', can: ['view'] }] }] },
+    });
+
+    await expect(service.has(USER_ID, APP_URN, 'view')).resolves.toBe(true);
+    expect(portal.whoisApps).toHaveBeenCalledWith(expect.objectContaining({ subject: SUBJECT }));
+    expect(portal.whoisApps).not.toHaveBeenCalledWith(expect.objectContaining({ subject: 'prod-sub' }));
+  });
+
   it('still asks WhoIs for a catalog app that shares the port-expose name', async () => {
     portExposeRows = [{ appName: 'immich', config: { kind: 'port-expose' } }];
     portal.whoisApps.mockResolvedValue({

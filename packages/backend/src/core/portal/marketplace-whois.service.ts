@@ -27,6 +27,7 @@ import type { LifecycleActor } from './lifecycle-actor';
 import { PortalClientService, type PortalWhoIsResponse } from './portal-client.service';
 import { assertHubManageAllowed, type HubManageVerdict } from './hub-manage-verdict';
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
+import { linksForCurrentPortal } from '@/modules/user/portal-links';
 
 export type GrantSurface = 'hub' | 'store';
 
@@ -803,7 +804,8 @@ export class MarketplaceWhoIsService {
   }
 
   private async portalSubject(userId: number): Promise<string | null> {
-    const links = await this.federatedIdentities.findByUserId(userId);
+    // The link the paired Portal issued, when there is one: it has never heard of another Portal's subject (#2178).
+    const links = linksForCurrentPortal(await this.federatedIdentities.findByUserId(userId), this.portal.getPublicPortalUrl());
     const link = links[0];
     return link?.subject ?? null;
   }

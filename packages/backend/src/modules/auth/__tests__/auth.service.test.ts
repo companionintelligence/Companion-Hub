@@ -1238,6 +1238,70 @@ describe('AuthService', () => {
       expect(sessionManager.destroyAllSessionsByUserId).toHaveBeenCalledWith(1);
       expect(userRepository.updateUser).toHaveBeenCalledWith(2, expect.objectContaining({ accessStatus: 'active', orgRole: 'member' }));
     });
+    describe('after the Hub moves to another Portal (#2178)', () => {
+      const prodLink = { issuer: 'https://prod.example.com/api/auth', subject: 'prod-sub' };
+      const stagingLink = { issuer: 'https://staging.example.com/api/auth', subject: 'staging-sub' };
+      const notMember = {
+        status: 403,
+        body: { error: 'Not a member of an organization this device is registered to', code: 'GRANT_DENIED' } as never,
+        code: 'GRANT_DENIED',
+      };
+      const member = { status: 200, body: { organizations: [{ organizationId: 'org-1', user: { role: 'owner' }, apps: [] }] } };
+
+      beforeEach(() => {
+        configurationService.get.mockImplementation(((key: string) => (key === 'ciCloudUrl' ? 'https://staging.example.com' : undefined)) as never);
+        userRepository.getOperators.mockResolvedValue([{ id: 1, accessStatus: 'active' }] as never);
+        deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      });
+
+      it("asks only about the paired Portal's link, so the old Portal's link can't revoke the person", async () => {
+        // The old Portal's subject comes first, as it did on the Hub that signed its operator out
+        // a few seconds after every sign-in. The paired Portal has never heard of it.
+        federatedIdentityRepository.findByUserId.mockResolvedValueOnce([prodLink, stagingLink] as never);
+        portal.whoisApps.mockImplementation((async ({ subject }: { subject: string }) => (subject === 'staging-sub' ? member : notMember)) as never);
+
+        await authService.reconcileOperatorMemberships();
+
+        expect(portal.whoisApps).toHaveBeenCalledTimes(1);
+        expect(portal.whoisApps).toHaveBeenCalledWith(expect.objectContaining({ subject: 'staging-sub' }));
+        expect(userRepository.updateUser).not.toHaveBeenCalledWith(1, expect.objectContaining({ accessStatus: 'revoked' }));
+        expect(userRepository.updateUser).toHaveBeenCalledWith(1, expect.objectContaining({ accessStatus: 'active', orgRole: 'owner' }));
+      });
+
+      it("still revokes when the paired Portal says its own link isn't a member", async () => {
+        federatedIdentityRepository.findByUserId.mockResolvedValueOnce([prodLink, stagingLink] as never);
+        portal.whoisApps.mockResolvedValueOnce(notMember);
+
+        await authService.reconcileOperatorMemberships();
+
+        expect(portal.whoisApps).toHaveBeenCalledWith(expect.objectContaining({ subject: 'staging-sub' }));
+        expect(userRepository.updateUser).toHaveBeenCalledWith(1, expect.objectContaining({ accessStatus: 'revoked' }));
+      });
+
+      it('asks about the old link when there is no other, so access the paired Portal cannot confirm still ends', async () => {
+        federatedIdentityRepository.findByUserId.mockResolvedValueOnce([prodLink] as never);
+        portal.whoisApps.mockResolvedValueOnce(notMember);
+
+        await authService.reconcileOperatorMemberships();
+
+        expect(portal.whoisApps).toHaveBeenCalledWith(expect.objectContaining({ subject: 'prod-sub' }));
+        expect(userRepository.updateUser).toHaveBeenCalledWith(1, expect.objectContaining({ accessStatus: 'revoked' }));
+      });
+
+      it("checks the paired Portal's link when a session is refreshed", async () => {
+        sessionManager.resolveSessionUserId.mockReturnValue(1);
+        userRepository.getUserById.mockResolvedValue({ id: 1, accessStatus: 'active' } as never);
+        federatedIdentityRepository.findByUserId.mockResolvedValueOnce([prodLink, stagingLink] as never);
+        portal.whoisApps.mockImplementation((async ({ subject }: { subject: string }) => (subject === 'staging-sub' ? member : notMember)) as never);
+        sessionManager.rotateSession.mockResolvedValue('next-session' as never);
+
+        await authService.refreshSession('sess');
+
+        expect(portal.whoisApps).toHaveBeenCalledWith(expect.objectContaining({ subject: 'staging-sub' }));
+        expect(userRepository.updateUser).not.toHaveBeenCalledWith(1, expect.objectContaining({ accessStatus: 'revoked' }));
+        expect(sessionManager.rotateSession).toHaveBeenCalledWith('sess');
+      });
+    });
   });
 
   describe('refreshSession', () => {
