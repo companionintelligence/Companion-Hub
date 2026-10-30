@@ -304,8 +304,30 @@ describe('ImageSizeService.getImageLayerSizes', () => {
     );
 
     const started = Date.now();
-    expect(await sizeServiceFor('unused').getImageLayerSizes('ghcr.io/besoeasy/zeronote:1.0.12', 50)).toBeNull();
+    expect(await sizeServiceFor('unused').getImageLayerSizes('ghcr.io/besoeasy/zeronote:1.0.12', { timeoutMs: 50 })).toBeNull();
     expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('stops when the pull it serves is cancelled, without a warning', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_input: unknown, init?: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            if (init?.signal?.aborted) reject(init.signal.reason);
+            init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+          }),
+      ),
+    );
+    const service = sizeServiceFor('unused');
+    const { logger } = service as unknown as { logger: LoggerService };
+    const cancel = new AbortController();
+
+    const lookup = service.getImageLayerSizes('ghcr.io/besoeasy/zeronote:1.0.12', { signal: cancel.signal });
+    cancel.abort();
+
+    expect(await lookup).toBeNull();
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 });
 
