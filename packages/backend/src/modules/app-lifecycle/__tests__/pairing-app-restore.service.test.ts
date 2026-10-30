@@ -488,6 +488,15 @@ describe('PairingAppRestoreService', () => {
     expect(originRefresh.refreshStaleOriginHosts).toHaveBeenCalledWith(['ci-memory:ci-marketplace']);
   });
 
+  it('moves exposed ports onto a new device name too, since their routes are not in a compose file', async () => {
+    cloudflare.getDeviceApplications.mockResolvedValue([portalApp('wordpress')]);
+    apps.getApps.mockResolvedValue([localApp('wordpress')]);
+
+    await expect(service.runCheck()).resolves.toBe('released');
+
+    expect(portExpose.syncPortExposeRoutes).toHaveBeenCalledTimes(1);
+  });
+
   it('still moves apps onto a new device name when the key refresh fails', async () => {
     cloudflare.getDeviceApplications.mockResolvedValue([portalApp('wordpress')]);
     apps.getApps.mockResolvedValue([localApp('wordpress')]);
@@ -579,6 +588,24 @@ describe('PairingAppRestoreService', () => {
         await vi.advanceTimersByTimeAsync(PairingAppRestoreService.POLL_MS * 3);
 
         expect(keyRefresh.refreshStaleDeviceKeys).toHaveBeenCalledTimes(1);
+      } finally {
+        service.onApplicationShutdown();
+        vi.useRealTimers();
+      }
+    });
+
+    it('tries a refused move onto the new name again on the next passes', async () => {
+      vi.useFakeTimers();
+      try {
+        state.check = null;
+        originRefresh.hasRefusedRestarts.mockReturnValueOnce(false).mockReturnValueOnce(true).mockReturnValue(false);
+        service.onApplicationBootstrap();
+
+        await vi.advanceTimersByTimeAsync(PairingAppRestoreService.POLL_MS * 4);
+
+        expect(originRefresh.refreshStaleOriginHosts).toHaveBeenNthCalledWith(1, []);
+        expect(originRefresh.refreshStaleOriginHosts).toHaveBeenNthCalledWith(2, [], { onlyRefused: true });
+        expect(originRefresh.refreshStaleOriginHosts).toHaveBeenCalledTimes(2);
       } finally {
         service.onApplicationShutdown();
         vi.useRealTimers();

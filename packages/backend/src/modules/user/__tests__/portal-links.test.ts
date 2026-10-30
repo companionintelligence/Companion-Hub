@@ -12,6 +12,11 @@ describe('portalOrigin', () => {
     expect(portalOrigin('  ')).toBeNull();
     expect(portalOrigin(undefined)).toBeNull();
   });
+
+  it('compares a value without a web scheme as written, not as the opaque origin every such value shares', () => {
+    expect(portalOrigin('localhost:8787/')).toBe('localhost:8787');
+    expect(portalOrigin('urn:ci-hub:x')).toBe('urn:ci-hub:x');
+  });
 });
 
 describe('linksForCurrentPortal', () => {
@@ -31,5 +36,17 @@ describe('linksForCurrentPortal', () => {
     const unknown = { subject: 'old' };
     expect(linksForCurrentPortal([unknown, staging], 'https://staging.example.com')).toEqual([staging]);
     expect(linksForCurrentPortal([unknown], 'https://staging.example.com')).toEqual([unknown]);
+  });
+
+  it('counts a link from the token issuer the Hub is set to accept, on another host than the Portal URL', () => {
+    const auth = { issuer: 'https://auth.staging.example.com/api/auth', subject: 'staging-sub' };
+    expect(linksForCurrentPortal([prod, auth], 'https://staging.example.com', 'https://auth.staging.example.com/api/auth')).toEqual([auth]);
+    expect(linksForCurrentPortal([prod, auth], 'https://staging.example.com', null)).toEqual([prod, auth]);
+  });
+
+  it('does not match unrelated values that have no web scheme', () => {
+    const other = { issuer: 'urn:other', subject: 'other-sub' };
+    const current = { issuer: 'localhost:8787', subject: 'current-sub' };
+    expect(linksForCurrentPortal([other, current], 'localhost:8787', null)).toEqual([current]);
   });
 });
