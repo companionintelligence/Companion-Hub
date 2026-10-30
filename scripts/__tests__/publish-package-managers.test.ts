@@ -1,10 +1,8 @@
 /**
- * The Hub's package-manager publisher writes into two repos it shares with other apps.
- *
- * `homebrew-tap` and `scoop-bucket` also hold entries and files the Hub does not own. The publisher used to
- * mirror its Hub-only `distribution/publish/` into them with `rsync -a --delete`, which removed the attribution
- * files and reset both READMEs. These tests run the real `distribution/scripts/publish-package-managers.sh` end
- * to end against local bare repos (`url.<base>.insteadOf`, a fake `gh`) and pin that only the Hub's own files change.
+ * The Hub's publisher writes into `homebrew-tap` and `scoop-bucket`, which also hold entries and files the Hub does not own.
+ * It used to mirror its Hub-only `distribution/publish/` into them with `rsync -a --delete`, which removed the attribution
+ * files and reset both READMEs. These tests run the real `distribution/scripts/publish-package-managers.sh` end to end
+ * against local bare repos (`url.<base>.insteadOf`, a fake `gh`) and pin that only the Hub's own files change.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
