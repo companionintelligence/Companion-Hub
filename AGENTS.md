@@ -37,6 +37,7 @@ Living docs agents **must update** when they change a system. Every doc starts w
 | [docs/system/desktop.md](docs/system/desktop.md) | Tauri, hub_manager, compose lifecycle |
 | [docs/system/e2e.md](docs/system/e2e.md) | Playwright lanes, benchmarks, visual tests |
 | [docs/system/agent-qa.md](docs/system/agent-qa.md) | Marketplace QA flywheel (separate from general workflow) |
+| [docs/system/marketplace-app-portability.md](docs/system/marketplace-app-portability.md) | Third-party agent packaging, proxy trust, and Hub integration |
 
 Deep architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (links to `docs/system/`).
 
