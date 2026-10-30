@@ -62,7 +62,10 @@ publish_repo() {
     git -c credential.helper= clone --depth=1 "$origin" "$work"
   fi
 
-  rsync -a --delete --exclude '.git' "${source_dir}/" "${work}/"
+  # Additive copy of the Hub's own files. The tap and the bucket also hold other apps' entries
+  # (Companion Capture, Companion Memory, Agent Sync) that this repo does not own, so nothing is
+  # mirrored or deleted here. See sync-published-files.sh.
+  bash "$ROOT/distribution/scripts/sync-published-files.sh" "$source_dir" "$work"
   (
     cd "$work"
     git add -A
