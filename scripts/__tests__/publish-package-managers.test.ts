@@ -181,25 +181,30 @@ describe('publish-package-managers.sh', () => {
     expect(remoteFile(tap, 'Casks/companion-capture.rb')).toBe(OTHER_APPS['homebrew-tap']['Casks/companion-capture.rb'].trim());
   }, 60_000);
 
-  it("stops before touching either repo when the Hub's own manifest is missing from the release directory", () => {
-    const tap = bareRemote('homebrew-tap', { 'Casks/companion-hub.rb': '# stale hub cask\n', ...OTHER_APPS['homebrew-tap'] });
-    const bucket = bareRemote('scoop-bucket', { 'companion-hub.json': '{"version":"stale"}\n', ...OTHER_APPS['scoop-bucket'] });
-    const tapHead = git(tap, 'rev-parse', 'main');
-    const bucketHead = git(bucket, 'rev-parse', 'main');
+  // Each of the Hub's two files has its own check, so each gets its own case. A publisher that checks only one of them fails the other case.
+  it.each(['homebrew-tap/Casks/companion-hub.rb', 'scoop-bucket/companion-hub.json'])(
+    "stops before touching either repo when the Hub's own %s is missing from the release directory",
+    (missing) => {
+      const tap = bareRemote('homebrew-tap', { 'Casks/companion-hub.rb': '# stale hub cask\n', ...OTHER_APPS['homebrew-tap'] });
+      const bucket = bareRemote('scoop-bucket', { 'companion-hub.json': '{"version":"stale"}\n', ...OTHER_APPS['scoop-bucket'] });
+      const tapHead = git(tap, 'rev-parse', 'main');
+      const bucketHead = git(bucket, 'rev-parse', 'main');
 
-    // The publisher finds its root from its own path, so run a copy whose release directory lacks the bucket manifest.
-    const copy = fs.mkdtempSync(path.join(root, 'tree-'));
-    fs.cpSync(path.dirname(publisher), path.join(copy, 'distribution/scripts'), { recursive: true });
-    fs.cpSync(publishDir, path.join(copy, 'distribution/publish'), { recursive: true });
-    fs.rmSync(path.join(copy, 'distribution/publish/scoop-bucket/companion-hub.json'));
+      // The publisher finds its root from its own path, so run a copy whose release directory lacks the file.
+      const copy = fs.mkdtempSync(path.join(root, 'tree-'));
+      fs.cpSync(path.dirname(publisher), path.join(copy, 'distribution/scripts'), { recursive: true });
+      fs.cpSync(publishDir, path.join(copy, 'distribution/publish'), { recursive: true });
+      fs.rmSync(path.join(copy, 'distribution/publish', missing));
 
-    const run = runPublisher(path.join(copy, 'distribution/scripts/publish-package-managers.sh'));
-    expect(run.status, run.output).toBe(1);
-    expect(run.output).toContain('distribution/publish/scoop-bucket/companion-hub.json is missing');
-    // The tap is not published either: the check runs before the first clone.
-    expect(git(tap, 'rev-parse', 'main')).toBe(tapHead);
-    expect(git(bucket, 'rev-parse', 'main')).toBe(bucketHead);
-  }, 60_000);
+      const run = runPublisher(path.join(copy, 'distribution/scripts/publish-package-managers.sh'));
+      expect(run.status, run.output).toBe(1);
+      expect(run.output).toContain(`distribution/publish/${missing} is missing`);
+      // Neither repo is published: the check runs before the first clone.
+      expect(git(tap, 'rev-parse', 'main')).toBe(tapHead);
+      expect(git(bucket, 'rev-parse', 'main')).toBe(bucketHead);
+    },
+    60_000,
+  );
 });
 
 describe('sync-published-files.sh', () => {
