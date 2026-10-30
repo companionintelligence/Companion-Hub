@@ -1,16 +1,12 @@
 /**
  * The Hub's package-manager publisher writes into two repos it shares with other apps.
  *
- * `homebrew-tap` and `scoop-bucket` also hold entries the Hub does not own: the Companion Capture and
- * Companion Memory cask and Scoop manifest, and the Agent Sync formula. They are maintained outside this
- * repo. The publisher used to mirror its Hub-only `distribution/publish/` into them with
- * `rsync -a --delete`, so the next Hub production release deleted every one of them (and a README that
- * someone had extended).
+ * `homebrew-tap` and `scoop-bucket` also hold entries and files the Hub does not own. The publisher used to
+ * mirror its Hub-only `distribution/publish/` into them with `rsync -a --delete`, which removed all of them.
  *
- * These tests run the real `distribution/scripts/publish-package-managers.sh` end to end: real git, real
- * clone/commit/push, against local bare repos that git's `url.<base>.insteadOf` setting substitutes for the
- * GitHub URL, with a fake `gh`. They pin what the publisher may touch: the Hub's own files change and
- * nothing else does.
+ * These tests run the real `distribution/scripts/publish-package-managers.sh` end to end (real git against
+ * local bare repos that `url.<base>.insteadOf` substitutes for the GitHub URL, and a fake `gh`) and pin that
+ * the Hub's own files change and nothing else does.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -34,7 +30,7 @@ const git = (cwd: string, ...args: string[]) =>
 
 const read = (file: string) => fs.readFileSync(file, 'utf-8');
 
-/** Files other apps keep in the shared repos. None of them exists under distribution/publish/. */
+/** Files other apps keep, or are about to keep, in the shared repos. None of them exists under distribution/publish/. */
 const OTHER_APPS = {
   'homebrew-tap': {
     'Casks/companion-capture.rb': '# capture cask\ncask "companion-capture" do\n  version "0.2.0-alpha.8"\nend\n',
@@ -124,10 +120,8 @@ afterAll(() => {
 
 describe('publish-package-managers.sh', () => {
   it('never mirrors with --delete', () => {
-    const scripts = fs
-      .readdirSync(path.dirname(publisher))
-      .filter((name) => name.endsWith('.sh'))
-      .map((name) => [name, read(path.join(path.dirname(publisher), name))] as const);
+    // The two scripts that write into the shared repos; other scripts here may legitimately use rsync.
+    const scripts = [publisher, syncHelper].map((file) => [path.basename(file), read(file)] as const);
     for (const [name, text] of scripts) {
       const executable = text.split('\n').filter((line) => !line.trimStart().startsWith('#'));
       expect(executable.join('\n'), `${name} runs a destructive sync`).not.toMatch(/--delete\b|\brsync\b/);

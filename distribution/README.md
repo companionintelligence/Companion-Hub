@@ -54,7 +54,7 @@ The publish script verifies push access before cloning and uses the PAT directly
 
 The publisher is additive. `publish-package-managers.sh` copies the files under `distribution/publish/<repo>/` into a clone of the target repo and commits what changed (`sync-published-files.sh`). It never deletes anything and never touches a file that is not in that directory.
 
-`homebrew-tap` and `scoop-bucket` are shared. They also hold the entries for Companion Capture, Companion Memory and Agent Sync, which are maintained outside this repo, so a mirror that deletes what it does not know would remove them. (An earlier version ran `rsync -a --delete` and did exactly that on every Hub production release.) Two consequences:
+`homebrew-tap` and `scoop-bucket` are shared. Other apps publish their own entries there (Companion Capture and Agent Sync today), and the repos carry files the Hub does not own, such as the attribution files and an extended README, so a mirror that deletes what it does not know would remove them. An earlier version of the publisher ran `rsync -a --delete` and did that. Two consequences:
 
 - A target repo's `README.md` is written only when it has none yet, so an extended README in the tap or the bucket stays as it is.
 - To retire a file the Hub used to publish, delete it in the target repo by hand.
