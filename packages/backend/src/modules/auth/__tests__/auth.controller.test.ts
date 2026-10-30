@@ -495,6 +495,23 @@ describe('AuthController', () => {
       { uri: '/api/authenticate?client=native' },
       { uri: '/api/keys' },
       { uri: '/graphql', extra: { 'x-api-key': 'mem_live_abc' } },
+      // Memory's sync engine, which verifies its own JWT (not a Portal token).
+      { uri: '/powersync/sync/stream', extra: { authorization: 'Bearer powersync.jwt.not-portal' } },
+      { uri: '/powersync/write-checkpoint2.json' },
+      // Memory's object store: an <img> of a signed link carries no key; the store checks the signature.
+      {
+        uri: '/static/companion/824bc2c5-f25c-4b6d-b836-7cd0accdae4c?X-Amz-Expires=300&X-Amz-Signature=abc',
+      },
+      // A CORS preflight from Phone Memory's webview: no credentials, by design.
+      {
+        uri: '/api/powersync/token?cutoff=2026-10-16T17%3A21%3A46.395Z',
+        extra: {
+          'x-forwarded-method': 'OPTIONS',
+          origin: 'https://localhost',
+          'access-control-request-method': 'GET',
+          'access-control-request-headers': 'x-api-key',
+        },
+      },
     ];
 
     it('lets Memory login and API-key traffic through without a Hub session', async () => {
@@ -560,6 +577,44 @@ describe('AuthController', () => {
 
           expect(res.status, `${host} ${uri}`).not.toHaveBeenCalledWith(200);
         }
+      }
+    });
+
+    it('SECURITY: on Memory, only a real preflight passes; other credential-less requests still need a session', async () => {
+      forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('ci-memory:ci-marketplace' as never);
+      const notPreflights: Array<[string, Record<string, string>]> = [
+        ['OPTIONS with no Access-Control-Request-Method', { 'x-forwarded-method': 'OPTIONS', origin: 'https://localhost' }],
+        ['OPTIONS with no Origin', { 'x-forwarded-method': 'OPTIONS', 'access-control-request-method': 'GET' }],
+        ['a GET dressed in preflight headers', { 'x-forwarded-method': 'GET', origin: 'https://localhost', 'access-control-request-method': 'GET' }],
+        ['a path that only starts like /powersync', {}],
+        ['a path that only starts like /static', {}],
+      ];
+
+      for (const [label, extra] of notPreflights) {
+        const uri = label.includes('/powersync')
+          ? '/powersyncx/sync/stream'
+          : label.includes('/static')
+            ? '/staticx/companion/824bc2c5-f25c-4b6d-b836-7cd0accdae4c'
+            : '/graphql';
+        const req = {
+          user: undefined,
+          headers: {
+            'x-forwarded-host': 'ci-memory-core3-team.companionintelligence.com',
+            'x-forwarded-uri': uri,
+            'x-forwarded-proto': 'https',
+            ...extra,
+          },
+        } as unknown as Request;
+        const res = {
+          status: vi.fn().mockReturnThis(),
+          send: vi.fn(),
+          redirect: vi.fn(),
+          setHeader: vi.fn(),
+        } as unknown as Response;
+
+        await authController.traefik(req, res);
+
+        expect(res.status, label).not.toHaveBeenCalledWith(200);
       }
     });
 

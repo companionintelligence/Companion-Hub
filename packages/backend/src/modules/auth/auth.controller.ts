@@ -139,11 +139,27 @@ interface EdgeSsoTicket {
  * the Hub cookie, and its login exchange and API routes must reach Nest for
  * app-level authentication. Browser HTML remains on cookie SSO.
  *
+ * `/powersync` is Memory's sync engine, which the gateway proxies there. Its
+ * requests carry a PowerSync JWT that Memory's API signed with the appliance's
+ * own secret and that the engine verifies; it is not a Portal token, so the
+ * Bearer check below would refuse it, and the phone's sync could never connect
+ * through the Hub. Without a valid token the engine answers 401 on every route
+ * but its liveness probes.
+ *
+ * `/static` is Memory's object store: photos, videos and downloads, each link
+ * signed by Memory's API for the person it was handed to and checked by the
+ * store itself (unsigned requests and bucket listings answer 403 AccessDenied,
+ * measured 2026-10-30). An `<img>` cannot carry the phone's API key, so through
+ * the edge every photo in Phone Memory failed with a redirect to the Hub login.
+ * A signed link opens its file for anyone holding it until it expires (five
+ * minutes, Memory's `staticfiles.auth.signatureTTL`), as it already does on a
+ * Memory reached without a Hub.
+ *
  * ONLY for the official Memory install — see `isMemoryProviderHost`. Every
  * other edge-authenticated app relies on the Hub to authenticate for it, and
  * these paths mean nothing to them.
  */
-const FORWARD_AUTH_APP_PUBLIC_PREFIXES = ['/api/authenticate', '/api/health', '/api/keys'] as const;
+const FORWARD_AUTH_APP_PUBLIC_PREFIXES = ['/api/authenticate', '/api/health', '/api/keys', '/powersync', '/static'] as const;
 
 function isForwardAuthAppPublicPath(uri: string): boolean {
   const path = (uri.split('?')[0] || '/').replace(/\/+$/, '') || '/';
@@ -173,6 +189,31 @@ function requestHasApiKey(req: Request): boolean {
   const raw = req.headers['x-api-key'];
   const value = Array.isArray(raw) ? raw[0] : raw;
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+/**
+ * Whether the forwarded request is a CORS preflight: the original method was
+ * OPTIONS and it carries both `Origin` and `Access-Control-Request-Method`, as
+ * every browser preflight does and nothing else needs to.
+ *
+ * A preflight never carries cookies, keys or tokens — the browser leaves them
+ * off by design — so no request from Phone Memory's webview to Memory with an
+ * `x-api-key` or `Authorization` header can get past one here: answered with a
+ * redirect to the Hub login, the webview refuses the real request outright
+ * ("Redirect is not allowed for a preflight request"). A preflight returns no
+ * data; the app's CORS policy answers it, and the real request that follows
+ * goes through this check like any other. Narrow on purpose: an OPTIONS request
+ * missing either header is not a preflight and gets no pass.
+ */
+function isCorsPreflight(req: Request): boolean {
+  const method = req.headers['x-forwarded-method'];
+  const value = (Array.isArray(method) ? method[0] : method)?.trim().toUpperCase();
+  const present = (name: string) => {
+    const raw = req.headers[name];
+    const header = Array.isArray(raw) ? raw[0] : raw;
+    return typeof header === 'string' && header.trim().length > 0;
+  };
+  return value === 'OPTIONS' && present('origin') && present('access-control-request-method');
 }
 
 @Controller('auth')
@@ -1571,7 +1612,7 @@ export class AuthController {
     // the same request falls through to the Bearer / session checks below and is refused like
     // any other anonymous one. Resolved from the forwarded host, which Traefik sets from the
     // router that matched — not from anything the client sent.
-    if (!forwardAuthUser && (isForwardAuthAppPublicPath(cleanUri) || requestHasApiKey(req))) {
+    if (!forwardAuthUser && (isForwardAuthAppPublicPath(cleanUri) || requestHasApiKey(req) || isCorsPreflight(req))) {
       if (await this.isMemoryProviderHost(forwardedHost)) {
         return res.status(200).send();
       }
