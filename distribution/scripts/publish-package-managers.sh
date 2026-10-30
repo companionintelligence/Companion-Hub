@@ -44,8 +44,10 @@ verify_publish_token() {
   done
 }
 
-# update-package-manifests.sh writes the Hub's own cask and manifest into distribution/publish/. If one is missing that
-# step did not run, so stop before either repo is touched instead of publishing half a release or nothing at all.
+# If the Hub's own cask or manifest is missing from distribution/publish/, stop before either repo is touched instead of
+# publishing half a release or nothing at all. Both files are tracked in git, so a checkout has them even when
+# update-package-manifests.sh did not run. The check fires only if a tracked file was deleted and the update step
+# did not recreate it.
 require_hub_files() {
   local file
   for file in homebrew-tap/Casks/companion-hub.rb scoop-bucket/companion-hub.json; do
