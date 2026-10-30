@@ -21,6 +21,7 @@ import { AuthRateLimiter } from '../auth-rate-limiter';
 import { AuthService } from '../auth.service';
 import { BearerOrgMembershipCache } from '../bearer-org-membership.cache';
 import { ForwardAuthIdentityResolver } from '../forward-auth-identity.resolver';
+import { MemoryApiKeyCheck } from '../memory-api-key.check';
 import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
 import { SessionManager } from '../session.manager';
 
@@ -48,6 +49,7 @@ describe('AuthController rate limiting', () => {
         { provide: BearerOrgMembershipCache, useValue: mock<BearerOrgMembershipCache>() },
         { provide: SessionUserCache, useValue: mock<SessionUserCache>() },
         { provide: ForwardAuthIdentityResolver, useValue: mock<ForwardAuthIdentityResolver>() },
+        { provide: MemoryApiKeyCheck, useValue: mock<MemoryApiKeyCheck>() },
         AuthRateLimiter,
       ],
     }).compile();

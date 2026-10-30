@@ -36,6 +36,7 @@ import { buildForwardAuthIdentityHeaders } from './utils/forward-auth-signing';
 import { normalizeForwardedHost, rawForwardedHost } from './utils/forward-auth-host';
 import { ForwardAuthIdentityResolver } from './forward-auth-identity.resolver';
 import { ForwardAuthSecretResolver } from './forward-auth-secret.resolver';
+import { MemoryApiKeyCheck } from './memory-api-key.check';
 import { BearerOrgMembershipCache } from './bearer-org-membership.cache';
 import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
@@ -178,17 +179,16 @@ function translatableErrorKey(error: unknown): string {
 }
 
 /**
- * Whether the request carries an `x-api-key` header at all. The VALUE is not
- * checked here — it is Memory's key, and Memory verifies it — which is exactly
- * why this exemption is scoped to the official Memory install by
- * `isMemoryProviderHost`. Applied to every edge-authenticated app, as it once
- * was, any non-empty header was an unauthenticated pass into apps that never
- * look at it (2026-09-24 audit).
+ * The request's `x-api-key`, or null. It is Memory's key: the edge passes it on only to the
+ * official Memory install (`isMemoryProviderHost`), and only once Memory has said it is one it
+ * accepts (`MemoryApiKeyCheck`). Applied to every edge-authenticated app, as it once was, any
+ * non-empty header was an unauthenticated pass into apps that never look at it (2026-09-24
+ * audit); until 2026-10-30 even Memory's pass took any non-empty value.
  */
-function requestHasApiKey(req: Request): boolean {
+function requestApiKey(req: Request): string | null {
   const raw = req.headers['x-api-key'];
-  const value = Array.isArray(raw) ? raw[0] : raw;
-  return typeof value === 'string' && value.trim().length > 0;
+  const value = (Array.isArray(raw) ? raw[0] : raw)?.trim();
+  return value ? value : null;
 }
 
 /**
@@ -232,6 +232,7 @@ export class AuthController {
     private readonly sessionUserCache: SessionUserCache,
     private readonly forwardAuthIdentities: ForwardAuthIdentityResolver,
     private readonly rateLimiter: AuthRateLimiter,
+    private readonly memoryApiKeys: MemoryApiKeyCheck,
   ) {}
 
   private readonly desktopWaitingChallenges = new DesktopWaitingChallenges();
@@ -1612,8 +1613,20 @@ export class AuthController {
     // the same request falls through to the Bearer / session checks below and is refused like
     // any other anonymous one. Resolved from the forwarded host, which Traefik sets from the
     // router that matched — not from anything the client sent.
-    if (!forwardAuthUser && (isForwardAuthAppPublicPath(cleanUri) || requestHasApiKey(req) || isCorsPreflight(req))) {
+    const apiKey = requestApiKey(req);
+    const selfAuthenticating = isForwardAuthAppPublicPath(cleanUri) || isCorsPreflight(req);
+    if (!forwardAuthUser && (selfAuthenticating || apiKey)) {
       if (await this.isMemoryProviderHost(forwardedHost)) {
+        if (selfAuthenticating || !apiKey) {
+          return res.status(200).send();
+        }
+        // Memory decides whether its key is real; the edge asks before letting the request in, so
+        // a made-up key stops here. `unknown` (Memory unreachable, or too old to have the check)
+        // passes as before: Memory still checks the key on the request itself.
+        if ((await this.memoryApiKeys.check(apiKey)) === 'invalid') {
+          this.logger.debug(`Traefik forward auth refused an API key Memory does not accept for ${forwardedHost} ${cleanUri}`);
+          return res.status(401).send();
+        }
         return res.status(200).send();
       }
       this.logger.debug(`Traefik forward auth: Memory-only exemption refused for ${forwardedHost || '(no host)'} ${cleanUri}`);
