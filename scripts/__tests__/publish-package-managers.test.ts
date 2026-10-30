@@ -2,11 +2,9 @@
  * The Hub's package-manager publisher writes into two repos it shares with other apps.
  *
  * `homebrew-tap` and `scoop-bucket` also hold entries and files the Hub does not own. The publisher used to
- * mirror its Hub-only `distribution/publish/` into them with `rsync -a --delete`, which removed all of them.
- *
- * These tests run the real `distribution/scripts/publish-package-managers.sh` end to end (real git against
- * local bare repos that `url.<base>.insteadOf` substitutes for the GitHub URL, and a fake `gh`) and pin that
- * the Hub's own files change and nothing else does.
+ * mirror its Hub-only `distribution/publish/` into them with `rsync -a --delete`, which removed the attribution
+ * files and reset both READMEs. These tests run the real `distribution/scripts/publish-package-managers.sh` end
+ * to end against local bare repos (`url.<base>.insteadOf`, a fake `gh`) and pin that only the Hub's own files change.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -67,8 +65,8 @@ function bareRemote(name: 'homebrew-tap' | 'scoop-bucket', files: Record<string,
   return bare;
 }
 
-function runPublisher(): { status: number | null; output: string } {
-  const result = spawnSync('bash', [publisher, 'companion-hub vTEST'], {
+function runPublisher(script = publisher): { status: number | null; output: string } {
+  const result = spawnSync('bash', [script, 'companion-hub vTEST'], {
     cwd: repoRoot,
     encoding: 'utf-8',
     env: {
@@ -128,6 +126,7 @@ describe('publish-package-managers.sh', () => {
     }
   });
 
+  // The end-to-end tests run dozens of git commands: 60 s, not the global 15 s, so a busy machine does not fail them.
   it('publishes the Hub files and leaves every other app and the extended README alone', () => {
     const tap = bareRemote('homebrew-tap', {
       'Casks/companion-hub.rb': '# stale hub cask\n',
@@ -170,7 +169,7 @@ describe('publish-package-managers.sh', () => {
     expect(again.output).toContain('No changes for scoop-bucket');
     expect(git(tap, 'rev-parse', 'main')).toBe(tapHead);
     expect(git(bucket, 'rev-parse', 'main')).toBe(bucketHead);
-  });
+  }, 60_000);
 
   it('seeds the README of a repo that has none, from distribution/publish/', () => {
     const tap = bareRemote('homebrew-tap', { 'Casks/companion-capture.rb': OTHER_APPS['homebrew-tap']['Casks/companion-capture.rb'] });
@@ -182,7 +181,27 @@ describe('publish-package-managers.sh', () => {
     expect(remoteFile(tap, 'README.md')).toBe(read(path.join(publishDir, 'homebrew-tap/README.md')).trim());
     expect(remoteFile(bucket, 'README.md')).toBe(read(path.join(publishDir, 'scoop-bucket/README.md')).trim());
     expect(remoteFile(tap, 'Casks/companion-capture.rb')).toBe(OTHER_APPS['homebrew-tap']['Casks/companion-capture.rb'].trim());
-  });
+  }, 60_000);
+
+  it("stops before touching either repo when the Hub's own manifest is missing from the release directory", () => {
+    const tap = bareRemote('homebrew-tap', { 'Casks/companion-hub.rb': '# stale hub cask\n', ...OTHER_APPS['homebrew-tap'] });
+    const bucket = bareRemote('scoop-bucket', { 'companion-hub.json': '{"version":"stale"}\n', ...OTHER_APPS['scoop-bucket'] });
+    const tapHead = git(tap, 'rev-parse', 'main');
+    const bucketHead = git(bucket, 'rev-parse', 'main');
+
+    // The publisher finds its root from its own path, so run a copy whose release directory lacks the bucket manifest.
+    const copy = fs.mkdtempSync(path.join(root, 'tree-'));
+    fs.cpSync(path.dirname(publisher), path.join(copy, 'distribution/scripts'), { recursive: true });
+    fs.cpSync(publishDir, path.join(copy, 'distribution/publish'), { recursive: true });
+    fs.rmSync(path.join(copy, 'distribution/publish/scoop-bucket/companion-hub.json'));
+
+    const run = runPublisher(path.join(copy, 'distribution/scripts/publish-package-managers.sh'));
+    expect(run.status, run.output).toBe(1);
+    expect(run.output).toContain('distribution/publish/scoop-bucket/companion-hub.json is missing');
+    // The tap is not published either: the check runs before the first clone.
+    expect(git(tap, 'rev-parse', 'main')).toBe(tapHead);
+    expect(git(bucket, 'rev-parse', 'main')).toBe(bucketHead);
+  }, 60_000);
 });
 
 describe('sync-published-files.sh', () => {

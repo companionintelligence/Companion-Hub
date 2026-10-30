@@ -44,6 +44,18 @@ verify_publish_token() {
   done
 }
 
+# update-package-manifests.sh writes the Hub's own cask and manifest into distribution/publish/. If one is missing that
+# step did not run, so stop before either repo is touched instead of publishing half a release or nothing at all.
+require_hub_files() {
+  local file
+  for file in homebrew-tap/Casks/companion-hub.rb scoop-bucket/companion-hub.json; do
+    if [[ ! -f "$DIST/$file" ]]; then
+      echo "distribution/publish/${file} is missing: run update-package-manifests.sh first. Nothing was published." >&2
+      exit 1
+    fi
+  done
+}
+
 publish_repo() {
   local repo_name="$1"
   local source_dir="$2"
@@ -81,6 +93,7 @@ publish_repo() {
   echo "Published ${repo_name}"
 }
 
+require_hub_files
 verify_publish_token
 publish_repo "homebrew-tap" "$DIST/homebrew-tap"
 publish_repo "scoop-bucket" "$DIST/scoop-bucket"

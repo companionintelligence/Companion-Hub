@@ -3,11 +3,8 @@
 # Usage: sync-published-files.sh <source_dir> <dest_dir>
 #
 # Additive on purpose: the tap and the bucket are shared with other apps, so this writes the files under
-# <source_dir> and never deletes or touches anything else. Publishing used to be `rsync -a --delete`, which
-# removed the attribution files in both repos and reset both READMEs.
-#
-# README.md describes the destination as a whole, so it is only written when the destination has none.
-# To retire a file this repo used to publish, delete it in the destination repo by hand.
+# <source_dir> and never deletes or touches anything else. README.md is only written when the destination has
+# none, and a file this repo stops publishing is deleted in the destination by hand.
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
