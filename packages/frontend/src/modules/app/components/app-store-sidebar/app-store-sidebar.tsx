@@ -84,7 +84,7 @@ export const AppStoreSidebar = () => {
             <span className="truncate">{t('COMMON_ALL')}</span>
           </Button>
 
-          <div className="my-2 mx-3 border-t border-border/50" />
+          <div className="my-2 mx-3 border-t border-border/85" />
           <Button
             variant="ghost"
             className="w-full justify-start font-normal text-sm gap-3 px-4 py-2 h-auto text-muted-foreground hover:bg-muted/50"
@@ -94,7 +94,7 @@ export const AppStoreSidebar = () => {
           </Button>
 
           {/* Alternatives - special item */}
-          <div className="my-2 mx-3 border-t border-border/50" />
+          <div className="my-2 mx-3 border-t border-border/85" />
           <Button
             variant="ghost"
             className={clsx(
@@ -128,7 +128,7 @@ export const AppStoreSidebar = () => {
             <Library className="h-4 w-4" />
             <span className="truncate">Library</span>
           </Button>
-          <div className="my-2 mx-3 border-t border-border/50" />
+          <div className="my-2 mx-3 border-t border-border/85" />
 
           {/* Categories */}
           {iconForCategory.map((cat) => {
