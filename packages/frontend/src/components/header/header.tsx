@@ -10,8 +10,7 @@ import { useMutation } from '@tanstack/react-query';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { logoutMutation } from '@/api-client/@tanstack/react-query.gen';
 import { useAppStoreState } from '@/stores/app-store';
-import { useCallback, useMemo, useState } from 'react';
-import { useAppContext } from '@/context/app-context';
+import { useCallback, useState } from 'react';
 
 type HeaderProps = {
   isLoggedIn?: boolean;
@@ -20,7 +19,6 @@ type HeaderProps = {
 
 export const Header = (props: HeaderProps) => {
   const userContext = useUserContext();
-  const { userSettings } = useAppContext();
   const { setTheme } = useTheme();
   const { resetBrowseToFeatured } = useAppStoreState();
   // Prefer context for authentication state
@@ -46,12 +44,6 @@ export const Header = (props: HeaderProps) => {
     navigate('/store?category=featured');
   }, [resetBrowseToFeatured, navigate]);
 
-  const deviceName = useMemo(() => {
-    const source = userSettings?.ciHubDeviceSlug?.trim();
-    if (!source) return 'CI HUB';
-    return source.replace(/[-_]+/g, ' ').toUpperCase();
-  }, [userSettings?.ciHubDeviceSlug]);
-
   const navButtonBase = 'cursor-pointer text-foreground/80 hover:bg-accent hover:text-accent-foreground';
   const navButtonActive = 'bg-accent text-accent-foreground shadow-sm';
 
@@ -72,8 +64,10 @@ export const Header = (props: HeaderProps) => {
       {/* Logo (Left) */}
       <div className="flex items-center justify-start">
         <Link to="/home" className="flex items-center gap-2" aria-label={t('COMMON_HOME')}>
-          <img src="/logo.svg" alt="CI Logo Icon" className="h-8 w-8 object-contain" />
-          <span className="max-w-48 truncate text-sm font-semibold tracking-wide text-chart-3 dark:text-aqua-light">{deviceName}</span>
+          <span aria-hidden="true" className="relative block h-12 w-[150px] shrink-0">
+            <img src="/brand/logo.lockup-on-light.svg" alt="" className="absolute inset-0 h-full w-full object-contain dark:hidden" />
+            <img src="/brand/logo.lockup.svg" alt="" className="absolute inset-0 hidden h-full w-full object-contain dark:block" />
+          </span>
         </Link>
       </div>
 

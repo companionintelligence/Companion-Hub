@@ -58,6 +58,7 @@ Tests: `packages/frontend/src/components/hub-status/hub-status.test.tsx`
 
 - Tailwind CSS 4 + Radix UI primitives
 - UI style guide: `docs/UI_STYLE_GUIDE.md`
+- The header uses CI-Common's generated `logo.lockup-on-light` and `logo.lockup` variants; `/logo.svg` is the generated tight mark used inside QR codes. Regenerate these mirrors with `CI_COMMON_ROOT=/path/to/CI-Common pnpm sync:brand-logo` and do not edit the SVGs by hand.
 - iOS / Tauri mobile: `html.ci-mobile` sets `--safe-area-top` / `--safe-area-bottom` (WKWebView often reports `env(safe-area-inset-*)` as 0). The fixed Hub header and dashboard `pt` use `--header-offset`. Keep `viewport-fit=cover` in `index.html` and the root Layout. Do not pin `body` color/background with inline styles — theme tokens (`bg-background text-foreground`) must win in dark mode. Do not slide dashboard routes with Framer Motion (`translateX` + `opacity` paints a blank WKWebView). Radix Dropdown/Dialog/Select must be `modal={false}` on a phone so `react-remove-scroll` does not lock `body`. Phone navigation smoke: `packages/frontend/src/lib/ios-navigation.smoke.test.tsx` — add a case when you add a Hub overlay or a new authenticated route.
 
 ## Testing

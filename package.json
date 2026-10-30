@@ -11,6 +11,7 @@
     "start": "pnpm exec tsx scripts/start.ts up",
     "dev": "pnpm exec tsx scripts/start.ts up dev --detached",
     "local": "pnpm exec tsx scripts/start.ts up local",
+    "sync:brand-logo": "node scripts/sync-brand-logo.mjs",
     "dev:app": "dotenv -e .env.dev -e .internal/.env -e .env.local -- env POSTGRES_HOST=localhost RABBITMQ_HOST=localhost NODE_ENV=development turbo run local",
     "bundle": "turbo bundle",
     "build": "turbo run build",
