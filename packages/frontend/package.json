@@ -61,7 +61,7 @@
     "react-i18next": "^17.1.0",
     "react-markdown": "^10.1.0",
     "react-router": "8.5.0",
-    "react-timezone-select": "^3.3.3",
+    "react-timezone-select": "^4.1.0",
     "react-tooltip": "^6.0.9",
     "rehype-raw": "^7.0.0",
     "rehype-sanitize": "^6.0.0",
