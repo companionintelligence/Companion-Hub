@@ -135,6 +135,9 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
           this.startupKeyRefreshPasses = 0;
           await this.refreshAppsAfterPairing();
         }
+      } else if (outcome === 'none' && this.originHostRefreshService.hasRefusedRestarts()) {
+        // An app that was busy, or a queue that was down, refused its move onto the new name.
+        await this.originHostRefreshService.refreshStaleOriginHosts([], { onlyRefused: true });
       }
     } catch (error) {
       this.logger.error(`[PairingAppRestore] Check failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -376,9 +379,9 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
 
   /**
    * Bring the apps a pairing left stale up to date: the app that calls the Portal as this device gets
-   * the new device key, and a running app still routed under an old device or organization name is
-   * recreated onto the new one (#2178). One restart writes both, so an app restarted for its key isn't
-   * restarted again for its name.
+   * the new device key, and a running app or exposed port still routed under an old device or
+   * organization name moves onto the new one (#2178). One restart writes both, so an app restarted for
+   * its key isn't restarted again for its name.
    */
   private async refreshAppsAfterPairing(): Promise<void> {
     let restarted: AppUrn[] = [];
@@ -395,6 +398,16 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
     } catch (error) {
       this.logger.error(
         `[PairingAppRestore] Could not move apps onto this Hub's new name: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    // An exposed port's public route lives in Traefik's file provider, not in a compose file.
+    try {
+      const { PortExposeService } = await import('@/modules/custom-apps/port-expose.service');
+      await this.moduleRef.get(PortExposeService, { strict: false })?.syncPortExposeRoutes();
+    } catch (error) {
+      this.logger.error(
+        `[PairingAppRestore] Could not move exposed ports onto this Hub's new name: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }

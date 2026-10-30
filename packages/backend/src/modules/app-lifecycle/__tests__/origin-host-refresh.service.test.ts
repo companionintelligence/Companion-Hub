@@ -107,6 +107,68 @@ describe('OriginHostRefreshService', () => {
     expect(lifecycle.restartApp).toHaveBeenCalledTimes(2);
   });
 
+  it('moves an app again when the Hub returns to a name it had earlier', async () => {
+    apps.getApps.mockResolvedValue([publicApp('wordpress')]);
+    const pairAs = async (device: string, routedAs: string) => {
+      registration.getDeviceRegistrationInfo.mockResolvedValue({ hubSubdomain: `${device}-acme`, slug: 'acme' } as never);
+      composes['wordpress:ci-marketplace'] = composeFor(`wordpress-ci-marketplace-${routedAs}-acme.localhost`);
+      return service.refreshStaleOriginHosts();
+    };
+
+    await expect(pairAs('office', 'laptop')).resolves.toEqual(['wordpress:ci-marketplace']);
+    await expect(pairAs('laptop', 'office')).resolves.toEqual(['wordpress:ci-marketplace']);
+    await expect(pairAs('office', 'laptop')).resolves.toEqual(['wordpress:ci-marketplace']);
+    expect(lifecycle.restartApp).toHaveBeenCalledTimes(3);
+  });
+
+  it('leaves exposed ports, which the file provider routes, and apps whose compose file has no router', async () => {
+    apps.getApps.mockResolvedValue([
+      publicApp('my-port', 'running', { config: { kind: 'port-expose', exposureMode: 'cloudflare', exposedLocal: true } } as never),
+      publicApp('no-port'),
+    ]);
+    composes['my-port:ci-marketplace'] = '{"schemaVersion":2,"services":[]}';
+    composes['no-port:ci-marketplace'] = 'services:\n  app:\n    image: example\n';
+
+    await expect(service.refreshStaleOriginHosts()).resolves.toEqual([]);
+    expect(lifecycle.restartApp).not.toHaveBeenCalled();
+  });
+
+  it('runs one pass at a time, so two callers do not restart the same app twice', async () => {
+    apps.getApps.mockResolvedValue([publicApp('wordpress')]);
+    composes['wordpress:ci-marketplace'] = composeFor('wordpress-ci-marketplace-laptop-acme.localhost');
+
+    const [first, second] = await Promise.all([service.refreshStaleOriginHosts(), service.refreshStaleOriginHosts()]);
+
+    expect([first, second]).toEqual([['wordpress:ci-marketplace'], []]);
+    expect(lifecycle.restartApp).toHaveBeenCalledTimes(1);
+  });
+
+  it('remembers a refused restart for a later pass, which looks only at refused apps, and gives up after a few tries', async () => {
+    apps.getApps.mockResolvedValue([publicApp('wordpress'), publicApp('ghost')]);
+    composes['wordpress:ci-marketplace'] = composeFor('wordpress-ci-marketplace-laptop-acme.localhost');
+    composes['ghost:ci-marketplace'] = composeFor('ghost-ci-marketplace-laptop-acme.localhost');
+    lifecycle.restartApp.mockImplementation((async ({ appUrn }: { appUrn: string }) => {
+      if (appUrn === 'wordpress:ci-marketplace') {
+        throw new Error('restart still under way');
+      }
+      return { requestId: 'r' };
+    }) as never);
+
+    await expect(service.refreshStaleOriginHosts()).resolves.toEqual(['ghost:ci-marketplace']);
+    expect(service.hasRefusedRestarts()).toBe(true);
+
+    for (let pass = 2; pass < OriginHostRefreshService.MAX_ATTEMPTS; pass += 1) {
+      await service.refreshStaleOriginHosts([], { onlyRefused: true });
+      expect(service.hasRefusedRestarts()).toBe(true);
+    }
+    await service.refreshStaleOriginHosts([], { onlyRefused: true });
+    expect(service.hasRefusedRestarts()).toBe(false);
+
+    const tried = lifecycle.restartApp.mock.calls.map(([params]) => params.appUrn);
+    expect(tried.filter((urn) => urn === 'wordpress:ci-marketplace')).toHaveLength(OriginHostRefreshService.MAX_ATTEMPTS);
+    expect(tried.filter((urn) => urn === 'ghost:ci-marketplace')).toHaveLength(1);
+  });
+
   it('does nothing on a Hub that is not paired', async () => {
     registration.getDeviceRegistrationInfo.mockResolvedValue(null as never);
     apps.getApps.mockResolvedValue([publicApp('wordpress')]);
