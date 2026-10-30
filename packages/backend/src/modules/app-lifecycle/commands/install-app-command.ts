@@ -360,18 +360,22 @@ export class InstallAppCommand extends AppLifecycleCommand {
         let lastPullProgress = DOWNLOAD_PROGRESS_START;
         let lastPullProgressAt = 0;
         let lastPullBytes = 0;
+        let sizeShown = false;
         dockerService.pullImages
           ? await dockerService.pullImages(appImages, {
               forcePull,
               signal: ctx?.signal,
-              layerSizes: (image) => imageSizeService?.getImageLayerSizes?.(image) ?? Promise.resolve(null),
+              layerSizes: (image, signal) => imageSizeService?.getImageLayerSizes?.(image, { signal }) ?? Promise.resolve(null),
               onProgress: ({ completedBytes, totalBytes, totalBytesKnown, completedImages, totalImages }) => {
-                const nextProgress =
-                  totalBytes > 0
-                    ? mapPullProgressToInstallProgress(completedBytes, totalBytes)
-                    : totalImages > 0
-                      ? mapPullProgressToInstallProgress(completedImages, totalImages)
-                      : DOWNLOAD_PROGRESS_START;
+                // The size under the bar and the bar itself wait for a final total. "3.0 MB / 3.7 MB" for a
+                // 26 MB download was a total still growing (CI-Hub#2177). A first layer of 405 bytes, done at
+                // once, put the bar at 98. Until then the page says only "Downloading" and the bar counts images.
+                const sizeKnown = totalBytes > 0 && totalBytesKnown !== false;
+                const nextProgress = sizeKnown
+                  ? mapPullProgressToInstallProgress(completedBytes, totalBytes)
+                  : totalImages > 0
+                    ? mapPullProgressToInstallProgress(completedImages, totalImages)
+                    : DOWNLOAD_PROGRESS_START;
                 const now = Date.now();
                 const percentRose =
                   nextProgress > lastPullProgress &&
@@ -379,16 +383,14 @@ export class InstallAppCommand extends AppLifecycleCommand {
                     now - lastPullProgressAt >= DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS ||
                     nextProgress >= DOWNLOAD_PROGRESS_MAX_DURING_PULL);
                 const sizeMoved = completedBytes !== lastPullBytes && now - lastPullProgressAt >= DOWNLOAD_SIZE_EMIT_INTERVAL_MS;
-                if (percentRose || sizeMoved) {
-                  // Without the registry's layer sizes the total grows as Docker reports more layers, so the
-                  // percentage can dip; the bar never goes back.
+                const sizeAppeared = sizeKnown && !sizeShown;
+                if (percentRose || sizeMoved || sizeAppeared) {
+                  // The bar never goes back.
                   lastPullProgress = Math.max(lastPullProgress, nextProgress);
                   lastPullProgressAt = now;
                   lastPullBytes = completedBytes;
-                  // The size under the bar waits for a final total: "3.0 MB / 3.7 MB" for a 26 MB download
-                  // was a total still growing (CI-Hub#2177). Until then the page says only "Downloading".
-                  const showSize = totalBytes > 0 && totalBytesKnown !== false;
-                  void emitProgress(lastPullProgress, showSize ? { downloadedBytes: completedBytes, totalBytes } : undefined);
+                  sizeShown = sizeKnown;
+                  void emitProgress(lastPullProgress, sizeKnown ? { downloadedBytes: completedBytes, totalBytes } : undefined);
                 }
               },
             })

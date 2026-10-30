@@ -32,6 +32,7 @@ import { DOCKERODE } from './constants';
 import { DockerReadFacade, type ManagedAppContainerVerification } from './docker-read.facade';
 import { listContainersMatchingAnyLabelSets, managedAppLabelSets } from './hub-container-query';
 import {
+  applyLayerEvent,
   type DockerPullLayerSnapshot,
   type DockerPullStage,
   imageSizeKnown,
@@ -249,6 +250,8 @@ export function describeComposeCliUnavailable(input: { service: string; pluginDe
 interface DockerPullProgressDetail {
   current?: number;
   total?: number;
+  /** Set when the counts are not bytes, such as `s` while the containerd store extracts. */
+  units?: string;
 }
 
 interface DockerPullProgressEventMessage {
@@ -269,7 +272,7 @@ export interface DockerPullProgressEvent {
   totalBytes: number;
   /**
    * Whether `totalBytes` is final. It is not while some layer has neither reported its size nor
-   * had one read from the manifest, and a total shown then only grows (CI-Hub#2177).
+   * had one read from the manifest. A total shown then only grows (CI-Hub#2177).
    */
   totalBytesKnown: boolean;
   completedImages: number;
@@ -1152,9 +1155,10 @@ export class DockerService {
       /**
        * Each image's compressed layer sizes for this Hub's platform, by layer digest, read from its
        * registry. Asked for once per image as its pull starts and never waited on: until it answers,
-       * or if it answers `null`, sizes come from Docker's events alone.
+       * or if it answers `null`, sizes come from Docker's events alone. `signal` fires if the pull is
+       * cancelled or times out.
        */
-      layerSizes?: (image: string) => Promise<ReadonlyMap<string, number> | null | undefined>;
+      layerSizes?: (image: string, signal: AbortSignal) => Promise<ReadonlyMap<string, number> | null | undefined>;
       signal?: AbortSignal;
       inactivityTimeoutMs?: number;
       firstEventTimeoutMs?: number;
@@ -1222,20 +1226,21 @@ export class DockerService {
 
     const completedImages = new Set<string>();
     const layerSnapshots = new Map<string, DockerPullLayerSnapshot>();
-    // Per image being downloaded: the layers Docker announced, whether its downloads have begun, and
+    // Per image being downloaded: the layers Docker announced, whether its downloads have begun and
     // its layer sizes from the manifest once they arrive. Together they say when the total is final.
     const downloadingImages = new Set<string>();
     const imageLayerIds = new Map<string, Set<string>>();
     const imageDownloadStarted = new Set<string>();
     const manifestSizes = new Map<string, ReadonlyMap<string, number>>();
-    const expectedLayerSizes = () => new Map([...manifestSizes.values()].flatMap((sizes) => [...sizes]));
+    // Every manifest's sizes in one map, by short layer id, added to as each manifest arrives.
+    const expectedLayerSizes = new Map<string, number>();
     // Set once this call has returned or thrown. When one image fails the others are not aborted,
     // and one still waiting on Docker must not later report a timeout for a pull that is over.
     let pullEnded = false;
 
     const pullStartedAt = Date.now();
     const statusLogTimer = globalThis.setInterval(() => {
-      const { completedBytes, totalBytes, layersDone, layersSeen } = summarizePullLayers(layerSnapshots, expectedLayerSizes());
+      const { completedBytes, totalBytes, layersDone, layersSeen } = summarizePullLayers(layerSnapshots, expectedLayerSizes);
       this.logger.info(
         `[pull] after ${secondsSince(pullStartedAt)}: ${completedImages.size} of ${uniqueImages.length} images done, ${layersDone} of ${layersSeen} layers, ${megabytes(completedBytes)} of ${megabytes(totalBytes)} MB`,
       );
@@ -1247,16 +1252,19 @@ export class DockerService {
         return;
       }
 
-      const expected = expectedLayerSizes();
-      const summary = summarizePullLayers(layerSnapshots, expected);
-      const totalBytesKnown = [...downloadingImages].every((image) =>
-        imageSizeKnown({
-          layerIds: imageLayerIds.get(image) ?? new Set(),
-          layers: layerSnapshots,
-          expected: manifestSizes.get(image),
-          downloadStarted: imageDownloadStarted.has(image),
-          complete: completedImages.has(image),
-        }),
+      const summary = summarizePullLayers(layerSnapshots, expectedLayerSizes);
+      // An image still being looked for locally may yet need a download, so it isn't known either.
+      const totalBytesKnown = uniqueImages.every(
+        (image) =>
+          completedImages.has(image) ||
+          (downloadingImages.has(image) &&
+            imageSizeKnown({
+              layerIds: imageLayerIds.get(image) ?? new Set(),
+              layers: layerSnapshots,
+              expected: manifestSizes.get(image),
+              downloadStarted: imageDownloadStarted.has(image),
+              complete: false,
+            })),
       );
       options.onProgress({
         activeImage,
@@ -1295,17 +1303,26 @@ export class DockerService {
           if (options.layerSizes) {
             const lookupStartedAt = Date.now();
             void Promise.resolve()
-              .then(() => options.layerSizes?.(image))
-              .then((sizes) => {
-                if (!sizes || sizes.size === 0 || pullEnded || completedImages.has(image)) {
-                  return;
-                }
-                manifestSizes.set(image, new Map([...sizes].map(([digest, size]) => [shortLayerId(digest), size])));
-                this.logger.info(`[pull] ${image}: ${sizes.size} layer sizes from the registry after ${secondsSince(lookupStartedAt)}`);
-                reportProgress(image);
-              })
+              .then(() => options.layerSizes?.(image, pullSignal))
+              .then(
+                (sizes) => {
+                  if (!sizes || sizes.size === 0 || pullEnded || completedImages.has(image)) {
+                    return;
+                  }
+                  const byLayerId = new Map([...sizes].map(([digest, size]) => [shortLayerId(digest), size]));
+                  manifestSizes.set(image, byLayerId);
+                  for (const [id, size] of byLayerId) expectedLayerSizes.set(id, size);
+                  this.logger.info(`[pull] ${image}: ${sizes.size} layer sizes from the registry after ${secondsSince(lookupStartedAt)}`);
+                  reportProgress(image);
+                },
+                (error) => {
+                  if (!pullEnded && !pullSignal.aborted) {
+                    this.logger.warn(`[pull] ${image}: no layer sizes from the registry (${error instanceof Error ? error.message : String(error)})`);
+                  }
+                },
+              )
               .catch((error) => {
-                this.logger.warn(`[pull] ${image}: no layer sizes from the registry (${error instanceof Error ? error.message : String(error)})`);
+                this.logger.warn(`[pull] ${image}: progress update failed (${error instanceof Error ? error.message : String(error)})`);
               });
           }
 
@@ -1405,14 +1422,7 @@ export class DockerService {
                         imageDownloadStarted.add(image);
                       }
                     }
-                    const snapshot = layerSnapshots.get(event.id) ?? { current: 0, total: 0, status: '' };
-                    const current = Math.max(snapshot.current, event.progressDetail?.current ?? snapshot.current);
-                    const total = Math.max(snapshot.total, event.progressDetail?.total ?? snapshot.total, current);
-                    layerSnapshots.set(event.id, {
-                      current,
-                      total,
-                      status: event.status ?? snapshot.status,
-                    });
+                    layerSnapshots.set(event.id, applyLayerEvent(layerSnapshots.get(event.id), event));
                   }
 
                   emitProgress(image);

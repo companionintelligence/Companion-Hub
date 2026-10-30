@@ -1,3 +1,4 @@
+import { isAbortError } from '@/common/abort';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
@@ -312,18 +313,19 @@ export class ImageSizeService {
   /**
    * The compressed size of each layer of the image this Hub pulls, by layer digest. Read while an
    * install's download runs, so its progress shows the whole download from the start (CI-Hub#2177).
-   * `null` when the registry can't be read within `timeoutMs`.
+   * `null` when the registry can't be read within `timeoutMs` or `signal` fires first.
    *
-   * Not for Docker Hub. There every manifest request counts against the anonymous pull limit, and
-   * the pull itself makes the same requests straight after, so this would spend two more per image.
+   * Not for Docker Hub. There every manifest request counts against the anonymous pull limit. The
+   * pull itself makes the same requests straight after, so this would spend two more per image.
    * The pull's own events give a Docker Hub image its total once every layer has reported.
    */
-  async getImageLayerSizes(image: string, timeoutMs = 5000): Promise<Map<string, number> | null> {
+  async getImageLayerSizes(image: string, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<Map<string, number> | null> {
     if (this.parseImageRef(image).registry === DEFAULT_REGISTRY) {
       return null;
     }
 
-    const deadline = AbortSignal.timeout(timeoutMs);
+    const timeout = AbortSignal.timeout(options.timeoutMs ?? 5000);
+    const deadline = options.signal ? AbortSignal.any([timeout, options.signal]) : timeout;
     const manifest = await this.fetchPlatformManifest(image, () => deadline);
     const sizes = new Map<string, number>();
     for (const layer of manifest?.layers ?? []) {
@@ -387,7 +389,10 @@ export class ImageSizeService {
 
       return manifest;
     } catch (error) {
-      this.logger.warn(`Error fetching image manifest for ${image}: ${error instanceof Error ? error.message : String(error)}`);
+      // A cancelled caller needs no warning. A time limit that ran out ends as a TimeoutError and still gets one.
+      if (!isAbortError(error)) {
+        this.logger.warn(`Error fetching image manifest for ${image}: ${error instanceof Error ? error.message : String(error)}`);
+      }
       return null;
     }
   }

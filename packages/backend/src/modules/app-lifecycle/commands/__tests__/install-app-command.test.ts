@@ -884,14 +884,48 @@ describe('InstallAppCommand — pull policy', () => {
       const sizes = new Map([['sha256:abc', 1_000]]);
       imageSizeService.getImageLayerSizes.mockResolvedValue(sizes);
       let asked: Promise<unknown> | undefined;
-      dockerService.pullImages = vi.fn(async (_images: string[], options: { layerSizes?: (image: string) => Promise<unknown> }) => {
-        asked = options.layerSizes?.('ghcr.io/example/app:latest');
-      });
+      const pullSignal = new AbortController().signal;
+      dockerService.pullImages = vi.fn(
+        async (_images: string[], options: { layerSizes?: (image: string, signal: AbortSignal) => Promise<unknown> }) => {
+          asked = options.layerSizes?.('ghcr.io/example/app:latest', pullSignal);
+        },
+      );
 
       await command.execute(appUrn, {});
 
       await expect(asked).resolves.toBe(sizes);
-      expect(imageSizeService.getImageLayerSizes).toHaveBeenCalledWith('ghcr.io/example/app:latest');
+      expect(imageSizeService.getImageLayerSizes).toHaveBeenCalledWith('ghcr.io/example/app:latest', { signal: pullSignal });
+    });
+
+    // The first layer to report can be a 405-byte one that is already done: 405 of 405 bytes.
+    it('moves the bar by whole images, not bytes, until the total is final', async () => {
+      dockerService.pullImages = vi.fn(async (_images: string[], options: { onProgress: (event: unknown) => void }) => {
+        options.onProgress({ ...pullTick(405, 405), totalBytesKnown: false });
+      });
+
+      await command.execute(appUrn, {});
+
+      const percents = progressTicks().map((tick) => tick.progress);
+      expect(percents).not.toContain(98);
+    });
+
+    it('shows the size as soon as the total turns final, even when nothing else moved', async () => {
+      const now = vi.spyOn(Date, 'now');
+      dockerService.pullImages = vi.fn(async (_images: string[], options: { onProgress: (event: unknown) => void }) => {
+        now.mockReturnValue(1_000_000);
+        options.onProgress({ ...pullTick(0, 10 * MB), totalBytesKnown: false });
+        // The manifest arrives a moment later. No byte has moved and the bar is still at 60.
+        now.mockReturnValue(1_000_100);
+        options.onProgress({ ...pullTick(0, 26 * MB), totalBytesKnown: true });
+      });
+
+      try {
+        await command.execute(appUrn, {});
+      } finally {
+        now.mockRestore();
+      }
+
+      expect(progressTicks()).toContainEqual(expect.objectContaining({ progress: 60, downloadedBytes: 0, totalBytes: 26 * MB }));
     });
 
     it('does not rewrite the job when only the downloaded size moved', async () => {
