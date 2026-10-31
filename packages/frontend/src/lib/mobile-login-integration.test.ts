@@ -13,8 +13,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { client } from '@/api-client/client.gen';
 import { getTauriSessionId, setTauriSessionId } from './api-fetch';
-import { clearHubConnection, resetMobileClientCacheForTests, setHubConnection } from './mobile-connection';
-import { resetActiveFetch } from './runtime-fetch';
+import { clearHubConnection, isTauriMobileSync, resetMobileClientCacheForTests, setHubConnection } from './mobile-connection';
+import { resetActiveFetch, runtimeFetch } from './runtime-fetch';
+import { loadTauriHttpFetch } from './tauri-http-fetch';
 
 // Create the spy in Vitest's hoisted mock scope so the dynamic plugin import
 // and this test always observe the same function across the full suite.
@@ -22,6 +23,9 @@ const { httpFetch } = vi.hoisted(() => ({
   httpFetch: vi.fn(
     async (..._args: unknown[]) => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
   ),
+}));
+const { webFetch } = vi.hoisted(() => ({
+  webFetch: vi.fn(async () => new Response(JSON.stringify({ source: 'webview' }), { status: 200, headers: { 'Content-Type': 'application/json' } })),
 }));
 vi.mock('./tauri-http-fetch', () => ({ loadTauriHttpFetch: vi.fn(async () => httpFetch) }));
 
@@ -52,6 +56,9 @@ beforeEach(() => {
   resetActiveFetch();
   resetMobileClientCacheForTests();
   httpFetch.mockClear();
+  webFetch.mockClear();
+  vi.mocked(loadTauriHttpFetch).mockClear();
+  vi.stubGlobal('fetch', webFetch);
   localStorage.clear();
   sessionStorage.clear();
   setTauriSessionId(null);
@@ -61,16 +68,22 @@ beforeEach(() => {
 afterEach(async () => {
   setTauriSessionId(null);
   await clearHubConnection();
+  vi.unstubAllGlobals();
 });
 
 describe('mobile login integration', () => {
   it('routes an authenticated generated-client call to the chosen Hub via native fetch + session header', async () => {
+    expect(isTauriMobileSync()).toBe(true);
     await setHubConnection('https://hub-apple-acme.ci.computer/');
     setTauriSessionId('sess-abc'); // as login onSuccess does
 
+    expect(loadTauriHttpFetch).toHaveBeenCalledTimes(1);
+    expect(client.getConfig().baseUrl).toBe('https://hub-apple-acme.ci.computer');
+    expect(client.getConfig().fetch).toBe(runtimeFetch);
     await client.get({ url: '/api/user-context' });
 
     expect(httpFetch).toHaveBeenCalledTimes(1);
+    expect(webFetch).not.toHaveBeenCalled();
     const req = httpFetch.mock.calls[0]?.[0] as Request;
     expect(req.url).toBe('https://hub-apple-acme.ci.computer/api/user-context'); // remote Hub, trailing slash trimmed
     expect(req.headers.get('X-CI-Hub-Session')).toBe('sess-abc'); // authenticated
