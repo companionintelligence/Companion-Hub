@@ -1,4 +1,8 @@
 /**
+ * Not interoperable. Frozen 2026-10-30. Do not use for identifiers that leave this process. See FROZEN.md
+ */
+
+/**
  * OOBI (Out-Of-Band Introduction) generation and resolution for KERI.
  * Enables direct peer-to-peer discovery of Hubs, Witnesses, and Companion Memories
  * over LAN, Tailscale MagicDNS, or HTTPS without relying on CI-Portal.
