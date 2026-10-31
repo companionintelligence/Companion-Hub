@@ -1,5 +1,5 @@
 import type { Architecture } from '@/common/constants';
-import type { ServiceInput } from '@ci-hub/common/schemas';
+import type { DynamicCompose, ServiceInput } from '@ci-hub/common/schemas';
 import { describe, expect, it } from 'vitest';
 import { mergeArchitectureOverrides } from '../compose-helpers';
 
@@ -221,5 +221,20 @@ describe('mergeArchitectureOverrides', () => {
 
     const result = mergeArchitectureOverrides(baseServices, overrides, 'amd64');
     expect(result).toEqual(baseServices);
+  });
+
+  it('drops prototype-sensitive keys from untrusted override objects', () => {
+    const overrides = JSON.parse(
+      '[{"architecture":"amd64","services":[{"name":"app","image":"safe:latest","__proto__":{"polluted":"yes"},"constructor":{"prototype":{"polluted":"yes"}},"prototype":{"polluted":"yes"}}]}]',
+    ) as DynamicCompose['overrides'];
+
+    const result = mergeArchitectureOverrides(baseServices, overrides, 'amd64');
+    const service = result[0];
+
+    expect(service?.image).toBe('safe:latest');
+    expect(service && Object.getPrototypeOf(service)).toBe(Object.prototype);
+    expect(service && Object.hasOwn(service, '__proto__')).toBe(false);
+    expect(service && Object.hasOwn(service, 'constructor')).toBe(false);
+    expect(({} as { polluted?: string }).polluted).toBeUndefined();
   });
 });

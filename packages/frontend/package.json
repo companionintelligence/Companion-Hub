@@ -72,7 +72,7 @@
     "zustand": "5.0.8"
   },
   "devDependencies": {
-    "@faker-js/faker": "^10.1.0",
+    "@faker-js/faker": "^10.6.0",
     "@hey-api/openapi-ts": "^0.97.3",
     "@react-router/dev": "7.18.2",
     "@tailwindcss/typography": "^0.5.19",
@@ -89,8 +89,8 @@
     "tailwindcss": "^4.1.18",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "^5.8.3",
-    "vite": "^7.1.9",
+    "vite": "7.3.7",
     "vite-tsconfig-paths": "^5.1.4",
-    "vitest": "^4.0.6"
+    "vitest": "^4.1.12"
   }
 }

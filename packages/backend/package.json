@@ -21,10 +21,10 @@
   },
   "dependencies": {
     "@ci-hub/common": "workspace:*",
-    "@modelcontextprotocol/client": "^2.0.0",
-    "@modelcontextprotocol/node": "^2.0.0",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "@modelcontextprotocol/server": "^2.0.0",
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@modelcontextprotocol/node": "^2.1.2",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@modelcontextprotocol/server": "^2.4.0",
     "@nestjs/axios": "^4.0.1",
     "@nestjs/common": "^11.1.0",
     "@nestjs/core": "^11.1.0",
@@ -41,7 +41,6 @@
     "argon2": "^0.44.0",
     "axios": "^1.18.0",
     "cookie-parser": "^1.4.7",
-    "deepmerge": "^4.3.1",
     "dockerode": "^4.0.6",
     "dotenv": "^17.2.2",
     "drizzle-orm": "^0.45.2",
@@ -68,7 +67,7 @@
     "zod-validation-error": "^4.0.2"
   },
   "devDependencies": {
-    "@faker-js/faker": "10.2.0",
+    "@faker-js/faker": "10.6.0",
     "@nestjs/cli": "^11.0.7",
     "@nestjs/schematics": "^11.0.5",
     "@nestjs/testing": "^11.1.0",
@@ -83,7 +82,7 @@
     "@types/semver": "^7.7.0",
     "@types/validator": "^13.15.0",
     "@types/web-push": "^3.6.4",
-    "@vitest/coverage-v8": "^4.0.6",
+    "@vitest/coverage-v8": "^4.1.12",
     "drizzle-kit": "^0.31.1",
     "esbuild": "^0.25.0",
     "memfs": "4.56.10",
@@ -91,7 +90,7 @@
     "typescript": "^5.8.3",
     "unplugin-swc": "^1.5.2",
     "vite-tsconfig-paths": "5.1.4",
-    "vitest": "^4.0.6",
+    "vitest": "^4.1.12",
     "vitest-mock-extended": "^3.1.0",
     "wait-for-expect": "^4.0.0"
   }
