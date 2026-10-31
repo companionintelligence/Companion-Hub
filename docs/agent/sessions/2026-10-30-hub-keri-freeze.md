@@ -51,7 +51,7 @@ Stop presenting hashes of public text labels as if they were key-derived identif
 
 - [x] `pnpm run lint:ci`: red before and after, for reasons outside this change. The set of files with diagnostics is identical to the base (143 files, 142 errors and 6 warnings), and every changed file outside that set has zero diagnostics.
 - [x] `pnpm run tsc`: 3 tasks successful, none from cache.
-- [x] `pnpm run test`: `common` 479 passed, `backend` 10528 passed and 2 skipped, `frontend` 3641 passed and 2 skipped, `openclaw-plugin` 44 passed, `test:cli` 3187 passed and 32 skipped with 1 failed. The failure, `qa-stream-compose-retry.test.ts`, is the same one that fails at the base.
+- [x] `pnpm run test`: `common` 479 passed, `backend` 10528 passed and 2 skipped, `frontend` 3641 passed and 2 skipped, `openclaw-plugin` 44 passed, `test:cli` 3192 passed and 32 skipped with 1 failed. The failure, `qa-stream-compose-retry.test.ts`, is the same one that fails at the base.
 - [x] `pnpm run test:entrypoint`: 17 passed. `pnpm run test` does not reach it while `test:cli` fails, so it ran on its own.
 - [x] `pnpm run check:openapi`: passed.
 - [x] `pnpm run knip:ci`: exit 0.
