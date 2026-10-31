@@ -51,6 +51,8 @@ http:
         # missing timestamp/signature (CI-Engineering#74). Listing a name also strips a
         # visitor's own copy of it before the copy, which is what keeps the stable-id
         # trio (issuer, id, id signature) from ever arriving unsigned.
+        # The last three names (AID, AID, KEL digest) are reserved: the Hub never sets them and no
+        # signature covers them. They are listed only so a visitor's own copy is deleted too.
         authResponseHeaders:
           - "X-CI-Hub-User"
           - "X-CI-Hub-User-Timestamp"
@@ -59,6 +61,9 @@ http:
           - "X-CI-Hub-User-Id"
           - "X-CI-Hub-User-Id-Signature"
           - "X-CI-Hub-User-Assertion"
+          - "X-CI-Hub-User-AID"
+          - "X-CI-Hub-AID"
+          - "X-CI-Hub-KEL-Digest"
 
     # First on every tunnel route (TraefikLabelsBuilder.addCloudflareLabels).
     # Traefik keeps a trusted peer's forwarded headers and fills in only those

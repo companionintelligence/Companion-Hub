@@ -29,6 +29,13 @@ import crypto from 'node:crypto';
  * three original headers are unchanged, so a consumer that only knows them verifies exactly what
  * it always did. See CI-Engineering architecture/identity/hub-memory-account-link.md.
  *
+ * `X-CI-Hub-User-AID`, `X-CI-Hub-AID` and `X-CI-Hub-KEL-Digest` are reserved names. The Hub does not
+ * set them and no signature covers them. On a route that uses the `ci-hub` forward-auth middleware,
+ * with the current `authResponseHeaders` list, Traefik deletes a visitor's own copy of each, so an app
+ * behind it does not receive a value (not exercised against a running Traefik). An app must still
+ * ignore these names. A value may be introduced only from a persisted key event log, and only
+ * together with a signature over it.
+ *
  * Neither message names the app it was signed for, so a consumer can only tell its own headers
  * from another app's by the key. An app that has a key of its own therefore also gets a bound
  * assertion, `X-CI-Hub-User-Assertion: 2.<nonce>.<signature>`, signed with that key over
@@ -48,6 +55,7 @@ export const FORWARD_AUTH_USER_ISSUER_HEADER = 'X-CI-Hub-User-Issuer';
 export const FORWARD_AUTH_USER_ID_HEADER = 'X-CI-Hub-User-Id';
 export const FORWARD_AUTH_USER_ID_SIGNATURE_HEADER = 'X-CI-Hub-User-Id-Signature';
 export const FORWARD_AUTH_ASSERTION_HEADER = 'X-CI-Hub-User-Assertion';
+// The next three names are reserved: the Hub never sets them (see the note at the top of this file).
 export const FORWARD_AUTH_USER_AID_HEADER = 'X-CI-Hub-User-AID';
 export const FORWARD_AUTH_HUB_AID_HEADER = 'X-CI-Hub-AID';
 export const FORWARD_AUTH_KEL_DIGEST_HEADER = 'X-CI-Hub-KEL-Digest';
@@ -64,11 +72,11 @@ export interface ForwardAuthStableId {
   issuer: string;
   /** The person's `user.public_id`. */
   userId: string;
-  /** KERI Autonomic Identifier (`did:keri:<user-aid>`). */
+  /** Reserved: the Hub never populates it. A value must come from a persisted key event log, never from hashing a label. */
   userAid?: string;
-  /** Appliance Autonomic Identifier (`did:keri:<hub-aid>`). */
+  /** Reserved: the Hub never populates it. A value must come from a persisted key event log, never from hashing a label. */
   hubAid?: string;
-  /** KEL latest event digest. */
+  /** Reserved: the Hub never populates it. A value must come from a persisted key event log. */
   kelDigest?: string;
 }
 

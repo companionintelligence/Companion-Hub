@@ -315,7 +315,9 @@ services:
       # listed here onto the forwarded request, and consumers verifying the signature fail
       # closed on a missing timestamp/signature (CI-Engineering#74). Listing a name also strips
       # a visitor's own copy, which keeps the stable-id trio from ever arriving unsigned.
-      traefik.http.middlewares.ci-hub.forwardauth.authResponseHeaders: "X-CI-Hub-User,X-CI-Hub-User-Timestamp,X-CI-Hub-User-Signature,X-CI-Hub-User-Issuer,X-CI-Hub-User-Id,X-CI-Hub-User-Id-Signature,X-CI-Hub-User-Assertion"
+      # The last three names (AID, AID, KEL digest) are reserved: the Hub never sets them and no
+      # signature covers them. They are listed only so a visitor's own copy is deleted too.
+      traefik.http.middlewares.ci-hub.forwardauth.authResponseHeaders: "X-CI-Hub-User,X-CI-Hub-User-Timestamp,X-CI-Hub-User-Signature,X-CI-Hub-User-Issuer,X-CI-Hub-User-Id,X-CI-Hub-User-Id-Signature,X-CI-Hub-User-Assertion,X-CI-Hub-User-AID,X-CI-Hub-AID,X-CI-Hub-KEL-Digest"
       # Prevent Traefik from creating a default router on websecure (which triggers ACME)
       traefik.http.routers.ci-hub.entrypoints: "web"
       traefik.http.routers.ci-hub.rule: "Host(`ci-hub.local`)"
