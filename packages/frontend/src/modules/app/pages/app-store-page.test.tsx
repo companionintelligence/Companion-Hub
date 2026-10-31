@@ -91,6 +91,8 @@ vi.mock('@/lib/hooks/use-infinite-scroll', () => ({
 
 const mockUsePortalCatalog = vi.hoisted(() =>
   vi.fn(() => ({
+    listings: [] as { urn: string }[],
+    hasListingsData: false,
     alternatives: {},
     isLoading: false,
     isError: false,
@@ -164,6 +166,8 @@ describe('AppStorePage — multi-store UX', () => {
     mockStoreState.storeId = 'ci-apps';
     mockStoreState.search = '';
     mockUsePortalCatalog.mockReturnValue({
+      listings: [],
+      hasListingsData: false,
       alternatives: {},
       isLoading: false,
       isError: false,
@@ -215,6 +219,8 @@ describe('AppStorePage — multi-store UX', () => {
 
   it('shows matching alternatives in catalog search for a proprietary name', () => {
     mockUsePortalCatalog.mockReturnValue({
+      listings: [],
+      hasListingsData: false,
       alternatives: {
         data: [
           {
