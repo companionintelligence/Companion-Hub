@@ -65,8 +65,10 @@ beforeEach(() => {
   vi.stubGlobal('fetch', webFetch);
   localStorage.clear();
   sessionStorage.clear();
-  setTauriSessionId(null);
   setMobileTauri();
+  // Clearing a null session checks the current platform; install the mobile
+  // runtime first so that cleanup cannot cache a desktop result from Node's UA.
+  setTauriSessionId(null);
 });
 
 afterEach(async () => {
