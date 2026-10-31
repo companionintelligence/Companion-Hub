@@ -17,11 +17,11 @@ Doc map, product names, tip scrub policy, and writing style: [`docs/README.md`](
 
 ## Workflow & queue
 
-| Resource | When to use |
-|----------|-------------|
+| Resource                                                     | When to use                                                                          |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
 | [docs/agent/AGENT_WORKFLOW.md](docs/agent/AGENT_WORKFLOW.md) | Standard session flow (research → plan → implement → run → test → review → validate) |
-| [docs/agent/END_OF_SHIFT.md](docs/agent/END_OF_SHIFT.md) | Final checklist before ending a session |
-| [TODO.md](TODO.md) | Agent task queue (`## Ready`, `## In Progress`, `## Blocked`) |
+| [docs/agent/END_OF_SHIFT.md](docs/agent/END_OF_SHIFT.md)     | Final checklist before ending a session                                              |
+| [TODO.md](TODO.md)                                           | Agent task queue (`## Ready`, `## In Progress`, `## Blocked`)                        |
 
 ---
 
@@ -29,14 +29,15 @@ Doc map, product names, tip scrub policy, and writing style: [`docs/README.md`](
 
 Living docs agents **must update** when they change a system. Every doc starts with a **7-line `>` summary block** (greppable via `rg "^>" docs/system/`).
 
-| Doc | System |
-|-----|--------|
-| [docs/system/README.md](docs/system/README.md) | Index + header format spec |
-| [docs/system/backend.md](docs/system/backend.md) | NestJS API, Drizzle, queues |
-| [docs/system/frontend.md](docs/system/frontend.md) | React Router, hub-status, API client |
-| [docs/system/desktop.md](docs/system/desktop.md) | Tauri, hub_manager, compose lifecycle |
-| [docs/system/e2e.md](docs/system/e2e.md) | Playwright lanes, benchmarks, visual tests |
-| [docs/system/agent-qa.md](docs/system/agent-qa.md) | Marketplace QA flywheel (separate from general workflow) |
+| Doc                                                                                      | System                                                        |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| [docs/system/README.md](docs/system/README.md)                                           | Index + header format spec                                    |
+| [docs/system/backend.md](docs/system/backend.md)                                         | NestJS API, Drizzle, queues                                   |
+| [docs/system/frontend.md](docs/system/frontend.md)                                       | React Router, hub-status, API client                          |
+| [docs/system/desktop.md](docs/system/desktop.md)                                         | Tauri, hub_manager, compose lifecycle                         |
+| [docs/system/e2e.md](docs/system/e2e.md)                                                 | Playwright lanes, benchmarks, visual tests                    |
+| [docs/system/agent-qa.md](docs/system/agent-qa.md)                                       | Marketplace QA flywheel (separate from general workflow)      |
+| [docs/system/marketplace-app-portability.md](docs/system/marketplace-app-portability.md) | Third-party agent packaging, proxy trust, and Hub integration |
 
 Deep architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (links to `docs/system/`).
 
@@ -46,12 +47,12 @@ Deep architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (links to `docs/
 
 ## Testing
 
-| Resource | Purpose |
-|----------|---------|
-| [docs/agent/TESTING.md](docs/agent/TESTING.md) | How to write tests; anti-patterns |
+| Resource                                                     | Purpose                             |
+| ------------------------------------------------------------ | ----------------------------------- |
+| [docs/agent/TESTING.md](docs/agent/TESTING.md)               | How to write tests; anti-patterns   |
 | [docs/agent/TEST_INVENTORY.md](docs/agent/TEST_INVENTORY.md) | Every spec file and what it asserts |
-| [docs/agent/PERFORMANCE.md](docs/agent/PERFORMANCE.md) | Benchmark and profiling commands |
-| [e2e/README.md](e2e/README.md) | Playwright lanes and local commands |
+| [docs/agent/PERFORMANCE.md](docs/agent/PERFORMANCE.md)       | Benchmark and profiling commands    |
+| [e2e/README.md](e2e/README.md)                               | Playwright lanes and local commands |
 
 Regenerate inventory: `pnpm run agent:test-inventory`
 
@@ -59,11 +60,11 @@ Regenerate inventory: `pnpm run agent:test-inventory`
 
 ## Review & conventions
 
-| Resource | Purpose |
-|----------|---------|
-| [docs/agent/AGENT_REVIEW.md](docs/agent/AGENT_REVIEW.md) | Cross-agent review at each phase |
-| [docs/agent/REVIEW_PERSONAS.md](docs/agent/REVIEW_PERSONAS.md) | Security, perf, maintainability, AI smells personas |
-| [docs/agent/CODING_CONVENTIONS.md](docs/agent/CODING_CONVENTIONS.md) | Conventions Biome does not enforce |
+| Resource                                                             | Purpose                                             |
+| -------------------------------------------------------------------- | --------------------------------------------------- |
+| [docs/agent/AGENT_REVIEW.md](docs/agent/AGENT_REVIEW.md)             | Cross-agent review at each phase                    |
+| [docs/agent/REVIEW_PERSONAS.md](docs/agent/REVIEW_PERSONAS.md)       | Security, perf, maintainability, AI smells personas |
+| [docs/agent/CODING_CONVENTIONS.md](docs/agent/CODING_CONVENTIONS.md) | Conventions Biome does not enforce                  |
 
 Run review: `bin/agent-review --phase impl --persona security`
 
@@ -71,12 +72,12 @@ Run review: `bin/agent-review --phase impl --persona security`
 
 ## Session traceability
 
-| Resource | Purpose |
-|----------|---------|
+| Resource                                                                             | Purpose                                   |
+| ------------------------------------------------------------------------------------ | ----------------------------------------- |
 | [docs/agent/SESSION_WORKSHEET.template.md](docs/agent/SESSION_WORKSHEET.template.md) | Per-session trace (commit with your work) |
-| [docs/agent/SESSION_FEEDBACK.template.md](docs/agent/SESSION_FEEDBACK.template.md) | End-of-session workflow feedback |
-| [docs/agent/WORKFLOW_FEEDBACK.md](docs/agent/WORKFLOW_FEEDBACK.md) | Rolling aggregate for periodic review |
-| [docs/agent/sessions/](docs/agent/sessions/) | Committed session worksheets |
+| [docs/agent/SESSION_FEEDBACK.template.md](docs/agent/SESSION_FEEDBACK.template.md)   | End-of-session workflow feedback          |
+| [docs/agent/WORKFLOW_FEEDBACK.md](docs/agent/WORKFLOW_FEEDBACK.md)                   | Rolling aggregate for periodic review     |
+| [docs/agent/sessions/](docs/agent/sessions/)                                         | Committed session worksheets              |
 
 Git tag after merge: `agent-session/<worksheet-slug>`
 
@@ -84,13 +85,13 @@ Git tag after merge: `agent-session/<worksheet-slug>`
 
 ## Skills (Cursor / Claude)
 
-| Skill | Path | Use when |
-|-------|------|----------|
-| Agent workflow | `.cursor/skills/agent-workflow/SKILL.md` | Starting any session |
-| Agent loop / night shift | `.cursor/skills/agent-loop/SKILL.md` | Autonomous work against TODO.md |
-| Agent sweep | `.cursor/skills/agent-sweep/SKILL.md` | Scan recent commits for gotchas |
-| Test audit | `.cursor/skills/test-audit/SKILL.md` | Find false-confidence tests |
-| Visual regression | `.cursor/skills/visual-regression/SKILL.md` | Screenshot baselines |
+| Skill                    | Path                                        | Use when                        |
+| ------------------------ | ------------------------------------------- | ------------------------------- |
+| Agent workflow           | `.cursor/skills/agent-workflow/SKILL.md`    | Starting any session            |
+| Agent loop / night shift | `.cursor/skills/agent-loop/SKILL.md`        | Autonomous work against TODO.md |
+| Agent sweep              | `.cursor/skills/agent-sweep/SKILL.md`       | Scan recent commits for gotchas |
+| Test audit               | `.cursor/skills/test-audit/SKILL.md`        | Find false-confidence tests     |
+| Visual regression        | `.cursor/skills/visual-regression/SKILL.md` | Screenshot baselines            |
 
 Claude mirrors live under `.claude/skills/` (same content as `.cursor/skills/` where present). Multi-node fleet QA (dashboard, SSH orchestrators, `fleet.json`) lives in private **CI-Engineering** `tools/fleet-qa/` — see companionintelligence/CI-Engineering#211. This tip keeps single-node `scripts/qa-stream.ts` only.
 
