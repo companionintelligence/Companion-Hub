@@ -98,12 +98,13 @@ Claude mirrors live under `.claude/skills/` (same content as `.cursor/skills/` w
 
 ## Bin scripts & tools
 
-| Script | Purpose |
-|--------|---------|
-| `bin/agent-review` | Cross-agent review CLI |
-| `bin/agent-validate-shift` | End-of-shift validation gate |
-| `bin/agent-sweep` | Recent-commit gotcha scan |
-| `bin/cihub.cjs` | Published Hub CLI |
+| Script                              | Purpose                                                                                           |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `bin/agent-review`                  | Cross-agent review CLI                                                                            |
+| `bin/agent-validate-shift`          | End-of-shift validation gate                                                                      |
+| `bin/agent-sweep`                   | Recent-commit gotcha scan                                                                         |
+| `bin/cihub.cjs`                     | Published Hub CLI                                                                                 |
+| `scripts/check-workflow-hygiene.ts` | Workflow guard: triggers, secret hand-overs, permissions, key blocks (`pnpm run check:workflows`) |
 
 Authoring guide: [docs/agent/SCRIPT_AUTHORING.md](docs/agent/SCRIPT_AUTHORING.md)
 

@@ -13,6 +13,10 @@ concurrency:
   group: e2e-platform-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# Read-only: this workflow checks out code and runs tests, and writes nothing back.
+permissions:
+  contents: read
+
 jobs:
   e2e-platform:
     if: >-
