@@ -1,6 +1,7 @@
 /**
  * Not interoperable. Frozen 2026-10-30. Do not use for identifiers that leave this process. See FROZEN.md
  */
+
 import { computeCesrDigest } from './cesr.js';
 
 /** The standard 44-character placeholder for a 256-bit SHA-256 SAID in CESR encoding. */
