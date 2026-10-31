@@ -2,6 +2,7 @@ import { CacheService } from '@/core/cache/cache.service';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
 import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
@@ -881,6 +882,98 @@ describe('AuthController', () => {
         ),
       );
       expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    /*
+     * `X-CI-Hub-User-AID`, `X-CI-Hub-AID` and `X-CI-Hub-KEL-Digest` are reserved names: the Hub never sets
+     * them. The controller's resolver is a mock everywhere else in this file, and a mock only echoes what a
+     * test hands it, so these cases answer from the REAL resolver on a fake directory. A resolver that
+     * starts to derive an AID again then reaches the reply, and the case fails.
+     */
+    describe('reserved AID headers', () => {
+      const AID_HEADERS = ['x-ci-hub-user-aid', 'x-ci-hub-aid', 'x-ci-hub-kel-digest'];
+      const DIRECTORY_ID = STABLE_ISSUER.slice('urn:ci-hub:'.length);
+      const APP_URN = 'ci-memory:ci-marketplace' as never;
+
+      // The three shapes of key an app can have: each builds its headers on its own code path.
+      const KEYS = {
+        'a per-app secret': { secret: 'per-app-secret', appUrn: APP_URN, source: 'app-env' as const },
+        'a key for the bound assertion only': {
+          secret: null,
+          assertion: { secret: 'memory-own-secret', audience: 'ci-memory:ci-marketplace' },
+          appUrn: APP_URN,
+          source: 'app-env' as const,
+        },
+        'a hub-wide secret and a key for the bound assertion': {
+          secret: 'hub-wide-secret',
+          assertion: { secret: 'memory-own-secret', audience: 'ci-memory:ci-marketplace' },
+          appUrn: APP_URN,
+          source: 'app-env' as const,
+        },
+      };
+
+      beforeEach(() => {
+        const users = mock<UserRepository>();
+        users.getPublicId.mockResolvedValue(PUBLIC_ID);
+        users.getUserDtoById.mockResolvedValue({ id: 7, username: 'owner@example.com', accessStatus: 'active' } as never);
+        const federated = mock<FederatedIdentityRepository>();
+        federated.findByIssuerSubject.mockResolvedValue({ userId: 7 } as never);
+        const directory = {
+          insert: () => ({ values: () => ({ onConflictDoNothing: async () => undefined }) }),
+          select: () => ({ from: () => ({ where: async () => [{ directoryId: DIRECTORY_ID }] }) }),
+        };
+        const resolver = new ForwardAuthIdentityResolver(directory as never, users, federated, new SessionUserCache(), mock<LoggerService>());
+        forwardAuthIdentities.stableIdFor.mockImplementation((userId) => resolver.stableIdFor(userId));
+        forwardAuthIdentities.personForPortalSubject.mockImplementation((issuer, subject) => resolver.personForPortalSubject(issuer, subject));
+      });
+
+      /** Everything the reply set, so a case can say what is there and what is not. */
+      const replyOf = (calls: unknown[][]) => ({
+        headers: Object.fromEntries(calls) as Record<string, string>,
+        names: calls.map(([name]) => String(name).toLowerCase()),
+      });
+
+      it.each(Object.entries(KEYS))('sets no AID header in the reply for a signed-in person when the app has %s', async (_shape, resolved) => {
+        forwardAuthSecrets.resolveForHost.mockResolvedValue(resolved as never);
+        const req = { user: { id: 7, username: 'owner@example.com' }, headers: { 'x-forwarded-host': 'ci-memory.ci.lan' } } as unknown as Request;
+        const setHeader = vi.fn();
+        const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader } as unknown as Response;
+
+        await authController.traefik(req, res);
+
+        const { headers, names } = replyOf(setHeader.mock.calls);
+        // The stable id did reach the reply, so the absence below is not a reply that never carried an identity.
+        expect(headers['X-CI-Hub-User-Issuer']).toBe(STABLE_ISSUER);
+        expect(headers['X-CI-Hub-User-Id']).toBe(PUBLIC_ID);
+        for (const reserved of AID_HEADERS) {
+          expect(names, reserved).not.toContain(reserved);
+        }
+        expect(res.status).toHaveBeenCalledWith(200);
+      });
+
+      it.each(Object.entries(KEYS))('sets no AID header in the reply for a Portal Bearer caller when the app has %s', async (_shape, resolved) => {
+        config.get.mockImplementation((key: string) => (key === 'ciCloudUrl' ? 'https://hub.ci.computer' : (undefined as never)));
+        vi.mocked(verifyPortalIdToken).mockResolvedValue({ sub: 'portal-sub', email: 'new-portal@example.com', name: 'Owner' });
+        authService.resolvePairedOrgMembership.mockResolvedValue('member');
+        forwardAuthSecrets.resolveForHost.mockResolvedValue(resolved as never);
+        const req = {
+          user: undefined,
+          headers: { authorization: 'Bearer portal.id.token', 'x-forwarded-host': 'ci-memory.ci.lan' },
+        } as unknown as Request;
+        const setHeader = vi.fn();
+        const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn() } as unknown as Response;
+
+        await authController.traefik(req, res);
+
+        const { headers, names } = replyOf(setHeader.mock.calls);
+        expect(headers['X-CI-Hub-User']).toBe('owner@example.com');
+        expect(headers['X-CI-Hub-User-Issuer']).toBe(STABLE_ISSUER);
+        expect(headers['X-CI-Hub-User-Id']).toBe(PUBLIC_ID);
+        for (const reserved of AID_HEADERS) {
+          expect(names, reserved).not.toContain(reserved);
+        }
+        expect(res.status).toHaveBeenCalledWith(200);
+      });
     });
 
     it('routes an unauthenticated LAN visitor into edge-sso on the derived root-domain origin', async () => {
