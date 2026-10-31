@@ -1,6 +1,60 @@
 import type { Architecture } from '@/common/constants';
 import { type DynamicCompose, type ServiceInput } from '@ci-hub/common/schemas';
-import deepmerge from 'deepmerge';
+
+const prototypeSensitiveKeys = new Set(['__proto__', 'constructor', 'prototype']);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function cloneComposeValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(cloneComposeValue);
+  }
+
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const clone: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (!prototypeSensitiveKeys.has(key)) {
+      Object.defineProperty(clone, key, {
+        configurable: true,
+        enumerable: true,
+        value: cloneComposeValue(entry),
+        writable: true,
+      });
+    }
+  }
+  return clone;
+}
+
+function mergeComposeValues(target: unknown, source: unknown): unknown {
+  if (Array.isArray(source)) {
+    return source.map(cloneComposeValue);
+  }
+
+  if (!isRecord(target) || !isRecord(source)) {
+    return cloneComposeValue(source);
+  }
+
+  const merged = cloneComposeValue(target) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(source)) {
+    if (prototypeSensitiveKeys.has(key)) {
+      continue;
+    }
+
+    const mergedValue = Object.hasOwn(target, key) ? mergeComposeValues(target[key], value) : cloneComposeValue(value);
+    Object.defineProperty(merged, key, {
+      configurable: true,
+      enumerable: true,
+      value: mergedValue,
+      writable: true,
+    });
+  }
+  return merged;
+}
 
 /**
  * Merges architecture-specific overrides with the base configuration
@@ -34,12 +88,7 @@ export const mergeArchitectureOverrides = (
 
     const baseService = servicesMap.get(override.name);
     if (baseService) {
-      // Special case for arrays that should be replaced rather than merged
-      const arrayMode = {
-        arrayMerge: (_target: unknown[], source: unknown[]) => source,
-      };
-
-      servicesMap.set(override.name, deepmerge(baseService, override, arrayMode) as ServiceInput);
+      servicesMap.set(override.name, mergeComposeValues(baseService, override) as ServiceInput);
     }
   }
 

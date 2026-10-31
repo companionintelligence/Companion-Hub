@@ -37,7 +37,9 @@ describe('PortalClientService.fetchDispatchDevices', () => {
     await service.fetchDispatchDevices();
 
     expect(getMock).toHaveBeenCalledWith('devices/pool-peers', expect.anything());
-    const [, options] = getMock.mock.calls[0]!;
+    const firstCall = getMock.mock.calls[0];
+    if (!firstCall) throw new Error('expected the pool-peers request');
+    const [, options] = firstCall;
     expect(options.headers).toMatchObject({ 'x-device-key': 'device-key-123' });
   });
 

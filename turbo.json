@@ -1,6 +1,20 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "ui": "stream",
+  "globalPassThroughEnv": [
+    "APP_STORE_DIR",
+    "QA_APP_WATCHDOG_MS",
+    "QA_BATCH",
+    "QA_CHROMIUM_PATH",
+    "QA_CONCURRENCY",
+    "QA_CPU_LIMIT",
+    "QA_MEM_LIMIT",
+    "QA_POSIX_VOLUME_FALLBACK",
+    "QA_READY_TIMEOUT_MS",
+    "QA_STDIN",
+    "RESULTS_DIR",
+    "SKIP_SCREENSHOT"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
