@@ -50,6 +50,10 @@ jobs:
       - name: Run knip (unused files/deps)
         run: pnpm run knip:ci
 
+      # Every workflow here is dispatched by hand, so nothing else runs these rules on a push.
+      - name: Check workflow hygiene
+        run: pnpm run check:workflows
+
       - name: Run tsc
         run: pnpm run tsc
 
