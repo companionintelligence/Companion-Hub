@@ -1,6 +1,7 @@
 /**
  * Not interoperable. Frozen 2026-10-30. Do not use for identifiers that leave this process. See FROZEN.md
  */
+
 import { createHash } from 'node:crypto';
 
 /**
