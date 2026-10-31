@@ -6,8 +6,8 @@ import { createHash } from 'node:crypto';
 /**
  * CESR-shaped primitives for the in-tree KERI-style module. These are this module's own encodings,
  * not the published CESR ones: for the published example key, the string built here differs from the
- * published string, so nothing that reads CESR will read it the same way. FROZEN.md holds the
- * verified example and the other known differences, each with how it was established.
+ * published string. FROZEN.md holds the verified example and the other known differences, each with
+ * how it was established.
  *
  * What this file emits:
  *   - 'B' + plain base64url of a 32-byte Ed25519 key (44 characters)
