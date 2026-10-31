@@ -15,6 +15,7 @@
  */
 import { client } from '@/api-client/client.gen';
 import { resetActiveFetch, runtimeFetch, setActiveFetch } from './runtime-fetch';
+import { loadTauriHttpFetch } from './tauri-http-fetch';
 
 const STORE_FILE = 'mobile-connection.json';
 const HUB_BASE_URL_KEY = 'hubBaseUrl';
@@ -240,16 +241,6 @@ async function openStore() {
   return load(STORE_FILE);
 }
 
-/** The Tauri HTTP plugin's `fetch` — native, bypasses webview CORS. */
-async function loadNativeFetch(): Promise<typeof runtimeFetch | null> {
-  try {
-    const http = await import('@tauri-apps/plugin-http');
-    return http.fetch as unknown as typeof runtimeFetch;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Ensure the app-wide {@link runtimeFetch} routes through the native Tauri HTTP
  * client on mobile. Loaded once and cached. Idempotent and safe to call whenever
@@ -271,7 +262,7 @@ async function ensureNativeFetchActive(timeoutMs: number | null = 3000): Promise
   }
 
   if (!pendingNativeFetch) {
-    const pending = loadNativeFetch();
+    const pending = loadTauriHttpFetch();
     pendingNativeFetch = pending;
     void pending.then((fetcher) => {
       if (pendingNativeFetch !== pending) return;
