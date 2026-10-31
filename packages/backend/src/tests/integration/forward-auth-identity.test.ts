@@ -2,7 +2,6 @@ import path from 'node:path';
 import { eq, sql } from 'drizzle-orm';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
-import { computeCesrDigest } from '@ci-hub/common/keri/cesr';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { federatedIdentity, user, userDirectory } from '@/core/database/drizzle/schema';
 import type { LoggerService } from '@/core/logger/logger.service';
@@ -18,13 +17,7 @@ const PORTAL = 'https://hub.ci.computer';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function stableIdentity(publicId: string, directoryId: string) {
-  const issuer = `urn:ci-hub:${directoryId}`;
-  return {
-    issuer,
-    userId: publicId,
-    userAid: `did:keri:${computeCesrDigest(Buffer.from(`ci-hub-user:${issuer}:${publicId}`, 'utf8'))}`,
-    hubAid: `did:keri:${computeCesrDigest(Buffer.from(`ci-hub-appliance:${issuer}`, 'utf8'))}`,
-  };
+  return { issuer: `urn:ci-hub:${directoryId}`, userId: publicId };
 }
 
 /*
