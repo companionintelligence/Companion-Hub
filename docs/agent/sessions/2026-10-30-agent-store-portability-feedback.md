@@ -9,8 +9,8 @@
 
 ## What worked
 
-- Reading the exact pinned Umbrel image tag exposed a trust-boundary mismatch that a current-branch-only review would have missed.
-- Olares manifests provided concrete defaults for sender allowlists, internal API entrances, and opt-in data access.
+- Reading the exact pinned store A image tag exposed a trust-boundary mismatch that a current-branch-only review would have missed.
+- Store B manifests provided concrete defaults for sender allowlists, internal API entrances, and opt-in data access.
 
 ## Friction / blockers
 
@@ -28,4 +28,4 @@
 
 ## One-line summary (for WORKFLOW_FEEDBACK.md)
 
-> 2026-10-30 — agent-store-portability: Compared Umbrel and Olares agent packaging, documented Hub trust boundaries, and recorded the OpenClaw wrapper quarantine and cross-repo bootstrap sync.
+> 2026-10-30 — agent-store-portability: Compared the agent packaging of store A and store B, documented Hub trust boundaries, and recorded the OpenClaw wrapper quarantine and cross-repo bootstrap sync.
