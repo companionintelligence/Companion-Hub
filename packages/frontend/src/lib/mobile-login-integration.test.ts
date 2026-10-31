@@ -13,7 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { client } from '@/api-client/client.gen';
 import { getTauriSessionId, setTauriSessionId } from './api-fetch';
-import { clearHubConnection, setHubConnection } from './mobile-connection';
+import { clearHubConnection, resetMobileClientCacheForTests, setHubConnection } from './mobile-connection';
+import { resetActiveFetch } from './runtime-fetch';
 
 // Native Tauri HTTP client — records what it is asked to fetch.
 const httpFetch = vi.fn(
@@ -45,6 +46,8 @@ client.interceptors.request.use((request: Request) => {
 });
 
 beforeEach(() => {
+  resetActiveFetch();
+  resetMobileClientCacheForTests();
   httpFetch.mockClear();
   localStorage.clear();
   sessionStorage.clear();

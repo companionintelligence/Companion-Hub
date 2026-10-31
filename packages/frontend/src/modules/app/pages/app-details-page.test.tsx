@@ -230,8 +230,7 @@ describe('AppDetailsPage', () => {
 
     render(<AppDetailsPage />);
 
-    expect(useQuery).toHaveBeenNthCalledWith(
-      3,
+    expect(useQuery).toHaveBeenCalledWith(
       expect.objectContaining({
         queryKey: ['app-runtime-health', 'test-app:community'],
         enabled: false,

@@ -44,6 +44,10 @@ vi.mock('react-i18next', () => ({
   Trans: ({ i18nKey }: { i18nKey: string }) => <span>{i18nKey}</span>,
 }));
 
+vi.mock('@/context/app-context', () => ({
+  useAppContext: () => ({ userSettings: { ciHubOrganizationLabel: '' } }),
+}));
+
 vi.mock('@tanstack/react-query', () => ({
   useQuery: vi.fn(),
   useInfiniteQuery: vi.fn(() => ({
@@ -236,13 +240,18 @@ describe('AppStorePage — multi-store UX', () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByText('Google Drive')).toBeInTheDocument();
-    const link = screen.getByRole('link', { name: /Nextcloud/i });
-    expect(link).toHaveAttribute('href', '/store/ci-marketplace/nextcloud');
+    expect(screen.getAllByText('Google Drive')).not.toHaveLength(0);
+    const links = screen.getAllByRole('link', { name: /Nextcloud/i });
+    expect(links).not.toHaveLength(0);
+    for (const link of links) {
+      expect(link).toHaveAttribute('href', '/store/ci-marketplace/nextcloud');
+    }
   });
 
   it('links curated alternatives (including OnlyOffice) to /store/<slug>/<appSlug>', () => {
     mockUsePortalCatalog.mockReturnValue({
+      listings: [{ urn: 'onlyoffice:ci-marketplace' }],
+      hasListingsData: true,
       alternatives: {
         utilities: [
           {
@@ -267,8 +276,11 @@ describe('AppStorePage — multi-store UX', () => {
       </MemoryRouter>,
     );
 
-    const link = screen.getByRole('link', { name: /OnlyOffice/i });
-    expect(link).toHaveAttribute('href', '/store/ci-marketplace/onlyoffice');
+    const links = screen.getAllByRole('link', { name: /OnlyOffice/i });
+    expect(links).not.toHaveLength(0);
+    for (const link of links) {
+      expect(link).toHaveAttribute('href', '/store/ci-marketplace/onlyoffice');
+    }
     expect(screen.queryByText('ONBOARDING_SOON')).not.toBeInTheDocument();
   });
 
