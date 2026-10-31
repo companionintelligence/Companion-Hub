@@ -37,14 +37,15 @@ vi.mock('@tauri-apps/plugin-store', () => ({
 vi.mock('@/lib/hub-runtime-mode', () => ({ usesCrossOriginDesktopApi: () => true }));
 
 function setMobileTauri() {
+  const userAgent = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)';
   Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
   Object.defineProperty(window.navigator, 'userAgent', {
-    value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',
+    value: userAgent,
     configurable: true,
   });
-  // Node 22+ exposes its own global navigator; make test code and application
-  // code observe the same JSDOM mobile user agent in every runner.
-  vi.stubGlobal('navigator', window.navigator);
+  // Node 22+ exposes its own global navigator, separate from JSDOM's window.navigator.
+  // The app reads the global, so stub it explicitly instead of relying on realm aliasing.
+  vi.stubGlobal('navigator', { userAgent, platform: 'iPhone', maxTouchPoints: 1 });
 }
 
 // Install the exact request interceptor root.tsx installs (session header).
@@ -76,6 +77,7 @@ afterEach(async () => {
 
 describe('mobile login integration', () => {
   it('routes an authenticated generated-client call to the chosen Hub via native fetch + session header', async () => {
+    expect(navigator.userAgent).toContain('iPhone');
     expect(isTauriMobileSync()).toBe(true);
     await setHubConnection('https://hub-apple-acme.ci.computer/');
     setTauriSessionId('sess-abc'); // as login onSuccess does
