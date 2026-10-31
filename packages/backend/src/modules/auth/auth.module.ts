@@ -14,6 +14,8 @@ import { AuthService } from './auth.service';
 import { ForwardAuthIdentityResolver } from './forward-auth-identity.resolver';
 import { ForwardAuthSecretResolver } from './forward-auth-secret.resolver';
 import { BearerOrgMembershipCache } from './bearer-org-membership.cache';
+import { MemoryApiKeyCheck } from './memory-api-key.check';
+import { MemoryProviderResolver } from '@/modules/memory-connect/memory-provider.resolver';
 import { SessionManager } from './session.manager';
 
 @Module({
@@ -23,7 +25,18 @@ import { SessionManager } from './session.manager';
   // second instance, so writes invalidated on one would still be served stale by the other.
   imports: [UserModule, EncryptionModule, PasswordModule, RegistrationModule, forwardRef(() => PortalModule), AppsModule, EnvModule, ApiKeyModule],
   controllers: [AuthController, OobiController],
-  providers: [AuthService, AuthRateLimiter, SessionManager, ForwardAuthSecretResolver, ForwardAuthIdentityResolver, BearerOrgMembershipCache],
+  // MemoryProviderResolver is stateless (it reads the installed apps each call), so a second
+  // instance here is safe, and it spares AuthModule importing MemoryConnectModule and its graph.
+  providers: [
+    AuthService,
+    AuthRateLimiter,
+    SessionManager,
+    ForwardAuthSecretResolver,
+    ForwardAuthIdentityResolver,
+    BearerOrgMembershipCache,
+    MemoryProviderResolver,
+    MemoryApiKeyCheck,
+  ],
   exports: [AuthService, SessionManager, BearerOrgMembershipCache],
 })
 export class AuthModule {}
