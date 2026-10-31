@@ -16,10 +16,13 @@ import { getTauriSessionId, setTauriSessionId } from './api-fetch';
 import { clearHubConnection, resetMobileClientCacheForTests, setHubConnection } from './mobile-connection';
 import { resetActiveFetch } from './runtime-fetch';
 
-// Native Tauri HTTP client — records what it is asked to fetch.
-const httpFetch = vi.fn(
-  async (..._args: unknown[]) => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
-);
+// Create the spy in Vitest's hoisted mock scope so the dynamic plugin import
+// and this test always observe the same function across the full suite.
+const { httpFetch } = vi.hoisted(() => ({
+  httpFetch: vi.fn(
+    async (..._args: unknown[]) => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+  ),
+}));
 vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
 
 vi.mock('@tauri-apps/plugin-store', () => ({
