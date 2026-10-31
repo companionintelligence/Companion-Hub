@@ -37,11 +37,14 @@ vi.mock('@tauri-apps/plugin-store', () => ({
 vi.mock('@/lib/hub-runtime-mode', () => ({ usesCrossOriginDesktopApi: () => true }));
 
 function setMobileTauri() {
-  (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {};
-  Object.defineProperty(navigator, 'userAgent', {
+  Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+  Object.defineProperty(window.navigator, 'userAgent', {
     value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',
     configurable: true,
   });
+  // Node 22+ exposes its own global navigator; make test code and application
+  // code observe the same JSDOM mobile user agent in every runner.
+  vi.stubGlobal('navigator', window.navigator);
 }
 
 // Install the exact request interceptor root.tsx installs (session header).
