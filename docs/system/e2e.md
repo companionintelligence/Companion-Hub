@@ -5,7 +5,7 @@
 > **Key paths:** `e2e/`, `e2e/visual/`, `e2e/helpers/screenshot.ts`, `scripts/agent/benchmark-gate.ts`
 > **Commands:** `pnpm run test:e2e:ci`, `pnpm run test:visual`, `pnpm run benchmark:gate`
 > **Owner persona:** code-quality + performance
-> **Last updated:** 2026-07-12
+> **Last updated:** 2026-10-30
 > **Related:** docs/agent/TESTING.md, docs/agent/TEST_INVENTORY.md, docs/FLYWHEEL.md
 
 ---
@@ -31,6 +31,10 @@ Local full stack: `pnpm run test:e2e` (docker-compose + Playwright via `scripts/
 | `e2e-extended.yml` | Nightly / label | Cross-domain + future |
 | `e2e-mcp.yml` | Manual dispatch only | MCP connect recipe — protocol handshake + app env injection (12 tests) |
 | `agent-gates.yml` | PR (optional) | Visual + benchmark gates |
+
+These workflows run with a read-only repository token: each declares `permissions: contents: read` at the top, and
+`ci.yml` and `agent-gates.yml` add `packages: read`. `pnpm run check:workflows` refuses a workflow that has no
+`permissions` at the top and not on every job; the rules are in [`.github/workflows/README.md`](../../.github/workflows/README.md).
 
 `e2e-mcp.yml` is dispatch-only on purpose: it boots a backend, so it earns its runner minutes only
 when the MCP surface, its auth, or the connect docs change. Run it with

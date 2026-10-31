@@ -125,3 +125,4 @@ Use the provided bug and feature templates. They include a Screenshots section t
 - Reference the related issue (`Closes #123`).
 - Keep one logical change per PR.
 - Ensure CI checks pass before requesting review.
+- If you change a file in `.github/workflows/`, run `pnpm run check:workflows`. It refuses a blanket `secrets: inherit`, `pull_request_target`, and a workflow with no `permissions`; the rules are in [`.github/workflows/README.md`](.github/workflows/README.md).
