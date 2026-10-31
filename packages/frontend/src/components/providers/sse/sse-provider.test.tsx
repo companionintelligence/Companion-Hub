@@ -310,6 +310,7 @@ describe('SSEProvider', () => {
 });
 
 describe('SSEProvider: a cancelled install of a custom app', () => {
+  // biome-ignore lint/correctness/noComponentHookFactories: this one-shot test fixture is created once per suite.
   const Where = () => <span data-testid="where">{useLocation().pathname}</span>;
 
   const renderOnAppPage = () => {

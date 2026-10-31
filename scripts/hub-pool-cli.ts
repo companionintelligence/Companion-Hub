@@ -1953,7 +1953,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     // affinity put another node first changed nothing an operator needs to read here.
     const contention = entry.contention;
     if (contention && contention.demoted.length > 0) {
-      const describe = (demoted: PoolRoutingContention['demoted'][number]) => {
+      const formatDemoted = (demoted: PoolRoutingContention['demoted'][number]) => {
         const busy = demoted.busyWith.map((generation) => `${sanitizeForBox(generation.model)} at ${describeContextWindow(generation.numCtx)}`);
         return `${sanitizeForBox(demoted.node)} (busy with ${busy.join(', ')}; this one at ${describeContextWindow(demoted.runsAt)})`;
       };
@@ -1963,16 +1963,16 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
       if (placed) {
         lines.push(
           placed.behind.length > 0
-            ? `  ↳ placed anyway on ${describe(placed)}: nothing it gave way to answered`
+            ? `  ↳ placed anyway on ${formatDemoted(placed)}: nothing it gave way to answered`
             : placed.overriddenBy === 'affinity'
-              ? `  ↳ kept ${describe(placed)} first: it holds this session's prompt prefix, which prefix affinity follows over contention`
-              : `  ↳ kept ${describe(placed)} first: every node after it was busier, or moved behind it by a line above`,
+              ? `  ↳ kept ${formatDemoted(placed)} first: it holds this session's prompt prefix, which prefix affinity follows over contention`
+              : `  ↳ kept ${formatDemoted(placed)} first: every node after it was busier, or moved behind it by a line above`,
         );
       } else {
         const moved = contention.demoted.filter((demoted) => demoted.behind.length > 0);
         if (moved.length > 0) {
           lines.push(
-            `  ↳ moved ${moved.map((demoted) => `${describe(demoted)} behind ${demoted.behind.map(sanitizeForBox).join(', ')}`).join('; ')}`,
+            `  ↳ moved ${moved.map((demoted) => `${formatDemoted(demoted)} behind ${demoted.behind.map(sanitizeForBox).join(', ')}`).join('; ')}`,
           );
         }
       }

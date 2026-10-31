@@ -601,6 +601,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       try {
         const main = document.getElementById('root');
         if (!main) return;
+        // biome-ignore lint/performance/useDomNodeTextContent: the dev fallback depends on visible rendered content.
         const text = (main.innerText || '').trim();
         const shouldShow = text.length === 0 && location.pathname !== '/login';
         if (shouldShow) {

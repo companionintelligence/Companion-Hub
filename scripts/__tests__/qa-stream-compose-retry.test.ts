@@ -383,7 +383,7 @@ describe('qa-stream retry wiring', () => {
     expect(source).toContain('&& up.retryableBindRace');
     expect(source).toContain('!isRetryableHostPortBindRace(run.err, run.interrupted)');
     expect(source).toContain('verify: verifyCleanup');
-    expect(source).toContain('return verifyQaResourceCleanup(execAsync, project, o.containerName)');
+    expect(source).toMatch(/verifyQaResourceCleanup\(execAsync, project, o\.containerName, managedVolumes\)/);
     expect(source).toContain('docker network ls');
     expect(source).toContain('docker volume ls');
     expect(source).toContain('firstAttemptFailKind');
