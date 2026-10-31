@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { client } from '@/api-client/client.gen';
 import { getTauriSessionId, setTauriSessionId } from './api-fetch';
-import { clearHubConnection, isTauriMobileSync, resetMobileClientCacheForTests, setHubConnection } from './mobile-connection';
+import { clearHubConnection, isMobileUserAgent, isTauriMobileSync, resetMobileClientCacheForTests, setHubConnection } from './mobile-connection';
 import { resetActiveFetch, runtimeFetch } from './runtime-fetch';
 import { loadTauriHttpFetch } from './tauri-http-fetch';
 
@@ -78,6 +78,18 @@ afterEach(async () => {
 describe('mobile login integration', () => {
   it('routes an authenticated generated-client call to the chosen Hub via native fetch + session header', async () => {
     expect(navigator.userAgent).toContain('iPhone');
+    console.info(
+      '[mobile-login-integration] environment',
+      JSON.stringify({
+        tauriMarker: '__TAURI_INTERNALS__' in window,
+        globalUserAgent: navigator.userAgent,
+        windowUserAgent: window.navigator.userAgent,
+        isMobileUserAgent: isMobileUserAgent(),
+        isTauriMobileSync: isTauriMobileSync(),
+        mobileFlag: sessionStorage.getItem('cihub.isTauriMobile'),
+        desktopFlag: sessionStorage.getItem('cihub.isTauriDesktop'),
+      }),
+    );
     expect(isTauriMobileSync()).toBe(true);
     await setHubConnection('https://hub-apple-acme.ci.computer/');
     setTauriSessionId('sess-abc'); // as login onSuccess does
