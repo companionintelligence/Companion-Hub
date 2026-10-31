@@ -30,6 +30,8 @@
  *   QA_MIN_FREE_MB  minimum free space to keep before accepting another app (default: 4096)
  *   QA_MIN_FREE_PERCENT  minimum free percentage to keep before accepting another app (default: 5)
  *   SKIP_SCREENSHOT set to "1" to skip Playwright screenshot
+ *   QA_KEEP_FAILED  set to "1" to retain non-pass containers and scratch files for inspection
+ *   QA_POSIX_VOLUME_FALLBACK set to "1" to use Docker volumes for ownership-sensitive binds; defaults on macOS/Windows
  *   QA_ENV_FILE     set to "1" to attach a production-style app.env (system variables + form fields) to every service, as the
  *                   Hub does. Off by default. Safe at any QA_CONCURRENCY: each app's form-field specs and manifest are passed
  *                   down explicitly, never read from module state after an await.
@@ -87,6 +89,10 @@ const APP_STORE_DIR =
 const RESULTS_DIR = process.env.RESULTS_DIR ?? join(home, 'qa-results');
 const SCREENSHOTS_DIR = join(RESULTS_DIR, 'screenshots');
 const SKIP_SCREENSHOT = process.env.SKIP_SCREENSHOT === '1';
+const KEEP_FAILED = process.env.QA_KEEP_FAILED === '1';
+const QA_POSIX_VOLUME_OVERRIDE = process.env.QA_POSIX_VOLUME_FALLBACK;
+const QA_POSIX_VOLUME_FALLBACK =
+  QA_POSIX_VOLUME_OVERRIDE === undefined ? ['darwin', 'win32'].includes(process.platform) : QA_POSIX_VOLUME_OVERRIDE === '1';
 const QA_ENV_FILE = process.env.QA_ENV_FILE === '1';
 const QA_NO_PROXY_HEADERS = process.env.QA_NO_PROXY_HEADERS === '1';
 const QA_NO_TEMPLATES = process.env.QA_NO_TEMPLATES === '1';
@@ -1250,7 +1256,13 @@ interface DockerService {
   extraHosts?: string[];
   networkMode?: string; // e.g. 'service:<main>' for a sidecar sharing the main service's namespace — honored by the Hub builder
   restart?: string; // no | always | unless-stopped | on-failure; the Hub's default when absent is unless-stopped (see restartPolicyOf)
-  volumes?: { hostPath?: string; containerPath?: string; readOnly?: boolean }[];
+  volumes?: {
+    hostPath?: string;
+    volumeName?: string;
+    containerPath?: string;
+    readOnly?: boolean;
+    requiresPosixPermissions?: boolean;
+  }[];
   environment?: { key?: string; value?: string }[];
   dependsOn?: unknown; // map {svc:{condition}} (Hub) or string[] — handled in composeUp
   healthCheck?: HealthCheck;
@@ -2241,11 +2253,16 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
   } finally {
     // Non-blocking, SIGKILL-bounded teardown (see forceTeardown) — a wedged daemon here used to
     // hang the app's promise forever, which wedged the node's pool and the whole fleet run.
-    const notes = String(result.notes ?? '');
-    const verifyCleanup =
-      (result.failKind === 'timeout' && isRetryableTimeout(notes)) || (result.failKind === 'compose' && isRetryableComposeFailure(notes));
-    const cleanupConfirmed = await forceTeardown({ appId, containerName, composeProject, composeYml, scratchDirs, verify: verifyCleanup });
-    if (verifyCleanup) result.cleanupConfirmed = cleanupConfirmed;
+    if (KEEP_FAILED && !['pass', 'skip'].includes(String(result.score))) {
+      // Keep an explicit diagnostic run available for browser inspection after the result is recorded.
+      result.artifactsRetained = true;
+    } else {
+      const notes = String(result.notes ?? '');
+      const verifyCleanup =
+        (result.failKind === 'timeout' && isRetryableTimeout(notes)) || (result.failKind === 'compose' && isRetryableComposeFailure(notes));
+      const cleanupConfirmed = await forceTeardown({ appId, containerName, composeProject, composeYml, scratchDirs, verify: verifyCleanup });
+      if (verifyCleanup) result.cleanupConfirmed = cleanupConfirmed;
+    }
   }
 
   return result;
@@ -3117,6 +3134,7 @@ async function composeUp(
   // block below), plus the set of dirs already seeded so shared ones are prepared exactly once.
   const sharedMounts = new Map<string, string>();
   const seededMounts = new Set<string>();
+  const managedVolumes = new Map<string, string>();
   // Services that declare a healthcheck: a depends_on may only request `service_healthy`
   // against these — asking it of a service without one makes `compose up` error out.
   const hasHealthcheck = new Set(services.filter((s) => s.name && (s.healthCheck ?? s.healthcheck)?.test).map((s) => s.name as string));
@@ -3212,13 +3230,30 @@ async function composeUp(
       y += '    volumes:\n';
       for (const v of vols) {
         const cp = v.containerPath as string;
+        const hp = subst(String(v.hostPath ?? ''));
+        const seed = seedSourceFor(appId, v.hostPath);
+        // Mirror the Hub builder on hosts whose Docker bind shares cannot preserve chown/chmod.
+        // The manifest still uses the real hostPath on Linux; local macOS/Windows smoke uses a
+        // project-scoped named volume for ownership-sensitive, unseeded data.
+        if (v.volumeName || (v.requiresPosixPermissions === true && QA_POSIX_VOLUME_FALLBACK && hp && !seed)) {
+          const key = v.volumeName ? `named:${v.volumeName}` : `host:${hp}`;
+          let volume = managedVolumes.get(key);
+          if (!volume) {
+            let index = managedVolumes.size + 1;
+            let generated = `qa-posix-data-${index}`;
+            while ([...managedVolumes.values()].includes(generated)) generated = `qa-posix-data-${++index}`;
+            volume = v.volumeName ?? generated;
+            managedVolumes.set(key, volume);
+          }
+          y += `      - ${yamlStr(`${volume}:${cp}${v.readOnly ? ':ro' : ''}`)}\n`;
+          continue;
+        }
         // Key the scratch dir on the manifest's hostPath, so two services declaring the SAME
         // hostPath share one directory — which is what the appliance does, and what these manifests
         // rely on. Keying per (service, containerPath) silently gave each service its own private
         // dir: route96 has an init sidecar that writes config.toml to a shared hostPath, the main
         // service mounted a DIFFERENT empty dir, found no config, and exited. Falls back to the old
         // per-service path only when no hostPath is declared (a purely ephemeral runtime dir).
-        const hp = subst(String(v.hostPath ?? ''));
         const sc = hp
           ? (sharedMounts.get(hp) ??
             (() => {
@@ -3284,6 +3319,10 @@ async function composeUp(
       const publish = reservedHostPort > 0 ? reservedHostPort : 0;
       y += `    ports:\n      - "${publish}:${mainPort}"\n`;
     }
+  }
+  if (managedVolumes.size) {
+    y += '\nvolumes:\n';
+    for (const volume of managedVolumes.values()) y += `  ${yamlStr(volume)}:\n`;
   }
   writeFileSync(ymlPath, y);
   // NON-BLOCKING `compose up` (execAsync, not execSync): the pull+create can take many minutes for a
