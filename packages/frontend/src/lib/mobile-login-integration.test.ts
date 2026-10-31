@@ -23,7 +23,7 @@ const { httpFetch } = vi.hoisted(() => ({
     async (..._args: unknown[]) => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
   ),
 }));
-vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
+vi.mock('./tauri-http-fetch', () => ({ loadTauriHttpFetch: vi.fn(async () => httpFetch) }));
 
 vi.mock('@tauri-apps/plugin-store', () => ({
   load: vi.fn(async () => ({ get: async () => null, set: vi.fn(async () => {}), delete: vi.fn(async () => {}), save: vi.fn(async () => {}) })),
