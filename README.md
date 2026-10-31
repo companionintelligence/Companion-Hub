@@ -252,6 +252,7 @@ Engineering notes for this repository live in [`docs/`](docs/). Start with the d
 
 ## Security and privacy
 
+- **Report a vulnerability.** Report it privately and don't open a public issue. See [`SECURITY.md`](SECURITY.md).
 - **Hub and Portal.** Open-source Hub is an untrusted client of Companion Portal. Marketplace installs and registry tag lists need a Portal-issued device key, so pair first (`cihub register` or the onboarding UI). An unpaired Hub gets `401` on those calls, and the catalog can look slow or empty instead of obviously unauthorized. See [`docs/security/hub-portal-trust.md`](docs/security/hub-portal-trust.md).
 - **Telemetry.** Distributed builds report crashes to Sentry by default. `CI_TELEMETRY=off` or `CI_LOCAL_ONLY=true` in the Hub `.env` stops it, as does the switch in **Settings → General**. What is collected, and what is not, is in [`docs/telemetry.md`](docs/telemetry.md).
 
