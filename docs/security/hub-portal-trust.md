@@ -126,7 +126,7 @@ Each app's headers are signed with that app's own key, read from its `app.env`:
 
 ## Identity bindings
 
-The Hub is a client of Portal and of the box, never a source of identity bindings. Portal decides which person owns a computer, and the box records it. The Hub has no route, table, or module that reads, writes, or names a binding, and `scripts/__tests__/hub-binding-authority.test.ts` fails if a file under `packages/` does.
+The Hub is a client of Portal and of the box, never a source of identity bindings. Portal decides which person owns a computer, and the box records it. The Hub has no route, table, or module that reads, writes, or names that record: no file under `packages/` carries its file name, its service name, its client's name, or its state folder, and `scripts/__tests__/hub-binding-authority.test.ts` fails if one does.
 
 Treat that as a property of the code, not as a security boundary. The Hub controls Docker on the appliance, so a Hub compromise reaches root, and the box has to defend its own record.
 
