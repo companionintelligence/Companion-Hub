@@ -27,7 +27,9 @@ import {
   verifyForwardAuthHeaders,
 } from '../packages/backend/src/modules/auth/utils/forward-auth-signing';
 
-console.log('--- RUNNING KERI & TRUST OVER IP (ToIP) VERIFICATION SUITE ---');
+// A round-trip check of the in-tree module against ITSELF. It says nothing about interoperability, which the
+// module does not have: see packages/common/src/keri/FROZEN.md.
+console.log('--- RUNNING IN-TREE KERI-STYLE MODULE ROUND TRIPS (frozen, not interoperable: see packages/common/src/keri/FROZEN.md) ---');
 
 // 1. CESR Encodings
 console.log('1. Testing CESR Encodings...');
@@ -250,7 +252,7 @@ assert.match(verifyTampered.reason, /Content-digest mismatch/);
 console.log('   ✓ RFC 9421 HTTP Signatures with KERI AIDs passed');
 
 // 7. Hub Forward-Auth with KERI Headers
-console.log('7. Testing Hub Forward-Auth with KERI AID Headers...');
+console.log('7. Testing that the forward-auth signing helpers carry caller-supplied AID values (the Hub itself sets none)...');
 const secret = 'test-hub-secret';
 const username = 'liam';
 const now = 1_700_000_000_000;
@@ -286,8 +288,8 @@ if (!fwdVerify.ok) {
 }
 assert.strictEqual(fwdVerify.stableId?.userAid, stableId.userAid);
 assert.strictEqual(fwdVerify.stableId?.hubAid, stableId.hubAid);
-console.log('   ✓ Hub Forward-Auth with KERI AID Headers passed');
+console.log('   ✓ forward-auth signing helpers carry caller-supplied AID values passed');
 
 console.log('\n======================================================');
-console.log('ALL KERI & TRUST OVER IP (ToIP) SPECIFICATIONS PASSED!');
+console.log('ALL IN-TREE KERI-STYLE ROUND TRIPS PASSED (internal consistency only, not interoperability)');
 console.log('======================================================');

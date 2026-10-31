@@ -1,11 +1,19 @@
+/**
+ * Not interoperable. Frozen 2026-10-30. Do not use for identifiers that leave this process. See FROZEN.md
+ */
+
 import { createHash } from 'node:crypto';
 
 /**
- * CESR (Composable Event Streaming Representation) primitives for KERI.
- * Prefix codes:
- *   - 'B': Ed25519 32-byte public key (44 chars base64url)
- *   - 'E': SHA-256 32-byte digest / SAID (44 chars base64url)
- *   - '0A': Ed25519 64-byte signature (88 chars base64url)
+ * CESR-shaped primitives for the in-tree KERI-style module. These are this module's own encodings,
+ * not the published CESR ones: for the published example key, the string built here differs from the
+ * published string. FROZEN.md holds the verified example and the other known differences, each with
+ * how it was established.
+ *
+ * What this file emits:
+ *   - 'B' + plain base64url of a 32-byte Ed25519 key (44 characters)
+ *   - 'E' + plain base64url of a SHA-256 digest (44 characters)
+ *   - '0A' + plain base64url of a 64-byte Ed25519 signature (88 characters)
  */
 export const CESR_ED25519_PUBKEY_PREFIX = 'B';
 export const CESR_SHA256_DIGEST_PREFIX = 'E';
@@ -26,7 +34,8 @@ export function encodeCesrPublicKey(pubkey: Buffer): string {
   if (pubkey.length !== 32) {
     throw new Error(`Invalid Ed25519 public key length: expected 32 bytes, got ${pubkey.length}`);
   }
-  // CESR 'B' prefix indicates 32-byte Ed25519 key (43 base64url chars + 1 prefix = 44 chars)
+  // 'B' + 43 base64url characters = 44 characters. Not the published form, which pre-pads the key before
+  // encoding and so gives a different string for the same key (FROZEN.md, reference-vector.test.ts).
   return `${CESR_ED25519_PUBKEY_PREFIX}${toBase64Url(pubkey)}`;
 }
 

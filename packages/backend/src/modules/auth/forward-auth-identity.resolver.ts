@@ -7,7 +7,6 @@ import { UserRepository } from '@/modules/user/user.repository';
 import { Inject, Injectable } from '@nestjs/common';
 import { eq } from 'drizzle-orm/sql';
 import { loadSessionUser } from './auth.middleware';
-import { computeCesrDigest } from '@ci-hub/common/keri/cesr';
 import { type ForwardAuthStableId, HUB_ISSUER_PREFIX } from './utils/forward-auth-signing';
 
 /** How long a Portal subject's Hub person is remembered on the Bearer path. */
@@ -54,16 +53,20 @@ export class ForwardAuthIdentityResolver {
     this.issuer = undefined;
   }
 
-  /** The stable id to sign beside `userId`'s username, or null when it cannot be read. */
+  /**
+   * The stable id to sign beside `userId`'s username, or null when it cannot be read.
+   *
+   * It is the issuer and the id, nothing derived from them. A hash of those two public labels is
+   * no key and names no one, yet a `did:keri:` string made of it reads as proof of a key, so the
+   * AID fields of {@link ForwardAuthStableId} stay unset until a persisted key event log supplies them.
+   */
   public async stableIdFor(userId: number): Promise<ForwardAuthStableId | null> {
     try {
       const [issuer, publicId] = await Promise.all([this.getIssuer(), this.getPublicId(userId)]);
       if (!publicId) {
         return null;
       }
-      const userAid = `did:keri:${computeCesrDigest(Buffer.from(`ci-hub-user:${issuer}:${publicId}`, 'utf8'))}`;
-      const hubAid = `did:keri:${computeCesrDigest(Buffer.from(`ci-hub-appliance:${issuer}`, 'utf8'))}`;
-      return { issuer, userId: publicId, userAid, hubAid };
+      return { issuer, userId: publicId };
     } catch (error) {
       this.logger.warn(`Forward auth could not read the stable id of user ${userId}; signing the username alone: ${describe(error)}`);
       return null;

@@ -2,6 +2,8 @@
 
 Rolling notes on the CI-Hub agent workflow. See [session worksheets](sessions/README.md) for context.
 
+> 2026-10-30 — hub-keri-freeze: Compare lint and test results against the base as sets when the gate is red there, and run the real collaborator behind a controller test when a mock would only echo the expected value.
+
 > 2026-10-28 — headless-http-app-qa: Added HTTP/TCP checks for supported no-GUI apps and synced Hub API artifacts; the active fleet campaign uses the earlier runner, so harness-versioned targeted retesting remains necessary.
 
 > 2026-10-28 — imageboot-registry-fallback: Retry Docker Hub and fall back to public ECR for image-boot dependencies, with registry errors visible.

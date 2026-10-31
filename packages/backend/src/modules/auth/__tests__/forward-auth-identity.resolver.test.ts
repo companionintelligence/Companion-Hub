@@ -4,7 +4,6 @@ import { SessionUserCache } from '@/core/cache/session-user.cache';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
 import type { UserRepository } from '@/modules/user/user.repository';
-import { computeCesrDigest } from '@ci-hub/common/keri/cesr';
 import { ForwardAuthIdentityResolver } from '../forward-auth-identity.resolver';
 
 const DIRECTORY_ID = '6f1c2a4e-2f3b-4c5d-8e9f-0a1b2c3d4e5f';
@@ -14,13 +13,7 @@ const NEW_PUBLIC_ID = '0293b4c5-d6e7-4f80-8b1c-2d3e4f5a6b7c';
 const PORTAL = 'https://hub.ci.computer';
 
 function stableIdentity(publicId = PUBLIC_ID, directoryId = DIRECTORY_ID) {
-  const issuer = `urn:ci-hub:${directoryId}`;
-  return {
-    issuer,
-    userId: publicId,
-    userAid: `did:keri:${computeCesrDigest(Buffer.from(`ci-hub-user:${issuer}:${publicId}`, 'utf8'))}`,
-    hubAid: `did:keri:${computeCesrDigest(Buffer.from(`ci-hub-appliance:${issuer}`, 'utf8'))}`,
-  };
+  return { issuer: `urn:ci-hub:${directoryId}`, userId: publicId };
 }
 
 /** A drizzle client answering only the two statements the resolver issues for the directory. */
@@ -57,6 +50,15 @@ describe('ForwardAuthIdentityResolver', () => {
 
   it('names a user by their public id under this Hub directory', async () => {
     await expect(make(fakeDb()).stableIdFor(7)).resolves.toEqual(stableIdentity());
+  });
+
+  // A hash of the issuer and the id is no key and names no one, but a `did:keri:` string made of it
+  // reads as proof of a key. The AID fields are reserved until a persisted key event log supplies them.
+  it('carries the issuer and the id only: no key-derived identifier of any kind', async () => {
+    const stableId = await make(fakeDb()).stableIdFor(7);
+
+    expect(Object.keys(stableId ?? {}).sort()).toEqual(['issuer', 'userId']);
+    expect(JSON.stringify(stableId)).not.toContain('did:keri');
   });
 
   it('reads the directory once and each public id once: forward auth runs on every request', async () => {
