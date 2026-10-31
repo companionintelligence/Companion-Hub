@@ -5,8 +5,11 @@ import { describe, expect, it, vi } from 'vitest';
 const { readFileSync } = await vi.importActual<typeof import('node:fs')>('node:fs');
 import {
   FORWARD_AUTH_ASSERTION_HEADER,
+  FORWARD_AUTH_HUB_AID_HEADER,
+  FORWARD_AUTH_KEL_DIGEST_HEADER,
   FORWARD_AUTH_SIGNATURE_HEADER,
   FORWARD_AUTH_TIMESTAMP_HEADER,
+  FORWARD_AUTH_USER_AID_HEADER,
   FORWARD_AUTH_USER_HEADER,
   FORWARD_AUTH_USER_ID_HEADER,
   FORWARD_AUTH_USER_ID_SIGNATURE_HEADER,
@@ -37,6 +40,13 @@ const EXPECTED_HEADERS = [
   FORWARD_AUTH_USER_ID_SIGNATURE_HEADER,
   // The bound assertion: an app that requires it signs nobody in through a copy that drops it.
   FORWARD_AUTH_ASSERTION_HEADER,
+  // The reserved AID names. The Hub never sets them and no signature covers them, so a visitor's own copy
+  // must not reach an app. On a route that uses the middleware, Traefik deletes every listed name from the
+  // forwarded request before it copies the reply's values, so listing them is what strips a visitor's value
+  // there; a copy that drops one lets it through.
+  FORWARD_AUTH_USER_AID_HEADER,
+  FORWARD_AUTH_HUB_AID_HEADER,
+  FORWARD_AUTH_KEL_DIGEST_HEADER,
 ];
 
 /** The compose label form: a single comma-separated string. */

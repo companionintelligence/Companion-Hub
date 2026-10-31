@@ -16,6 +16,7 @@
 ## Done (recent)
 
 - [x] **hub-workflow-hygiene** — add a workflow guard that `pnpm test` runs, name the secrets each called release workflow receives, give six workflows a read-only token, and add `SECURITY.md` (2026-10-30, `docs/agent/sessions/2026-10-30-hub-workflow-hygiene.md`)
+- [x] **hub-keri-freeze** — freeze the in-tree KERI module as not interoperable, stop emitting label-derived `did:keri:` strings in forward auth, and delete a visitor's AID headers at the Traefik edge (2026-10-30, `docs/agent/sessions/2026-10-30-hub-keri-freeze.md`)
 - [x] **qa-start-timeout-cleanup** — prevent unsafe QA retries after Docker start timeouts, output overflow, and external termination; verify cleanup before retries (2026-10-27, [PR #2171](https://github.com/companionintelligence/Companion-Hub/pull/2171))
 - [x] **localai-backend-and-media-routing** — LocalAI backend integration, options object in `ConfigurationService.setInferencePreferences`, generalized TTS/STT audio routing, and pool-routed GPU media workload tracking (2026-10-22, `docs/agent/sessions/2026-10-22-localai-and-media-routing.md`)
 - [x] **inference-scope-and-engines** — `inference` API-key scope for external OpenAI-compatible clients, pooled model listing merges peer inventories, llama.cpp + LM Studio backends (2026-09-21, `docs/agent/sessions/2026-09-21-inference-scope-and-engines.md`)
