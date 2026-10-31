@@ -92,7 +92,20 @@ function findKeriImports(root: string): string[] {
   return found.sort();
 }
 
-const startsWithAny = (entry: string, files: string[]) => files.some((file) => entry.startsWith(`${file} `));
+/** True when a "<file> imports <specifier>" entry comes from one of `files`. The space keeps `a.ts` from matching `a.tsx`. */
+function isFoundIn(entry: string, files: string[]): boolean {
+  return files.some((file) => entry.startsWith(`${file} `));
+}
+
+/** What the guard reports: every entry that does not come from an allowed file. */
+function unexpectedImports(found: string[], allowed: string[]): string[] {
+  return found.filter((entry) => !isFoundIn(entry, allowed));
+}
+
+/** The entries that come from one file. An allowed file with none no longer loads the module, so its exception is stale. */
+function importsOf(found: string[], file: string): string[] {
+  return found.filter((entry) => isFoundIn(entry, [file]));
+}
 
 describe('the import detector', () => {
   const keriDir = join(REPO_ROOT, KERI_DIR);
@@ -156,6 +169,54 @@ describe('findKeriImports on a synthetic checkout', () => {
       'scripts/tool.ts imports ../packages/common/src/keri/cesr',
     ]);
   });
+
+  it('lets an allowed file through and still reports any other file that loads the module', () => {
+    // A checkout of its own, one folder down, so the files above do not count.
+    const checkout = join(root, 'allowed');
+    put('allowed/scripts/verify-keri-toip.ts', "import { a } from '../packages/common/src/keri/aid';\n");
+    put('allowed/packages/backend/src/service.ts', "import { x } from '@ci-hub/common/keri/cesr';\n");
+
+    const found = findKeriImports(checkout);
+
+    expect(found).toHaveLength(2);
+    expect(unexpectedImports(found, ['scripts/verify-keri-toip.ts'])).toEqual(['packages/backend/src/service.ts imports @ci-hub/common/keri/cesr']);
+    expect(importsOf(found, 'scripts/verify-keri-toip.ts')).toEqual(['scripts/verify-keri-toip.ts imports ../packages/common/src/keri/aid']);
+  });
+});
+
+describe('the allow-list filter', () => {
+  const found = [
+    'packages/backend/src/service.ts imports @ci-hub/common/keri/cesr',
+    'scripts/verify-keri-toip.ts imports ../packages/common/src/keri/aid',
+    'scripts/verify-keri-toip.ts imports ../packages/common/src/keri/tel',
+    // A file whose name only starts like the allowed one.
+    'scripts/verify-keri-toip.tsx imports @ci-hub/common/keri/oobi',
+  ];
+
+  it('removes every entry of an allowed file and nothing else', () => {
+    expect(unexpectedImports(found, ['scripts/verify-keri-toip.ts'])).toEqual([
+      'packages/backend/src/service.ts imports @ci-hub/common/keri/cesr',
+      'scripts/verify-keri-toip.tsx imports @ci-hub/common/keri/oobi',
+    ]);
+  });
+
+  it('removes nothing when nothing is allowed', () => {
+    expect(unexpectedImports(found, [])).toEqual(found);
+  });
+
+  it('removes everything when every file is allowed', () => {
+    const everyFile = ['packages/backend/src/service.ts', 'scripts/verify-keri-toip.ts', 'scripts/verify-keri-toip.tsx'];
+    expect(unexpectedImports(found, everyFile)).toEqual([]);
+  });
+
+  it('finds the entries of one file, none for a file that loads nothing, and none for a name that is only a prefix', () => {
+    expect(importsOf(found, 'scripts/verify-keri-toip.ts')).toEqual([
+      'scripts/verify-keri-toip.ts imports ../packages/common/src/keri/aid',
+      'scripts/verify-keri-toip.ts imports ../packages/common/src/keri/tel',
+    ]);
+    expect(importsOf(found, 'scripts/gone.ts')).toEqual([]);
+    expect(importsOf(found, 'scripts/verify-keri-toip')).toEqual([]);
+  });
 });
 
 describe('the repository', () => {
@@ -166,9 +227,8 @@ describe('the repository', () => {
   });
 
   it('has no non-test source that imports the frozen KERI module', () => {
-    const unexpected = found.filter((entry) => !startsWithAny(entry, Object.keys(ALLOWED)));
     expect(
-      unexpected,
+      unexpectedImports(found, Object.keys(ALLOWED)),
       'The KERI module is frozen and not interoperable (packages/common/src/keri/FROZEN.md): do not import it. ' +
         'Unfreezing is a reviewed change, not an edit to this list.',
     ).toEqual([]);
@@ -176,8 +236,7 @@ describe('the repository', () => {
 
   it('lists only exceptions that exist and still load the module', () => {
     for (const [file, reason] of Object.entries(ALLOWED)) {
-      const loaders = found.filter((entry) => startsWithAny(entry, [file]));
-      expect(loaders.length, `${file} (${reason}) no longer loads the module: remove it from ALLOWED`).toBeGreaterThan(0);
+      expect(importsOf(found, file).length, `${file} (${reason}) no longer loads the module: remove it from ALLOWED`).toBeGreaterThan(0);
     }
   });
 });
