@@ -11,6 +11,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Read-only: this workflow checks out code and lints it, and writes nothing back.
+permissions:
+  contents: read
+
 jobs:
   style-canon-lint:
     runs-on: ubuntu-latest
