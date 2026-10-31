@@ -61,7 +61,7 @@
  */
 
 import { exec, execSync, spawn, spawnSync } from 'node:child_process';
-import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import {
   chmodSync,
   cpSync,
@@ -113,6 +113,44 @@ function qaContainerName(appId: string): string {
 function qaProjectName(appId: string): string {
   return `qa-${QA_RUN_NAMESPACE ? `${QA_RUN_NAMESPACE}-` : ''}${appId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
 }
+
+// <single-service-managed-volumes>
+/** Resolve a run-scoped Docker volume for the single-service `docker run` smoke path. */
+function singleServiceManagedVolumeName(containerName: string, key: string): string {
+  const stem =
+    containerName
+      .toLowerCase()
+      .replace(/[^a-z0-9_.-]+/g, '-')
+      .replace(/^[^a-z0-9]+/, '')
+      .slice(0, 80) || 'qa';
+  const digest = createHash('sha256').update(`${containerName}\0${key}`).digest('hex').slice(0, 16);
+  return `qa-${stem}-${digest}`;
+}
+
+function resolveSingleServiceManagedVolume(
+  volume: { volumeName?: string; requiresPosixPermissions?: boolean },
+  containerName: string,
+  hostPath: string,
+  seeded: boolean,
+  fallback: boolean,
+  managedVolumes: Map<string, string>,
+): string | null {
+  const key = volume.volumeName
+    ? `named:${volume.volumeName}`
+    : volume.requiresPosixPermissions === true && fallback && hostPath && !seeded
+      ? `host:${hostPath}`
+      : null;
+  if (!key) return null;
+  let name = managedVolumes.get(key);
+  if (!name) {
+    name = singleServiceManagedVolumeName(containerName, key);
+    managedVolumes.set(key, name);
+  }
+  return name;
+}
+// </single-service-managed-volumes>
+
+const SINGLE_SERVICE_MANAGED_VOLUMES = new Map<string, Set<string>>();
 // The fleet command intentionally uses `~/...` so the remote shell expands its home directory.
 // Node's filesystem APIs do not perform shell expansion, so normalize that spelling before the
 // marker is written or removed; otherwise Stop would signal a path the runner never created.
@@ -963,6 +1001,7 @@ async function verifyQaResourceCleanup(
   run: (command: string, timeoutMs: number) => Promise<{ ok: boolean; out: string }>,
   project: string,
   containerName: string,
+  managedVolumes: string[] = [],
 ): Promise<boolean> {
   const projectFilter = shq(`label=com.docker.compose.project=${project}`);
   const checks = [
@@ -970,6 +1009,7 @@ async function verifyQaResourceCleanup(
     `docker network ls -q --filter ${projectFilter}`,
     `docker volume ls -q --filter ${projectFilter}`,
     `docker ps -aq --filter ${shq(`name=^/${containerName}$`)}`,
+    ...managedVolumes.map((name) => `docker volume ls -q --filter ${shq(`name=${name}`)}`),
   ];
   for (const command of checks) {
     if (!cleanupVerificationPassed(await run(command, 15_000))) return false;
@@ -1171,6 +1211,7 @@ async function forceTeardown(o: {
 }): Promise<boolean> {
   const project = (o.composeProject || qaProjectName(o.appId)).toLowerCase().replace(/[^a-z0-9-]/g, '-');
   const ymlRef = o.composeYml ? `-f ${o.composeYml}` : '';
+  const managedVolumes = [...(SINGLE_SERVICE_MANAGED_VOLUMES.get(o.containerName) ?? [])];
   // Compose teardown (operates on the project by name when we have no yml — compose v2 matches the
   // project label), then a single-container force-remove. One of the two is a no-op per app shape.
   await execAsync(`docker compose -p ${project} ${ymlRef} down -v --remove-orphans 2>/dev/null`, 150_000);
@@ -1179,6 +1220,8 @@ async function forceTeardown(o: {
   await execAsync(`docker rm -f -v $(docker ps -aq --filter label=com.docker.compose.project=${project}) 2>/dev/null`, 60_000);
   await execAsync(`docker stop -t 3 ${o.containerName} 2>/dev/null`, 30_000);
   await execAsync(`docker rm -f -v ${o.containerName} 2>/dev/null`, 30_000);
+  const volumesRemoved =
+    !managedVolumes.length || (await execAsync(`docker volume rm -f ${managedVolumes.map(shq).join(' ')} 2>/dev/null`, 30_000)).ok;
   for (const d of o.scratchDirs ?? []) {
     try {
       wipeScratchTree(d);
@@ -1186,12 +1229,17 @@ async function forceTeardown(o: {
       /* best-effort — a wipe failure must never block dispatch */
     }
   }
-  if (!o.verify) return true;
+  if (!o.verify) {
+    if (volumesRemoved) SINGLE_SERVICE_MANAGED_VOLUMES.delete(o.containerName);
+    return volumesRemoved;
+  }
   // A readiness/compose retry reuses the run-scoped name and project. Do not retry if the daemon
   // could not confirm removal of the project containers, networks, volumes, and named container;
   // otherwise the second attempt can reuse stale resources or overwrite the real timeout with a
   // misleading container-name conflict.
-  return verifyQaResourceCleanup(execAsync, project, o.containerName);
+  const cleaned = volumesRemoved && (await verifyQaResourceCleanup(execAsync, project, o.containerName, managedVolumes));
+  if (cleaned) SINGLE_SERVICE_MANAGED_VOLUMES.delete(o.containerName);
+  return cleaned;
 }
 
 /**
@@ -1551,8 +1599,20 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         wipeScratchTree(join(RESULTS_DIR, 'scratch', appId));
         // Mount an ephemeral scratch dir per declared volume so stateful apps can
         // boot for the smoke test (e.g. vaultwarden refuses to start without /data).
+        const managedVolumes = new Map<string, string>();
         for (const v of main?.volumes ?? []) {
           if (!v.containerPath) continue;
+          const hostPath = String(v.hostPath ?? '');
+          const seeded = Boolean(seedSourceFor(appId, v.hostPath));
+          const managedVolume = resolveSingleServiceManagedVolume(v, containerName, hostPath, seeded, QA_POSIX_VOLUME_FALLBACK, managedVolumes);
+          if (managedVolume) {
+            const tracked = SINGLE_SERVICE_MANAGED_VOLUMES.get(containerName) ?? new Set<string>();
+            tracked.add(managedVolume);
+            SINGLE_SERVICE_MANAGED_VOLUMES.set(containerName, tracked);
+            const readonly = v.readOnly ? ',readonly' : '';
+            runFlags += ` --mount ${shQuote(`type=volume,source=${managedVolume},target=${v.containerPath}${readonly}`)}`;
+            continue;
+          }
           // Absolute host paths that exist (e.g. /etc/localtime) bind DIRECTLY, mirroring the Hub
           // builder — mounting an ephemeral scratch *dir* onto a host *file* makes `docker run` fail
           // ("mount a directory onto a file"; frigate's /etc/localtime). Templated ${APP_DATA_DIR}/...
