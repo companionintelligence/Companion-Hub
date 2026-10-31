@@ -7,7 +7,8 @@ import { afterAll, describe, expect, it } from 'vitest';
  * The Hub has no authority over identity bindings (docs/security/hub-portal-trust.md): which person owns
  * a computer is decided by Portal and recorded on the box itself, and the Hub is a client of both. It never
  * reads, writes, or names a binding. That is true today by absence, and this keeps it true: nothing under
- * `packages/` may carry the file name, the service name, or the state folder of the box's identity record.
+ * `packages/` may carry the file name, the service name, the client's name, or the state folder of the box's
+ * identity record.
  *
  * It is a property of the code, not a security boundary: a compromised Hub controls Docker on the appliance,
  * and that reaches root, so the box still has to defend its own record.
@@ -15,8 +16,8 @@ import { afterAll, describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../..');
 
-/** Lower-case on purpose: the comparison is case-insensitive. */
-const FORBIDDEN = ['bindings.json', 'ci-os-identity', '/var/lib/ci-os/identity'];
+/** The record's file, its service, its client, and its state folder. Lower-case on purpose: the comparison is case-insensitive. */
+const FORBIDDEN = ['bindings.json', 'ci-os-identity', 'ci-os-bind', '/var/lib/ci-os/identity'];
 
 /** Build output and dependencies, which are neither the Hub's code nor under review. */
 const SKIPPED_DIRS = new Set(['node_modules', 'dist', 'target', '.turbo', '.git', 'coverage']);
@@ -69,9 +70,11 @@ describe('the scan for identity-binding authority', () => {
 
   afterAll(() => rmSync(root, { recursive: true, force: true }));
 
-  it('reports a file named like a binding record, and a file that names the service or its state folder, in any letter case', () => {
+  it('reports a file named like a binding record, and a file that names the service, its client, or its state folder, in any letter case', () => {
     put('packages/backend/src/bindings.json', '{}');
     put('packages/backend/src/service.ts', "const dir = '/var/lib/ci-os/identity';\n");
+    put('packages/backend/src/launcher.ts', "spawn('ci-os-bind', ['status']);\n");
+    put('packages/backend/src/bin.ts', "execFile('CI-OS-Bind', args);\n");
     put('packages/frontend/src/page.tsx', '// calls Ci-OS-Identity over a socket\n');
     // Not reported: unrelated text, build output, dependencies, and binary files.
     put('packages/backend/src/clean.ts', "export const x = 'identity';\n");
@@ -80,7 +83,9 @@ describe('the scan for identity-binding authority', () => {
     put('packages/frontend/public/logo.bin', Buffer.concat([Buffer.from([0, 1, 2, 3]), Buffer.from('ci-os-identity')]));
 
     expect(findBindingAuthority(root, join(root, 'packages'))).toEqual([
+      'packages/backend/src/bin.ts: text mentions ci-os-bind',
       'packages/backend/src/bindings.json: path contains bindings.json',
+      'packages/backend/src/launcher.ts: text mentions ci-os-bind',
       'packages/backend/src/service.ts: text mentions /var/lib/ci-os/identity',
       'packages/frontend/src/page.tsx: text mentions ci-os-identity',
     ]);
@@ -88,7 +93,7 @@ describe('the scan for identity-binding authority', () => {
 });
 
 describe('the Hub', () => {
-  it('has no identity-binding file, service name, or state folder anywhere under packages/', () => {
+  it('has no identity-binding file, service name, client name, or state folder anywhere under packages/', () => {
     expect(
       findBindingAuthority(REPO_ROOT, join(REPO_ROOT, 'packages')),
       'The Hub is a client of Portal and of the box, never a source of identity bindings (docs/security/hub-portal-trust.md). ' +
