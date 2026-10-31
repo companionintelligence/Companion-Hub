@@ -122,6 +122,13 @@ Each app's headers are signed with that app's own key, read from its `app.env`:
 - An app with `CI_HUB_FORWARD_AUTH_SECRET` gets the username, timestamp, and stable id signed with it, plus `X-CI-Hub-User-Assertion: 2.<nonce>.<hex>`, an HMAC under its own key over `ci-hub-forward-auth/2\n<app urn>\n<nonce>\n<timestampMs>\n<username>\n<issuer>\n<user id>`. The assertion names the app it was signed for, and the nonce is fresh per request.
 - Companion Memory's `CI_HUB_FORWARD_AUTH_SECRET` is the Hub-wide secret, because it also authenticates the connect exchange and the agent doorbell. Its own key is `CI_HUB_FORWARD_AUTH_IDENTITY_SECRET`, written with `CI_APP_URN` (its audience). The username triple is still signed with the Hub-wide secret for Memory releases that predate the assertion.
 - An app with no key (every third-party app), or a host that matches no installed app, gets `X-CI-Hub-User` alone, unsigned. Such an app cannot check a signature, and the Hub-wide secret never stands in for a missing key.
+- The Hub produces no AID header. `X-CI-Hub-User-AID`, `X-CI-Hub-AID`, and `X-CI-Hub-KEL-Digest` are reserved names: Traefik deletes a visitor's own copy of each, so no app reads a value from them. The stable id that forward auth signs is the issuer and the person's id, with nothing derived from them. The in-tree KERI module is frozen and not interoperable; see [`FROZEN.md`](../../packages/common/src/keri/FROZEN.md).
+
+## Identity bindings
+
+The Hub is a client of Portal and of the box, never a source of identity bindings. Portal decides which person owns a computer, and the box records it. The Hub has no route, table, or module that reads, writes, or names a binding, and `scripts/__tests__/hub-binding-authority.test.ts` fails if a file under `packages/` does.
+
+Treat that as a property of the code, not as a security boundary. The Hub controls Docker on the appliance, so a Hub compromise reaches root, and the box has to defend its own record.
 
 ## Review checklist for publication
 

@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-10-26 (a stopped Public Web app stays in the Cloudflare sync)
+> **Last updated:** 2026-10-30 (forward auth emits no AID value; the in-tree KERI module is frozen)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -26,7 +26,7 @@ packages/backend/
 |--------|----------------|
 | `apps` / `app-lifecycle` | Install, start, stop, uninstall marketplace apps |
 | `docker` | Dockerode + compose orchestration |
-| `auth` | Hub sessions, 2FA, Portal SSO. Human login admits each Portal `(iss, sub)` in the paired org as their own operator — not `getFirstOperator()`. Session middleware prefers the newest of cookie vs `X-CI-Hub-Session`. Also the route guards that are not operator auth: `InternalNetworkGuard` (source address only; passes proxy traffic unless `HUB_TRUST_PROXY` is set), `ObservabilityReadGuard` (`qa:read` keys on marked GETs), `InferenceAccessGuard` (see [Inference access](#inference-access)), and `InternalOriginGuard` (the origin leg alone, no key — the app credentials handout). |
+| `auth` | Hub sessions, 2FA, Portal SSO. Human login admits each Portal `(iss, sub)` in the paired org as their own operator — not `getFirstOperator()`. Session middleware prefers the newest of cookie vs `X-CI-Hub-Session`. Forward auth (`GET /api/auth/traefik`) signs the username and the person's stable id, which is the issuer and the id with nothing derived from them; the AID header names (`X-CI-Hub-User-AID`, `X-CI-Hub-AID`, `X-CI-Hub-KEL-Digest`) are reserved and never set, and Traefik deletes a visitor's copy. The in-tree KERI module in `packages/common/src/keri` is frozen and not interoperable (see its `FROZEN.md`); `scripts/__tests__/keri-import-guard.test.ts` keeps production code from importing it. Also the route guards that are not operator auth: `InternalNetworkGuard` (source address only; passes proxy traffic unless `HUB_TRUST_PROXY` is set), `ObservabilityReadGuard` (`qa:read` keys on marked GETs), `InferenceAccessGuard` (see [Inference access](#inference-access)), and `InternalOriginGuard` (the origin leg alone, no key — the app credentials handout). |
 | `health` | Liveness/readiness (`/api/health/live`) |
 | `sse` | Real-time status stream to frontend |
 | `mcp` | MCP server tools for agent apps |
