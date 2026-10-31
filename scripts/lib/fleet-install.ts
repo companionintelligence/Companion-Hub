@@ -22,7 +22,7 @@
  */
 
 import { sshCapture, type SshTarget } from './fleet-ssh.js';
-import { isTooBusyForMaintenance, readHostFacts, type HostFacts } from './fleet-hardware.js';
+import { isTooBusyForMaintenance, readHostFacts } from './fleet-hardware.js';
 
 export interface InstallStep {
   name: string;

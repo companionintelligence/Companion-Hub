@@ -15,12 +15,12 @@
 ## Friction / blockers
 
 - The clean worktree had no installed dependencies, so focused tests used the shared Vitest 5.0.5 installation while the lockfile pins 4.1.4.
-- A strict standalone type-check of the full runner reports two diagnostics on unchanged lines 903–904; focused helper checks pass.
+- A strict standalone type-check of the full runner reports two diagnostics on unchanged lines 903–904; focused helper checks pass. Backend targeted tests could not start in the clean worktree because `unplugin-swc` and `vite-tsconfig-paths` are unavailable there.
 - Host-side KVM SSH repair needs independent console verification; the Tailscale receive warning has no local failure reason in available logs.
 
 ## Workflow improvements
 
-- Give the standalone Fleet-QA runner a task-scoped typecheck command so it can be validated without the entire Hub application graph.
+- Give the standalone Fleet-QA runner a task-scoped typecheck command and its own lightweight dependency install so it can be validated without the entire Hub application graph.
 - Keep a current safe-node allowlist and explicit preflight/lock checks next to the fleet dashboard commands.
 
 ## Tooling gaps
@@ -29,4 +29,4 @@
 
 ## One-line summary (for WORKFLOW_FEEDBACK.md)
 
-> 2026-10-31 — qa-managed-posix-volumes: Added run-scoped POSIX-sensitive Docker volumes to single-service QA with seeded-data preservation and guarded cleanup; recorded the standalone runner lint/typecheck gates.
+> 2026-10-31 — qa-managed-posix-volumes: Added run-scoped POSIX-sensitive Docker volumes to single-service QA and cleared five repo-wide Biome blockers discovered by exact PR CI.

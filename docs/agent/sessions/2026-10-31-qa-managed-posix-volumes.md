@@ -21,6 +21,7 @@ Make the single-service QA runner reliable for manifest volumes that require Lin
 1. Compared the narrow QA volume change already merged to `dev` with the older `main` runner; used a clean isolated worktree based on `origin/main`.
 2. Added a platform-aware fallback, run-scoped managed volume names, explicit guarded cleanup, focused unit tests, and operating documentation.
 3. Validated the focused tests and reviewed the remaining fleet, Marketplace, Portal, disk, and Tailscale gates.
+4. Dispatched the exact Hub CI workflow; its lint step exposed five existing warnings. Removed both unsafe test assertions, escaped two shell template placeholders correctly, and removed one unused type import.
 
 ## Decisions
 
@@ -36,6 +37,10 @@ Make the single-service QA runner reliable for manifest volumes that require Lin
 - `scripts/qa-stream.ts`
 - `scripts/qa-managed-volume.ts`
 - `scripts/__tests__/qa-managed-volume.test.ts`
+- `scripts/lib/fleet-backends.ts`
+- `scripts/lib/fleet-install.ts`
+- `packages/backend/src/core/portal/__tests__/portal-client-dispatch-devices.test.ts`
+- `packages/backend/src/modules/registration/__tests__/registration.service.test.ts`
 - `docs/system/agent-qa.md`
 - `turbo.json`
 - `docs/agent/WORKFLOW_FEEDBACK.md`
@@ -44,15 +49,17 @@ Make the single-service QA runner reliable for manifest volumes that require Lin
 
 ## Tests run
 
-- [x] Focused Vitest: 5/5 passed using shared Vitest 5.0.5; this worktree's lockfile specifies Vitest 4.1.4.
+- [x] Focused Vitest for managed volumes, backend generator, and installer scripts: 39/39 passed using shared Vitest 5.0.5; this worktree's lockfile specifies Vitest 4.1.4.
 - [x] `git diff --check` passed.
 - [x] Changed-file `biome ci --error-on-warnings` passed after the QA runner's environment variables were declared in `turbo.json`.
 - [x] Helper/test type-check and `qa-stream.ts` transpile passed in the implementation worker; its full-stream strict type-check also reports two diagnostics on unchanged lines 903–904.
-- [ ] Full package type-check, full test suite, app launch, and `bin/agent-validate-shift` were not run; this change is isolated to the standalone QA runner and its helper.
+- [x] Initial exact-SHA CI reached the build client successfully and reported five unrelated Biome warnings; all five were corrected in this branch.
+- [ ] Exact-SHA CI rerun is pending after those fixes. Local backend test startup could not resolve `unplugin-swc` and `vite-tsconfig-paths` because this clean worktree has no installed workspace dependencies.
+- [ ] Full package type-check, full test suite, app launch, and `bin/agent-validate-shift` were not run locally; this change is isolated to QA runner scripts plus the five CI lint blockers.
 
 ## Open items / handoff
 
-Run the exact GitHub PR checks on the resulting commit. Existing main/development CI failures and the fleet's Tailscale/SSH gaps remain separate from this code change; do not change SSH host-key trust without console verification.
+Rerun Hub CI on the final commit and inspect all check results before considering merge. The fleet's Tailscale/SSH gaps remain separate; do not change SSH host-key trust without console verification.
 
 ## Reviews run
 

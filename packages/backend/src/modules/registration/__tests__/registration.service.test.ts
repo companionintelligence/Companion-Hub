@@ -788,7 +788,9 @@ describe('RegistrationService', () => {
 
       await (service as any).validateRegistrationWithCloud();
 
-      const [, body] = mockedAxios.post.mock.calls[0]!;
+      const firstCall = mockedAxios.post.mock.calls[0];
+      if (!firstCall) throw new Error('expected the registration update request');
+      const [, body] = firstCall;
       expect(body).toEqual({ device_id: 'test-device' });
       expect(body).not.toHaveProperty('tailscale_dns');
     });
