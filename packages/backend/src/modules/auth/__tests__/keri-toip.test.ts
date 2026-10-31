@@ -20,7 +20,9 @@ import {
   verifyForwardAuthHeaders,
 } from '../utils/forward-auth-signing';
 
-describe('KERI & Trust Over IP (ToIP) Core Engine', () => {
+// These cases check the in-tree module against ITSELF: what it encodes, it decodes; what it signs, it verifies.
+// They say nothing about interoperability, which the module does not have (packages/common/src/keri/FROZEN.md).
+describe('In-tree KERI-style module (frozen, not interoperable): internal round trips', () => {
   describe('CESR Encodings', () => {
     it('encodes and decodes Ed25519 public keys with CESR "B" prefix', () => {
       const raw = Buffer.alloc(32, 0x42);
@@ -441,8 +443,9 @@ describe('KERI & Trust Over IP (ToIP) Core Engine', () => {
     });
   });
 
-  describe('Hub Forward-Auth Integration with KERI Headers', () => {
-    it('signs and verifies forward-auth headers with user AID and hub AID', () => {
+  // The Hub itself never supplies these values (the names are reserved); this checks the helpers pass a caller's values through.
+  describe('Reserved AID headers in the forward-auth signing helpers', () => {
+    it('carries caller-supplied AID values through signing and verification unchanged', () => {
       const secret = 'test-hub-secret';
       const username = 'liam';
       const now = 1_700_000_000_000;

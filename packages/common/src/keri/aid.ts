@@ -1,3 +1,6 @@
+/**
+ * Not interoperable. Frozen 2026-10-30. Do not use for identifiers that leave this process. See FROZEN.md
+ */
 import { createPublicKey, generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify, type KeyObject } from 'node:crypto';
 import { computeCesrDigest, decodeCesrPublicKey, decodeCesrSignature, encodeCesrPublicKey, encodeCesrSignature } from './cesr.js';
 import { canonicalStringify, computeSaid, verifySaid } from './said.js';
