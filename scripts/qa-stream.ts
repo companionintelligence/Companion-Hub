@@ -580,6 +580,8 @@ async function captureScreenshotWithPlaywright(
             () => {
               const body = document.body;
               if (!body) return false;
+              // This probe must ignore hidden DOM text because it is checking whether the screenshot visibly rendered content.
+              // biome-ignore lint/performance/useDomNodeTextContent: rendered-text semantics are required for screenshot validation.
               if (body.innerText.trim()) return true;
               return Array.from(body.querySelectorAll('canvas, img, svg, video, iframe, [role="img"], [role="application"]')).some((element) => {
                 const rect = element.getBoundingClientRect();
@@ -3316,7 +3318,7 @@ async function composeUp(
       }
     }
     if (s === main) {
-      const publish = reservedHostPort > 0 ? reservedHostPort : 0;
+      const publish = Math.max(reservedHostPort, 0);
       y += `    ports:\n      - "${publish}:${mainPort}"\n`;
     }
   }
