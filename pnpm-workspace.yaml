@@ -1,5 +1,5 @@
 packages:
-  - 'packages/*'
+  - "packages/*"
 
 # Security overrides — raise vulnerable deps to patched versions
 # (Dependabot alerts on CI-Hub@dev). The advisory-driven entries below are FLOOR
@@ -11,59 +11,59 @@ packages:
 overrides:
   # 26.6.4 was published inside pnpm's release-age window, so a frozen install
   # (CI, the image build, and the pre-commit hook) rejects the lockfile.
-  '@types/node@26.6.4': 26.6.3
-  '@babel/core': 7.29.6
-  '@grpc/grpc-js@<1.14.6': '^1.14.6'
-  '@hono/node-server': 1.19.15
-  '@opentelemetry/core': 2.8.0
-  '@protobufjs/utf8': 1.1.1
-  'axios@<1.20.0': '^1.20.0'
+  "@types/node@26.6.4": 26.6.3
+  "@babel/core": 7.29.6
+  "@grpc/grpc-js@<1.14.6": "^1.14.6"
+  "@hono/node-server@<2.1.3": "^2.1.3"
+  "@opentelemetry/core": 2.8.0
+  "@protobufjs/utf8": 1.1.1
+  "axios@<1.20.0": "^1.20.0"
   baseline-browser-mapping: 2.11.13
   body-parser: 2.4.0
-  'brace-expansion@<5.0.12': '^5.0.12'
+  "brace-expansion@<5.0.12": "^5.0.12"
   browserslist: 4.28.9
-  'dompurify@<3.4.17': '^3.4.17'
+  "dompurify@<3.4.17": "^3.4.17"
   drizzle-orm: 0.45.2
   esbuild: 0.25.0
-  'fast-uri@<3.1.9': '^3.1.9'
+  "fast-uri@<3.1.9": "^3.1.9"
   fflate: 0.8.3
   file-type: 21.3.2
   follow-redirects: 1.16.1
   form-data: 4.0.6
-  'handlebars@<4.7.10': '^4.7.10'
-  'hono@<4.13.11': '^4.13.11'
-  'i18next-fs-backend@<2.6.9': '^2.6.9'
-  'i18next-http-backend@<4.0.3': '^4.0.3'
-  'ip-address@<10.7.1': '^10.7.1'
-  'js-yaml@^3': 3.15.2
-  'js-yaml@^4': 4.3.2
-  'launch-editor@<2.14.2': '^2.14.2'
-  'multer@<2.5.0': '^2.5.0'
-  'nanoid@^3': 3.3.18
-  'piscina@<4.9.4': '^4.9.4'
+  "handlebars@<4.7.10": "^4.7.10"
+  "hono@<4.13.11": "^4.13.11"
+  "i18next-fs-backend@<2.6.9": "^2.6.9"
+  "i18next-http-backend@<4.0.3": "^4.0.3"
+  "ip-address@<10.7.1": "^10.7.1"
+  "js-yaml@^3": 3.15.2
+  "js-yaml@^4": 4.3.2
+  "launch-editor@<2.14.2": "^2.14.2"
+  "multer@<2.5.0": "^2.5.0"
+  "nanoid@^3": 3.3.18
+  "piscina@<4.9.4": "^4.9.4"
   postcss: 8.5.23
   # @tailwindcss/typography 0.5.20 (the latest) pins 6.0.10 exactly. Build time only, and the
   # frontend's built CSS is byte-identical on 7.x.
-  'postcss-selector-parser@<7.1.6': '^7.1.6'
+  "postcss-selector-parser@<7.1.6": "^7.1.6"
   protobufjs: 7.6.5
   qs: 6.16.1
   react-router: 8.4.0
-  'shell-quote@>=1.8.4 <1.11.0': '^1.11.0'
-  'smol-toml@<1.9.0': '^1.9.0'
+  "shell-quote@>=1.8.4 <1.11.0": "^1.11.0"
+  "smol-toml@<1.9.0": "^1.9.0"
   source-map-js: 1.2.2
   systeminformation: companionintelligence/systeminformation#master
   turbo: 2.9.14
   uuid: 11.1.1
   valibot: 1.4.2
   vite: 8.3.3
-  'zod@<4.6.6': '^4.6.6'
+  "zod@<4.6.6": "^4.6.6"
   ws: 8.21.0
 
 allowBuilds:
-  '@nestjs/core': true
-  '@scarf/scarf': true
-  '@sentry/cli': true
-  '@swc/core': true
+  "@nestjs/core": true
+  "@scarf/scarf": true
+  "@sentry/cli": true
+  "@swc/core": true
   argon2: true
   cpu-features: true
   esbuild: true
