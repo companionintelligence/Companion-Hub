@@ -61,6 +61,25 @@ on:
         required: false
         default: ''
         type: string
+    # A caller passes these by name, and a called workflow accepts only the secrets it declares. They are
+    # `required: false` so a missing one fails in the step that needs it, with that step's message, not at
+    # startup; the Sentry ones are optional by design. `ci-local restore` swaps this `on:` block for the
+    # commented original above, so copy this map into that original before you restore.
+    secrets:
+      CLOUDFLARE_ACCOUNT_ID:
+        required: false
+      CLOUDFLARE_API_TOKEN:
+        required: false
+      PORTAL_REGISTRY_PASSWORD:
+        required: false
+      PORTAL_REGISTRY_USERNAME:
+        required: false
+      SENTRY_AUTH_TOKEN:
+        required: false
+      SENTRY_DSN:
+        required: false
+      SENTRY_FRONTEND_DSN:
+        required: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

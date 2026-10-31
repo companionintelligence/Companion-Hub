@@ -112,6 +112,5 @@ jobs:
   e2e-tests:
     needs: [build-images]
     uses: "./.github/workflows/e2e.yml"
-    secrets: inherit
     with:
       version: nightly
