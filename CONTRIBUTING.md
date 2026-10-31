@@ -9,6 +9,7 @@ This guide covers conventions for issues and pull requests.
 - [Code structure](#code-structure)
 - [AI agents](#ai-agents)
 - [Screenshot requirements](#screenshot-requirements)
+- [Security issues](#security-issues)
 - [Issue templates](#issue-templates)
 - [Pull requests](#pull-requests)
 
@@ -115,6 +116,10 @@ Before marking a PR ready for review:
 
 - [ ] Screenshots attached for all UI/UX changes
 - [ ] Before/after screenshots for changes to existing UI
+
+## Security issues
+
+Don't open a public issue or pull request for a vulnerability. Report it privately as [`SECURITY.md`](SECURITY.md) describes.
 
 ## Issue templates
 
