@@ -30,9 +30,11 @@ import crypto from 'node:crypto';
  * it always did. See CI-Engineering architecture/identity/hub-memory-account-link.md.
  *
  * `X-CI-Hub-User-AID`, `X-CI-Hub-AID` and `X-CI-Hub-KEL-Digest` are reserved names. The Hub does not
- * set them and no signature covers them. Traefik deletes a visitor's own copy of each (they are in
- * `authResponseHeaders`), so an app never reads a value from them. A value may be introduced only
- * from a persisted key event log, and only together with a signature over it.
+ * set them and no signature covers them. On a route that uses the `ci-hub` forward-auth middleware,
+ * with the current `authResponseHeaders` list, Traefik deletes a visitor's own copy of each, so an app
+ * behind it does not receive a value (not exercised against a running Traefik). An app must still
+ * ignore these names. A value may be introduced only from a persisted key event log, and only
+ * together with a signature over it.
  *
  * Neither message names the app it was signed for, so a consumer can only tell its own headers
  * from another app's by the key. An app that has a key of its own therefore also gets a bound

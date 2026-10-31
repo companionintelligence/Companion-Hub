@@ -10,8 +10,9 @@ This module encodes keys, digests, signatures, and key events in a CESR-like and
 example that is checked here, the module produces a different string than the published one. A string that looks like a KERI
 identifier but is not one reads as proof of a key. Nothing that reads the published formats will read it the same way.
 
-Evidence tags used below: **[V]** verified by a test that runs in this repository. **[code]** read from the source in this
-folder. **[docs]** taken from the published specification text and not exercised by a test here. **UNKNOWN** not established.
+Evidence tags used below: **[V]** verified by a test that runs in this repository. **[I]** implemented here and not
+exercised by any run. **[code]** read from the source in this folder. **[docs]** taken from the published specification
+text and not exercised by a test here. **UNKNOWN** not established.
 
 ## What the freeze changes
 
@@ -20,8 +21,9 @@ folder. **[docs]** taken from the published specification text and not exercised
 - No production code imports the module. The one that did, `ForwardAuthIdentityResolver`, no longer builds `did:keri:`
   strings. It returns the issuer and the person's id only. [V: `forward-auth-identity.resolver.test.ts`]
 - The three header names `X-CI-Hub-User-AID`, `X-CI-Hub-AID`, and `X-CI-Hub-KEL-Digest` are reserved. The Hub never sets
-  them, and Traefik deletes a visitor's own copy of each. A value may be introduced only from a persisted key event log, and
-  only with a signature over it.
+  them. On a route that uses the `ci-hub` forward-auth middleware, with the current header list, Traefik deletes a
+  visitor's own copy of each, so an app behind it does not receive a value. [I: not run against Traefik] An app must still
+  ignore these names. A value may be introduced only from a persisted key event log, and only with a signature over it.
 - `scripts/__tests__/keri-import-guard.test.ts` fails when non-test source under `packages/*/src` or `scripts/` imports the
   module. The only exception is the standalone round-trip script `scripts/verify-keri-toip.ts`, which exercises the module
   itself.
