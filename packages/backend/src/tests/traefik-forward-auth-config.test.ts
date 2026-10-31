@@ -41,8 +41,9 @@ const EXPECTED_HEADERS = [
   // The bound assertion: an app that requires it signs nobody in through a copy that drops it.
   FORWARD_AUTH_ASSERTION_HEADER,
   // The reserved AID names. The Hub never sets them and no signature covers them, so a visitor's own copy
-  // must never reach an app. Traefik deletes every listed name from the forwarded request before it copies
-  // the reply's values, so listing them is what strips a visitor's value; a copy that drops one lets it through.
+  // must not reach an app. On a route that uses the middleware, Traefik deletes every listed name from the
+  // forwarded request before it copies the reply's values, so listing them is what strips a visitor's value
+  // there; a copy that drops one lets it through.
   FORWARD_AUTH_USER_AID_HEADER,
   FORWARD_AUTH_HUB_AID_HEADER,
   FORWARD_AUTH_KEL_DIGEST_HEADER,
