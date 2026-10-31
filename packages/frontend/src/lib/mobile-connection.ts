@@ -15,6 +15,7 @@
  */
 import { client } from '@/api-client/client.gen';
 import { resetActiveFetch, runtimeFetch, setActiveFetch } from './runtime-fetch';
+import { loadTauriHttpFetch } from './tauri-http-fetch';
 
 const STORE_FILE = 'mobile-connection.json';
 const HUB_BASE_URL_KEY = 'hubBaseUrl';
@@ -28,6 +29,8 @@ let cachedIsDesktop = false;
 let currentHubBaseUrl: string | null = null;
 let initialized = false;
 let cachedNativeFetch: typeof runtimeFetch | null = null;
+let pendingNativeFetch: Promise<typeof runtimeFetch | null> | null = null;
+let nativeFetchEpoch = 0;
 
 function readSessionFlag(key: string): boolean {
   try {
@@ -95,6 +98,8 @@ export function resetMobileClientCacheForTests(): void {
   currentHubBaseUrl = null;
   initialized = false;
   cachedNativeFetch = null;
+  pendingNativeFetch = null;
+  nativeFetchEpoch += 1;
   try {
     sessionStorage.removeItem(MOBILE_FLAG_KEY);
     sessionStorage.removeItem(DESKTOP_FLAG_KEY);
@@ -236,16 +241,6 @@ async function openStore() {
   return load(STORE_FILE);
 }
 
-/** The Tauri HTTP plugin's `fetch` — native, bypasses webview CORS. */
-async function loadNativeFetch(): Promise<typeof runtimeFetch | null> {
-  try {
-    const http = await import('@tauri-apps/plugin-http');
-    return http.fetch as unknown as typeof runtimeFetch;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Ensure the app-wide {@link runtimeFetch} routes through the native Tauri HTTP
  * client on mobile. Loaded once and cached. Idempotent and safe to call whenever
@@ -253,16 +248,41 @@ async function loadNativeFetch(): Promise<typeof runtimeFetch | null> {
  * reach a cross-origin `https://*.ci.computer` Hub through `window.fetch`, so the
  * native fetch must be the active one *before* the first authenticated request
  * (the Hub `/login` POST) fires. Best-effort: a null result just leaves the
- * previous fetch in place. No-op off mobile.
+ * previous fetch in place. Startup may use a short timeout, but a late module
+ * load still activates native fetch. Explicit Hub selection waits for the
+ * module so the following login cannot race ahead on webview fetch. No-op off
+ * mobile.
  */
-async function ensureNativeFetchActive(): Promise<void> {
+async function ensureNativeFetchActive(timeoutMs: number | null = 3000): Promise<void> {
   if (!isTauriMobileSync() && !isMobileClient()) return;
-  if (!cachedNativeFetch) {
-    cachedNativeFetch = await withTimeout(loadNativeFetch(), 3000, null);
-  }
+
   if (cachedNativeFetch) {
     setActiveFetch(cachedNativeFetch);
+    return;
   }
+
+  if (!pendingNativeFetch) {
+    const pending = loadTauriHttpFetch();
+    pendingNativeFetch = pending;
+    void pending.then((fetcher) => {
+      if (pendingNativeFetch !== pending) return;
+      if (fetcher) cachedNativeFetch = fetcher;
+      else pendingNativeFetch = null;
+    });
+  }
+
+  const pending = pendingNativeFetch;
+  const epoch = nativeFetchEpoch;
+  const fetcher = timeoutMs === null ? await pending : await withTimeout(pending, timeoutMs, null);
+  const activateNativeFetch = (resolvedFetcher: typeof runtimeFetch | null) => {
+    if (!resolvedFetcher || epoch !== nativeFetchEpoch) return;
+    if (!isTauriMobileSync() && !isMobileClient()) return;
+    cachedNativeFetch = resolvedFetcher;
+    setActiveFetch(resolvedFetcher);
+  };
+
+  if (fetcher) activateNativeFetch(fetcher);
+  else void pending.then(activateNativeFetch);
 }
 
 function applyHubBaseUrl(baseUrl: string): void {
@@ -355,7 +375,9 @@ export async function setHubConnection(baseUrl: string): Promise<void> {
   // (initMobileConnection never ran — e.g. dev builds skip it — or a prior
   // clearHubConnection reset it), that POST would fall back to the webview
   // `window.fetch` and fail cross-origin, so the Hub login silently never works.
-  await ensureNativeFetchActive();
+  // Choosing a Hub is immediately followed by login. Wait for native HTTP so a
+  // slow cold import cannot silently leave the generated client on webview fetch.
+  await ensureNativeFetchActive(null);
   applyHubBaseUrl(normalized);
   try {
     const store = await openStore();

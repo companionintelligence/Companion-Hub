@@ -21,6 +21,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rm
 import { connect } from 'node:net';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { managedVolumeCleanupCommand, resolveManagedPosixVolumeName, resolvePosixVolumeFallback } from './qa-managed-volume.ts';
 
 const home = homedir();
 const APP_STORE_DIR =
@@ -29,6 +30,11 @@ const APP_STORE_DIR =
 const RESULTS_DIR = process.env.RESULTS_DIR ?? join(home, 'qa-results');
 const SCREENSHOTS_DIR = join(RESULTS_DIR, 'screenshots');
 const SKIP_SCREENSHOT = process.env.SKIP_SCREENSHOT === '1';
+const QA_POSIX_VOLUME_FALLBACK = resolvePosixVolumeFallback(process.platform, process.env.QA_POSIX_VOLUME_FALLBACK);
+// The runner process is one QA run. Keep its volume names stable across attempts, but distinct
+// from volumes left by an interrupted earlier invocation.
+const QA_VOLUME_RUN_ID = randomBytes(12).toString('hex');
+const SINGLE_SERVICE_MANAGED_VOLUMES = new Map<string, Set<string>>();
 
 // Durable results — qa-aggregate.ts SCPs results.json (an array of QAResult) and
 // batch-<N>-summary.json off each node. We append every app result here as it finishes
@@ -287,10 +293,16 @@ async function forceTeardown(o: {
 }): Promise<void> {
   const project = (o.composeProject || `qa-${o.appId}`).toLowerCase().replace(/[^a-z0-9-]/g, '-');
   const ymlRef = o.composeYml ? `-f ${o.composeYml}` : '';
+  const managedVolumes = [...(SINGLE_SERVICE_MANAGED_VOLUMES.get(o.containerName) ?? [])];
   // Compose teardown (operates on the project by name when we have no yml — compose v2 matches the
   // project label), then a single-container force-remove. One of the two is a no-op per app shape.
   await execAsync(`docker compose -p ${project} ${ymlRef} down -v --remove-orphans 2>/dev/null`, 150_000);
   await execAsync(`docker rm -f ${o.containerName} 2>/dev/null`, 30_000);
+  const cleanup = managedVolumeCleanupCommand(managedVolumes);
+  if (cleanup) {
+    const removed = await execAsync(`${cleanup} 2>/dev/null`, 30_000);
+    if (removed.ok) SINGLE_SERVICE_MANAGED_VOLUMES.delete(o.containerName);
+  }
   for (const d of o.scratchDirs ?? []) {
     try {
       wipeScratchTree(d);
@@ -346,7 +358,12 @@ interface DockerService {
   sysctls?: Record<string, number | string>;
   dns?: string | string[];
   extraHosts?: string[];
-  volumes?: { hostPath?: string; containerPath?: string; readOnly?: boolean }[];
+  volumes?: {
+    hostPath?: string;
+    containerPath?: string;
+    readOnly?: boolean;
+    requiresPosixPermissions?: boolean;
+  }[];
   environment?: { key?: string; value?: string }[];
   dependsOn?: unknown; // map {svc:{condition}} (Hub) or string[] — handled in composeUp
   healthCheck?: HealthCheck;
@@ -480,8 +497,25 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         wipeScratchTree(join(RESULTS_DIR, 'scratch', appId));
         // Mount an ephemeral scratch dir per declared volume so stateful apps can
         // boot for the smoke test (e.g. vaultwarden refuses to start without /data).
+        const managedVolumesByHostPath = new Map<string, string>();
         for (const v of main?.volumes ?? []) {
           if (!v.containerPath) continue;
+          const managedVolume = resolveManagedPosixVolumeName(
+            v,
+            containerName,
+            QA_VOLUME_RUN_ID,
+            QA_POSIX_VOLUME_FALLBACK,
+            Boolean(seedSourceFor(appId, v.hostPath)),
+            managedVolumesByHostPath,
+          );
+          if (managedVolume) {
+            const tracked = SINGLE_SERVICE_MANAGED_VOLUMES.get(containerName) ?? new Set<string>();
+            tracked.add(managedVolume);
+            SINGLE_SERVICE_MANAGED_VOLUMES.set(containerName, tracked);
+            const readonly = v.readOnly ? ',readonly' : '';
+            runFlags += ` --mount ${shQuote(`type=volume,source=${managedVolume},target=${v.containerPath}${readonly}`)}`;
+            continue;
+          }
           // Absolute host paths that exist (e.g. /etc/localtime) bind DIRECTLY, mirroring the Hub
           // builder — mounting an ephemeral scratch *dir* onto a host *file* makes `docker run` fail
           // ("mount a directory onto a file"; frigate's /etc/localtime). Templated ${APP_DATA_DIR}/...
