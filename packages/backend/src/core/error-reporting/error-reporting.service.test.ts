@@ -229,6 +229,26 @@ describe('ErrorReportingService', () => {
     expect(scope.setTag).toHaveBeenCalledWith('failure_category', 'platform');
     expect(scope.setTag).toHaveBeenCalledWith('error_class', 'portal-http-error');
   });
+
+  it('reports a start the queue refused while RabbitMQ was not connected as a warning, grouped by cause across apps', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'ci-import-tools:ci-marketplace',
+      phase: 'start',
+      message: "Queue 'app-events-queue' is unavailable while RabbitMQ is connecting.",
+      errorCode: 'queue_unavailable',
+    });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.stringContaining('ci-import-tools:ci-marketplace'), 'warning');
+    const scope = lastScope();
+    expect(scope.setFingerprint).toHaveBeenCalledWith(['app-failure', 'start', 'queue-unavailable']);
+    expect(scope.setTag).toHaveBeenCalledWith('failure_category', 'user_environment');
+    expect(scope.setTag).toHaveBeenCalledWith('error_class', 'queue-unavailable');
+  });
 });
 
 describe('ErrorReportingService consent gating', () => {

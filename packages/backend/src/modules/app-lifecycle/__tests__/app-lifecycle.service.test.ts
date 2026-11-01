@@ -8077,15 +8077,45 @@ describe('AppLifecycleService', () => {
     // is connecting". All three were marked stopped while running until the status sync put them
     // back at 08:50:00.
     it('the boot-time start of running apps leaves them running while the queue is still connecting', async () => {
-      appsRepository.getApps.mockResolvedValue([{ id: 7, appName: 'ci-hermes', appStoreSlug: 'ci-marketplace', status: 'running' }] as any);
-      givenApp('running');
-      appEventsQueue.unavailableReason.mockReturnValue("Queue 'app-events-queue' is unavailable while RabbitMQ is connecting.");
+      vi.useFakeTimers();
+      try {
+        appsRepository.getApps.mockResolvedValue([{ id: 7, appName: 'ci-hermes', appStoreSlug: 'ci-marketplace', status: 'running' }] as any);
+        givenApp('running');
+        appEventsQueue.unavailableReason.mockReturnValue("Queue 'app-events-queue' is unavailable while RabbitMQ is connecting.");
 
-      await service.restartRunningApps();
+        await service.restartRunningApps();
+        await vi.advanceTimersByTimeAsync(11 * 60_000);
 
-      await vi.waitFor(() => expect(logger.error).toHaveBeenCalledWith('Failed to start app 7', expect.any(TranslatableError)));
-      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
-      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('were not restarted'));
+        expect(logger.error).not.toHaveBeenCalledWith('Failed to start app 7', expect.anything());
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('the boot-time start of running apps starts them once RabbitMQ connects during that wait', async () => {
+      vi.useFakeTimers();
+      try {
+        appsRepository.getApps.mockResolvedValue([{ id: 7, appName: 'ci-hermes', appStoreSlug: 'ci-marketplace', status: 'running' }] as any);
+        givenApp('running');
+        let connected = false;
+        appEventsQueue.unavailableReason.mockImplementation(() =>
+          connected ? undefined : "Queue 'app-events-queue' is unavailable while RabbitMQ is connecting.",
+        );
+        appEventsQueue.publish.mockResolvedValue({ success: true, message: 'started' } as any);
+        setTimeout(() => {
+          connected = true;
+        }, 2_500);
+
+        await service.restartRunningApps();
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'start', appUrn }));
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('refreshing inference apps logs a refused restart for that app instead of rejecting the whole refresh', async () => {
@@ -8097,6 +8127,67 @@ describe('AppLifecycleService', () => {
       await expect(service.restartAiApps()).resolves.toBeUndefined();
 
       expect(logger.error).toHaveBeenCalledWith('Failed to restart AI app 7', expect.any(TranslatableError));
+    });
+
+    // 6P (2026-09-17): the Hub booted while RabbitMQ was still connecting. The queue passed the start's
+    // pre-check, then refused its publish as the connection dropped, so the start was reported to Sentry as
+    // an error. The queue refuses such a publish before it sends anything, so the start is published again.
+    describe('a start the queue refuses because RabbitMQ is still connecting', () => {
+      const connecting = "Queue 'app-events-queue' is unavailable while RabbitMQ is connecting.";
+      const refused = { success: false, message: connecting, errorCode: QUEUE_UNAVAILABLE_CODE } as any;
+
+      beforeEach(() => {
+        vi.useFakeTimers();
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('publishes the same start again once the queue is back, and the app runs', async () => {
+        givenApp('stopped');
+        let connected = true;
+        appEventsQueue.unavailableReason.mockImplementation(() => (connected ? undefined : connecting));
+        appEventsQueue.publish
+          .mockImplementationOnce(async () => {
+            connected = false;
+            setTimeout(() => {
+              connected = true;
+            }, 2_500);
+            return refused;
+          })
+          .mockResolvedValueOnce({ success: true, message: 'started' } as any);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        expect(appEventsQueue.publish).toHaveBeenCalledTimes(2);
+        expect(appEventsQueue.publish.mock.calls[1][0]).toEqual(appEventsQueue.publish.mock.calls[0][0]);
+        expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, expect.objectContaining({ status: 'running' }));
+        expect(errorReportingService.reportAppFailure).not.toHaveBeenCalled();
+        expect(logger.error).not.toHaveBeenCalledWith(expect.stringContaining('Failed to start app'));
+      });
+
+      it('gives up after the bound with a warning rather than an error, and settles the app on the status it had', async () => {
+        givenApp('running');
+        appEventsQueue.unavailableReason.mockReturnValueOnce(undefined).mockReturnValue(connecting);
+        appEventsQueue.publish.mockResolvedValue(refused);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+        await vi.advanceTimersByTimeAsync(30 * 60_000);
+
+        // While the queue is down it is polled, not published to: the one publish is the refusal.
+        expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
+        expect(logger.warn).toHaveBeenCalledWith(`Failed to start app ${appUrn}: ${connecting}`);
+        expect(logger.error).not.toHaveBeenCalledWith(expect.stringContaining('Failed to start app'));
+        expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'running' });
+        expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
+          appUrn,
+          phase: 'start',
+          message: connecting,
+          errorCode: QUEUE_UNAVAILABLE_CODE,
+        });
+      });
     });
   });
 });

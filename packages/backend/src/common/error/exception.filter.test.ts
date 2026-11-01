@@ -2,7 +2,7 @@ import { HttpStatus } from '@nestjs/common';
 import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import type { ArgumentsHost } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { LoggerService } from '@/core/logger/logger.service';
 import { MainExceptionFilter } from './exception.filter';
@@ -92,5 +92,34 @@ describe('MainExceptionFilter', () => {
     expect(response.status).not.toHaveBeenCalled();
     expect(response.json).not.toHaveBeenCalled();
     expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { how: 'by its stream error code', error: Object.assign(new Error('aborted'), { code: 'ERR_STREAM_PREMATURE_CLOSE' }) },
+    { how: 'by its message', error: new Error('Premature close') },
+  ])('does not capture or log as an error a client that hung up mid-response, recognised $how', ({ error }) => {
+    const captureAndRespond = vi.spyOn(filter as unknown as { captureAndRespond: () => void }, 'captureAndRespond');
+    request.method = 'POST';
+    request.path = '/api/inference/pool/local/api/chat';
+    request.url = '/api/inference/pool/local/api/chat';
+    response.headersSent = true;
+
+    filter.catch(error, createHost());
+
+    expect(captureAndRespond).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining('/api/inference/pool/local/api/chat'));
+    expect(response.status).not.toHaveBeenCalled();
+    expect(response.json).not.toHaveBeenCalled();
+  });
+
+  it('still reports and answers any other error', () => {
+    const captureAndRespond = vi.spyOn(filter as unknown as { captureAndRespond: () => void }, 'captureAndRespond');
+
+    filter.catch(new Error('boom'), createHost());
+
+    expect(captureAndRespond).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('/api/auth/portal/desktop-exchange'), expect.any(Error));
+    expect(response.status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
   });
 });

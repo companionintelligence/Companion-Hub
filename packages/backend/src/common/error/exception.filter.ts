@@ -6,6 +6,13 @@ import { ZodError } from 'zod';
 import { buildPortalSsoErrorRedirectUrl, resolveRequestOriginFallback } from '@/modules/auth/portal-sso';
 import { TranslatableError } from './translatable-error';
 
+/** The error a stream raises when its client hangs up before the stream has finished. */
+function isClientDisconnect(exception: unknown): boolean {
+  return (
+    exception instanceof Error && ((exception as { code?: unknown }).code === 'ERR_STREAM_PREMATURE_CLOSE' || exception.message === 'Premature close')
+  );
+}
+
 @Catch()
 export class MainExceptionFilter implements ExceptionFilter {
   constructor(private readonly logger: LoggerService) {}
@@ -43,8 +50,20 @@ export class MainExceptionFilter implements ExceptionFilter {
     return true;
   }
 
-  @SentryExceptionCaptured()
   catch(exception: unknown, host: ArgumentsHost) {
+    // A client that hangs up mid-response ends the stream with "Premature close". Nothing is broken and there
+    // is no one left to answer, so it is neither captured by Sentry nor logged as an error.
+    if (isClientDisconnect(exception)) {
+      this.logger.debug(`Client disconnected before the response finished: ${host.switchToHttp().getRequest<Request>().url}`);
+      return;
+    }
+
+    this.captureAndRespond(exception, host);
+  }
+
+  /** The decorator captures every exception that reaches it, so only exceptions past `catch`'s disconnect check get here. */
+  @SentryExceptionCaptured()
+  private captureAndRespond(exception: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();

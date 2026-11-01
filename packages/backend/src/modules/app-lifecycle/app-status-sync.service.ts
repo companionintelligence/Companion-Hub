@@ -34,6 +34,21 @@ const TRANSITIONAL_STATES: AppStatus[] = [
   'restoring',
 ];
 
+/** The Docker socket is missing, refusing connections, or not readable by the Hub's user. */
+function isDockerSocketUnavailable(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { code, address, message } = error as { code?: unknown; address?: unknown; message?: unknown };
+  const names = [address, message].some((value) => typeof value === 'string' && value.includes('docker.sock'));
+  return names && ['EACCES', 'EPERM', 'ENOENT', 'ECONNREFUSED'].includes(String(code));
+}
+
+/** A Docker call the read-only proxy in front of the socket refused: docker-modem's "(HTTP code 403) ..." error, with the status as `statusCode`. */
+function isReadOnlyDockerProxyRefusal(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { statusCode, message } = error as { statusCode?: unknown; message?: unknown };
+  return statusCode === 403 && typeof message === 'string' && message.includes('blocked by the read-only test proxy');
+}
+
 @Injectable()
 export class AppStatusSyncService {
   /** Untracked app URNs already warned about, so the five-minute sync does not repeat itself. */
@@ -277,10 +292,28 @@ export class AppStatusSyncService {
         totalApps: apps.length,
       };
     } catch (error) {
-      this.logger.error('Error during app status sync:', error);
-      // Status sync is what detects app crashes. If the loop itself dies and we
-      // only log locally, crash detection goes dark with no Sentry signal.
-      this.errorReportingService?.captureException(error, { surface: 'app-status-sync' });
+      if (isDockerSocketUnavailable(error)) {
+        // Every pass fails the same way until the socket is readable, so one warning an hour says so.
+        this.logger.warn(`App status sync skipped: the Docker socket is not reachable. ${String(error)}`);
+        this.errorReportingService?.captureWarning(
+          'App status sync cannot reach the Docker socket',
+          { surface: 'app-status-sync' },
+          { debounceKey: 'app-status-sync:docker-socket', debounceMs: 60 * 60_000 },
+        );
+      } else if (isReadOnlyDockerProxyRefusal(error)) {
+        // The proxy refuses the same listing on every pass, so one warning an hour says so.
+        this.logger.warn(`App status sync refused by the read-only Docker proxy. ${String(error)}`);
+        this.errorReportingService?.captureWarning(
+          'App status sync was refused by the read-only Docker proxy',
+          { surface: 'app-status-sync' },
+          { debounceKey: 'app-status-sync:docker-proxy-refused', debounceMs: 60 * 60_000 },
+        );
+      } else {
+        this.logger.error('Error during app status sync:', error);
+        // Status sync is what detects app crashes. If the loop itself dies and we
+        // only log locally, crash detection goes dark with no Sentry signal.
+        this.errorReportingService?.captureException(error, { surface: 'app-status-sync' });
+      }
 
       return {
         success: false,

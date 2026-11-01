@@ -10,6 +10,7 @@ import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import path from 'node:path';
 import { PortalClientService } from '@/core/portal/portal-client.service';
+import { TranslatableError } from '@/common/error/translatable-error';
 import { EVERY_ADDRESS_FAILED, axiosEveryAddressFailed } from '@/tests/utils/network-failures';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -357,6 +358,20 @@ describe('CloudflareClientService', () => {
         synced: 0,
         errorMessage: 'Network Error',
       });
+    });
+
+    it('reads the Portal status from a refused request, and retries only when it is transient', async () => {
+      const refusal = (status: string) => new TranslatableError('PORTAL_REQUEST_FAILED', { status, path: 'tunnels/state' }, 502);
+      portalClient.postTunnelState.mockRejectedValueOnce(refusal('404'));
+
+      const refused = await service.syncState('org-id', [], 'tun-id');
+      expect(refused).toMatchObject({ ok: false, errorStatus: 404, transient: false });
+      expect(portalClient.postTunnelState).toHaveBeenCalledTimes(1);
+
+      portalClient.postTunnelState.mockRejectedValue(refusal('503'));
+      const unavailable = await service.syncState('org-id', [], 'tun-id');
+      expect(unavailable).toMatchObject({ ok: false, errorStatus: 503, transient: true });
+      expect(portalClient.postTunnelState).toHaveBeenCalledTimes(4);
     });
   });
 

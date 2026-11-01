@@ -12,6 +12,7 @@ import axios, { AxiosInstance, type AxiosResponse } from 'axios';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
+import { TranslatableError } from '@/common/error/translatable-error';
 import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
 import { describeNetworkError } from '@/common/helpers/network-error';
 import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
@@ -189,6 +190,8 @@ export interface CloudflareSyncResult {
   errorStatus?: number;
   /** Provides a concise, user-safe reason for a full sync failure. */
   errorMessage?: string;
+  /** True unless the Portal answered with a 4xx: a network, DNS, timeout, or 5xx failure may pass on the next pass. */
+  transient?: boolean;
 }
 
 export interface PortalDeviceApplication {
@@ -513,8 +516,13 @@ export class CloudflareClientService {
         } else if (errorStatus >= 500) {
           errorMessage = `Portal/Cloudflare control-plane error (${errorStatus})`;
         }
+      } else if (error instanceof TranslatableError) {
+        // `postJson` answers every non-2xx with its own 502 and keeps the Portal's status in the params.
+        errorStatus = Number((error.getResponse() as { intlParams?: { status?: string } }).intlParams?.status) || undefined;
       }
-      return { ok: false, failed: [], failures: [], synced: 0, errorStatus, errorMessage };
+      // A 4xx is the Portal's answer, and it repeats until someone acts. Anything else may pass.
+      const transient = errorStatus === undefined || errorStatus < 400 || errorStatus >= 500;
+      return { ok: false, failed: [], failures: [], synced: 0, errorStatus, errorMessage, transient };
     }
   }
 

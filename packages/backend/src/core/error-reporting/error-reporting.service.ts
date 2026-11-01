@@ -4,6 +4,7 @@ import * as Sentry from '@sentry/nestjs';
 import type { AppUrn } from '@ci-hub/common/types';
 import { KVM_MISSING_CODE, NETWORK_OVERLAP_CODE, ROCM_KFD_MISSING_CODE } from '@/modules/app-lifecycle/commands/app-lifecycle-errors';
 import { PORTAL_HTTP_ERROR_CODE, PORTAL_TIMEOUT_CODE, PORTAL_UNREACHABLE_CODE } from '@/core/portal/portal.constants';
+import { QUEUE_UNAVAILABLE_CODE } from '@/modules/queue/queue.constants';
 import { DOCKER_HOST_PORT_CONFLICT_PATTERN } from '@/modules/network/docker-port-errors';
 import { snapshotHostHealth } from './host-health';
 import { scrubString } from './sentry-scrubber';
@@ -95,6 +96,9 @@ const ERROR_CODE_CLASSIFICATIONS: Readonly<Record<string, AppFailureClassificati
   [PORTAL_TIMEOUT_CODE]: { category: 'user_environment', errorClass: 'portal-unreachable' },
   [PORTAL_UNREACHABLE_CODE]: { category: 'user_environment', errorClass: 'portal-unreachable' },
   [PORTAL_HTTP_ERROR_CODE]: { category: 'platform', errorClass: 'portal-http-error' },
+  // The queue refused the command before RabbitMQ was connected to take it. A condition that clears on its
+  // own, so it is a warning, grouped by cause across apps.
+  [QUEUE_UNAVAILABLE_CODE]: { category: 'user_environment', errorClass: 'queue-unavailable' },
 };
 
 export function classifyAppFailure(message: string, errorCode?: string): AppFailureClassification {
