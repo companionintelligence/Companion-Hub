@@ -130,7 +130,7 @@ describe('InstallAppCommand — pull policy', () => {
       }),
       removeAppNetworks: vi.fn().mockResolvedValue(undefined),
       // Used by install-cancel compensation.
-      snapshotAppImageIds: vi.fn().mockResolvedValue([]),
+      imageIdLocally: vi.fn().mockResolvedValue(null),
       removeAppImages: vi.fn().mockResolvedValue(undefined),
     };
 
@@ -284,6 +284,30 @@ describe('InstallAppCommand — pull policy', () => {
     const upCommand = composeArgs.find((a) => a.includes('up'));
     expect(upCommand).toBeDefined();
     expect(upCommand).not.toContain('--pull');
+  });
+
+  it('records the image its pull brought onto the computer for the app, and not the one that was already there', async () => {
+    const afm = (command as any).moduleRef.get(AppFilesManager);
+    afm.writePulledImageIds.mockResolvedValue(true);
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [
+        { name: 'app', image: 'ghcr.io/example/app:latest' },
+        { name: 'db', image: 'postgres:16' },
+      ],
+      overrides: [],
+    } as any);
+    const onComputer = new Map([['postgres:16', 'sha256:postgres']]);
+    dockerService.imageIdLocally = vi.fn(async (ref: string) => onComputer.get(ref) ?? null);
+    dockerService.pullImages = vi.fn(async () => {
+      onComputer.set('ghcr.io/example/app:latest', 'sha256:app');
+    });
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(true);
+    expect(dockerService.pullImages).toHaveBeenCalled();
+    expect(afm.writePulledImageIds).toHaveBeenCalledTimes(1);
+    expect(afm.writePulledImageIds).toHaveBeenCalledWith(appUrn, ['sha256:app']);
   });
 
   it('SHOULD pass through other compose arguments unchanged', async () => {
@@ -980,7 +1004,7 @@ describe('InstallAppCommand — plan-based pre-flight', () => {
         message: 'All containers are running',
       }),
       removeAppNetworks: vi.fn().mockResolvedValue(undefined),
-      snapshotAppImageIds: vi.fn().mockResolvedValue([]),
+      imageIdLocally: vi.fn().mockResolvedValue(null),
       removeAppImages: vi.fn().mockResolvedValue(undefined),
     };
 

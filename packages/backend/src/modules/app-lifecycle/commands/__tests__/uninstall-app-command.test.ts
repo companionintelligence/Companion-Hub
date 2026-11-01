@@ -17,7 +17,6 @@ describe('UninstallAppCommand', () => {
   let logger: DeepMockProxy<LoggerService>;
   let dockerService: {
     composeApp: ReturnType<typeof vi.fn>;
-    snapshotAppImageIds: ReturnType<typeof vi.fn>;
     removeAppImages: ReturnType<typeof vi.fn>;
     removeAppNetworks: ReturnType<typeof vi.fn>;
     removeAppDataDirAsRoot: ReturnType<typeof vi.fn>;
@@ -47,6 +46,8 @@ describe('UninstallAppCommand', () => {
     appFilesManager.deleteAppDataDir.mockResolvedValue(true);
     appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: true, permissionDenied: false });
     appFilesManager.getAppDataHostDir.mockReturnValue('/srv/app-data/store/test-app');
+    appFilesManager.readPulledImageIds.mockResolvedValue(['sha256:a']);
+    appFilesManager.deletePulledImageIds.mockResolvedValue(undefined);
 
     portManager = mock<PortManagerService>();
     portManager.releaseAll.mockResolvedValue(1);
@@ -56,7 +57,6 @@ describe('UninstallAppCommand', () => {
 
     dockerService = {
       composeApp: vi.fn().mockResolvedValue({ success: true }),
-      snapshotAppImageIds: vi.fn().mockResolvedValue(['sha256:a']),
       removeAppImages: vi.fn().mockResolvedValue(undefined),
       removeAppNetworks: vi.fn().mockResolvedValue(undefined),
       removeAppDataDirAsRoot: vi.fn().mockResolvedValue(true),
@@ -65,29 +65,42 @@ describe('UninstallAppCommand', () => {
     command = new UninstallAppCommand(makeModuleRef(), mock<Dockerode>());
   });
 
-  it('runs compose down with --rmi all and explicit image/network cleanup', async () => {
+  it('runs compose down with --rmi local and removes only the images the app recorded pulling', async () => {
     const result = await command.execute(appUrn);
 
     expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
-    expect(dockerService.snapshotAppImageIds).toHaveBeenCalledWith(appUrn);
-    expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans -v --rmi all');
+    expect(appFilesManager.readPulledImageIds).toHaveBeenCalledWith(appUrn);
+    expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans -v --rmi local');
     expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, ['sha256:a']);
     expect(dockerService.removeAppNetworks).toHaveBeenCalledWith(appUrn);
+    expect(appFilesManager.deletePulledImageIds).toHaveBeenCalledWith(appUrn);
     expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
     expect(appFilesManager.deleteAppDataDirDetailed).toHaveBeenCalledWith(appUrn);
     // Clean delete → no privileged escalation.
     expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
 
-    const snapshotOrder = dockerService.snapshotAppImageIds.mock.invocationCallOrder[0];
+    const readOrder = appFilesManager.readPulledImageIds.mock.invocationCallOrder[0];
     const downOrder = dockerService.composeApp.mock.invocationCallOrder[0];
     const removeImagesOrder = dockerService.removeAppImages.mock.invocationCallOrder[0];
     const removeNetworksOrder = dockerService.removeAppNetworks.mock.invocationCallOrder[0];
+    const forgetImagesOrder = appFilesManager.deletePulledImageIds.mock.invocationCallOrder[0];
     const deleteFolderOrder = appFilesManager.deleteAppFolder.mock.invocationCallOrder[0];
 
-    expect(snapshotOrder).toBeLessThan(downOrder);
+    expect(readOrder).toBeLessThan(downOrder);
     expect(downOrder).toBeLessThan(removeImagesOrder);
     expect(removeImagesOrder).toBeLessThan(removeNetworksOrder);
-    expect(removeNetworksOrder).toBeLessThan(deleteFolderOrder);
+    expect(removeNetworksOrder).toBeLessThan(forgetImagesOrder);
+    expect(forgetImagesOrder).toBeLessThan(deleteFolderOrder);
+  });
+
+  it('removes no pulled image when the app recorded none', async () => {
+    appFilesManager.readPulledImageIds.mockResolvedValue([]);
+
+    const result = await command.execute(appUrn);
+
+    expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
+    expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, []);
+    expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans -v --rmi local');
   });
 
   it('preserves Docker volumes when deleteAllData is false', async () => {
@@ -96,7 +109,7 @@ describe('UninstallAppCommand', () => {
     const result = await preserveDataCommand.execute(appUrn);
 
     expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
-    expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans --rmi all');
+    expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans --rmi local');
     expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
     expect(appFilesManager.deleteAppDataDirDetailed).not.toHaveBeenCalled();
   });
@@ -202,7 +215,7 @@ describe('UninstallAppCommand', () => {
   });
 
   it('continues uninstall when compose down fails and cleanup helpers remain non-fatal', async () => {
-    dockerService.snapshotAppImageIds.mockResolvedValueOnce([]);
+    appFilesManager.readPulledImageIds.mockResolvedValueOnce([]);
     dockerService.composeApp.mockRejectedValueOnce(new Error('compose failed'));
 
     const result = await command.execute(appUrn);

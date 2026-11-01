@@ -43,13 +43,14 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         logger.warn(`Failed to release ports for ${appUrn}: ${err}`);
       }
 
-      // Capture image IDs before compose down so we can remove pulled images by
-      // immutable ID even when tags/compose refs are no longer resolvable.
-      const snapshotImageIds = isPortExpose ? [] : await dockerService.snapshotAppImageIds(appUrn);
+      // The images this app's installs and updates pulled for it, as recorded when each brought them in. Only
+      // these are removed: an image that was on the computer before the app, or that another app uses, stays.
+      const appImageIds = isPortExpose ? [] : await appFilesManager.readPulledImageIds(appUrn);
 
       try {
         if (!isPortExpose) {
-          const downCommand = this.deleteAllData ? 'down --remove-orphans -v --rmi all' : 'down --remove-orphans --rmi all';
+          // `local` removes only the images compose built for this app; the pulled ones are removed by ID below.
+          const downCommand = this.deleteAllData ? 'down --remove-orphans -v --rmi local' : 'down --remove-orphans --rmi local';
           await dockerService.composeApp(appUrn, downCommand);
           logger.info(`Successfully cleaned up all Docker resources for ${appUrn}`);
         }
@@ -71,8 +72,9 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         }
 
         // Explicit post-down cleanup is a safety net for partial teardown states.
-        await dockerService.removeAppImages(appUrn, snapshotImageIds);
+        await dockerService.removeAppImages(appUrn, appImageIds);
         await dockerService.removeAppNetworks(appUrn);
+        await appFilesManager.deletePulledImageIds(appUrn);
       }
 
       // Sync Cloudflare state (app removal will be reflected)

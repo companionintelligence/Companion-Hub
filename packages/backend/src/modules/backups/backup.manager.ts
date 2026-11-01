@@ -96,6 +96,7 @@ export class BackupManager implements OnApplicationShutdown {
     this.logger.info('Copying files to backup location...');
 
     let staging: { id: string; dir: string } | null = null;
+    let archiveDir: string | null = null;
 
     try {
       await this.filesystem.createDirectory(tempDir);
@@ -151,9 +152,7 @@ export class BackupManager implements OnApplicationShutdown {
 
       this.logger.info('Creating archive...');
 
-      // Beside the folder being archived, not inside it: an archive written into its own source is
-      // read as it grows, and a tar that skips it is a tar that may exit non-zero.
-      let archivePath = `${tempDir}.tar.gz`;
+      let archivePath: string;
 
       if (staging) {
         const archived = await this.docker.archiveBackupAsRoot(appUrn, staging.id, deadline);
@@ -166,6 +165,17 @@ export class BackupManager implements OnApplicationShutdown {
 
         archivePath = archived;
       } else {
+        // In a folder only this Hub's user can open, and not inside the folder being archived: an archive written into
+        // its own source is read as it grows, and a tar that skips it is a tar that may exit non-zero. Beside that folder,
+        // in the shared temp folder, tar would leave the archive readable by every account while it is being written.
+        archiveDir = await this.filesystem.createTempDirectory(appUrn);
+
+        if (!archiveDir) {
+          throw new Error('Failed to create the backup archive folder');
+        }
+
+        archivePath = path.join(archiveDir, 'backup.tar.gz');
+
         const { stdout, stderr, exitCode } = await this.archiveManager.createTarGz(tempDir, archivePath);
         this.logger.debug('--- archiveManager.createTarGz ---');
         this.logger.debug('stderr:', stderr);
@@ -185,10 +195,21 @@ export class BackupManager implements OnApplicationShutdown {
       const finalPath = path.join(backupDir, `${backupName}.tar.gz`);
 
       try {
+        // Owner-only before the copy, and again after it whatever mode the copy gave the new file: the archive holds
+        // the app's data and its passwords, which no other account on the computer may read.
+        if (!(await this.filesystem.restrictToOwner(archivePath))) {
+          throw new Error('Failed to make the backup archive owner-only');
+        }
+
         const moved = await this.filesystem.copyFile(archivePath, finalPath);
 
         if (moved === false || !(await this.filesystem.isFile(finalPath))) {
           throw new Error('Failed to move the backup archive into the backups folder');
+        }
+
+        if (!(await this.filesystem.restrictToOwner(finalPath))) {
+          await this.filesystem.removeFile(finalPath);
+          throw new Error('Failed to make the backup archive owner-only');
         }
       } finally {
         await this.filesystem.removeFile(archivePath);
@@ -199,6 +220,10 @@ export class BackupManager implements OnApplicationShutdown {
     } finally {
       // The temp folder goes whether the backup worked or not: a failed one used to leave a full copy of the app in /tmp.
       await this.filesystem.removeDirectory(tempDir);
+
+      if (archiveDir) {
+        await this.filesystem.removeDirectory(archiveDir);
+      }
 
       if (staging) {
         await this.filesystem.removeDirectory(staging.dir);
@@ -729,6 +754,12 @@ export class BackupManager implements OnApplicationShutdown {
 
     if (!written) {
       throw new Error('Failed to write the backup file');
+    }
+
+    // An uploaded archive is as private as one the Hub makes: owner-only, or it is not kept.
+    if (!(await this.filesystem.restrictToOwner(backupPath))) {
+      await this.filesystem.removeFile(backupPath);
+      throw new Error('Failed to make the backup archive owner-only');
     }
 
     this.logger.info(`Backup uploaded successfully: ${filename}`);

@@ -229,6 +229,47 @@ export class AppFilesManager {
     return this.filesystem.removeDirectory(appInstalledDir);
   }
 
+  /**
+   * The record of the image IDs an app's installs and updates pulled for it, beside the app's folders rather than in
+   * them: an update replaces the install folder, and the record must outlive that, as it outlives a reset.
+   */
+  private getPulledImagesPath(appUrn: AppUrn): string {
+    const { directories } = this.configuration.getConfig();
+    const { appStoreId, appName } = extractAppUrn(appUrn);
+
+    return path.resolve(directories.dataDir, 'pulled-images', appStoreId, `${appName}.json`);
+  }
+
+  /**
+   * The image IDs recorded for the app, or none. A record that is missing or unreadable records nothing, so an
+   * uninstall then removes no image rather than one the Hub cannot show it pulled.
+   */
+  public async readPulledImageIds(appUrn: AppUrn): Promise<string[]> {
+    const text = await this.filesystem.readTextFile(this.getPulledImagesPath(appUrn));
+    if (!text) {
+      return [];
+    }
+
+    try {
+      const { imageIds } = JSON.parse(text) as { imageIds?: unknown };
+      return Array.isArray(imageIds) ? imageIds.filter((id): id is string => typeof id === 'string' && id.length > 0) : [];
+    } catch {
+      this.logger.warn(`The record of the images pulled for ${appUrn} is not valid JSON; it records none`);
+      return [];
+    }
+  }
+
+  /** Replaces the app's record of the image IDs its installs and updates pulled. Returns false when it could not be written. */
+  public async writePulledImageIds(appUrn: AppUrn, imageIds: string[]): Promise<boolean> {
+    const content = JSON.stringify({ imageIds: [...new Set(imageIds)] }, null, 2);
+    return this.filesystem.writeTextFile(this.getPulledImagesPath(appUrn), content);
+  }
+
+  /** Forgets the app's record of the images it pulled. Called once an uninstall has removed what it could. */
+  public async deletePulledImageIds(appUrn: AppUrn): Promise<void> {
+    await this.filesystem.removeFile(this.getPulledImagesPath(appUrn));
+  }
+
   /** Returns whether the app's data dir was fully removed (false on a partial/failed delete). */
   public async deleteAppDataDir(appUrn: AppUrn): Promise<boolean> {
     const { appDataDir } = this.getAppPaths(appUrn);
