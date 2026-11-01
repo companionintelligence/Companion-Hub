@@ -44,6 +44,11 @@ supported protocol signal. If the TCP procfs snapshot is unreadable or incomplet
 is unknown and the app is skipped as unsupported rather than passed or reported as definitely
 closed. A present but unreadable IPv4 or IPv6 table also makes the result unknown.
 
+Generated QA environment values follow the Marketplace form-field contract. Password fields get a
+fresh alphanumeric value containing uppercase, lowercase, and digits, with declared minimum and
+maximum lengths honored. The value avoids punctuation so it remains safe through Compose and shell
+boundaries. Other secret fields keep opaque random values.
+
 ## Agent notes
 
 - Status server: `agent/status-server.ts` (port 3099)
