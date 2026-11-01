@@ -1401,6 +1401,33 @@ function hasValidTcpProcSnapshot(output: string): boolean {
     return /^\/proc\/net\/tcp6?$/.test(path?.trim() ?? '') && /^\s*sl\s+local_address\s+rem_address\s+st\b/.test(header ?? '');
   });
 }
+
+function tcpListenerFromProcSnapshot(output: string, port: number): 'listening' | 'not-listening' | 'unknown' {
+  if (!hasValidTcpProcSnapshot(output)) return 'unknown';
+  const hex = port.toString(16).toUpperCase().padStart(4, '0');
+  for (const line of output.split(/\r?\n/)) {
+    const columns = line.trim().split(/\s+/);
+    if (columns.length >= 4 && columns[3] === '0A' && columns[1]?.endsWith(`:${hex}`)) return 'listening';
+  }
+  return 'not-listening';
+}
+
+function isKnownWireProtocolImage(image: string): boolean {
+  const reference = (image.toLowerCase().split('@')[0] ?? '').trim();
+  const slash = reference.lastIndexOf('/');
+  const colon = reference.lastIndexOf(':');
+  const repository = colon > slash ? reference.slice(0, colon) : reference;
+  const name = repository.slice(repository.lastIndexOf('/') + 1);
+  // SQL Server is silent until it receives a TDS prelogin packet. Treat only Microsoft's known
+  // repository paths as that protocol; a custom image named `mssql` is not evidence of SQL Server.
+  if (repository === 'mcr.microsoft.com/mssql/server' || repository === 'microsoft/mssql-server-linux') return true;
+  if (name === 'mssql' || name === 'sqlserver') {
+    return false;
+  }
+  return /(^|\/)(mongo|redis|memcached|postgres|mariadb|mysql|percona|cassandra|clickhouse|elasticsearch|opensearch|rabbitmq|nats|etcd|valkey)(:|$)/.test(
+    repository,
+  );
+}
 // </qa-route-policy>
 
 /**
@@ -2113,10 +2140,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         const listener = await inspectInternalListener(statsName, result.port);
         const listening = listener === 'listening';
         const img = (result.image || '').toLowerCase();
-        const knownWireProtocol =
-          /(^|\/)(mongo|redis|memcached|postgres|mariadb|mysql|percona|cassandra|clickhouse|elasticsearch|opensearch|rabbitmq|nats|etcd|valkey)(:|$|\/)/.test(
-            img.split('@')[0],
-          );
+        const knownWireProtocol = isKnownWireProtocolImage(img);
         const greets = listening && (await serverGreets(hostPort));
         if (httpStatus === 0 && listening && (greets || knownWireProtocol)) {
           ready = true;
@@ -2807,20 +2831,34 @@ function hexOfLength(chars: number): string {
 
 /** Inspect /proc directly so an unavailable `ss`/`netstat` binary cannot masquerade as a listener. */
 async function inspectInternalListener(container: string, port: number): Promise<'listening' | 'not-listening' | 'unknown'> {
-  const hex = port.toString(16).toUpperCase().padStart(4, '0');
-  // /proc/net/tcp col 2 is local_address (HEX_IP:HEX_PORT), col 4 is st; 0A = TCP_LISTEN. Read both
-  // families because a container may bind v4, v6, or both. If procfs is unavailable, preserve that
-  // uncertainty instead of treating the Docker proxy's host-side handshake as container evidence.
-  const script =
-    'found=0; for file in /proc/net/tcp /proc/net/tcp6; do if [ -e "$file" ]; then [ -r "$file" ] || exit 44; found=1; printf "__PROC__:%s\\n" "$file"; cat "$file" || exit 43; fi; done; [ "$found" -eq 1 ] || exit 42';
-  const proc = await execAsync(`docker exec ${container} sh -c ${shq(script)}`, 8_000);
-  if (!proc.ok || !hasValidTcpProcSnapshot(proc.out)) return 'unknown';
+  // Read procfs without depending on a shell inside the app image. Minimal database images can
+  // expose /proc/net while omitting `/bin/sh`, which made a healthy in-container listener appear
+  // unknown and caused PostgreSQL/SQL Server QA to skip. An absent tcp6 file is fine; a permission
+  // or exec error keeps the answer unknown so a Docker proxy handshake cannot become a false pass.
+  // Read the container's network-namespace procfs from the host. Never execute `cat` (or another
+  // image-provided binary) inside the app: a custom image could fabricate a listener snapshot.
+  // Docker exposes the container init PID, and Linux exposes that process's net namespace at
+  // /proc/<pid>/net. On non-Linux hosts (including Docker Desktop's VM boundary) the evidence is
+  // unavailable, so keep the answer unknown instead of weakening the probe.
+  if (process.platform !== 'linux') return 'unknown';
+  const inspected = await execAsync(`docker inspect ${shq(container)} --format '{{.State.Pid}}|{{.State.Running}}'`, 8_000);
+  const [pidText, runningText] = inspected.ok ? inspected.out.split('|') : [];
+  const pid = Number(pidText);
+  if (runningText !== 'true' || !Number.isSafeInteger(pid) || pid <= 0) return 'unknown';
 
-  for (const line of proc.out.split(/\r?\n/)) {
-    const columns = line.trim().split(/\s+/);
-    if (columns.length >= 4 && columns[3] === '0A' && columns[1]?.endsWith(`:${hex}`)) return 'listening';
+  const snapshots: string[] = [];
+  for (const path of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    try {
+      const contents = readFileSync(`/proc/${pid}/net/${path.endsWith('tcp6') ? 'tcp6' : 'tcp'}`, 'utf8');
+      snapshots.push(`__PROC__:${path}\n${contents}`);
+    } catch (error) {
+      // tcp6 can be absent in a kernel without IPv6. tcp is required; permission errors or any
+      // other unreadable snapshot are uncertainty, not evidence that the port is closed.
+      if (path.endsWith('/tcp6') && (error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      return 'unknown';
+    }
   }
-  return 'not-listening';
+  return tcpListenerFromProcSnapshot(snapshots.join('\n'), port);
 }
 
 /** Split a command string into argv the way Docker Compose does (shlex: quotes and backslashes, NO shell). The single-container path used to run a string `command` as `sh -c '<cmd>'`, which an image whose ENTRYPOINT is not a shell receives as `-c` (openbooks: 'unknown shorthand flag: c' while compose starts it fine). */

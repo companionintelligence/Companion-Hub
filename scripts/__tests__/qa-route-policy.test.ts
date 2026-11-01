@@ -9,8 +9,15 @@ const source = readFileSync(join(import.meta.dirname, '..', 'qa-stream.ts'), 'ut
 const block = /\/\/ <qa-route-policy>([\s\S]*?)\/\/ <\/qa-route-policy>/.exec(source);
 if (!block) throw new Error('the <qa-route-policy> block is missing from scripts/qa-stream.ts');
 const js = ts.transpileModule(block[1], { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
-const { classifyQaRoute, scoreReadyQaApp, isUnsupportedSilentHeadlessTcp, hasValidTcpProcSnapshot } = new Function(
-  `${js}\nreturn { classifyQaRoute, scoreReadyQaApp, isUnsupportedSilentHeadlessTcp, hasValidTcpProcSnapshot };`,
+const {
+  classifyQaRoute,
+  scoreReadyQaApp,
+  isUnsupportedSilentHeadlessTcp,
+  hasValidTcpProcSnapshot,
+  tcpListenerFromProcSnapshot,
+  isKnownWireProtocolImage,
+} = new Function(
+  `${js}\nreturn { classifyQaRoute, scoreReadyQaApp, isUnsupportedSilentHeadlessTcp, hasValidTcpProcSnapshot, tcpListenerFromProcSnapshot, isKnownWireProtocolImage };`,
 )() as {
   classifyQaRoute: (
     config: { no_gui?: boolean; mcp?: unknown },
@@ -25,6 +32,8 @@ const { classifyQaRoute, scoreReadyQaApp, isUnsupportedSilentHeadlessTcp, hasVal
     knownWireProtocol: boolean,
   ) => boolean;
   hasValidTcpProcSnapshot: (output: string) => boolean;
+  tcpListenerFromProcSnapshot: (output: string, port: number) => 'listening' | 'not-listening' | 'unknown';
+  isKnownWireProtocolImage: (image: string) => boolean;
 };
 
 describe('qa-stream route policy', () => {
@@ -158,6 +167,28 @@ describe('ready QA scoring', () => {
     expect(hasValidTcpProcSnapshot(`__PROC__:/tmp/tcp\n${header}\n`)).toBe(false);
     expect(hasValidTcpProcSnapshot(`__PROC__:/proc/net/tcp\n${header}\n__PROC__:/proc/net/tcp6\n`)).toBe(false);
   });
+
+  it('finds a listening port from the procfs TCP state instead of requiring a shell in the image', () => {
+    const header = '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode';
+    const listener = '   0: 00000000:1538 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 12345';
+    const snapshot = `__PROC__:/proc/net/tcp\n${header}\n${listener}\n`;
+    expect(tcpListenerFromProcSnapshot(snapshot, 5432)).toBe('listening');
+    expect(tcpListenerFromProcSnapshot(snapshot, 1433)).toBe('not-listening');
+    expect(tcpListenerFromProcSnapshot('', 5432)).toBe('unknown');
+    expect(tcpListenerFromProcSnapshot(`__PROC__:/proc/net/tcp6\n${header}\n${listener.replace('1538', '0599')}\n`, 1433)).toBe('listening');
+    expect(tcpListenerFromProcSnapshot(`__PROC__:/proc/net/tcp\n${header}\nmalformed row\n`, 5432)).toBe('not-listening');
+  });
+
+  it('recognizes SQL Server images as supported silent wire-protocol services', () => {
+    expect(isKnownWireProtocolImage('postgres:16')).toBe(true);
+    expect(isKnownWireProtocolImage('mcr.microsoft.com/mssql/server:2022-latest')).toBe(true);
+    expect(isKnownWireProtocolImage('mcr.microsoft.com/mssql/server@sha256:abc')).toBe(true);
+    expect(isKnownWireProtocolImage('microsoft/mssql-server-linux:latest')).toBe(true);
+    expect(isKnownWireProtocolImage('ghcr.io/acme/mssql:latest')).toBe(false);
+    expect(isKnownWireProtocolImage('ghcr.io/acme/sqlserver:latest')).toBe(false);
+    expect(isKnownWireProtocolImage('mcr.microsoft.com/azure-sql-edge:latest')).toBe(false);
+    expect(isKnownWireProtocolImage('nginx:latest')).toBe(false);
+  });
 });
 
 describe('qa-stream wiring', () => {
@@ -167,10 +198,10 @@ describe('qa-stream wiring', () => {
     expect(source).toContain("if (route.kind === 'headless') result.port = route.port;");
     expect(source).toContain('unsupportedHeadlessTcp && bh.healthy && !deadReason');
     expect(source).toContain('httpStatus === 0 && listening && (greets || knownWireProtocol)');
-    expect(source).toContain('cat "$file" || exit 43');
-    expect(source).toContain('[ -e "$file" ]');
-    expect(source).toContain('[ -r "$file" ] || exit 44');
-    expect(source).toContain('!proc.ok || !hasValidTcpProcSnapshot(proc.out)');
+    expect(source).toContain('docker inspect ${shq(container)} --format');
+    expect(source).toContain('/proc/${pid}/net/');
+    expect(source).not.toContain('docker exec ${shq(container)} cat');
+    expect(source).toContain('tcpListenerFromProcSnapshot(snapshots.join');
     expect(source).toContain("result.failKind = 'unsupported-probe';");
     expect(source).toContain("result.score = 'skip' as Score;");
     expect(source).toMatch(/scoreReadyQaApp\(result\.hasScreenshot === true,\s*config\.no_gui === true,\s*result\.backendHealthy !== false\)/);
