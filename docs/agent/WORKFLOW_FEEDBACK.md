@@ -2,6 +2,8 @@
 
 Rolling notes on the CI-Hub agent workflow. See [session worksheets](sessions/README.md) for context.
 
+> 2026-11-01 — qa-procfs-probe: Read Linux container sockets through trusted host procfs, constrain SQL Server image evidence, and test unsupported-platform uncertainty.
+
 > 2026-11-01 — qa-password-policy: Generate policy-compliant password values for app QA and add coverage for bounds, character classes, and freshness.
 
 > 2026-10-30 — agent-store-portability: Compared the agent packaging of store A and store B, documented Hub trust boundaries, and recorded the OpenClaw wrapper quarantine and cross-repo bootstrap sync.

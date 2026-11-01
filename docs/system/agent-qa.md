@@ -39,10 +39,14 @@ Multi-node Tailscale fleet runners and host inventories are **not published** in
 For local no-GUI service checks, the runner uses the main compose service's declared TCP
 `internalPort` for readiness and suppresses screenshots; no-GUI MCP apps continue through the
 stdio protocol lane. Portless and UDP-only services are skipped. A silent TCP endpoint is never
-passed on the Docker proxy handshake alone: the runner verifies an in-container listener and a
-supported protocol signal. If the TCP procfs snapshot is unreadable or incomplete, that evidence
-is unknown and the app is skipped as unsupported rather than passed or reported as definitely
-closed. A present but unreadable IPv4 or IPv6 table also makes the result unknown.
+passed on the Docker proxy handshake alone: on Linux, the runner reads the container network
+namespace TCP tables through the host's `/proc/<pid>/net` view, without executing image-provided
+tools. It then accepts only a known datastore image or a protocol greeting. SQL Server is accepted
+only for Microsoft's canonical image paths. On non-Linux hosts where Docker Desktop's VM namespace
+is not visible, this evidence remains unknown and silent services are skipped. If a required TCP
+procfs snapshot is unreadable or incomplete, the app is skipped as unsupported rather than passed or
+reported as definitely closed. A present but unreadable IPv4 or IPv6 table also makes the result
+unknown.
 
 Generated QA environment values follow the Marketplace form-field contract. Password fields get a
 fresh alphanumeric value containing uppercase, lowercase, and digits, with declared minimum and
