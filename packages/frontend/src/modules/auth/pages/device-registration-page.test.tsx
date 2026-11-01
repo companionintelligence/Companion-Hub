@@ -4,6 +4,7 @@ import type { RegistrationStatus } from '@/lib/registration-status';
 import DeviceRegistrationPage from './device-registration-page';
 
 const {
+  addHubBreadcrumb,
   captureHubWarning,
   navigate,
   setHubSentryDeviceId,
@@ -16,6 +17,7 @@ const {
   prepareFreshRegistrationDetailed,
   probeRegistrationDomain,
 } = vi.hoisted(() => ({
+  addHubBreadcrumb: vi.fn(),
   captureHubWarning: vi.fn(),
   navigate: vi.fn(),
   setHubSentryDeviceId: vi.fn(),
@@ -53,6 +55,7 @@ vi.mock('@/lib/registration-api', () => ({
 }));
 
 vi.mock('@/lib/sentry', () => ({
+  addHubBreadcrumb,
   captureHubWarning,
   setHubSentryDeviceId,
 }));
@@ -279,6 +282,34 @@ describe('DeviceRegistrationPage', () => {
     });
 
     expect(screen.queryByRole('button', { name: 'Retry status check' })).not.toBeInTheDocument();
+  });
+
+  it('leaves a trail for a status check that fails rather than reporting each one, and keeps polling', async () => {
+    vi.useFakeTimers();
+    fetchRegistrationStatusResult.mockResolvedValue({ ok: false, status: 0, data: undefined });
+
+    render(<DeviceRegistrationPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    expect(fetchRegistrationStatusResult.mock.calls.length).toBeGreaterThan(3);
+    expect(screen.getByRole('heading', { name: 'Registration status temporarily unavailable' })).toBeInTheDocument();
+    expect(addHubBreadcrumb).toHaveBeenCalledWith('Device registration status temporarily unavailable', { status: 0 });
+    expect(captureHubWarning).not.toHaveBeenCalled();
+  });
+
+  it('leaves a trail for a device lookup that fails, and still tells the person on the page', async () => {
+    fetchDeviceRegistrationInfoResult.mockResolvedValue({ ok: false, status: 503, data: undefined });
+
+    render(<DeviceRegistrationPage />);
+
+    expect(await screen.findByText('Failed to get device information')).toBeInTheDocument();
+    expect(addHubBreadcrumb).toHaveBeenCalledWith('Device registration page could not load device info', { status: 503 });
+    expect(captureHubWarning).not.toHaveBeenCalled();
   });
 
   it('starts no new status check while the last one is still waiting for the Hub', async () => {

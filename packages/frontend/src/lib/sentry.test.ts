@@ -8,6 +8,7 @@ const testEnv = import.meta.env as MutableImportMetaEnv;
 
 const {
   fetchDeviceRegistrationInfoResult,
+  addBreadcrumb,
   captureException,
   captureMessage,
   init,
@@ -20,6 +21,7 @@ const {
   replayIntegration,
 } = vi.hoisted(() => ({
   fetchDeviceRegistrationInfoResult: vi.fn(),
+  addBreadcrumb: vi.fn(),
   captureException: vi.fn(),
   captureMessage: vi.fn(),
   init: vi.fn(),
@@ -33,6 +35,7 @@ const {
 }));
 
 vi.mock('@sentry/react', () => ({
+  addBreadcrumb,
   captureMessage,
   captureException,
   init,
@@ -202,6 +205,25 @@ describe('frontend sentry', () => {
     expect(captureMessage).toHaveBeenCalledWith('startup fallback warning', 'warning');
   });
 
+  it('records a breadcrumb without sending an event of its own', async () => {
+    const { addHubBreadcrumb } = await import('./sentry');
+
+    addHubBreadcrumb('status temporarily unavailable', { status: 0 });
+
+    expect(addBreadcrumb).toHaveBeenCalledWith({ category: 'hub', level: 'warning', message: 'status temporarily unavailable', data: { status: 0 } });
+    expect(captureMessage).not.toHaveBeenCalled();
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('records no breadcrumb while Sentry is not running', async () => {
+    testEnv.DEV = true;
+    const { addHubBreadcrumb } = await import('./sentry');
+
+    addHubBreadcrumb('status temporarily unavailable');
+
+    expect(addBreadcrumb).not.toHaveBeenCalled();
+  });
+
   it('drops known handled frontend noise in beforeSend', async () => {
     await import('./sentry');
 
@@ -245,6 +267,34 @@ describe('frontend sentry', () => {
         },
       }),
     ).toBeNull();
+  });
+
+  it('drops fetch failures against the configured local Hub API and keeps the rest', async () => {
+    const { client } = await import('@/api-client/client.gen');
+    await import('./sentry');
+
+    type SentryEventInput = { exception?: { values?: Array<{ value?: string }> } };
+    const beforeSend = init.mock.calls[0]?.[0]?.beforeSend as ((event: SentryEventInput) => SentryEventInput | null) | undefined;
+    expect(beforeSend).toBeTypeOf('function');
+    const failed = (value: string) => ({ exception: { values: [{ value }] } });
+
+    try {
+      client.setConfig({ baseUrl: 'http://127.0.0.1:5002' });
+      // The SDK records whichever loopback name the request used.
+      expect(beforeSend?.(failed('Failed to fetch (localhost:5002)'))).toBeNull();
+      expect(beforeSend?.(failed('Load failed (127.0.0.1:5002)'))).toBeNull();
+      // Another port or host is not the configured Hub API.
+      expect(beforeSend?.(failed('Failed to fetch (127.0.0.1:5004)'))).not.toBeNull();
+      expect(beforeSend?.(failed('Failed to fetch (hub.ci.computer)'))).not.toBeNull();
+      // Without a host there is no origin to match, so the event is kept.
+      expect(beforeSend?.(failed('Failed to fetch'))).not.toBeNull();
+
+      // When the Hub API is on another machine, a failure here is not that Hub.
+      client.setConfig({ baseUrl: 'https://hub-home.ci.computer' });
+      expect(beforeSend?.(failed('Failed to fetch (localhost:5002)'))).not.toBeNull();
+    } finally {
+      client.setConfig({ baseUrl: '' });
+    }
   });
 
   it('rewrites TranslatableError events with HTTP status and path, and drops 4xx', async () => {
