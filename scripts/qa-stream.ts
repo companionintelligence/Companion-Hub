@@ -61,7 +61,7 @@
  */
 
 import { exec, execSync, spawn, spawnSync } from 'node:child_process';
-import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes, randomInt } from 'node:crypto';
 import {
   chmodSync,
   cpSync,
@@ -2739,6 +2739,38 @@ function formatAppEnv(kv: Map<string, string>): string {
  */
 type FieldSpec = { min?: number; max?: number; type?: string; def?: string; encoding?: string; options?: string[] };
 
+// <qa-password-generator>
+/** Generate a policy-friendly QA password without punctuation that Compose may reinterpret. */
+function makeQaPassword(spec: { min?: number; max?: number } = {}): string {
+  const min = typeof spec.min === 'number' && Number.isFinite(spec.min) ? Math.max(3, Math.ceil(spec.min)) : 3;
+  const max = typeof spec.max === 'number' && Number.isFinite(spec.max) ? Math.floor(spec.max) : 4096;
+  if (max < 3 || min > max) {
+    throw new RangeError(`Password field must allow between 3 and ${max} characters to generate a QA password`);
+  }
+
+  const length = Math.max(min, Math.min(32, max));
+  const categories = ['ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz', '0123456789'];
+  const alphabet = categories.join('');
+  const chars = Array.from({ length }, () => alphabet.charAt(randomInt(alphabet.length)));
+  const positions = [0, 1, 2];
+  for (let index = positions.length - 1; index > 0; index--) {
+    const swapIndex = randomInt(index + 1);
+    const current = positions[index];
+    const swap = positions[swapIndex];
+    if (current === undefined || swap === undefined) throw new Error('Could not select password positions');
+    positions[index] = swap;
+    positions[swapIndex] = current;
+  }
+  for (let index = 0; index < categories.length; index++) {
+    const position = positions[index];
+    const category = categories[index];
+    if (position === undefined || category === undefined) throw new Error('Could not select password categories');
+    chars[position] = category.charAt(randomInt(category.length));
+  }
+  return chars.join('');
+}
+// </qa-password-generator>
+
 /**
  * Returned, not stored. A module-level map set per app was read after an await (reserveHostPort, then composeUp), so with apps
  * running side by side the last manifest loaded would win as soon as that await really yields. Today it is a single microtask
@@ -2937,7 +2969,8 @@ function valueForVar(name: string, cache: Map<string, string>, scratchBase: stri
     cache.set(name, v);
     return v;
   }
-  if (/PASSWORD|SECRET|KEY|TOKEN|SALT|HASH/.test(name)) v = randomBytes(16).toString('hex');
+  if (spec?.type === 'password' || /PASSWORD/.test(name)) v = makeQaPassword(spec);
+  else if (/SECRET|KEY|TOKEN|SALT|HASH/.test(name)) v = randomBytes(16).toString('hex');
   else if (/USER(NAME)?$/.test(name)) v = 'ciadmin';
   // `.localhost` is a reserved TLD that strict validators reject (directus's UsersService.validateEmail
   // rejects it outright, crashing `cli.js bootstrap` before the app ever binds its port). RFC 2606
