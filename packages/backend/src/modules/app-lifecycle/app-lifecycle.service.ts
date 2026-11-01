@@ -313,7 +313,7 @@ function customDomainColumns(parsedForm: {
   return { customDomainIntent: intent, customDomainTakeover: intent !== null && parsedForm.customDomainTakeover === true };
 }
 
-function buildInstallRowPatch(parsedForm: ParsedAppForm): Record<string, unknown> {
+function buildInstallRowPatch(parsedForm: ParsedAppForm, storedConfig: unknown): Record<string, unknown> {
   /*
    * BOTH destructured out before the spread. `customDomain` always was — it must
    * never land in `app.custom_domain`, per the note above. `customDomainTakeover`
@@ -334,8 +334,19 @@ function buildInstallRowPatch(parsedForm: ParsedAppForm): Record<string, unknown
     ...rowFields
   } = parsedForm;
 
+  /*
+   * A form that names no port keeps the one the app is on. The config is replaced whole, and every start
+   * rebuilds APP_PORT from it (`startCommandForm`), so a port the form left out sent the app back to the
+   * manifest's while the row still named the port it had. A port is set by a move or by a save that names one.
+   */
+  const config = toStoredConfig(parsedForm);
+  const storedPort = (storedConfig as { port?: unknown } | null | undefined)?.port;
+  if (parsedForm.port === undefined && typeof storedPort === 'number') {
+    config.port = storedPort;
+  }
+
   return {
-    config: toStoredConfig(parsedForm),
+    config,
     ...rowFields,
     ...customDomainColumns(parsedForm),
   };
@@ -1806,7 +1817,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     if (existingApp && !retrying) {
-      await this.appRepository.updateAppById(existingApp.id, buildInstallRowPatch(parsedForm));
+      await this.appRepository.updateAppById(existingApp.id, buildInstallRowPatch(parsedForm, current?.config));
       await this.claimCustomDomainIntent(existingApp.id, parsedForm.customDomain);
       // Part of the install the caller was authorized for, not a new decision. Under this install's claim.
       return this.dispatchStart({ appUrn });
@@ -1878,7 +1889,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (raced.status !== 'install_failed' && raced.status !== 'installing') {
           // A reinstall after all, which nothing can cancel (see `reinstall` above).
           this.operationRegistry.endPreparingInstall(appUrn, preparing);
-          await this.appRepository.updateAppById(raced.id, buildInstallRowPatch(parsedForm));
+          await this.appRepository.updateAppById(raced.id, buildInstallRowPatch(parsedForm, raced.config));
           await this.claimCustomDomainIntent(raced.id, parsedForm.customDomain);
           return this.dispatchStart({ appUrn });
         }

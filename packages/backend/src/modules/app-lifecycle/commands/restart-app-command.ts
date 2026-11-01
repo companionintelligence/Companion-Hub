@@ -51,7 +51,18 @@ export class RestartAppCommand extends AppLifecycleCommand {
       }
 
       const forcePull = !form.skipPull && config.force_pull;
-      await this.composeAppWithNetworkRecovery(appUrn, form, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);
+      // Another program can hold the port the app restarts on. Move the app off it, as install does, rather than fail.
+      const refusedHostPorts = new Set<number>();
+      await this.composeAppWithNetworkRecovery(
+        appUrn,
+        form,
+        `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`,
+        3,
+        undefined,
+        {
+          recoverHostPortConflict: (error) => this.moveMainPortOffConflict(appUrn, form, error, refusedHostPorts),
+        },
+      );
 
       // TODO(#244): revisit on next Traefik upgrade
       // Regenerate Traefik file-based config after app restarts (workaround for Docker API version issue)

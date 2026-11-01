@@ -111,7 +111,18 @@ export class StartAppCommand extends AppLifecycleCommand {
       }
 
       const forcePull = !form.skipPull && config.force_pull;
-      await this.composeAppWithNetworkRecovery(appUrn, form, startComposeCommand({ forcePull, onlyRecreateChanged: form.onlyRecreateChanged }));
+      // Another program can hold the port the app starts on. Move the app off it, as install does, rather than fail.
+      const refusedHostPorts = new Set<number>();
+      await this.composeAppWithNetworkRecovery(
+        appUrn,
+        form,
+        startComposeCommand({ forcePull, onlyRecreateChanged: form.onlyRecreateChanged }),
+        3,
+        undefined,
+        {
+          recoverHostPortConflict: (error) => this.moveMainPortOffConflict(appUrn, form, error, refusedHostPorts),
+        },
+      );
 
       // Regenerate Traefik file-based config after app starts
       const effectiveExposure = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');

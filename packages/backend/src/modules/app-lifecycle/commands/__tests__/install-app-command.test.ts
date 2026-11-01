@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mock, mockDeep } from 'vitest-mock-extended';
-import { InstallAppCommand, extractComposeImages, mapPullProgressToInstallProgress, withMovedPort } from '../install-app-command';
+import { InstallAppCommand, extractComposeImages, mapPullProgressToInstallProgress } from '../install-app-command';
+import { withMovedPort } from '../main-host-port';
 import type { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
 import { LoggerService } from '@/core/logger/logger.service';

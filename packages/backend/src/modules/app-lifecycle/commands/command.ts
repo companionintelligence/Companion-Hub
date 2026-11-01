@@ -1,5 +1,6 @@
 import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
+import type { PortAllocation } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { ModuleRef } from '@nestjs/core';
@@ -9,6 +10,7 @@ import type { OperationPhase } from '../app-operation-registry';
 import { prepareAppComposeDir } from './compose-preparation';
 import { reportAndTranslateAppError } from './failure-reporting';
 import { assertHostDevicesAvailable } from './host-device-preflight';
+import { moveMainPortOffHostConflict, writeMainHostPort } from './main-host-port';
 import { type ComposeRecoveryDeps, removeAppProjectNetworks, runComposeWithNetworkRecovery } from './network-recovery';
 
 /**
@@ -104,6 +106,23 @@ export class AppLifecycleCommand {
       recoverHostPortConflict: recovery?.recoverHostPortConflict,
     };
     return runComposeWithNetworkRecovery(deps, appUrn, form, command, maxAttempts, signal);
+  }
+
+  /** Point the app at the host port of its main allocation; see `writeMainHostPort`. */
+  protected async applyMainHostPort(
+    appUrn: AppUrn,
+    form: AppEventFormInput,
+    main: Pick<PortAllocation, 'hostPort' | 'containerPort'>,
+  ): Promise<void> {
+    return writeMainHostPort(this.moduleRef, appUrn, form, main);
+  }
+
+  /**
+   * Move the app's main port off a host port another program holds, once Docker has refused it. Install,
+   * start and restart pass it to `composeAppWithNetworkRecovery`; see `moveMainPortOffHostConflict`.
+   */
+  protected async moveMainPortOffConflict(appUrn: AppUrn, form: AppEventFormInput, error: unknown, refused: Set<number>): Promise<boolean> {
+    return moveMainPortOffHostConflict(this.moduleRef, appUrn, form, error, refused);
   }
 
   protected handleAppError = async (err: unknown, appId: string, event: string): Promise<AppCommandFailureResult> => {
