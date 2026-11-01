@@ -20,8 +20,11 @@ permissions:
 jobs:
   e2e-platform:
     if: >-
-      ${{ !github.event.pull_request.draft &&
-          (github.head_ref == 'dev' || github.head_ref == 'main') }}
+      ${{ (github.event_name == 'workflow_dispatch' &&
+           (github.ref_name == 'dev' || github.ref_name == 'main')) ||
+          (github.event_name == 'pull_request' &&
+           !github.event.pull_request.draft &&
+           (github.head_ref == 'dev' || github.head_ref == 'main')) }}
     runs-on: [self-hosted, ci-core]
     timeout-minutes: 15
 

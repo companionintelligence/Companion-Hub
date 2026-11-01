@@ -1302,6 +1302,7 @@ describe('InstallForm', () => {
       ];
       // A `t` that shows its values, which the module-wide mock drops.
       const t = (key: string, values?: Record<string, string>) => (values ? `${key} ${Object.values(values).join(' ')}` : key);
+      // biome-ignore lint/correctness/noComponentHookFactories: this one-shot test harness is rendered once for this assertion.
       const Harness = () => {
         const { control } = useForm();
 
