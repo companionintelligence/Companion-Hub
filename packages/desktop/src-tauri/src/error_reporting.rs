@@ -412,6 +412,7 @@ fn is_benign_hub_start_message(message: &str) -> bool {
             && lower.contains("traefik"))
         || lower.contains("cannot connect to the docker daemon")
         || lower.contains("failed to connect to the docker api")
+        || lower.contains("needs docker compose")
         || is_benign_compose_optional_env_warning(&lower)
 }
 
@@ -905,6 +906,13 @@ mod tests {
             grouping_fingerprint("Database bootstrap failed."),
             grouping_fingerprint("Traefik recreate preparation failed.")
         );
+    }
+
+    #[test]
+    fn suppresses_compose_too_old_refusal_from_sentry_capture() {
+        assert!(is_benign_hub_start_message(
+            "setup: Auto-start failed: Companion Hub needs Docker Compose 2.33 or newer. This computer has Compose 2.31.0-desktop.2. Update Docker, then start the Hub again."
+        ));
     }
 
     #[test]

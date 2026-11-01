@@ -281,7 +281,7 @@ fn hub_node_arch_that_cannot_be_read_is_not_a_mismatch() {
         let log = engine.check_arch("x64");
 
         assert!(
-            log.contains(&format!("Could not probe Hub Node arch: {reason}")),
+            log.contains(&format!("Hub Node arch not read: {reason}")),
             "log: {log}"
         );
         assert!(!log.contains("mismatch"), "log: {log}");
@@ -306,10 +306,7 @@ fn hub_node_arch_check_logs_the_reason_when_docker_or_node_fails() {
     ] {
         let log = engine.check_arch("x64");
 
-        assert!(
-            log.contains("Could not probe Hub Node arch: "),
-            "log: {log}"
-        );
+        assert!(log.contains("Hub Node arch not read: "), "log: {log}");
         assert!(log.contains(reason), "log: {log}");
         assert!(!log.contains("mismatch"), "log: {log}");
     }
@@ -394,7 +391,7 @@ fn hub_node_arch_mismatch_is_reported_on_a_streaming_engine_whose_copy_route_fai
         ),
         "log: {log}"
     );
-    assert!(!log.contains("Could not probe"), "log: {log}");
+    assert!(!log.contains("Hub Node arch not read"), "log: {log}");
 }
 
 #[test]
@@ -431,6 +428,6 @@ fn hub_node_arch_missing_from_the_list_of_node_arches_is_still_a_mismatch() {
             ),
             "log: {log}"
         );
-        assert!(!log.contains("Could not probe"), "log: {log}");
+        assert!(!log.contains("Hub Node arch not read"), "log: {log}");
     }
 }

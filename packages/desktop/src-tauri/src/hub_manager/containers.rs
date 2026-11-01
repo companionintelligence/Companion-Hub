@@ -742,7 +742,7 @@ pub(crate) fn log_hub_node_arch(hub: &ContainerReader, expected: &str, data_dir:
     let actual = output.stdout.as_str();
     let message = if !output.succeeded() || actual.is_empty() {
         format!(
-            "Could not probe Hub Node arch: {}",
+            "Hub Node arch not read: {}",
             hub_node_arch_unread_reason(&output)
         )
     } else if output.printed_line(expected) {

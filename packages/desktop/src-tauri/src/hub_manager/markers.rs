@@ -346,6 +346,10 @@ pub enum HubWatchdogAction {
 /// `api_container_up` is true when [`get_hub_status`] reports `Running` or `Starting`
 /// (container present and not hard-stopped). In that case we never call full
 /// `start_hub` — only an optional single-container bounce after a longer threshold.
+///
+/// `start_in_progress` is [`hub_start_in_progress`]. While a start runs, `get_hub_status`
+/// reports `Starting` without probing the container, so `api_container_up` says nothing
+/// about it, and the watchdog leaves the start to finish.
 pub fn decide_hub_watchdog_action(
     consecutive_health_failures: u32,
     cooldown_elapsed_secs: Option<u64>,
@@ -353,13 +357,15 @@ pub fn decide_hub_watchdog_action(
     start_failed: bool,
     api_container_up: bool,
     docker_available: bool,
+    start_in_progress: bool,
 ) -> HubWatchdogAction {
     // If Docker is not running there is nothing we can do — skip silently.
     if !docker_available {
         return HubWatchdogAction::None;
     }
     // Respect intentional stop and sticky start failures — both require explicit user action.
-    if user_stopped || start_failed {
+    // A start already running owns the containers until it finishes.
+    if user_stopped || start_failed || start_in_progress {
         return HubWatchdogAction::None;
     }
     if let Some(elapsed) = cooldown_elapsed_secs {
@@ -412,6 +418,7 @@ pub(crate) fn should_trigger_hub_watchdog_for(
             start_failed,
             false,
             docker_available,
+            false,
         ),
         HubWatchdogAction::StartHub
     )
@@ -433,7 +440,8 @@ pub fn hub_needs_runtime_recovery() -> bool {
 
 /// Restart only the Hub API container after a wedged-API detection.
 pub fn restart_wedged_hub_container() -> Result<String, String> {
-    let name = hub_container_name();
+    let name = first_existing_container(HUB_CONTAINER_NAMES)
+        .ok_or_else(|| "No Hub container is left to restart.".to_string())?;
     let _ = append_desktop_log(
         "tray.watchdog",
         &format!("Restarting wedged {name} container (API unreachable while Docker reports up)."),

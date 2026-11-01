@@ -668,7 +668,9 @@ pub fn get_hub_status() -> HubStatus {
                 }
             }
         }
-        ("created", _) | ("exited", _) => {
+        // A dead container is not running and cannot be restarted in place, so it reads as
+        // stopped. Left to the fallthrough, it showed "Starting" and the watchdog never acted.
+        ("created", _) | ("exited", _) | ("dead", _) => {
             if let Some(message) = read_start_failed(&data_dir) {
                 HubStatus::Error { message }
             } else {

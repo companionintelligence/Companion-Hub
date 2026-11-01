@@ -923,7 +923,7 @@ pub fn run() {
                             "user intentionally stopped the Hub — respecting decision across relaunch"
                                 .to_string()
                         } else if start_failed {
-                            "previous start failed — waiting for explicit user retry"
+                            "an earlier start did not finish; waiting for an explicit user retry"
                                 .to_string()
                         } else if !containers_exist {
                             "containers are missing".to_string()

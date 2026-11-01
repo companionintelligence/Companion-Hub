@@ -84,6 +84,12 @@ pub fn refresh_host_hardware_probe_cache(data_dir: &Path) {
     refresh_host_metrics_probe_cache(data_dir);
 }
 
+/// True while a `start_hub` call runs. The start is bringing the containers up, so the watchdog
+/// must not restart one from under it.
+pub fn hub_start_in_progress() -> bool {
+    START_IN_PROGRESS.load(Ordering::SeqCst)
+}
+
 /// Start Hub using docker compose up (with port conflict resolution).
 ///
 /// Uses a global `AtomicBool` guard to prevent concurrent invocations.

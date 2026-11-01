@@ -556,6 +556,8 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                     crate::hub_manager::HubStatus::Running
                         | crate::hub_manager::HubStatus::Starting
                 );
+                // The decision reads the container only through `hub_status`. A missing
+                // container reads Stopped, which routes to the start path.
                 let action = if !compose_ready {
                     // Desktop initialize copies compose into the data dir; don't race it.
                     crate::hub_manager::HubWatchdogAction::None
@@ -568,6 +570,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                         crate::hub_manager::is_start_failed(&data_dir_for_watchdog),
                         api_container_up,
                         crate::hub_manager::is_docker_available(),
+                        crate::hub_manager::hub_start_in_progress(),
                     )
                 };
                 match action {
