@@ -249,6 +249,62 @@ describe('ErrorReportingService', () => {
     expect(scope.setTag).toHaveBeenCalledWith('error_class', 'rocm-unavailable');
   });
 
+  it('attaches the underlying cause as a scrubbed extra of about 1 KB at most', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'jaeger:ci-marketplace',
+      phase: 'install',
+      message: 'COMMON_AN_ERROR_OCCURRED',
+      cause: `timeout of 20000ms exceeded password=hunter2 ${'x'.repeat(2000)}`,
+    });
+
+    const cause = lastScope().setExtra.mock.calls.find(([key]) => key === 'cause')?.[1];
+    expect(typeof cause).toBe('string');
+    expect(cause).toContain('timeout of 20000ms exceeded');
+    expect(cause).not.toContain('hunter2');
+    expect(cause.length).toBeLessThanOrEqual(1024);
+  });
+
+  it('keeps a multi-line failure on one title line, so the cause is not cut off', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'ci-memory:ci-marketplace',
+      phase: 'install',
+      message:
+        'Container ci-memory_ci-marketplace-database-1  Error\ndependency failed to start: container ci-memory_ci-marketplace-database-1 is unhealthy',
+    });
+
+    const [title] = vi.mocked(Sentry.captureMessage).mock.calls[0];
+    expect(title).toContain('dependency failed to start: container ci-memory_ci-marketplace-database-1 is unhealthy');
+    expect(title).not.toContain('\n');
+  });
+
+  it('titles a translation key by its cause, and keeps the key as the message', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'jaeger:ci-marketplace',
+      phase: 'install',
+      message: 'COMMON_AN_ERROR_OCCURRED',
+      cause: 'Failed to fetch app files: 503 Service Unavailable',
+    });
+
+    const [title] = vi.mocked(Sentry.captureMessage).mock.calls[0];
+    expect(title).toContain('Failed to fetch app files: 503 Service Unavailable');
+    expect(lastScope().setExtra).toHaveBeenCalledWith('message', 'COMMON_AN_ERROR_OCCURRED');
+  });
+
   it('titles crash-phase reports as a crash, not "crash failed"', () => {
     const configuration = {
       get: vi.fn(() => ({ allowErrorMonitoring: true })),

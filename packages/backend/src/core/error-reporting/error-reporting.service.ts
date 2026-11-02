@@ -29,6 +29,12 @@ export interface AppFailureContext {
   message: string;
   /** Structured error code from AppLifecycleError (e.g. 'rocm_kfd_missing'), when available. */
   errorCode?: string;
+  /**
+   * The underlying error text behind `message`. A translation key such as COMMON_AN_ERROR_OCCURRED names
+   * what the user saw, not what broke: the cause is attached as an extra, and when `message` is only a key
+   * it becomes the headline that the title and the classifier read.
+   */
+  cause?: string;
   containers?: Array<{ name: string; state: string; logs?: string }>;
 }
 
@@ -165,6 +171,17 @@ export function classifyAppFailure(message: string, errorCode?: string): AppFail
   return { category: 'unknown', errorClass: 'unclassified' };
 }
 
+/** Longest cause the event carries as an extra; a whole response body is not worth more. */
+const CAUSE_EXTRA_MAX_LENGTH = 1024;
+
+/** Longest detail a Sentry title carries; the event keeps the full message as an extra. */
+const TITLE_DETAIL_MAX_LENGTH = 300;
+
+/** A translation key such as COMMON_AN_ERROR_OCCURRED: it names what the user saw, not what broke. */
+function isTranslationKeyShaped(message: string): boolean {
+  return /^[A-Z][A-Z0-9_]+$/.test(message.trim());
+}
+
 function appFailureTitle(phase: AppFailurePhase, appUrn: string, detail: string): string {
   // "Marketplace app crash failed" read like the crash handler itself broke.
   if (phase === 'crash') {
@@ -285,7 +302,10 @@ export class ErrorReportingService {
     }
     this.debounce.set(debounceKey, now);
 
-    const classification = classifyAppFailure(context.message, context.errorCode);
+    // A translation key says what the user was shown, not what broke. When the cause is known it is the
+    // headline: the classifier and the title both read it.
+    const headline = context.cause && isTranslationKeyShaped(context.message) ? context.cause : context.message;
+    const classification = classifyAppFailure(headline, context.errorCode);
     // User-environment failures (Docker down, disk full, unsupported arch, …) are not hub bugs, and neither
     // is an app that failed on its own terms (a crash, a dependency, a health probe). Keep them visible but
     // below the error threshold.
@@ -312,6 +332,10 @@ export class ErrorReportingService {
           : ['app-failure', context.phase, classification.errorClass],
       );
       scope.setExtra('message', scrubString(context.message));
+      if (context.cause) {
+        // Scrubbed before it is bounded, so a secret cannot survive by straddling the cut.
+        scope.setExtra('cause', scrubString(context.cause).slice(0, CAUSE_EXTRA_MAX_LENGTH));
+      }
       if (classification.errorClass === 'port-conflict') {
         // Name the port and the remedy, so the report says what to change on this device.
         const hostPort = extractConflictingHostPort(context.message);
@@ -353,8 +377,15 @@ export class ErrorReportingService {
         // Best-effort pairing context.
       }
 
-      const scrubbedMessage = scrubString(context.message).trim();
-      const detail = scrubbedMessage ? `: ${scrubbedMessage}` : '';
+      // Docker and compose put the cause on a later line than the headline, and a Sentry title keeps only
+      // the first line. Joining the lines keeps the cause in the title.
+      const titleDetail = scrubString(headline)
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .join(' — ')
+        .slice(0, TITLE_DETAIL_MAX_LENGTH);
+      const detail = titleDetail ? `: ${titleDetail}` : '';
       Sentry.captureMessage(appFailureTitle(context.phase, String(context.appUrn), detail), level);
     });
   }
