@@ -234,6 +234,12 @@ describe('RestartAppCommand — pull policy', () => {
     expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn);
   });
 
+  it('rebuilds the Traefik routes of a Private VPN app, which leaves exposedLocal off', async () => {
+    await command.execute(appUrn, { exposureMode: 'tailscale', exposedLocal: false });
+
+    expect(traefikConfigService.regenerateTraefikConfig).toHaveBeenCalledTimes(2);
+  });
+
   it('leaves the Traefik routes alone for an app that does not go out through Traefik', async () => {
     await command.execute(appUrn, {});
 

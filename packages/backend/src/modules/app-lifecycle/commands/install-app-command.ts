@@ -2,6 +2,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { SSEService } from '@/core/sse/sse.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
+import { getEffectiveExposureMode } from '@/modules/apps/app-exposure.helpers';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
@@ -414,13 +415,27 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // Regenerate Traefik file-based config after app is installed and started. Also when a service
       // failed, since the other containers stay up and the status sync moves the app to `running` once
       // they all settle. The check above was the wait for the containers to start.
-      const effectiveExposure = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
-      if (effectiveExposure !== 'local' && !form.skipRun) {
+      if (getEffectiveExposureMode(form) !== 'local') {
         const traefikConfigService = this.moduleRef.get(TraefikConfigService, { strict: false });
         if (traefikConfigService) {
           logger.debug(`Regenerating Traefik config for newly installed exposed app ${appUrn}`);
           await traefikConfigService.regenerateTraefikConfig(0);
         }
+      }
+
+      // Register the agent wake webhook for MCP-client apps (R-HOOK-1). Also when a service failed: an
+      // app the status sync brings to `running` goes through nothing else that would register it.
+      //
+      // The target is resolved by AgentNotifyService from what is on disk. Install and the startup
+      // rehydration call the same code, so they cannot drift apart.
+      try {
+        const agentNotifyService = this.moduleRef.get(AgentNotifyService, { strict: false });
+        const target = await agentNotifyService?.resolveWebhookTarget(appUrn);
+        if (target) {
+          agentNotifyService.registerWebhook(appUrn, target.url, target.token);
+        }
+      } catch (hookErr) {
+        logger.warn(`Failed to register agent webhook for ${appUrn}: ${hookErr}`);
       }
 
       if (notUp) {
@@ -456,20 +471,6 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       // Cloudflare public DNS/tunnel sync runs in AppLifecycleService.syncExposure()
       // once the install completes and the app is marked running — not here.
-
-      // Register the agent wake webhook for MCP-client apps (R-HOOK-1).
-      //
-      // The target is resolved by AgentNotifyService from what is on disk, so install and
-      // the startup rehydration cannot drift apart — they call the same code.
-      try {
-        const agentNotifyService = this.moduleRef.get(AgentNotifyService, { strict: false });
-        const target = await agentNotifyService?.resolveWebhookTarget(appUrn);
-        if (target) {
-          agentNotifyService.registerWebhook(appUrn, target.url, target.token);
-        }
-      } catch (hookErr) {
-        logger.warn(`Failed to register agent webhook for ${appUrn}: ${hookErr}`);
-      }
 
       await emitProgress(99);
       await this.markInstallSucceeded(appUrn, sseService, appsRepository, logger);

@@ -4,6 +4,7 @@ import { InstallAppCommand, extractComposeImages, mapPullProgressToInstallProgre
 import { withMovedPort } from '../main-host-port';
 import type { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
+import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { SSEService } from '@/core/sse/sse.service';
@@ -530,6 +531,26 @@ describe('InstallAppCommand — pull policy', () => {
 
     expect(result.success).toBe(false);
     expect(traefikConfigService.regenerateTraefikConfig).toHaveBeenCalledWith(0);
+  });
+
+  it('SHOULD register the agent webhook when a service failed, since the status sync can bring the app to running', async () => {
+    dockerService.waitForManagedAppContainersReady.mockResolvedValue({
+      ok: false,
+      message: 'ghost keeps restarting',
+      serviceFailure: { kind: 'restarting', service: 'ghost' },
+    });
+    const agentNotifyService = {
+      resolveWebhookTarget: vi.fn().mockResolvedValue({ url: 'http://agent/hook', token: 'token' }),
+      registerWebhook: vi.fn(),
+    };
+    const moduleRef = (command as any).moduleRef;
+    const resolve = moduleRef.get.getMockImplementation();
+    moduleRef.get.mockImplementation((token: unknown) => (token === AgentNotifyService ? agentNotifyService : resolve(token)));
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(agentNotifyService.registerWebhook).toHaveBeenCalledWith(appUrn, 'http://agent/hook', 'token');
   });
 
   it('SHOULD name the failing service and keep its logs when it crashes after compose up', async () => {
