@@ -162,6 +162,33 @@ describe('RestartAppCommand — pull policy', () => {
     expect(upCmd).toContain('--pull always');
   });
 
+  // Saving an edited custom app restarts it, so a new image it names arrives here rather than in a start.
+  it('records an image compose pulled during the restart and leaves one that was already there', async () => {
+    const onComputer = new Map([['traefik/whoami:v1.10.3', 'sha256:mine']]);
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [
+        { name: 'web', image: 'traefik/whoami:v1.10.2', isMain: true, internalPort: 80 },
+        { name: 'side', image: 'traefik/whoami:v1.10.3' },
+      ],
+      overrides: [],
+    } as any);
+    dockerService.imageIdLocally = vi.fn(async (ref: string) => onComputer.get(ref) ?? null);
+    dockerService.imageIdsLocally = vi.fn(async () => new Set(onComputer.values()));
+    dockerService.imageTagsLocally = vi.fn(async () => []);
+    appFilesManager.readPulledImages.mockResolvedValue({ imageIds: [], imageTags: [] });
+    appFilesManager.writePulledImages.mockResolvedValue(true);
+    dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+      if (args.startsWith('up')) {
+        onComputer.set('traefik/whoami:v1.10.2', 'sha256:whoami');
+      }
+    });
+
+    const result = await command.execute('port-test:_user' as AppUrn, {});
+
+    expect(result.success).toBe(true);
+    expect(appFilesManager.writePulledImages).toHaveBeenCalledWith('port-test:_user', { imageIds: ['sha256:whoami'], imageTags: [] });
+  });
+
   // A device present at install time can be gone by a later restart (ROCm/KVM modules not yet
   // loaded at boot, host reconfigured) — restart needs the same host-device preflight as
   // install/start, rather than only finding out via Docker's raw compose-up error.

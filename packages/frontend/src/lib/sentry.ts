@@ -1,4 +1,5 @@
 import * as Sentry from '@sentry/react';
+import { client } from '@/api-client/client.gen';
 import { TranslatableError } from '@/types/error.types';
 import { isChunkLoadError } from './chunk-load-error';
 import { fetchDeviceRegistrationInfoResult } from './registration-api';
@@ -230,6 +231,48 @@ function enrichTranslatableErrorEvent(event: Sentry.ErrorEvent, error: Translata
   return event;
 }
 
+/** The loopback names a machine answers to itself under. */
+const LOOPBACK_HOST = /^(?:localhost|127\.0\.0\.1|\[::1\])(?=:|$)/;
+
+/**
+ * The SDK appends the host a generic fetch failure hit: "Failed to fetch (localhost:5002)". Safari
+ * says "Load failed" and Firefox "NetworkError when attempting to fetch resource.".
+ */
+const FETCH_FAILURE_WITH_HOST = /^(?:Failed to fetch|Load failed|NetworkError when attempting to fetch resource\.) \(([^()\s]+)\)$/;
+
+/**
+ * A store or alternatives request that got no response at all (status 0): the device is offline, or
+ * the network dropped. The screens show their own error state, so the event is not a frontend bug.
+ */
+const NO_RESPONSE_STORE_LOAD = /^Failed to load (?:store listings|alternatives) \(0\)/;
+
+/** Injected by an automation script that calls a page function the app never defined. */
+const INJECTED_SCRIPT_CALL = /^Function "__seenText" is not exposed$/;
+
+/**
+ * The Hub API origin the client calls, as `host:port`, when that origin is this machine. The
+ * loopback names fold together, so `localhost:5002` and `127.0.0.1:5002` match. Null for a remote Hub.
+ */
+function localHubApiHost(): string | null {
+  let api: URL;
+  try {
+    api = new URL(client.getConfig().baseUrl || window.location.origin, window.location.href);
+  } catch {
+    return null;
+  }
+  return LOOPBACK_HOST.test(api.host) ? api.host.replace(LOOPBACK_HOST, 'loopback') : null;
+}
+
+/** A request to the Hub API on this machine failed to connect, which means that Hub is not answering. */
+function isLocalHubApiFetchFailure(text: string): boolean {
+  const failedHost = FETCH_FAILURE_WITH_HOST.exec(text)?.[1];
+  if (!failedHost) {
+    return false;
+  }
+  const localHost = localHubApiHost();
+  return localHost !== null && failedHost.replace(LOOPBACK_HOST, 'loopback') === localHost;
+}
+
 function shouldDropSentryEvent(event: Sentry.ErrorEvent): boolean {
   const exceptionValues = event.exception?.values ?? [];
   const haystack = [event.message, ...exceptionValues.flatMap((value) => [value.value, value.type])].filter(
@@ -254,6 +297,13 @@ function shouldDropSentryEvent(event: Sentry.ErrorEvent): boolean {
     // TanStack Query throws CancelledError whenever an in-flight query is
     // superseded or unmounted; it is expected control flow, not a failure.
     if (text === 'CancelledError') {
+      return true;
+    }
+    // The Hub API on this machine is not answering. That is the Hub being down, not a frontend bug.
+    if (isLocalHubApiFetchFailure(text)) {
+      return true;
+    }
+    if (NO_RESPONSE_STORE_LOAD.test(text) || INJECTED_SCRIPT_CALL.test(text)) {
       return true;
     }
   }
@@ -464,6 +514,15 @@ export function captureHubWarning(message: string, context?: Record<string, unkn
     }
     Sentry.captureMessage(message, 'warning');
   });
+}
+
+/** For a state the page recovers from on its own: it rides along with a later event instead of being one. */
+export function addHubBreadcrumb(message: string, data?: Record<string, unknown>): void {
+  if (!sentryInitialized) {
+    return;
+  }
+
+  Sentry.addBreadcrumb({ category: 'hub', level: 'warning', message, data });
 }
 
 export function setHubSentryDeviceId(deviceId: string | null | undefined): void {

@@ -7,6 +7,7 @@ import {
 } from '../registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DatabaseService } from '@/core/database/database.service';
+import { entitlementCache, whoisCache } from '@/core/database/drizzle/schema';
 import { LoggerService } from '@/core/logger/logger.service';
 import { CloudflareClientService } from '../../cloudflare/cloudflare-client.service';
 import { TunnelHealthService } from '../../cloudflare/tunnel-health.service';
@@ -3107,7 +3108,8 @@ describe('RegistrationService', () => {
 
       await service.resetRegistration();
 
-      expect(deleteGrants).toHaveBeenCalled();
+      expect(deleteGrants).toHaveBeenCalledWith(whoisCache);
+      expect(deleteGrants).toHaveBeenCalledWith(entitlementCache);
       expect(loggerService.info).toHaveBeenCalledWith('Cleared cached app grants');
     });
   });

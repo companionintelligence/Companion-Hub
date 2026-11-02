@@ -128,6 +128,7 @@ The Hub's own restarts skip the check. Each of them updates an app that is alrea
 | Entitled, free, or unknown app | Allowed | Allowed |
 | `402` | Refused | Refused |
 | `401`: device key rejected | Refused, because the bundle download and registry token that follow need the same key | Allowed, unless a check in the last 24 hours returned `402` |
+| `409 ORGANIZATION_REQUIRED` or `403 DEVICE_NOT_IN_ORGANIZATION`: Portal can't place this Hub | Refused with a message saying how to repair it, even with an entitled answer cached | Allowed, unless a check in the last 24 hours returned `402` |
 | Portal unreachable or `5xx` | Allowed only with an entitled answer cached in the last 24 hours | Allowed, unless a check in the last 24 hours returned `402` |
 
 ## The push key

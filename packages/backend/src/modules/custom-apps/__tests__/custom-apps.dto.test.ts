@@ -1,7 +1,53 @@
 import { BadRequestException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import { ZodValidationPipe } from '@/common/zod-dto';
-import { CreateCustomAppDto, UpdateCustomAppDto } from '../dto/custom-apps.dto';
+import { CreateCustomAppDto, CreatePortExposeAppDto, UpdateCustomAppDto, UpdatePortExposeAppDto } from '../dto/custom-apps.dto';
+
+/*
+ * The Hub's own web ingress holds 80 and 443, so a port-expose app published on one of them can never bind.
+ * A save that asks for one is answered 400 naming the port; any other port keeps the range rule.
+ */
+describe('port-expose DTOs — Hub ingress ports', () => {
+  const refusal = (metatype: typeof CreatePortExposeAppDto | typeof UpdatePortExposeAppDto, body: unknown) => {
+    try {
+      new ZodValidationPipe().transform(body, { metatype });
+    } catch (error) {
+      expect(error).toBeInstanceOf(BadRequestException);
+      return (error as BadRequestException).getResponse() as {
+        message: Array<{ message: string; path: unknown[]; params?: unknown }>;
+      };
+    }
+    throw new Error('the body was accepted');
+  };
+
+  it.each([80, 443])('answers 400 naming port %i on a create and on an update', (port) => {
+    const create = refusal(CreatePortExposeAppDto, { name: 'Legacy web', port, exposureMode: 'local' });
+    const update = refusal(UpdatePortExposeAppDto, { port, exposureMode: 'local' });
+
+    for (const response of [create, update]) {
+      expect(response.message).toContainEqual(
+        expect.objectContaining({
+          message: 'CUSTOM_APP_ERROR_PORT_HELD_BY_HUB',
+          path: ['port'],
+          params: { port: String(port) },
+        }),
+      );
+    }
+  });
+
+  it('keeps the range rule for a port the Hub does not hold', () => {
+    const response = refusal(CreatePortExposeAppDto, { name: 'Legacy web', port: 22, exposureMode: 'local' });
+
+    expect(response.message).toEqual([expect.objectContaining({ path: ['port'] })]);
+    expect(response.message[0]?.message).not.toBe('CUSTOM_APP_ERROR_PORT_HELD_BY_HUB');
+  });
+
+  it('accepts a port the Hub does not hold', () => {
+    expect(() =>
+      new ZodValidationPipe().transform({ name: 'Legacy web', port: 8080, exposureMode: 'local' }, { metatype: CreatePortExposeAppDto }),
+    ).not.toThrow();
+  });
+});
 
 /*
  * The Hub finds an app's containers by `ci-hub.appurn` and the other labels it writes. A custom app

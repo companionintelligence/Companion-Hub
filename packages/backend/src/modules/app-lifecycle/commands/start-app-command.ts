@@ -114,7 +114,7 @@ export class StartAppCommand extends AppLifecycleCommand {
       const forcePull = !form.skipPull && config.force_pull;
       // Another program can hold the port the app starts on. Move the app off it, as install does, rather than fail.
       const refusedHostPorts = new Set<number>();
-      await this.composeAppWithNetworkRecovery(
+      await this.composeUpRecordingPulls(
         appUrn,
         form,
         startComposeCommand({ forcePull, onlyRecreateChanged: form.onlyRecreateChanged }),

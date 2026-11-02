@@ -10,6 +10,26 @@ use std::process::Output;
 use std::time::Duration;
 
 #[test]
+fn only_refusals_that_clear_on_their_own_are_retried() {
+    assert!(is_transient_container_removal_failure(
+        "cannot remove container \"traefik\": could not kill container: container aa669b695e5a PID 4123"
+    ));
+    assert!(is_transient_container_removal_failure(
+        "Cannot restart container ci-hub: container is marked for removal and cannot be started"
+    ));
+    assert!(is_transient_container_removal_failure(
+        "Cannot restart container ci-os-hub: tried to kill container, but did not receive an exit event"
+    ));
+    // A runtime that cannot start a shim does not clear by waiting, and neither does a socket that is down.
+    assert!(!is_transient_container_removal_failure(
+        "Cannot restart container ci-hub: failed to create task for container: failed to start shim"
+    ));
+    assert!(!is_transient_container_removal_failure(
+        "failed to connect to the docker API at unix:///home/cid/.docker/desktop/docker.sock"
+    ));
+}
+
+#[test]
 fn prefers_a_running_legacy_hub_over_an_exited_canonical_container() {
     let names = ["ci-hub", "ci-os-hub"];
     let chosen = crate::hub_manager::first_preferred_container(&names, |name| match name {
@@ -281,7 +301,7 @@ fn hub_node_arch_that_cannot_be_read_is_not_a_mismatch() {
         let log = engine.check_arch("x64");
 
         assert!(
-            log.contains(&format!("Could not probe Hub Node arch: {reason}")),
+            log.contains(&format!("Hub Node arch not read: {reason}")),
             "log: {log}"
         );
         assert!(!log.contains("mismatch"), "log: {log}");
@@ -306,10 +326,7 @@ fn hub_node_arch_check_logs_the_reason_when_docker_or_node_fails() {
     ] {
         let log = engine.check_arch("x64");
 
-        assert!(
-            log.contains("Could not probe Hub Node arch: "),
-            "log: {log}"
-        );
+        assert!(log.contains("Hub Node arch not read: "), "log: {log}");
         assert!(log.contains(reason), "log: {log}");
         assert!(!log.contains("mismatch"), "log: {log}");
     }
@@ -394,7 +411,7 @@ fn hub_node_arch_mismatch_is_reported_on_a_streaming_engine_whose_copy_route_fai
         ),
         "log: {log}"
     );
-    assert!(!log.contains("Could not probe"), "log: {log}");
+    assert!(!log.contains("Hub Node arch not read"), "log: {log}");
 }
 
 #[test]
@@ -431,6 +448,6 @@ fn hub_node_arch_missing_from_the_list_of_node_arches_is_still_a_mismatch() {
             ),
             "log: {log}"
         );
-        assert!(!log.contains("Could not probe"), "log: {log}");
+        assert!(!log.contains("Hub Node arch not read"), "log: {log}");
     }
 }

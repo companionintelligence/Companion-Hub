@@ -617,6 +617,47 @@ describe('AppStatusSyncService', () => {
     expect(errorReportingService.captureException).toHaveBeenCalledWith(boom, { surface: 'app-status-sync' });
   });
 
+  it('treats an unreachable Docker socket as a warning, not an error on every pass', async () => {
+    docker.listContainers.mockRejectedValue(
+      Object.assign(new Error('connect EACCES /var/run/docker.sock'), { code: 'EACCES', address: '/var/run/docker.sock' }),
+    );
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(result.success).toBe(false);
+    expect(errorReportingService.captureException).not.toHaveBeenCalled();
+    expect(errorReportingService.captureWarning).toHaveBeenCalledWith(
+      'App status sync cannot reach the Docker socket',
+      { surface: 'app-status-sync' },
+      { debounceKey: 'app-status-sync:docker-socket', debounceMs: 60 * 60_000 },
+    );
+  });
+
+  it('treats a Docker call the read-only proxy refuses as a warning, not an error on every pass', async () => {
+    docker.listContainers.mockRejectedValue(
+      Object.assign(new Error('(HTTP code 403) unexpected - blocked by the read-only test proxy '), { statusCode: 403 }),
+    );
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(result.success).toBe(false);
+    expect(errorReportingService.captureException).not.toHaveBeenCalled();
+    expect(errorReportingService.captureWarning).toHaveBeenCalledWith(
+      'App status sync was refused by the read-only Docker proxy',
+      { surface: 'app-status-sync' },
+      { debounceKey: 'app-status-sync:docker-proxy-refused', debounceMs: 60 * 60_000 },
+    );
+  });
+
+  it('keeps any other Docker refusal an error', async () => {
+    docker.listContainers.mockRejectedValue(Object.assign(new Error('(HTTP code 403) unexpected - forbidden '), { statusCode: 403 }));
+
+    await service.syncAllAppStatuses();
+
+    expect(errorReportingService.captureException).toHaveBeenCalledWith(expect.any(Error), { surface: 'app-status-sync' });
+    expect(errorReportingService.captureWarning).not.toHaveBeenCalled();
+  });
+
   it('attaches container logs when reporting a running → stopped crash', async () => {
     appRepository.getApps.mockResolvedValue([
       {

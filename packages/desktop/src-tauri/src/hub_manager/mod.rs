@@ -34,6 +34,7 @@ mod logging;
 mod markers;
 mod runtime_env;
 mod runtime_state;
+mod start_retry;
 mod status;
 mod windows_paths;
 mod wsl;
@@ -57,6 +58,7 @@ pub use logging::*;
 pub use markers::*;
 pub use runtime_env::*;
 pub(crate) use runtime_state::*;
+pub use start_retry::*;
 pub use status::*;
 pub(crate) use windows_paths::*;
 // Every consumer of these is #[cfg(windows)], so on other hosts the re-export

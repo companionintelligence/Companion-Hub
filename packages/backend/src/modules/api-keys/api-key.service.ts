@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { TRANSIENT_DB_RETRY_DELAYS_MS, withTransientDbRetry } from '@/core/database/transient-db-retry';
-import { ApiKeyStoreUnavailableError, isTransientDbError } from './api-key.errors';
+import { ApiKeyStoreUnavailableError, isDatabaseCredentialError, isTransientDbError } from './api-key.errors';
 import { type ApiKeyListRow, type ApiKeyRow, ApiKeyRepository } from './api-key.repository';
 import { API_KEY_SCOPES, type ApiKeyScope } from './api-key.scopes';
 import { type ApiKeyCapability, DEFAULT_API_KEY_CAPABILITY, coerceApiKeyCapability } from './api-key.capabilities';
@@ -154,8 +154,9 @@ export class ApiKeyService {
       });
     } catch (err) {
       // Non-transient query bugs must keep their original type. Exhausted transient
-      // failures become ApiKeyStoreUnavailableError so guards can answer 503.
-      if (!isTransientDbError(err)) {
+      // failures, and a login Postgres refuses (the Hub's own credentials, which no retry
+      // fixes), become ApiKeyStoreUnavailableError so guards can answer 503.
+      if (!isTransientDbError(err) && !isDatabaseCredentialError(err)) {
         throw err;
       }
       throw new ApiKeyStoreUnavailableError(err);

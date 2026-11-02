@@ -739,7 +739,7 @@ pub fn select_docker_engine(
     Ok((
         engine.candidate.clone(),
         format!(
-            "fresh install: platform fallback {} ({}){note}",
+            "fresh install: first reachable engine in platform order, {} ({}){note}",
             engine.candidate.label, engine.candidate.docker_host
         ),
     ))
@@ -1096,7 +1096,7 @@ mod tests {
         )];
         let (selected, reason) = select_docker_engine(&engines, None).unwrap();
         assert_eq!(selected.kind, DockerEngineKind::System);
-        assert!(reason.contains("fallback"));
+        assert!(reason.contains("first reachable engine"));
     }
 
     #[test]
@@ -1303,7 +1303,7 @@ mod tests {
         )];
         let (selected, reason) = select_docker_engine(&engines, None).unwrap();
         assert_eq!(selected.kind, DockerEngineKind::AppleContainer);
-        assert!(reason.contains("fallback"));
+        assert!(reason.contains("first reachable engine"));
         assert!(reason.contains("experimental"));
     }
 

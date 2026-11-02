@@ -489,6 +489,67 @@ describe('StartAppCommand — pull policy', () => {
     });
   });
 
+  describe('the record of the images the start pulled', () => {
+    const whoami = 'traefik/whoami:v1.10.2';
+    let onComputer: Map<string, string>;
+
+    beforeEach(() => {
+      onComputer = new Map();
+      vi.mocked(parseComposeJson).mockReturnValue({
+        services: [{ name: 'web', image: whoami, isMain: true, internalPort: 80 }],
+        overrides: [],
+      } as any);
+      dockerService.imageIdLocally = vi.fn(async (ref: string) => onComputer.get(ref) ?? null);
+      dockerService.imageIdsLocally = vi.fn(async () => new Set(onComputer.values()));
+      dockerService.imageTagsLocally = vi.fn(async () => []);
+      appFilesManager.readPulledImages.mockResolvedValue({ imageIds: [], imageTags: [] });
+      appFilesManager.writePulledImages.mockResolvedValue(true);
+    });
+
+    it('lists the images here for a forced pull, which can move a tag, and not for a start that pulls nothing', async () => {
+      onComputer.set(whoami, 'sha256:whoami');
+      appFilesManager.readPulledImages.mockResolvedValue({ imageIds: ['sha256:whoami'], imageTags: [] });
+
+      await command.execute(appUrn, {});
+      expect(dockerService.imageIdsLocally).not.toHaveBeenCalled();
+
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'test-app', force_pull: true } as any);
+      await command.execute(appUrn, {});
+      expect(dockerService.imageIdsLocally).toHaveBeenCalledTimes(1);
+    });
+
+    it('records an image compose pulled during the start', async () => {
+      dockerService.composeApp.mockImplementation(async () => {
+        onComputer.set(whoami, 'sha256:whoami');
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+      expect(appFilesManager.writePulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:whoami'], imageTags: [] });
+    });
+
+    it('does not record an image that was on the computer before the start', async () => {
+      onComputer.set(whoami, 'sha256:mine');
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+      expect(appFilesManager.writePulledImages).not.toHaveBeenCalled();
+    });
+
+    it('does not fail the start when the record cannot be written', async () => {
+      appFilesManager.writePulledImages.mockResolvedValue(false);
+      dockerService.composeApp.mockImplementation(async () => {
+        onComputer.set(whoami, 'sha256:whoami');
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+    });
+  });
+
   describe('after compose up', () => {
     const crashLoop = {
       ok: false,

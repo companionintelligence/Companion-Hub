@@ -556,6 +556,18 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                     crate::hub_manager::HubStatus::Running
                         | crate::hub_manager::HubStatus::Starting
                 );
+                // The decision reads the container only through `hub_status`. A missing
+                // container reads Stopped, which routes to the start path.
+                // A sticky start failure holds the watchdog until its automatic retry is due. The
+                // retry fires only while the Hub is down, so it never restarts a container that
+                // came up on its own.
+                let start_failed = crate::hub_manager::is_start_failed(&data_dir_for_watchdog);
+                let retry_due = start_failed
+                    && !api_container_up
+                    && crate::hub_manager::automatic_retry_due(
+                        &data_dir_for_watchdog,
+                        crate::hub_manager::now_ms(),
+                    );
                 let action = if !compose_ready {
                     // Desktop initialize copies compose into the data dir; don't race it.
                     crate::hub_manager::HubWatchdogAction::None
@@ -565,21 +577,29 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                         cooldown_secs,
                         stack_dev_mode
                             || crate::hub_manager::is_user_stopped(&data_dir_for_watchdog),
-                        crate::hub_manager::is_start_failed(&data_dir_for_watchdog),
+                        start_failed && !retry_due,
                         api_container_up,
                         crate::hub_manager::is_docker_available(),
+                        crate::hub_manager::hub_start_in_progress(),
                     )
                 };
                 match action {
                     crate::hub_manager::HubWatchdogAction::None => {}
                     crate::hub_manager::HubWatchdogAction::StartHub => {
-                        let _ = crate::hub_manager::append_desktop_log(
-                            "tray.watchdog",
-                            &format!(
+                        let message = if retry_due {
+                            format!(
+                                "Automatic retry {} of {} after a failed start — starting hub.",
+                                crate::hub_manager::start_retry_state(&data_dir_for_watchdog)
+                                    .failures,
+                                crate::hub_manager::MAX_AUTOMATIC_RETRIES
+                            )
+                        } else {
+                            format!(
                                 "Hub API unreachable for {} consecutive checks — auto-starting hub.",
                                 consecutive_failures
-                            ),
-                        );
+                            )
+                        };
+                        let _ = crate::hub_manager::append_desktop_log("tray.watchdog", &message);
                         last_watchdog_start = Some(std::time::Instant::now());
                         consecutive_failures = 0;
                         let compose = compose_path_for_watchdog.clone();
@@ -587,7 +607,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                         let data = data_dir_for_watchdog.clone();
                         tauri::async_runtime::spawn(async move {
                             match tokio::task::spawn_blocking(move || {
-                                crate::hub_manager::start_hub(&compose, &env, &data)
+                                crate::hub_manager::start_hub_automatic(&compose, &env, &data)
                             })
                             .await
                             {
