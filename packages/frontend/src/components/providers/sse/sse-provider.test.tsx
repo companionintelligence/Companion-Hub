@@ -148,6 +148,73 @@ describe('SSEProvider', () => {
     expect(mockToastWarning).toHaveBeenCalledWith(expect.stringContaining('could not be fully removed'), expect.anything());
   });
 
+  describe('a success that moved the app off a busy port', () => {
+    const movedHostPort = { from: 10000, to: 10001 };
+
+    it.each(['start_success', 'restart_success', 'install_success'])('%s says where the app is now, in place of the success toast', (event) => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event, appUrn: 'excalidraw:community', movedHostPort });
+      });
+
+      expect(mockToastSuccess).not.toHaveBeenCalled();
+      expect(mockToastWarning).toHaveBeenCalledTimes(1);
+      expect(mockToastWarning).toHaveBeenCalledWith(
+        'excalidraw is now on port 10001 because another program is using port 10000. Update any bookmarks or clients that use the old port.',
+        { duration: 20000 },
+      );
+    });
+
+    it.each(['start_error', 'restart_error'])('%s still says where the app is now, beside the error', (event) => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event, appUrn: 'excalidraw:community', movedHostPort });
+      });
+
+      expect(mockToastError).toHaveBeenCalledTimes(1);
+      expect(mockToastWarning).toHaveBeenCalledWith(expect.stringMatching(/^excalidraw is now on port 10001 /), expect.anything());
+    });
+
+    it('host_port_moved says where the app is now, with no outcome of its own to report', () => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event: 'host_port_moved', appUrn: 'excalidraw:community', movedHostPort });
+      });
+
+      expect(mockToastSuccess).not.toHaveBeenCalled();
+      expect(mockToastError).not.toHaveBeenCalled();
+      expect(mockToastWarning).toHaveBeenCalledWith(expect.stringMatching(/^excalidraw is now on port 10001 /), expect.anything());
+    });
+
+    it('names the app as its page does', () => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event: 'start_success', appUrn: 'uptime-kuma:ci-marketplace', movedHostPort });
+      });
+
+      expect(mockToastWarning).toHaveBeenCalledWith(expect.stringMatching(/^Uptime Kuma is now on port 10001 /), expect.anything());
+    });
+
+    it.each([
+      ['start_success', 'App excalidraw started successfully'],
+      ['restart_success', 'App excalidraw restarted successfully'],
+      ['install_success', 'App excalidraw installed successfully'],
+    ])('%s with no move stays the plain success toast', (event, text) => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event, appUrn: 'excalidraw:community' });
+      });
+
+      expect(mockToastWarning).not.toHaveBeenCalled();
+      expect(mockToastSuccess).toHaveBeenCalledWith(text);
+    });
+  });
+
   it('shows the plain success toast when uninstall_success has no warningCode', () => {
     const getOnEvent = renderProvider();
 

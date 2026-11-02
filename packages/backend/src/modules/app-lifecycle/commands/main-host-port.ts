@@ -3,11 +3,13 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
 import { deriveAppBaseWsOrigin, parseAppBaseUrl } from '@/modules/apps/app.helpers';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { extractConflictingHostBinding } from '@/modules/network/docker-port-errors';
 import { PortManagerService, type PortAllocation } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
+import type { HostPortMove } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { ModuleRef } from '@nestjs/core';
 
@@ -110,6 +112,34 @@ export async function writeMainHostPort(
 }
 
 /**
+ * A stored config as `writeMainHostPort` leaves it after `move`, with its keys sorted because the
+ * database does not keep their order. Run on both sides, it tells settings saved during a command from
+ * the command's own move.
+ */
+export function configAfterMove(config: unknown, { from, to }: HostPortMove, baseUrlFields: readonly string[] = []): Record<string, unknown> {
+  const baseUrlKeys = new Set(baseUrlFields);
+  const moved = Object.entries({ ...(config as Record<string, unknown> | null), port: to }).map(([key, value]) => [
+    key,
+    baseUrlKeys.has(key) && typeof value === 'string' ? withMovedPort(value, from, to) : value,
+  ]);
+  return Object.fromEntries(moved.sort(([a], [b]) => String(a).localeCompare(String(b))));
+}
+
+/**
+ * What a command's run moved the app from and to, or `undefined` if it stayed where it was. `startedOn`
+ * is the port the run began on, by default the first one Docker refused. `form.port` follows every move.
+ */
+export function hostPortMoveOf(form: AppEventFormInput, refused: ReadonlySet<number>, startedOn = [...refused][0]): HostPortMove | undefined {
+  return startedOn !== undefined && form.port !== undefined && form.port !== startedOn ? { from: startedOn, to: form.port } : undefined;
+}
+
+/** The port this app's compose publishes its main service on: `${APP_PORT}`, from the app.env written for this run. */
+async function publishedMainPort(moduleRef: ModuleRef, appUrn: AppUrn): Promise<number> {
+  const appEnv = await moduleRef.get(AppFilesManager, { strict: false }).getAppEnv(appUrn);
+  return Number(moduleRef.get(EnvUtils, { strict: false }).envStringToMap(appEnv.content).get('APP_PORT'));
+}
+
+/**
  * Move the app's main port when `compose up` failed because something already holds it on the
  * host, and report whether it moved. The port manager's probe runs inside the Hub container and
  * cannot see a program listening on the host itself (a locally run OpenClaw gateway on 18789,
@@ -117,7 +147,10 @@ export async function writeMainHostPort(
  * down during this command, so a retry never lands on one of them again.
  *
  * Only the main port moves. A port from the manifest's `addPorts` is published as written, so a
- * conflict on one fails the install as before.
+ * conflict on one fails the install as before. Classify the refusal by the port the compose file
+ * actually publishes from app.env, not the allocation table: that table can be stale or overlap an
+ * `addPorts` binding. An app that doesn't publish its main port has no host port to recover.
+ * The move only ever takes a free port and gives up this app's own allocation, so no other app loses one.
  */
 export async function moveMainPortOffHostConflict(
   moduleRef: ModuleRef,
@@ -130,7 +163,19 @@ export async function moveMainPortOffHostConflict(
   const logger = moduleRef.get(LoggerService, { strict: false });
   const conflict = extractConflictingHostBinding(error);
   // The main port is always TCP, so a UDP refusal on the same number is an `addPorts` mapping.
-  if (!portManager || !conflict || conflict.protocol === 'udp' || (await portManager.getMainPort(appUrn)) !== conflict.port) {
+  if (!portManager || !conflict || conflict.protocol === 'udp') {
+    return false;
+  }
+  if (!publishesHostPort(form)) {
+    return false;
+  }
+  let publishedPort: number;
+  try {
+    publishedPort = await publishedMainPort(moduleRef, appUrn);
+  } catch {
+    return false;
+  }
+  if (!Number.isInteger(publishedPort) || publishedPort !== conflict.port) {
     return false;
   }
 

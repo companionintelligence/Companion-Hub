@@ -318,6 +318,17 @@ describe('handleAppSseEvent', () => {
     expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ['getCustomDomains'] });
   });
 
+  it('refetches an app whose host port moved while no page was connected and leaves its status alone', () => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, {
+      event: 'host_port_moved',
+      appUrn: 'n8n:ci-marketplace',
+      movedHostPort: { from: 10000, to: 10001 },
+    });
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['getApp', 'n8n:ci-marketplace'] });
+    expect(queryClient.setQueryData).not.toHaveBeenCalled();
+  });
+
   // #2101: another tab's install has no row during its checks. The event says what is under way, so
   // every open page shows it at once, and the read that follows brings the rest.
   it('marks the operation an install began on the app at once, and reads the app again', () => {

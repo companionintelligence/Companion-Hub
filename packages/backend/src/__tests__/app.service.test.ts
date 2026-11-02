@@ -92,6 +92,7 @@ describe('AppService', () => {
     marketplaceService.initialize.mockResolvedValue(undefined);
     appsRepository.getApps.mockResolvedValue([]);
     portManagerService.migrateExistingApp.mockResolvedValue(undefined as never);
+    portManagerService.setMainPort.mockResolvedValue(true);
     appLifecycleService.restartRunningApps.mockResolvedValue(undefined);
     configurationService.getConfig.mockReturnValue(
       fromPartial({
@@ -487,6 +488,30 @@ describe('AppService', () => {
 
       await expect(appService.bootstrap()).resolves.toBeUndefined();
       expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Skipping Docker network prune during bootstrap'));
+    });
+
+    /*
+     * A save left the table behind until saves kept it in step, so an app can sit on a row port with an
+     * allocation still on an older one. The table then calls a free port taken and misses a taken one.
+     */
+    it('puts the main allocation of each app on the port its row publishes', async () => {
+      appsRepository.getApps.mockResolvedValue([
+        { appName: 'port-test', appStoreSlug: '_user', port: 18558 },
+        { appName: 'no-port', appStoreSlug: '_user', port: null },
+      ] as never);
+
+      await appService.bootstrap();
+
+      expect(portManagerService.setMainPort).toHaveBeenCalledExactlyOnceWith('port-test:_user', 18558);
+    });
+
+    it('logs an app whose port another allocation holds in the table', async () => {
+      appsRepository.getApps.mockResolvedValue([{ appName: 'port-test', appStoreSlug: '_user', port: 18558 }] as never);
+      portManagerService.setMainPort.mockResolvedValue(false);
+
+      await appService.bootstrap();
+
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Port 18558 of port-test:_user is already allocated'));
     });
 
     it('prunes only Hub-managed networks, never every idle network on the host', async () => {

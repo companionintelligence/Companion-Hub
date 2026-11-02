@@ -53,15 +53,16 @@ export class PortAllocationRepository {
     return this.db.query.portAllocation.findMany() as Promise<PortAllocation[]>;
   }
 
+  public async updateHostPort(id: number, hostPort: number): Promise<void> {
+    await this.db.update(portAllocation).set({ hostPort }).where(eq(portAllocation.id, id)).execute();
+  }
+
   public async deleteByAppUrn(appUrn: string): Promise<number> {
     const result = await this.db.delete(portAllocation).where(eq(portAllocation.appUrn, appUrn)).returning().execute();
     return result.length;
   }
 
-  public async deleteByHostPort(port: number, protocol: 'tcp' | 'udp'): Promise<void> {
-    await this.db
-      .delete(portAllocation)
-      .where(and(eq(portAllocation.hostPort, port), eq(portAllocation.protocol, protocol)))
-      .execute();
+  public async deleteById(id: number): Promise<void> {
+    await this.db.delete(portAllocation).where(eq(portAllocation.id, id)).execute();
   }
 }

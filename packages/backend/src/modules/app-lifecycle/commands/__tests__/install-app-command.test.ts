@@ -702,6 +702,21 @@ describe('InstallAppCommand — pull policy', () => {
       expect(form.port).toBe(10000);
     });
 
+    it('reports the move in the success event the worker sends as well as in its result', async () => {
+      refusals = [8080];
+      portManager.getMainPort.mockResolvedValue(8080);
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10000));
+      const sseService = ((command as any).moduleRef as ModuleRef).get(SSEService) as any;
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: true, movedHostPort: { from: 8080, to: 10000 } });
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'install_success', movedHostPort: { from: 8080, to: 10000 } }),
+      );
+    });
+
     it('never offers a port Docker already refused during the same install', async () => {
       refusals = [8080, 10000];
       portManager.getMainPort.mockResolvedValueOnce(8080).mockResolvedValueOnce(10000);
@@ -724,6 +739,28 @@ describe('InstallAppCommand — pull policy', () => {
       portManager.getMainPort.mockResolvedValue(8080);
 
       const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(portManager.moveMainPort).not.toHaveBeenCalled();
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(1);
+    });
+
+    it('does not recover a non-main conflict just because a stale allocation matches it', async () => {
+      refusals = [51820];
+      portManager.getMainPort.mockResolvedValue(51820);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(portManager.moveMainPort).not.toHaveBeenCalled();
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(1);
+    });
+
+    it('does not recover an extra published port when the main port is not exposed', async () => {
+      refusals = [51820];
+      portManager.getMainPort.mockResolvedValue(51820);
+
+      const result = await command.execute(appUrn, { exposureMode: 'cloudflare', openPort: false, exposedLocal: false });
 
       expect(result.success).toBe(false);
       expect(portManager.moveMainPort).not.toHaveBeenCalled();
