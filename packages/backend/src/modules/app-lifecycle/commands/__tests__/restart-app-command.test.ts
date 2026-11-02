@@ -172,8 +172,10 @@ describe('RestartAppCommand — pull policy', () => {
       overrides: [],
     } as any);
     dockerService.imageIdLocally = vi.fn(async (ref: string) => onComputer.get(ref) ?? null);
-    appFilesManager.readPulledImageIds.mockResolvedValue([]);
-    appFilesManager.writePulledImageIds.mockResolvedValue(true);
+    dockerService.imageIdsLocally = vi.fn(async () => new Set(onComputer.values()));
+    dockerService.imageTagsLocally = vi.fn(async () => []);
+    appFilesManager.readPulledImages.mockResolvedValue({ imageIds: [], imageTags: [] });
+    appFilesManager.writePulledImages.mockResolvedValue(true);
     dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
       if (args.startsWith('up')) {
         onComputer.set('traefik/whoami:v1.10.2', 'sha256:whoami');
@@ -183,7 +185,7 @@ describe('RestartAppCommand — pull policy', () => {
     const result = await command.execute('port-test:_user' as AppUrn, {});
 
     expect(result.success).toBe(true);
-    expect(appFilesManager.writePulledImageIds).toHaveBeenCalledWith('port-test:_user', ['sha256:whoami']);
+    expect(appFilesManager.writePulledImages).toHaveBeenCalledWith('port-test:_user', { imageIds: ['sha256:whoami'], imageTags: [] });
   });
 
   // A device present at install time can be gone by a later restart (ROCm/KVM modules not yet

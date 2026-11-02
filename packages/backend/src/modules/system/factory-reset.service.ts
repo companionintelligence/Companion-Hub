@@ -260,7 +260,7 @@ export class FactoryResetService {
       await this.resetSettings();
       await this.forgetSettingsInMemory();
       await this.forgetInferenceState();
-      await this.forgetIn(AppFilesManager, 'the record of the images apps pulled', (files) => files.deleteAllPulledImageIds());
+      await this.forgetIn(AppFilesManager, 'the record of the images apps pulled', (files) => files.deleteAllPulledImages());
       await this.restoreCloudAppStore();
       this.cache.clear();
       await this.clearBearerOrgMembership();

@@ -628,10 +628,11 @@ describe('DockerService', () => {
       const removeB = vi.fn().mockResolvedValue(undefined);
       const removeC = vi.fn().mockResolvedValue(undefined);
 
+      const inspect = vi.fn().mockResolvedValue({ RepoTags: [] });
       dockerode.getImage.mockImplementation((id: string) => {
-        if (id === 'sha256:a') return { remove: removeA } as any;
-        if (id === 'sha256:b') return { remove: removeB } as any;
-        return { remove: removeC } as any;
+        if (id === 'sha256:a') return { remove: removeA, inspect } as any;
+        if (id === 'sha256:b') return { remove: removeB, inspect } as any;
+        return { remove: removeC, inspect } as any;
       });
 
       await service.removeAppImages('test:store' as any, ['sha256:a', 'sha256:b', 'sha256:a']);
@@ -671,10 +672,11 @@ describe('DockerService', () => {
         .mockRejectedValue(new Error('conflict: unable to delete sha256:b (must be forced) - image is referenced in multiple repositories'));
       const removeFree = vi.fn().mockResolvedValue(undefined);
 
+      const inspect = vi.fn().mockResolvedValue({ RepoTags: [] });
       dockerode.getImage.mockImplementation((id: string) => {
-        if (id === 'sha256:a') return { remove: removeStillUsed } as any;
-        if (id === 'sha256:b') return { remove: removeOtherTag } as any;
-        return { remove: removeFree } as any;
+        if (id === 'sha256:a') return { remove: removeStillUsed, inspect } as any;
+        if (id === 'sha256:b') return { remove: removeOtherTag, inspect } as any;
+        return { remove: removeFree, inspect } as any;
       });
 
       await expect(service.removeAppImages('test:store' as any, ['sha256:a', 'sha256:b', 'sha256:c'])).resolves.toBeUndefined();
@@ -692,13 +694,107 @@ describe('DockerService', () => {
       const removeMissing = vi.fn().mockRejectedValue(new Error('No such image: sha256:a'));
       const removeInUse = vi.fn().mockRejectedValue(new Error('image is being used by running container'));
 
+      const inspect = vi.fn().mockResolvedValue({ RepoTags: [] });
       dockerode.getImage.mockImplementation((id: string) => {
-        if (id === 'sha256:a') return { remove: removeMissing } as any;
-        return { remove: removeInUse } as any;
+        if (id === 'sha256:a') return { remove: removeMissing, inspect } as any;
+        return { remove: removeInUse, inspect } as any;
       });
 
       await expect(service.removeAppImages('test:store' as any, ['sha256:a', 'sha256:b'])).resolves.toBeUndefined();
       expect(loggerService.warn).toHaveBeenCalled();
+    });
+
+    describe('the tags on a recorded image', () => {
+      const image = (repoTags: string[] | undefined) => ({
+        remove: vi.fn().mockResolvedValue(undefined),
+        inspect: vi.fn().mockResolvedValue({ RepoTags: repoTags }),
+      });
+
+      beforeEach(() => {
+        dockerode.listImages.mockResolvedValue([] as any);
+      });
+
+      it('keeps an image with a tag the app did not bring in: Docker would remove one tag without asking', async () => {
+        const handPulled = image(['postgres:16-alpine', 'postgres@sha256:d']);
+        dockerode.getImage.mockReturnValue(handPulled as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:a'], []);
+
+        expect(handPulled.remove).not.toHaveBeenCalled();
+        expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('postgres:16-alpine'));
+      });
+
+      it('removes an image that holds only the tags it arrived with', async () => {
+        const own = image(['app:1']);
+        dockerode.getImage.mockReturnValue(own as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:a'], ['app:1']);
+
+        expect(own.remove).toHaveBeenCalledWith();
+      });
+
+      it('removes an image with no tags: a digest name is not one', async () => {
+        const pinned = image(['postgres@sha256:d']);
+        dockerode.getImage.mockReturnValue(pinned as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:a'], []);
+
+        expect(pinned.remove).toHaveBeenCalledWith();
+      });
+
+      it('removes an image Docker reports no tags for at all', async () => {
+        const untagged = image(undefined);
+        dockerode.getImage.mockReturnValue(untagged as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:a'], []);
+
+        expect(untagged.remove).toHaveBeenCalledWith();
+      });
+
+      it('keeps an image whose tags cannot be read', async () => {
+        const unknown = { remove: vi.fn(), inspect: vi.fn().mockRejectedValue(new Error('connect EACCES /var/run/docker.sock')) };
+        dockerode.getImage.mockReturnValue(unknown as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:a'], []);
+
+        expect(unknown.remove).not.toHaveBeenCalled();
+        expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('could not read its tags'));
+      });
+
+      it('passes over an image that has already gone, without a warning', async () => {
+        const gone = { remove: vi.fn(), inspect: vi.fn().mockRejectedValue(new Error('No such image: sha256:a')) };
+        dockerode.getImage.mockReturnValue(gone as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:a'], []);
+
+        expect(gone.remove).not.toHaveBeenCalled();
+        expect(loggerService.warn).not.toHaveBeenCalled();
+      });
+
+      it("still removes the app's own compose build, whatever its tags", async () => {
+        dockerode.listImages.mockResolvedValue([{ Id: 'sha256:built' }] as any);
+        const built = image(['test_store-web:latest']);
+        dockerode.getImage.mockReturnValue(built as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:built'], []);
+
+        expect(built.remove).toHaveBeenCalledWith();
+        expect(loggerService.warn).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('imageIdsLocally and imageTagsLocally', () => {
+    it('lists the IDs of the images here', async () => {
+      dockerode.listImages.mockResolvedValue([{ Id: 'sha256:a' }, { Id: 'sha256:b' }] as any);
+
+      await expect(service.imageIdsLocally()).resolves.toEqual(new Set(['sha256:a', 'sha256:b']));
+    });
+
+    it('leaves digest names out of the tags, which the containerd image store lists among them', async () => {
+      dockerode.getImage.mockReturnValue({ inspect: vi.fn().mockResolvedValue({ RepoTags: ['app:1', 'app@sha256:d'] }) } as any);
+
+      await expect(service.imageTagsLocally('sha256:a')).resolves.toEqual(['app:1']);
     });
   });
 

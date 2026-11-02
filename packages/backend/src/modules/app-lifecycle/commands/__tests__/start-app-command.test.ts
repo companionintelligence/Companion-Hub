@@ -498,8 +498,22 @@ describe('StartAppCommand — pull policy', () => {
         overrides: [],
       } as any);
       dockerService.imageIdLocally = vi.fn(async (ref: string) => onComputer.get(ref) ?? null);
-      appFilesManager.readPulledImageIds.mockResolvedValue([]);
-      appFilesManager.writePulledImageIds.mockResolvedValue(true);
+      dockerService.imageIdsLocally = vi.fn(async () => new Set(onComputer.values()));
+      dockerService.imageTagsLocally = vi.fn(async () => []);
+      appFilesManager.readPulledImages.mockResolvedValue({ imageIds: [], imageTags: [] });
+      appFilesManager.writePulledImages.mockResolvedValue(true);
+    });
+
+    it('lists the images here for a forced pull, which can move a tag, and not for a start that pulls nothing', async () => {
+      onComputer.set(whoami, 'sha256:whoami');
+      appFilesManager.readPulledImages.mockResolvedValue({ imageIds: ['sha256:whoami'], imageTags: [] });
+
+      await command.execute(appUrn, {});
+      expect(dockerService.imageIdsLocally).not.toHaveBeenCalled();
+
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'test-app', force_pull: true } as any);
+      await command.execute(appUrn, {});
+      expect(dockerService.imageIdsLocally).toHaveBeenCalledTimes(1);
     });
 
     it('records an image compose pulled during the start', async () => {
@@ -510,7 +524,7 @@ describe('StartAppCommand — pull policy', () => {
       const result = await command.execute(appUrn, {});
 
       expect(result.success).toBe(true);
-      expect(appFilesManager.writePulledImageIds).toHaveBeenCalledWith(appUrn, ['sha256:whoami']);
+      expect(appFilesManager.writePulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:whoami'], imageTags: [] });
     });
 
     it('does not record an image that was on the computer before the start', async () => {
@@ -519,11 +533,11 @@ describe('StartAppCommand — pull policy', () => {
       const result = await command.execute(appUrn, {});
 
       expect(result.success).toBe(true);
-      expect(appFilesManager.writePulledImageIds).not.toHaveBeenCalled();
+      expect(appFilesManager.writePulledImages).not.toHaveBeenCalled();
     });
 
     it('does not fail the start when the record cannot be written', async () => {
-      appFilesManager.writePulledImageIds.mockResolvedValue(false);
+      appFilesManager.writePulledImages.mockResolvedValue(false);
       dockerService.composeApp.mockImplementation(async () => {
         onComputer.set(whoami, 'sha256:whoami');
       });

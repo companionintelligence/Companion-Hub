@@ -9,6 +9,7 @@ import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import type { AppUrn } from '@ci-hub/common/types';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { AppLifecycleCommand } from './command';
+import { imagesNoOtherAppNames } from './pull-app-images';
 
 export class UninstallAppCommand extends AppLifecycleCommand {
   constructor(
@@ -45,8 +46,9 @@ export class UninstallAppCommand extends AppLifecycleCommand {
 
       // The images this app's installs, updates and starts pulled for it, as recorded when each brought them in. Only
       // these are removed, with Delete all data on or off, since an image is not the app's data. An image that was on
-      // the computer before the app stays. So does one a container still uses, though a stopped app has no containers.
-      const appImageIds = isPortExpose ? [] : await appFilesManager.readPulledImageIds(appUrn);
+      // the computer before the app stays. So does one a container still uses and one another installed app names.
+      const pulledImages = isPortExpose ? { imageIds: [], imageTags: [] } : await appFilesManager.readPulledImages(appUrn);
+      const appImageIds = await imagesNoOtherAppNames(this.moduleRef, appUrn, pulledImages.imageIds);
 
       try {
         if (!isPortExpose) {
@@ -73,9 +75,9 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         }
 
         // Explicit post-down cleanup is a safety net for partial teardown states.
-        await dockerService.removeAppImages(appUrn, appImageIds);
+        await dockerService.removeAppImages(appUrn, appImageIds, pulledImages.imageTags);
         await dockerService.removeAppNetworks(appUrn);
-        await appFilesManager.deletePulledImageIds(appUrn);
+        await appFilesManager.deletePulledImages(appUrn);
       }
 
       // Sync Cloudflare state (app removal will be reflected)

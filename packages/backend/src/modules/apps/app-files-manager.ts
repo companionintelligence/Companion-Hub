@@ -11,6 +11,15 @@ import { Injectable } from '@nestjs/common';
 import { parseInstalledAppInfo, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 
+const IMAGE_ID_PATTERN = /^sha256:[0-9a-f]{64}$/;
+
+/** What an app's pulls brought onto this computer, as its record holds it. */
+export type PulledImages = {
+  imageIds: string[];
+  /** The tags those images had when they arrived. Any other tag came from something else: see `DockerService.removeAppImages`. */
+  imageTags: string[];
+};
+
 /** What was last logged as left out of each app's installed manifest. */
 const loggedLeftOut = new Map<string, string>();
 
@@ -248,27 +257,33 @@ export class AppFilesManager {
   }
 
   /**
-   * The image IDs recorded for the app, or none. A record that is missing or unreadable records nothing, so an
-   * uninstall then removes no image rather than one the Hub cannot show it pulled.
+   * What the record holds for the app, or nothing. A record that is missing or unreadable records nothing, so an
+   * uninstall then removes no image rather than one the Hub cannot show it pulled. Only an image ID counts: Docker
+   * takes a name just as well. A name removes whichever image has that name by then.
    */
-  public async readPulledImageIds(appUrn: AppUrn): Promise<string[]> {
+  public async readPulledImages(appUrn: AppUrn): Promise<PulledImages> {
     const text = await this.filesystem.readTextFile(this.getPulledImagesPath(appUrn));
     if (!text) {
-      return [];
+      return { imageIds: [], imageTags: [] };
     }
 
     try {
-      const { imageIds } = JSON.parse(text) as { imageIds?: unknown };
-      return Array.isArray(imageIds) ? imageIds.filter((id): id is string => typeof id === 'string' && id.length > 0) : [];
+      const { imageIds, imageTags } = JSON.parse(text) as { imageIds?: unknown; imageTags?: unknown };
+      const entries: unknown[] = Array.isArray(imageIds) ? imageIds : [];
+      const ids = entries.filter((id): id is string => typeof id === 'string' && IMAGE_ID_PATTERN.test(id));
+      if (ids.length !== entries.length) {
+        this.logger.warn(`The record of the images pulled for ${appUrn} holds entries that are not image IDs; they are ignored`);
+      }
+      return { imageIds: ids, imageTags: Array.isArray(imageTags) ? imageTags.filter((tag): tag is string => typeof tag === 'string') : [] };
     } catch {
       this.logger.warn(`The record of the images pulled for ${appUrn} is not valid JSON; it records none`);
-      return [];
+      return { imageIds: [], imageTags: [] };
     }
   }
 
-  /** Replaces the app's record of the image IDs its pulls brought in. Returns false when it could not be written. */
-  public async writePulledImageIds(appUrn: AppUrn, imageIds: string[]): Promise<boolean> {
-    const content = JSON.stringify({ imageIds: [...new Set(imageIds)] }, null, 2);
+  /** Replaces the app's record of the images its pulls brought in. Returns false when it could not be written. */
+  public async writePulledImages(appUrn: AppUrn, { imageIds, imageTags }: PulledImages): Promise<boolean> {
+    const content = JSON.stringify({ imageIds: [...new Set(imageIds)], imageTags: [...new Set(imageTags)] }, null, 2);
     return this.filesystem.writeTextFile(this.getPulledImagesPath(appUrn), content);
   }
 
@@ -277,7 +292,7 @@ export class AppFilesManager {
    * record is normal, for an app whose images were all here before it or one installed before records were kept, so
    * only a record that exists is removed and only a failure to remove it is logged as one.
    */
-  public async deletePulledImageIds(appUrn: AppUrn): Promise<void> {
+  public async deletePulledImages(appUrn: AppUrn): Promise<void> {
     const recordPath = this.getPulledImagesPath(appUrn);
     if (await this.filesystem.pathExists(recordPath)) {
       await this.filesystem.removeFile(recordPath);
@@ -285,7 +300,7 @@ export class AppFilesManager {
   }
 
   /** Forgets every app's record. For a factory reset: a record left behind would claim images for the next Hub's apps. */
-  public async deleteAllPulledImageIds(): Promise<void> {
+  public async deleteAllPulledImages(): Promise<void> {
     await this.filesystem.removeDirectory(this.getPulledImagesDir());
   }
 

@@ -111,7 +111,9 @@ export class AppLifecycleCommand {
 
   /** `composeAppWithNetworkRecovery` for an `up` that can pull images, which records them for the uninstall; see `recordComposeUpPulls`. */
   protected async composeUpRecordingPulls(...args: Parameters<AppLifecycleCommand['composeAppWithNetworkRecovery']>): Promise<void> {
-    return recordComposeUpPulls(this.moduleRef, args[0], () => this.composeAppWithNetworkRecovery(...args));
+    return recordComposeUpPulls(this.moduleRef, args[0], () => this.composeAppWithNetworkRecovery(...args), {
+      forced: args[2].includes('--pull always'),
+    });
   }
 
   /** Point the app at the host port of its main allocation; see `writeMainHostPort`. */

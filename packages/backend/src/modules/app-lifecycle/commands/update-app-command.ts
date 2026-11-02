@@ -18,7 +18,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import type { OperationPhase } from '../app-operation-registry';
 import { AppLifecycleCommand, type CommandExecutionContext } from './command';
-import { installedComposeImages, pullAppImagesRecorded } from './pull-app-images';
+import { installedComposeImages, pullAppImagesRecorded, recordComposeUpPulls } from './pull-app-images';
 import { type UpdatePhase, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 
 /**
@@ -175,12 +175,17 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       logger.info(`Pulling images for ${appUrn} before stopping the current version`);
       report('pulling');
       const imagesToPull = this.imagesToPull(composeToInstall.content);
-      await pullAppImagesRecorded({ docker: dockerService, files: appFilesManager, logger }, appUrn, imagesToPull, () =>
-        dockerService.pullImages(imagesToPull, {
-          forcePull: true,
-          signal: ctx?.signal,
-          timeoutMs: Math.min(workLeftMs(), DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES * 60_000),
-        }),
+      await pullAppImagesRecorded(
+        { docker: dockerService, files: appFilesManager, logger },
+        appUrn,
+        imagesToPull,
+        () =>
+          dockerService.pullImages(imagesToPull, {
+            forcePull: true,
+            signal: ctx?.signal,
+            timeoutMs: Math.min(workLeftMs(), DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES * 60_000),
+          }),
+        { forced: true },
       );
       checkpoint('after downloading the new images');
 
@@ -387,7 +392,8 @@ export class UpdateAppCommand extends AppLifecycleCommand {
         logger.warn(`No backup or volume snapshot available to roll back ${appUrn}; recreating the current containers instead`);
       }
 
-      await dockerService.composeApp(appUrn, 'pull');
+      // The files of the previous version are back by now. A tag of theirs that moved since brings in a new image here.
+      await recordComposeUpPulls(this.moduleRef, appUrn, () => dockerService.composeApp(appUrn, 'pull'), { forced: true });
       await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
       logger.info(`Auto-rollback recovery step completed for ${appUrn} (data and files ${restored ? 'restored' : 'NOT restored'})`);
 
