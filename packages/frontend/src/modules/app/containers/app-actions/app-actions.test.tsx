@@ -372,6 +372,32 @@ describe('AppActions', () => {
     });
   });
 
+  describe('the exposure mode the settings dialog opens on', () => {
+    const openedMode = (app: AppDetails) => {
+      render(<AppActions app={app} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+      return (hoisted.updateSettingsProps?.config as Record<string, unknown> | undefined)?.exposureMode;
+    };
+
+    it('is the mode a custom app runs in when its form holds only a port', () => {
+      expect(openedMode(makeApp({ exposureMode: 'local', config: { port: 9898 } }))).toBe('local');
+    });
+
+    it('is the mode the stored form names', () => {
+      expect(openedMode(makeApp({ exposureMode: 'tailscale', config: { port: 9898, exposureMode: 'tailscale' } }))).toBe('tailscale');
+    });
+
+    it('stays Public Web for an app saved that way', () => {
+      expect(
+        openedMode(makeApp({ exposureMode: 'cloudflare', exposedLocal: true, config: { exposureMode: 'cloudflare', exposedLocal: true } })),
+      ).toBe('cloudflare');
+    });
+
+    it('is what compose runs when the row and the form disagree', () => {
+      // An install that sent no exposure settings stored `exposed_local = true` beside a local form.
+      expect(openedMode(makeApp({ exposureMode: 'cloudflare', exposedLocal: true, config: { openPort: true } }))).toBe('local');
+    });
+  });
+
   describe('the restart setting for a newly connected domain', () => {
     /*
      * The stored config snapshot leaves this setting out, so that flipping it never

@@ -44,7 +44,7 @@ import { useUpdatePhase } from '../../helpers/use-update-phase';
 import { useMemoryConnection } from '../../helpers/use-memory-connection';
 import { useLocation, useNavigate, Link, useSearchParams } from 'react-router';
 import { invalidateAppQueries, type AppInstallErrorCache } from '../../helpers/app-sse-cache';
-import type { AppUrn } from '@ci-hub/common/types';
+import { type AppUrn, servedExposureMode } from '@ci-hub/common/types';
 import type { UpdatePhase } from '@ci-hub/common/schemas';
 import { openExternal } from '@/lib/helpers/open-external';
 import { canOpenFolderInFileExplorer, openPathInFileExplorer } from '@/lib/helpers/open-folder';
@@ -1146,6 +1146,12 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
            * success toast.
            */
           ...(app ? { customDomainExpected: app.customDomain ?? '' } : {}),
+          /*
+           * The mode the app runs in, which its form does not always name: a custom app's holds only
+           * its port. Left out, the dialog would open on what a new install gets (Public Web on a
+           * paired Hub) and the next save would publish the app.
+           */
+          ...(app ? { exposureMode: servedExposureMode(app) } : {}),
         }}
         status={app?.status}
       />
