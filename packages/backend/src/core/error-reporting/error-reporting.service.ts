@@ -5,7 +5,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { KVM_MISSING_CODE, NETWORK_OVERLAP_CODE, ROCM_KFD_MISSING_CODE } from '@/modules/app-lifecycle/commands/app-lifecycle-errors';
 import { PORTAL_HTTP_ERROR_CODE, PORTAL_TIMEOUT_CODE, PORTAL_UNREACHABLE_CODE } from '@/core/portal/portal.constants';
 import { QUEUE_UNAVAILABLE_CODE } from '@/modules/queue/queue.constants';
-import { DOCKER_HOST_PORT_CONFLICT_PATTERN } from '@/modules/network/docker-port-errors';
+import { DOCKER_HOST_PORT_CONFLICT_PATTERN, extractConflictingHostPort } from '@/modules/network/docker-port-errors';
 import { snapshotHostHealth } from './host-health';
 import { scrubString } from './sentry-scrubber';
 import { type UserConsent, currentUserConsent, resolveTelemetryDecision } from './telemetry-consent';
@@ -72,11 +72,23 @@ const USER_ENVIRONMENT_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: st
   { pattern: /mounts denied|invalid mount config/i, errorClass: 'mount-denied' },
   { pattern: /failed to set up container networking|driver failed programming external connectivity/i, errorClass: 'docker-networking' },
   { pattern: /failed to pull image|tls handshake timeout|i\/o timeout/i, errorClass: 'image-pull-failed' },
+  // The queue dropped the channel a command went out on. The command may already have run, so it is reported
+  // and not retried; the queue reconnects on its own.
+  { pattern: /channel is closed|connection is closing|channel creation failed|is unavailable while RabbitMQ is/i, errorClass: 'queue-unavailable' },
+  // The Hub restarted mid-install, so the user is asked to retry it; nothing in the app failed.
+  { pattern: /Install did not finish before Hub restarted/i, errorClass: 'hub-restarted' },
+  // The host refused a file or a socket the Hub writes to. Permissions are the device's to fix.
+  { pattern: /\b(?:EACCES|EPERM)\b|permission denied/i, errorClass: 'host-permission-denied' },
+  { pattern: /attempt to write a readonly database|disk image is malformed/i, errorClass: 'host-database-file' },
+  // Companion Portal would not hand this device the app for its account.
+  { pattern: /APP_INSTALL_PORTAL_DOWNLOAD_UNAUTHORIZED/i, errorClass: 'entitlement-refused' },
 ];
 
 /** Failures caused by a broken app manifest in the marketplace. */
 const APP_CONFIG_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: string }> = [
   { pattern: /invalid dynamic compose schema/i, errorClass: 'invalid-compose-schema' },
+  // The catalog this Hub reads has no entry for the app: a catalog gap, not a Hub defect.
+  { pattern: /Store not found for/i, errorClass: 'app-not-in-catalog' },
 ];
 
 /**
@@ -240,9 +252,11 @@ export class ErrorReportingService {
     this.debounce.set(debounceKey, now);
 
     const classification = classifyAppFailure(context.message, context.errorCode);
-    // User-environment failures (Docker down, disk full, unsupported arch, …)
-    // are not hub bugs; keep them visible but below the error threshold.
-    const level: Sentry.SeverityLevel = context.phase === 'post_start' || classification.category === 'user_environment' ? 'warning' : 'error';
+    // User-environment failures (Docker down, disk full, unsupported arch, …) are not hub bugs; keep them
+    // visible but below the error threshold. So is a crash: the app's own containers exited, which is the
+    // app's failure to report, not the Hub's.
+    const level: Sentry.SeverityLevel =
+      context.phase === 'post_start' || context.phase === 'crash' || classification.category === 'user_environment' ? 'warning' : 'error';
 
     Sentry.withScope((scope) => {
       scope.setTag('component', 'backend');
@@ -259,6 +273,17 @@ export class ErrorReportingService {
           : ['app-failure', context.phase, classification.errorClass],
       );
       scope.setExtra('message', scrubString(context.message));
+      if (classification.errorClass === 'port-conflict') {
+        // Name the port and the remedy, so the report says what to change on this device.
+        const hostPort = extractConflictingHostPort(context.message);
+        if (hostPort !== undefined) {
+          scope.setTag('host_port', String(hostPort));
+          scope.setExtra(
+            'remedy',
+            `Host port ${hostPort} is already in use on this device. Stop the program or container using it, or change the port this app publishes.`,
+          );
+        }
+      }
       // Whether the host could have driven a socket when this failed. The difference between
       // "the device's network is broken" and "the device is too busy to notice its network" is
       // not in any message, and the device is a customer's: this is the only look we get.

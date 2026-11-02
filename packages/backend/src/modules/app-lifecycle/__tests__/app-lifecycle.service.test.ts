@@ -3344,10 +3344,14 @@ describe('AppLifecycleService', () => {
       await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
       await syncAfter(1, { excalidraw: 'api_error' });
 
-      expect(errorReportingService.captureMessage).toHaveBeenCalledTimes(1);
-      expect(errorReportingService.captureMessage).toHaveBeenCalledWith(expect.stringContaining('excalidraw: Cloudflare rejected'), 'error', {
-        failedApps: ['excalidraw'],
-      });
+      // A refusal Cloudflare may clear on a later pass is a warning, not an error; the quota one reports nothing.
+      expect(errorReportingService.captureMessage).not.toHaveBeenCalled();
+      expect(errorReportingService.captureWarning).toHaveBeenCalledTimes(1);
+      expect(errorReportingService.captureWarning).toHaveBeenCalledWith(
+        expect.stringContaining('excalidraw: Cloudflare rejected'),
+        { failedApps: ['excalidraw'] },
+        expect.objectContaining({ debounceKey: 'cloudflare:public-dns:transient' }),
+      );
     });
 
     it('still reports a sync that did not complete', async () => {
@@ -3612,9 +3616,11 @@ describe('AppLifecycleService', () => {
           },
         ],
       ]);
-      expect(errorReportingService.captureMessage).toHaveBeenCalledWith(expect.stringContaining('NOT created for 1 app(s)'), 'error', {
-        failedApps: ['docmost'],
-      });
+      expect(errorReportingService.captureWarning).toHaveBeenCalledWith(
+        expect.stringContaining('NOT created for 1 app(s)'),
+        { failedApps: ['docmost'] },
+        expect.objectContaining({ debounceKey: 'cloudflare:public-dns:transient' }),
+      );
       expect(errorReportingService.captureMessage).not.toHaveBeenCalledWith(expect.stringContaining('n8n:'), expect.anything(), expect.anything());
     });
   });

@@ -92,6 +92,55 @@ describe('ErrorReportingService', () => {
     expect(scope.setTag).toHaveBeenCalledWith('error_class', 'image-arch-unsupported');
   });
 
+  it.each([
+    ['a queue that dropped the channel', 'Marketplace app start failed: channel is closed', 'queue-unavailable'],
+    ['a restart mid-install', 'Install did not finish before Hub restarted. Retry the install.', 'hub-restarted'],
+    ['a host file the Hub may not write', "EACCES: permission denied, mkdtemp '/data/app'", 'host-permission-denied'],
+    ['a sqlite file on a read-only volume', 'attempt to write a readonly database', 'host-database-file'],
+    ['an app the Portal would not hand out', 'APP_INSTALL_PORTAL_DOWNLOAD_UNAUTHORIZED', 'entitlement-refused'],
+  ])('groups %s as a warning by error class', (_label, message, errorClass) => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({ appUrn: 'ci-memory:ci-marketplace', phase: 'start', message });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'warning');
+    expect(lastScope().setFingerprint).toHaveBeenCalledWith(['app-failure', 'start', errorClass]);
+  });
+
+  it('names the host port and the remedy when Docker finds it taken', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'legacy-port80:_user',
+      phase: 'start',
+      message:
+        'Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint legacy-port80__user-web-1: Bind for 0.0.0.0:80 failed: port is already allocated',
+    });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'warning');
+    const scope = lastScope();
+    expect(scope.setTag).toHaveBeenCalledWith('host_port', '80');
+    expect(scope.setExtra).toHaveBeenCalledWith('remedy', expect.stringContaining('Host port 80 is already in use'));
+  });
+
+  it('groups a missing catalog entry as an app-config error, not per app', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({ appUrn: 'n8n:ci-marketplace', phase: 'install', message: 'Store not found for n8n:ci-marketplace' });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'error');
+    expect(lastScope().setFingerprint).toHaveBeenCalledWith(['app-failure', 'install', 'app-not-in-catalog']);
+  });
+
   it('keeps unclassified failures as errors with per-app grouping', () => {
     const configuration = {
       get: vi.fn(() => ({ allowErrorMonitoring: true })),
@@ -146,7 +195,7 @@ describe('ErrorReportingService', () => {
 
     expect(Sentry.captureMessage).toHaveBeenCalledWith(
       'Marketplace app crashed: comfyui:ci-marketplace: App transitioned from running to stopped during status sync',
-      'error',
+      'warning',
     );
   });
 
