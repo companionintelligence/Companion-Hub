@@ -366,26 +366,22 @@ fn nvidia_probe_payload(
 /// `nvidia-smi --query-gpu=name,memory.total,driver_version` on a Linux host, one CSV row per GPU.
 ///
 /// Run directly, never through a login shell: `sh -l` sources `~/.profile`, and a line there that
-/// fails stops the shell before nvidia-smi runs. When the app's PATH lacks nvidia-smi, the usual
-/// install directories are tried by absolute path.
+/// fails stops the shell before nvidia-smi runs. The driver's own binary is tried first, by absolute
+/// path, and PATH is the fallback. A nvidia-smi on PATH can be a wrapper script that sources a file
+/// which may be gone, and the wrapper then stops before the query runs.
 #[cfg(target_os = "linux")]
 fn linux_nvidia_smi_query() -> std::io::Result<std::process::Output> {
     const QUERY: [&str; 2] = [
         "--query-gpu=name,memory.total,driver_version",
         "--format=csv,noheader,nounits",
     ];
-    match Command::new("nvidia-smi").args(QUERY).output() {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            match ["/usr/bin", "/usr/local/bin", "/usr/lib/wsl/lib"]
-                .iter()
-                .map(|dir| Path::new(dir).join("nvidia-smi"))
-                .find(|path| path.is_file())
-            {
-                Some(path) => Command::new(path).args(QUERY).output(),
-                None => Err(error),
-            }
-        }
-        result => result,
+    let installed = ["/usr/bin", "/usr/local/bin", "/usr/lib/wsl/lib"]
+        .iter()
+        .map(|dir| Path::new(dir).join("nvidia-smi"))
+        .find(|path| path.is_file());
+    match installed {
+        Some(path) => Command::new(path).args(QUERY).output(),
+        None => Command::new("nvidia-smi").args(QUERY).output(),
     }
 }
 
