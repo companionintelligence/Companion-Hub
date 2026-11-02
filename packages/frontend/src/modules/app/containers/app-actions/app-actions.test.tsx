@@ -398,6 +398,23 @@ describe('AppActions', () => {
     });
   });
 
+  describe('the exposure mode the install dialog opens on', () => {
+    const installMode = (app: AppDetails | null) => {
+      render(<AppActions app={app} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+      return hoisted.installDialogProps?.retryExposureMode;
+    };
+
+    it('is what a failed install asked for when it is retried', () => {
+      expect(installMode(makeApp({ status: 'install_failed', exposureMode: 'local', config: { exposureMode: 'local', openPort: true } }))).toBe(
+        'local',
+      );
+    });
+
+    it('is left to the new-install default for an app that is not installed', () => {
+      expect(installMode(null)).toBeUndefined();
+    });
+  });
+
   describe('the restart setting for a newly connected domain', () => {
     /*
      * The stored config snapshot leaves this setting out, so that flipping it never

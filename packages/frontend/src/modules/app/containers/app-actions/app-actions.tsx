@@ -1065,7 +1065,13 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
 
   return (
     <>
-      <InstallDialog isOpen={installDisclosure.isOpen} onClose={installDisclosure.close} info={info} boundCustomDomain={app?.customDomain ?? null} />
+      <InstallDialog
+        isOpen={installDisclosure.isOpen}
+        onClose={installDisclosure.close}
+        info={info}
+        boundCustomDomain={app?.customDomain ?? null}
+        retryExposureMode={app?.status === 'install_failed' ? servedExposureMode(app) : undefined}
+      />
       <CancelInstallDialog
         isOpen={cancelInstallDisclosure.isOpen}
         onClose={cancelInstallDisclosure.close}

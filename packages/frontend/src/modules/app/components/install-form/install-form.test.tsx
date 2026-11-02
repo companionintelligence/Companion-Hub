@@ -3009,6 +3009,7 @@ describe('InstallForm - the exposure mode of an app already installed', () => {
   });
 
   afterEach(() => {
+    MOCK_AVAILABLE_DOMAINS.domains = [];
     fetchDnsAvailability.mockReset();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -3066,7 +3067,7 @@ describe('InstallForm - the exposure mode of an app already installed', () => {
     expect(selectedMode()).toEqual([PUBLIC]);
   });
 
-  it('does not save Public Web for an app that offers no choice of mode', async () => {
+  it('saves This Machine Only for a form that names no mode and shows no modes to pick from', async () => {
     const notExposable = { ...customApp, exposable: false } as AppInfo;
     const { container, onSubmit } = renderForm({ port: 9898 }, { info: notExposable });
 
@@ -3142,6 +3143,12 @@ describe('InstallForm - the exposure mode of an app already installed', () => {
     await submit(container);
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'cloudflare', exposedLocal: true })));
+  });
+
+  it('opens the retry of a failed install on the mode it asked for', () => {
+    renderForm({ exposureMode: 'local' }, { isEdit: false });
+
+    expect(selectedMode()).toEqual([LOCAL]);
   });
 
   it('gives a new install the first mode on offer, as before', async () => {
