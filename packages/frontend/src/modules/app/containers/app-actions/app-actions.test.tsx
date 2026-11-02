@@ -661,16 +661,7 @@ describe('AppActions', () => {
         serviceFailure: { kind: 'restarting', service: 'summary-service' },
       });
 
-      render(
-        <AppActions
-          app={makeApp({ status: 'stopped' })}
-          metadata={metadata}
-          info={info}
-          failure={null}
-          urlAvailability={idleAvailability}
-          layout="hero"
-        />,
-      );
+      render(<AppActions app={makeApp({ status: 'stopped' })} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
 
       expect(screen.getByRole('alert')).toHaveTextContent('APP_ERROR_SERVICE_KEEPS_RESTARTING');
     });
