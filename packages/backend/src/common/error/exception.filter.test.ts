@@ -38,6 +38,34 @@ describe('MainExceptionFilter', () => {
     } as ArgumentsHost;
   }
 
+  it('answers 503 DATABASE_UNAVAILABLE, not the driver message, when the database cannot be reached', () => {
+    const cause = Object.assign(new Error('getaddrinfo EAI_AGAIN ci-hub-db'), { code: 'EAI_AGAIN' });
+
+    filter.catch(new Error('Failed query: select "id" from "api_keys" where "hashed_key" = $1', { cause }), createHost());
+
+    expect(response.status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
+    expect(response.json).toHaveBeenCalledWith(
+      expect.objectContaining({ statusCode: HttpStatus.SERVICE_UNAVAILABLE, message: 'DATABASE_UNAVAILABLE' }),
+    );
+    expect(JSON.stringify(response.json.mock.calls[0][0])).not.toContain('api_keys');
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('answers 503 for a login Postgres refuses, since that also leaves the store unusable', () => {
+    const cause = Object.assign(new Error('password authentication failed for user "companion"'), { code: '28P01' });
+
+    filter.catch(new Error('Failed query: select 1', { cause }), createHost());
+
+    expect(response.status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
+  });
+
+  it('keeps a 500 for a query bug that is not a database outage', () => {
+    filter.catch(new Error('column "owner_app_urn" does not exist'), createHost());
+
+    expect(response.status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
+    expect(response.json).toHaveBeenCalledWith(expect.objectContaining({ message: 'INTERNAL_SERVER_ERROR' }));
+  });
+
   it('returns JSON for desktop-exchange errors instead of redirecting to login', () => {
     filter.catch(new BadRequestException('Invalid or expired desktop exchange token'), createHost());
 
