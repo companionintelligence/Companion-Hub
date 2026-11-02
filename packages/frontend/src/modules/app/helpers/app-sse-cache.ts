@@ -56,7 +56,7 @@ export type AppSsePayload = {
   warningCode?: string;
   /** Optional detail for the caveat (e.g. the host path of an uninstall remnant) used to render an actionable message. */
   warningDetail?: string;
-  /** A start, restart or install outcome only: the host port the app could not have and the one it is on now. */
+  /** A start, restart or install outcome, or `host_port_moved`: the host port the app could not have and the one it is on now. */
   movedHostPort?: HostPortMove;
   progress?: number;
   /** Install ticks only, once Docker has reported layer sizes: the image download so far. */
@@ -95,6 +95,8 @@ const LIFECYCLE_INVALIDATE_EVENTS = new Set([
   'custom_domain_changed',
   // The row's public domain moved, so every URL the app page shows is stale.
   'public_domain_changed',
+  // Carries no appStatus. A tab that was away still shows the old port until it refetches.
+  'host_port_moved',
 ]);
 
 const TERMINAL_PROGRESS_STATUSES = new Set(['running', 'missing', 'install_failed']);

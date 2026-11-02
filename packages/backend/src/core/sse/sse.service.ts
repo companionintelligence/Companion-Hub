@@ -1,12 +1,18 @@
 import { DockerService } from '@/modules/docker/docker.service';
 import { Injectable, type MessageEvent, type OnApplicationShutdown } from '@nestjs/common';
-import type { SSE, Topic } from '@ci-hub/common/schemas';
+import type { HostPortMove, SSE, Topic } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
-import { Observable, Subject, type Subscription, interval, merge } from 'rxjs';
-import { map, startWith } from 'rxjs/operators';
+import { Observable, Subject, type Subscription, defer, interval, merge, timer } from 'rxjs';
+import { finalize, map, startWith } from 'rxjs/operators';
 import { resolveHubBuildInfo } from '../build-info/hub-build-info';
 import { ConfigurationService } from '../config/configuration.service';
 import { LoggerService } from '../logger/logger.service';
+
+/**
+ * How long a connection has to stay up before the host port moves replayed to it count as heard. A tab
+ * on an old bundle reloads on the hello and drops at once. The page it reloads into has to get them.
+ */
+const PORT_MOVE_HEARD_AFTER_MS = 5_000;
 
 @Injectable()
 export class SSEService implements OnApplicationShutdown {
@@ -51,12 +57,13 @@ export class SSEService implements OnApplicationShutdown {
   private readonly installProgress = new Map<string, MessageEvent>();
 
   /**
-   * The last event telling of an app's host port move that nobody was connected to receive, by app.
-   * A start at Hub boot can move an app with the desktop closed. The person only learns its address
-   * changed if the next page to connect is told. Sent once, to that page. Kept in memory, so a Hub
-   * restart loses it. The Hub's log keeps the move.
+   * Host port moves nobody was connected to receive, by app: the port the person last knew of and the
+   * one the app is on now. A start at Hub boot can move an app with the desktop closed. The person only
+   * learns its address changed if the next page to connect is told, as `host_port_moved`, because the
+   * outcome that moved it may be long past. Kept in memory, so a Hub restart loses it. The Hub's log
+   * keeps the move.
    */
-  private readonly unseenPortMoves = new Map<string, MessageEvent>();
+  private readonly unseenPortMoves = new Map<string, HostPortMove>();
 
   /**
    * Emits an event to the specified topic.
@@ -94,10 +101,20 @@ export class SSEService implements OnApplicationShutdown {
     }
 
     if (topic === 'app' && !currentTopic.observed && 'movedHostPort' in data && data.movedHostPort) {
-      this.unseenPortMoves.set(data.appUrn, event);
+      this.keepUnseenPortMove(data.appUrn, data.movedHostPort);
     }
 
     currentTopic.next(event);
+  }
+
+  /** A second move nobody heard about still starts from the port the person knows. One back to that port is no news. */
+  private keepUnseenPortMove(appUrn: string, { from, to }: HostPortMove): void {
+    const known = this.unseenPortMoves.get(appUrn)?.from ?? from;
+    if (known === to) {
+      this.unseenPortMoves.delete(appUrn);
+    } else {
+      this.unseenPortMoves.set(appUrn, { from: known, to });
+    }
   }
 
   /**
@@ -148,23 +165,42 @@ export class SSEService implements OnApplicationShutdown {
    * it exists. It is built per subscription, not emitted on the topic, because a Hub
    * that has just started has no subscribers to emit to — the clients are all mid-reconnect.
    * The latest tick of a running install or step of a running update follows the hello (`installProgress`),
-   * then any host port move nobody has heard about yet (`unseenPortMoves`).
+   * then any host port move nobody has heard about yet (`unseenPortMoves`). A move counts as heard once
+   * a connection that got it has stayed up for `PORT_MOVE_HEARD_AFTER_MS`.
    */
   getAppEventsObservable(): Observable<MessageEvent> {
-    // `buildVersion` is the image stamp `GET /api/hub/build` serves, which image builds set to the
-    // page bundle's version, so a tab compares like with like. `version` stays the env file's, which
-    // the pending-update flow compares. An unstamped image sends no `buildVersion`.
-    const hello: MessageEvent = {
-      type: 'message',
-      data: JSON.stringify({
-        event: 'hub_hello',
-        version: this.config.getConfig().version,
-        ...(this.buildVersion ? { buildVersion: this.buildVersion } : {}),
-      } satisfies Extract<SSE, { topic: 'app' }>['data']),
-    };
-    const unseenPortMoves = [...this.unseenPortMoves.values()];
-    this.unseenPortMoves.clear();
-    return this.getTopicObservable('app').pipe(startWith(hello, ...this.installProgress.values(), ...unseenPortMoves));
+    return defer(() => {
+      // `buildVersion` is the image stamp `GET /api/hub/build` serves, which image builds set to the
+      // page bundle's version, so a tab compares like with like. `version` stays the env file's, which
+      // the pending-update flow compares. An unstamped image sends no `buildVersion`.
+      const hello: MessageEvent = {
+        type: 'message',
+        data: JSON.stringify({
+          event: 'hub_hello',
+          version: this.config.getConfig().version,
+          ...(this.buildVersion ? { buildVersion: this.buildVersion } : {}),
+        } satisfies Extract<SSE, { topic: 'app' }>['data']),
+      };
+      const moves = [...this.unseenPortMoves];
+      const moveEvents = moves.map(
+        ([appUrn, movedHostPort]): MessageEvent => ({
+          type: 'message',
+          data: JSON.stringify({ event: 'host_port_moved', appUrn, movedHostPort }),
+        }),
+      );
+      // While this connection is up, a new move goes out live and is not kept, so all of these are what it was sent.
+      const heard = moves.length > 0 ? timer(PORT_MOVE_HEARD_AFTER_MS).subscribe(() => this.forgetUnseenPortMoves(moves)) : undefined;
+      return this.getTopicObservable('app').pipe(
+        startWith(hello, ...this.installProgress.values(), ...moveEvents),
+        finalize(() => heard?.unsubscribe()),
+      );
+    });
+  }
+
+  private forgetUnseenPortMoves(moves: ReadonlyArray<[string, HostPortMove]>): void {
+    for (const [appUrn] of moves) {
+      this.unseenPortMoves.delete(appUrn);
+    }
   }
 
   /**

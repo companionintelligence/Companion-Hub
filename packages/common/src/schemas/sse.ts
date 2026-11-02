@@ -97,6 +97,9 @@ const appScopedEventSchema = z.object({
     // An install call for the app began or ended its checks, which run before the app has a row.
     // Carries no status, but `operation`: what the Hub has under way for the app now.
     'operation_change',
+    // Sent to the next page to connect when no page was connected for the outcome that moved the app
+    // off a host port. Carries `movedHostPort` and no status, since that outcome may be long past.
+    'host_port_moved',
   ]),
   appUrn: appUrnSchema,
   appStatus: appStatusSchema.optional(),

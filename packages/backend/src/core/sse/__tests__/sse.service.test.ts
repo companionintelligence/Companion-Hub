@@ -72,21 +72,54 @@ describe('SSEService app stream', () => {
     const appUrn = 'port-test:_user';
     const moved = { event: 'start_success' as const, appUrn, appStatus: 'running' as const, movedHostPort: { from: 10000, to: 10001 } };
 
+    const notice = (movedHostPort: { from: number; to: number }) => ({ event: 'host_port_moved', appUrn, movedHostPort });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** A page that stays connected long enough for what it was sent to count as heard. */
+    const stayConnected = () => {
+      const connection = service.getAppEventsObservable().subscribe();
+      vi.advanceTimersByTime(5_000);
+      connection.unsubscribe();
+    };
+
     it('reaches the next page to connect, right after the hello', async () => {
       service.emit('app', moved);
 
       const [, second] = await collect(2);
-      expect(JSON.parse(second.data as string)).toEqual(moved);
+      expect(JSON.parse(second.data as string)).toEqual(notice(moved.movedHostPort));
     });
 
-    it('reaches only that page', async () => {
+    it('leaves out the outcome that moved the app, which may be long past', async () => {
+      service.emit('app', { event: 'start_error', appUrn, appStatus: 'stopped', error: 'mount failed', movedHostPort: moved.movedHostPort });
+
+      const [, second] = await collect(2);
+      expect(JSON.parse(second.data as string)).toEqual(notice(moved.movedHostPort));
+    });
+
+    it('reaches only that page once it has stayed connected', async () => {
+      vi.useFakeTimers();
       service.emit('app', moved);
-      await collect(2);
+      stayConnected();
 
       const pending = collect(2);
       service.emit('app', { event: 'install_queue', active: null, queued: [] });
       const [, second] = await pending;
       expect(JSON.parse(second.data as string)).toEqual({ event: 'install_queue', active: null, queued: [] });
+    });
+
+    // A tab on an old bundle reloads on the hello, which comes first, so the page it reloads into has to be told.
+    it('reaches the next page too when the connection it was sent on dropped at once', async () => {
+      vi.useFakeTimers();
+      service.emit('app', moved);
+      const reloading = service.getAppEventsObservable().subscribe();
+      reloading.unsubscribe();
+      vi.advanceTimersByTime(5_000);
+
+      const [, second] = await collect(2);
+      expect(JSON.parse(second.data as string)).toEqual(notice(moved.movedHostPort));
     });
 
     it('is not sent again when a page was connected to hear it', async () => {
@@ -100,13 +133,22 @@ describe('SSEService app stream', () => {
       expect(JSON.parse(second.data as string)).toEqual({ event: 'install_queue', active: null, queued: [] });
     });
 
-    it('keeps only the latest move of an app', async () => {
+    it('says where the app is now and the port the person last knew of, across moves nobody heard', async () => {
       service.emit('app', moved);
       service.emit('app', { ...moved, movedHostPort: { from: 10001, to: 10002 } });
 
+      const [, second] = await collect(2);
+      expect(JSON.parse(second.data as string).movedHostPort).toEqual({ from: 10000, to: 10002 });
+    });
+
+    it('says nothing of an app that moved back to the port the person knows', async () => {
+      service.emit('app', moved);
+      service.emit('app', { ...moved, movedHostPort: { from: 10001, to: 10000 } });
+
       const pending = collect(2);
+      service.emit('app', { event: 'install_queue', active: null, queued: [] });
       const [, second] = await pending;
-      expect(JSON.parse(second.data as string).movedHostPort).toEqual({ from: 10001, to: 10002 });
+      expect(JSON.parse(second.data as string)).toEqual({ event: 'install_queue', active: null, queued: [] });
     });
 
     it('forgets the move of an app uninstalled before anyone heard', async () => {

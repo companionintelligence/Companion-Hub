@@ -177,6 +177,18 @@ describe('SSEProvider', () => {
       expect(mockToastWarning).toHaveBeenCalledWith(expect.stringMatching(/^excalidraw is now on port 10001 /), expect.anything());
     });
 
+    it('host_port_moved says where the app is now, with no outcome of its own to report', () => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event: 'host_port_moved', appUrn: 'excalidraw:community', movedHostPort });
+      });
+
+      expect(mockToastSuccess).not.toHaveBeenCalled();
+      expect(mockToastError).not.toHaveBeenCalled();
+      expect(mockToastWarning).toHaveBeenCalledWith(expect.stringMatching(/^excalidraw is now on port 10001 /), expect.anything());
+    });
+
     it('names the app as its page does', () => {
       const getOnEvent = renderProvider();
 

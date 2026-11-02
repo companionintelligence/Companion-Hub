@@ -309,6 +309,12 @@ mid-install shows where the download is instead of waiting for the next tick. `p
 when each image's pull starts, its first event from Docker, and every 30 seconds where the layers
 are.
 
+A start, restart or install can move an app off a host port another program holds. With no page
+connected, `SSEService` keeps the move and sends it to each new `app` subscriber as
+`host_port_moved`, until one connection has stayed up for five seconds. A tab that reloads on the
+hello doesn't use it up. It is kept in memory, one entry per app, so a Hub restart loses it. The
+Hub's log keeps the move.
+
 What cancelling an install (`AppLifecycleService.cancelOperation`) does depends on how far it got:
 
 - `installApp` registers the operation only after the Portal bundle download and the image

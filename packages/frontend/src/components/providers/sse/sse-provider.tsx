@@ -132,6 +132,11 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
       }
 
       switch (event) {
+        case 'host_port_moved':
+          if (movedHostPort) {
+            showPortMoved(appUrn, appName, movedHostPort);
+          }
+          break;
         case 'install_success':
           showSuccessOrPortMoved('APP_INSTALL_SUCCESS', appUrn, appName, movedHostPort);
           break;
