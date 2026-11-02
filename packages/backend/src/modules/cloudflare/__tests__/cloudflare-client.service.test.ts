@@ -269,6 +269,49 @@ describe('CloudflareClientService', () => {
       expect(message).not.toContain('undefined');
     });
 
+    it('retries a 429 from the Portal the way it retries a 503', async () => {
+      const refusal = (status: string) => new TranslatableError('PORTAL_REQUEST_FAILED', { status, path: 'tunnels/state' }, 502);
+      portalClient.postTunnelState.mockClear();
+      portalClient.postTunnelState.mockRejectedValue(refusal('429'));
+
+      const throttled = await service.syncState('org-id', [], 'tun-id');
+
+      expect(throttled).toMatchObject({ ok: false, errorStatus: 429, transient: true });
+      expect(portalClient.postTunnelState).toHaveBeenCalledTimes(3);
+    });
+
+    it('sends the state again when the Portal reports a transient app failure, then stops', async () => {
+      portalClient.postTunnelState.mockClear();
+      portalClient.postTunnelState
+        .mockResolvedValueOnce({
+          success: true,
+          failed: ['anything-llm'],
+          failures: [{ app: 'anything-llm', reason: 'api_error', message: 'Failed to read' }],
+          synced: 0,
+        } as any)
+        .mockResolvedValueOnce({ success: true, synced: 1 } as any);
+
+      const result = await service.syncState('org-id', [], 'tun-id');
+
+      expect(portalClient.postTunnelState).toHaveBeenCalledTimes(2);
+      expect(result).toEqual({ ok: true, failed: [], failures: [], synced: 1 });
+    });
+
+    it('does not send the state again for an app refusal a repeat cannot change', async () => {
+      portalClient.postTunnelState.mockClear();
+      portalClient.postTunnelState.mockResolvedValue({
+        success: true,
+        failed: ['anything-llm'],
+        failures: [{ app: 'anything-llm', reason: 'conflict', message: 'taken' }],
+        synced: 0,
+      } as any);
+
+      const result = await service.syncState('org-id', [], 'tun-id');
+
+      expect(portalClient.postTunnelState).toHaveBeenCalledTimes(1);
+      expect(result.failures).toEqual([{ app: 'anything-llm', reason: 'conflict', message: 'taken' }]);
+    });
+
     it('should surface the custom domains CI-Cloud reports as wired', async () => {
       portalClient.postTunnelState.mockResolvedValue({
         success: true,

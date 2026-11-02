@@ -33,7 +33,13 @@ import {
 } from '../apps/app-public-routing.helpers';
 import { ADDRESS_KEPT_STATUSES } from '../apps/app-starting-page';
 import { isPortExposeApp, PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
-import { CloudflareClientService, AppInfo, type PublicDnsFailure, type PublicDnsFailureReason } from '../cloudflare/cloudflare-client.service';
+import {
+  CloudflareClientService,
+  AppInfo,
+  type PublicDnsFailure,
+  type PublicDnsFailureReason,
+  isTransientAppFailure,
+} from '../cloudflare/cloudflare-client.service';
 import { DockerReadFacade } from '../docker/docker-read.facade';
 import { RegistrationService } from '../registration/registration.service';
 import { isServePermissionDenied, servePermissionRemedy, TailscaleService, type TailscaleServeEntry } from '../tailscale/tailscale.service';
@@ -1177,6 +1183,12 @@ export class ExposureSyncService implements OnModuleDestroy {
         // fault, so a sync refused only for those reports nothing to Sentry. Any
         // other failure in the same sync, including one with no reason, still does.
         const onlyUserActionRefusals = refusedNames.every((name) => isUserActionRefusal(failureByApp.get(name)?.reason));
+        // Every refusal passes on its own (the sync already retried it): a warning, on the hourly interval.
+        // An app whose failure carries no reason (an older Portal) is not known to be transient, so it stays an error.
+        const onlyTransientRefusals = refusedNames.every((name) => {
+          const failure = failureByApp.get(name);
+          return failure !== undefined && isTransientAppFailure(failure);
+        });
 
         this.surfacePublicDnsFailure(
           `[Cloudflare] Public DNS records were NOT created for ${refusedNames.length} app(s): ${failedLabels.join(', ')}. ` +
@@ -1185,7 +1197,7 @@ export class ExposureSyncService implements OnModuleDestroy {
             )}`,
           refusedNames,
           toastTargets,
-          { reportError: !onlyUserActionRefusals },
+          { reportError: !onlyUserActionRefusals, transient: onlyTransientRefusals },
         );
       } else if (appEntries.length > 0) {
         // Log success only after the request and every per-app operation complete.

@@ -159,6 +159,17 @@ export interface PublicDnsFailure {
 }
 
 /**
+ * Per-app refusals the Portal says pass on their own: a Cloudflare write that failed, a write parked for
+ * a later sync, or an old address still being released. The other reasons name a conflict or a limit that
+ * a repeat cannot change.
+ */
+const TRANSIENT_APP_FAILURE_REASONS: ReadonlySet<PublicDnsFailureReason> = new Set(['api_error', 'write_failed', 'release_pending']);
+
+export function isTransientAppFailure(failure: PublicDnsFailure): boolean {
+  return TRANSIENT_APP_FAILURE_REASONS.has(failure.reason);
+}
+
+/**
  * Describes the outcome of a Companion Portal state synchronization.
  *
  * `ok` reports whether the request succeeded. `failed` lists apps whose public
@@ -370,11 +381,20 @@ export class CloudflareClientService {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const result = await this.syncStateOnce(organizationId, apps, customDomainApps);
       if (result.ok) {
-        return result;
+        // The Portal answered, but some apps' DNS writes failed for a reason it says passes on its own. The
+        // state is reconciled as a whole, so sending it again is safe, and a second pass usually clears them.
+        if (!result.failures.some(isTransientAppFailure) || attempt === maxAttempts) {
+          return result;
+        }
+        this.logger.warn(`Cloudflare state sync attempt ${attempt}/${maxAttempts} left transient app address failures; retrying…`);
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+        continue;
       }
       lastError = result;
+      // 429 is the Portal shedding load, which a short wait clears like a 5xx does.
       const transient =
         result.errorStatus === undefined ||
+        result.errorStatus === 429 ||
         result.errorStatus >= 500 ||
         result.errorMessage?.toLowerCase().includes('timeout') ||
         result.errorMessage?.toLowerCase().includes('network');
@@ -520,8 +540,8 @@ export class CloudflareClientService {
         // `postJson` answers every non-2xx with its own 502 and keeps the Portal's status in the params.
         errorStatus = Number((error.getResponse() as { intlParams?: { status?: string } }).intlParams?.status) || undefined;
       }
-      // A 4xx is the Portal's answer, and it repeats until someone acts. Anything else may pass.
-      const transient = errorStatus === undefined || errorStatus < 400 || errorStatus >= 500;
+      // A 4xx is the Portal's answer, and it repeats until someone acts; a 429 is load that a wait clears. Anything else may pass.
+      const transient = errorStatus === undefined || errorStatus === 429 || errorStatus < 400 || errorStatus >= 500;
       return { ok: false, failed: [], failures: [], synced: 0, errorStatus, errorMessage, transient };
     }
   }
