@@ -704,6 +704,21 @@ describe('StartAppCommand — pull policy', () => {
       expect(result).toMatchObject({ success: true, movedHostPort: { from: 8080, to: 10000 } });
     });
 
+    it('reports the move and the failure when the app moved and a service then crash-looped', async () => {
+      refusals = [8080];
+      const serviceFailure = { kind: 'restarting', service: 'summary-service', exitCode: 126 };
+      dockerService.waitForManagedAppContainersReady.mockResolvedValue({
+        ok: false,
+        message: 'summary-service keeps restarting (exit 126)',
+        errorDetail: 'app-summary-service-1 (restarting, exit 126): ',
+        serviceFailure,
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: false, serviceFailure, movedHostPort: { from: 8080, to: 10000 } });
+    });
+
     it('names the port the app started on when Docker refuses a second one too', async () => {
       refusals = [8080, 10000];
       portManager.getMainPort.mockResolvedValueOnce(8080).mockResolvedValueOnce(10000);

@@ -8264,6 +8264,25 @@ describe('AppLifecycleService', () => {
         });
       });
 
+      it('tells the page about the move and the failing service when both happened', async () => {
+        const serviceFailure = { kind: 'restarting', service: 'summary-service', exitCode: 126 };
+        appEventsQueue.publish.mockResolvedValue({
+          success: false,
+          message: 'summary-service keeps restarting (exit 126)',
+          serviceFailure,
+          movedHostPort,
+        } as any);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+
+        await vi.waitFor(() => {
+          expect(sseService.emit).toHaveBeenCalledWith(
+            'app',
+            expect.objectContaining({ event: 'start_error', appUrn, serviceFailure, movedHostPort }),
+          );
+        });
+      });
+
       it('sends nothing about a move when the app kept its port', async () => {
         await service.startApp({ actor: TEST_ACTOR, appUrn });
 
