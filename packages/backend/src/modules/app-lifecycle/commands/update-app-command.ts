@@ -20,7 +20,8 @@ import type Dockerode from 'dockerode';
 import type { OperationPhase } from '../app-operation-registry';
 import { AppLifecycleCommand, type CommandExecutionContext } from './command';
 import { pullAppImagesRecorded } from './pull-app-images';
-import { type UpdatePhase, parseInstalledComposeJson } from '@ci-hub/common/schemas';
+import { type AppSecurityGrants, type UpdatePhase, parseInstalledComposeJson } from '@ci-hub/common/schemas';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
 
 /**
  * Kept free at the end of an update's time (`CommandExecutionContext.deadline`) for undoing it:
@@ -105,7 +106,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     let composeToInstall: Awaited<ReturnType<MarketplaceService['getDockerComposeJson']>>;
     try {
       composeToInstall = await marketplaceService.getDockerComposeJson(appUrn);
-      parseInstalledComposeJson(composeToInstall.content);
+      parseInstalledComposeJson(composeToInstall.content, securityGrantsFor(appUrn));
     } catch (err) {
       logger.error(`Error parsing docker-compose.yml for app ${appUrn} from marketplace repository. Are you running the latest version of CI Hub?`);
       // Nothing has been touched: the running app is exactly as it was.
@@ -175,7 +176,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       // files already on disk. Nothing is stopped, removed or replaced until the images are here.
       logger.info(`Pulling images for ${appUrn} before stopping the current version`);
       report('pulling');
-      const imagesToPull = this.imagesToPull(composeToInstall.content);
+      const imagesToPull = this.imagesToPull(composeToInstall.content, securityGrantsFor(appUrn));
       await pullAppImagesRecorded({ docker: dockerService, files: appFilesManager, logger }, appUrn, imagesToPull, () =>
         dockerService.pullImages(imagesToPull, {
           forcePull: true,
@@ -344,9 +345,9 @@ export class UpdateAppCommand extends AppLifecycleCommand {
    * The images the new version needs, as `compose pull` would resolve them: with the per-architecture
    * overrides applied, so the pull asks for the image this machine will actually run.
    */
-  private imagesToPull(composeContent: unknown): string[] {
+  private imagesToPull(composeContent: unknown, grants?: AppSecurityGrants): string[] {
     const configService = this.moduleRef.get(ConfigurationService, { strict: false });
-    const { services, overrides } = parseInstalledComposeJson(composeContent);
+    const { services, overrides } = parseInstalledComposeJson(composeContent, grants);
     const merged = mergeArchitectureOverrides(services, overrides, configService?.get('architecture'));
 
     return [...new Set(merged.map((service) => service.image?.trim()).filter((image): image is string => Boolean(image)))];

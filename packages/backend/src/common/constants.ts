@@ -182,6 +182,12 @@ export const DEFAULT_TZ = 'UTC';
 /** Last-resort fallback when LOCAL_DOMAIN and DOMAIN are both unset. Prefer localhost:port for local app access. */
 export const DEFAULT_LOCAL_DOMAIN = 'localhost';
 
+/**
+ * Host ports the Hub's own web ingress (Traefik) holds. An app published on one of them can never bind, so
+ * a port-expose app is refused them when it is saved, and a conflict on them is the user's configuration.
+ */
+export const HUB_INGRESS_HOST_PORTS: readonly number[] = [80, 443];
+
 function isProductionEnvironmentDefault() {
   return process.env.CI_HUB_ENVIRONMENT === 'production';
 }

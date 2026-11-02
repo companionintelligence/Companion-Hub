@@ -44,6 +44,7 @@ import { toAppCommandFailureResult } from './commands/app-lifecycle-errors';
 import type { CommandExecutionContext } from './commands/command';
 import { assertHostDevicesAvailable } from './commands/host-device-preflight';
 import { extractComposeImages } from './commands/install-app-command';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { toCheckResult, planImages, planPorts, planFormFields } from './planning/install-plan';
 import type { InstallPlan, InstallPlanChecks } from './planning/install-plan.types';
 import { buildComposePortRequests, buildMainPortRequest, type PortRequestInput } from './planning/port-requests';
@@ -114,6 +115,15 @@ export const RESTARTS_THAT_WAIT_FOR_THE_APP: ReadonlySet<SystemLifecycleReason> 
 
 /** How often a waiting command looks at the app again, besides being woken when its slot empties. */
 const OPERATION_WAIT_POLL_MS = 5_000;
+
+/**
+ * A start the queue refused because RabbitMQ was still connecting is published again, the delay
+ * doubling from QUEUE_RECONNECT_FIRST_DELAY_MS up to QUEUE_RECONNECT_MAX_DELAY_MS, for
+ * QUEUE_RECONNECT_WAIT_MS in all. The boot gives a start it refused the same ten minutes (app.service.ts).
+ */
+const QUEUE_RECONNECT_FIRST_DELAY_MS = 1_000;
+const QUEUE_RECONNECT_MAX_DELAY_MS = 15_000;
+const QUEUE_RECONNECT_WAIT_MS = 10 * 60_000;
 
 /**
  * The restart a caller of {@link AppLifecycleService.withAppHeld} applies its change with, under the
@@ -1184,7 +1194,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'start');
-    this.publishRegistered(appUrn, requestId, {
+    this.publishStartWhenQueueUp(appUrn, requestId, {
       appUrn,
       command: 'start',
       requestId,
@@ -1228,7 +1238,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             },
           });
         } else {
-          this.logger.error(`Failed to start app ${appUrn}: ${message}`);
+          // The queue never took the command, so nothing ran and the app settles on the status it had. That is a
+          // warning: the queue was not up, which is the device's, not a failure of the start itself.
+          if (errorCode === QUEUE_UNAVAILABLE_CODE) {
+            this.logger.warn(`Failed to start app ${appUrn}: ${message}`);
+          } else {
+            this.logger.error(`Failed to start app ${appUrn}: ${message}`);
+          }
           await this.settleCommandOutcome({
             appId: app.id,
             appUrn,
@@ -1322,7 +1338,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       this.marketplaceService.getDockerComposeJson(appUrn),
     ]);
 
-    const images = composeJson.content ? await planImages(this.dockerService, extractComposeImages(composeJson.content)) : [];
+    const images = composeJson.content
+      ? await planImages(this.dockerService, extractComposeImages(composeJson.content, securityGrantsFor(appUrn)))
+      : [];
 
     // Parsed the same way `validateAppConfig`/`installApp` do; an invalid form still produces a
     // usable (if empty) basis here — `checks.config` is what reports the validation failure.
@@ -1336,7 +1354,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
     if (composeJson.content) {
       try {
-        portRequests.push(...buildComposePortRequests(composeJson.content));
+        portRequests.push(...buildComposePortRequests(composeJson.content, securityGrantsFor(appUrn)));
       } catch {
         // Malformed compose — already surfaced via `checks.config`/`images`; the port plan just omits extras.
       }
@@ -3209,6 +3227,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const runningApps = apps.filter((app: AppFromDb) => app.status === 'running');
 
     (async () => {
+      // A boot can come before RabbitMQ has connected, and every start is refused until it has. Wait for it
+      // rather than fail each start at once. If it never connects, the apps are left as they are.
+      if (runningApps.length > 0 && !(await this.waitForAppEventsQueue(QUEUE_RECONNECT_WAIT_MS))) {
+        this.logger.warn(
+          `RabbitMQ did not connect within ${QUEUE_RECONNECT_WAIT_MS / 60_000} minutes, so ${runningApps.length} running app(s) were not restarted.`,
+        );
+        return;
+      }
       for (const app of runningApps) {
         try {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
@@ -3527,6 +3553,43 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       this.operationRegistry.clear(appUrn, requestId);
       throw error;
     });
+  }
+
+  /**
+   * Resolves true once the app-events queue can take a command, polling on the backoff of the
+   * QUEUE_RECONNECT_* constants. Resolves false when it still cannot after `waitMs`.
+   */
+  private async waitForAppEventsQueue(waitMs: number): Promise<boolean> {
+    const deadline = Date.now() + waitMs;
+    let delay = QUEUE_RECONNECT_FIRST_DELAY_MS;
+    while (this.appEventsQueue.unavailableReason() !== undefined) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(delay, remaining)));
+      delay = Math.min(delay * 2, QUEUE_RECONNECT_MAX_DELAY_MS);
+    }
+    return true;
+  }
+
+  /**
+   * Publish a start. While the queue refuses it because RabbitMQ is still connecting, wait for the queue
+   * (waitForAppEventsQueue) and publish it again, until the queue takes it or QUEUE_RECONNECT_WAIT_MS has
+   * passed. Only the refusal the queue makes before it sends anything (QUEUE_UNAVAILABLE_CODE, see
+   * queue.entity.ts) is repeated, so the start cannot run twice. A refusal while the queue reports itself
+   * ready is returned at once, as before.
+   */
+  private async publishStartWhenQueueUp(appUrn: AppUrn, requestId: string, event: z.input<typeof appEventSchema>) {
+    const deadline = Date.now() + QUEUE_RECONNECT_WAIT_MS;
+    let raw = (await this.publishRegistered(appUrn, requestId, event)) as z.output<typeof appEventResultSchema>;
+    while (!raw.success && raw.errorCode === QUEUE_UNAVAILABLE_CODE && this.appEventsQueue.unavailableReason() !== undefined) {
+      if (!(await this.waitForAppEventsQueue(Math.max(deadline - Date.now(), 0)))) {
+        break;
+      }
+      raw = (await this.publishRegistered(appUrn, requestId, event)) as z.output<typeof appEventResultSchema>;
+    }
+    return raw;
   }
 
   private operationBusyError(appUrn: AppUrn, busy: OperationCommand): TranslatableError {

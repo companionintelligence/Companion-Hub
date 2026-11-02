@@ -105,6 +105,35 @@ describe('DockerService', () => {
     vi.clearAllMocks();
   });
 
+  describe('diagnoseAppContainers', () => {
+    it('does not count a clean one-shot exit as an unhealthy container', async () => {
+      (dockerReadFacade.diagnoseAppContainers as unknown as { mockRestore?: () => void }).mockRestore?.();
+      const listing = createMockSpawnProcess();
+      (child_process.spawn as any)
+        .mockImplementationOnce(() => listing)
+        .mockImplementationOnce(() => {
+          const logs = createMockSpawnProcess();
+          setImmediate(() => logs.emit('close', 0));
+          return logs;
+        });
+
+      const diagnosis = dockerReadFacade.diagnoseAppContainers('ghost:ci-marketplace' as any);
+      setImmediate(() => {
+        listing.stdout.emit(
+          'data',
+          Buffer.from(
+            'ghost_ci-marketplace-migrate-1|Exited (0) 2 seconds ago\nghost_ci-marketplace-app-1|Up 2 hours\nghost_ci-marketplace-setup-1|Exited (1) 5 minutes ago\n',
+          ),
+        );
+        listing.emit('close', 0);
+      });
+      const result = await diagnosis;
+
+      expect(result.unhealthy.map((container) => container.name)).toEqual(['ghost_ci-marketplace-setup-1']);
+      expect(result.healthy).toEqual(['ghost_ci-marketplace-migrate-1', 'ghost_ci-marketplace-app-1']);
+    });
+  });
+
   describe('getBaseComposeArgsApp', () => {
     it('should generate basic compose arguments', async () => {
       const appUrn = 'test-app' as any;
