@@ -95,9 +95,40 @@ pub fn hub_start_in_progress() -> bool {
 /// Uses a global `AtomicBool` guard to prevent concurrent invocations.
 /// A `Drop` guard ensures the flag is cleared even if the inner logic panics.
 pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
+    start_hub_with_origin(compose_path, env_path, data_dir, StartOrigin::Explicit)
+}
+
+/// A start the desktop begins on its own: launch auto-start and the watchdog. Unlike
+/// [`start_hub`], it leaves the automatic-retry budget alone, so a failure counts against it.
+pub(crate) fn start_hub_automatic(
+    compose_path: &Path,
+    env_path: &Path,
+    data_dir: &Path,
+) -> Result<String, String> {
+    start_hub_with_origin(compose_path, env_path, data_dir, StartOrigin::Automatic)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StartOrigin {
+    /// The user, the tray, a restart, or the updater asked for this start.
+    Explicit,
+    /// The desktop started the Hub on its own.
+    Automatic,
+}
+
+fn start_hub_with_origin(
+    compose_path: &Path,
+    env_path: &Path,
+    data_dir: &Path,
+    origin: StartOrigin,
+) -> Result<String, String> {
     // Clear the user-stopped marker: the user has explicitly requested a start.
     if !stack_dev_mode_enabled() {
         clear_user_stopped(data_dir);
+    }
+    if origin == StartOrigin::Explicit {
+        // An explicit start gets a fresh automatic-retry budget.
+        reset_start_retry_budget(data_dir);
     }
 
     // Prevent concurrent start attempts.
@@ -137,11 +168,9 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
             let formatted = format_start_failure_message(&error);
             if should_persist_start_failure(&error) {
                 let _ = mark_start_failed(data_dir, &error);
-                let _ = append_desktop_log_for(
-                    data_dir,
-                    "hub.start",
-                    &format!("Start failed (sticky failure state set): {}", formatted),
-                );
+                let outcome = record_start_failure(data_dir, now_ms());
+                let _ =
+                    append_desktop_log_for(data_dir, "hub.start", &outcome.log_message(&formatted));
             } else {
                 let _ = append_desktop_log_for(
                     data_dir,

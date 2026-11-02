@@ -891,6 +891,12 @@ pub fn run() {
                         // explicitly click "Start Hub" again.
                         let user_stopped = hub_manager::is_user_stopped(&data_for_decision);
                         let start_failed = hub_manager::is_start_failed(&data_for_decision);
+                        // A sticky failure holds auto-start only until its automatic retry is due.
+                        let retry_due = start_failed
+                            && hub_manager::automatic_retry_due(
+                                &data_for_decision,
+                                hub_manager::now_ms(),
+                            );
                         let needs_runtime_recovery = hub_manager::hub_needs_runtime_recovery();
                         // Another `docker inspect`, so only when nothing above decided already.
                         let stopped_core_services = if user_stopped
@@ -903,8 +909,10 @@ pub fn run() {
                             hub_manager::stopped_core_services()
                         };
 
-                        let should_start = if user_stopped || start_failed {
+                        let should_start = if user_stopped {
                             false
+                        } else if start_failed {
+                            retry_due
                         } else if !containers_exist {
                             true
                         } else if needs_runtime_recovery {
@@ -922,8 +930,10 @@ pub fn run() {
                         let reason = if user_stopped {
                             "user intentionally stopped the Hub — respecting decision across relaunch"
                                 .to_string()
+                        } else if retry_due {
+                            "an earlier start failed and its automatic retry is due".to_string()
                         } else if start_failed {
-                            "an earlier start did not finish; waiting for an explicit user retry"
+                            "an earlier start failed; waiting for its automatic retry or a user retry"
                                 .to_string()
                         } else if !containers_exist {
                             "containers are missing".to_string()
@@ -980,7 +990,7 @@ pub fn run() {
                                 let env_for_start = env.clone();
                                 let data_for_start = data.clone();
                                 let result = tokio::task::spawn_blocking(move || {
-                                    hub_manager::start_hub(
+                                    hub_manager::start_hub_automatic(
                                         &compose_for_start,
                                         &env_for_start,
                                         &data_for_start,

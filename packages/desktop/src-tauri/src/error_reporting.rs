@@ -407,6 +407,7 @@ fn is_expected_warning_message(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     lower.contains("non-fatal")
         || lower.contains("transient, not sticky")
+        || lower.contains("(automatic retry ")
         || lower.contains("snapshot while disconnected")
         || lower.contains("the hub couldn't be reached")
         || (lower.contains("nvidia-smi") && lower.contains("command failed"))
@@ -1018,6 +1019,24 @@ mod tests {
             classify_log_level("Start failed (sticky failure state set): Database did not become healthy after bootstrap: Timed out waiting for Database to become healthy (last status: restarting:unhealthy)."),
             sentry::Level::Error
         );
+    }
+
+    #[test]
+    fn a_pending_automatic_retry_logs_a_warning_not_an_error() {
+        let message = crate::hub_manager::RetryOutcome::Scheduled {
+            retry: 1,
+            wait_secs: 300,
+        }
+        .log_message("docker compose up -d failed");
+        assert_eq!(classify_log_level(&message), sentry::Level::Warning);
+    }
+
+    #[test]
+    fn an_exhausted_automatic_retry_budget_logs_an_error_that_says_retries_were_tried() {
+        let message = crate::hub_manager::RetryOutcome::Exhausted { tries: 3 }
+            .log_message("Postgres did not restore TCP authentication");
+        assert!(message.contains("3 automatic retries were tried and failed"));
+        assert_eq!(classify_log_level(&message), sentry::Level::Error);
     }
 
     #[test]
