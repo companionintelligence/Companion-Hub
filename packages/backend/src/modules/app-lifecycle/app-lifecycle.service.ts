@@ -1023,7 +1023,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       this.sseService.emit('app', { event: 'update_error', appUrn, appStatus: status, error: result.message });
       this.agentNotifyService?.notify('update_error', { appUrn }, 'high');
       // Reported as a failed update's rollback is: the command skipped its own report for a cancel.
-      this.reportAppFailure(appUrn, 'update', result.message || 'The cancelled update could not be rolled back', result.errorCode);
+      this.reportAppFailure(
+        appUrn,
+        'update',
+        result.message || 'The cancelled update could not be rolled back',
+        result.errorCode,
+        result.serviceFailure,
+      );
       return;
     }
     this.sseService.emit('app', { event: 'update_cancelled', appUrn, appStatus: status });
@@ -1128,7 +1134,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       void this.emitInstallQueueUpdate();
     }
     this.agentNotifyService?.notify('install_error', { appUrn }, 'high');
-    this.reportAppFailure(appUrn, 'install', result.message, result.errorCode);
+    this.reportAppFailure(appUrn, 'install', result.message, result.errorCode, result.serviceFailure);
   }
 
   /**
@@ -3518,8 +3524,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
   }
 
-  private reportAppFailure(appUrn: AppUrn, phase: AppFailurePhase, message: string, errorCode?: string): void {
-    this.errorReportingService?.reportAppFailure({ appUrn, phase, message, errorCode });
+  private reportAppFailure(appUrn: AppUrn, phase: AppFailurePhase, message: string, errorCode?: string, serviceFailure?: AppServiceFailure): void {
+    // Container logs are app-controlled and may contain arbitrary private data. Keep them in the
+    // permission-gated app failure details, but send only the structured reason to telemetry.
+    const telemetryMessage = serviceFailure ? describeAppServiceFailure({ ...serviceFailure, logLine: undefined }) : message;
+    this.errorReportingService?.reportAppFailure({ appUrn, phase, message: telemetryMessage, errorCode });
   }
 
   /**
@@ -3878,7 +3887,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         movedHostPort: params.movedHostPort,
       });
       this.agentNotifyService?.notify(params.failureOutcome.notifyEvent, { appUrn: params.appUrn }, params.failureOutcome.notifySeverity ?? 'high');
-      this.reportAppFailure(params.appUrn, params.failureOutcome.failurePhase, params.message ?? 'Unknown error', params.errorCode);
+      this.reportAppFailure(
+        params.appUrn,
+        params.failureOutcome.failurePhase,
+        params.message ?? 'Unknown error',
+        params.errorCode,
+        params.serviceFailure,
+      );
       return true;
     }
 

@@ -6764,6 +6764,7 @@ describe('AppLifecycleService', () => {
       appEventsQueue.publish.mockResolvedValue({
         success: false,
         message: 'web keeps restarting (exit 1): API_KEY=sk-live-abc is invalid',
+        errorCode: 'app_service_failed',
         errorDetail: 'app-web-1 (restarting, exit 1): API_KEY=sk-live-abc is invalid',
         serviceFailure: { kind: 'restarting', service: 'web', exitCode: 1, logLine: 'API_KEY=sk-live-abc is invalid' },
       } as any);
@@ -6774,6 +6775,13 @@ describe('AppLifecycleService', () => {
       const emitted = sseService.emit.mock.calls.find(([, data]) => (data as { event?: string }).event === event);
       expect(emitted).toBeDefined();
       expect(JSON.stringify(emitted)).not.toContain('sk-live-abc');
+      expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
+        appUrn,
+        phase: event === 'start_error' ? 'start' : 'restart',
+        message: 'web keeps restarting (exit 1)',
+        errorCode: 'app_service_failed',
+      });
+      expect(JSON.stringify(errorReportingService.reportAppFailure.mock.calls)).not.toContain('sk-live-abc');
     });
 
     it('a failure with no service keeps its message and detail on the event', async () => {
@@ -7300,7 +7308,12 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppsByDomain.mockResolvedValue([]);
       appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
       appsRepository.getAppsByPort.mockResolvedValue([]);
-      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'summary-service keeps restarting (exit 126): private app log',
+        errorCode: 'app_service_failed',
+        serviceFailure: { kind: 'restarting', service: 'summary-service', exitCode: 126, logLine: 'private app log' },
+      } as any);
 
       await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
       await flushMicrotasks();
@@ -7311,6 +7324,13 @@ describe('AppLifecycleService', () => {
       expect(updateIdx).toBeGreaterThanOrEqual(0);
       expect(sseIdx).toBeGreaterThan(updateIdx);
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'install_failed' }));
+      expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
+        appUrn,
+        phase: 'install',
+        message: 'summary-service keeps restarting (exit 126)',
+        errorCode: 'app_service_failed',
+      });
+      expect(JSON.stringify(errorReportingService.reportAppFailure.mock.calls)).not.toContain('private app log');
     });
 
     it('installApp error: still emits install_error when install_failed status write fails', async () => {
