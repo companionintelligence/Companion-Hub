@@ -41,7 +41,12 @@ For local no-GUI service checks, the runner uses the main compose service's decl
 stdio protocol lane. Portless and UDP-only services are skipped. A silent TCP endpoint is never
 passed on the Docker proxy handshake alone: on Linux, the runner reads the container network
 namespace TCP tables through the host's `/proc/<pid>/net` view, without executing image-provided
-tools. It then accepts only a known datastore image or a protocol greeting. SQL Server is accepted
+tools. It then accepts only a known datastore image or a protocol greeting. For known no-GUI
+wire-protocol images on their declared protocol port, it requires both IPv4 published TCP reachability
+and an IPv4 wildcard or container-address listener, checks as soon as the container is running, and sends
+no HTTP bytes to that port. IPv6-only listeners remain unknown until the published IPv6 path is verified.
+Unknown procfs failures stay visible in the QA result. HTTP-capable
+ports such as etcd's client endpoint continue through the HTTP readiness probe. SQL Server is accepted
 only for Microsoft's canonical image paths. On non-Linux hosts where Docker Desktop's VM namespace
 is not visible, this evidence remains unknown and silent services are skipped. If a required TCP
 procfs snapshot is unreadable or incomplete, the app is skipped as unsupported rather than passed or

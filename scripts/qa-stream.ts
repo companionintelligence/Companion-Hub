@@ -77,7 +77,7 @@ import {
 } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import { createRequire } from 'node:module';
-import { connect } from 'node:net';
+import { connect, isIP } from 'node:net';
 import { EOL, homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
@@ -1393,6 +1393,25 @@ function isUnsupportedSilentHeadlessTcp(
   return noGui && httpStatus === 0 && !greeted && noSupportedProbe;
 }
 
+function hasKnownProtocolListener(
+  noGui: boolean,
+  httpStatus: number,
+  listener: 'listening' | 'not-listening' | 'unknown',
+  knownWireProtocol: boolean,
+  publishedEndpointReachable: boolean,
+): boolean {
+  return noGui && publishedEndpointReachable && acceptsWireProtocolReadiness(httpStatus, listener, false, knownWireProtocol);
+}
+
+function acceptsWireProtocolReadiness(
+  httpStatus: number,
+  listener: 'listening' | 'not-listening' | 'unknown',
+  greeted: boolean,
+  knownWireProtocolEndpoint: boolean,
+): boolean {
+  return httpStatus === 0 && listener === 'listening' && (greeted || knownWireProtocolEndpoint);
+}
+
 function hasValidTcpProcSnapshot(output: string): boolean {
   const sections = output.split(/^__PROC__:/m).slice(1);
   if (sections.length === 0) return false;
@@ -1402,14 +1421,41 @@ function hasValidTcpProcSnapshot(output: string): boolean {
   });
 }
 
-function tcpListenerFromProcSnapshot(output: string, port: number): 'listening' | 'not-listening' | 'unknown' {
+function procIpv4Address(hex: string): string | null {
+  if (!/^[A-Fa-f0-9]{8}$/.test(hex)) return null;
+  const bytes = hex.match(/../g);
+  return bytes
+    ? bytes
+        .reverse()
+        .map((byte) => Number.parseInt(byte, 16))
+        .join('.')
+    : null;
+}
+
+function tcpListenerFromProcSnapshot(output: string, port: number, reachableAddresses: string[] = []): 'listening' | 'not-listening' | 'unknown' {
   if (!hasValidTcpProcSnapshot(output)) return 'unknown';
   const hex = port.toString(16).toUpperCase().padStart(4, '0');
-  for (const line of output.split(/\r?\n/)) {
-    const columns = line.trim().split(/\s+/);
-    if (columns.length >= 4 && columns[3] === '0A' && columns[1]?.endsWith(`:${hex}`)) return 'listening';
+  const reachable = new Set(reachableAddresses);
+  let unverifiedIpv6Listener = false;
+  for (const section of output.split(/^__PROC__:/m).slice(1)) {
+    const [path, ...lines] = section.split(/\r?\n/);
+    const isIpv4 = path?.trim() === '/proc/net/tcp';
+    const isIpv6 = path?.trim() === '/proc/net/tcp6';
+    if (!isIpv4 && !isIpv6) continue;
+    for (const line of lines) {
+      const columns = line.trim().split(/\s+/);
+      const [addressHex, portHex] = columns[1]?.split(':') ?? [];
+      if (columns.length < 4 || columns[3] !== '0A' || portHex !== hex || !addressHex) continue;
+      if (/^0+$/.test(addressHex)) {
+        if (isIpv4) return 'listening'; // IPv4 wildcard bind is reachable through the IPv4 published mapping
+        unverifiedIpv6Listener = true;
+        continue;
+      }
+      if (isIpv4 && reachable.has(procIpv4Address(addressHex) ?? '')) return 'listening';
+      if (isIpv6) unverifiedIpv6Listener = true;
+    }
   }
-  return 'not-listening';
+  return unverifiedIpv6Listener ? 'unknown' : 'not-listening';
 }
 
 function isKnownWireProtocolImage(image: string): boolean {
@@ -1427,6 +1473,44 @@ function isKnownWireProtocolImage(image: string): boolean {
   return /(^|\/)(mongo|redis|memcached|postgres|mariadb|mysql|percona|cassandra|clickhouse|elasticsearch|opensearch|rabbitmq|nats|etcd|valkey)(:|$)/.test(
     repository,
   );
+}
+
+function isKnownWireProtocolEndpoint(image: string, port: number): boolean {
+  if (!isKnownWireProtocolImage(image)) return false;
+  const reference = (image.toLowerCase().split('@')[0] ?? '').trim();
+  const slash = reference.lastIndexOf('/');
+  const colon = reference.lastIndexOf(':');
+  const repository = colon > slash ? reference.slice(0, colon) : reference;
+  if (repository === 'mcr.microsoft.com/mssql/server' || repository === 'microsoft/mssql-server-linux') return port === 1433;
+
+  const name = repository.slice(repository.lastIndexOf('/') + 1);
+  const protocolPorts: Record<string, number> = {
+    cassandra: 9042,
+    clickhouse: 9000,
+    elasticsearch: 9300,
+    mariadb: 3306,
+    memcached: 11211,
+    mongo: 27017,
+    mysql: 3306,
+    nats: 4222,
+    opensearch: 9300,
+    percona: 3306,
+    postgres: 5432,
+    rabbitmq: 5672,
+    redis: 6379,
+    valkey: 6379,
+  };
+  return protocolPorts[name] === port;
+}
+
+function listenerProbeFailureNote(detail: string): string {
+  const bounded = detail.trim().slice(0, 180);
+  return bounded ? `container listener probe: ${bounded}` : 'container listener could not be verified';
+}
+
+function unsupportedHeadlessProbeNote(listener: 'listening' | 'not-listening' | 'unknown', detail: string, port: number): string {
+  const evidence = listener === 'unknown' ? listenerProbeFailureNote(detail) : `TCP listener on :${port} is live`;
+  return `no_gui service has no supported protocol-specific readiness probe; ${evidence}`;
 }
 // </qa-route-policy>
 
@@ -2046,6 +2130,10 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     let readyVia = '';
     let unsupportedHeadlessTcp = false;
     let deadReason = '';
+    let listenerProbeDetail = '';
+    let lastListenerState: 'listening' | 'not-listening' | 'unknown' = 'unknown';
+    const imageRef = String(result.image ?? '').toLowerCase();
+    const knownSilentEndpoint = isKnownWireProtocolEndpoint(imageRef, Number(result.port));
 
     while (!ready && Date.now() - readyStart < maxWaitMs) {
       await new Promise((r) => setTimeout(r, 3000));
@@ -2056,8 +2144,10 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         `docker inspect ${statsName} --format '{{.State.Status}}|{{.RestartCount}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'`,
         8_000,
       );
+      let containerRunning = false;
       if (ins.ok) {
         const [st, rc, health] = (ins.out || '').split('|');
+        containerRunning = st === 'running';
         const restarts = Number(rc || 0);
         mainRestarts = restarts;
         // `exited` is final only when the policy does not restart it (`no`, or `on-failure` after a clean exit). Otherwise the container
@@ -2078,6 +2168,28 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         }
       }
       if (ready) break;
+      // Use the same evidence as the final raw-TCP fallback as soon as a known database/protocol
+      // image has a listener in its own network namespace. Waiting the whole HTTP deadline for a
+      // service that cannot speak HTTP made a healthy PostgreSQL app take 7.5 minutes to score.
+      if (config.no_gui === true && knownSilentEndpoint && containerRunning && httpStatus === 0) {
+        const publishedEndpointReachable = await tcpAccepts(hostPort, 1000);
+        if (publishedEndpointReachable) {
+          const probe = await inspectInternalListener(statsName, Number(result.port));
+          lastListenerState = probe.state;
+          listenerProbeDetail =
+            probe.state === 'unknown' ? probe.detail : probe.state === 'not-listening' ? `no LISTEN entry on container port ${result.port}` : '';
+          if (hasKnownProtocolListener(true, httpStatus, probe.state, knownSilentEndpoint, publishedEndpointReachable)) {
+            ready = true;
+            readyVia = 'tcp';
+            result.notes = `ready via reachable published endpoint and verified in-container TCP listener on :${result.port} for known protocol image (${imageRef.split('@')[0]})`;
+            break;
+          }
+        } else {
+          listenerProbeDetail = `published TCP endpoint :${hostPort} did not accept a connection`;
+        }
+      }
+      // HTTP bytes sent to a known silent protocol port are garbage and provide no readiness evidence.
+      if (config.no_gui === true && knownSilentEndpoint) continue;
       // (2) HTTP probe. `redirect: 'manual'` is load-bearing, not a detail: Node's fetch defaults
       // to redirect:'follow', so an app answering / with a 302 to its own configured hostname sends
       // us chasing a host this machine cannot resolve, and fetch THROWS ECONNREFUSED instead of
@@ -2132,17 +2244,20 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         //
         // Two accepted forms of evidence, because one alone is not enough:
         //   (a) the server GREETS unsolicited — mysql/postgres announce themselves on connect.
-        //   (b) the image is a known datastore family. mongodb neither greets NOR answers an HTTP
+        //   (b) the image and declared port identify a known wire-protocol endpoint. MongoDB neither greets NOR answers an HTTP
         //       request (verified: both probes return zero bytes), so at the socket level it is
         //       indistinguishable from a stalled web app. An explicit list is a heuristic, but it is
         //       auditable and wrong in a bounded way — whereas accepting every silent listener is
         //       what manufactured ~12 false passes per run.
-        const listener = await inspectInternalListener(statsName, result.port);
+        const probe = await inspectInternalListener(statsName, Number(result.port));
+        const listener = probe.state;
+        lastListenerState = listener;
+        listenerProbeDetail =
+          probe.state === 'unknown' ? probe.detail : probe.state === 'not-listening' ? `no LISTEN entry on container port ${result.port}` : '';
         const listening = listener === 'listening';
-        const img = (result.image || '').toLowerCase();
-        const knownWireProtocol = isKnownWireProtocolImage(img);
+        const img = imageRef;
         const greets = listening && (await serverGreets(hostPort));
-        if (httpStatus === 0 && listening && (greets || knownWireProtocol)) {
+        if (acceptsWireProtocolReadiness(httpStatus, listener, greets, knownSilentEndpoint)) {
           ready = true;
           readyVia = 'tcp';
           // Name the evidence that ACTUALLY applied. The old note asserted "no HTTP listener
@@ -2153,19 +2268,19 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
             result.notes,
             greets
               ? `ready via raw TCP on :${hostPort} — in-container listener on :${result.port} sent an unsolicited protocol greeting (non-HTTP service)`
-              : `ready via raw TCP on :${hostPort} — in-container listener on :${result.port}; no greeting, accepted on known datastore image (${img.split('@')[0]})`,
+              : `ready via raw TCP on :${hostPort} — in-container listener on :${result.port}; no greeting, accepted for known protocol endpoint (${img.split('@')[0]}:${result.port})`,
           ]
             .filter(Boolean)
             .join(' | ');
         } else {
-          unsupportedHeadlessTcp = isUnsupportedSilentHeadlessTcp(config.no_gui === true, httpStatus, listener, greets, knownWireProtocol);
+          unsupportedHeadlessTcp = isUnsupportedSilentHeadlessTcp(config.no_gui === true, httpStatus, listener, greets, knownSilentEndpoint);
           result.notes = [
             result.notes,
             listener === 'listening'
               ? `:${result.port} is listening but never served HTTP or identified a supported wire protocol`
               : listener === 'not-listening'
                 ? `port :${hostPort} accepts TCP but nothing is listening on :${result.port} inside the container (docker-proxy artifact)`
-                : `could not verify whether anything is listening on :${result.port} inside the container`,
+                : listenerProbeFailureNote(listenerProbeDetail),
           ]
             .filter(Boolean)
             .join(' | ');
@@ -2189,8 +2304,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       if (unsupportedHeadlessTcp && bh.healthy && !deadReason) {
         result.score = 'skip' as Score;
         result.failKind = 'unsupported-probe';
-        const unsupportedNotes = String(result.notes ?? '');
-        result.notes = `no_gui service has no supported protocol-specific readiness probe${unsupportedNotes.includes('could not verify') ? '; container listener could not be verified' : `; TCP listener on :${result.port} is live`}`;
+        result.notes = unsupportedHeadlessProbeNote(lastListenerState, listenerProbeDetail, Number(result.port));
         return result;
       }
       // Container exited / restart-looped after a clean start = a real app FAIL; never becoming
@@ -2199,6 +2313,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       result.failKind = deadReason ? 'exit' : 'timeout';
       result.notes =
         (deadReason ? `backend ${deadReason} after ${waited}s` : `not ready within ${Math.round(maxWaitMs / 1000)}s`) +
+        (listenerProbeDetail ? ` | ${listenerProbeFailureNote(listenerProbeDetail)}` : '') +
         (bh.down.length ? ` — down: ${bh.down.join(', ')}` : '') +
         (bh.errors ? ` | ${bh.errors.replace(/\s+/g, ' ').slice(0, 200)}` : '');
       return result;
@@ -2829,8 +2944,11 @@ function hexOfLength(chars: number): string {
     .slice(0, chars);
 }
 
+type InternalListenerState = 'listening' | 'not-listening' | 'unknown';
+type InternalListenerProbe = { state: InternalListenerState; detail: string };
+
 /** Inspect /proc directly so an unavailable `ss`/`netstat` binary cannot masquerade as a listener. */
-async function inspectInternalListener(container: string, port: number): Promise<'listening' | 'not-listening' | 'unknown'> {
+async function inspectInternalListener(container: string, port: number): Promise<InternalListenerProbe> {
   // Read procfs without depending on a shell inside the app image. Minimal database images can
   // expose /proc/net while omitting `/bin/sh`, which made a healthy in-container listener appear
   // unknown and caused PostgreSQL/SQL Server QA to skip. An absent tcp6 file is fine; a permission
@@ -2840,11 +2958,21 @@ async function inspectInternalListener(container: string, port: number): Promise
   // Docker exposes the container init PID, and Linux exposes that process's net namespace at
   // /proc/<pid>/net. On non-Linux hosts (including Docker Desktop's VM boundary) the evidence is
   // unavailable, so keep the answer unknown instead of weakening the probe.
-  if (process.platform !== 'linux') return 'unknown';
-  const inspected = await execAsync(`docker inspect ${shq(container)} --format '{{.State.Pid}}|{{.State.Running}}'`, 8_000);
-  const [pidText, runningText] = inspected.ok ? inspected.out.split('|') : [];
+  if (process.platform !== 'linux') return { state: 'unknown', detail: `host platform ${process.platform} does not expose container procfs` };
+  const inspected = await execAsync(
+    `docker inspect ${shq(container)} --format '{{.State.Pid}}|{{.State.Running}}|{{range .NetworkSettings.Networks}}{{.IPAddress}} {{.GlobalIPv6Address}} {{end}}'`,
+    8_000,
+  );
+  const [pidText, runningText, addressText = ''] = inspected.ok ? inspected.out.split('|') : [];
   const pid = Number(pidText);
-  if (runningText !== 'true' || !Number.isSafeInteger(pid) || pid <= 0) return 'unknown';
+  if (!inspected.ok) return { state: 'unknown', detail: `docker inspect failed: ${(inspected.err || 'no diagnostic output').slice(-180)}` };
+  if (runningText !== 'true' || !Number.isSafeInteger(pid) || pid <= 0) {
+    return {
+      state: 'unknown',
+      detail: `container state did not include a live PID (pid=${pidText || 'missing'}, running=${runningText || 'missing'})`,
+    };
+  }
+  const reachableAddresses = addressText.split(/\s+/).filter((address) => isIP(address) === 4);
 
   const snapshots: string[] = [];
   for (const path of ['/proc/net/tcp', '/proc/net/tcp6']) {
@@ -2855,10 +2983,20 @@ async function inspectInternalListener(container: string, port: number): Promise
       // tcp6 can be absent in a kernel without IPv6. tcp is required; permission errors or any
       // other unreadable snapshot are uncertainty, not evidence that the port is closed.
       if (path.endsWith('/tcp6') && (error as NodeJS.ErrnoException).code === 'ENOENT') continue;
-      return 'unknown';
+      const code = (error as NodeJS.ErrnoException).code;
+      return { state: 'unknown', detail: `cannot read ${path} for PID ${pid}${code ? ` (${code})` : ''}` };
     }
   }
-  return tcpListenerFromProcSnapshot(snapshots.join('\n'), port);
+  const state = tcpListenerFromProcSnapshot(snapshots.join('\n'), port, reachableAddresses);
+  return {
+    state,
+    detail:
+      state === 'unknown'
+        ? `procfs TCP snapshot for PID ${pid} was incomplete or malformed`
+        : state === 'not-listening'
+          ? `no listener on port ${port} was bound to a wildcard or container IP`
+          : `procfs TCP snapshot for PID ${pid} confirmed a reachable bind address`,
+  };
 }
 
 /** Split a command string into argv the way Docker Compose does (shlex: quotes and backslashes, NO shell). The single-container path used to run a string `command` as `sh -c '<cmd>'`, which an image whose ENTRYPOINT is not a shell receives as `-c` (openbooks: 'unknown shorthand flag: c' while compose starts it fine). */
