@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { abortError, isAbortError, throwIfAborted } from '@/common/abort';
 import { getAppDataHostPath, resolveAppDataHostRoot } from '@/common/helpers/app-data-path.helper';
@@ -26,6 +27,7 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, InternalServerErrorException, Inject } from '@nestjs/common';
 import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
+import { type DataProgressListener, type DataProgressSample, withDataProgress } from '@/common/helpers/data-progress';
 import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { AppFilesManager } from '../apps/app-files-manager';
@@ -337,6 +339,31 @@ interface AppNetworkMember {
   aliases: string[];
   networks: Set<string>;
 }
+
+/** The file a root helper keeps its progress in, as `<bytes tar has read> <bytes it has to>`. */
+const HELPER_PROGRESS_FILE = 'progress';
+/** The folder for it where a helper's output folder is not otherwise writable: the extract of a restore. */
+const HELPER_PROGRESS_DIRNAME = 'progress-out';
+
+/**
+ * Shell that follows the tar in `$pid` from the background, writing how much it has read to `file`
+ * every couple of seconds. It ends with the tar, and nothing it does can fail the helper's own work.
+ * Replaced whole each time, so the Hub never reads half a line. Ends in `&`: the caller's `wait` follows.
+ */
+const followTarProgress = (file: string, total: string) =>
+  `( while kill -0 "$pid" 2>/dev/null; do r=$(sed -n "s/^rchar: //p" "/proc/$pid/io" 2>/dev/null) || r=""; if [ -n "$r" ]; then echo "$r ${total}" > "${file}.tmp" && mv -f "${file}.tmp" "${file}"; fi; sleep 2; done ) >/dev/null 2>&1 &`;
+
+/** What a root helper last wrote with {@link followTarProgress}, `null` until it has written anything. */
+const readHelperProgress = async (file: string): Promise<DataProgressSample | null> => {
+  const text = await fs.promises.readFile(file, 'utf8').catch(() => null);
+  const match = text === null ? null : /^(\d+) (\d+)\s*$/.exec(text);
+
+  if (!match) return null;
+
+  const totalBytes = Number(match[2]);
+
+  return { doneBytes: Number(match[1]), ...(totalBytes > 0 ? { totalBytes } : {}) };
+};
 
 @Injectable()
 export class DockerService {
@@ -838,7 +865,12 @@ export class DockerService {
    *
    * @returns the archive as the Hub sees it, given to the Hub's user, or `null` (already logged).
    */
-  public async archiveBackupAsRoot(appUrn: AppUrn, stagingId: string, deadline?: AppCommandDeadline): Promise<string | null> {
+  public async archiveBackupAsRoot(
+    appUrn: AppUrn,
+    stagingId: string,
+    deadline?: AppCommandDeadline,
+    onProgress?: DataProgressListener,
+  ): Promise<string | null> {
     const owner = this.hubOwner();
 
     if (!owner) {
@@ -849,29 +881,40 @@ export class DockerService {
     const paths = this.resolveSnapshotHostPaths(appUrn, stagingId, 'backup archive', BACKUP_STAGING_AREA);
     if (!paths) return null;
 
-    const archive = path.join(this.backupStagingDir(appUrn, stagingId), 'out', 'backup.tar.gz');
+    const outDir = path.join(this.backupStagingDir(appUrn, stagingId), 'out');
+    const archive = path.join(outDir, 'backup.tar.gz');
+    const progressFile = path.join(outDir, HELPER_PROGRESS_FILE);
 
-    const archived = await this.runPrivilegedSnapshotHelper(
-      [`${paths.hostSnapshotDir}/stage:/stage:ro`, `${paths.hostAppDataDir}:/stage/app-data:ro`, `${paths.hostSnapshotDir}/out:/out:rw`],
-      [
-        'sh',
-        '-c',
-        [
-          'set -e',
-          'cd /stage',
-          'if [ -n "$(find ./app-data -mindepth 1 -path "./app-data/*backups*" -prune -o \\( -type f -o -type l \\) -links +1 -print | head -n 1)" ]; then echo "the data holds hard links, which a restore refuses" >&2; exit 3; fi',
-          '{ find . -path ./app-data -prune -o -print; echo ./app-data; find ./app-data -mindepth 1 -path "./app-data/*backups*" -prune -o ! -type b ! -type c ! -type p ! -type s -print; } > /tmp/entries',
-          'tar -czf /out/backup.tar.gz --numeric-owner --no-recursion -T /tmp/entries',
-          'chown "$1" /out/backup.tar.gz',
-          'chmod 600 /out/backup.tar.gz',
-        ].join('; '),
-        'sh',
-        owner,
-      ],
-      PRIVILEGED_DATA_TIMEOUT_MS,
-      `archiving ${paths.hostAppDataDir} for a backup`,
-      BACKUP_STAGING_AREA.tag,
-      deadline,
+    const archived = await withDataProgress(
+      onProgress,
+      'archiving',
+      () => readHelperProgress(progressFile),
+      () =>
+        this.runPrivilegedSnapshotHelper(
+          [`${paths.hostSnapshotDir}/stage:/stage:ro`, `${paths.hostAppDataDir}:/stage/app-data:ro`, `${paths.hostSnapshotDir}/out:/out:rw`],
+          [
+            'sh',
+            '-c',
+            [
+              'set -e',
+              'cd /stage',
+              'if [ -n "$(find ./app-data -mindepth 1 -path "./app-data/*backups*" -prune -o \\( -type f -o -type l \\) -links +1 -print | head -n 1)" ]; then echo "the data holds hard links, which a restore refuses" >&2; exit 3; fi',
+              '{ find . -path ./app-data -prune -o -print; echo ./app-data; find ./app-data -mindepth 1 -path "./app-data/*backups*" -prune -o ! -type b ! -type c ! -type p ! -type s -print; } > /tmp/entries',
+              // What tar will read, for the progress figure. Worth no failure: the backup goes on without a total.
+              'total=$(find ./app-data -mindepth 1 -path "./app-data/*backups*" -prune -o -type f -exec stat -c %s {} + | awk \'{s+=$1} END {print s+0}\') || total=0',
+              'tar -czf /out/backup.tar.gz --numeric-owner --no-recursion -T /tmp/entries & pid=$!',
+              `${followTarProgress(`/out/${HELPER_PROGRESS_FILE}`, '$total')} wait "$pid"`,
+              'chown "$1" /out/backup.tar.gz',
+              'chmod 600 /out/backup.tar.gz',
+            ].join('; '),
+            'sh',
+            owner,
+          ],
+          PRIVILEGED_DATA_TIMEOUT_MS,
+          `archiving ${paths.hostAppDataDir} for a backup`,
+          BACKUP_STAGING_AREA.tag,
+          deadline,
+        ),
     );
 
     return archived ? archive : null;
@@ -896,6 +939,8 @@ export class DockerService {
     const dir = this.backupStagingDir(appUrn, id);
 
     if (!(await this.filesystem.createDirectory(path.join(dir, 'in')))) return null;
+    // Where the extract as root says how far it has got: the only folder it may write outside the data.
+    if (!(await this.filesystem.createDirectory(path.join(dir, HELPER_PROGRESS_DIRNAME)))) return null;
 
     return { id, dir, archive: path.join(dir, 'in', 'backup.tar.gz') };
   }
@@ -920,7 +965,13 @@ export class DockerService {
    * @param stagingId the id {@link createRestoreStagingDir} returned
    * @param member the data folder's name exactly as the archive lists it (`app-data` or `./app-data`)
    */
-  public async extractBackupAppDataAsRoot(appUrn: AppUrn, stagingId: string, member: string, deadline?: AppCommandDeadline): Promise<boolean> {
+  public async extractBackupAppDataAsRoot(
+    appUrn: AppUrn,
+    stagingId: string,
+    member: string,
+    deadline?: AppCommandDeadline,
+    progress?: { onProgress: DataProgressListener; totalBytes: number | undefined },
+  ): Promise<boolean> {
     if (!/^(\.\/)*app-data$/.test(member)) {
       this.logger.error(`[restore] refusing privileged extract for ${appUrn}: ${member} is not the data folder of a backup`);
       return false;
@@ -938,26 +989,39 @@ export class DockerService {
 
     // An extract that never starts (no budget left) writes nothing, so it needs no strip afterwards.
     const startsInTime = !deadline?.expired;
-    const extracted = await this.runPrivilegedSnapshotHelper(
-      [`${paths.hostSnapshotDir}/in:/in:ro`, `${paths.hostAppDataDir}:/x/app-data:rw`],
-      [
-        'sh',
-        '-c',
-        [
-          'tar -C /x -xpf /in/backup.tar.gz --numeric-owner "$1"; status=$?',
-          STRIP_RESTORED_SPECIAL_FILES,
-          'chown "$2" /x/app-data || status=1',
-          'if [ -f /x/app-data/app.env ] && [ ! -L /x/app-data/app.env ]; then chown "$2" /x/app-data/app.env || status=1; fi',
-          'exit $status',
-        ].join('; '),
-        'sh',
-        member,
-        owner,
-      ],
-      PRIVILEGED_DATA_TIMEOUT_MS,
-      `restoring ${paths.hostAppDataDir} from ${paths.hostSnapshotDir}/in/backup.tar.gz with its owners`,
-      '[restore]',
-      deadline,
+    const progressFile = path.join(this.backupStagingDir(appUrn, stagingId), HELPER_PROGRESS_DIRNAME, HELPER_PROGRESS_FILE);
+    const extracted = await withDataProgress(
+      progress?.onProgress,
+      'restoring_data',
+      () => readHelperProgress(progressFile),
+      () =>
+        this.runPrivilegedSnapshotHelper(
+          [
+            `${paths.hostSnapshotDir}/in:/in:ro`,
+            `${paths.hostAppDataDir}:/x/app-data:rw`,
+            `${paths.hostSnapshotDir}/${HELPER_PROGRESS_DIRNAME}:/p:rw`,
+          ],
+          [
+            'sh',
+            '-c',
+            [
+              'tar -C /x -xpf /in/backup.tar.gz --numeric-owner "$1" & pid=$!',
+              `${followTarProgress(`/p/${HELPER_PROGRESS_FILE}`, '$3')} wait "$pid"; status=$?`,
+              STRIP_RESTORED_SPECIAL_FILES,
+              'chown "$2" /x/app-data || status=1',
+              'if [ -f /x/app-data/app.env ] && [ ! -L /x/app-data/app.env ]; then chown "$2" /x/app-data/app.env || status=1; fi',
+              'exit $status',
+            ].join('; '),
+            'sh',
+            member,
+            owner,
+            String(progress?.totalBytes ?? 0),
+          ],
+          PRIVILEGED_DATA_TIMEOUT_MS,
+          `restoring ${paths.hostAppDataDir} from ${paths.hostSnapshotDir}/in/backup.tar.gz with its owners`,
+          '[restore]',
+          deadline,
+        ),
     );
 
     // Stopped at the budget's end, the extract never reached its own strip, and what it wrote stays until

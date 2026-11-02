@@ -4,6 +4,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
+import { type DataProgressListener, withDataProgress } from '@/common/helpers/data-progress';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
@@ -77,6 +78,9 @@ export class UpdateAppCommand extends AppLifecycleCommand {
    */
   private deadline: AppCommandDeadline | undefined;
 
+  /** Tells the app page how far a long data step of the update, or of its rollback, has got. */
+  private showDataProgress: DataProgressListener | undefined;
+
   /** What the update leaves for after its reply (see `afterReply`). */
   private afterReplyWork: (() => Promise<void>) | undefined;
 
@@ -125,9 +129,15 @@ export class UpdateAppCommand extends AppLifecycleCommand {
 
     // Each step is reported to the operation registry, which decides what a cancel may still do, and
     // to the app page, which shows it. Before, the page said "Preparing..." for the whole update.
+    let shownPhase: UpdatePhase = 'preparing';
     const report = (phase: UpdatePhase) => {
+      shownPhase = phase;
       ctx?.setPhase(REGISTRY_PHASE[phase]);
       sseService?.emit('app', { event: 'status_change', appUrn, appStatus: 'updating', updatePhase: phase });
+    };
+    // The step stays as it is, so a figure changes nothing a cancel may do. The next `report` clears it.
+    this.showDataProgress = (dataProgress) => {
+      sseService?.emit('app', { event: 'status_change', appUrn, appStatus: 'updating', updatePhase: shownPhase, dataProgress });
     };
 
     // ⚠ ONE DEADLINE FOR THE WHOLE UPDATE. The service waits for the reply for a fixed time from when
@@ -198,19 +208,25 @@ export class UpdateAppCommand extends AppLifecycleCommand {
         report('backing_up');
         await dockerService.composeApp(appUrn, 'stop');
         // The backup's root helpers get the update's work time, not a fresh budget of their own.
-        const backupRes = await backupManager.backupApp(appUrn, ctx?.deadline?.withReserve(UPDATE_ROLLBACK_RESERVE_MS));
+        const backupRes = await backupManager.backupApp(appUrn, ctx?.deadline?.withReserve(UPDATE_ROLLBACK_RESERVE_MS), this.showDataProgress);
         backupFile = backupRes?.filename;
         await this.applyBackupRetention(appUrn);
+      } else {
+        // No backup was asked for, but the rollback still needs the data, so it is copied here. Under
+        // the download's label, this step looked like a download that had stopped.
+        report('backing_up');
       }
 
       // The data is already in the backup when there is one; copying it again here is a second full
       // copy of the app's data folder that nothing reads. The installed files are always snapshotted:
       // they are what a rollback puts back.
       // A copy of the data as root is part of the update's work, so it gets the work time like the backup.
-      snapshotResult = await dockerService.createPreUpdateVolumeSnapshot(appUrn, {
-        includeData: !backupFile,
-        deadline: ctx?.deadline?.withReserve(UPDATE_ROLLBACK_RESERVE_MS),
-      });
+      snapshotResult = await withDataProgress(backupFile ? undefined : this.showDataProgress, 'copying_data', undefined, () =>
+        dockerService.createPreUpdateVolumeSnapshot(appUrn, {
+          includeData: !backupFile,
+          deadline: ctx?.deadline?.withReserve(UPDATE_ROLLBACK_RESERVE_MS),
+        }),
+      );
 
       // An update that cannot be undone is not started. Nothing has been changed yet, so refusing here
       // costs nothing; going on would put a failed or partial snapshot in charge of the rollback.
@@ -397,14 +413,15 @@ export class UpdateAppCommand extends AppLifecycleCommand {
           // Until the reply is due, not a fresh budget: a restore that outlasted it went on writing data
           // after the page had already shown the update as failed.
           // The backup the Hub took before this update, so its app files are the version to go back to.
-          await backupManager.restoreApp(appUrn, state.backupFile, this.deadline, { appFiles: 'from-backup' });
+          await backupManager.restoreApp(appUrn, state.backupFile, this.deadline, { appFiles: 'from-backup', onProgress: this.showDataProgress });
           restored = true;
           logger.info(`Restored ${appUrn} app files and data from backup ${state.backupFile}`);
         } catch (restoreErr) {
           logger.error(`Failed to restore ${appUrn} from backup ${state.backupFile}: ${restoreErr}. The backup file has been kept.`);
         }
       } else if (state.snapshotResult?.snapshotPath || state.snapshotResult?.appFilesSnapshotPath) {
-        restored = await this.restoreFromSnapshot(appUrn, state.snapshotResult);
+        const snapshot = state.snapshotResult;
+        restored = await withDataProgress(this.showDataProgress, 'restoring_data', undefined, () => this.restoreFromSnapshot(appUrn, snapshot));
       } else {
         logger.warn(`No backup or volume snapshot available to roll back ${appUrn}; recreating the current containers instead`);
       }

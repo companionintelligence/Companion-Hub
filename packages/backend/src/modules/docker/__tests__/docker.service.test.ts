@@ -1789,10 +1789,14 @@ describe('DockerService', () => {
           `${hostStaging}/in:/in:ro`,
           '-v',
           `${hostAppData}:/x/app-data:rw`,
+          '-v',
+          `${hostStaging}/progress-out:/p:rw`,
           'alpine:3.20',
           'sh',
           '-c',
-          'tar -C /x -xpf /in/backup.tar.gz --numeric-owner "$1"; status=$?; ' +
+          'tar -C /x -xpf /in/backup.tar.gz --numeric-owner "$1" & pid=$!; ' +
+            // Followed from the background, so nothing about the figure can fail the restore.
+            `( while kill -0 "$pid" 2>/dev/null; do r=$(sed -n "s/^rchar: //p" "/proc/$pid/io" 2>/dev/null) || r=""; if [ -n "$r" ]; then echo "$r $3" > "/p/progress.tmp" && mv -f "/p/progress.tmp" "/p/progress"; fi; sleep 2; done ) >/dev/null 2>&1 & wait "$pid"; status=$?; ` +
             'find /x/app-data \\( -type b -o -type c -o -type p -o -type s \\) -delete || status=1; ' +
             'find /x/app-data -type f \\( -perm -4000 -o -perm -2000 \\) -exec chmod ug-s {} + || status=1; ' +
             // The folder and app.env are the Hub's, whatever uid the archive gave them.
@@ -1802,6 +1806,7 @@ describe('DockerService', () => {
           'sh',
           './app-data',
           '1000:1000',
+          '0',
         ],
         { stdio: 'pipe' },
       );

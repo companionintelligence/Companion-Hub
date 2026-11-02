@@ -1,9 +1,10 @@
 import type { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
 import { mock, mockDeep } from 'vitest-mock-extended';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { SSEService } from '@/core/sse/sse.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { BackupManager } from '@/modules/backups/backup.manager';
 import { DockerService } from '@/modules/docker/docker.service';
@@ -15,6 +16,7 @@ describe('BackupAppCommand', () => {
   let docker: ReturnType<typeof mock<DockerService>>;
   let backups: ReturnType<typeof mock<BackupManager>>;
   let command: BackupAppCommand;
+  let services: Map<unknown, unknown>;
 
   beforeEach(() => {
     docker = mock<DockerService>();
@@ -23,7 +25,7 @@ describe('BackupAppCommand', () => {
     backups.backupApp.mockResolvedValue({ filename: 'kimai.tar.gz' });
     const config = mock<ConfigurationService>();
     config.get.mockReturnValue({ maxBackups: 0 } as never);
-    const services = new Map<unknown, unknown>([
+    services = new Map<unknown, unknown>([
       [LoggerService, mockDeep<LoggerService>()],
       [DockerService, docker],
       [BackupManager, backups],
@@ -39,7 +41,25 @@ describe('BackupAppCommand', () => {
     await expect(command.execute(appUrn)).resolves.toMatchObject({ success: true });
 
     expect(backups.assertBackupPossible.mock.invocationCallOrder[0]).toBeLessThan(docker.composeApp.mock.invocationCallOrder[0] as number);
-    expect(backups.backupApp).toHaveBeenCalledWith(appUrn);
+    expect(backups.backupApp).toHaveBeenCalledWith(appUrn, undefined, expect.any(Function));
+  });
+
+  it("shows the backup's progress on the app page", async () => {
+    const emit = vi.fn();
+    services.set(SSEService, { emit });
+    backups.backupApp.mockImplementation(async (_urn, _deadline, onProgress) => {
+      onProgress?.({ step: 'archiving', doneBytes: 9, totalBytes: 21 });
+      return { filename: 'x.tar.gz' };
+    });
+
+    await command.execute(appUrn);
+
+    expect(emit).toHaveBeenCalledWith('app', {
+      event: 'status_change',
+      appUrn,
+      appStatus: 'backing_up',
+      dataProgress: { step: 'archiving', doneBytes: 9, totalBytes: 21 },
+    });
   });
 
   // Kimai's database is the case: the Hub cannot read it, and the helper that can is not available.

@@ -25,6 +25,14 @@ import { AppVolumeArchiveService } from '../docker/app-volume-archive.service';
 import { removeAppDataDirWithRootFallback } from '../docker/app-data-removal';
 import { BACKUP_STAGING_DIRNAME, DockerService } from '../docker/docker.service';
 import { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
+import {
+  type DataProgressListener,
+  type DataProgressSample,
+  directoryBytes,
+  fileBytes,
+  processBytesRead,
+  withDataProgress,
+} from '@/common/helpers/data-progress';
 
 /**
  * How the Hub copies an app's data into a backup. Links are copied as links with their targets as
@@ -76,8 +84,9 @@ export class BackupManager implements OnApplicationShutdown {
   /**
    * @param deadline the budget the root helper may use, when the data needs one. A manual backup gets its own
    *   ({@link AppCommandDeadline.forAppCommand}); a caller doing more than the backup passes its own.
+   * @param onProgress told which step the backup is in and how far it has got, for the app page
    */
-  public backupApp = async (appUrn: AppUrn, deadline: AppCommandDeadline = this.commandDeadline()) => {
+  public backupApp = async (appUrn: AppUrn, deadline: AppCommandDeadline = this.commandDeadline(), onProgress?: DataProgressListener) => {
     const { dataDir } = this.config.get('directories');
     const backupName = `${appUrn}-${Date.now()}`;
     const { appStoreId, appName } = extractAppUrn(appUrn);
@@ -104,7 +113,7 @@ export class BackupManager implements OnApplicationShutdown {
       const { appDataDir, appInstalledDir } = this.appFilesManager.getAppPaths(appUrn);
       const userConfigDir = path.join(dataDir, 'user-config', appStoreId, appName);
 
-      const data = await this.copyAppDataForBackup(appDataDir, path.join(tempDir, 'app-data'));
+      const data = await this.copyAppDataForBackup(appDataDir, path.join(tempDir, 'app-data'), onProgress);
 
       // Where the rest of the backup is put together: the temp folder, or a staging folder root can read.
       let assembly = tempDir;
@@ -148,14 +157,14 @@ export class BackupManager implements OnApplicationShutdown {
 
       // Where app-data cannot carry file ownership (a Windows Hub), most apps' databases live in named
       // Docker volumes instead, outside every folder above.
-      await this.archiveAppVolumes(appUrn, path.join(assembly, 'volumes'));
+      await this.archiveAppVolumes(appUrn, path.join(assembly, 'volumes'), onProgress);
 
       this.logger.info('Creating archive...');
 
       let archivePath: string;
 
       if (staging) {
-        const archived = await this.docker.archiveBackupAsRoot(appUrn, staging.id, deadline);
+        const archived = await this.docker.archiveBackupAsRoot(appUrn, staging.id, deadline, onProgress);
 
         if (!archived) {
           throw deadline.expired
@@ -176,7 +185,24 @@ export class BackupManager implements OnApplicationShutdown {
 
         archivePath = path.join(archiveDir, 'backup.tar.gz');
 
-        const { stdout, stderr, exitCode } = await this.archiveManager.createTarGz(tempDir, archivePath);
+        // Where the platform cannot say what tar has read, the archive's own size at least keeps moving.
+        // It has no total: compressed, it would stop short of the size of the data.
+        const totalBytes = onProgress ? await directoryBytes(tempDir) : undefined;
+        let tarPid: number | undefined;
+        const { stdout, stderr, exitCode } = await withDataProgress(
+          onProgress,
+          'archiving',
+          async () => {
+            const read = await processBytesRead(tarPid);
+            if (read !== null) return { doneBytes: read, totalBytes };
+            const written = await fileBytes(archivePath);
+            return written === null ? null : { doneBytes: written };
+          },
+          () =>
+            this.archiveManager.createTarGz(tempDir, archivePath, (pid) => {
+              tarPid = pid;
+            }),
+        );
         this.logger.debug('--- archiveManager.createTarGz ---');
         this.logger.debug('stderr:', stderr);
         this.logger.debug('stdout:', stdout);
@@ -201,7 +227,16 @@ export class BackupManager implements OnApplicationShutdown {
           throw new Error('Failed to make the backup archive owner-only');
         }
 
-        const moved = await this.filesystem.copyFile(archivePath, finalPath);
+        const archiveBytes = onProgress ? await fileBytes(archivePath) : null;
+        const moved = await withDataProgress(
+          onProgress,
+          'saving_backup',
+          async () => {
+            const saved = await fileBytes(finalPath);
+            return saved === null ? null : { doneBytes: saved, ...(archiveBytes === null ? {} : { totalBytes: archiveBytes }) };
+          },
+          () => this.filesystem.copyFile(archivePath, finalPath),
+        );
 
         if (moved === false || !(await this.filesystem.isFile(finalPath))) {
           throw new Error('Failed to move the backup archive into the backups folder');
@@ -256,7 +291,11 @@ export class BackupManager implements OnApplicationShutdown {
    * Hub already knows it cannot read is not copied: the copy would stop at the first such file, after
    * copying the rest for nothing, and root archives it instead.
    */
-  private async copyAppDataForBackup(appDataDir: string, dest: string): Promise<{ copied: boolean; permissionDenied: boolean }> {
+  private async copyAppDataForBackup(
+    appDataDir: string,
+    dest: string,
+    onProgress?: DataProgressListener,
+  ): Promise<{ copied: boolean; permissionDenied: boolean }> {
     if (!(await this.filesystem.pathExists(appDataDir))) {
       return { copied: await this.filesystem.createDirectory(dest), permissionDenied: false };
     }
@@ -265,7 +304,14 @@ export class BackupManager implements OnApplicationShutdown {
       return { copied: false, permissionDenied: true };
     }
 
-    return this.filesystem.copyDirectoryDetailed(appDataDir, dest, appDataCopyOptions(appDataDir));
+    const totalBytes = onProgress ? await directoryBytes(appDataDir, leftOutOfBackups) : undefined;
+
+    return withDataProgress(
+      onProgress,
+      'copying_data',
+      async () => ({ doneBytes: await directoryBytes(dest), totalBytes }),
+      () => this.filesystem.copyDirectoryDetailed(appDataDir, dest, appDataCopyOptions(appDataDir)),
+    );
   }
 
   /** What the Hub cannot read of the data a backup takes. What a backup leaves out never needs the root helper. */
@@ -293,14 +339,16 @@ export class BackupManager implements OnApplicationShutdown {
    *   the Hub installed. It could otherwise widen the app's compose (a custom app's binds, an override)
    *   past what that person may change. `'from-backup'` is for the update rollback alone, which restores
    *   the backup the Hub itself took just before the update.
+   * @param options.onProgress told which step the restore is in and how far it has got, for the app page
    */
   public restoreApp = async (
     appUrn: AppUrn,
     filename: string,
     deadline: AppCommandDeadline = this.commandDeadline(),
-    options: { appFiles?: 'keep' | 'from-backup' } = {},
+    options: { appFiles?: 'keep' | 'from-backup'; onProgress?: DataProgressListener } = {},
   ) => {
     const appFiles = options.appFiles ?? 'keep';
+    const { onProgress } = options;
     const { dataDir } = this.config.get('directories');
     const { appStoreId, appName } = extractAppUrn(appUrn);
     const backupDir = path.join(dataDir, 'backups', appStoreId, appName);
@@ -335,9 +383,31 @@ export class BackupManager implements OnApplicationShutdown {
       // data before it writes the backup's, so an archive that turns out to be corrupt,
       // truncated, or hostile must be rejected while the live data is still there.
       // Each of these throws; none of them is advisory.
+      // The size of the data, once a listing has told it. tar counts what it reads uncompressed, so the
+      // size of the archive would not do as the total. The first listing has only its running figure.
+      let dataBytes: number | undefined;
+      const followTar = (): { read: () => Promise<DataProgressSample | null>; onProcess: (pid: number) => void } => {
+        let pid: number | undefined;
+        return {
+          read: async () => {
+            const doneBytes = await processBytesRead(pid);
+            return doneBytes === null ? null : { doneBytes, ...(dataBytes === undefined ? {} : { totalBytes: dataBytes }) };
+          },
+          onProcess: (next) => {
+            pid = next;
+          },
+        };
+      };
+
       const checkListing = async (file: string) => {
+        const tar = followTar();
+
         try {
-          return await this.checkArchiveListing(file);
+          const { member, bytes } = await withDataProgress(onProgress, 'checking_backup', tar.read, () =>
+            this.checkArchiveListing(file, tar.onProcess),
+          );
+          dataBytes = bytes;
+          return member;
         } catch (error) {
           this.logRejectedBackup(filename, error);
           throw error;
@@ -365,7 +435,10 @@ export class BackupManager implements OnApplicationShutdown {
       }
 
       this.logger.info('Extracting archive...');
-      const { stderr, stdout } = await this.archiveManager.extractTarGz(source, restoreDir);
+      const unpacking = followTar();
+      const { stderr, stdout } = await withDataProgress(onProgress, 'unpacking_backup', unpacking.read, () =>
+        this.archiveManager.extractTarGz(source, restoreDir, unpacking.onProcess),
+      );
       this.logger.debug('--- archiveManager.extractTarGz ---');
       this.logger.debug('stderr:', stderr);
       this.logger.debug('stdout:', stdout);
@@ -416,11 +489,23 @@ export class BackupManager implements OnApplicationShutdown {
         throw this.outOfTime('Restoring', appUrn, deadline, 'Nothing was changed.');
       }
 
-      await this.replaceAppFiles(appUrn, restoreDir, dataMember && staging ? { stagingId: staging.id, member: dataMember } : null, deadline, appFiles);
+      await this.replaceAppFiles(
+        appUrn,
+        restoreDir,
+        dataMember && staging ? { stagingId: staging.id, member: dataMember } : null,
+        deadline,
+        appFiles,
+        onProgress,
+        dataBytes,
+      );
 
-      for (const volume of volumes) {
-        this.logger.info(`Restoring Docker volume ${volume.name}...`);
-        await this.appVolumes.importVolume(appUrn, volume, path.join(restoreDir, 'volumes', `${volume.key}.tar`));
+      if (volumes.length > 0) {
+        await withDataProgress(onProgress, 'restoring_volumes', undefined, async () => {
+          for (const volume of volumes) {
+            this.logger.info(`Restoring Docker volume ${volume.name}...`);
+            await this.appVolumes.importVolume(appUrn, volume, path.join(restoreDir, 'volumes', `${volume.key}.tar`));
+          }
+        });
       }
     } finally {
       // Always, including when validation or extraction threw: an unsafe upload would
@@ -436,13 +521,14 @@ export class BackupManager implements OnApplicationShutdown {
   /**
    * List the archive and refuse it if any entry is unsafe.
    *
-   * @returns the name of its data folder when the backup was made with its owners, for root to extract, or `null`.
+   * @returns `member`: the name of its data folder when the backup was made with its owners, for root to
+   *   extract, or `null`. `bytes`: what the listing says the archive holds.
    */
-  private async checkArchiveListing(archive: string): Promise<string | null> {
-    const entries = await this.archiveManager.listTarGz(archive);
+  private async checkArchiveListing(archive: string, onProcess?: (pid: number) => void): Promise<{ member: string | null; bytes: number }> {
+    const entries = await this.archiveManager.listTarGz(archive, onProcess);
     validateRestoreArchiveEntries(entries);
 
-    return appDataMemberWithOwners(entries);
+    return { member: appDataMemberWithOwners(entries), bytes: entries.reduce((sum, entry) => sum + (entry.size ?? 0), 0) };
   }
 
   /**
@@ -470,7 +556,7 @@ export class BackupManager implements OnApplicationShutdown {
   }
 
   /** Write each of the app's named Docker volumes into `dir` as `<key>.tar`. An app with none gets no folder. */
-  private async archiveAppVolumes(appUrn: AppUrn, dir: string) {
+  private async archiveAppVolumes(appUrn: AppUrn, dir: string, onProgress?: DataProgressListener) {
     const volumes = (await this.appVolumes.listAppVolumes(appUrn)).map((volume) => ({ ...volume, file: `${volume.key}.tar` }));
 
     if (volumes.length === 0) {
@@ -492,10 +578,12 @@ export class BackupManager implements OnApplicationShutdown {
 
     await this.filesystem.createDirectory(dir);
 
-    for (const { name, file } of volumes) {
-      this.logger.info(`Including Docker volume ${name} in backup...`);
-      await this.appVolumes.exportVolume(name, path.join(dir, file));
-    }
+    await withDataProgress(onProgress, 'including_volumes', undefined, async () => {
+      for (const { name, file } of volumes) {
+        this.logger.info(`Including Docker volume ${name} in backup...`);
+        await this.appVolumes.exportVolume(name, path.join(dir, file));
+      }
+    });
   }
 
   /** Say in the log which entry made a backup unusable; the error the caller sees cannot name it. */
@@ -514,6 +602,8 @@ export class BackupManager implements OnApplicationShutdown {
     withOwners: { stagingId: string; member: string } | null,
     deadline: AppCommandDeadline,
     appFiles: 'keep' | 'from-backup',
+    onProgress?: DataProgressListener,
+    dataBytes?: number,
   ) {
     const withAppFiles = appFiles === 'from-backup';
     const { dataDir } = this.config.get('directories');
@@ -522,7 +612,7 @@ export class BackupManager implements OnApplicationShutdown {
     const userConfigDir = path.join(dataDir, 'user-config', appStoreId, appName);
 
     // Remove old data directories
-    await this.removeLiveAppData(appUrn, appDataDir, deadline);
+    await withDataProgress(onProgress, 'removing_data', undefined, () => this.removeLiveAppData(appUrn, appDataDir, deadline));
     if (withAppFiles) {
       await this.filesystem.removeDirectory(appInstalledDir);
       await this.filesystem.removeDirectory(userConfigDir);
@@ -539,9 +629,19 @@ export class BackupManager implements OnApplicationShutdown {
     // made with its owners goes back through root from the same archive, which every check above passed.
     const copied = [
       withOwners
-        ? (await this.docker.extractBackupAppDataAsRoot(appUrn, withOwners.stagingId, withOwners.member, deadline)) &&
-          (await this.rootRestoreLanded(appUrn, path.join(restoreDir, 'app-data'), appDataDir))
-        : await this.filesystem.copyDirectory(path.join(restoreDir, 'app-data'), appDataDir, { verbatimSymlinks: true }),
+        ? (await this.docker.extractBackupAppDataAsRoot(
+            appUrn,
+            withOwners.stagingId,
+            withOwners.member,
+            deadline,
+            onProgress ? { onProgress, totalBytes: dataBytes } : undefined,
+          )) && (await this.rootRestoreLanded(appUrn, path.join(restoreDir, 'app-data'), appDataDir))
+        : await withDataProgress(
+            onProgress,
+            'restoring_data',
+            async () => ({ doneBytes: await directoryBytes(appDataDir), totalBytes: dataBytes }),
+            () => this.filesystem.copyDirectory(path.join(restoreDir, 'app-data'), appDataDir, { verbatimSymlinks: true }),
+          ),
     ];
     if (withAppFiles) {
       copied.push(await this.filesystem.copyDirectory(path.join(restoreDir, 'app'), appInstalledDir));

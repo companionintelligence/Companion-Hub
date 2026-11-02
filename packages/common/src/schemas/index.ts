@@ -99,6 +99,8 @@ import type {
 
 import {
   type AppServiceFailure,
+  type DataProgress,
+  type DataProgressStep,
   type HostPortMove,
   type SSE,
   type Topic,
@@ -227,5 +229,7 @@ export {
   type AppServiceFailure,
   type SSE,
   type Topic,
+  type DataProgress,
+  type DataProgressStep,
   type UpdatePhase,
 };

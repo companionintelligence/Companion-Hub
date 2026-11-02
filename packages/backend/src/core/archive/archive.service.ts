@@ -4,7 +4,11 @@ import { spawnAsync, spawnLines, type SpawnResult } from '@/common/helpers/exec-
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 
-export type ArchiveEntry = { path: string; type: string };
+/** `size` is the bytes tar lists for the entry; a directory, a link or a device node has none. */
+export type ArchiveEntry = { path: string; type: string; size?: number };
+
+/** Told the id of the tar that does the work, so the caller can follow how much it has read. */
+export type TarProcessListener = (pid: number) => void;
 
 const INVALID_ARCHIVE = 'Invalid backup archive';
 
@@ -13,6 +17,16 @@ const INVALID_ARCHIVE = 'Invalid backup archive';
  * memory: a small compressed file can expand to an arbitrary number of entries.
  */
 export const MAX_ARCHIVE_ENTRIES = 1_000_000;
+
+/**
+ * The size in a verbose listing line, which stands after the mode and the owner in tar's output on
+ * every tar (`-rw-r--r-- root/root 200000000 2026-11-02 ...`). `undefined` for an entry without one,
+ * such as a device node's `8,0`. Only a progress figure reads it: nothing is decided on it.
+ */
+const listedSize = (line: string): number | undefined => {
+  const size = /^\S+\s+\S+\s+(\d+)\s/.exec(line)?.[1];
+  return size === undefined ? undefined : Number(size);
+};
 
 /**
  * Every tar invocation here is an argument vector handed straight to the program,
@@ -25,10 +39,10 @@ export const MAX_ARCHIVE_ENTRIES = 1_000_000;
 export class ArchiveService {
   constructor(private readonly logger: LoggerService) {}
 
-  createTarGz = async (sourceDir: string, destinationFile: string) => {
+  createTarGz = async (sourceDir: string, destinationFile: string, onProcess?: TarProcessListener) => {
     const args = ['-czpf', destinationFile, '-C', sourceDir, '.'];
     this.logger.debug(`Creating archive with args: tar ${args.join(' ')}`);
-    return spawnAsync('tar', args);
+    return spawnAsync('tar', args, {}, onProcess);
   };
 
   /**
@@ -38,12 +52,12 @@ export class ArchiveService {
    * It used to return tar's stderr and let the caller carry on, so a corrupt or
    * non-tar upload "extracted" nothing and the restore wiped the app regardless.
    */
-  extractTarGz = async (sourceFile: string, destinationDir: string): Promise<SpawnResult> => {
+  extractTarGz = async (sourceFile: string, destinationDir: string, onProcess?: TarProcessListener): Promise<SpawnResult> => {
     const flags = (await this.isGzip(sourceFile)) ? '-xzpf' : '-xpf';
     const args = [flags, sourceFile, '-C', destinationDir];
 
     this.logger.debug(`Extracting archive with args: tar ${args.join(' ')}`);
-    const result = await spawnAsync('tar', args);
+    const result = await spawnAsync('tar', args, {}, onProcess);
 
     if (result.exitCode !== 0) {
       this.logger.error(`Archive extraction failed: ${result.stderr.trim() || `exit code ${result.exitCode}`}`);
@@ -65,8 +79,10 @@ export class ArchiveService {
    * Both are read line by line as tar prints them, keeping a path or one character per entry, so
    * the size of the listing is not limited by a buffer: a photo library of several hundred
    * thousand files lists as readily as a small app.
+   *
+   * @param onProcess told the id of one of the two tars. They read the same file at the same pace.
    */
-  listTarGz = async (sourceFile: string): Promise<ArchiveEntry[]> => {
+  listTarGz = async (sourceFile: string, onProcess?: TarProcessListener): Promise<ArchiveEntry[]> => {
     const gzip = await this.isGzip(sourceFile);
     const verboseArgs = [gzip ? '-tzvf' : '-tvf', sourceFile];
     const pathArgs = [gzip ? '-tzf' : '-tf', sourceFile];
@@ -74,6 +90,7 @@ export class ArchiveService {
     this.logger.debug(`Listing archive with args: tar ${verboseArgs.join(' ')}`);
 
     const types: string[] = [];
+    const sizes: Array<number | undefined> = [];
     const paths: string[] = [];
 
     const collect = (into: string[], pick: (line: string) => string) => (line: string) => {
@@ -90,7 +107,12 @@ export class ArchiveService {
       spawnLines(
         'tar',
         verboseArgs,
-        collect(types, (line) => line.charAt(0)),
+        collect(types, (line) => {
+          sizes.push(listedSize(line));
+          return line.charAt(0);
+        }),
+        {},
+        onProcess,
       ),
       spawnLines(
         'tar',
@@ -108,7 +130,7 @@ export class ArchiveService {
       throw new Error(INVALID_ARCHIVE);
     }
 
-    return paths.map((entryPath, index) => ({ path: entryPath, type: types[index] ?? '' }));
+    return paths.map((entryPath, index) => ({ path: entryPath, type: types[index] ?? '', size: sizes[index] }));
   };
 
   /**

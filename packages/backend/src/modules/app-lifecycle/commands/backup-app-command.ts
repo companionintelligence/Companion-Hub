@@ -1,5 +1,6 @@
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { SSEService } from '@/core/sse/sse.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { BackupManager } from '@/modules/backups/backup.manager';
 import { DockerService } from '@/modules/docker/docker.service';
@@ -28,7 +29,10 @@ export class BackupAppCommand extends AppLifecycleCommand {
         logger.error(`Failed to stop app ${appUrn}:`, err);
       });
 
-      await backupManager.backupApp(appUrn);
+      const sseService = this.moduleRef.get(SSEService, { strict: false });
+      await backupManager.backupApp(appUrn, undefined, (dataProgress) =>
+        sseService?.emit('app', { event: 'status_change', appUrn, appStatus: 'backing_up', dataProgress }),
+      );
 
       logger.info('Backup completed!');
 

@@ -72,6 +72,30 @@ export const appServiceFailureSchema = z.object({
 });
 export type AppServiceFailure = z.infer<typeof appServiceFailureSchema>;
 
+/**
+ * The long step of a backup or restore under way, on its own or as part of an update or its rollback.
+ * `doneBytes` is what the step has worked through and `totalBytes` what it has to, each only where
+ * the Hub can measure it; a step without them still says what is happening.
+ */
+const dataProgressSchema = z.object({
+  step: z.enum([
+    'copying_data',
+    'including_volumes',
+    'archiving',
+    'saving_backup',
+    'checking_backup',
+    'unpacking_backup',
+    'removing_data',
+    'restoring_data',
+    'restoring_volumes',
+  ]),
+  doneBytes: z.number().nonnegative().optional(),
+  totalBytes: z.number().nonnegative().optional(),
+  bytesPerSecond: z.number().nonnegative().optional(),
+});
+export type DataProgress = z.infer<typeof dataProgressSchema>;
+export type DataProgressStep = DataProgress['step'];
+
 const appScopedEventSchema = z.object({
   event: z.enum([
     'status_change',
@@ -133,6 +157,9 @@ const appScopedEventSchema = z.object({
   totalBytes: z.number().nonnegative().optional(),
   // What an update is doing, on a `status_change` with `appStatus: 'updating'`.
   updatePhase: updatePhaseSchema.optional(),
+  // How far a backup or restore has got, on a `status_change` with `appStatus` `backing_up`,
+  // `restoring` or `updating`. Absent means no such step is under way.
+  dataProgress: dataProgressSchema.optional(),
   // Identifier for a non-fatal caveat on an otherwise-successful op (e.g. uninstall
   // completed but a root-owned path could not be fully removed). The client maps it
   // to a warning toast — a discriminator like errorCode, not rendered as a raw key.

@@ -1,4 +1,5 @@
 import { LoggerService } from '@/core/logger/logger.service';
+import { SSEService } from '@/core/sse/sse.service';
 import { BackupManager } from '@/modules/backups/backup.manager';
 import { DockerService } from '@/modules/docker/docker.service';
 import type { ModuleRef } from '@nestjs/core';
@@ -27,7 +28,11 @@ export class RestoreAppCommand extends AppLifecycleCommand {
         logger.error(`Failed to stop app ${appUrn}:`, err);
       });
 
-      await backupManager.restoreApp(appUrn, this.filename);
+      const sseService = this.moduleRef.get(SSEService, { strict: false });
+      // Data only (appFiles defaults to 'keep'): the archive may be one somebody uploaded.
+      await backupManager.restoreApp(appUrn, this.filename, undefined, {
+        onProgress: (dataProgress) => sseService?.emit('app', { event: 'status_change', appUrn, appStatus: 'restoring', dataProgress }),
+      });
 
       // Done
       logger.info(`App ${appUrn} restored!`);
