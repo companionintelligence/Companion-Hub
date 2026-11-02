@@ -100,8 +100,13 @@ export class SSEService implements OnApplicationShutdown {
       this.topics.set(formattedTopic, currentTopic);
     }
 
-    if (topic === 'app' && !currentTopic.observed && 'movedHostPort' in data && data.movedHostPort) {
-      this.keepUnseenPortMove(data.appUrn, data.movedHostPort);
+    if (topic === 'app' && 'movedHostPort' in data && data.movedHostPort) {
+      if (currentTopic.observed) {
+        // A live move supersedes any stale notice that the connected page already received.
+        this.unseenPortMoves.delete(data.appUrn);
+      } else {
+        this.keepUnseenPortMove(data.appUrn, data.movedHostPort);
+      }
     }
 
     currentTopic.next(event);
@@ -112,9 +117,10 @@ export class SSEService implements OnApplicationShutdown {
     const known = this.unseenPortMoves.get(appUrn)?.from ?? from;
     if (known === to) {
       this.unseenPortMoves.delete(appUrn);
-    } else {
-      this.unseenPortMoves.set(appUrn, { from: known, to });
+      return;
     }
+    const pending = { from: known, to };
+    this.unseenPortMoves.set(appUrn, pending);
   }
 
   /**
@@ -165,8 +171,9 @@ export class SSEService implements OnApplicationShutdown {
    * it exists. It is built per subscription, not emitted on the topic, because a Hub
    * that has just started has no subscribers to emit to — the clients are all mid-reconnect.
    * The latest tick of a running install or step of a running update follows the hello (`installProgress`),
-   * then any host port move nobody has heard about yet (`unseenPortMoves`). A move counts as heard once
-   * a connection that got it has stayed up for `PORT_MOVE_HEARD_AFTER_MS`.
+   * then any host port move nobody has heard about yet (`unseenPortMoves`). A replayed move counts as
+   * heard once a connection that got it has stayed up for `PORT_MOVE_HEARD_AFTER_MS`; a newer live move
+   * replaces any older replay notice because connected pages receive it directly.
    */
   getAppEventsObservable(): Observable<MessageEvent> {
     return defer(() => {
@@ -198,8 +205,10 @@ export class SSEService implements OnApplicationShutdown {
   }
 
   private forgetUnseenPortMoves(moves: ReadonlyArray<[string, HostPortMove]>): void {
-    for (const [appUrn] of moves) {
-      this.unseenPortMoves.delete(appUrn);
+    for (const [appUrn, heardMove] of moves) {
+      if (this.unseenPortMoves.get(appUrn) === heardMove) {
+        this.unseenPortMoves.delete(appUrn);
+      }
     }
   }
 

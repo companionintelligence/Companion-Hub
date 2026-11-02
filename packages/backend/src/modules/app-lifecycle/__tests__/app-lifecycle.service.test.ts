@@ -8094,7 +8094,10 @@ describe('AppLifecycleService', () => {
 
       // The move rewrote `config`, which read as settings saved during the start, so the "restart needed" badge stayed.
       it('clears the restart a save was owed, though the move changed the stored config', async () => {
-        appsRepository.getAppById.mockResolvedValue({ ...fakeApp, config: { port: 10001 } } as any);
+        const config = { port: 10000, SITE_URL: 'http://localhost:10000' };
+        appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, config } as any);
+        appsRepository.getAppById.mockResolvedValue({ ...fakeApp, config: { port: 10001, SITE_URL: 'http://localhost:10001' } } as any);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ form_fields: [{ type: 'app_base_url', env_variable: 'SITE_URL' }] } as any);
         appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK', movedHostPort } as any);
 
         await service.startApp({ actor: TEST_ACTOR, appUrn });
@@ -8102,6 +8105,23 @@ describe('AppLifecycleService', () => {
         await vi.waitFor(() => {
           expect(appsRepository.updateAppById).toHaveBeenCalledWith(fakeApp.id, { status: 'running', pendingRestart: false });
         });
+      });
+
+      it('keeps the restart owed when another URL setting changes to the new port during the start', async () => {
+        const config = { port: 10000, CALLBACK_URL: 'http://localhost:10000/callback' };
+        appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, config } as any);
+        appsRepository.getAppById.mockResolvedValue({
+          ...fakeApp,
+          config: { port: 10001, CALLBACK_URL: 'http://localhost:10001/callback' },
+          pendingRestart: true,
+        } as any);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ form_fields: [{ type: 'url', env_variable: 'CALLBACK_URL' }] } as any);
+        appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK', movedHostPort } as any);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+
+        await vi.waitFor(() => expect(appsRepository.updateAppById).toHaveBeenCalledWith(fakeApp.id, { status: 'running' }));
+        expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(fakeApp.id, expect.objectContaining({ pendingRestart: false }));
       });
 
       it('keeps the restart owed for settings saved during a start that also moved the app', async () => {

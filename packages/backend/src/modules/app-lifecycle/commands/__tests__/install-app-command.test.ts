@@ -745,6 +745,28 @@ describe('InstallAppCommand — pull policy', () => {
       expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(1);
     });
 
+    it('does not recover a non-main conflict just because a stale allocation matches it', async () => {
+      refusals = [51820];
+      portManager.getMainPort.mockResolvedValue(51820);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(portManager.moveMainPort).not.toHaveBeenCalled();
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(1);
+    });
+
+    it('does not recover an extra published port when the main port is not exposed', async () => {
+      refusals = [51820];
+      portManager.getMainPort.mockResolvedValue(51820);
+
+      const result = await command.execute(appUrn, { exposureMode: 'cloudflare', openPort: false, exposedLocal: false });
+
+      expect(result.success).toBe(false);
+      expect(portManager.moveMainPort).not.toHaveBeenCalled();
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(1);
+    });
+
     it('leaves the app row alone when the main port is the one it already records', async () => {
       const result = await command.execute(appUrn, {});
 

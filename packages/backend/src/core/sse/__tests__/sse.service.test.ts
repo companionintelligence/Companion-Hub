@@ -141,6 +141,23 @@ describe('SSEService app stream', () => {
       expect(JSON.parse(second.data as string).movedHostPort).toEqual({ from: 10000, to: 10002 });
     });
 
+    it('clears a stale replay when a connected page receives a newer move', async () => {
+      vi.useFakeTimers();
+      service.emit('app', moved);
+      const received: Array<Record<string, unknown>> = [];
+      const connected = service.getAppEventsObservable().subscribe((event) => received.push(JSON.parse(event.data as string)));
+      expect(received.at(-1)).toEqual(notice({ from: 10000, to: 10001 }));
+
+      service.emit('app', { ...moved, movedHostPort: { from: 10001, to: 10002 } });
+      expect(received.at(-1)).toMatchObject({ event: 'start_success', movedHostPort: { from: 10001, to: 10002 } });
+      connected.unsubscribe();
+
+      const pending = collect(2);
+      service.emit('app', { event: 'install_queue', active: null, queued: [] });
+      const [, second] = await pending;
+      expect(JSON.parse(second.data as string)).toEqual({ event: 'install_queue', active: null, queued: [] });
+    });
+
     it('says nothing of an app that moved back to the port the person knows', async () => {
       service.emit('app', moved);
       service.emit('app', { ...moved, movedHostPort: { from: 10001, to: 10000 } });

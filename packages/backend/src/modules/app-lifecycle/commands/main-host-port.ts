@@ -116,10 +116,11 @@ export async function writeMainHostPort(
  * database does not keep their order. Run on both sides, it tells settings saved during a command from
  * the command's own move.
  */
-export function configAfterMove(config: unknown, { from, to }: HostPortMove): Record<string, unknown> {
+export function configAfterMove(config: unknown, { from, to }: HostPortMove, baseUrlFields: readonly string[] = []): Record<string, unknown> {
+  const baseUrlKeys = new Set(baseUrlFields);
   const moved = Object.entries({ ...(config as Record<string, unknown> | null), port: to }).map(([key, value]) => [
     key,
-    typeof value === 'string' ? withMovedPort(value, from, to) : value,
+    baseUrlKeys.has(key) && typeof value === 'string' ? withMovedPort(value, from, to) : value,
   ]);
   return Object.fromEntries(moved.sort(([a], [b]) => String(a).localeCompare(String(b))));
 }
@@ -146,10 +147,9 @@ async function publishedMainPort(moduleRef: ModuleRef, appUrn: AppUrn): Promise<
  * down during this command, so a retry never lands on one of them again.
  *
  * Only the main port moves. A port from the manifest's `addPorts` is published as written, so a
- * conflict on one fails the install as before. The refused port counts as the main port when it is
- * the allocated one or the one the app publishes. Those differ on a Hub whose table fell behind a
- * saved port before saves kept it in step, or when another app holds the saved port in the table. An
- * app that doesn't publish its main port has no such port, so `APP_PORT` says nothing about a refusal.
+ * conflict on one fails the install as before. Classify the refusal by the port the compose file
+ * actually publishes from app.env, not the allocation table: that table can be stale or overlap an
+ * `addPorts` binding. An app that doesn't publish its main port has no host port to recover.
  * The move only ever takes a free port and gives up this app's own allocation, so no other app loses one.
  */
 export async function moveMainPortOffHostConflict(
@@ -166,10 +166,16 @@ export async function moveMainPortOffHostConflict(
   if (!portManager || !conflict || conflict.protocol === 'udp') {
     return false;
   }
-  const refusedMainPort =
-    (await portManager.getMainPort(appUrn)) === conflict.port ||
-    (publishesHostPort(form) && (await publishedMainPort(moduleRef, appUrn)) === conflict.port);
-  if (!refusedMainPort) {
+  if (!publishesHostPort(form)) {
+    return false;
+  }
+  let publishedPort: number;
+  try {
+    publishedPort = await publishedMainPort(moduleRef, appUrn);
+  } catch {
+    return false;
+  }
+  if (!Number.isInteger(publishedPort) || publishedPort !== conflict.port) {
     return false;
   }
 

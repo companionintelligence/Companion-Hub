@@ -3805,7 +3805,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       try {
         const clearPendingRestart =
           params.successOutcome.clearPendingRestart &&
-          (await this.configUnchangedSince(params.appId, params.successOutcome.configAtDispatch, params.movedHostPort));
+          (await this.configUnchangedSince(params.appId, params.appUrn, params.successOutcome.configAtDispatch, params.movedHostPort));
         await this.appRepository.updateAppById(params.appId, {
           status: params.successOutcome.status,
           ...(clearPendingRestart ? { pendingRestart: false } : {}),
@@ -3854,10 +3854,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Whether the app's stored config is still the one a command was dispatched with. Settings saved
    * while a start ran were not in it, so the restart they asked for is still owed. A move rewrites the
-   * stored config itself, so its own rewrite doesn't count (`configAfterMove`). A port other than the one
-   * it moved to is not its rewrite: that is a save the app hasn't taken up.
+   * stored port and declared app base URLs, so those changes don't count (`configAfterMove`). Other
+   * settings that happen to contain the moved port still count as saves the app hasn't taken up.
    */
-  private async configUnchangedSince(appId: number, configAtDispatch: unknown, move?: HostPortMove): Promise<boolean> {
+  private async configUnchangedSince(appId: number, appUrn: AppUrn, configAtDispatch: unknown, move?: HostPortMove): Promise<boolean> {
     if (configAtDispatch === undefined) {
       return true;
     }
@@ -3871,7 +3871,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       if (move && storedPort !== undefined && storedPort !== move.to) {
         return false;
       }
-      const comparable = (config: unknown) => JSON.stringify(move ? configAfterMove(config, move) : (config ?? null));
+      let baseUrlFields: string[] = [];
+      if (move) {
+        try {
+          const installedInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
+          if (!installedInfo) {
+            return false;
+          }
+          baseUrlFields = (installedInfo?.form_fields ?? []).filter((field) => field.type === 'app_base_url').map((field) => field.env_variable);
+        } catch {
+          // Without the field declarations, we cannot distinguish the port's base-URL rewrite from
+          // a concurrent save. Keep the restart owed rather than clearing it on uncertain state.
+          return false;
+        }
+      }
+      const comparable = (config: unknown) => JSON.stringify(move ? configAfterMove(config, move, baseUrlFields) : (config ?? null));
       return comparable(current.config) === comparable(configAtDispatch);
     } catch {
       // Unknown: clear it, as before this check existed.
