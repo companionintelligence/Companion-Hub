@@ -310,6 +310,21 @@ describe('UpdateAppCommand', () => {
       expect(pulled).toBeLessThan(order(appFilesManager.deleteAppFolder));
     });
 
+    it('records the new version of an image the app recorded before, so an uninstall removes it too', async () => {
+      vi.mocked(parseComposeJson).mockReturnValue({ services: [{ name: 'app', image: 'app-image:1' }], overrides: [] } as any);
+      let pulled = false;
+      dockerService.pullImages.mockImplementation(async () => {
+        pulled = true;
+      });
+      dockerService.imageIdLocally.mockImplementation(async () => (pulled ? 'sha256:v2' : 'sha256:v1'));
+      appFilesManager.readPulledImageIds.mockResolvedValue(['sha256:v1']);
+      appFilesManager.writePulledImageIds.mockResolvedValue(true);
+
+      await command.execute(appUrn, {});
+
+      expect(appFilesManager.writePulledImageIds).toHaveBeenCalledWith(appUrn, ['sha256:v1', 'sha256:v2']);
+    });
+
     it('leaves a running app exactly as it was when the pull fails', async () => {
       dockerService.pullImages.mockRejectedValue(new Error('registry unreachable'));
 

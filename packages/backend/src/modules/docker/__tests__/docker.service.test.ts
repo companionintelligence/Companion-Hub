@@ -479,20 +479,6 @@ describe('DockerService', () => {
     });
   });
 
-  describe('snapshotAppImageIds', () => {
-    it('should return unique image IDs from compose project containers', async () => {
-      dockerode.listContainers.mockResolvedValue([{ ImageID: 'sha256:a' } as any, { ImageID: 'sha256:b' } as any, { ImageID: 'sha256:a' } as any]);
-
-      const result = await service.snapshotAppImageIds('test:store' as any);
-
-      expect(dockerode.listContainers).toHaveBeenCalledWith({
-        all: true,
-        filters: { label: ['com.docker.compose.project=test_store'] },
-      });
-      expect(result).toEqual(['sha256:a', 'sha256:b']);
-    });
-  });
-
   describe('getManagedAppContainerVerification', () => {
     it('returns ok when all labeled containers are running', async () => {
       dockerode.listContainers.mockResolvedValue([{ State: 'running', Status: 'Up 1 second' }] as any);
@@ -635,7 +621,7 @@ describe('DockerService', () => {
   });
 
   describe('removeAppImages', () => {
-    it('should remove snapshot and labeled images with dedupe', async () => {
+    it('removes only the recorded images and the compose builds of the app, each once and never forced', async () => {
       dockerode.listImages.mockResolvedValue([{ Id: 'sha256:b' }, { Id: 'sha256:c' }] as any);
 
       const removeA = vi.fn().mockResolvedValue(undefined);
@@ -648,14 +634,56 @@ describe('DockerService', () => {
         return { remove: removeC } as any;
       });
 
-      await service.removeAppImages('test:store' as any, ['sha256:a', 'sha256:b']);
+      await service.removeAppImages('test:store' as any, ['sha256:a', 'sha256:b', 'sha256:a']);
 
       expect(dockerode.listImages).toHaveBeenCalledWith({
         filters: { label: ['com.docker.compose.project=test_store'] },
       });
-      expect(removeA).toHaveBeenCalledWith({ force: true });
-      expect(removeB).toHaveBeenCalledWith({ force: true });
-      expect(removeC).toHaveBeenCalledWith({ force: true });
+      // No options at all: a forced removal would take an image that another container still uses.
+      expect(removeA).toHaveBeenCalledTimes(1);
+      expect(removeA).toHaveBeenCalledWith();
+      expect(removeB).toHaveBeenCalledWith();
+      expect(removeC).toHaveBeenCalledWith();
+    });
+
+    it('removes nothing but the compose builds when the app recorded no pull', async () => {
+      dockerode.listImages.mockResolvedValue([{ Id: 'sha256:c' }] as any);
+
+      const removeBuilt = vi.fn().mockResolvedValue(undefined);
+      dockerode.getImage.mockReturnValue({ remove: removeBuilt } as any);
+
+      await service.removeAppImages('test:store' as any, []);
+
+      // An image that was on the computer before the app is not in the record, so it is never asked for.
+      expect(dockerode.getImage).toHaveBeenCalledTimes(1);
+      expect(dockerode.getImage).toHaveBeenCalledWith('sha256:c');
+      expect(removeBuilt).toHaveBeenCalledWith();
+    });
+
+    it('skips an image something still holds (a container, or another tag of it) and goes on with the rest', async () => {
+      dockerode.listImages.mockResolvedValue([] as any);
+
+      const removeStillUsed = vi
+        .fn()
+        .mockRejectedValue(new Error('conflict: unable to delete sha256:a (cannot be forced) - image is being used by stopped container 1f2e3d'));
+      const removeOtherTag = vi
+        .fn()
+        .mockRejectedValue(new Error('conflict: unable to delete sha256:b (must be forced) - image is referenced in multiple repositories'));
+      const removeFree = vi.fn().mockResolvedValue(undefined);
+
+      dockerode.getImage.mockImplementation((id: string) => {
+        if (id === 'sha256:a') return { remove: removeStillUsed } as any;
+        if (id === 'sha256:b') return { remove: removeOtherTag } as any;
+        return { remove: removeFree } as any;
+      });
+
+      await expect(service.removeAppImages('test:store' as any, ['sha256:a', 'sha256:b', 'sha256:c'])).resolves.toBeUndefined();
+
+      expect(removeStillUsed).toHaveBeenCalledWith();
+      expect(removeOtherTag).toHaveBeenCalledWith();
+      expect(removeFree).toHaveBeenCalledWith();
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Skipping image removal for sha256:a'));
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Skipping image removal for sha256:b'));
     });
 
     it('should swallow not found and in use removal errors', async () => {
@@ -671,6 +699,28 @@ describe('DockerService', () => {
 
       await expect(service.removeAppImages('test:store' as any, ['sha256:a', 'sha256:b'])).resolves.toBeUndefined();
       expect(loggerService.warn).toHaveBeenCalled();
+    });
+  });
+
+  describe('imageIdLocally', () => {
+    it('returns the ID of the image the reference names on this computer', async () => {
+      const inspect = vi.fn().mockResolvedValue({ Id: 'sha256:a' });
+      dockerode.getImage.mockReturnValue({ inspect } as any);
+
+      await expect(service.imageIdLocally('python:3.13-alpine')).resolves.toBe('sha256:a');
+      expect(dockerode.getImage).toHaveBeenCalledWith('python:3.13-alpine');
+    });
+
+    it('returns null for an image that is not on this computer', async () => {
+      dockerode.getImage.mockReturnValue({ inspect: vi.fn().mockRejectedValue(new Error('No such image: python:3.13-alpine')) } as any);
+
+      await expect(service.imageIdLocally('python:3.13-alpine')).resolves.toBeNull();
+    });
+
+    it('rethrows a failure that is not a missing image, so a Docker that cannot be reached is not read as no image', async () => {
+      dockerode.getImage.mockReturnValue({ inspect: vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED /var/run/docker.sock')) } as any);
+
+      await expect(service.imageIdLocally('python:3.13-alpine')).rejects.toThrow('ECONNREFUSED');
     });
   });
 
@@ -1127,6 +1177,31 @@ describe('DockerService', () => {
 
       expect(child_process.spawn).toHaveBeenCalledWith('docker', expect.arrayContaining(['busybox:1.36']), { stdio: 'pipe' });
     });
+
+    it('empties the data folder of a custom app in the reserved _user store, which is where reset and uninstall look for it', async () => {
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(0));
+      const customUrn = 'my-compose:_user' as any;
+      const hostDir = getAppDataHostPath(customUrn, inputs);
+
+      await expect(service.removeAppDataDirAsRoot(customUrn)).resolves.toBe(true);
+
+      expect(hostDir).toBe('/host/root/app-data/_user/my-compose');
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        expect.arrayContaining(['-v', `${hostDir}:/target:rw`, 'find', '/target', '-mindepth', '1', '-delete']),
+        { stdio: 'pipe' },
+      );
+    });
+
+    it('still refuses a store that starts with an underscore when it is not the reserved _user store', async () => {
+      await expect(service.removeAppDataDirAsRoot('my-compose:_other' as any)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('still refuses a traversal in the app name of a _user app', async () => {
+      await expect(service.removeAppDataDirAsRoot('..:_user' as any)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
   });
 
   describe('privileged snapshot helpers (restore and remove a root-owned data snapshot)', () => {
@@ -1140,6 +1215,28 @@ describe('DockerService', () => {
       delete process.env.CI_HUB_APP_DATA_PATH;
       delete process.env.CI_HUB_CLEANUP_IMAGE;
       (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(0));
+    });
+
+    it('copies the data of a custom app in the reserved _user store into its snapshot, the way a store app is copied', async () => {
+      const customUrn = 'my-compose:_user' as any;
+      const customSnapshot = 'pre-update-my-compose-1792500000000';
+
+      await expect(service.copyAppDataDirAsRoot(customUrn, customSnapshot)).resolves.toBe(true);
+
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        expect.arrayContaining([
+          '-v',
+          '/host/root/app-data/_user/my-compose:/src:ro',
+          '-v',
+          `/host/root/backups/.pre-update-snapshots/_user/my-compose/${customSnapshot}/app-data:/dest:rw`,
+          'cp',
+          '-a',
+          '/src/.',
+          '/dest/',
+        ]),
+        { stdio: 'pipe' },
+      );
     });
 
     it('restores by emptying the data folder and copying the snapshot over it, both mounts confined to this app', async () => {

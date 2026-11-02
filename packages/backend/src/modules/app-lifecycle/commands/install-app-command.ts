@@ -18,6 +18,7 @@ import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { AppLifecycleCommand, type CommandExecutionContext } from './command';
 import { AppLifecycleError, type AppCommandResult } from './app-lifecycle-errors';
+import { pullAppImagesRecorded } from './pull-app-images';
 import { isAbortError, throwIfAborted } from '@/common/abort';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
@@ -362,38 +363,40 @@ export class InstallAppCommand extends AppLifecycleCommand {
         let lastPullBytes = 0;
         let sizeShown = false;
         dockerService.pullImages
-          ? await dockerService.pullImages(appImages, {
-              forcePull,
-              signal: ctx?.signal,
-              layerSizes: (image, signal) => imageSizeService?.getImageLayerSizes?.(image, { signal }) ?? Promise.resolve(null),
-              onProgress: ({ completedBytes, totalBytes, totalBytesKnown, completedImages, totalImages }) => {
-                // The size under the bar and the bar itself wait for a final total. "3.0 MB / 3.7 MB" for a
-                // 26 MB download was a total still growing (CI-Hub#2177). A first layer of 405 bytes, done at
-                // once, put the bar at 98. Until then the page says only "Downloading" and the bar counts images.
-                const sizeKnown = totalBytes > 0 && totalBytesKnown !== false;
-                const nextProgress = sizeKnown
-                  ? mapPullProgressToInstallProgress(completedBytes, totalBytes)
-                  : totalImages > 0
-                    ? mapPullProgressToInstallProgress(completedImages, totalImages)
-                    : DOWNLOAD_PROGRESS_START;
-                const now = Date.now();
-                const percentRose =
-                  nextProgress > lastPullProgress &&
-                  (nextProgress - lastPullProgress >= 2 ||
-                    now - lastPullProgressAt >= DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS ||
-                    nextProgress >= DOWNLOAD_PROGRESS_MAX_DURING_PULL);
-                const sizeMoved = completedBytes !== lastPullBytes && now - lastPullProgressAt >= DOWNLOAD_SIZE_EMIT_INTERVAL_MS;
-                const sizeAppeared = sizeKnown && !sizeShown;
-                if (percentRose || sizeMoved || sizeAppeared) {
-                  // The bar never goes back.
-                  lastPullProgress = Math.max(lastPullProgress, nextProgress);
-                  lastPullProgressAt = now;
-                  lastPullBytes = completedBytes;
-                  sizeShown = sizeKnown;
-                  void emitProgress(lastPullProgress, sizeKnown ? { downloadedBytes: completedBytes, totalBytes } : undefined);
-                }
-              },
-            })
+          ? await pullAppImagesRecorded({ docker: dockerService, files: appFilesManager, logger }, appUrn, appImages, () =>
+              dockerService.pullImages(appImages, {
+                forcePull,
+                signal: ctx?.signal,
+                layerSizes: (image, signal) => imageSizeService?.getImageLayerSizes?.(image, { signal }) ?? Promise.resolve(null),
+                onProgress: ({ completedBytes, totalBytes, totalBytesKnown, completedImages, totalImages }) => {
+                  // The size under the bar and the bar itself wait for a final total. "3.0 MB / 3.7 MB" for a
+                  // 26 MB download was a total still growing (CI-Hub#2177). A first layer of 405 bytes, done at
+                  // once, put the bar at 98. Until then the page says only "Downloading" and the bar counts images.
+                  const sizeKnown = totalBytes > 0 && totalBytesKnown !== false;
+                  const nextProgress = sizeKnown
+                    ? mapPullProgressToInstallProgress(completedBytes, totalBytes)
+                    : totalImages > 0
+                      ? mapPullProgressToInstallProgress(completedImages, totalImages)
+                      : DOWNLOAD_PROGRESS_START;
+                  const now = Date.now();
+                  const percentRose =
+                    nextProgress > lastPullProgress &&
+                    (nextProgress - lastPullProgress >= 2 ||
+                      now - lastPullProgressAt >= DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS ||
+                      nextProgress >= DOWNLOAD_PROGRESS_MAX_DURING_PULL);
+                  const sizeMoved = completedBytes !== lastPullBytes && now - lastPullProgressAt >= DOWNLOAD_SIZE_EMIT_INTERVAL_MS;
+                  const sizeAppeared = sizeKnown && !sizeShown;
+                  if (percentRose || sizeMoved || sizeAppeared) {
+                    // The bar never goes back.
+                    lastPullProgress = Math.max(lastPullProgress, nextProgress);
+                    lastPullProgressAt = now;
+                    lastPullBytes = completedBytes;
+                    sizeShown = sizeKnown;
+                    void emitProgress(lastPullProgress, sizeKnown ? { downloadedBytes: completedBytes, totalBytes } : undefined);
+                  }
+                },
+              }),
+            )
           : logger.warn(`Docker pull progress tracking is unavailable for ${appUrn}; falling back to compose up progress`);
       }
 

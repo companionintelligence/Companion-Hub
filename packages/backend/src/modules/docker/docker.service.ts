@@ -176,6 +176,9 @@ const PRIVILEGED_IMAGE_CHECK_TIMEOUT_MS = 120_000;
 const SNAPSHOT_ID_PATTERN = /^pre-update-[A-Za-z0-9][A-Za-z0-9._-]*-\d+$/;
 // `backup-<app>-<epoch ms>`, as createBackupStagingDir names a staging folder.
 const BACKUP_STAGING_ID_PATTERN = /^backup-[A-Za-z0-9][A-Za-z0-9._-]*-\d+$/;
+// The reserved per-user store every custom app lives in (`RESERVED_APP_STORE_SLUGS`). Its leading `_` fails the
+// segment pattern the privileged helpers apply, so it is accepted by name; no other store is.
+const USER_APP_STORE_SLUG = '_user';
 
 /** A folder under `backups/` that the privileged helpers may write one app's copy into and how its entries are named. */
 type PrivilegedCopyArea = { dirname: string; idPattern: RegExp; tag: string };
@@ -342,6 +345,20 @@ export class DockerService {
     return message.includes('is being used') || message.includes('in use') || message.includes('has active endpoints');
   }
 
+  /**
+   * Whether Docker refused to remove an image because something still holds it: a container that uses it, or
+   * another tag of the same image (`must be forced`). Removal is never forced, so these are the refusals to expect.
+   *
+   * @param error Error from Dockerode.
+   */
+  private isImageHeldError(error: unknown): boolean {
+    if (this.isResourceInUseError(error)) {
+      return true;
+    }
+
+    return error instanceof Error && /conflict|must be forced/i.test(error.message);
+  }
+
   public getAppRuntimeStats(...args: Parameters<DockerReadFacade['getAppRuntimeStats']>) {
     return this.dockerReadFacade.getAppRuntimeStats(...args);
   }
@@ -364,33 +381,6 @@ export class DockerService {
 
   public diagnoseAppContainers(...args: Parameters<DockerReadFacade['diagnoseAppContainers']>) {
     return this.dockerReadFacade.diagnoseAppContainers(...args);
-  }
-
-  /**
-   * Captures image IDs from all containers in an app's Compose project.
-   *
-   * Capture these immutable IDs before `compose down` so cleanup can remove
-   * pulled images even if tag or reference resolution changes later.
-   *
-   * @param appUrn App URN to inspect.
-   * @returns Unique Docker image IDs referenced by project containers.
-   */
-  public async snapshotAppImageIds(appUrn: AppUrn): Promise<string[]> {
-    const projectName = this.getComposeProjectName(appUrn);
-
-    try {
-      // Capture concrete IDs before teardown because Compose references can resolve
-      // differently after the containers are removed.
-      const containers = await this.docker.listContainers({
-        all: true,
-        filters: { label: [`com.docker.compose.project=${projectName}`] },
-      });
-
-      return [...new Set(containers.map((container) => container.ImageID).filter(Boolean))];
-    } catch (error) {
-      this.logger.warn(`Failed to snapshot image IDs for ${appUrn}: ${error}`);
-      return [];
-    }
   }
 
   public async forceStopApp(appUrn: AppUrn, graceSeconds = 10): Promise<{ stopped: string[]; killed: string[] }> {
@@ -427,16 +417,17 @@ export class DockerService {
   }
 
   /**
-   * Removes Docker images associated with an uninstalled app.
+   * Removes the images an uninstalled app brought onto this computer, and the images its own compose build made.
    *
-   * Candidates include image IDs captured before teardown and Compose-labeled
-   * images for local builds. Missing or in-use images do not fail the uninstall,
-   * allowing application-level cleanup to finish.
+   * `appImageIds` are the IDs an install or an update recorded when it pulled the image for this app
+   * (`AppFilesManager.readPulledImageIds`). Nothing else is removed: an image that was on the computer before
+   * the app, or that another app uses, stays. Removal is never forced, so Docker refuses an image that a
+   * container, running or stopped, still uses. Missing or held images do not fail the uninstall.
    *
    * @param appUrn App URN being uninstalled.
-   * @param snapshotImageIds Image IDs captured before container teardown.
+   * @param appImageIds Image IDs the app's installs and updates pulled for it.
    */
-  public async removeAppImages(appUrn: AppUrn, snapshotImageIds: string[] = []): Promise<void> {
+  public async removeAppImages(appUrn: AppUrn, appImageIds: string[] = []): Promise<void> {
     const projectName = this.getComposeProjectName(appUrn);
 
     const labeledImages = await this.docker.listImages({ filters: { label: [`com.docker.compose.project=${projectName}`] } }).catch((error) => {
@@ -444,16 +435,15 @@ export class DockerService {
       return [];
     });
 
-    // Combine container IDs with Compose-labeled builds so cleanup covers partial
-    // installation and teardown states.
-    const imageIds = new Set<string>([...snapshotImageIds, ...labeledImages.map((image) => image.Id)].filter(Boolean));
+    // The app's recorded pulls and its own compose builds. Never forced: an image another container uses stays.
+    const imageIds = new Set<string>([...appImageIds, ...labeledImages.map((image) => image.Id)].filter(Boolean));
 
     for (const imageId of imageIds) {
       try {
-        await this.docker.getImage(imageId).remove({ force: true });
+        await this.docker.getImage(imageId).remove();
       } catch (error) {
-        // Missing or in-use images must not block the remaining uninstall cleanup.
-        if (this.isResourceMissingError(error) || this.isResourceInUseError(error)) {
+        // Missing or held images must not block the remaining uninstall cleanup.
+        if (this.isResourceMissingError(error) || this.isImageHeldError(error)) {
           this.logger.warn(`Skipping image removal for ${imageId} (${appUrn}): ${error}`);
           continue;
         }
@@ -551,12 +541,13 @@ export class DockerService {
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const p = path.posix;
     const isSafeSegment = (segment: string) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment);
+    const isSafeStoreSegment = (segment: string) => segment === USER_APP_STORE_SLUG || isSafeSegment(segment);
     const expected = p.join(appDataRoot, appStoreId, appName);
 
     // Require the exact `{app-data-root}/{store}/{app}` path to confine the
     // privileged deletion to one app directory.
     if (
-      !isSafeSegment(appStoreId) ||
+      !isSafeStoreSegment(appStoreId) ||
       !isSafeSegment(appName) ||
       p.normalize(appDataRoot) === '/' ||
       p.normalize(hostAppDataDir) !== p.normalize(expected) ||
@@ -602,6 +593,7 @@ export class DockerService {
     };
     const p = path.posix;
     const isSafeSegment = (segment: string) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment);
+    const isSafeStoreSegment = (segment: string) => segment === USER_APP_STORE_SLUG || isSafeSegment(segment);
 
     try {
       const { appName, appStoreId } = extractAppUrn(appUrn);
@@ -616,7 +608,7 @@ export class DockerService {
       const hostSnapshotDir = p.join(rootFolderHost, 'backups', area.dirname, appStoreId, appName, snapshotId);
 
       if (
-        !isSafeSegment(appStoreId) ||
+        !isSafeStoreSegment(appStoreId) ||
         !isSafeSegment(appName) ||
         !area.idPattern.test(snapshotId) ||
         p.normalize(appDataRoot) === '/' ||
@@ -1142,6 +1134,22 @@ export class DockerService {
     } catch (error) {
       if (this.isResourceMissingError(error)) {
         return false;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * The ID of the image `image` names on this computer, or `null` when it is not here. Read-only, never pulls.
+   * An install or an update compares it before and after a pull to tell the images the pull brought in.
+   */
+  async imageIdLocally(image: string): Promise<string | null> {
+    try {
+      const info = await this.docker.getImage(image).inspect();
+      return info.Id || null;
+    } catch (error) {
+      if (this.isResourceMissingError(error)) {
+        return null;
       }
       throw error;
     }

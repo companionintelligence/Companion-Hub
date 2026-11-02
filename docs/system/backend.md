@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-10-30 (forward auth emits no AID value; the in-tree KERI module is frozen)
+> **Last updated:** 2026-11-01 (uninstall removes only the images an app pulled; reset and uninstall reach the `_user` store; backup archives are owner-only)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -41,6 +41,8 @@ packages/backend/
 docker-managed named volume (`volumeName`), never both. Compose scopes named volumes to the app's
 project, so `db` becomes `<app>_<store>_db`, and the existing lifecycle commands already reclaim
 them — `down --volumes` on uninstall-with-data and reset, preserved on stop/restart/update.
+
+Uninstall removes only the images the Hub pulled for the app. An install or an update records the IDs of the images its pulls brought onto the computer in `<dataDir>/pulled-images/<store>/<app>.json`, which sits beside the app folders so an update keeps it. An image that was already there, or that another app uses, is never recorded, and removal is never forced, so Docker refuses an image a container still uses. Compose removes only the images it built (`--rmi local`). An app installed before this record existed has none, so its pulled images stay on the computer after uninstall.
 
 A bind mount may also declare `requiresPosixPermissions: true`, meaning its contents need real
 ownership. Windows-backed host paths (drvfs/9p) accept `chown`/`chmod` and silently discard them,

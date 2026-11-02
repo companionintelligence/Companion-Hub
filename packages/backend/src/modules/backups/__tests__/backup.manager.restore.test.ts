@@ -320,11 +320,34 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
     it('leaves no temporary folder or stray archive behind', async () => {
       const { filename } = await manager.backupApp(appUrn);
 
-      expect(tempDirs).toHaveLength(1);
-      await expect(fs.promises.access(tempDirs[0] as string)).rejects.toThrow();
-      await expect(fs.promises.access(`${tempDirs[0]}.tar.gz`)).rejects.toThrow();
+      // The copy's folder, and the owner-only folder the archive is written in: every folder the backup made is gone.
+      expect(tempDirs.length).toBeGreaterThan(0);
+      for (const dir of tempDirs) {
+        await expect(fs.promises.access(dir)).rejects.toThrow();
+      }
       await expect(fs.promises.readdir(backupDir)).resolves.toContain(filename);
     });
+
+    // POSIX folder modes mean nothing on Windows, where this check would prove nothing.
+    it.skipIf(process.platform === 'win32')(
+      'writes the archive into a folder only its owner can open, not beside the copy in the shared temp folder',
+      async () => {
+        const tar = archive.createTarGz.bind(archive);
+        let archiveFolder: string | undefined;
+        let archiveFolderMode: number | undefined;
+        vi.spyOn(archive, 'createTarGz').mockImplementation(async (sourceDir, destinationFile) => {
+          archiveFolder = path.dirname(destinationFile);
+          archiveFolderMode = (await fs.promises.stat(archiveFolder)).mode & 0o777;
+          return tar(sourceDir, destinationFile);
+        });
+
+        await manager.backupApp(appUrn);
+
+        // The shared temp folder is world-writable and readable; a folder made for this archive alone is 0700.
+        expect(archiveFolder).not.toBe(os.tmpdir());
+        expect(archiveFolderMode).toBe(0o700);
+      },
+    );
 
     it('does not report a backup when tar failed, and cleans up', async () => {
       vi.spyOn(archive, 'createTarGz').mockResolvedValue({ stdout: '', stderr: 'tar: No space left on device', exitCode: 2 });
