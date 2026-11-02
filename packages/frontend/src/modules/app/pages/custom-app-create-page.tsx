@@ -81,12 +81,13 @@ export default () => {
                   </>
                 }
                 onChange={(e) => setAppName(e.target.value)}
+                aria-describedby="custom-app-name-help"
                 error={appNameError}
                 placeholder={t('CUSTOM_APP_NAME_PLACEHOLDER')}
                 title={t('CUSTOM_APP_NAME_HELP')}
                 disabled={createCustomApp.isPending}
               />
-              <p className="mt-1 text-xs text-muted-foreground">
+              <p id="custom-app-name-help" className="mt-1 text-xs text-muted-foreground">
                 {t('CUSTOM_APP_NAME_HELP')}
                 {appName && derivedSlug ? ` ${t('CUSTOM_APP_NAME_DERIVED', { slug: derivedSlug })}` : ''}
               </p>

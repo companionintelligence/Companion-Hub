@@ -67,7 +67,7 @@ export function PoolSetupCard() {
           <div className="flex min-w-0 items-start gap-3">
             <Network aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-primary" />
             <div className="min-w-0 space-y-1">
-              <h2 id={headingId} className="text-sm font-semibold">
+              <h2 id={headingId} className="text-sm font-medium">
                 {t('HUB_POOL_SETUP_CARD_TITLE')}
               </h2>
               <p className="text-sm text-muted-foreground">{t('HUB_POOL_SETUP_CARD_BODY')}</p>
@@ -103,7 +103,7 @@ export function PoolSetupCard() {
           <div className="flex min-w-0 items-start gap-3">
             <Network aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-warning" />
             <div className="min-w-0 space-y-1">
-              <h2 id={headingId} className="text-sm font-semibold">
+              <h2 id={headingId} className="text-sm font-medium">
                 {t('HUB_POOL_SETUP_REVIEW_TITLE', { count: invitation.requests.length })}
               </h2>
               <p className="text-sm text-muted-foreground">{t('HUB_POOL_SETUP_REVIEW_BODY')}</p>

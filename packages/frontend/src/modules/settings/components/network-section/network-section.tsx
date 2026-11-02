@@ -9,7 +9,7 @@ import type { ReactNode } from 'react';
  * Shared chrome for the Network tab.
  *
  * Deliberately dense, in the idiom of the fleet-QA dashboard: a value is large and a
- * label is small, uppercase and quiet, so a glance reads the numbers and only a second
+ * label is small,  and quiet, so a glance reads the numbers and only a second
  * look reads what they are. The explanations that used to sit under every control now
  * live on the label as a tooltip — the page carried 1,614 words of prose across 166
  * translation keys, which buried the four facts an operator actually comes here for.
@@ -46,7 +46,7 @@ export const SectionHeader = ({ icon: Icon, title, badge, actions }: { icon: Luc
   <CardHeader className="pb-3">
     <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2">
       <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
-      <CardTitle className="text-base font-semibold">{title}</CardTitle>
+      <CardTitle className="text-base font-medium">{title}</CardTitle>
       {badge}
       {actions ? <div className="ml-auto flex items-center gap-2">{actions}</div> : null}
     </div>
@@ -64,7 +64,7 @@ export const DetailGrid = ({ children }: { children: ReactNode }) => (
 
 export const Detail = ({ label, value, mono = true }: { label: string; value: ReactNode; mono?: boolean }) => (
   <div className="min-w-0 space-y-0.5">
-    <dt className="text-[10px] uppercase tracking-[0.5px] text-muted-foreground">{label}</dt>
+    <dt className="text-[10px]   text-muted-foreground">{label}</dt>
     <dd className={cn('break-words text-xs leading-snug', mono && 'font-mono')}>{value}</dd>
   </div>
 );

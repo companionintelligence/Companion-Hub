@@ -747,7 +747,7 @@ export default function DeviceRegistrationPage() {
       <div className="flex flex-col items-center gap-4 py-4 text-center">
         <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
         <div>
-          <h2 className="text-xl font-semibold text-foreground">{t('DEVICE_REGISTRATION_CHECKING_STATUS')}</h2>
+          <h2 className="text-xl font-medium text-foreground">{t('DEVICE_REGISTRATION_CHECKING_STATUS')}</h2>
           <p className="mt-1 text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_PLEASE_WAIT')}</p>
         </div>
       </div>
@@ -776,12 +776,12 @@ export default function DeviceRegistrationPage() {
                 id={`reg-progress-${registrationStatus?.phase}`}
                 hint={progressCopy.hint}
                 as="h2"
-                className="text-xl font-semibold text-foreground"
+                className="text-xl font-medium text-foreground"
               >
                 {progressCopy.title}
               </HintText>
             ) : (
-              <h2 className="text-xl font-semibold text-foreground">{progressCopy.title}</h2>
+              <h2 className="text-xl font-medium text-foreground">{progressCopy.title}</h2>
             )}
           </div>
           <p className="mt-3 text-sm text-muted-foreground">{progressCopy.description}</p>
@@ -814,7 +814,7 @@ export default function DeviceRegistrationPage() {
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-4 text-center">
         <AlertCircle role="img" aria-label={t('COMMON_ERROR')} className="h-12 w-12 text-destructive" />
         <div>
-          <h2 className="text-xl font-semibold text-foreground">{t('DEVICE_REGISTRATION_STATUS_UNAVAILABLE')}</h2>
+          <h2 className="text-xl font-medium text-foreground">{t('DEVICE_REGISTRATION_STATUS_UNAVAILABLE')}</h2>
           <p className="mt-3 text-sm text-muted-foreground">{statusError}</p>
         </div>
         <Button onClick={() => void handleRetryStatus()}>{t('DEVICE_REGISTRATION_RETRY_STATUS_CHECK')}</Button>
@@ -833,7 +833,7 @@ export default function DeviceRegistrationPage() {
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-4 text-center">
         <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
         <div>
-          <h2 className="text-xl font-semibold text-foreground">{t('DEVICE_REGISTRATION_COMPLETE')}</h2>
+          <h2 className="text-xl font-medium text-foreground">{t('DEVICE_REGISTRATION_COMPLETE')}</h2>
           <p className="mt-1 text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_LOADING_HUB')}</p>
         </div>
       </div>
@@ -886,7 +886,7 @@ export default function DeviceRegistrationPage() {
               id="reg-account"
               hint={t(REGISTRATION_ACCOUNT_HINT)}
               as="h2"
-              className="text-lg font-semibold leading-snug text-foreground md:text-xl"
+              className="text-lg font-medium leading-snug text-foreground md:text-xl"
             >
               {t('DEVICE_REGISTRATION_STEP_1_TITLE')}
             </HintText>
@@ -901,7 +901,7 @@ export default function DeviceRegistrationPage() {
               &nbsp;
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Button asChild className="h-10 flex-1 text-sm font-semibold md:h-11 md:text-base" intent="primary">
+              <Button asChild className="h-10 flex-1 text-sm font-medium md:h-11 md:text-base" intent="primary">
                 <a href={loginUrl} target="_blank" rel="noopener noreferrer">
                   {t('DEVICE_REGISTRATION_LOGIN_TO_COMPANION')}
                 </a>
@@ -912,7 +912,7 @@ export default function DeviceRegistrationPage() {
           <div className="mt-3 space-y-2 border-t border-border/60 pt-2">
             <p className="text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_NO_ACCOUNT_YET')}</p>
             <div className="flex flex-wrap items-center gap-2">
-              <Button asChild variant="outline" className="h-10 flex-1 text-sm font-semibold md:h-11 md:text-base">
+              <Button asChild variant="outline" className="h-10 flex-1 text-sm font-medium md:h-11 md:text-base">
                 <a href={signupUrl} target="_blank" rel="noopener noreferrer">
                   {t('DEVICE_REGISTRATION_CREATE_ACCOUNT')}
                 </a>
@@ -931,7 +931,7 @@ export default function DeviceRegistrationPage() {
         </div>
 
         <section className="flex flex-col rounded-lg border border-border/60 bg-muted/20 p-6 md:p-8">
-          <h2 className="text-lg font-semibold leading-snug text-foreground md:text-xl">{t('DEVICE_REGISTRATION_STEP_2_TITLE')}</h2>
+          <h2 className="text-lg font-medium leading-snug text-foreground md:text-xl">{t('DEVICE_REGISTRATION_STEP_2_TITLE')}</h2>
 
           <div className="mt-6 space-y-4">
             <div className="space-y-2">
@@ -988,7 +988,9 @@ export default function DeviceRegistrationPage() {
                   }}
                   maxLength={6}
                   disabled={isPairing}
-                  className={`h-10 min-w-0 flex-1 rounded-md border bg-background/60 px-3 py-1 text-base font-mono tracking-widest shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:h-11 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
+                  aria-invalid={pairingError ? true : undefined}
+                  aria-describedby={pairingError ? 'pairing-code-error' : undefined}
+                  className={`h-10 min-w-0 flex-1 rounded-md border bg-background/60 px-3 py-1 text-base font-mono  shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:h-11 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
                 />
                 <Button
                   intent="primary"
@@ -1000,7 +1002,11 @@ export default function DeviceRegistrationPage() {
                   {isPairing ? t('DEVICE_REGISTRATION_REGISTERING') : t('DEVICE_REGISTRATION_REGISTER')}
                 </Button>
               </div>
-              {pairingError && <p className="text-[0.8rem] font-medium text-destructive">{pairingError}</p>}
+              {pairingError && (
+                <p id="pairing-code-error" role="alert" className="text-[0.8rem] font-medium text-destructive">
+                  {pairingError}
+                </p>
+              )}
             </div>
           </div>
         </section>

@@ -141,7 +141,7 @@ test.describe('Scenario: First Install Path', () => {
     await page.getByPlaceholder('Enter your password').fill(testUser.password);
     await page.getByRole('button', { name: 'Login' }).click();
 
-    await expect(page.getByRole('heading', { name: 'Set Up Companion Hub' })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('heading', { name: 'Set up Companion Hub' })).toBeVisible({ timeout: 15000 });
   });
 });
 

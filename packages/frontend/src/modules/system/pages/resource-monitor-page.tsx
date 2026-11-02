@@ -295,7 +295,7 @@ export default function ResourceMonitorPage() {
        * cannot be the only signal — every fact behind it also raises a fault chip in the rail.
        */}
       <details className="group col-span-full rounded-lg border border-border bg-card" open={configWarnings.total > 0}>
-        <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2 text-[12px] font-bold uppercase tracking-[0.1em] text-muted-foreground">
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2 text-[12px] font-medium   text-muted-foreground">
           {t('DASHBOARD_BAND_CONFIG')}
           {configWarnings.total > 0 ? (
             <span className="rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-[10px] font-medium normal-case tracking-normal text-warning">

@@ -102,12 +102,12 @@ export const CloudProviderCard = ({ providers, insufficientHardware, onUpdate }:
         return (
           <div key={type} className="rounded-md border border-primary/40 bg-primary/[0.06] p-4" data-testid={`cloud-provider-${type}`}>
             <div className="mb-2 flex items-center justify-between gap-2">
-              <label className="flex items-center gap-2 text-sm font-semibold" htmlFor={`cloud-key-input-${type}`}>
+              <label className="flex items-center gap-2 text-sm font-medium" htmlFor={`cloud-key-input-${type}`}>
                 <BrandLogo name={PROVIDER_BRAND[type]} className="h-4 w-4 text-foreground/80" />
                 {PROVIDER_TITLE[type]}
               </label>
               <span
-                className={`rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${
+                className={`rounded-full px-2 py-1 text-[10px] font-medium   ${
                   needsKey
                     ? 'bg-warning/10 text-warning'
                     : current.stored && !current.enabled

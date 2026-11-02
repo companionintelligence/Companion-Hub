@@ -171,7 +171,7 @@ export function ModelMemory({
     <Panel title={t('DASHBOARD_MODEL_MEMORY_TITLE')} density="compact" className={className}>
       <PanelBody state={state} error={t('DASHBOARD_MEMORY_FAILED')}>
         {rows.length === 0 ? (
-          <p className="py-2.5 text-center text-[13px] italic text-muted-foreground">{t('DASHBOARD_MODEL_MEMORY_EMPTY')}</p>
+          <p className="py-2.5 text-center text-[13px]  text-muted-foreground">{t('DASHBOARD_MODEL_MEMORY_EMPTY')}</p>
         ) : (
           <div className="space-y-2.5">
             {rows.map((row) => {
@@ -180,7 +180,7 @@ export function ModelMemory({
               return (
                 <div key={row.kind} className="space-y-1" data-testid={`model-memory-${row.kind}`}>
                   <div className="flex items-baseline justify-between gap-2 text-[11px]">
-                    <span className="font-medium uppercase tracking-[0.5px]">{row.kind === 'vram' ? t('DASHBOARD_VRAM') : t('DASHBOARD_RAM')}</span>
+                    <span className="font-medium  ">{row.kind === 'vram' ? t('DASHBOARD_VRAM') : t('DASHBOARD_RAM')}</span>
                     <span className="tabular-nums text-muted-foreground">
                       {t('DASHBOARD_MEMORY_OF_BUDGET', {
                         // A floor is written as one: an engine in this pool holds a model nobody could size.

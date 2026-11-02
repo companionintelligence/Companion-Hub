@@ -99,7 +99,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           >
             <img alt={t('ONBOARDING_HUB_LOGO_ALT')} src={HUB_MARK} height={40} width={40} className="h-10 w-10 object-contain" />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">{t('ONBOARDING_SET_UP_COMPANION_HUB')}</h1>
+          <h1 className="text-2xl font-medium tracking-tight text-foreground sm:text-3xl">{t('ONBOARDING_SET_UP_COMPANION_HUB')}</h1>
         </div>
         {children}
       </div>

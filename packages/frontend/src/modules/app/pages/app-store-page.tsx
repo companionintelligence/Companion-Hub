@@ -325,6 +325,7 @@ export default () => {
               'rounded-full whitespace-nowrap',
               category ? 'bg-background text-muted-foreground border-border' : 'bg-primary text-primary-foreground border-primary',
             )}
+            aria-pressed={!category}
             onClick={() => setCategory(undefined)}
           >
             <LayoutGrid className="h-3.5 w-3.5 mr-1.5" />
@@ -337,6 +338,7 @@ export default () => {
               'rounded-full whitespace-nowrap',
               isAlternativesView ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-border',
             )}
+            aria-pressed={isAlternativesView}
             onClick={() => setCategory(ALTERNATIVES_VIEW)}
           >
             <ArrowLeftRight className="h-3.5 w-3.5 mr-1.5" />
@@ -354,6 +356,7 @@ export default () => {
                   'rounded-full whitespace-nowrap',
                   isSelected ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-border',
                 )}
+                aria-pressed={isSelected}
                 onClick={() => setCategory(cat.id)}
               >
                 {Icon && <Icon className="h-3.5 w-3.5 mr-1.5" />}
@@ -369,13 +372,13 @@ export default () => {
       ) : isAlternativesView ? (
         <div className="min-w-0 space-y-6">
           <div>
-            <h2 className="mb-1 text-xl font-semibold text-foreground sm:text-2xl">{t('APP_STORE_ALTERNATIVES')}</h2>
+            <h2 className="mb-1 text-xl font-medium text-foreground sm:text-2xl">{t('APP_STORE_ALTERNATIVES')}</h2>
             <p className="text-muted-foreground">{t('APP_STORE_ALTERNATIVES_SUBTITLE')}</p>
           </div>
           {isAlternativesDataLoading && (
             <div className="space-y-4 py-4">
-              <div className="h-8 max-w-md w-[60%] animate-pulse rounded bg-muted" />
-              <div className="h-40 animate-pulse rounded-md bg-muted/40" />
+              <div className="h-8 max-w-md w-[60%]  rounded bg-muted" />
+              <div className="h-40  rounded-md bg-muted/40" />
             </div>
           )}
           {isAlternativesDataError && (

@@ -1,5 +1,6 @@
 import { SimpleAppTile } from './simple-app-tile';
 import { Link } from 'react-router';
+import { ArrowRight } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { AppInfo, AppStatus } from '@/types/app.types';
 import { CATALOG_PAGE_SIZE } from '@/lib/catalog-page-size';
@@ -77,10 +78,12 @@ export const HorizontalAppList = ({ apps, isLoading = false, customDomainsAwaiti
 
   if (visibleApps.length === 0) {
     return (
-      <Link to="/store" className="flex justify-center items-center no-underline py-16 sm:py-0 w-full" style={{ minHeight: 0 }}>
-        <h1 className="text-center text-xl sm:text-3xl text-muted-foreground font-medium px-4">
-          {t('DASHBOARD_NO_APPS_MESSAGE', 'Click here to install your first app')}
-        </h1>
+      <Link
+        to="/store"
+        className="flex w-full items-center justify-between gap-4 rounded-lg border border-dashed border-border bg-card px-5 py-4 no-underline transition-colors hover:border-foreground/20"
+      >
+        <h1 className="text-base font-medium text-foreground">{t('DASHBOARD_NO_APPS_MESSAGE', 'Install your first app')}</h1>
+        <ArrowRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
       </Link>
     );
   }

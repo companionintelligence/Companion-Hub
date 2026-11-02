@@ -70,7 +70,7 @@ describe('LoginForm', () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole('link', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toHaveClass('h-10', 'w-full', 'font-semibold');
+    expect(screen.getByRole('link', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toHaveClass('h-10', 'w-full', 'font-medium');
     // This is the <a href> branch — browser-hub-sso, a plain browser already on
     // the Hub, which navigates in place — so the hint must be the in-app one and
     // not the "opens in your browser" line that belongs to the native shells.

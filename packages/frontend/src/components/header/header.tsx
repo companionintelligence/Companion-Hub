@@ -50,8 +50,8 @@ export const Header = (props: HeaderProps) => {
 
   const deviceName = useMemo(() => {
     const source = userSettings?.ciHubDeviceSlug?.trim();
-    if (!source) return 'COMPANION HUB';
-    return source.replace(/[-_]+/g, ' ').toUpperCase();
+    if (!source) return 'Companion Hub';
+    return source.replace(/[-_]+/g, ' ');
   }, [userSettings?.ciHubDeviceSlug]);
 
   const navButtonBase = 'cursor-pointer text-foreground/80 hover:bg-accent hover:text-accent-foreground';
@@ -73,9 +73,9 @@ export const Header = (props: HeaderProps) => {
     >
       {/* Logo (Left) */}
       <div className="flex items-center justify-start">
-        <Link to="/home" className="flex items-center gap-2" aria-label={t('COMMON_HOME')}>
-          <img src="/logo.svg" alt="Companion Hub logo" className="h-8 w-8 object-contain" />
-          <span className="max-w-48 truncate text-sm font-semibold tracking-wide text-chart-3 dark:text-aqua-light">{deviceName}</span>
+        <Link to="/home" className="flex items-center gap-2">
+          <img src="/logo.svg" alt="" className="h-8 w-8 object-contain" />
+          <span className="max-w-48 truncate text-sm font-medium text-foreground">{deviceName}</span>
         </Link>
       </div>
 
@@ -217,7 +217,7 @@ function MobileAppMenu({
         aria-expanded={open}
         aria-haspopup="menu"
         data-testid="mobile-app-menu-btn"
-        className="text-foreground"
+        className="min-h-[44px] min-w-[44px] text-foreground"
         loading={loggingOut}
         onClick={() => setOpen((current) => !current)}
       >
@@ -248,7 +248,7 @@ function MobileAppMenu({
             ref={menuRef}
             role="menu"
             data-testid="mobile-app-menu"
-            className="absolute right-0 top-full z-50 mt-2 max-h-[calc(100dvh-var(--header-offset)-1rem)] w-56 origin-top-right animate-in overflow-y-auto fade-in-0 zoom-in-95 slide-in-from-top-2 rounded-md border bg-popover p-1 text-popover-foreground shadow-md duration-200"
+            className="absolute right-0 top-full z-50 mt-2 max-h-[calc(100dvh-var(--header-offset)-1rem)] w-56 origin-top-right animate-in overflow-y-auto fade-in-0 zoom-in-95 slide-in-from-top-2 rounded-md border bg-popover p-1 text-popover-foreground shadow-md duration-200 motion-reduce:animate-none"
           >
             {isLoggedIn ? (
               <>

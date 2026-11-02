@@ -299,9 +299,9 @@ export function WorkloadTrend({
       ) : null}
       <PanelBody state={state} error={t('DASHBOARD_CONTAINERS_FAILED')} lines={6}>
         {charted.length === 0 ? (
-          <p className="py-5 text-center text-[13px] italic text-muted-foreground">{t('DASHBOARD_TRENDS_NO_WORKLOADS')}</p>
+          <p className="py-5 text-center text-[13px]  text-muted-foreground">{t('DASHBOARD_TRENDS_NO_WORKLOADS')}</p>
         ) : samples.length < 2 ? (
-          <p className="py-5 text-center text-[13px] italic text-muted-foreground">{t('DASHBOARD_TRENDS_WAITING', { total: samples.length })}</p>
+          <p className="py-5 text-center text-[13px]  text-muted-foreground">{t('DASHBOARD_TRENDS_WAITING', { total: samples.length })}</p>
         ) : (
           <div className="space-y-1.5">
             {/* Every axis label is HTML and lives outside the SVG: `preserveAspectRatio="none"`
@@ -375,7 +375,7 @@ export function WorkloadTrend({
         )}
         {outside.length > 0 ? (
           <div data-testid="workload-trend-gpu-unattributed" className="mt-2 space-y-0.5 border-t border-border pt-2 text-[11px]">
-            <p className="uppercase tracking-[0.5px] text-muted-foreground">{t('DASHBOARD_TRENDS_GPU_UNATTRIBUTED')}</p>
+            <p className="  text-muted-foreground">{t('DASHBOARD_TRENDS_GPU_UNATTRIBUTED')}</p>
             <ul className="space-y-0.5">
               {outside.map((entry, index) => (
                 // Two processes can share a name (core-2 runs two `llama-server`s), so the index

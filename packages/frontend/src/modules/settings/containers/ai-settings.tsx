@@ -758,7 +758,7 @@ export const AiSettingsContainer = () => {
   if (loading) {
     return (
       <div className="min-w-0 space-y-5">
-        <div className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+        <div className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6">
           <div className="flex flex-col items-center gap-4 py-4 text-center">
             <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
             <p className="text-sm text-muted-foreground">{t('COMMON_DETECTING_HARDWARE')}</p>
@@ -780,7 +780,7 @@ export const AiSettingsContainer = () => {
   if (error || !profile) {
     return (
       <div className="min-w-0 space-y-5">
-        <div className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 text-center py-8">
+        <div className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6 text-center py-8">
           <p className="text-destructive mb-4">{t('AI_SETTINGS_LOAD_FAILED', { error: String(error) })}</p>
           <Button variant="outline" onClick={() => fetchProfile()}>
             <RefreshCw className="mr-2" size={16} />
@@ -827,8 +827,8 @@ export const AiSettingsContainer = () => {
       {!isInsufficient && (
         <>
           {/* Recommended Models — FTUE ModelCard grid */}
-          <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
-            <h2 className="text-base font-bold uppercase tracking-wide">{t('COMMON_RECOMMENDED_MODELS')}</h2>
+          <section className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6">
+            <h2 className="text-base font-medium  ">{t('COMMON_RECOMMENDED_MODELS')}</h2>
             <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 mb-5">{t('AI_SETTINGS_RECOMMENDED_MODELS_SUBTITLE')}</p>
 
             {backendCompatibleRecommendedModels.length === 0 ? (
@@ -903,8 +903,8 @@ export const AiSettingsContainer = () => {
           </section>
 
           {/* Downloaded Models */}
-          <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
-            <h2 className="text-base font-bold uppercase tracking-wide mb-0.5">{t('AI_SETTINGS_DOWNLOADED_MODELS')}</h2>
+          <section className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6">
+            <h2 className="text-base font-medium   mb-0.5">{t('AI_SETTINGS_DOWNLOADED_MODELS')}</h2>
             <p className="text-xs text-muted-foreground mb-4">{t('AI_SETTINGS_DOWNLOADED_MODELS_SUBTITLE')}</p>
 
             {runtimeModelsLoading && <p className="text-sm text-muted-foreground">{t('SETTINGS_NETWORK_LOADING')}</p>}
@@ -939,7 +939,7 @@ export const AiSettingsContainer = () => {
                       </span>
                       <div className="min-w-0 flex-1">
                         <div className="text-sm font-medium truncate">{model.name}</div>
-                        <div className="text-[11px] text-muted-foreground uppercase tracking-wide truncate">{model.id}</div>
+                        <div className="text-[11px] text-muted-foreground   truncate">{model.id}</div>
                       </div>
                       {resident ? (
                         unloadButton(actionId)
@@ -973,9 +973,9 @@ export const AiSettingsContainer = () => {
           />
 
           {selectedBackend === 'vllm' && (
-            <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
+            <section className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6 space-y-4">
               <div>
-                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_VLLM_SECTION_TITLE')}</h2>
+                <h2 className="text-base font-medium  ">{t('ONBOARDING_VLLM_SECTION_TITLE')}</h2>
                 <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_VLLM_SECTION_DESC')}</p>
               </div>
               <VllmSetupCard
@@ -989,7 +989,7 @@ export const AiSettingsContainer = () => {
                 onEndpointUrlChange={handleVllmUrlChange}
               />
               <div>
-                <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
+                <h3 className="text-sm font-medium">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
                 <p className="text-xs text-muted-foreground mt-0.5 mb-3">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}</p>
                 <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
               </div>
@@ -997,9 +997,9 @@ export const AiSettingsContainer = () => {
           )}
 
           {selectedBackend === 'omlx' && (
-            <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
+            <section className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6 space-y-4">
               <div>
-                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_OMLX_SECTION_TITLE')}</h2>
+                <h2 className="text-base font-medium  ">{t('ONBOARDING_OMLX_SECTION_TITLE')}</h2>
                 <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_OMLX_SECTION_DESC')}</p>
               </div>
               <OmlxSetupCard
@@ -1013,14 +1013,14 @@ export const AiSettingsContainer = () => {
           )}
 
           {selectedBackend === 'lemonade' && (
-            <section className="space-y-4 rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+            <section className="space-y-4 rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6">
               <div>
-                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_LEMONADE_SECTION_TITLE')}</h2>
+                <h2 className="text-base font-medium  ">{t('ONBOARDING_LEMONADE_SECTION_TITLE')}</h2>
                 <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">{t('ONBOARDING_LEMONADE_SECTION_DESC')}</p>
               </div>
               <LemonadeSetupCard status={lemonadeStatus} checking={checkingLemonade} onRecheck={handleRecheckLemonade} />
               <div>
-                <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
+                <h3 className="text-sm font-medium">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
                 <p className="text-xs text-muted-foreground mt-0.5 mb-3">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}</p>
                 <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
               </div>

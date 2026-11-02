@@ -389,7 +389,7 @@ export const McpSettingsContainer = () => {
               {toolGroups.map(([category, groupTools]) => (
                 <div key={category} className="space-y-1">
                   <div className="flex items-center gap-2" data-testid={`mcp-tool-category-${category}`}>
-                    <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{category}</h4>
+                    <h4 className="text-xs font-medium   text-muted-foreground">{category}</h4>
                     <span className="text-xs text-muted-foreground">({groupTools.length})</span>
                   </div>
                   <ul className="divide-y divide-border">

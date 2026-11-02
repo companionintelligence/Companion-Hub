@@ -43,7 +43,7 @@ export const AuthLayout = ({ children, wide = false }: AuthLayoutProps) => {
             }}
           />
         </div>
-        <Card className={cn('w-full', wide && 'border-primary/30 shadow-[0_0_48px_-12px] shadow-primary/25 ring-1 ring-primary/20')}>
+        <Card className={cn('w-full', wide && 'border-primary/30')}>
           <CardContent className={cn('p-6', wide && 'md:p-8')}>{children}</CardContent>
         </Card>
       </div>

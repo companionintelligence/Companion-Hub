@@ -252,7 +252,7 @@ const RoutingResult = ({ entry, t }: { entry: PoolRoutingRecord; t: Translate })
  */
 const Block = ({ title, help, children }: { title: string; help?: string; children: ReactNode }) => (
   <div className="space-y-2 border-t pt-3">
-    <h3 className="text-[10px] font-bold uppercase tracking-[0.06em] text-muted-foreground">
+    <h3 className="text-[10px] font-medium   text-muted-foreground">
       {help ? (
         <HintText id={`hub-pool-block-${title}`} hint={help} className="cursor-help underline decoration-dotted underline-offset-2">
           {title}
@@ -1106,7 +1106,7 @@ export const HubPoolSection = () => {
                           <span
                             data-testid="hub-pool-peer-not-accepting"
                             title={t('HUB_POOL_PEER_NOT_ACCEPTING')}
-                            className="shrink-0 rounded-sm border border-border px-1 text-[9px] uppercase tracking-wide text-muted-foreground"
+                            className="shrink-0 rounded-sm border border-border px-1 text-[9px]   text-muted-foreground"
                           >
                             {t('HUB_POOL_PEER_NOT_ACCEPTING_MARK')}
                           </span>
@@ -1115,7 +1115,7 @@ export const HubPoolSection = () => {
                           <span
                             data-testid="hub-pool-peer-bearer"
                             title={t('HUB_POOL_PEER_BEARER_HELP')}
-                            className="shrink-0 rounded-sm border border-border px-1 text-[9px] uppercase tracking-wide text-muted-foreground"
+                            className="shrink-0 rounded-sm border border-border px-1 text-[9px]   text-muted-foreground"
                           >
                             {t('HUB_POOL_PEER_BEARER')}
                           </span>
@@ -1354,7 +1354,7 @@ export const HubPoolSection = () => {
                           <span
                             data-testid="hub-pool-routing-pinned"
                             title={t('HUB_POOL_ROUTING_PINNED')}
-                            className="shrink-0 rounded-sm border border-border px-1 text-[9px] uppercase tracking-wide text-muted-foreground"
+                            className="shrink-0 rounded-sm border border-border px-1 text-[9px]   text-muted-foreground"
                           >
                             {t('HUB_POOL_ROUTING_PIN_MARK')}
                           </span>
@@ -1369,7 +1369,7 @@ export const HubPoolSection = () => {
                                 ? entry.attempts.map((attempt) => `${attempt.node} (${attempt.reason})`).join(' → ')
                                 : entry.failedOverFrom.join(' → '),
                             })}
-                            className="shrink-0 rounded-sm border border-warning/40 px-1 text-[9px] uppercase tracking-wide text-warning"
+                            className="shrink-0 rounded-sm border border-warning/40 px-1 text-[9px]   text-warning"
                           >
                             {t('HUB_POOL_ROUTING_FAILOVER_MARK', { count: entry.failedOverFrom.length })}
                           </span>
@@ -1416,7 +1416,7 @@ export const HubPoolSection = () => {
                     are held in this component's state, never re-fetched. A reload loses them, which
                     is correct — the operator mints a new one. */}
                 <span>
-                  <span className="block font-mono text-2xl tracking-[0.3em]" data-testid="hub-pool-minted-pin">
+                  <span className="block font-mono text-2xl " data-testid="hub-pool-minted-pin">
                     {mintedPin.pin}
                   </span>
                   {mintedPin.expiresAt ? (
@@ -1551,7 +1551,7 @@ export const HubPoolSection = () => {
                 )}
               </ul>
             ) : (
-              <p className="py-2 text-center text-xs italic text-muted-foreground">
+              <p className="py-2 text-center text-xs  text-muted-foreground">
                 <HintText
                   id="hub-pool-discoverable-empty"
                   hint={t('HUB_POOL_DISCOVERABLE_EMPTY')}

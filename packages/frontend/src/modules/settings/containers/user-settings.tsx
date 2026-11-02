@@ -11,7 +11,7 @@ import { useTranslation } from 'react-i18next';
 import { type SettingsFormValues, UserSettingsForm } from '../components/user-settings-form/user-settings-form';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Switch } from '@/components/ui/Switch';
-import { Sparkles } from 'lucide-react';
+import { SlidersHorizontal } from 'lucide-react';
 import { SettingsHint } from '../components/settings-hint';
 
 type Props = {
@@ -76,7 +76,7 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname, manage
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 shrink-0 text-muted-foreground" />
+            <SlidersHorizontal className="h-5 w-5 shrink-0 text-muted-foreground" />
             <CardTitle className="text-xl">{t('SETTINGS_GENERAL_ADVANCED_MODE_TITLE')}</CardTitle>
           </div>
           <p className="text-sm text-muted-foreground">{t('SETTINGS_GENERAL_ADVANCED_MODE_SUBTITLE')}</p>

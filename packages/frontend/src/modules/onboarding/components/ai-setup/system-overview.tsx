@@ -38,7 +38,7 @@ function OverviewItem({ icon, label, value, sub, testId }: { icon: ReactNode; la
     <div className="flex items-start gap-3" data-testid={testId}>
       <span className="mt-0.5 text-primary [&_svg]:h-6 [&_svg]:w-6">{icon}</span>
       <div className="min-w-0">
-        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+        <div className="text-[11px] font-medium   text-muted-foreground">{label}</div>
         {/*
           Wrap to a second line rather than hard-truncating: at six columns these
           tiles clipped their own values ("No GPU detect…", "12 cores · ar…"),
@@ -80,17 +80,18 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
   const showLinuxRuntimeSteps = isLinuxClient() || isWslEngineHost;
 
   return (
-    <section className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+    <section className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <Monitor className="h-6 w-6 text-primary" />
-          <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg" data-testid="hw-card-title">
+          <h2 className="text-base font-medium   sm:text-lg" data-testid="hw-card-title">
             {t('ONBOARDING_SYSTEM_OVERVIEW_TITLE')}
           </h2>
         </div>
         <div className="flex items-center gap-2">
-          <span className={cn('rounded-full px-2.5 py-0.5 text-xs font-medium', badge.color)} data-testid="tier-badge">
-            {badge.emoji} {badge.label}
+          <span className="inline-flex items-center gap-2 text-xs font-medium text-muted-foreground" data-testid="tier-badge">
+            <span className={cn('size-2 rounded-full', badge.dot)} aria-hidden />
+            {badge.label}
           </span>
           <Button variant="outline" size="sm" onClick={onRescan} loading={rescanning} data-testid="rescan-btn">
             {t('ONBOARDING_RESCAN')}
@@ -151,20 +152,20 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
         <div className="mt-4 rounded-md border border-warning/30 bg-warning/10 p-3 text-xs text-warning" data-testid="nvidia-runtime-warning">
           <p className="mb-2">{t('ONBOARDING_NVIDIA_RUNTIME_MISSING_DESC_1')}</p>
           <p className="mb-2">{t('ONBOARDING_NVIDIA_RUNTIME_MISSING_DESC_2')}</p>
-          <p className="font-semibold">{t('ONBOARDING_ACTION_ITEMS')}</p>
+          <p className="font-medium">{t('ONBOARDING_ACTION_ITEMS')}</p>
           <div className="mt-2 space-y-3 leading-relaxed">
             <div>
-              <p className="font-semibold">1. {t('ONBOARDING_RETRY_AUTOMATIC_SETUP')}</p>
+              <p className="font-medium">1. {t('ONBOARDING_RETRY_AUTOMATIC_SETUP')}</p>
               <p>{t('ONBOARDING_RETRY_AUTOMATIC_SETUP_DESC')}</p>
             </div>
             <div>
               {showLinuxRuntimeSteps ? (
                 <>
-                  <p className="font-semibold">2. {t('ONBOARDING_MANUAL_INSTALL_DISTRO_SPECIFIC')}</p>
+                  <p className="font-medium">2. {t('ONBOARDING_MANUAL_INSTALL_DISTRO_SPECIFIC')}</p>
                   {isWslEngineHost && <p className="mt-1 text-warning">{t('ONBOARDING_WSL_ENGINE_MANUAL_NOTE')}</p>}
                   <div className="mt-1.5 space-y-2">
                     <div className="rounded bg-warning/10 p-2.5 font-mono text-[11px] leading-6 text-warning">
-                      <p className="font-semibold text-warning">{t('ONBOARDING_DISTRO_DEBIAN_UBUNTU')}</p>
+                      <p className="font-medium text-warning">{t('ONBOARDING_DISTRO_DEBIAN_UBUNTU')}</p>
                       <p>sudo mkdir -p /etc/apt/keyrings</p>
                       <p>
                         curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o
@@ -178,7 +179,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
                       <p>sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit</p>
                     </div>
                     <div className="rounded bg-warning/10 p-2.5 font-mono text-[11px] leading-6 text-warning">
-                      <p className="font-semibold text-warning">{t('ONBOARDING_DISTRO_RHEL_FEDORA')}</p>
+                      <p className="font-medium text-warning">{t('ONBOARDING_DISTRO_RHEL_FEDORA')}</p>
                       <p>
                         curl -fsSL https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | sudo tee
                         /etc/yum.repos.d/nvidia-container-toolkit.repo
@@ -186,14 +187,14 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
                       <p>sudo dnf install -y nvidia-container-toolkit</p>
                     </div>
                     <div className="rounded bg-warning/10 p-2.5 font-mono text-[11px] leading-6 text-warning">
-                      <p className="font-semibold text-warning">{t('ONBOARDING_DISTRO_ARCH_MANJARO')}</p>
+                      <p className="font-medium text-warning">{t('ONBOARDING_DISTRO_ARCH_MANJARO')}</p>
                       <p>sudo pacman -Sy --noconfirm nvidia-container-toolkit</p>
                     </div>
                   </div>
                 </>
               ) : (
                 <>
-                  <p className="font-semibold">2. {t('ONBOARDING_COMPLETE_GPU_SUPPORT_HOST')}</p>
+                  <p className="font-medium">2. {t('ONBOARDING_COMPLETE_GPU_SUPPORT_HOST')}</p>
                   <div className="mt-1.5 rounded bg-warning/10 p-2.5 text-[11px] leading-6 text-warning">
                     {t('ONBOARDING_COMPLETE_GPU_SUPPORT_HOST_DESC')}
                   </div>
@@ -202,7 +203,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
             </div>
             {showLinuxRuntimeSteps && (
               <div>
-                <p className="font-semibold">3. {t('ONBOARDING_THEN_RUN')}</p>
+                <p className="font-medium">3. {t('ONBOARDING_THEN_RUN')}</p>
                 <div className="mt-1.5 rounded bg-warning/10 p-2.5 font-mono text-[11px] leading-6 text-warning">
                   <p>sudo nvidia-ctk runtime configure --runtime=docker</p>
                   <p>sudo systemctl restart docker</p>
@@ -212,8 +213,8 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
             )}
             <div>
               <p>
-                {showLinuxRuntimeSteps ? '4.' : '3.'} {t('ONBOARDING_RETURN_AND_CLICK')}{' '}
-                <span className="font-semibold">{t('ONBOARDING_RESCAN')}</span>.
+                {showLinuxRuntimeSteps ? '4.' : '3.'} {t('ONBOARDING_RETURN_AND_CLICK')} <span className="font-medium">{t('ONBOARDING_RESCAN')}</span>
+                .
               </p>
             </div>
           </div>

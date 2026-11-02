@@ -8,7 +8,7 @@ import { useTranslation } from 'react-i18next';
  * dashboard.
  *
  * The idiom is the fleet-QA dashboard's: a value is large and a label is small,
- * uppercase and quiet, so a glance reads the numbers and only a second look reads
+ *  and quiet, so a glance reads the numbers and only a second look reads
  * what they are. Tables are 13px with micro-headers and tabular numerals.
  * Nothing here introduces a charting dependency — this app has none, and its existing
  * CPU history chart is hand-drawn SVG, so these are too.
@@ -74,8 +74,8 @@ export const StatChip = ({
   hintId?: string;
 }) => (
   <div className="flex min-w-[92px] flex-col gap-1 rounded-md border border-border bg-muted/20 px-3 py-1.5">
-    <span className={cn('text-[22px] font-bold leading-none tabular-nums', TONE_TEXT[tone])}>{value}</span>
-    <span className="text-[11px] uppercase leading-tight tracking-[0.5px] text-muted-foreground">
+    <span className={cn('text-[22px] font-medium leading-none tabular-nums', TONE_TEXT[tone])}>{value}</span>
+    <span className="text-[11px]  leading-tight  text-muted-foreground">
       {hint && hintId ? (
         <HintText id={hintId} hint={hint} className="cursor-help underline decoration-dotted underline-offset-2">
           {label}
@@ -125,7 +125,7 @@ export const Th = ({
     id={id}
     scope="col"
     className={cn(
-      'whitespace-nowrap border-b border-border px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.06em] text-muted-foreground',
+      'whitespace-nowrap border-b border-border px-3 py-1.5 text-[11px] font-medium   text-muted-foreground',
       align === 'right' ? 'text-right' : 'text-left',
       className,
     )}
@@ -186,7 +186,7 @@ export const Tr = ({
 
 export const TableEmpty = ({ colSpan, children }: { colSpan: number; children: ReactNode }) => (
   <tr>
-    <td colSpan={colSpan} className="px-3 py-5 text-center text-[13px] italic text-muted-foreground">
+    <td colSpan={colSpan} className="px-3 py-5 text-center text-[13px]  text-muted-foreground">
       {children}
     </td>
   </tr>
@@ -496,7 +496,7 @@ export const BandMeter = ({ value, bands = 3, className }: { value: number | nul
 // ── Layout ───────────────────────────────────────────────────────────────────
 
 /**
- * Panel inside a dashboard section: micro-uppercase heading, optional right-side slot.
+ * Panel inside a dashboard section: small muted heading, optional right-side slot.
  *
  * `density` defaults to what every existing caller already renders, so the Network settings tab
  * is untouched. `'compact'` is the resource board's setting: on a twelve-column grid of ten
@@ -537,7 +537,7 @@ export const Panel = ({
     )}
   >
     <div className="flex items-center gap-2">
-      <h3 className="text-[11px] font-bold uppercase tracking-[0.08em] text-muted-foreground">{title}</h3>
+      <h3 className="text-[11px] font-medium   text-muted-foreground">{title}</h3>
       {actions ? <div className="ml-auto flex items-center gap-2">{actions}</div> : null}
     </div>
     {children}
@@ -576,7 +576,7 @@ export const PanelBody = ({
     return (
       <div className="space-y-1.5" aria-busy="true">
         {Array.from({ length: lines }, (_, index) => 100 - index * 12).map((width) => (
-          <div key={width} className="h-3 animate-pulse rounded-sm bg-muted/60" style={{ width: `${width}%` }} />
+          <div key={width} className="h-3  rounded-sm bg-muted/60" style={{ width: `${width}%` }} />
         ))}
       </div>
     );
@@ -589,7 +589,7 @@ export const PanelBody = ({
 export const DashboardSection = ({ title, badge, children }: { title: string; badge?: ReactNode; children: ReactNode }) => (
   <section className="space-y-4">
     <div className="flex items-center gap-2 border-b border-border pb-2">
-      <h2 className="text-sm font-bold uppercase tracking-[0.1em]">{title}</h2>
+      <h2 className="text-sm font-medium  ">{title}</h2>
       {badge}
     </div>
     {children}
@@ -609,7 +609,7 @@ export const DashboardSection = ({ title, badge, children }: { title: string; ba
  */
 export const BandHeader = ({ title, badge, className }: { title: string; badge?: ReactNode; className?: string }) => (
   <div className={cn('col-span-full flex items-center gap-2 border-b border-border pb-1.5 pt-1', className)}>
-    <h2 className="text-[12px] font-bold uppercase tracking-[0.1em]">{title}</h2>
+    <h2 className="text-[12px] font-medium  ">{title}</h2>
     {badge}
   </div>
 );
@@ -648,7 +648,7 @@ export const RailStat = ({ stat }: { stat: RailStatData }) => {
       )}
     >
       {stat.state.pending ? (
-        <span className="h-[18px] w-10 animate-pulse rounded-sm bg-muted/60" aria-busy="true" />
+        <span className="h-[18px] w-10  rounded-sm bg-muted/60" aria-busy="true" />
       ) : stat.state.failed ? (
         /* A FAILED query must not borrow {@link DASH}. `value` is already DASH whenever the figure
            was never measured, so rendering DASH here too collapses "we asked and it broke" into
@@ -656,15 +656,15 @@ export const RailStat = ({ stat }: { stat: RailStatData }) => {
            word is the distinction, so it has to be visible: as a `title` it was unreachable on
            touch, and in `sub` it vanished entirely for the stats that carry no `sub`. Sized to the
            label rather than the value because "unavailable" does not fit a 112px cell at 18px. */
-        <span className="truncate text-[11px] font-medium italic leading-none text-muted-foreground" title={t('DASHBOARD_RAIL_UNAVAILABLE')}>
+        <span className="truncate text-[11px] font-medium  leading-none text-muted-foreground" title={t('DASHBOARD_RAIL_UNAVAILABLE')}>
           {t('DASHBOARD_RAIL_UNAVAILABLE')}
         </span>
       ) : (
-        <span className={cn('truncate text-[18px] font-bold leading-none tabular-nums', TONE_TEXT[stat.tone ?? 'plain'])}>{stat.value}</span>
+        <span className={cn('truncate text-[18px] font-medium leading-none tabular-nums', TONE_TEXT[stat.tone ?? 'plain'])}>{stat.value}</span>
       )}
       {/* `title` on both lines because both truncate: at twelve-up a cell is ~85px, and a sub like
           "oldest 6m 11s · This Hub" is the part of the figure an operator most wants to read. */}
-      <span className="truncate text-[10px] uppercase leading-tight tracking-[0.5px] text-muted-foreground" title={stat.label}>
+      <span className="truncate text-[10px]  leading-tight  text-muted-foreground" title={stat.label}>
         {stat.label}
       </span>
       {stat.sub ? (

@@ -69,7 +69,7 @@ export function SetupPageShell({
               />
             )}
             {resolvedTitle && (
-              <h1 className={cn('text-2xl font-bold text-foreground', fitShortWindows && 'tight-window:text-xl compact-window:text-[19px]')}>
+              <h1 className={cn('text-2xl font-medium text-foreground', fitShortWindows && 'tight-window:text-xl compact-window:text-[19px]')}>
                 {resolvedTitle}
               </h1>
             )}

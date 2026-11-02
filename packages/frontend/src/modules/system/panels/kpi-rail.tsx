@@ -429,14 +429,14 @@ export function DashboardRail({
      */
     <div className="col-span-full -mx-1 border-b border-border/60 px-1 py-1.5">
       <div className="mb-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1">
-        <h1 className="text-sm font-bold uppercase tracking-[0.1em]">{t('RESOURCE_MONITOR_TITLE')}</h1>
+        <h1 className="text-sm font-medium  ">{t('RESOURCE_MONITOR_TITLE')}</h1>
         {/* The badge appears only once the pool has actually answered. A failed status query
             must not resolve to "local only", which is a different claim. */}
         {pool ? (
           <StatusBadge connected={!!pool.routingActive} label={pool.routingActive ? t('DASHBOARD_POOLED') : t('DASHBOARD_LOCAL_ONLY')} />
         ) : null}
         <VerdictLine verdict={verdict} />
-        <span className="ml-auto flex flex-wrap items-center gap-x-2.5 text-[10px] uppercase tracking-[0.5px] text-muted-foreground">
+        <span className="ml-auto flex flex-wrap items-center gap-x-2.5 text-[10px]   text-muted-foreground">
           {/* The Hub's own uptime, from the routing log's start: the one place a restart shows. Every
               in-memory figure on this page — the ring, the watched series, the 24-sample history —
               starts over at it, so "up 12m" is the reason a quiet page is quiet. */}

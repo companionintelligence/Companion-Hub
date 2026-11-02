@@ -197,7 +197,7 @@ export default () => {
     const refusedName = listing.error.intlParams?.app;
     return (
       <div className="mx-auto max-w-2xl px-4 py-16 text-center">
-        <h1 className="text-2xl font-semibold">{refusedName || t('APP_ACTION_GRANT_DENIED', { action: 'view' })}</h1>
+        <h1 className="text-2xl font-medium">{refusedName || t('APP_ACTION_GRANT_DENIED', { action: 'view' })}</h1>
         {refusedName ? <p className="mt-2 text-muted-foreground">{t('APP_ACTION_GRANT_DENIED', { action: 'view', app: refusedName })}</p> : null}
       </div>
     );
@@ -206,7 +206,7 @@ export default () => {
   if (listing.isError || !listingInfo) {
     return (
       <div className="mx-auto max-w-2xl px-4 py-16 text-center">
-        <h1 className="text-2xl font-semibold">{t('APP_ERROR_APP_NOT_FOUND', { id: appUrn })}</h1>
+        <h1 className="text-2xl font-medium">{t('APP_ERROR_APP_NOT_FOUND', { id: appUrn })}</h1>
         <p className="mt-2 text-muted-foreground">{t('APP_DETAILS_LOAD_FAILED')}</p>
       </div>
     );
@@ -224,7 +224,7 @@ export default () => {
       key: 'rating',
       value: (
         <span className="flex items-center gap-1.5">
-          <span className="text-sm font-semibold">0.0</span>
+          <span className="text-sm font-medium">0.0</span>
           <Star className="h-3.5 w-3.5 fill-yellow-500 text-yellow-500" />
         </span>
       ),
@@ -276,7 +276,7 @@ export default () => {
                   wrap this chip onto the next line, under the author. */}
               <span
                 data-testid="app-price-badge"
-                className="col-start-2 row-start-1 justify-self-end rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-semibold uppercase tracking-wide text-emerald-950 shadow-sm sm:hidden"
+                className="col-start-2 row-start-1 justify-self-end rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-medium   text-emerald-950 shadow-sm sm:hidden"
               >
                 {t('APP_PRICE_FREE')}
               </span>
@@ -286,13 +286,13 @@ export default () => {
                     someone else") keeps its column instead of wrapping under the title at 985px. */}
                 <div className="flex flex-wrap items-start justify-between gap-3 sm:flex-nowrap">
                   <div className="min-w-0 space-y-2">
-                    <h1 className="break-words text-2xl font-semibold tracking-tight sm:text-4xl">{info?.name}</h1>
+                    <h1 className="break-words text-2xl font-medium tracking-tight sm:text-4xl">{info?.name}</h1>
                     {info?.author ? <p className="text-base font-medium text-emerald-800 dark:text-emerald-400 sm:text-lg">{info.author}</p> : null}
                   </div>
                   <div className="flex shrink-0 flex-col items-end gap-2">
                     <span
                       data-testid="app-price-badge"
-                      className="hidden rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-semibold uppercase tracking-wide text-emerald-950 shadow-sm sm:inline-flex"
+                      className="hidden rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-medium   text-emerald-950 shadow-sm sm:inline-flex"
                     >
                       {t('APP_PRICE_FREE')}
                     </span>
