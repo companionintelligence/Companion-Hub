@@ -23,7 +23,7 @@ import { InstallPipelineTracker } from '../apps/install-pipeline.tracker';
 import { BackupManager } from '../backups/backup.manager';
 import { TailscaleService } from '../tailscale/tailscale.service';
 import { ExposureSyncService, type ExposureSyncOptions } from './exposure-sync.service';
-import { hasUpdateAvailable } from '../marketplace/app-version';
+import { hasUpdateAvailable } from '@ci-hub/common/validation';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { ImageSizeService } from '../marketplace/image-size.service';
 import { ReposHelpers } from '../app-stores/repos.helpers';
