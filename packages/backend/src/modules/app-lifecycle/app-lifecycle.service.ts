@@ -46,6 +46,7 @@ import { assertHostDevicesAvailable } from './commands/host-device-preflight';
 import { extractComposeImages } from './commands/install-app-command';
 import { toCheckResult, planImages, planPorts, planFormFields } from './planning/install-plan';
 import type { InstallPlan, InstallPlanChecks } from './planning/install-plan.types';
+import { type HostPortMove, configAfterMove } from './commands/main-host-port';
 import { buildComposePortRequests, buildMainPortRequest, type PortRequestInput } from './planning/port-requests';
 import { PortManagerService } from '../network/port-manager.service';
 import { EnvUtils } from '../env/env.utils';
@@ -1191,7 +1192,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       form: this.startCommandForm(app.config, { skipPull, onlyRecreateChanged }),
     })
       .then(async (raw) => {
-        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
+        const { success, message, errorCode, errorDetail, settingsPath, movedHostPort } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
           this.logger.info(`App ${appUrn} started successfully`);
           await this.settleCommandOutcome({
@@ -1205,6 +1206,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
               event: 'start_success',
               clearPendingRestart: true,
               configAtDispatch: app.config,
+              movedHostPort,
               afterApply: async () => {
                 /*
                  * NOT GATED ON `isProduction`, and that is the fix.
@@ -1241,6 +1243,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             settingsPath,
             failureOutcome: {
               status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
+              movedHostPort,
               event: 'start_error',
               notifyEvent: 'start_error',
               failurePhase: 'start',
@@ -1776,7 +1779,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       const appsWithSamePort = conflictsOtherApp(await this.appRepository.getAppsByPort(port));
 
       if (appsWithSamePort.length > 0) {
-        throw new TranslatableError('APP_ERROR_PORT_ALREADY_IN_USE', { port: port.toString(), id: appsWithSamePort[0]?.appName });
+        throw new TranslatableError(
+          'APP_ERROR_PORT_ALREADY_IN_USE',
+          { port: port.toString(), id: appsWithSamePort[0]?.appName },
+          HttpStatus.CONFLICT,
+        );
+      }
+      // A first install or a retry allocates afresh and takes a free port when this one is held. A
+      // reinstall publishes what the form names, so a port it moves to has to be free now.
+      if (reinstall && port !== existingApp?.port) {
+        await this.refusePortAllocatedToAnotherApp(appUrn, port);
       }
     }
 
@@ -1817,6 +1829,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     if (existingApp && !retrying) {
+      await this.recordMainPort(appUrn, parsedForm.port);
       await this.appRepository.updateAppById(existingApp.id, buildInstallRowPatch(parsedForm, current?.config));
       await this.claimCustomDomainIntent(existingApp.id, parsedForm.customDomain);
       // Part of the install the caller was authorized for, not a new decision. Under this install's claim.
@@ -1889,6 +1902,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (raced.status !== 'install_failed' && raced.status !== 'installing') {
           // A reinstall after all, which nothing can cancel (see `reinstall` above).
           this.operationRegistry.endPreparingInstall(appUrn, preparing);
+          await this.recordMainPort(appUrn, parsedForm.port);
           await this.appRepository.updateAppById(raced.id, buildInstallRowPatch(parsedForm, raced.config));
           await this.claimCustomDomainIntent(raced.id, parsedForm.customDomain);
           return this.dispatchStart({ appUrn });
@@ -1953,7 +1967,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.appEventsQueue
       .publish({ appUrn, command: 'install', requestId, form: { ...parsedForm, skipRun } })
       .then(async (raw) => {
-        const { success, message, cancelled } = raw as z.output<typeof appEventResultSchema>;
+        const { success, message, cancelled, movedHostPort } = raw as z.output<typeof appEventResultSchema>;
         // Cancellation is finalized worker-side in invokeCommand (record deleted + install_cancelled
         // emitted), independent of this RPC reply. Nothing to do here — avoids a double delete/SSE/toast.
         if (cancelled) {
@@ -1964,7 +1978,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           const claimed = this.operationRegistry.claimCompletion(appUrn, requestId);
           if (claimed) {
             await this.appRepository.updateAppById(appId, { status: 'running' });
-            this.sseService.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
+            this.sseService.emit('app', { event: 'install_success', appUrn, appStatus: 'running', movedHostPort });
 
             const appIntentSyncService = this.appIntentSyncService;
             if (appIntentSyncService) {
@@ -2206,7 +2220,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.registerDispatchedCommand(appUrn, requestId, 'restart');
     this.publishRegistered(appUrn, requestId, { command: 'restart', appUrn, requestId, form: { ...app.config, skipPull } })
       .then(async (raw) => {
-        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
+        const { success, message, errorCode, errorDetail, settingsPath, movedHostPort } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
           this.logger.info(`App ${appUrn} restarted successfully`);
           await this.settleCommandOutcome({
@@ -2220,6 +2234,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
               event: 'restart_success',
               clearPendingRestart: true,
               configAtDispatch: app.config,
+              movedHostPort,
             },
           });
         } else {
@@ -2236,6 +2251,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             settingsPath,
             failureOutcome: {
               status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
+              movedHostPort,
               event: 'restart_error',
               notifyEvent: 'restart_error',
               failurePhase: 'restart',
@@ -2287,7 +2303,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       requestId,
       form: this.startCommandForm(app.config, { skipPull, onlyRecreateChanged }),
     });
-    const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
+    const { success, message, errorCode, errorDetail, settingsPath, movedHostPort } = raw as z.output<typeof appEventResultSchema>;
 
     if (success) {
       this.logger.info(`App ${appUrn} started successfully`);
@@ -2302,6 +2318,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           event: 'start_success',
           clearPendingRestart: true,
           configAtDispatch: app.config,
+          movedHostPort,
           afterApply: async () => {
             /*
              * NOT GATED ON `isProduction`, and that is the fix.
@@ -2341,6 +2358,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       settingsPath,
       failureOutcome: {
         status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
+        movedHostPort,
         event: 'start_error',
         notifyEvent: 'start_error',
         failurePhase: 'start',
@@ -2390,7 +2408,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       requestId,
       form: { ...app.config, skipPull },
     });
-    const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
+    const { success, message, errorCode, errorDetail, settingsPath, movedHostPort } = raw as z.output<typeof appEventResultSchema>;
 
     if (success) {
       this.logger.info(`App ${appUrn} restarted successfully`);
@@ -2405,6 +2423,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           event: 'restart_success',
           clearPendingRestart: true,
           configAtDispatch: app.config,
+          movedHostPort,
         },
       });
 
@@ -2424,6 +2443,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       settingsPath,
       failureOutcome: {
         status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
+        movedHostPort,
         event: 'restart_error',
         notifyEvent: 'restart_error',
         failurePhase: 'restart',
@@ -2925,7 +2945,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       const appsWithSamePort = await this.appRepository.getAppsByPort(port, app.id);
 
       if (appsWithSamePort.length > 0) {
-        throw new TranslatableError('APP_ERROR_PORT_ALREADY_IN_USE', { port: port.toString(), id: appsWithSamePort[0]?.appName });
+        throw new TranslatableError(
+          'APP_ERROR_PORT_ALREADY_IN_USE',
+          { port: port.toString(), id: appsWithSamePort[0]?.appName },
+          HttpStatus.CONFLICT,
+        );
+      }
+      // Only a port the save moves to. An app can already sit on a port another app holds in the table
+      // (`migrateExistingPortAllocations` leaves that as it is). Every save sends its port again.
+      if (port !== app.port) {
+        await this.refusePortAllocatedToAnotherApp(appUrn, port);
       }
     }
 
@@ -2953,6 +2982,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       this.logger.error(`Failed to update app ${appUrn}: ${message}`);
       throw new TranslatableError('APP_ERROR_APP_FAILED_TO_UPDATE', { id: appUrn }, HttpStatus.INTERNAL_SERVER_ERROR, { cause: message });
     }
+
+    await this.recordMainPort(appUrn, parsedForm.port ?? appInfo.port);
 
     const changed = await this.appRepository.updateAppById(app.id, {
       // `parsedForm`, not the request snapshot: the row must record what was actually applied.
@@ -3011,6 +3042,38 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     return { requestId };
+  }
+
+  /**
+   * Refuse a port the port manager gave another app. The check on the rows beside this one can't see
+   * an `addPorts` mapping or the main port of an app that isn't publishing it right now. Either would
+   * fail that app's next start if this one took the port.
+   */
+  private async refusePortAllocatedToAnotherApp(appUrn: AppUrn, port: number): Promise<void> {
+    const holder = await this.moduleRef.get(PortManagerService, { strict: false })?.getPortHolder(port);
+    if (holder && holder.appUrn !== appUrn) {
+      const { appName } = extractAppUrn(holder.appUrn as AppUrn);
+      throw new TranslatableError('APP_ERROR_PORT_ALREADY_IN_USE', { port: port.toString(), id: appName }, HttpStatus.CONFLICT);
+    }
+  }
+
+  /**
+   * Keep the port manager's table on the port a save or reinstall just gave the app's row. What is held
+   * by another app was refused above, unless it was taken since or the app doesn't publish the port. The
+   * row then wins: a start refused on that port moves the app (`moveMainPortOffHostConflict`). So does a
+   * table it could not write: the save or reinstall still goes through and the boot backfill corrects it.
+   */
+  private async recordMainPort(appUrn: AppUrn, port: number | undefined): Promise<void> {
+    if (port === undefined) {
+      return;
+    }
+    try {
+      if ((await this.moduleRef.get(PortManagerService, { strict: false })?.setMainPort(appUrn, port)) === false) {
+        this.logger.warn(`Port ${port} of ${appUrn} is allocated to another app, so its port allocation stays as it was`);
+      }
+    } catch (error) {
+      this.logger.warn(`Could not record port ${port} of ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /**
@@ -3582,6 +3645,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
        * (while the app was starting, say) is still owed, so it is not cleared then.
        */
       configAtDispatch?: unknown;
+      /** The host port the command moved the app off and onto, which the person is told about. */
+      movedHostPort?: HostPortMove;
       afterApply?: () => Promise<void>;
     };
     failureOutcome?: {
@@ -3590,6 +3655,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       notifyEvent: string;
       failurePhase: AppFailurePhase;
       notifySeverity?: 'high' | 'info';
+      /** The host port the command moved the app off and onto before it failed. The row stays on the new one. */
+      movedHostPort?: HostPortMove;
     };
   }): Promise<boolean> {
     // The app stays claimed while the outcome is written: a command waiting for it (see
@@ -3603,7 +3670,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     if (params.success && params.successOutcome) {
       try {
         const clearPendingRestart =
-          params.successOutcome.clearPendingRestart && (await this.configUnchangedSince(params.appId, params.successOutcome.configAtDispatch));
+          params.successOutcome.clearPendingRestart &&
+          (await this.configUnchangedSince(params.appId, params.successOutcome.configAtDispatch, params.successOutcome.movedHostPort));
         await this.appRepository.updateAppById(params.appId, {
           status: params.successOutcome.status,
           ...(clearPendingRestart ? { pendingRestart: false } : {}),
@@ -3612,6 +3680,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           event: params.successOutcome.event,
           appUrn: params.appUrn,
           appStatus: params.successOutcome.status,
+          movedHostPort: params.successOutcome.movedHostPort,
         });
       } finally {
         // Before `afterApply`, whose own restarts (a custom domain bound meanwhile) need the app.
@@ -3637,6 +3706,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         errorCode: params.errorCode,
         errorDetail: params.errorDetail,
         settingsPath: params.settingsPath,
+        movedHostPort: params.failureOutcome.movedHostPort,
       });
       this.agentNotifyService?.notify(params.failureOutcome.notifyEvent, { appUrn: params.appUrn }, params.failureOutcome.notifySeverity ?? 'high');
       this.reportAppFailure(params.appUrn, params.failureOutcome.failurePhase, params.message ?? 'Unknown error', params.errorCode);
@@ -3649,16 +3719,18 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
   /**
    * Whether the app's stored config is still the one a command was dispatched with. Settings saved
-   * while a start ran were not in it, so the restart they asked for is still owed.
+   * while a start ran were not in it, so the restart they asked for is still owed. A move rewrites the
+   * stored config itself, so its own rewrite doesn't count (`configAfterMove`).
    */
-  private async configUnchangedSince(appId: number, configAtDispatch: unknown): Promise<boolean> {
+  private async configUnchangedSince(appId: number, configAtDispatch: unknown, move?: HostPortMove): Promise<boolean> {
     if (configAtDispatch === undefined) {
       return true;
     }
 
     try {
       const current = await this.appRepository.getAppById(appId);
-      return !current || JSON.stringify(current.config ?? null) === JSON.stringify(configAtDispatch ?? null);
+      const comparable = (config: unknown) => JSON.stringify(move ? configAfterMove(config, move) : (config ?? null));
+      return !current || comparable(current.config) === comparable(configAtDispatch);
     } catch {
       // Unknown: clear it, as before this check existed.
       return true;

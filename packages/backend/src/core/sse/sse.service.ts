@@ -51,6 +51,14 @@ export class SSEService implements OnApplicationShutdown {
   private readonly installProgress = new Map<string, MessageEvent>();
 
   /**
+   * The last event telling of an app's host port move that nobody was connected to receive, by app.
+   * A start at Hub boot can move an app with the desktop closed. The person only learns its address
+   * changed if the next page to connect is told. Sent once, to that page. Kept in memory, so a Hub
+   * restart loses it. The Hub's log keeps the move.
+   */
+  private readonly unseenPortMoves = new Map<string, MessageEvent>();
+
+  /**
    * Emits an event to the specified topic.
    */
   emit<T extends Topic>(topic: T, data: Extract<SSE, { topic: T }>['data'], appUrn?: AppUrn) {
@@ -73,12 +81,20 @@ export class SSEService implements OnApplicationShutdown {
       } else {
         this.installProgress.delete(data.appUrn);
       }
+      // Nobody needs to hear where an app they uninstalled had moved to.
+      if (data.event === 'uninstall_success') {
+        this.unseenPortMoves.delete(data.appUrn);
+      }
     }
 
     let currentTopic = this.topics.get(formattedTopic);
     if (!currentTopic) {
       currentTopic = new Subject<MessageEvent>();
       this.topics.set(formattedTopic, currentTopic);
+    }
+
+    if (topic === 'app' && !currentTopic.observed && 'movedHostPort' in data && data.movedHostPort) {
+      this.unseenPortMoves.set(data.appUrn, event);
     }
 
     currentTopic.next(event);
@@ -131,7 +147,8 @@ export class SSEService implements OnApplicationShutdown {
    * is this Hub's version. See `hubHelloEventSchema` in `@ci-hub/common/schemas` for why
    * it exists. It is built per subscription, not emitted on the topic, because a Hub
    * that has just started has no subscribers to emit to — the clients are all mid-reconnect.
-   * The latest tick of a running install or step of a running update follows the hello (`installProgress`).
+   * The latest tick of a running install or step of a running update follows the hello (`installProgress`),
+   * then any host port move nobody has heard about yet (`unseenPortMoves`).
    */
   getAppEventsObservable(): Observable<MessageEvent> {
     // `buildVersion` is the image stamp `GET /api/hub/build` serves, which image builds set to the
@@ -145,7 +162,9 @@ export class SSEService implements OnApplicationShutdown {
         ...(this.buildVersion ? { buildVersion: this.buildVersion } : {}),
       } satisfies Extract<SSE, { topic: 'app' }>['data']),
     };
-    return this.getTopicObservable('app').pipe(startWith(hello, ...this.installProgress.values()));
+    const unseenPortMoves = [...this.unseenPortMoves.values()];
+    this.unseenPortMoves.clear();
+    return this.getTopicObservable('app').pipe(startWith(hello, ...this.installProgress.values(), ...unseenPortMoves));
   }
 
   /**

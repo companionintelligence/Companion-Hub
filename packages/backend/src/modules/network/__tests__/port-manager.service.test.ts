@@ -41,6 +41,12 @@ const createMockRepo = () => {
       }
       return before - allocations.length;
     }),
+    updateHostPort: vi.fn(async (id: number, hostPort: number) => {
+      const allocation = allocations.find((a) => a.id === id);
+      if (allocation) {
+        allocation.hostPort = hostPort;
+      }
+    }),
     deleteByHostPort: vi.fn(async (port: number, protocol: string) => {
       const index = allocations.findIndex((a) => a.hostPort === port && a.protocol === protocol);
       if (index !== -1) {
@@ -154,6 +160,64 @@ describe('PortManagerService', () => {
 
     expect(allocations).toHaveLength(1);
     expect(callCount).toBe(2); // First failed, second succeeded
+  });
+
+  describe('setMainPort', () => {
+    const app = 'port-test:_user' as AppUrn;
+    const other = 'holder:_user' as AppUrn;
+
+    it('records a port set by hand on the allocation the app has, so the old one is free again', async () => {
+      await service.migrateExistingApp(app, 10000, 80);
+
+      await expect(service.setMainPort(app, 18558)).resolves.toBe(true);
+
+      expect(await service.getMainPort(app)).toBe(18558);
+      expect(repo._allocations).toEqual([expect.objectContaining({ appUrn: app, hostPort: 18558, containerPort: 80, label: 'main' })]);
+    });
+
+    it('never takes a port another app holds: it answers false and leaves both apps alone', async () => {
+      await service.migrateExistingApp(app, 10000, 80);
+      await service.migrateExistingApp(other, 10001, 80);
+
+      await expect(service.setMainPort(app, 10001)).resolves.toBe(false);
+
+      expect(await service.getMainPort(app)).toBe(10000);
+      expect(await service.getMainPort(other)).toBe(10001);
+      expect(repo.updateHostPort).not.toHaveBeenCalled();
+    });
+
+    it('answers false when another app takes the port between the check and the write', async () => {
+      await service.migrateExistingApp(app, 10000, 80);
+      repo.updateHostPort.mockRejectedValueOnce(Object.assign(new Error('Failed query'), { cause: { code: '23505' } }));
+
+      await expect(service.setMainPort(app, 18558)).resolves.toBe(false);
+    });
+
+    it('lets any other database failure through', async () => {
+      await service.migrateExistingApp(app, 10000, 80);
+      repo.updateHostPort.mockRejectedValueOnce(new Error('connection lost'));
+
+      await expect(service.setMainPort(app, 18558)).rejects.toThrow('connection lost');
+    });
+
+    it('has nothing to do for an app on that port already, or with no main allocation', async () => {
+      await service.migrateExistingApp(app, 10000, 80);
+
+      await expect(service.setMainPort(app, 10000)).resolves.toBe(true);
+      await expect(service.setMainPort('no-port:_user' as AppUrn, 18558)).resolves.toBe(true);
+
+      expect(repo.updateHostPort).not.toHaveBeenCalled();
+      expect(repo.create).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('getPortHolder', () => {
+    it('names the allocation that holds a port but nothing for a free one', async () => {
+      await service.migrateExistingApp('holder:_user' as AppUrn, 10001, 80);
+
+      expect(await service.getPortHolder(10001)).toEqual(expect.objectContaining({ appUrn: 'holder:_user' }));
+      expect(await service.getPortHolder(10002)).toBeUndefined();
+    });
   });
 
   describe('moveMainPort', () => {

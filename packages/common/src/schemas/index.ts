@@ -88,7 +88,7 @@ import type {
   AgentSkillConfig,
 } from './agent-config.js';
 
-import { type SSE, type Topic, type UpdatePhase, lifecycleOperationSchema, sseSchema } from './sse.js';
+import { type HostPortMove, type SSE, type Topic, type UpdatePhase, hostPortMoveSchema, lifecycleOperationSchema, sseSchema } from './sse.js';
 
 import { toJsonSchema } from './utils/to-json-schema.js';
 
@@ -185,6 +185,8 @@ export {
   type RandomEncoding,
   type InferenceVariable,
   type AppCategory,
+  type HostPortMove,
+  hostPortMoveSchema,
   type SSE,
   type Topic,
   type UpdatePhase,

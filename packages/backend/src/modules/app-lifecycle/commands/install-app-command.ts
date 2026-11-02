@@ -16,6 +16,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { AppLifecycleCommand, type CommandExecutionContext } from './command';
 import { AppLifecycleError, type AppCommandResult } from './app-lifecycle-errors';
+import { type HostPortMove, hostPortMoveOf } from './main-host-port';
 import { pullAppImagesRecorded } from './pull-app-images';
 import { isAbortError, throwIfAborted } from '@/common/abort';
 import { parseComposeJson } from '@ci-hub/common/schemas';
@@ -477,7 +478,8 @@ export class InstallAppCommand extends AppLifecycleCommand {
       }
 
       await emitProgress(99);
-      await this.markInstallSucceeded(appUrn, sseService, appsRepository, logger);
+      const movedHostPort = hostPortMoveOf(form, refusedHostPorts);
+      await this.markInstallSucceeded(appUrn, sseService, appsRepository, logger, movedHostPort);
 
       try {
         const mcpProbe = this.moduleRef.get(McpProbeService, { strict: false });
@@ -486,7 +488,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
         logger.debug(`MCP post-install probe not scheduled for ${appUrn}: ${probeErr}`);
       }
 
-      return { success: true, message: `App ${appUrn} installed successfully` };
+      return { success: true, message: `App ${appUrn} installed successfully`, movedHostPort };
     } catch (err) {
       // A user-requested cancel: tear down whatever was partially created and report a cancellation
       // (not a failure). The service finalizes the cancel (deletes the record + emits install_cancelled).
@@ -608,6 +610,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
     sseService: SSEService | undefined,
     appsRepository: AppsRepository | undefined,
     logger: LoggerService,
+    movedHostPort: HostPortMove | undefined,
   ): Promise<void> {
     if (!appsRepository) return;
 
@@ -622,6 +625,6 @@ export class InstallAppCommand extends AppLifecycleCommand {
     }
 
     await appsRepository.updateAppById(app.id, { status: 'running' });
-    sseService?.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
+    sseService?.emit('app', { event: 'install_success', appUrn, appStatus: 'running', movedHostPort });
   }
 }

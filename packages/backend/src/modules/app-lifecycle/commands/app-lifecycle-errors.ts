@@ -1,3 +1,4 @@
+import type { HostPortMove } from './main-host-port';
 import { extractOverlapCidrsFromError, isDockerNetworkOverlapError } from '@/modules/network/docker-network-errors';
 
 export const ROCM_KFD_MISSING_CODE = 'rocm_kfd_missing';
@@ -83,9 +84,11 @@ export type AppCommandFailureResult = {
   cancelledStatus?: string;
   /** A failed update put the previous version back (and running again, if it was running), or a backup was refused before it stopped the app. */
   rolledBack?: boolean;
+  /** The host port the command moved the app off and onto before it failed. */
+  movedHostPort?: HostPortMove;
 };
 
-export type AppCommandResult = { success: true; message: string } | AppCommandFailureResult;
+export type AppCommandResult = { success: true; message: string; movedHostPort?: HostPortMove } | AppCommandFailureResult;
 
 export function toAppCommandFailureResult(err: unknown): AppCommandFailureResult {
   if (err instanceof AppLifecycleError) {

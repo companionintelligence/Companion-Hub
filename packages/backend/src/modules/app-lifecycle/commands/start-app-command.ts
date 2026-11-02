@@ -12,6 +12,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import type Dockerode from 'dockerode';
 import { AppLifecycleCommand } from './command';
+import { hostPortMoveOf } from './main-host-port';
 
 /**
  * The compose subcommand a start runs.
@@ -62,6 +63,8 @@ export class StartAppCommand extends AppLifecycleCommand {
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const appHelpers = this.moduleRef.get(AppHelpers, { strict: false });
     const traefikConfigService = this.moduleRef.get(TraefikConfigService, { strict: false });
+    const portOnStart = form.port;
+    const refusedHostPorts = new Set<number>();
 
     try {
       const config = await appFilesManager.getInstalledAppInfo(appUrn);
@@ -112,7 +115,6 @@ export class StartAppCommand extends AppLifecycleCommand {
 
       const forcePull = !form.skipPull && config.force_pull;
       // Another program can hold the port the app starts on. Move the app off it, as install does, rather than fail.
-      const refusedHostPorts = new Set<number>();
       await this.composeAppWithNetworkRecovery(
         appUrn,
         form,
@@ -134,9 +136,10 @@ export class StartAppCommand extends AppLifecycleCommand {
 
       logger.info(`App ${appUrn} started`);
 
-      return { success: true, message: `App ${appUrn} started successfully` };
+      return { success: true, message: `App ${appUrn} started successfully`, movedHostPort: hostPortMoveOf(form, refusedHostPorts, portOnStart) };
     } catch (err) {
-      return this.handleAppError(err, appUrn, 'start');
+      // The row, config and app.env stay on a port the run moved to, whatever failed after the move.
+      return { ...(await this.handleAppError(err, appUrn, 'start')), movedHostPort: hostPortMoveOf(form, refusedHostPorts, portOnStart) };
     }
   }
 

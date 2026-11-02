@@ -674,6 +674,21 @@ describe('InstallAppCommand — pull policy', () => {
       expect(form.port).toBe(10000);
     });
 
+    it('reports the move in the success event the worker sends as well as in its result', async () => {
+      refusals = [8080];
+      portManager.getMainPort.mockResolvedValue(8080);
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10000));
+      const sseService = ((command as any).moduleRef as ModuleRef).get(SSEService) as any;
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: true, movedHostPort: { from: 8080, to: 10000 } });
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'install_success', movedHostPort: { from: 8080, to: 10000 } }),
+      );
+    });
+
     it('never offers a port Docker already refused during the same install', async () => {
       refusals = [8080, 10000];
       portManager.getMainPort.mockResolvedValueOnce(8080).mockResolvedValueOnce(10000);

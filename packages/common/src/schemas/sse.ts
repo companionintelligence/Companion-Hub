@@ -55,6 +55,10 @@ const installQueueEventSchema = z.object({
 const updatePhaseSchema = z.enum(['preparing', 'pulling', 'backing_up', 'replacing', 'starting', 'verifying', 'finalizing', 'rolling_back']);
 export type UpdatePhase = z.infer<typeof updatePhaseSchema>;
 
+/** The host port an app was to publish and the one it ended up on, which is what a person is told. */
+export const hostPortMoveSchema = z.object({ from: z.number(), to: z.number() });
+export type HostPortMove = z.infer<typeof hostPortMoveSchema>;
+
 const appScopedEventSchema = z.object({
   event: z.enum([
     'status_change',
@@ -116,6 +120,10 @@ const appScopedEventSchema = z.object({
   // Optional detail for the caveat (e.g. the host path of an uninstall remnant), so the
   // client can render an actionable message such as a manual cleanup command.
   warningDetail: z.string().optional(),
+  // On a start, restart or install outcome: the app could not have the host port it was to publish
+  // (`from`) so it is on `to` now. The client says so, in place of a plain success, because its local address changed.
+  // A start or restart can fail after the move. The app stays on `to` then too.
+  movedHostPort: hostPortMoveSchema.optional(),
 });
 
 /**

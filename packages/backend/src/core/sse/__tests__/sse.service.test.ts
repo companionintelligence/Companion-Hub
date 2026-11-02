@@ -68,6 +68,67 @@ describe('SSEService app stream', () => {
     expect(service.hasSubscribers('app')).toBe(false);
   });
 
+  describe('a host port move nobody was connected to hear about', () => {
+    const appUrn = 'port-test:_user';
+    const moved = { event: 'start_success' as const, appUrn, appStatus: 'running' as const, movedHostPort: { from: 10000, to: 10001 } };
+
+    it('reaches the next page to connect, right after the hello', async () => {
+      service.emit('app', moved);
+
+      const [, second] = await collect(2);
+      expect(JSON.parse(second.data as string)).toEqual(moved);
+    });
+
+    it('reaches only that page', async () => {
+      service.emit('app', moved);
+      await collect(2);
+
+      const pending = collect(2);
+      service.emit('app', { event: 'install_queue', active: null, queued: [] });
+      const [, second] = await pending;
+      expect(JSON.parse(second.data as string)).toEqual({ event: 'install_queue', active: null, queued: [] });
+    });
+
+    it('is not sent again when a page was connected to hear it', async () => {
+      const connected = service.getAppEventsObservable().subscribe();
+      service.emit('app', moved);
+      connected.unsubscribe();
+
+      const pending = collect(2);
+      service.emit('app', { event: 'install_queue', active: null, queued: [] });
+      const [, second] = await pending;
+      expect(JSON.parse(second.data as string)).toEqual({ event: 'install_queue', active: null, queued: [] });
+    });
+
+    it('keeps only the latest move of an app', async () => {
+      service.emit('app', moved);
+      service.emit('app', { ...moved, movedHostPort: { from: 10001, to: 10002 } });
+
+      const pending = collect(2);
+      const [, second] = await pending;
+      expect(JSON.parse(second.data as string).movedHostPort).toEqual({ from: 10001, to: 10002 });
+    });
+
+    it('forgets the move of an app uninstalled before anyone heard', async () => {
+      service.emit('app', moved);
+      service.emit('app', { event: 'uninstall_success', appUrn });
+
+      const pending = collect(2);
+      service.emit('app', { event: 'install_queue', active: null, queued: [] });
+      const [, second] = await pending;
+      expect(JSON.parse(second.data as string)).toEqual({ event: 'install_queue', active: null, queued: [] });
+    });
+
+    it('leaves a success that moved nothing unreplayed', async () => {
+      service.emit('app', { event: 'start_success', appUrn, appStatus: 'running' });
+
+      const pending = collect(2);
+      service.emit('app', { event: 'install_queue', active: null, queued: [] });
+      const [, second] = await pending;
+      expect(JSON.parse(second.data as string)).toEqual({ event: 'install_queue', active: null, queued: [] });
+    });
+  });
+
   describe('a page opened mid-install', () => {
     const appUrn = 'openclaw:ci-marketplace';
     const tick = (progress: number, downloadedBytes: number) =>

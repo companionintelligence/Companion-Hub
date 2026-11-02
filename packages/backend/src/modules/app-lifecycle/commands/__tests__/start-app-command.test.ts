@@ -392,6 +392,22 @@ describe('StartAppCommand — pull policy', () => {
       );
     });
 
+    it('says so when it moves the app off the Hub port it was saved on', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-nginx', port: 80, force_pull: false } as any);
+      portManager.getMainPort.mockResolvedValue(8080);
+
+      const result = await command.execute(customUrn, { port: 8080 });
+
+      expect(result).toMatchObject({ success: true, movedHostPort: { from: 8080, to: 10000 } });
+    });
+
+    it('reports no move for an app given its first host port', async () => {
+      const result = (await command.execute(customUrn, {})) as { movedHostPort?: unknown };
+
+      expect(result.success).toBe(true);
+      expect(result.movedHostPort).toBeUndefined();
+    });
+
     it('keeps the port a settings save stored when nothing else holds it, and records it', async () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-nginx', port: 8081, force_pull: false } as any);
 
@@ -544,6 +560,62 @@ describe('StartAppCommand — pull policy', () => {
       // The next start rebuilds APP_PORT from the row's config, so the new port is recorded there too.
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, { config: { exposureMode: 'local', port: 10000 }, port: 10000 });
       expect(form.port).toBe(10000);
+    });
+
+    it('says where it moved the app from and to', async () => {
+      refusals = [8080];
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: true, movedHostPort: { from: 8080, to: 10000 } });
+    });
+
+    it('names the port the app started on when Docker refuses a second one too', async () => {
+      refusals = [8080, 10000];
+      portManager.getMainPort.mockResolvedValueOnce(8080).mockResolvedValueOnce(10000);
+      portManager.moveMainPort.mockResolvedValueOnce(mainAllocation(10000)).mockResolvedValueOnce(mainAllocation(10001));
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: true, movedHostPort: { from: 8080, to: 10001 } });
+    });
+
+    it('reports the move when the start fails on the port it moved to', async () => {
+      refusals = [8080, 10000, 10001];
+      portManager.getMainPort.mockResolvedValueOnce(8080).mockResolvedValueOnce(10000);
+      portManager.moveMainPort.mockResolvedValueOnce(mainAllocation(10000)).mockResolvedValueOnce(mainAllocation(10001));
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: false, movedHostPort: { from: 8080, to: 10001 } });
+    });
+
+    it('reports no move when the app kept its port', async () => {
+      const result = (await command.execute(appUrn, { port: 8080 })) as { movedHostPort?: unknown };
+
+      expect(result.movedHostPort).toBeUndefined();
+    });
+
+    /*
+     * Saves used to leave the table behind, so a Hub can hold a row, a config and an app.env on 18558
+     * with an allocation still on 10000. The start is refused on 18558. Comparing that to the table
+     * alone gave up with "see logs".
+     */
+    it('moves an app off a port set by hand when the table still names an older one', async () => {
+      appEnv = ['APP_HOSTNAME=127.0.0.1', 'APP_PORT=18558', 'APP_URL=http://127.0.0.1:18558'].join('\n');
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, port: 18558, config: { exposureMode: 'local', port: 18558 } } as any);
+      portManager.getMainPort.mockResolvedValue(10000);
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10001));
+      refusals = [18558];
+      const form = { port: 18558 };
+
+      const result = await command.execute(appUrn, form);
+
+      expect(result).toMatchObject({ success: true, movedHostPort: { from: 18558, to: 10001 } });
+      expect(portManager.moveMainPort).toHaveBeenCalledExactlyOnceWith(appUrn, new Set([18558]));
+      expect(appEnv).toContain('APP_PORT=10001');
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, { config: { exposureMode: 'local', port: 10001 }, port: 10001 });
+      expect(form.port).toBe(10001);
     });
 
     it('fails as before when the port Docker refused is not the main port', async () => {

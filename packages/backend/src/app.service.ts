@@ -655,6 +655,11 @@ export class AppService implements OnApplicationShutdown {
   /**
    * Backfill port allocations for apps that were installed before the port manager existed.
    * Scans all installed apps and creates port_allocation records for any that are missing.
+   *
+   * Corrects the main allocation of an app whose row names another port, too. A save and a reinstall
+   * left the table behind until they learned to keep it in step, so such records exist on Hubs today.
+   * An exposed port's save still does. The row is what the app publishes. A port another app holds
+   * stays as it is: a start refused on it moves the app (`moveMainPortOffHostConflict`).
    */
   private async migrateExistingPortAllocations() {
     try {
@@ -667,6 +672,9 @@ export class AppService implements OnApplicationShutdown {
         const appUrn = `${installedApp.appName}:${installedApp.appStoreSlug}` as import('@ci-hub/common/types').AppUrn;
         try {
           await this.portManager.migrateExistingApp(appUrn, installedApp.port, installedApp.port);
+          if (!(await this.portManager.setMainPort(appUrn, installedApp.port))) {
+            this.logger.warn(`Port ${installedApp.port} of ${appUrn} is allocated to another app, so its port allocation stays as it was`);
+          }
           migrated++;
         } catch (err) {
           this.logger.warn(`Failed to migrate port allocation for ${appUrn}: ${err}`);
