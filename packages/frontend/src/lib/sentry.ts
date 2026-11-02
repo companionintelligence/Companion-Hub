@@ -241,6 +241,15 @@ const LOOPBACK_HOST = /^(?:localhost|127\.0\.0\.1|\[::1\])(?=:|$)/;
 const FETCH_FAILURE_WITH_HOST = /^(?:Failed to fetch|Load failed|NetworkError when attempting to fetch resource\.) \(([^()\s]+)\)$/;
 
 /**
+ * A store or alternatives request that got no response at all (status 0): the device is offline, or
+ * the network dropped. The screens show their own error state, so the event is not a frontend bug.
+ */
+const NO_RESPONSE_STORE_LOAD = /^Failed to load (?:store listings|alternatives) \(0\)/;
+
+/** Injected by an automation script that calls a page function the app never defined. */
+const INJECTED_SCRIPT_CALL = /^Function "__seenText" is not exposed$/;
+
+/**
  * The Hub API origin the client calls, as `host:port`, when that origin is this machine. The
  * loopback names fold together, so `localhost:5002` and `127.0.0.1:5002` match. Null for a remote Hub.
  */
@@ -292,6 +301,9 @@ function shouldDropSentryEvent(event: Sentry.ErrorEvent): boolean {
     }
     // The Hub API on this machine is not answering. That is the Hub being down, not a frontend bug.
     if (isLocalHubApiFetchFailure(text)) {
+      return true;
+    }
+    if (NO_RESPONSE_STORE_LOAD.test(text) || INJECTED_SCRIPT_CALL.test(text)) {
       return true;
     }
   }

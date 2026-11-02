@@ -297,6 +297,24 @@ describe('frontend sentry', () => {
     }
   });
 
+  it('drops a store load that got no response and an injected automation call, and keeps the rest', async () => {
+    await import('./sentry');
+
+    type SentryEventInput = { exception?: { values?: Array<{ value?: string }> } };
+    const beforeSend = init.mock.calls[0]?.[0]?.beforeSend as ((event: SentryEventInput) => SentryEventInput | null) | undefined;
+    expect(beforeSend).toBeTypeOf('function');
+    const failed = (value: string) => ({ exception: { values: [{ value }] } });
+
+    // Status 0 means no response reached the app: the device is offline, or the network dropped.
+    expect(beforeSend?.(failed('Failed to load store listings (0)'))).toBeNull();
+    expect(beforeSend?.(failed('Failed to load alternatives (0): something'))).toBeNull();
+    // A status the server did answer with is a real failure and is kept.
+    expect(beforeSend?.(failed('Failed to load store listings (503): Service Unavailable'))).not.toBeNull();
+    // Only the call an automation script injects is dropped; another missing page function is the app's own.
+    expect(beforeSend?.(failed('Function "__seenText" is not exposed'))).toBeNull();
+    expect(beforeSend?.(failed('Function "renderPage" is not exposed'))).not.toBeNull();
+  });
+
   it('rewrites TranslatableError events with HTTP status and path, and drops 4xx', async () => {
     const { TranslatableError } = await import('@/types/error.types');
     await import('./sentry');
