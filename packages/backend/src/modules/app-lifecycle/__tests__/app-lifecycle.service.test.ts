@@ -5732,6 +5732,158 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
     });
 
+    describe('a form that names no exposure mode', () => {
+      const lastPatch = () => appsRepository.updateAppById.mock.calls.find(([, patch]) => 'config' in patch)?.[1] as Record<string, unknown>;
+      const publicWeb = {
+        port: 8080,
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        enableAuth: true,
+        localSubdomain: 'shop',
+        publicDomain: 'example.com',
+      };
+      const onAppStored = (config: Record<string, unknown>, status = 'stopped') =>
+        appsRepository.getAppByUrn.mockResolvedValue({
+          id: 1,
+          appName: 'myapp',
+          appStoreSlug: 'ci-marketplace',
+          status,
+          config,
+          exposureMode: config.exposureMode ?? 'local',
+          localSubdomain: config.localSubdomain ?? null,
+          publicDomain: config.publicDomain ?? null,
+        } as any);
+
+      it('leaves an app on Public Web under the name it has', async () => {
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
+
+        expect(lastPatch()).toMatchObject({
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          openPort: false,
+          localSubdomain: 'shop',
+          publicDomain: 'example.com',
+          port: 9090,
+        });
+        expect(lastPatch().config).toMatchObject({
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          openPort: false,
+          localSubdomain: 'shop',
+          publicDomain: 'example.com',
+        });
+        expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('Public routing changed'));
+      });
+
+      it('leaves an app on the Private VPN', async () => {
+        onAppStored({ port: 8080, exposureMode: 'tailscale', exposedLocal: false, openPort: false });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'tailscale', exposedLocal: false, openPort: false });
+      });
+
+      it('leaves a form that never named one on This Machine Only, port open', async () => {
+        onAppStored({ port: 8080 });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', exposedLocal: false, openPort: true, port: 9090 });
+        expect((lastPatch().config as Record<string, unknown>).exposureMode).toBeUndefined();
+      });
+
+      it('changes and restarts nothing when it repeats what the app already has', async () => {
+        onAppStored(publicWeb, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(lastPatch()).toBeUndefined();
+      });
+
+      it('lets a renamed subdomain through on the app it was', async () => {
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { localSubdomain: 'store' } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare', localSubdomain: 'store', publicDomain: 'example.com', openPort: false });
+      });
+
+      it('still moves the app when the form does name a mode', async () => {
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposureMode: 'local' } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', openPort: true, publicDomain: null, localSubdomain: null });
+      });
+
+      it('takes exposedLocal: false as the decision a legacy client meant by it', async () => {
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposedLocal: false } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', exposedLocal: false, publicDomain: null });
+      });
+
+      it('leaves a Private VPN app there when exposedLocal: false only repeats that it is not public', async () => {
+        onAppStored({ port: 8080, exposureMode: 'tailscale', exposedLocal: false, openPort: false });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, exposedLocal: false } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'tailscale', exposedLocal: false, openPort: false, port: 9090 });
+      });
+
+      it('records a legacy form the way compose runs it and keeps its domain', async () => {
+        // A version bump re-submits the stored form verbatim. This one is public through `exposedLocal`.
+        onAppStored({ port: 8080, exposedLocal: true, openPort: false, localSubdomain: 'shop', publicDomain: 'example.com' });
+
+        await service.updateAppConfig({
+          actor: TEST_ACTOR,
+          appUrn,
+          form: { port: 9090, exposedLocal: true, openPort: false, localSubdomain: 'shop', publicDomain: 'example.com' },
+        });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare', exposedLocal: true, publicDomain: 'example.com', openPort: false });
+      });
+
+      it('does not restart an app on Public Web whose form never had an openPort', async () => {
+        const { openPort: _openPort, ...noOpenPort } = publicWeb;
+        onAppStored(noOpenPort, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(lastPatch()).toBeUndefined();
+      });
+
+      it('keeps the host port open on This Machine Only when a form asks to close it', async () => {
+        onAppStored({ port: 8080 });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, openPort: false } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', openPort: true });
+      });
+
+      it('does not restart an app on This Machine Only whose stored form says the port is closed', async () => {
+        onAppStored({ port: 8080, exposureMode: 'local', openPort: false }, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('does not read a jsonb reordering of a nested setting as a change', async () => {
+        onAppStored({ ...publicWeb, nested: { a: 1, b: 2 } }, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { ...publicWeb, nested: { b: 2, a: 1 } } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+    });
+
     it('warns about the reset using the RESOLVED settings, not the ones the request arrived with', async () => {
       // The non-exposable reset runs after the edge-auth defaulting has already mutated the form,
       // so the warning must read the resolved values. Reading the destructured copies taken at the

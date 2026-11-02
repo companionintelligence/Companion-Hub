@@ -64,7 +64,7 @@ import type { ActorCheckContext, LifecycleActor, SystemLifecycleReason } from '@
 import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
-import { publishesHostPort } from '../apps/app-exposure.helpers';
+import { getEffectiveExposureMode, publishesHostPort } from '../apps/app-exposure.helpers';
 import {
   canServeOnCustomDomain,
   didPublicRoutingIdentityChange,
@@ -259,11 +259,37 @@ function normalizeSubmittedForm(parsedForm: ParsedAppForm): ParsedAppForm {
     normalized = { ...normalized, localSubdomain: sanitizeAppSubdomain(normalized.localSubdomain) || undefined };
   }
 
-  if ((normalized.exposureMode ?? 'local') === 'local' && !normalized.openPort) {
+  if (getEffectiveExposureMode(normalized) === 'local' && !normalized.openPort) {
     normalized = { ...normalized, openPort: true };
   }
 
   return normalized;
+}
+
+/**
+ * Keep the exposure the app runs with when a save says nothing about it.
+ *
+ * `updateAppConfig` replaces the stored form whole and rewrites the row from it, so a form naming no
+ * mode, an MCP or API call changing one setting, took the app off Public Web or the Private VPN and
+ * released its public name. Naming `exposureMode` is a decision. So is an `exposedLocal` that differs
+ * from what the app is. One that repeats it is not: `false` says only "not public", which a Private
+ * VPN app already is.
+ *
+ * `submitted` is the form as it came in: `normalizeSubmittedForm` has already opened the host port
+ * of any form naming no mode, which would open it here on an app that is not on This Machine Only.
+ */
+function keepStoredExposure(parsedForm: ParsedAppForm, submitted: ParsedAppForm, storedConfig: unknown): void {
+  const stored = (storedConfig ?? {}) as Partial<ParsedAppForm>;
+  const isPublic = getEffectiveExposureMode(stored) === 'cloudflare';
+  if (submitted.exposureMode !== undefined || (submitted.exposedLocal !== undefined && submitted.exposedLocal !== isPublic)) return;
+
+  parsedForm.exposureMode = stored.exposureMode;
+  parsedForm.exposedLocal = stored.exposedLocal;
+  // This Machine Only always publishes the host port. Elsewhere a stored form with no `openPort` stays
+  // that way, or the save would read as a change and restart the app.
+  parsedForm.openPort = getEffectiveExposureMode(parsedForm) === 'local' ? true : (submitted.openPort ?? stored.openPort);
+  parsedForm.localSubdomain ??= stored.localSubdomain;
+  parsedForm.publicDomain ??= stored.publicDomain;
 }
 
 /**
@@ -1145,10 +1171,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Check if the configuration has changed in a way that requires a restart
    */
   private hasConfigChanged(oldConfig: Record<string, unknown>, newConfig: Record<string, unknown>): boolean {
-    const oldJSON = JSON.stringify(oldConfig);
-    const newJSON = JSON.stringify(newConfig);
+    // Sorted at every depth, because the order means nothing: Postgres stores `config` as jsonb, which
+    // sets its own. A setting a save inherits also lands after the ones it named.
+    const sortedJSON = (config: Record<string, unknown>) =>
+      JSON.stringify(config, (_key, value: unknown) =>
+        value && typeof value === 'object' && !Array.isArray(value)
+          ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)))
+          : value,
+      );
 
-    return oldJSON !== newJSON;
+    return sortedJSON(oldConfig) !== sortedJSON(newConfig);
   }
 
   /**
@@ -1858,7 +1890,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           ...customDomainColumns(parsedForm),
           openPort: openPort ?? false,
           exposedLocal: exposedLocal ?? !!appInfo.exposable,
-          exposureMode: parsedForm.exposureMode ?? 'local',
+          exposureMode: getEffectiveExposureMode(parsedForm),
           appStoreSlug: appStoreId,
           isVisibleOnGuestDashboard,
           enableAuth: parsedForm.enableAuth ?? false,
@@ -1924,7 +1956,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         ...customDomainColumns(parsedForm),
         openPort: openPort ?? false,
         exposedLocal: exposedLocal ?? !!appInfo.exposable,
-        exposureMode: parsedForm.exposureMode ?? 'local',
+        exposureMode: getEffectiveExposureMode(parsedForm),
         isVisibleOnGuestDashboard,
         enableAuth: parsedForm.enableAuth ?? false,
         ...autoRestartColumn(parsedForm),
@@ -2779,6 +2811,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
 
+    keepStoredExposure(parsedForm, parsedFormResult.data, app.config);
+
     // A custom app's config.json keeps its internal port, and the host port the Hub gave it lives on
     // the row (see `allocateCustomAppHostPort`). A save that leaves the port out would fall back to
     // config.json below and publish the internal port again, which for port 80 can never bind.
@@ -2893,7 +2927,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       parsedForm.publicDomain = undefined;
     }
 
-    if (parsedForm.exposureMode !== 'cloudflare') {
+    if (getEffectiveExposureMode(parsedForm) !== 'cloudflare') {
       parsedForm.publicDomain = undefined;
     }
 
@@ -2961,7 +2995,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // `config` blob stored in this same call, which does carry the corrected form.
       exposed: parsedForm.exposed ?? false,
       exposedLocal: parsedForm.exposedLocal ?? false,
-      exposureMode: parsedForm.exposureMode ?? 'local',
+      // What compose runs the form as: a legacy form's `exposedLocal` is Public Web, not This Machine Only.
+      exposureMode: getEffectiveExposureMode(parsedForm),
       openPort: parsedForm.openPort,
       port: parsedForm.port ?? appInfo.port,
       domain: parsedForm.domain ?? null,

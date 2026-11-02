@@ -1,3 +1,5 @@
+import { effectiveExposureMode } from '@ci-hub/common/types';
+
 export type AppFormHostPortFields = {
   openPort?: boolean;
   exposedLocal?: boolean;
@@ -6,7 +8,7 @@ export type AppFormHostPortFields = {
 
 /** Matches compose.builder.ts effective exposure mode resolution. */
 export function getEffectiveExposureMode(form: AppFormHostPortFields): 'local' | 'cloudflare' | 'tailscale' {
-  return form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
+  return effectiveExposureMode(form);
 }
 
 /** True when the main service binds ${APP_PORT} on the Docker host. */
