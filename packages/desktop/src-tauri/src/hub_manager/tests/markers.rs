@@ -11,27 +11,27 @@ fn hub_watchdog_decision() {
     // `docker_available` is passed explicitly — probing the real daemon would make this
     // test fail on any machine without Docker installed.
     assert_eq!(
-        decide_hub_watchdog_action(2, None, false, false, false, true),
+        decide_hub_watchdog_action(2, None, false, false, false, true, false),
         HubWatchdogAction::None
     );
     assert_eq!(
-        decide_hub_watchdog_action(3, None, false, false, false, true),
+        decide_hub_watchdog_action(3, None, false, false, false, true, false),
         HubWatchdogAction::StartHub
     );
     assert_eq!(
-        decide_hub_watchdog_action(3, None, true, false, false, true),
+        decide_hub_watchdog_action(3, None, true, false, false, true, false),
         HubWatchdogAction::None
     );
     assert_eq!(
-        decide_hub_watchdog_action(3, None, false, true, false, true),
+        decide_hub_watchdog_action(3, None, false, true, false, true, false),
         HubWatchdogAction::None
     );
     assert_eq!(
-        decide_hub_watchdog_action(3, Some(60), false, false, false, true),
+        decide_hub_watchdog_action(3, Some(60), false, false, false, true, false),
         HubWatchdogAction::None
     );
     assert_eq!(
-        decide_hub_watchdog_action(3, Some(301), false, false, false, true),
+        decide_hub_watchdog_action(3, Some(301), false, false, false, true, false),
         HubWatchdogAction::StartHub
     );
 }
@@ -57,32 +57,76 @@ fn hub_watchdog_skips_compose_up_when_container_is_up() {
     use crate::hub_manager::{decide_hub_watchdog_action, HubWatchdogAction};
     // Three failures used to trigger start_hub — must not when the container is already up.
     assert_eq!(
-        decide_hub_watchdog_action(3, None, false, false, true, true),
+        decide_hub_watchdog_action(3, None, false, false, true, true, false),
         HubWatchdogAction::None
     );
     assert_eq!(
-        decide_hub_watchdog_action(5, None, false, false, true, true),
+        decide_hub_watchdog_action(5, None, false, false, true, true, false),
         HubWatchdogAction::None
     );
     assert_eq!(
-        decide_hub_watchdog_action(6, None, false, false, true, true),
+        decide_hub_watchdog_action(6, None, false, false, true, true, false),
         HubWatchdogAction::RestartWedgedContainer
     );
     assert_eq!(
-        decide_hub_watchdog_action(6, Some(60), false, false, true, true),
+        decide_hub_watchdog_action(6, Some(60), false, false, true, true, false),
         HubWatchdogAction::None
     );
     assert_eq!(
-        decide_hub_watchdog_action(3, None, false, false, false, true),
+        decide_hub_watchdog_action(3, None, false, false, false, true, false),
         HubWatchdogAction::StartHub
     );
     assert_eq!(
-        decide_hub_watchdog_action(6, None, true, false, true, true),
+        decide_hub_watchdog_action(6, None, true, false, true, true, false),
         HubWatchdogAction::None
     );
     assert_eq!(
-        decide_hub_watchdog_action(3, None, false, false, false, false),
+        decide_hub_watchdog_action(3, None, false, false, false, false, false),
         HubWatchdogAction::None
+    );
+}
+
+#[test]
+fn hub_watchdog_starts_a_missing_hub_instead_of_restarting_it() {
+    use crate::hub_manager::{decide_hub_watchdog_action, HubWatchdogAction};
+    // With no container the status reads Stopped, so the outage takes the full start path at
+    // the normal threshold, however long it has lasted. Nothing is restarted.
+    assert_eq!(
+        decide_hub_watchdog_action(3, None, false, false, false, true, false),
+        HubWatchdogAction::StartHub
+    );
+    assert_eq!(
+        decide_hub_watchdog_action(6, None, false, false, false, true, false),
+        HubWatchdogAction::StartHub
+    );
+    assert_eq!(
+        decide_hub_watchdog_action(6, Some(301), false, false, false, true, false),
+        HubWatchdogAction::StartHub
+    );
+}
+
+#[test]
+fn hub_watchdog_leaves_a_start_in_progress_alone() {
+    use crate::hub_manager::{decide_hub_watchdog_action, HubWatchdogAction};
+    // While a start runs, get_hub_status reports Starting without probing, so the API looks up
+    // even when the container is missing or still being created. A restart from here would
+    // bounce a container compose is still waiting on, so the watchdog does nothing at all.
+    assert_eq!(
+        decide_hub_watchdog_action(6, None, false, false, true, true, true),
+        HubWatchdogAction::None
+    );
+    assert_eq!(
+        decide_hub_watchdog_action(12, None, false, false, true, true, true),
+        HubWatchdogAction::None
+    );
+    assert_eq!(
+        decide_hub_watchdog_action(6, None, false, false, false, true, true),
+        HubWatchdogAction::None
+    );
+    // The same failures are acted on once the start has finished.
+    assert_eq!(
+        decide_hub_watchdog_action(6, None, false, false, true, true, false),
+        HubWatchdogAction::RestartWedgedContainer
     );
 }
 
