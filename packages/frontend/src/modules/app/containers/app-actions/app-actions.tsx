@@ -684,16 +684,23 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     );
   };
 
+  // `install_error` carries a translation key for a refusal (`describePortalBundleFailure`) and plain text for most other failures.
+  // Only the key travels (`reportAndTranslateAppError`), so copy that asks for values would print `{{status}}` as written.
+  const describeInstallFailure = (message: string) => {
+    if (!i18n.exists(message)) {
+      return message;
+    }
+    const copy = t(message);
+    return copy.includes('{{') ? t('COMMON_AN_ERROR_OCCURRED') : copy;
+  };
+
   // If there was an install error for this app, show it under the open/action area
   const installErrorMessage =
     installError?.errorCode === 'rocm_kfd_missing'
       ? t('APP_ERROR_ROCM_KFD_MISSING')
       : installError?.errorCode === 'network_overlap'
         ? t('APP_ERROR_NETWORK_OVERLAP')
-        : // `install_error` carries a translation key for a refusal (`describePortalBundleFailure`) and plain text for most other failures.
-          installError?.message && i18n.exists(installError.message)
-          ? t(installError.message)
-          : installError?.message;
+        : installError?.message && describeInstallFailure(installError.message);
   const installErrorSettingsPath =
     installError?.settingsPath ?? (installError?.errorCode === 'rocm_kfd_missing' ? '/settings?tab=ai&section=rocm' : undefined);
 

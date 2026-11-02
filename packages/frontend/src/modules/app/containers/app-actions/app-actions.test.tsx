@@ -158,13 +158,20 @@ vi.mock('sonner', () => ({
   },
 }));
 
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({
-    // Every key reads as itself but the one the install error banner is handed, so a key left untranslated shows.
-    t: (key: string) => (key === 'APP_INSTALL_PORTAL_ORGANIZATION_REQUIRED' ? 'Translated refusal' : key),
-    i18n: { exists: (key: string) => key === 'APP_INSTALL_PORTAL_ORGANIZATION_REQUIRED' },
-  }),
-}));
+vi.mock('react-i18next', () => {
+  // Every key reads as itself but those the install error banner is handed, so a key left untranslated shows.
+  const copy: Record<string, string> = {
+    APP_INSTALL_PORTAL_ORGANIZATION_REQUIRED: 'Translated refusal',
+    PORTAL_REQUEST_FAILED: 'CI Account request failed ({{status}}) for {{path}}.',
+  };
+
+  return {
+    useTranslation: () => ({
+      t: (key: string) => copy[key] ?? key,
+      i18n: { exists: (key: string) => key in copy },
+    }),
+  };
+});
 
 vi.mock('react-tooltip', () => ({
   Tooltip: () => null,
@@ -527,6 +534,12 @@ describe('AppActions', () => {
       renderWithInstallError('APP_INSTALL_PORTAL_ORGANIZATION_REQUIRED');
 
       expect(screen.getByRole('alert')).toHaveTextContent('Translated refusal');
+    });
+
+    it('shows the general message for a key whose copy asks for values the event does not carry', () => {
+      renderWithInstallError('PORTAL_REQUEST_FAILED');
+
+      expect(screen.getByRole('alert')).toHaveTextContent('COMMON_AN_ERROR_OCCURRED');
     });
 
     it('shows an install that failed later as the text it sent', () => {
