@@ -16,7 +16,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { AppLifecycleCommand, type CommandExecutionContext } from './command';
 import { AppLifecycleError, type AppCommandResult } from './app-lifecycle-errors';
-import { pullAppImagesRecorded } from './pull-app-images';
+import { pullAppImagesRecorded, uniqueServiceImages } from './pull-app-images';
 import { isAbortError, throwIfAborted } from '@/common/abort';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
@@ -37,8 +37,7 @@ const DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS = 250;
 const DOWNLOAD_SIZE_EMIT_INTERVAL_MS = 2_000;
 
 export function extractComposeImages(composeContent: unknown): string[] {
-  const { services } = parseComposeJson(composeContent);
-  return [...new Set(services.map((service) => service.image?.trim()).filter((image): image is string => Boolean(image)))];
+  return uniqueServiceImages(parseComposeJson(composeContent).services);
 }
 
 export function mapPullProgressToInstallProgress(completedBytes: number, totalBytes: number): number {
@@ -396,7 +395,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       await emitProgress(99);
       const refusedHostPorts = new Set<number>();
-      await this.composeAppWithNetworkRecovery(appUrn, form, 'up --detach --force-recreate --remove-orphans', 3, ctx?.signal, {
+      await this.composeUpRecordingPulls(appUrn, form, 'up --detach --force-recreate --remove-orphans', 3, ctx?.signal, {
         recoverHostPortConflict: (error) => this.moveMainPortOffConflict(appUrn, form, error, refusedHostPorts),
       });
       await appFilesManager.setAppDataDirPermissions(appUrn);

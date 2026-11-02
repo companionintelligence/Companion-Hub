@@ -419,13 +419,14 @@ export class DockerService {
   /**
    * Removes the images an uninstalled app brought onto this computer, and the images its own compose build made.
    *
-   * `appImageIds` are the IDs an install or an update recorded when it pulled the image for this app
-   * (`AppFilesManager.readPulledImageIds`). Nothing else is removed: an image that was on the computer before
-   * the app, or that another app uses, stays. Removal is never forced, so Docker refuses an image that a
-   * container, running or stopped, still uses. Missing or held images do not fail the uninstall.
+   * `appImageIds` are the IDs an install, an update, a start or a restart recorded when it brought the image in for
+   * this app (`AppFilesManager.readPulledImageIds`). Nothing else is removed: an image that was on the computer before
+   * the app stays. Removal is never forced, so Docker refuses an image that a container, running or stopped, still
+   * uses. An app stopped by the Hub has no containers, so it doesn't hold one. Missing or held images do not fail the
+   * uninstall.
    *
    * @param appUrn App URN being uninstalled.
-   * @param appImageIds Image IDs the app's installs and updates pulled for it.
+   * @param appImageIds Image IDs the app's installs, updates, starts and restarts brought in for it.
    */
   public async removeAppImages(appUrn: AppUrn, appImageIds: string[] = []): Promise<void> {
     const projectName = this.getComposeProjectName(appUrn);
@@ -1141,7 +1142,7 @@ export class DockerService {
 
   /**
    * The ID of the image `image` names on this computer, or `null` when it is not here. Read-only, never pulls.
-   * An install or an update compares it before and after a pull to tell the images the pull brought in.
+   * An install, an update, a start or a restart compares it before and after a pull to tell the images the pull brought in.
    */
   async imageIdLocally(image: string): Promise<string | null> {
     try {

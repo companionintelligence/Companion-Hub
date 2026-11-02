@@ -487,6 +487,53 @@ describe('StartAppCommand — pull policy', () => {
     });
   });
 
+  describe('the record of the images the start pulled', () => {
+    const whoami = 'traefik/whoami:v1.10.2';
+    let onComputer: Map<string, string>;
+
+    beforeEach(() => {
+      onComputer = new Map();
+      vi.mocked(parseComposeJson).mockReturnValue({
+        services: [{ name: 'web', image: whoami, isMain: true, internalPort: 80 }],
+        overrides: [],
+      } as any);
+      dockerService.imageIdLocally = vi.fn(async (ref: string) => onComputer.get(ref) ?? null);
+      appFilesManager.readPulledImageIds.mockResolvedValue([]);
+      appFilesManager.writePulledImageIds.mockResolvedValue(true);
+    });
+
+    it('records an image compose pulled during the start', async () => {
+      dockerService.composeApp.mockImplementation(async () => {
+        onComputer.set(whoami, 'sha256:whoami');
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+      expect(appFilesManager.writePulledImageIds).toHaveBeenCalledWith(appUrn, ['sha256:whoami']);
+    });
+
+    it('does not record an image that was on the computer before the start', async () => {
+      onComputer.set(whoami, 'sha256:mine');
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+      expect(appFilesManager.writePulledImageIds).not.toHaveBeenCalled();
+    });
+
+    it('does not fail the start when the record cannot be written', async () => {
+      appFilesManager.writePulledImageIds.mockResolvedValue(false);
+      dockerService.composeApp.mockImplementation(async () => {
+        onComputer.set(whoami, 'sha256:whoami');
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+    });
+  });
+
   describe('when another program holds the host port the app starts on', () => {
     /** Docker Engine's wording when a program on the host already listens on the port. */
     const portTaken = (port: number) =>

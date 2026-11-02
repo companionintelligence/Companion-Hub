@@ -258,6 +258,28 @@ describe('InstallAppCommand — pull policy', () => {
     expect(upCommand).not.toContain('--pull');
   });
 
+  it('records an image that arrived in compose up rather than in the pull', async () => {
+    const afm = (command as any).moduleRef.get(AppFilesManager);
+    const onComputer = new Map<string, string>();
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'app', image: 'ghcr.io/example/app:arm64', isMain: true }],
+      overrides: [],
+    } as any);
+    afm.readPulledImageIds.mockResolvedValue([]);
+    afm.writePulledImageIds.mockResolvedValue(true);
+    dockerService.imageIdLocally = vi.fn(async (ref: string) => onComputer.get(ref) ?? null);
+    dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+      if (args.startsWith('up')) {
+        onComputer.set('ghcr.io/example/app:arm64', 'sha256:arm64');
+      }
+    });
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(true);
+    expect(afm.writePulledImageIds).toHaveBeenCalledWith(appUrn, ['sha256:arm64']);
+  });
+
   it('MUST pre-pull images when force_pull is true and still omit --pull from compose up', async () => {
     // Get moduleRef to update appFilesManager mock
     const moduleRef = (command as any).moduleRef;

@@ -42,7 +42,7 @@ docker-managed named volume (`volumeName`), never both. Compose scopes named vol
 project, so `db` becomes `<app>_<store>_db`, and the existing lifecycle commands already reclaim
 them — `down --volumes` on uninstall-with-data and reset, preserved on stop/restart/update.
 
-Uninstall removes only the images the Hub pulled for the app. An install or an update records the IDs of the images its pulls brought onto the computer in `<dataDir>/pulled-images/<store>/<app>.json`, which sits beside the app folders so an update keeps it. An image that was already there, or that another app uses, is never recorded, and removal is never forced, so Docker refuses an image a container still uses. Compose removes only the images it built (`--rmi local`). An app installed before this record existed has none, so its pulled images stay on the computer after uninstall.
+Uninstall removes only the images the Hub pulled for the app. An install, an update, a start or a restart records the IDs of the images it brought onto the computer in `<dataDir>/state/pulled-images/<store>/<app>.json`. A start and a restart count for the same reason: `compose up` pulls whatever isn't here. That is where a custom app gets its images. The record sits in `state/` because a packaged Hub mounts only the folders under `/data`, so it can be written there and a Hub update keeps it. An image that was already there is never recorded. Two apps can share an image and the second one to start doesn't record it. Removal is never forced, so Docker refuses an image a container still uses and the uninstall carries on. If the app that recorded a shared image goes first, the image stays. It stays after the other app goes too, because neither holds a record of it any more. A stopped app has no containers to hold an image, so its image can go with the other app. Its next start downloads it again and records it. Images go whether or not Delete all data is on, since they aren't the app's data. Compose removes only the images it built (`--rmi local`). An app installed before this record existed has none, so its pulled images stay on the computer after uninstall.
 
 A bind mount may also declare `requiresPosixPermissions: true`, meaning its contents need real
 ownership. Windows-backed host paths (drvfs/9p) accept `chown`/`chmod` and silently discard them,
@@ -579,6 +579,8 @@ waiting or loading when the reset runs is refused once its load ends
 (`ModelRegistryService.currentPinGeneration()`), so it does not pin the old Hub's model again.
 `clearOldHubRequests` removes `state/password-change-request` and `state/pairing-app-check.json`
 and drops the backoff of that apps check (`PairingAppRestoreService.forget()`).
+`AppFilesManager.deleteAllPulledImageIds()` removes `state/pulled-images`, which the uninstalls before
+it have mostly emptied: a record left behind would claim images for an app of the same name on the next Hub.
 `state/inference-footprint-sightings.json` and `state/tailscale-serve-ownership.json` stay: one
 describes this hardware and the other names the Tailscale Serve listeners this Hub published.
 

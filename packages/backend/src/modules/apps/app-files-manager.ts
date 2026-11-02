@@ -230,14 +230,21 @@ export class AppFilesManager {
   }
 
   /**
-   * The record of the image IDs an app's installs and updates pulled for it, beside the app's folders rather than in
-   * them: an update replaces the install folder, and the record must outlive that, as it outlives a reset.
+   * The folder holding each app's record of the image IDs its pulls brought in. It sits in `state/` because a
+   * packaged Hub mounts only the folders under `/data`: `/data` itself belongs to root and goes with the container.
+   * So the record can be written and it outlives a Hub update, a reset of the app and an app update, which replaces
+   * the install folder.
    */
-  private getPulledImagesPath(appUrn: AppUrn): string {
+  private getPulledImagesDir(): string {
     const { directories } = this.configuration.getConfig();
+
+    return path.resolve(directories.dataDir, 'state', 'pulled-images');
+  }
+
+  private getPulledImagesPath(appUrn: AppUrn): string {
     const { appStoreId, appName } = extractAppUrn(appUrn);
 
-    return path.resolve(directories.dataDir, 'pulled-images', appStoreId, `${appName}.json`);
+    return path.join(this.getPulledImagesDir(), appStoreId, `${appName}.json`);
   }
 
   /**
@@ -259,15 +266,27 @@ export class AppFilesManager {
     }
   }
 
-  /** Replaces the app's record of the image IDs its installs and updates pulled. Returns false when it could not be written. */
+  /** Replaces the app's record of the image IDs its pulls brought in. Returns false when it could not be written. */
   public async writePulledImageIds(appUrn: AppUrn, imageIds: string[]): Promise<boolean> {
     const content = JSON.stringify({ imageIds: [...new Set(imageIds)] }, null, 2);
     return this.filesystem.writeTextFile(this.getPulledImagesPath(appUrn), content);
   }
 
-  /** Forgets the app's record of the images it pulled. Called once an uninstall has removed what it could. */
+  /**
+   * Forgets the app's record of the images it pulled. Called once an uninstall has removed what it could. Having no
+   * record is normal, for an app whose images were all here before it or one installed before records were kept, so
+   * only a record that exists is removed and only a failure to remove it is logged as one.
+   */
   public async deletePulledImageIds(appUrn: AppUrn): Promise<void> {
-    await this.filesystem.removeFile(this.getPulledImagesPath(appUrn));
+    const recordPath = this.getPulledImagesPath(appUrn);
+    if (await this.filesystem.pathExists(recordPath)) {
+      await this.filesystem.removeFile(recordPath);
+    }
+  }
+
+  /** Forgets every app's record. For a factory reset: a record left behind would claim images for the next Hub's apps. */
+  public async deleteAllPulledImageIds(): Promise<void> {
+    await this.filesystem.removeDirectory(this.getPulledImagesDir());
   }
 
   /** Returns whether the app's data dir was fully removed (false on a partial/failed delete). */

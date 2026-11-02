@@ -114,6 +114,15 @@ describe('UninstallAppCommand', () => {
     expect(appFilesManager.deleteAppDataDirDetailed).not.toHaveBeenCalled();
   });
 
+  it("removes the images the app pulled with Delete all data off too, since an image is not the app's data", async () => {
+    const preserveDataCommand = new UninstallAppCommand(makeModuleRef(), mock<Dockerode>(), false);
+
+    await preserveDataCommand.execute(appUrn);
+
+    expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, ['sha256:a']);
+    expect(appFilesManager.deletePulledImageIds).toHaveBeenCalledWith(appUrn);
+  });
+
   it('reports the remnant with the host path when app-data deletion fails without a permission error (#907)', async () => {
     // A non-permission failure: not worth escalating to root, so surface it directly.
     appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: false });

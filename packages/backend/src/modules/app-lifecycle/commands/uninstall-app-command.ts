@@ -43,8 +43,9 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         logger.warn(`Failed to release ports for ${appUrn}: ${err}`);
       }
 
-      // The images this app's installs and updates pulled for it, as recorded when each brought them in. Only
-      // these are removed: an image that was on the computer before the app, or that another app uses, stays.
+      // The images this app's installs, updates and starts pulled for it, as recorded when each brought them in. Only
+      // these are removed, with Delete all data on or off, since an image is not the app's data. An image that was on
+      // the computer before the app stays. So does one a container still uses, though a stopped app has no containers.
       const appImageIds = isPortExpose ? [] : await appFilesManager.readPulledImageIds(appUrn);
 
       try {

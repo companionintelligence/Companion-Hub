@@ -31,6 +31,7 @@ import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { ConfigurationService, inSettingsFileTurn, newHubLocalKey } from '@/core/config/configuration.service';
+import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { UninstallAppCommand } from '@/modules/app-lifecycle/commands/uninstall-app-command';
 import { ExposureSyncService } from '@/modules/app-lifecycle/exposure-sync.service';
 import { withTimeout } from '@/common/helpers/with-timeout';
@@ -259,6 +260,7 @@ export class FactoryResetService {
       await this.resetSettings();
       await this.forgetSettingsInMemory();
       await this.forgetInferenceState();
+      await this.forgetIn(AppFilesManager, 'the record of the images apps pulled', (files) => files.deleteAllPulledImageIds());
       await this.restoreCloudAppStore();
       this.cache.clear();
       await this.clearBearerOrgMembership();

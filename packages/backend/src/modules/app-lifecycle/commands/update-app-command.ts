@@ -2,7 +2,6 @@ import { DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
 import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
-import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
@@ -19,7 +18,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import type { OperationPhase } from '../app-operation-registry';
 import { AppLifecycleCommand, type CommandExecutionContext } from './command';
-import { pullAppImagesRecorded } from './pull-app-images';
+import { installedComposeImages, pullAppImagesRecorded } from './pull-app-images';
 import { type UpdatePhase, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 
 /**
@@ -345,11 +344,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
    * overrides applied, so the pull asks for the image this machine will actually run.
    */
   private imagesToPull(composeContent: unknown): string[] {
-    const configService = this.moduleRef.get(ConfigurationService, { strict: false });
-    const { services, overrides } = parseInstalledComposeJson(composeContent);
-    const merged = mergeArchitectureOverrides(services, overrides, configService?.get('architecture'));
-
-    return [...new Set(merged.map((service) => service.image?.trim()).filter((image): image is string => Boolean(image)))];
+    return installedComposeImages(composeContent, this.moduleRef.get(ConfigurationService, { strict: false })?.get('architecture'));
   }
 
   /**
