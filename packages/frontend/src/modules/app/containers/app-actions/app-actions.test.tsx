@@ -158,11 +158,20 @@ vi.mock('sonner', () => ({
   },
 }));
 
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({
-    t: (key: string) => key,
-  }),
-}));
+vi.mock('react-i18next', () => {
+  // Every key reads as itself but those the install error banner is handed, so a key left untranslated shows.
+  const copy: Record<string, string> = {
+    APP_INSTALL_PORTAL_ORGANIZATION_REQUIRED: 'Translated refusal',
+    PORTAL_REQUEST_FAILED: 'CI Account request failed ({{status}}) for {{path}}.',
+  };
+
+  return {
+    useTranslation: () => ({
+      t: (key: string) => copy[key] ?? key,
+      i18n: { exists: (key: string) => key in copy },
+    }),
+  };
+});
 
 vi.mock('react-tooltip', () => ({
   Tooltip: () => null,
@@ -555,6 +564,32 @@ describe('AppActions', () => {
     expect(install).toHaveAttribute('aria-disabled', 'true');
     await userEvent.click(install);
     expect(hoisted.toastError).toHaveBeenCalledWith('APP_ACTION_WRONG_ARCHITECTURE');
+  });
+
+  describe('the install error under the actions', () => {
+    const renderWithInstallError = (message: string) => {
+      hoisted.queryClient.getQueryData.mockImplementation((key: unknown[]) => (key[0] === 'app-install-error' ? { message, ts: 1 } : null));
+
+      render(<AppActions app={null} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+    };
+
+    it('translates a refused bundle download, which arrives as a key', () => {
+      renderWithInstallError('APP_INSTALL_PORTAL_ORGANIZATION_REQUIRED');
+
+      expect(screen.getByRole('alert')).toHaveTextContent('Translated refusal');
+    });
+
+    it('shows the general message for a key whose copy asks for values the event does not carry', () => {
+      renderWithInstallError('PORTAL_REQUEST_FAILED');
+
+      expect(screen.getByRole('alert')).toHaveTextContent('COMMON_AN_ERROR_OCCURRED');
+    });
+
+    it('shows an install that failed later as the text it sent', () => {
+      renderWithInstallError('One or more containers exited after install.');
+
+      expect(screen.getByRole('alert')).toHaveTextContent('One or more containers exited after install.');
+    });
   });
 
   describe('a saved link to install this app', () => {

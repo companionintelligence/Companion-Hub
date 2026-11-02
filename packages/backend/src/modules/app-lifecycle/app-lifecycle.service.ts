@@ -3433,7 +3433,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Turn a failed Portal bundle fetch into the error the caller throws, and report it first.
    *
    * The user sees a translation key: the one `downloadAppFiles` chose when Portal's status had a
-   * meaning of its own (401/402/403), else `COMMON_AN_ERROR_OCCURRED`. Everything else about the
+   * meaning of its own (401/402/403, or a refusal about the organization), else `COMMON_AN_ERROR_OCCURRED`. Everything else about the
    * failure — `timeout of 20000ms exceeded`, `Failed to fetch app files: 503 …` — used to stop
    * here: it was replaced by that key before being reported, so every non-auth Portal failure
    * reached Sentry as `COMMON_AN_ERROR_OCCURRED`, unclassified, with the cause only in a log on
