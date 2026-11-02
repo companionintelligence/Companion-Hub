@@ -189,6 +189,7 @@ describe('scrubEvent infrastructure noise', () => {
     ['a sqlite file on a read-only volume', 'Error: attempt to write a readonly database', 'host-database-file'],
     ['a tailscale CLI that failed', 'Error: Command failed: /usr/bin/tailscale down', 'tailscale-command-failed'],
     ['a model that stayed silent', 'Error: No response headers within 801000ms', 'upstream-timeout'],
+    ['a peer that closed the socket mid-fetch', 'SocketError: other side closed', 'upstream-closed'],
   ])('groups %s as warning under its own fingerprint', (_label, message, errorClass) => {
     const result = scrub(errorEvent(message));
 

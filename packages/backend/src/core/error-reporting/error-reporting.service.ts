@@ -34,12 +34,14 @@ export interface AppFailureContext {
 
 /**
  * - `user_environment`: the device — Docker, disk, network, host load. A warning.
+ * - `app_runtime`: the app's own containers or data steps failed (a dependency, a health probe, a backup,
+ *   a container that would not start). A warning: the app failed, the Hub did not.
  * - `app_config`: the marketplace manifest. An error, the app's author's to fix.
  * - `platform`: a Companion service the Hub depends on answered wrongly (Portal 5xx). An error,
  *   ours, grouped by cause across apps like the other classified kinds.
  * - `unknown`: nothing matched; grouped per app so a new failure mode stays its own issue.
  */
-export type AppFailureCategory = 'user_environment' | 'app_config' | 'platform' | 'unknown';
+export type AppFailureCategory = 'user_environment' | 'app_runtime' | 'app_config' | 'platform' | 'unknown';
 
 export interface AppFailureClassification {
   category: AppFailureCategory;
@@ -74,7 +76,10 @@ const USER_ENVIRONMENT_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: st
   { pattern: /failed to pull image|tls handshake timeout|i\/o timeout/i, errorClass: 'image-pull-failed' },
   // The queue dropped the channel a command went out on. The command may already have run, so it is reported
   // and not retried; the queue reconnects on its own.
-  { pattern: /channel is closed|connection is closing|channel creation failed|is unavailable while RabbitMQ is/i, errorClass: 'queue-unavailable' },
+  {
+    pattern: /channel is closed|connection is closing|channel creation failed|is unavailable while RabbitMQ is|RPC response timed out/i,
+    errorClass: 'queue-unavailable',
+  },
   // The Hub restarted mid-install, so the user is asked to retry it; nothing in the app failed.
   { pattern: /Install did not finish before Hub restarted/i, errorClass: 'hub-restarted' },
   // The host refused a file or a socket the Hub writes to. Permissions are the device's to fix.
@@ -89,6 +94,24 @@ const APP_CONFIG_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: string }
   { pattern: /invalid dynamic compose schema/i, errorClass: 'invalid-compose-schema' },
   // The catalog this Hub reads has no entry for the app: a catalog gap, not a Hub defect.
   { pattern: /Store not found for/i, errorClass: 'app-not-in-catalog' },
+  // A compose file or port the app's manifest (a custom app's, in practice) cannot turn into containers.
+  { pattern: /Error generating docker-compose\.yml|invalid containerPort/i, errorClass: 'invalid-app-manifest' },
+];
+
+/**
+ * The app's own containers or data steps failed. Checked after the environment and manifest kinds, so a
+ * Docker or disk cause that shows up inside one of these messages is still the device's.
+ */
+const APP_RUNTIME_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: string }> = [
+  { pattern: /dependency failed to start/i, errorClass: 'dependency-failed' },
+  { pattern: /didn't complete successfully|did not complete successfully/i, errorClass: 'service-did-not-complete' },
+  { pattern: /OCI runtime create failed|unable to start container process/i, errorClass: 'container-start-failed' },
+  { pattern: /health probe/i, errorClass: 'health-probe-failed' },
+  { pattern: /connect ECONNREFUSED 127\.0\.0\.\d+:\d+|ECONNABORTED|timeout of \d+ms exceeded/i, errorClass: 'app-not-listening' },
+  {
+    pattern: /could not delete the data|failed to restore the backup|failed to copy the app files|could not snapshot/i,
+    errorClass: 'app-data-step-failed',
+  },
 ];
 
 /**
@@ -126,6 +149,11 @@ export function classifyAppFailure(message: string, errorCode?: string): AppFail
   for (const { pattern, errorClass } of APP_CONFIG_PATTERNS) {
     if (pattern.test(message)) {
       return { category: 'app_config', errorClass };
+    }
+  }
+  for (const { pattern, errorClass } of APP_RUNTIME_PATTERNS) {
+    if (pattern.test(message)) {
+      return { category: 'app_runtime', errorClass };
     }
   }
   return { category: 'unknown', errorClass: 'unclassified' };
@@ -252,11 +280,16 @@ export class ErrorReportingService {
     this.debounce.set(debounceKey, now);
 
     const classification = classifyAppFailure(context.message, context.errorCode);
-    // User-environment failures (Docker down, disk full, unsupported arch, …) are not hub bugs; keep them
-    // visible but below the error threshold. So is a crash: the app's own containers exited, which is the
-    // app's failure to report, not the Hub's.
+    // User-environment failures (Docker down, disk full, unsupported arch, …) are not hub bugs, and neither
+    // is an app that failed on its own terms (a crash, a dependency, a health probe). Keep them visible but
+    // below the error threshold.
     const level: Sentry.SeverityLevel =
-      context.phase === 'post_start' || context.phase === 'crash' || classification.category === 'user_environment' ? 'warning' : 'error';
+      context.phase === 'post_start' ||
+      context.phase === 'crash' ||
+      classification.category === 'user_environment' ||
+      classification.category === 'app_runtime'
+        ? 'warning'
+        : 'error';
 
     Sentry.withScope((scope) => {
       scope.setTag('component', 'backend');

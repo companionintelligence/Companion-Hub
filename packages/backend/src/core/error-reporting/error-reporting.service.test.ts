@@ -129,6 +129,41 @@ describe('ErrorReportingService', () => {
     expect(scope.setExtra).toHaveBeenCalledWith('remedy', expect.stringContaining('Host port 80 is already in use'));
   });
 
+  it.each([
+    ['a dependency that did not start', 'dependency failed to start: container owncloud exited', 'dependency-failed'],
+    ['a one-off service that exited non-zero', 'service "safeos-ollama-pull" didn\'t complete successfully: exit 1', 'service-did-not-complete'],
+    [
+      'a container the runtime would not start',
+      'OCI runtime create failed: runc create failed: unable to start container process',
+      'container-start-failed',
+    ],
+    ['a failed health probe after an update', 'Update failed health probe: Health probe did not pass', 'health-probe-failed'],
+    ['an app that refused a connection on its own port', 'connect ECONNREFUSED 127.0.0.9:443', 'app-not-listening'],
+    ['a backup the app could not finish', 'Could not delete the data of rb-perm-check, so it was not reset', 'app-data-step-failed'],
+  ])('reports %s as a warning, grouped by cause', (_label, message, errorClass) => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({ appUrn: 'some-app:ci-marketplace', phase: 'install', message });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'warning');
+    expect(lastScope().setFingerprint).toHaveBeenCalledWith(['app-failure', 'install', errorClass]);
+  });
+
+  it('groups a manifest a compose file cannot turn into containers as an app-config error', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({ appUrn: 'port-test:_user', phase: 'start', message: 'invalid containerPort: 70000' });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'error');
+    expect(lastScope().setFingerprint).toHaveBeenCalledWith(['app-failure', 'start', 'invalid-app-manifest']);
+  });
+
   it('groups a missing catalog entry as an app-config error, not per app', () => {
     const configuration = {
       get: vi.fn(() => ({ allowErrorMonitoring: true })),
@@ -150,7 +185,7 @@ describe('ErrorReportingService', () => {
     service.reportAppFailure({
       appUrn: 'home-assistant:ci-marketplace',
       phase: 'start',
-      message: 'Error generating docker-compose.yml file for app home-assistant:ci-marketplace.',
+      message: 'Something the Hub has no name for went wrong.',
     });
 
     expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'error');

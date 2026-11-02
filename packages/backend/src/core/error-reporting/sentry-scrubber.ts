@@ -262,6 +262,8 @@ const INFRASTRUCTURE_NOISE_RULES: ReadonlyArray<{ errorClass: string; pattern: R
     errorClass: 'client-aborted',
     pattern: /^(?:TypeError|RelayError|Error): (?:terminated|aborted)$|Premature close|upstream response failed mid-body: terminated/m,
   },
+  // The other end of a fetch closed the socket before it answered (undici's SocketError under "fetch failed").
+  { errorClass: 'upstream-closed', pattern: /SocketError: other side closed|UND_ERR_SOCKET/ },
   // A model or peer took longer than the Hub waits for its answer.
   {
     errorClass: 'upstream-timeout',
