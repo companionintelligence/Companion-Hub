@@ -7,7 +7,7 @@ vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 
 const spawn = vi.mocked(child_process.spawn);
 
-/** `docker logs` printing `text` to stderr, as the CLI does for its own errors and for a container's stderr, and exiting with `code`. */
+/** `docker logs` printing `text` to stderr before it exits with `code`. The CLI does that for its own errors and for a container's stderr. */
 function dockerLogsExits(code: number, text: string) {
   spawn.mockImplementation((() => {
     const cmd = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });

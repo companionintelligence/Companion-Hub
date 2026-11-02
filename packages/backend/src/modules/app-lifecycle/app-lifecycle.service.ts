@@ -422,7 +422,7 @@ function toStoredConfig(parsedForm: ParsedAppForm): Record<string, unknown> {
 /** Apply the same schema defaults/normalization used on save so unchanged configs compare equal. */
 /**
  * A failed command's reason as its event says it. The `app` topic reaches every signed-in session
- * whatever it may read, and a container's log takes `settingsReadAction`. So when the reason quotes a
+ * whatever it may read. A container's log takes `settingsReadAction`. So when the reason quotes a
  * log the event names the service and the exit code. The app page reads the rest off
  * `GET /api/apps/:urn`, which asks.
  */
