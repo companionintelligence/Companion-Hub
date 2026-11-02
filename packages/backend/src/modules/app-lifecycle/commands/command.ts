@@ -7,7 +7,7 @@ import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { ModuleRef } from '@nestjs/core';
 import Dockerode from 'dockerode';
-import { type AppCommandFailureResult, AppLifecycleError } from './app-lifecycle-errors';
+import { APP_SERVICE_FAILED_CODE, type AppCommandFailureResult, AppLifecycleError } from './app-lifecycle-errors';
 import type { OperationPhase } from '../app-operation-registry';
 import { prepareAppComposeDir } from './compose-preparation';
 import { reportAndTranslateAppError } from './failure-reporting';
@@ -149,6 +149,7 @@ export class AppLifecycleCommand {
       }
       logger.error(`[AppDiag] ${appUrn} did not come up: ${verification.message}${verification.errorDetail ? `\n${verification.errorDetail}` : ''}`);
       return new AppLifecycleError(verification.message, {
+        code: APP_SERVICE_FAILED_CODE,
         detail: verification.errorDetail ?? verification.message,
         serviceFailure: verification.serviceFailure,
       });

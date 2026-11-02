@@ -7,6 +7,9 @@ export const KVM_MISSING_CODE = 'kvm_missing';
 
 export const NETWORK_OVERLAP_CODE = 'network_overlap';
 
+/** A service did not come up after `compose up`, which the Hub read from Docker (`AppLifecycleCommand.appCameUpError`). */
+export const APP_SERVICE_FAILED_CODE = 'app_service_failed';
+
 export const NETWORK_OVERLAP_USER_MESSAGE = 'App network range conflict — Hub is reassigning a new internal network. Retry install or start.';
 
 export function createNetworkOverlapError(conflictingCidrs: string[] = []): AppLifecycleError {

@@ -173,6 +173,23 @@ describe('ErrorReportingService', () => {
     expect(lastScope().setFingerprint).toHaveBeenCalledWith(['app-failure', 'install', errorClass]);
   });
 
+  it.each([
+    ['says Permission denied', 'app-summary-service-1 (restarting, exit 126): /app/run.sh: bad interpreter: Permission denied'],
+    ['fails to bind a port the Hub holds', 'app-web-1 (exited, exit 1): listen tcp 0.0.0.0:443: bind: address already in use'],
+    ['names a reference it cannot resolve', 'app-web-1 (exited, exit 1): failed to resolve reference "registry.local/model:1"'],
+    ['has no containers to name', "None of this app's services are running."],
+  ])('reports a service that did not come up as a warning under the same cause when its log %s', (_label, message) => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({ appUrn: 'some-app:ci-marketplace', phase: 'start', message, errorCode: 'app_service_failed' });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'warning');
+    expect(lastScope().setFingerprint).toHaveBeenCalledWith(['app-failure', 'start', 'container-exited']);
+  });
+
   it('groups a manifest a compose file cannot turn into containers as an app-config error', () => {
     const configuration = {
       get: vi.fn(() => ({ allowErrorMonitoring: true })),

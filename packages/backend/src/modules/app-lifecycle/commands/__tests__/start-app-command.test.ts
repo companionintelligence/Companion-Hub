@@ -566,6 +566,7 @@ describe('StartAppCommand — pull policy', () => {
       expect(result).toMatchObject({
         success: false,
         message: 'summary-service keeps restarting (exit 126): permission denied',
+        errorCode: 'app_service_failed',
         errorDetail: crashLoop.errorDetail,
         serviceFailure: crashLoop.serviceFailure,
       });

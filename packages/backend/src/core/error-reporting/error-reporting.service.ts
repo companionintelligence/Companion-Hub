@@ -3,7 +3,12 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { Injectable } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 import type { AppUrn } from '@ci-hub/common/types';
-import { KVM_MISSING_CODE, NETWORK_OVERLAP_CODE, ROCM_KFD_MISSING_CODE } from '@/modules/app-lifecycle/commands/app-lifecycle-errors';
+import {
+  APP_SERVICE_FAILED_CODE,
+  KVM_MISSING_CODE,
+  NETWORK_OVERLAP_CODE,
+  ROCM_KFD_MISSING_CODE,
+} from '@/modules/app-lifecycle/commands/app-lifecycle-errors';
 import { PORTAL_HTTP_ERROR_CODE, PORTAL_TIMEOUT_CODE, PORTAL_UNREACHABLE_CODE } from '@/core/portal/portal.constants';
 import { QUEUE_UNAVAILABLE_CODE } from '@/modules/queue/queue.constants';
 import { DOCKER_HOST_PORT_CONFLICT_PATTERN, extractConflictingHostPort } from '@/modules/network/docker-port-errors';
@@ -138,6 +143,9 @@ const ERROR_CODE_CLASSIFICATIONS: Readonly<Record<string, AppFailureClassificati
   [ROCM_KFD_MISSING_CODE]: { category: 'user_environment', errorClass: 'rocm-unavailable' },
   [KVM_MISSING_CODE]: { category: 'user_environment', errorClass: 'kvm-unavailable' },
   [NETWORK_OVERLAP_CODE]: { category: 'user_environment', errorClass: 'network-overlap' },
+  // The report's text ends in the app's own log, which can say anything. A crash that logs "Permission denied"
+  // would read as the device's, and one that logs a bind on 443 would not be captured at all.
+  [APP_SERVICE_FAILED_CODE]: { category: 'app_runtime', errorClass: 'container-exited' },
   // A Portal request that got no answer is the device's path to Portal or a host too starved to
   // drive a socket, not Portal (#1912: one hub timed out against Portal, Cloudflare and its own
   // Postgres in the same minute). Both kinds share a class so one bad hub is one issue.
