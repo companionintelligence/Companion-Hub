@@ -13,6 +13,5 @@ export function getEffectiveExposureMode(form: AppFormHostPortFields): 'local' |
 
 /** True when the main service binds ${APP_PORT} on the Docker host. */
 export function publishesHostPort(form: AppFormHostPortFields): boolean {
-  const effectiveExposureMode = getEffectiveExposureMode(form);
-  return Boolean(form.openPort || effectiveExposureMode === 'local' || form.exposedLocal);
+  return Boolean(form.openPort || getEffectiveExposureMode(form) === 'local' || form.exposedLocal);
 }

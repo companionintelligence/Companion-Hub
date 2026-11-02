@@ -1665,6 +1665,116 @@ describe('AppLifecycleService', () => {
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'start', appUrn }));
     });
 
+    describe('a reinstall form that names no mode', () => {
+      const lastPatch = () => appsRepository.updateAppById.mock.calls.find(([, patch]) => 'config' in patch)?.[1] as Record<string, any>;
+      const publicWeb = {
+        port: 8080,
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        enableAuth: true,
+        localSubdomain: 'shop',
+        publicDomain: 'example.com',
+      };
+      const onAppStored = (config: Record<string, unknown>) =>
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config, exposureMode: config.exposureMode ?? 'local' } as any);
+
+      it('leaves an app on Public Web under its name, with its closed host port and its login', async () => {
+        onAppStored(publicWeb);
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } } as any);
+
+        const expected = {
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          openPort: false,
+          enableAuth: true,
+          localSubdomain: 'shop',
+          publicDomain: 'example.com',
+        };
+        expect(lastPatch()).toMatchObject(expected);
+        expect(lastPatch().config).toMatchObject({ ...expected, port: 9090 });
+      });
+
+      it('leaves an app on the Private VPN', async () => {
+        onAppStored({ port: 8080, exposureMode: 'tailscale', exposedLocal: false, openPort: false });
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} } as any);
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'tailscale', openPort: false });
+        expect(lastPatch().config).toMatchObject({ exposureMode: 'tailscale' });
+      });
+
+      it('leaves an app on This Machine Only', async () => {
+        onAppStored({ port: 8080 });
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} } as any);
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', openPort: true });
+        expect(lastPatch().config.exposureMode).toBeUndefined();
+      });
+
+      it('still moves the app when the form names another mode', async () => {
+        onAppStored(publicWeb);
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'local' } } as any);
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', openPort: true });
+        expect(lastPatch().config.localSubdomain).toBeUndefined();
+        expect(lastPatch().config.publicDomain).toBeUndefined();
+      });
+
+      it('has no mode to keep on an app that is not exposable', async () => {
+        marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
+        onAppStored({ port: 8080, exposureMode: 'tailscale', openPort: false });
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} } as any);
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local' });
+      });
+
+      it('is not kept for a retry of a failed install, which goes through the form it was given', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'install_failed', config: publicWeb, exposureMode: 'cloudflare' } as any);
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} } as any);
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local' });
+      });
+    });
+
+    it('gives a first install of a legacy form with a closed host port the Hub login it always had', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposedLocal: true, openPort: false } } as any);
+
+      expect(appsRepository.createApp).toHaveBeenCalledWith(
+        expect.objectContaining({ exposureMode: 'cloudflare', openPort: false, enableAuth: true }),
+      );
+    });
+
+    it('records the mode compose runs when a reinstall form is public through exposedLocal alone', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 }, exposureMode: 'local' } as any);
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposedLocal: true, openPort: false } } as any);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ exposureMode: 'cloudflare' }));
+    });
+
+    it('keeps the public domain of an install form that is public through exposedLocal alone', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 }, exposureMode: 'local' } as any);
+
+      await service.installApp({
+        actor: TEST_ACTOR,
+        appUrn,
+        form: { port: 8080, exposedLocal: true, openPort: false, publicDomain: 'example.com' },
+      } as any);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ config: expect.objectContaining({ publicDomain: 'example.com' }) }),
+      );
+    });
+
     it('refuses the reinstall before it parks anything when another app holds the subdomain', async () => {
       /*
        * The release reaches CI-Cloud and writes the row, so it has to run AFTER
@@ -5879,6 +5989,105 @@ describe('AppLifecycleService', () => {
         onAppStored({ ...publicWeb, nested: { a: 1, b: 2 } }, 'running');
 
         await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { ...publicWeb, nested: { b: 2, a: 1 } } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('records the mode compose runs when a version bump re-submits a legacy form and changes nothing', async () => {
+        const legacy = { port: 8080, exposedLocal: true, openPort: true, localSubdomain: 'shop' };
+        onAppStored(legacy, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: legacy });
+
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, { exposureMode: 'cloudflare' });
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('keeps the name and the closed host port when a form only repeats the mode the app is in', async () => {
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, exposureMode: 'cloudflare' } });
+
+        expect(lastPatch()).toMatchObject({
+          exposureMode: 'cloudflare',
+          localSubdomain: 'shop',
+          publicDomain: 'example.com',
+          openPort: false,
+          port: 9090,
+        });
+      });
+
+      it('does not read a subdomain stored before it was canonicalized as a change', async () => {
+        onAppStored({ ...publicWeb, localSubdomain: 'My-App' }, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('has no mode to keep on an app that is not exposable', async () => {
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
+        onAppStored({ port: 8080, exposureMode: 'tailscale', openPort: false });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', exposedLocal: false });
+      });
+
+      it('keeps exposedLocal when a form only repeats the mode the app is in', async () => {
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, exposureMode: 'cloudflare' } });
+
+        expect(lastPatch()).toMatchObject({ exposedLocal: true });
+      });
+
+      it('leaves the Hub login on when a form closes the host port of a public app that never chose one', async () => {
+        const { enableAuth: _enableAuth, openPort: _openPort, ...servedOpen } = publicWeb;
+        onAppStored(servedOpen);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { openPort: false } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare', openPort: false, enableAuth: true });
+      });
+
+      it('honors a login turned off in the form that closes the host port', async () => {
+        const { enableAuth: _enableAuth, openPort: _openPort, ...servedOpen } = publicWeb;
+        onAppStored(servedOpen);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { openPort: false, enableAuth: false } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare', openPort: false, enableAuth: false });
+      });
+
+      it('gives a legacy form that goes public with a closed host port the Hub login it always had', async () => {
+        onAppStored({ port: 8080 });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposedLocal: true, openPort: false } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare', openPort: false, enableAuth: true });
+      });
+
+      it('does not restart a legacy Public Web app with a closed host port and no login on a save that changes nothing', async () => {
+        onAppStored({ port: 8080, exposedLocal: true, openPort: false, localSubdomain: 'shop' }, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('opens the host port of a form public through exposedLocal that says nothing about it, as the queue will', async () => {
+        onAppStored({ port: 8080 });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposedLocal: true } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare', openPort: true });
+      });
+
+      it('does not restart a legacy Public Web app whose form never had an openPort', async () => {
+        onAppStored({ port: 8080, exposedLocal: true }, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
 
         expect(appEventsQueue.publish).not.toHaveBeenCalled();
       });
