@@ -267,6 +267,32 @@ describe('reportAndTranslateAppError — error reporting side effect', () => {
     expect(reported[0]?.errorCode).toBe('custom_code');
   });
 
+  it('keeps app service logs in the command result but strips them from worker telemetry', async () => {
+    const { moduleRef, reported } = createHarness();
+    const privateLog = 'DATABASE_URL=private-value';
+    const serviceFailure = { kind: 'restarting' as const, service: 'web', exitCode: 1, logLine: privateLog };
+    const err = new AppLifecycleError(`web keeps restarting: ${privateLog}`, {
+      code: 'app_service_failed',
+      detail: `web-1 (restarting, exit 1): ${privateLog}`,
+      serviceFailure,
+    });
+
+    const result = await reportAndTranslateAppError(moduleRef, err, 'urn:store:custom', 'start');
+
+    expect(reported).toEqual([
+      {
+        appUrn: 'urn:store:custom',
+        phase: 'start',
+        message: 'web keeps restarting (exit 1)',
+        errorCode: 'app_service_failed',
+        cause: undefined,
+      },
+    ]);
+    expect(JSON.stringify(reported)).not.toContain(privateLog);
+    expect(result.errorDetail).toContain(privateLog);
+    expect(result.serviceFailure).toEqual(serviceFailure);
+  });
+
   it('reports the message when an AppLifecycleError carries no detail', async () => {
     const { moduleRef, reported } = createHarness();
     const err = new AppLifecycleError('nothing more to say');

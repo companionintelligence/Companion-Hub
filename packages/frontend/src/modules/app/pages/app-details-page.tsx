@@ -332,6 +332,7 @@ export default () => {
                   metadata={metadata}
                   info={info}
                   appDataHostPath={appDataHostPath}
+                  failure={privateRecord?.failure}
                   localDomain={userSettings.localDomain}
                   sslPort={userSettings.sslPort}
                   runtimeHealth={runtimeHealth.data}

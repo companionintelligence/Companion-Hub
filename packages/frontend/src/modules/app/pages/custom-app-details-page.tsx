@@ -36,7 +36,7 @@ export const CustomAppDetailsPage = () => {
     );
   }
 
-  const { info, app, metadata } = getApp.data;
+  const { info, app, metadata, failure } = getApp.data;
 
   if (isPortExposeApp(app?.config) || isPortExposeApp({ kind: (info as { kind?: 'port-expose' }).kind })) {
     if (!app) {
@@ -50,7 +50,7 @@ export const CustomAppDetailsPage = () => {
     return <PortExposeDetailsView app={app} info={info} />;
   }
 
-  return <CustomAppDetailsPageContent info={info} app={app} metadata={metadata} appId={appId} />;
+  return <CustomAppDetailsPageContent info={info} app={app} metadata={metadata} failure={failure} appId={appId} />;
 };
 
 export default CustomAppDetailsPage;

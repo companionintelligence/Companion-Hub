@@ -1,3 +1,4 @@
+import type { GetAppDto } from '@/api-client';
 import { useSearchParams } from 'react-router';
 import { AppDetailsTabs } from '../containers/app-details-tabs/app-details-tabs';
 import { AppActions } from '../containers/app-actions/app-actions';
@@ -25,9 +26,10 @@ interface Props {
   info: AppInfo;
   app?: AppDetails | null;
   metadata: AppMetadata;
+  failure?: GetAppDto['failure'];
 }
 
-export const CustomAppDetailsPageContent = ({ appId, info, app, metadata }: Props) => {
+export const CustomAppDetailsPageContent = ({ appId, info, app, metadata, failure }: Props) => {
   const { t } = useTranslation();
   // A member sees the app, its status and Open; its settings, backups and lifecycle are an owner's or admin's.
   const access = useCustomAppAccess();
@@ -110,6 +112,7 @@ export const CustomAppDetailsPageContent = ({ appId, info, app, metadata }: Prop
                   app={app}
                   metadata={metadata}
                   info={info}
+                  failure={failure}
                   localDomain={userSettings.localDomain}
                   sslPort={userSettings.sslPort}
                   runtimeHealth={runtimeHealth.data}

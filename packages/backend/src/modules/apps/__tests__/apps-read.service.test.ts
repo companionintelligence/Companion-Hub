@@ -8,6 +8,9 @@ import { MarketplaceService } from '../../marketplace/marketplace.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { PortAllocationRepository } from '../../network/port-allocation.repository';
 import { InstallPipelineTracker } from '../install-pipeline.tracker';
+import { LifecycleJobService } from '../../app-lifecycle/lifecycle-job.service';
+import type { ModuleRef } from '@nestjs/core';
+import type { AppUrn } from '@ci-hub/common/types';
 
 /**
  * `countUpdatesAvailable` measured live on the fleet: beta-max ran `ci-openclaw` `2026.9.14` while the
@@ -127,5 +130,122 @@ describe('AppsReadService.countUpdatesAvailable', () => {
     await expect(service.countUpdatesAvailable()).resolves.toBe(0);
     expect(marketplaceService.getAppUpdateInfo).not.toHaveBeenCalled();
     expect(appFilesManager.getInstalledAppInfo).not.toHaveBeenCalled();
+  });
+});
+
+describe('AppsReadService.getApp failure', () => {
+  const appUrn = 'ci-memory:ci-marketplace' as AppUrn;
+  const serviceFailure = { kind: 'restarting', service: 'summary-service', exitCode: 126 };
+
+  const failedAt = '2026-11-02T10:00:00.000Z';
+  let jobService: ReturnType<typeof mock<LifecycleJobService>>;
+
+  function build(status: string, jobs: unknown[], updatedAt = '2026-11-02T10:00:01.000Z') {
+    const appsRepository = mock<AppsRepository>();
+    const appFilesManager = mock<AppFilesManager>();
+    const marketplaceService = mock<MarketplaceService>();
+    jobService = mock<LifecycleJobService>();
+    const moduleRef = mock<ModuleRef>();
+    appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status, updatedAt } as never);
+    appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'ci-memory' } as never);
+    appFilesManager.getUserComposeFile.mockResolvedValue({ content: null } as never);
+    appFilesManager.getUserEnv.mockResolvedValue({ content: null } as never);
+    appFilesManager.getDockerComposeJson.mockResolvedValue({ content: null } as never);
+    marketplaceService.getAppUpdateInfo.mockResolvedValue({ latestVersion: 1, latestDockerVersion: '1' } as never);
+    marketplaceService.resolveAppDescription.mockResolvedValue({ id: 'ci-memory' } as never);
+    jobService.listJobs.mockImplementation((async ({ excludeOperations = [], limit }: { excludeOperations?: string[]; limit?: number }) =>
+      (jobs as Array<{ operation?: string }>)
+        .filter(({ operation }) => !operation || !excludeOperations.includes(operation))
+        .slice(0, limit)) as never);
+    moduleRef.get.mockImplementation(((token: unknown) => (token === LifecycleJobService ? jobService : undefined)) as never);
+    const portAllocationRepository = mock<PortAllocationRepository>();
+    portAllocationRepository.getByAppUrn.mockResolvedValue([] as never);
+    const configurationService = mock<ConfigurationService>();
+    configurationService.getConfig.mockReturnValue({ userSettings: {} } as never);
+    return new AppsReadService(
+      appsRepository,
+      appFilesManager,
+      mock<LoggerService>(),
+      marketplaceService,
+      configurationService,
+      portAllocationRepository,
+      mock<InstallPipelineTracker>(),
+      moduleRef,
+    );
+  }
+
+  const failedJob = (failure: unknown, error = 'summary-service keeps restarting (exit 126)') => ({
+    status: 'failed',
+    error,
+    finishedAt: failedAt,
+    metadata: { failure },
+  });
+
+  it('gives a failed install the reason its last job recorded, so a reload does not lose it', async () => {
+    const service = build('install_failed', [failedJob({ errorDetail: 'logs', serviceFailure })]);
+
+    await expect(service.getApp(appUrn)).resolves.toMatchObject({
+      failure: { message: 'summary-service keeps restarting (exit 126)', errorDetail: 'logs', serviceFailure },
+    });
+  });
+
+  it('keeps any reason for a failed install, not only a crash', async () => {
+    const service = build('install_failed', [failedJob({ errorCode: 'network_overlap' }, 'App network range conflict')]);
+
+    await expect(service.getApp(appUrn)).resolves.toMatchObject({ failure: { message: 'App network range conflict', errorCode: 'network_overlap' } });
+  });
+
+  it('gives a stopped app the reason when its containers did not come up', async () => {
+    const service = build('stopped', [failedJob({ serviceFailure })]);
+
+    await expect(service.getApp(appUrn)).resolves.toMatchObject({ failure: { serviceFailure } });
+  });
+
+  it('gives a stopped app no reason for any other failed start, which its toast told', async () => {
+    const service = build('stopped', [failedJob({ errorCode: undefined }, 'address already in use')]);
+
+    await expect(service.getApp(appUrn)).resolves.toMatchObject({ failure: null });
+  });
+
+  it('gives a stopped app no reason when its row moved on long after the job, as when the sync brought it back and it stopped again', async () => {
+    const service = build('stopped', [failedJob({ serviceFailure })], '2026-11-05T08:00:00.000Z');
+
+    await expect(service.getApp(appUrn)).resolves.toMatchObject({ failure: null });
+  });
+
+  it('keeps the reason of a failed install however long ago it failed', async () => {
+    const service = build('install_failed', [failedJob({ serviceFailure })], '2026-11-05T08:00:00.000Z');
+
+    await expect(service.getApp(appUrn)).resolves.toMatchObject({ failure: { serviceFailure } });
+  });
+
+  it('gives no reason once a later job went fine, such as a Stop', async () => {
+    const service = build('stopped', [{ status: 'completed', error: null, metadata: {} }]);
+
+    await expect(service.getApp(appUrn)).resolves.toMatchObject({ failure: null });
+  });
+
+  it('keeps the reason past a backup or an env rewrite and never gives their failure as the reason', async () => {
+    const serviceFailure = { kind: 'exited', service: 'migrate', exitCode: 1 };
+    const service = build('stopped', [
+      { operation: 'generate_env', status: 'failed', error: 'Could not write app.env', metadata: { failure: {} } },
+      { operation: 'backup', status: 'completed', error: null, metadata: {} },
+      { operation: 'start', ...failedJob({ serviceFailure }, 'migrate exited (exit 1)') },
+    ]);
+
+    await expect(service.getApp(appUrn)).resolves.toMatchObject({ failure: { message: 'migrate exited (exit 1)', serviceFailure } });
+  });
+
+  it('never shows the stack trace of a job that threw', async () => {
+    const service = build('install_failed', [{ status: 'failed', error: 'Error: boom\n    at foo.ts:1', metadata: {} }]);
+
+    await expect(service.getApp(appUrn)).resolves.toMatchObject({ failure: null });
+  });
+
+  it('gives a running app no reason and does not read its jobs', async () => {
+    const service = build('running', [failedJob({ serviceFailure })]);
+
+    await expect(service.getApp(appUrn)).resolves.toMatchObject({ failure: null });
+    expect(jobService.listJobs).not.toHaveBeenCalled();
   });
 });

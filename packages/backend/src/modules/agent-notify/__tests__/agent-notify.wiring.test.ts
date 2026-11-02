@@ -13,6 +13,7 @@ import { AppStatusSyncService } from '@/modules/app-lifecycle/app-status-sync.se
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { BackupsService } from '@/modules/backups/backups.service';
 import { DOCKERODE } from '@/modules/docker/constants';
+import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { HubPoolIdentityRepository } from '@/modules/hub-pool/hub-pool-identity.repository';
 import { HubPoolIdentityService } from '@/modules/hub-pool/hub-pool-identity.service';
 import { McpService } from '@/modules/mcp/mcp.service';
@@ -73,6 +74,7 @@ describe('AppModule wiring', () => {
   const appsRepository = mock<AppsRepository>();
   const appEventsQueue = mock<AppEventsQueue>();
   const docker = { listContainers: vi.fn() };
+  const dockerReadFacade = { diagnoseAppContainers: vi.fn().mockResolvedValue({ unhealthy: [], healthy: [] }) };
   const poolIdentityRows = { get: vi.fn(), insertIfAbsent: vi.fn(), replaceKeys: vi.fn() };
   const tailscale = mock<TailscaleService>();
   tailscale.getStatusCached.mockResolvedValue(fromPartial({ connected: false }));
@@ -98,6 +100,8 @@ describe('AppModule wiring', () => {
       .useValue(mock<SystemEventsQueue>())
       .overrideProvider(DOCKERODE)
       .useValue(docker)
+      .overrideProvider(DockerReadFacade)
+      .useValue(dockerReadFacade)
       .overrideProvider(AppsRepository)
       .useValue(appsRepository)
       .overrideProvider(CacheService)

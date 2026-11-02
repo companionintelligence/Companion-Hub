@@ -119,6 +119,37 @@ describe('SSEProvider', () => {
     expect(mockToastDismiss).toHaveBeenCalledWith('start-error-toast');
   });
 
+  it.each([
+    ['start_error', 'excalidraw did not start: summary-service keeps restarting (exit 126): permission denied'],
+    ['restart_error', 'excalidraw did not restart: summary-service keeps restarting (exit 126): permission denied'],
+    ['install_error', 'excalidraw did not install: summary-service keeps restarting (exit 126): permission denied'],
+  ])('names the failing service and the reason in the %s toast', (event, text) => {
+    let onEvent: ((data: unknown) => void) | undefined;
+    mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+      onEvent = config.onEvent;
+    });
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <SSEProvider>
+            <div>child</div>
+          </SSEProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    act(() => {
+      onEvent?.({
+        event,
+        appUrn: 'excalidraw:community',
+        serviceFailure: { kind: 'restarting', service: 'summary-service', exitCode: 126, logLine: 'permission denied' },
+      });
+    });
+
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+    expect(mockToastError).toHaveBeenCalledWith(text, { duration: 10000 });
+  });
+
   const renderProvider = () => {
     let onEvent: ((data: unknown) => void) | undefined;
     mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
@@ -174,6 +205,25 @@ describe('SSEProvider', () => {
       });
 
       expect(mockToastError).toHaveBeenCalledTimes(1);
+      expect(mockToastWarning).toHaveBeenCalledWith(expect.stringMatching(/^excalidraw is now on port 10001 /), expect.anything());
+    });
+
+    it.each([
+      ['start_error', 'excalidraw did not start: summary-service keeps restarting (exit 126)'],
+      ['restart_error', 'excalidraw did not restart: summary-service keeps restarting (exit 126)'],
+    ])('%s names the failing service and still says where the app is now', (event, text) => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({
+          event,
+          appUrn: 'excalidraw:community',
+          movedHostPort,
+          serviceFailure: { kind: 'restarting', service: 'summary-service', exitCode: 126 },
+        });
+      });
+
+      expect(mockToastError).toHaveBeenCalledExactlyOnceWith(text, { duration: 10000 });
       expect(mockToastWarning).toHaveBeenCalledWith(expect.stringMatching(/^excalidraw is now on port 10001 /), expect.anything());
     });
 

@@ -2,7 +2,7 @@ import { AppCommandDeadline, appEventsQueueTimeoutMs } from '@/common/helpers/ap
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import messages from '@ci-hub/common/i18n/translations/en.json';
-import type { HostPortMove, SSE } from '@ci-hub/common/schemas';
+import type { AppServiceFailure, HostPortMove, SSE } from '@ci-hub/common/schemas';
 import { isPortExposeApp, manifestDefaultsEdgeAuthOn, servedOpenPort } from '@ci-hub/common/schemas';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -75,6 +75,7 @@ import {
   type AppPublicRoutingSnapshot,
 } from '../apps/app-public-routing.helpers';
 import { DockerService } from '../docker/docker.service';
+import { describeAppServiceFailure } from '../docker/managed-app-containers';
 import { AppIntentSyncService } from '../apps/app-intent-sync.service';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 import type { MemoryConnectService } from '../memory-connect/memory-connect.service';
@@ -486,6 +487,20 @@ function toStoredConfig(parsedForm: ParsedAppForm): Record<string, unknown> {
 }
 
 /** Apply the same schema defaults/normalization used on save so unchanged configs compare equal. */
+/**
+ * A failed command's reason as its event says it. The `app` topic reaches every signed-in session
+ * whatever it may read. A container's log takes `settingsReadAction`. So when the reason quotes a
+ * log the event names the service and the exit code. The app page reads the rest off
+ * `GET /api/apps/:urn`, which asks.
+ */
+function failureForEveryone(result: { message?: string; errorDetail?: string; serviceFailure?: AppServiceFailure }) {
+  if (!result.serviceFailure) {
+    return { error: result.message, errorDetail: result.errorDetail };
+  }
+  const { logLine: _logLine, ...serviceFailure } = result.serviceFailure;
+  return { error: describeAppServiceFailure(serviceFailure), serviceFailure };
+}
+
 function normalizeConfigForCompare(raw: Record<string, unknown>): Record<string, unknown> {
   const parsed = appFormSchema.safeParse(raw);
   if (!parsed.success) {
@@ -884,7 +899,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         await this.syncExposure();
       } else {
         if (job) {
-          await this.lifecycleJobService?.failJob(job.id, result.message || 'Operation failed').catch(() => null);
+          // What the app page shows after a reload, when the event that carried it is gone (see `AppsReadService.lastFailure`).
+          const failure = {
+            errorCode: result.errorCode,
+            errorDetail: result.errorDetail,
+            settingsPath: result.settingsPath,
+            serviceFailure: result.serviceFailure,
+          };
+          await this.lifecycleJobService?.failJob(job.id, result.message || 'Operation failed', { failure }).catch(() => null);
         }
         await this.handleFailedResult(data.command, data.appUrn, result);
         if (isInstall) {
@@ -1001,7 +1023,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       this.sseService.emit('app', { event: 'update_error', appUrn, appStatus: status, error: result.message });
       this.agentNotifyService?.notify('update_error', { appUrn }, 'high');
       // Reported as a failed update's rollback is: the command skipped its own report for a cancel.
-      this.reportAppFailure(appUrn, 'update', result.message || 'The cancelled update could not be rolled back', result.errorCode);
+      this.reportAppFailure(
+        appUrn,
+        'update',
+        result.message || 'The cancelled update could not be rolled back',
+        result.errorCode,
+        result.serviceFailure,
+      );
       return;
     }
     this.sseService.emit('app', { event: 'update_cancelled', appUrn, appStatus: status });
@@ -1098,16 +1126,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       event: 'install_error',
       appUrn,
       appStatus: 'install_failed',
-      error: result.message,
+      ...failureForEveryone(result),
       errorCode: result.errorCode,
-      errorDetail: result.errorDetail,
       settingsPath: result.settingsPath,
     });
     if (emitQueueUpdate) {
       void this.emitInstallQueueUpdate();
     }
     this.agentNotifyService?.notify('install_error', { appUrn }, 'high');
-    this.reportAppFailure(appUrn, 'install', result.message, result.errorCode);
+    this.reportAppFailure(appUrn, 'install', result.message, result.errorCode, result.serviceFailure);
   }
 
   /**
@@ -1257,7 +1284,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       form: this.startCommandForm(app.config, { skipPull, onlyRecreateChanged }),
     })
       .then(async (raw) => {
-        const { success, message, errorCode, errorDetail, settingsPath, movedHostPort } = raw as z.output<typeof appEventResultSchema>;
+        const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort } = raw as z.output<
+          typeof appEventResultSchema
+        >;
         if (success) {
           this.logger.info(`App ${appUrn} started successfully`);
           await this.settleCommandOutcome({
@@ -1312,6 +1341,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             errorCode,
             errorDetail,
             settingsPath,
+            serviceFailure,
             movedHostPort,
             failureOutcome: {
               status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
@@ -2292,7 +2322,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.registerDispatchedCommand(appUrn, requestId, 'restart');
     this.publishRegistered(appUrn, requestId, { command: 'restart', appUrn, requestId, form: { ...app.config, skipPull } })
       .then(async (raw) => {
-        const { success, message, errorCode, errorDetail, settingsPath, movedHostPort } = raw as z.output<typeof appEventResultSchema>;
+        const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort } = raw as z.output<
+          typeof appEventResultSchema
+        >;
         if (success) {
           this.logger.info(`App ${appUrn} restarted successfully`);
           await this.settleCommandOutcome({
@@ -2321,6 +2353,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             errorCode,
             errorDetail,
             settingsPath,
+            serviceFailure,
             movedHostPort,
             failureOutcome: {
               status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
@@ -2375,7 +2408,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       requestId,
       form: this.startCommandForm(app.config, { skipPull, onlyRecreateChanged }),
     });
-    const { success, message, errorCode, errorDetail, settingsPath, movedHostPort } = raw as z.output<typeof appEventResultSchema>;
+    const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort } = raw as z.output<typeof appEventResultSchema>;
 
     if (success) {
       this.logger.info(`App ${appUrn} started successfully`);
@@ -2428,6 +2461,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       errorCode,
       errorDetail,
       settingsPath,
+      serviceFailure,
       movedHostPort,
       failureOutcome: {
         status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
@@ -2480,7 +2514,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       requestId,
       form: { ...app.config, skipPull },
     });
-    const { success, message, errorCode, errorDetail, settingsPath, movedHostPort } = raw as z.output<typeof appEventResultSchema>;
+    const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort } = raw as z.output<typeof appEventResultSchema>;
 
     if (success) {
       this.logger.info(`App ${appUrn} restarted successfully`);
@@ -2513,6 +2547,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       errorCode,
       errorDetail,
       settingsPath,
+      serviceFailure,
       movedHostPort,
       failureOutcome: {
         status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
@@ -3489,8 +3524,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
   }
 
-  private reportAppFailure(appUrn: AppUrn, phase: AppFailurePhase, message: string, errorCode?: string): void {
-    this.errorReportingService?.reportAppFailure({ appUrn, phase, message, errorCode });
+  private reportAppFailure(appUrn: AppUrn, phase: AppFailurePhase, message: string, errorCode?: string, serviceFailure?: AppServiceFailure): void {
+    // Container logs are app-controlled and may contain arbitrary private data. Keep them in the
+    // permission-gated app failure details, but send only the structured reason to telemetry.
+    const telemetryMessage = serviceFailure ? describeAppServiceFailure({ ...serviceFailure, logLine: undefined }) : message;
+    this.errorReportingService?.reportAppFailure({ appUrn, phase, message: telemetryMessage, errorCode });
   }
 
   /**
@@ -3553,8 +3591,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * `restarting` (a public-route repair) would leave a spinner nothing settles. The
    * status sync skips transitional rows for its grace period, and it runs on the
    * queue that just failed.
+   *
+   * A failed install stays one when a start sent to it through the API fails too: `stopped` would take
+   * away its Retry install and send the next retry through Start, past install's port handling.
    */
   private statusAfterFailedCommand(errorCode: string | undefined, statusBefore: AppStatus, statusOnFailure: AppStatus): AppStatus {
+    if (statusBefore === 'install_failed') {
+      return statusBefore;
+    }
     const settled = statusBefore === 'running' || statusBefore === 'stopped';
     return errorCode === QUEUE_UNAVAILABLE_CODE && settled ? statusBefore : statusOnFailure;
   }
@@ -3772,6 +3816,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     errorCode?: string;
     errorDetail?: string;
     settingsPath?: string;
+    serviceFailure?: z.output<typeof appEventResultSchema>['serviceFailure'];
     /** The host port the command moved the app off and onto, which the person is told about. If it then failed, the row stays on the new one. */
     movedHostPort?: HostPortMove;
     successOutcome?: {
@@ -3836,14 +3881,19 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         event: params.failureOutcome.event,
         appUrn: params.appUrn,
         appStatus: params.failureOutcome.status,
-        error: params.message,
+        ...failureForEveryone(params),
         errorCode: params.errorCode,
-        errorDetail: params.errorDetail,
         settingsPath: params.settingsPath,
         movedHostPort: params.movedHostPort,
       });
       this.agentNotifyService?.notify(params.failureOutcome.notifyEvent, { appUrn: params.appUrn }, params.failureOutcome.notifySeverity ?? 'high');
-      this.reportAppFailure(params.appUrn, params.failureOutcome.failurePhase, params.message ?? 'Unknown error', params.errorCode);
+      this.reportAppFailure(
+        params.appUrn,
+        params.failureOutcome.failurePhase,
+        params.message ?? 'Unknown error',
+        params.errorCode,
+        params.serviceFailure,
+      );
       return true;
     }
 

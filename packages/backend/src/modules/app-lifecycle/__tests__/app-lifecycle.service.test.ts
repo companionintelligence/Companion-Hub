@@ -759,6 +759,23 @@ describe('AppLifecycleService', () => {
       expect(mutex.acquire).toHaveBeenCalledWith('test-app');
     });
 
+    it('records why a command failed on its job, where the app page reads it after a reload', async () => {
+      const failJob = vi.fn().mockResolvedValue(null);
+      (service as any).lifecycleJobService = { createJob: vi.fn().mockResolvedValue({ id: 'job-1' }), failJob };
+      const serviceFailure = { kind: 'restarting', service: 'summary-service', exitCode: 126 };
+      const result = { success: false, message: 'summary-service keeps restarting (exit 126)', errorDetail: 'the logs', serviceFailure };
+      commandFactory.createCommand.mockReturnValue({ execute: vi.fn().mockResolvedValue(result) } as any);
+
+      await service.invokeCommand(
+        { appUrn: 'test-app:ci-marketplace', command: 'start', requestId: '00000000-0000-4000-8000-000000000009', form: {} } as any,
+        vi.fn(),
+      );
+
+      expect(failJob).toHaveBeenCalledWith('job-1', 'summary-service keeps restarting (exit 126)', {
+        failure: expect.objectContaining({ errorDetail: 'the logs', serviceFailure }),
+      });
+    });
+
     it('should handle errors during execution', async () => {
       const data = { appUrn: 'test-app:ci-marketplace', command: 'install', requestId: '00000000-0000-4000-8000-000000000003', form: {} } as any;
       const reply = vi.fn();
@@ -6716,6 +6733,80 @@ describe('AppLifecycleService', () => {
       expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith(expect.objectContaining({ phase: 'start', errorCode: 'rocm_kfd_missing' }));
     });
 
+    it('startApp error: the failing service reaches the emitted SSE event and the app is stopped', async () => {
+      const serviceFailure = { kind: 'restarting', service: 'summary-service', exitCode: 126, logLine: 'permission denied' };
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'summary-service keeps restarting (exit 126): permission denied',
+        errorDetail: 'app-summary-service-1 (restarting, exit 126): permission denied',
+        serviceFailure,
+      } as any);
+
+      await service.startApp({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'start_error',
+          appStatus: 'stopped',
+          error: 'summary-service keeps restarting (exit 126)',
+          serviceFailure: { kind: 'restarting', service: 'summary-service', exitCode: 126 },
+        }),
+      );
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(expect.anything(), { status: 'stopped' });
+    });
+
+    it.each([
+      ['start_error', (s: AppLifecycleService) => s.startApp({ actor: TEST_ACTOR, appUrn })],
+      ['restart_error', (s: AppLifecycleService) => s.restartApp({ actor: TEST_ACTOR, appUrn })],
+    ])('%s carries no log text, since the app topic reaches every signed-in session', async (event, send) => {
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'web keeps restarting (exit 1): API_KEY=sk-live-abc is invalid',
+        errorCode: 'app_service_failed',
+        errorDetail: 'app-web-1 (restarting, exit 1): API_KEY=sk-live-abc is invalid',
+        serviceFailure: { kind: 'restarting', service: 'web', exitCode: 1, logLine: 'API_KEY=sk-live-abc is invalid' },
+      } as any);
+
+      await send(service);
+      await flushMicrotasks();
+
+      const emitted = sseService.emit.mock.calls.find(([, data]) => (data as { event?: string }).event === event);
+      expect(emitted).toBeDefined();
+      expect(JSON.stringify(emitted)).not.toContain('sk-live-abc');
+      expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
+        appUrn,
+        phase: event === 'start_error' ? 'start' : 'restart',
+        message: 'web keeps restarting (exit 1)',
+        errorCode: 'app_service_failed',
+      });
+      expect(JSON.stringify(errorReportingService.reportAppFailure.mock.calls)).not.toContain('sk-live-abc');
+    });
+
+    it('a failure with no service keeps its message and detail on the event', async () => {
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'compose failed', errorDetail: 'port is taken' } as any);
+
+      await service.startApp({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'start_error', error: 'compose failed', errorDetail: 'port is taken' }),
+      );
+    });
+
+    it('startApp error: a failed install stays one when a start sent to it through the API fails too', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'install_failed', config: {} } as any);
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'summary-service keeps restarting (exit 126)' } as any);
+
+      await service.startApp({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(1, { status: 'install_failed' });
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'start_error', appStatus: 'install_failed' }));
+    });
+
     it('startApp: transitional status_change emitted after DB commit', async () => {
       await service.startApp({ actor: TEST_ACTOR, appUrn });
 
@@ -6873,6 +6964,16 @@ describe('AppLifecycleService', () => {
       );
     });
 
+    it('restartApp error: the failing service reaches the emitted SSE event', async () => {
+      const serviceFailure = { kind: 'exited', service: 'migrate', exitCode: 1 };
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'migrate exited (exit 1)', serviceFailure } as any);
+
+      await service.restartApp({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_error', serviceFailure }));
+    });
+
     it('restartApp: transitional status_change emitted after DB commit', async () => {
       await service.restartApp({ actor: TEST_ACTOR, appUrn });
 
@@ -6907,6 +7008,17 @@ describe('AppLifecycleService', () => {
           settingsPath: '/settings?tab=ai&section=rocm',
         }),
       );
+    });
+
+    it('startAppAndWait and restartAppAndWait answer false for a crash loop and name the service', async () => {
+      const serviceFailure = { kind: 'restarting', service: 'summary-service', exitCode: 126 };
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'summary-service keeps restarting (exit 126)', serviceFailure } as any);
+
+      await expect(service.startAppAndWait({ appUrn })).resolves.toBe(false);
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'start_error', serviceFailure }));
+
+      await expect(service.restartAppAndWait({ appUrn })).resolves.toBe(false);
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_error', serviceFailure }));
     });
 
     it('startAppAndWait recreates the containers unless asked to leave unchanged ones running', async () => {
@@ -7196,7 +7308,12 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppsByDomain.mockResolvedValue([]);
       appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
       appsRepository.getAppsByPort.mockResolvedValue([]);
-      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'summary-service keeps restarting (exit 126): private app log',
+        errorCode: 'app_service_failed',
+        serviceFailure: { kind: 'restarting', service: 'summary-service', exitCode: 126, logLine: 'private app log' },
+      } as any);
 
       await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
       await flushMicrotasks();
@@ -7207,6 +7324,13 @@ describe('AppLifecycleService', () => {
       expect(updateIdx).toBeGreaterThanOrEqual(0);
       expect(sseIdx).toBeGreaterThan(updateIdx);
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'install_failed' }));
+      expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
+        appUrn,
+        phase: 'install',
+        message: 'summary-service keeps restarting (exit 126)',
+        errorCode: 'app_service_failed',
+      });
+      expect(JSON.stringify(errorReportingService.reportAppFailure.mock.calls)).not.toContain('private app log');
     });
 
     it('installApp error: still emits install_error when install_failed status write fails', async () => {
@@ -8157,6 +8281,25 @@ describe('AppLifecycleService', () => {
 
         await vi.waitFor(() => {
           expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'start_error', appUrn, movedHostPort }));
+        });
+      });
+
+      it('tells the page about the move and the failing service when both happened', async () => {
+        const serviceFailure = { kind: 'restarting', service: 'summary-service', exitCode: 126 };
+        appEventsQueue.publish.mockResolvedValue({
+          success: false,
+          message: 'summary-service keeps restarting (exit 126)',
+          serviceFailure,
+          movedHostPort,
+        } as any);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+
+        await vi.waitFor(() => {
+          expect(sseService.emit).toHaveBeenCalledWith(
+            'app',
+            expect.objectContaining({ event: 'start_error', appUrn, serviceFailure, movedHostPort }),
+          );
         });
       });
 
