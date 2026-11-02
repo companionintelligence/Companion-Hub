@@ -1,3 +1,4 @@
+import { HUB_INGRESS_HOST_PORTS } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Injectable } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
@@ -306,6 +307,12 @@ export class ErrorReportingService {
     // headline: the classifier and the title both read it.
     const headline = context.cause && isTranslationKeyShaped(context.message) ? context.cause : context.message;
     const classification = classifyAppFailure(headline, context.errorCode);
+    // A port the Hub's ingress holds is refused when an app is saved. A conflict on it means the app was saved
+    // before that rule, so it is the user's configuration, not a Hub defect, and it is not captured.
+    const conflictingPort = classification.errorClass === 'port-conflict' ? extractConflictingHostPort(headline) : undefined;
+    if (conflictingPort !== undefined && HUB_INGRESS_HOST_PORTS.includes(conflictingPort)) {
+      return;
+    }
     // User-environment failures (Docker down, disk full, unsupported arch, …) are not hub bugs, and neither
     // is an app that failed on its own terms (a crash, a dependency, a health probe). Keep them visible but
     // below the error threshold.

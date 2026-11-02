@@ -117,16 +117,31 @@ describe('ErrorReportingService', () => {
     const service = new ErrorReportingService(configuration);
 
     service.reportAppFailure({
-      appUrn: 'legacy-port80:_user',
+      appUrn: 'legacy-web:_user',
       phase: 'start',
       message:
-        'Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint legacy-port80__user-web-1: Bind for 0.0.0.0:80 failed: port is already allocated',
+        'Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint legacy-web__user-web-1: Bind for 0.0.0.0:18789 failed: port is already allocated',
     });
 
     expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'warning');
     const scope = lastScope();
-    expect(scope.setTag).toHaveBeenCalledWith('host_port', '80');
-    expect(scope.setExtra).toHaveBeenCalledWith('remedy', expect.stringContaining('Host port 80 is already in use'));
+    expect(scope.setTag).toHaveBeenCalledWith('host_port', '18789');
+    expect(scope.setExtra).toHaveBeenCalledWith('remedy', expect.stringContaining('Host port 18789 is already in use'));
+  });
+
+  it.each([80, 443])('does not capture a conflict on the Hub ingress port %i, which the save refuses', (port) => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'legacy-web:_user',
+      phase: 'start',
+      message: `Error response from daemon: driver failed programming external connectivity: Bind for 0.0.0.0:${port} failed: port is already allocated`,
+    });
+
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 
   it.each([
