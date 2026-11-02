@@ -10,6 +10,26 @@ use std::process::Output;
 use std::time::Duration;
 
 #[test]
+fn only_refusals_that_clear_on_their_own_are_retried() {
+    assert!(is_transient_container_removal_failure(
+        "cannot remove container \"traefik\": could not kill container: container aa669b695e5a PID 4123"
+    ));
+    assert!(is_transient_container_removal_failure(
+        "Cannot restart container ci-hub: container is marked for removal and cannot be started"
+    ));
+    assert!(is_transient_container_removal_failure(
+        "Cannot restart container ci-os-hub: tried to kill container, but did not receive an exit event"
+    ));
+    // A runtime that cannot start a shim does not clear by waiting, and neither does a socket that is down.
+    assert!(!is_transient_container_removal_failure(
+        "Cannot restart container ci-hub: failed to create task for container: failed to start shim"
+    ));
+    assert!(!is_transient_container_removal_failure(
+        "failed to connect to the docker API at unix:///home/cid/.docker/desktop/docker.sock"
+    ));
+}
+
+#[test]
 fn prefers_a_running_legacy_hub_over_an_exited_canonical_container() {
     let names = ["ci-hub", "ci-os-hub"];
     let chosen = crate::hub_manager::first_preferred_container(&names, |name| match name {

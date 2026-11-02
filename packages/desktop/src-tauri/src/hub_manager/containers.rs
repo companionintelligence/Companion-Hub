@@ -2,7 +2,73 @@
 
 use super::*;
 
+const TRAEFIK_REMOVE_ATTEMPTS: u32 = 4;
+const TRAEFIK_REMOVE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+const TRAEFIK_GONE_POLL_ATTEMPTS: u32 = 20;
+const TRAEFIK_GONE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// An engine refusal that clears on its own: the old process is still stopping, or another
+/// recreate is already removing the same container.
+pub(crate) fn is_transient_container_removal_failure(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("could not kill container")
+        || lower.contains("marked for removal")
+        || lower.contains("did not receive an exit event")
+}
+
+/// Removes the Traefik container before a recreate. A refusal that clears on its own is retried
+/// after a pause, and a removal that succeeds is followed by a wait until the name is free, because
+/// compose cannot recreate Traefik while the old container still holds the name.
 pub(crate) fn remove_existing_traefik_container(data_dir: &Path) -> Result<(), String> {
+    let mut attempt = 1;
+    loop {
+        match remove_traefik_container_once(data_dir) {
+            Ok(()) => return wait_until_traefik_gone(),
+            Err(error)
+                if attempt < TRAEFIK_REMOVE_ATTEMPTS
+                    && is_transient_container_removal_failure(&error) =>
+            {
+                // The line carries no error text: a refusal that a retry clears is not a fault.
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    &format!(
+                        "Traefik removal was refused (attempt {attempt} of {TRAEFIK_REMOVE_ATTEMPTS}); trying again in {}s.",
+                        TRAEFIK_REMOVE_RETRY_DELAY.as_secs()
+                    ),
+                );
+                std::thread::sleep(TRAEFIK_REMOVE_RETRY_DELAY);
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Waits until `docker container inspect traefik` reports that the name is free.
+fn wait_until_traefik_gone() -> Result<(), String> {
+    for _ in 0..TRAEFIK_GONE_POLL_ATTEMPTS {
+        let output = docker_command()
+            .args(["container", "inspect", "traefik"])
+            .output()
+            .map_err(|error| format!("Could not check the Traefik container: {error}"))?;
+        if output.status.success() {
+            std::thread::sleep(TRAEFIK_GONE_POLL_INTERVAL);
+            continue;
+        }
+        let combined = format_command_output(
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        );
+        if is_docker_missing_resource_message(&combined) {
+            return Ok(());
+        }
+        return Err(format!("Could not check the Traefik container. {combined}"));
+    }
+    Err("The Traefik container is still present after its removal.".to_string())
+}
+
+fn remove_traefik_container_once(data_dir: &Path) -> Result<(), String> {
     let output = docker_command()
         .args(["rm", "-f", "traefik"])
         .output()
