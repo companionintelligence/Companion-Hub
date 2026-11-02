@@ -32,9 +32,14 @@ interface IProps {
    * it when there is a binding to release.
    */
   boundCustomDomain?: string | null;
+  /**
+   * The mode a failed install asked for, for its retry. Left out, the dialog opens on what a new install
+   * gets, which is Public Web on a paired Hub whatever the person picked the first time.
+   */
+  retryExposureMode?: string;
 }
 
-export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose, boundCustomDomain }) => {
+export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose, boundCustomDomain, retryExposureMode }) => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { setOptimisticStatus } = useAppStatus();
@@ -91,7 +96,10 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose, boundCu
    * changes; a fresh object every render would re-assert the value while the
    * operator types.
    */
-  const initialValues = useMemo(() => ({ customDomainExpected: boundCustomDomain ?? '' }), [boundCustomDomain]);
+  const initialValues = useMemo(
+    () => ({ customDomainExpected: boundCustomDomain ?? '', ...(retryExposureMode ? { exposureMode: retryExposureMode } : {}) }),
+    [boundCustomDomain, retryExposureMode],
+  );
 
   const normalizeFormValues = (values: FormValues) => {
     return {

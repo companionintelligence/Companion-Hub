@@ -147,8 +147,11 @@ type SecurityIssue = { message: string; path: PropertyKey[]; params?: Record<str
 function assertCustomAppServiceSecurity(
   service: { privileged?: boolean; volumes?: { hostPath?: string }[]; extraLabels?: Record<string, unknown> },
   report: (issue: SecurityIssue) => void,
+  grants?: AppSecurityGrants,
 ) {
-  if (service.privileged === true) {
+  // The same grants the install sink consults, so an app's parse and its install agree on what it may
+  // use. Without grants this is the strict rule: nothing privileged, and no denied host path.
+  if (service.privileged === true && !grants?.privileged) {
     report({ message: 'CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED', path: ['privileged'] });
   }
   for (const key of Object.keys(service.extraLabels ?? {})) {
@@ -159,9 +162,13 @@ function assertCustomAppServiceSecurity(
   for (const issue of collectTraefikLabelIssues(service.extraLabels)) {
     report({ message: issue.message, path: ['extraLabels', issue.label], params: issue.params });
   }
+  const grantedPaths = new Set((grants?.hostPaths ?? []).map(normalizeCustomAppHostPath));
   for (const [index, volume] of (service.volumes ?? []).entries()) {
     // Named volumes are docker-managed and expose no host path, so they cannot escape the sandbox.
-    if (volume.hostPath !== undefined && isDeniedCustomAppHostPath(volume.hostPath)) {
+    if (volume.hostPath === undefined || grantedPaths.has(normalizeCustomAppHostPath(volume.hostPath))) {
+      continue;
+    }
+    if (isDeniedCustomAppHostPath(volume.hostPath)) {
       report({ message: 'CUSTOM_APP_ERROR_HOST_PATH_DENIED', path: ['volumes', index, 'hostPath'] });
     }
   }
@@ -764,9 +771,12 @@ export function isConfidentialRuntime(runtime?: string): boolean {
   return (CONFIDENTIAL_CONTAINER_RUNTIMES as readonly string[]).includes(runtime) || runtime.startsWith('kata');
 }
 
-export const serviceSchema = serviceSchemaV2Object.superRefine((service, ctx) => {
-  assertCustomAppServiceSecurity(service, (issue) => ctx.addIssue({ code: 'custom', ...issue }));
-});
+const serviceSchemaFor = (grants?: AppSecurityGrants) =>
+  serviceSchemaV2Object.superRefine((service, ctx) => {
+    assertCustomAppServiceSecurity(service, (issue) => ctx.addIssue({ code: 'custom', ...issue }), grants);
+  });
+
+export const serviceSchema = serviceSchemaFor();
 
 /**
  * Unrefined object form of the dynamic compose schema.
@@ -777,25 +787,30 @@ export const serviceSchema = serviceSchemaV2Object.superRefine((service, ctx) =>
  * of the shape must derive it from this object and re-apply
  * `assertComposeOverrideSecurity` themselves — see `dynamicComposeFormSchema`.
  */
-export const dynamicComposeObject = z.object({
-  schemaVersion: z.literal(2),
-  services: serviceSchema.array().min(1, 'CUSTOM_APP_ERROR_SERVICES_MIN_LENGTH'),
-  overrides: z
-    .array(
-      z.object({
-        architecture: z.enum(['arm64', 'amd64'], 'CUSTOM_APP_ERROR_ARCHITECTURE_INVALID').optional(),
-        services: serviceSchemaV2Object.partial().array(),
-      }),
-    )
-    .optional(),
-});
+const dynamicComposeObjectFor = (grants?: AppSecurityGrants) =>
+  z.object({
+    schemaVersion: z.literal(2),
+    services: serviceSchemaFor(grants).array().min(1, 'CUSTOM_APP_ERROR_SERVICES_MIN_LENGTH'),
+    overrides: z
+      .array(
+        z.object({
+          architecture: z.enum(['arm64', 'amd64'], 'CUSTOM_APP_ERROR_ARCHITECTURE_INVALID').optional(),
+          services: serviceSchemaV2Object.partial().array(),
+        }),
+      )
+      .optional(),
+  });
 
-const assertComposeOverrideSecurity = (compose: { overrides?: { services: unknown[] }[] }, ctx: z.RefinementCtx) => {
+export const dynamicComposeObject = dynamicComposeObjectFor();
+
+const assertComposeOverrideSecurity = (compose: { overrides?: { services: unknown[] }[] }, ctx: z.RefinementCtx, grants?: AppSecurityGrants) => {
   // Each issue's path leads to the override service that broke the rule, so the editor can name it.
   for (const [overrideIndex, override] of (compose.overrides ?? []).entries()) {
     for (const [serviceIndex, service] of override.services.entries()) {
-      assertCustomAppServiceSecurity(service as Parameters<typeof assertCustomAppServiceSecurity>[0], (issue) =>
-        ctx.addIssue({ code: 'custom', ...issue, path: ['overrides', overrideIndex, 'services', serviceIndex, ...issue.path] }),
+      assertCustomAppServiceSecurity(
+        service as Parameters<typeof assertCustomAppServiceSecurity>[0],
+        (issue) => ctx.addIssue({ code: 'custom', ...issue, path: ['overrides', overrideIndex, 'services', serviceIndex, ...issue.path] }),
+        grants,
       );
     }
   }
@@ -810,6 +825,25 @@ export const dynamicComposeSchema = dynamicComposeObject.superRefine(assertCompo
 export const dynamicComposeFormSchema = dynamicComposeObject.omit({ schemaVersion: true }).superRefine(assertComposeOverrideSecurity);
 
 export const dynamicComposeUnion = z.discriminatedUnion('schemaVersion', [dynamicComposeSchemaV1, dynamicComposeSchema]);
+
+const grantedUnions = new WeakMap<AppSecurityGrants, typeof dynamicComposeUnion>();
+
+/**
+ * `dynamicComposeUnion` with one app's sandbox grants applied. Without grants it is the strict union
+ * itself. The grants are the ones the install sink consults, so an app the allowlist permits parses
+ * the way it installs. Cached per grants object, so a parse does not rebuild the schema each time.
+ */
+export const dynamicComposeUnionFor = (grants?: AppSecurityGrants): typeof dynamicComposeUnion => {
+  if (!grants) return dynamicComposeUnion;
+
+  let union = grantedUnions.get(grants);
+  if (!union) {
+    const schema = dynamicComposeObjectFor(grants).superRefine((compose, ctx) => assertComposeOverrideSecurity(compose, ctx, grants));
+    union = z.discriminatedUnion('schemaVersion', [dynamicComposeSchemaV1, schema]);
+    grantedUnions.set(grants, union);
+  }
+  return union;
+};
 
 export type DynamicCompose = z.output<typeof dynamicComposeSchema>;
 export type DependsOn = z.output<typeof serviceSchema.shape.dependsOn>;

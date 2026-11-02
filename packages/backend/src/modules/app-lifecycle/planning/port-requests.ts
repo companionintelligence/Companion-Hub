@@ -1,4 +1,4 @@
-import { parseComposeJson } from '@ci-hub/common/schemas';
+import { type AppSecurityGrants, parseComposeJson } from '@ci-hub/common/schemas';
 
 export interface PortRequestInput {
   containerPort: number;
@@ -23,10 +23,10 @@ export function buildMainPortRequest(appPort: number | undefined, formPort: numb
  * compose — callers that already log-and-continue on that (`InstallAppCommand`) keep doing so at
  * the call site; the plan preview treats it the same way `checks.config`/`images` already do.
  */
-export function buildComposePortRequests(composeContent: unknown): PortRequestInput[] {
+export function buildComposePortRequests(composeContent: unknown, grants?: AppSecurityGrants): PortRequestInput[] {
   if (!composeContent) return [];
 
-  const { services } = parseComposeJson(composeContent);
+  const { services } = parseComposeJson(composeContent, grants);
   const requests: PortRequestInput[] = [];
 
   for (const service of services) {

@@ -20,7 +20,12 @@ function asExposureMode(value: unknown): AppExposureMode | undefined {
  * `exposedLocal` flag beside another mode is therefore not public: nothing routes it.
  */
 export function publishesPublicWebRoute(form: AppExposureFields): boolean {
-  return (form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local')) === 'cloudflare';
+  return effectiveExposureMode(form) === 'cloudflare';
+}
+
+/** A form that names no mode is This Machine Only, unless it carries the legacy `exposedLocal` flag. */
+export function effectiveExposureMode(form: AppExposureFields): AppExposureMode {
+  return form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
 }
 
 /**
@@ -43,4 +48,9 @@ export function storedExposureForm(app: { config?: unknown; exposureMode?: strin
   }
 
   return { exposureMode: asExposureMode(app.exposureMode), exposedLocal: app.exposedLocal === true };
+}
+
+/** The exposure mode an installed app runs in, whether or not its stored form names one. */
+export function servedExposureMode(app: Parameters<typeof storedExposureForm>[0]): AppExposureMode {
+  return effectiveExposureMode(storedExposureForm(app));
 }

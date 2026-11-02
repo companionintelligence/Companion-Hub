@@ -92,6 +92,138 @@ describe('ErrorReportingService', () => {
     expect(scope.setTag).toHaveBeenCalledWith('error_class', 'image-arch-unsupported');
   });
 
+  it.each([
+    ['a queue that dropped the channel', 'Marketplace app start failed: channel is closed', 'queue-unavailable'],
+    ['a restart mid-install', 'Install did not finish before Hub restarted. Retry the install.', 'hub-restarted'],
+    ['a host file the Hub may not write', "EACCES: permission denied, mkdtemp '/data/app'", 'host-permission-denied'],
+    ['a sqlite file on a read-only volume', 'attempt to write a readonly database', 'host-database-file'],
+    ['an app the Portal would not hand out', 'APP_INSTALL_PORTAL_DOWNLOAD_UNAUTHORIZED', 'entitlement-refused'],
+  ])('groups %s as a warning by error class', (_label, message, errorClass) => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({ appUrn: 'ci-memory:ci-marketplace', phase: 'start', message });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'warning');
+    expect(lastScope().setFingerprint).toHaveBeenCalledWith(['app-failure', 'start', errorClass]);
+  });
+
+  it('names the host port and the remedy when Docker finds it taken', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'legacy-web:_user',
+      phase: 'start',
+      message:
+        'Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint legacy-web__user-web-1: Bind for 0.0.0.0:18789 failed: port is already allocated',
+    });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'warning');
+    const scope = lastScope();
+    expect(scope.setTag).toHaveBeenCalledWith('host_port', '18789');
+    expect(scope.setExtra).toHaveBeenCalledWith('remedy', expect.stringContaining('Host port 18789 is already in use'));
+  });
+
+  it.each([80, 443])('does not capture a conflict on the Hub ingress port %i, which the save refuses', (port) => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'legacy-web:_user',
+      phase: 'start',
+      message: `Error response from daemon: driver failed programming external connectivity: Bind for 0.0.0.0:${port} failed: port is already allocated`,
+    });
+
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a dependency that did not start', 'dependency failed to start: container owncloud exited', 'dependency-failed'],
+    ['a one-off service that exited non-zero', 'service "safeos-ollama-pull" didn\'t complete successfully: exit 1', 'service-did-not-complete'],
+    [
+      'a container the runtime would not start',
+      'OCI runtime create failed: runc create failed: unable to start container process',
+      'container-start-failed',
+    ],
+    ['a failed health probe after an update', 'Update failed health probe: Health probe did not pass', 'health-probe-failed'],
+    ['an app that refused a connection on its own port', 'connect ECONNREFUSED 127.0.0.9:443', 'app-not-listening'],
+    ['a backup the app could not finish', 'Could not delete the data of rb-perm-check, so it was not reset', 'app-data-step-failed'],
+    ['a container of the app that keeps restarting', 'mixpost_ci-marketplace-mixpost-1 (Restarting (1) 3 seconds ago)', 'container-exited'],
+    [
+      'a data volume the app still holds',
+      'Volume wordpress_ci-marketplace_data-mariadb is in use by review1965-holder, which is still running; stop the app and try again',
+      'volume-in-use',
+    ],
+  ])('reports %s as a warning, grouped by cause', (_label, message, errorClass) => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({ appUrn: 'some-app:ci-marketplace', phase: 'install', message });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'warning');
+    expect(lastScope().setFingerprint).toHaveBeenCalledWith(['app-failure', 'install', errorClass]);
+  });
+
+  it('groups a manifest a compose file cannot turn into containers as an app-config error', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({ appUrn: 'port-test:_user', phase: 'start', message: 'invalid containerPort: 70000' });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'error');
+    expect(lastScope().setFingerprint).toHaveBeenCalledWith(['app-failure', 'start', 'invalid-app-manifest']);
+  });
+
+  it('groups an image reference that does not resolve as an app-config error', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'bad-image:_user',
+      phase: 'start',
+      message: 'Error response from daemon: failed to resolve reference "docker.io/library/nginx:tag-does-not-exist": not found',
+    });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'error');
+    expect(lastScope().setFingerprint).toHaveBeenCalledWith(['app-failure', 'start', 'image-reference-invalid']);
+  });
+
+  it('groups a catalog that has no entry for the app under the same app-config class', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({ appUrn: 'burner:ci-marketplace', phase: 'install', message: 'App burner:ci-marketplace not found' });
+
+    expect(lastScope().setFingerprint).toHaveBeenCalledWith(['app-failure', 'install', 'app-not-in-catalog']);
+  });
+
+  it('groups a missing catalog entry as an app-config error, not per app', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({ appUrn: 'n8n:ci-marketplace', phase: 'install', message: 'Store not found for n8n:ci-marketplace' });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'error');
+    expect(lastScope().setFingerprint).toHaveBeenCalledWith(['app-failure', 'install', 'app-not-in-catalog']);
+  });
+
   it('keeps unclassified failures as errors with per-app grouping', () => {
     const configuration = {
       get: vi.fn(() => ({ allowErrorMonitoring: true })),
@@ -101,7 +233,7 @@ describe('ErrorReportingService', () => {
     service.reportAppFailure({
       appUrn: 'home-assistant:ci-marketplace',
       phase: 'start',
-      message: 'Error generating docker-compose.yml file for app home-assistant:ci-marketplace.',
+      message: 'Something the Hub has no name for went wrong.',
     });
 
     expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'error');
@@ -132,6 +264,62 @@ describe('ErrorReportingService', () => {
     expect(scope.setTag).toHaveBeenCalledWith('error_class', 'rocm-unavailable');
   });
 
+  it('attaches the underlying cause as a scrubbed extra of about 1 KB at most', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'jaeger:ci-marketplace',
+      phase: 'install',
+      message: 'COMMON_AN_ERROR_OCCURRED',
+      cause: `timeout of 20000ms exceeded password=hunter2 ${'x'.repeat(2000)}`,
+    });
+
+    const cause = lastScope().setExtra.mock.calls.find(([key]) => key === 'cause')?.[1];
+    expect(typeof cause).toBe('string');
+    expect(cause).toContain('timeout of 20000ms exceeded');
+    expect(cause).not.toContain('hunter2');
+    expect(cause.length).toBeLessThanOrEqual(1024);
+  });
+
+  it('keeps a multi-line failure on one title line, so the cause is not cut off', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'ci-memory:ci-marketplace',
+      phase: 'install',
+      message:
+        'Container ci-memory_ci-marketplace-database-1  Error\ndependency failed to start: container ci-memory_ci-marketplace-database-1 is unhealthy',
+    });
+
+    const [title] = vi.mocked(Sentry.captureMessage).mock.calls[0];
+    expect(title).toContain('dependency failed to start: container ci-memory_ci-marketplace-database-1 is unhealthy');
+    expect(title).not.toContain('\n');
+  });
+
+  it('titles a translation key by its cause, and keeps the key as the message', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'jaeger:ci-marketplace',
+      phase: 'install',
+      message: 'COMMON_AN_ERROR_OCCURRED',
+      cause: 'Failed to fetch app files: 503 Service Unavailable',
+    });
+
+    const [title] = vi.mocked(Sentry.captureMessage).mock.calls[0];
+    expect(title).toContain('Failed to fetch app files: 503 Service Unavailable');
+    expect(lastScope().setExtra).toHaveBeenCalledWith('message', 'COMMON_AN_ERROR_OCCURRED');
+  });
+
   it('titles crash-phase reports as a crash, not "crash failed"', () => {
     const configuration = {
       get: vi.fn(() => ({ allowErrorMonitoring: true })),
@@ -146,7 +334,7 @@ describe('ErrorReportingService', () => {
 
     expect(Sentry.captureMessage).toHaveBeenCalledWith(
       'Marketplace app crashed: comfyui:ci-marketplace: App transitioned from running to stopped during status sync',
-      'error',
+      'warning',
     );
   });
 
@@ -228,6 +416,26 @@ describe('ErrorReportingService', () => {
     expect(scope.setFingerprint).toHaveBeenCalledWith(['app-failure', 'install', 'portal-http-error']);
     expect(scope.setTag).toHaveBeenCalledWith('failure_category', 'platform');
     expect(scope.setTag).toHaveBeenCalledWith('error_class', 'portal-http-error');
+  });
+
+  it('reports a start the queue refused while RabbitMQ was not connected as a warning, grouped by cause across apps', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'ci-import-tools:ci-marketplace',
+      phase: 'start',
+      message: "Queue 'app-events-queue' is unavailable while RabbitMQ is connecting.",
+      errorCode: 'queue_unavailable',
+    });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.stringContaining('ci-import-tools:ci-marketplace'), 'warning');
+    const scope = lastScope();
+    expect(scope.setFingerprint).toHaveBeenCalledWith(['app-failure', 'start', 'queue-unavailable']);
+    expect(scope.setTag).toHaveBeenCalledWith('failure_category', 'user_environment');
+    expect(scope.setTag).toHaveBeenCalledWith('error_class', 'queue-unavailable');
   });
 });
 

@@ -393,8 +393,46 @@ fn is_success_message(message: &str) -> bool {
     lower.contains("succeeded") || lower.contains("successful")
 }
 
+/// Routine status lines that contain failure words. They record a decision or a known state, not a
+/// fault, so they stay breadcrumbs.
+fn is_routine_status_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("should_start=false")
+        || (lower.starts_with("using ") && lower.contains(" because "))
+}
+
+/// States the Hub reports as recoverable. The watchdog or the next start deals with them, so they
+/// reach Sentry as warnings even when the line says "failed" or "error".
+fn is_expected_warning_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("non-fatal")
+        || lower.contains("transient, not sticky")
+        || lower.contains("(automatic retry ")
+        || lower.contains("snapshot while disconnected")
+        || lower.contains("the hub couldn't be reached")
+        || (lower.contains("nvidia-smi") && lower.contains("command failed"))
+}
+
+/// Conditions on the person's own machine: no Docker engine, a Compose too old for the stack, a
+/// Docker install that cannot read the Hub's files, WSL2 without Ollama. They are warnings tagged
+/// `user_environment`, so they stay visible without counting as bugs in the app.
+fn is_user_environment_condition(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("docker is not running")
+        || lower.contains("no reachable docker engine")
+        || lower.contains("needs docker compose")
+        || lower.contains("couldn't find env file")
+        || lower.contains("installation inside the wsl2 distro")
+        || lower.contains(".env.dev: permission denied")
+        || lower.contains(".env: permission denied")
+}
+
 fn classify_log_level(message: &str) -> sentry::Level {
-    if is_failure_message(message) {
+    if is_routine_status_message(message) {
+        sentry::Level::Info
+    } else if is_expected_warning_message(message) || is_user_environment_condition(message) {
+        sentry::Level::Warning
+    } else if is_failure_message(message) {
         sentry::Level::Error
     } else if is_success_message(message) {
         sentry::Level::Info
@@ -545,8 +583,14 @@ pub fn record_log_event(operation: &str, message: &str) {
 
     if level != sentry::Level::Info && should_capture_log_event(operation, message) {
         let fingerprint = grouping_fingerprint(message);
+        let environment = is_user_environment_condition(message);
         sentry::with_scope(
-            |scope| scope.set_fingerprint(Some(&[operation, fingerprint.as_str()])),
+            |scope| {
+                scope.set_fingerprint(Some(&[operation, fingerprint.as_str()]));
+                if environment {
+                    scope.set_tag("category", "user_environment");
+                }
+            },
             || {
                 sentry::capture_message(
                     &format!("{operation}: {}", truncate(message, 2000)),
@@ -566,9 +610,22 @@ pub fn capture_setup_failure(message: &str) {
         return;
     }
 
-    sentry::capture_message(
-        &format!("desktop setup failed: {message}"),
-        sentry::Level::Fatal,
+    // A Docker, disk or WSL condition on the person's machine stops the setup but is not a crash.
+    let environment = is_user_environment_condition(message);
+    let level = if environment {
+        sentry::Level::Warning
+    } else {
+        sentry::Level::Fatal
+    };
+    sentry::with_scope(
+        |scope| {
+            if environment {
+                scope.set_tag("category", "user_environment");
+            }
+        },
+        || {
+            sentry::capture_message(&format!("desktop setup failed: {message}"), level);
+        },
     );
 
     // The client guard lives in a `static OnceLock` and is never dropped, so a
@@ -599,11 +656,11 @@ fn truncate(value: &str, max_len: usize) -> String {
 mod tests {
     use super::{
         classify_log_level, env_telemetry_block, grouping_fingerprint, hub_image_tag,
-        is_benign_compose_optional_env_warning, is_benign_hub_start_message, normalize_portal_url,
-        parse_dsn, portal_environment_for_url, read_deployment_version, read_device_id,
-        read_first_env_value, read_hub_image, read_portal_url, read_user_consent_from,
-        settings_path_for, should_capture_with, CaptureRecord, UserConsent,
-        LOG_EVENT_DEBOUNCE_WINDOW, REPEAT_CAPTURE_LIMIT,
+        is_benign_compose_optional_env_warning, is_benign_hub_start_message,
+        is_user_environment_condition, normalize_portal_url, parse_dsn, portal_environment_for_url,
+        read_deployment_version, read_device_id, read_first_env_value, read_hub_image,
+        read_portal_url, read_user_consent_from, settings_path_for, should_capture_with,
+        CaptureRecord, UserConsent, LOG_EVENT_DEBOUNCE_WINDOW, REPEAT_CAPTURE_LIMIT,
     };
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
@@ -905,6 +962,81 @@ mod tests {
             grouping_fingerprint("Database bootstrap failed."),
             grouping_fingerprint("Traefik recreate preparation failed.")
         );
+    }
+
+    #[test]
+    fn compose_too_old_refusal_is_an_environment_warning() {
+        let refusal = "setup: Auto-start failed: Companion Hub needs Docker Compose 2.33 or newer. This computer has Compose 2.31.0-desktop.2. Update Docker, then start the Hub again.";
+        assert_eq!(classify_log_level(refusal), sentry::Level::Warning);
+        assert!(is_user_environment_condition(refusal));
+        assert!(!is_benign_hub_start_message(refusal));
+    }
+
+    #[test]
+    fn user_environment_failures_are_warnings_not_errors() {
+        for message in [
+            "hub.start: Docker engine selection failed: No reachable Docker engine found. Start Docker Desktop (or your Docker Engine) and try again.",
+            "hub.start: Start failed (transient, not sticky): Docker is not running — please start Docker Desktop and try again.",
+            "hub.start: Database bootstrap failed. open ~/.local/share/companion-hub/.env.dev: permission denied",
+            "hub.start: Stack image pull failed (non-fatal, continuing): docker compose pull failed. open ~/.local/share/companion-hub/.env.dev: permission denied",
+            "hub.start: docker compose up -d failed (attempt 3). couldn't find env file: /home/ci/.local/share/companion-hub/.env.dev",
+            r#"inference.ollama: completed state=Failed detail=Some("Ollama installation inside the WSL2 distro \"Ubuntu\" failed.")"#,
+        ] {
+            assert_eq!(classify_log_level(message), sentry::Level::Warning, "{message}");
+            assert!(is_user_environment_condition(message), "{message}");
+        }
+    }
+
+    #[test]
+    fn recoverable_hub_states_are_warnings_not_errors() {
+        for message in [
+            "gpu.probe: nvidia-smi command failed with exit code 2: sh: 34: .: cannot open /home/u/.local/bin/env: No such file",
+            "tray.health: Hub status snapshot while disconnected: error: Hub has restarted 5 times. Open tray → View Logs for details.",
+            "sign-in-wait: Desktop sign-in wait: the Hub couldn't be reached (error sending request for url (http://127.0.0.1:5002/api/auth/portal/desktop-waiting/challenge)).",
+        ] {
+            assert_eq!(classify_log_level(message), sentry::Level::Warning, "{message}");
+        }
+    }
+
+    #[test]
+    fn routine_start_decisions_stay_breadcrumbs() {
+        for message in [
+            "setup: Auto-start decision: should_start=false (previous start failed — waiting for explicit user retry)",
+            "using system at unix:///var/run/docker.sock because fresh install: platform fallback system Docker Engine (unix:///var/run/docker.sock)",
+            "using wsl-engine at tcp://127.0.0.1:2375 because fresh install: platform fallback WSL Engine (tcp://127.0.0.1:2375)",
+        ] {
+            assert_eq!(classify_log_level(message), sentry::Level::Info, "{message}");
+        }
+    }
+
+    #[test]
+    fn sticky_hub_failures_stay_errors() {
+        assert_eq!(
+            classify_log_level("Start failed (sticky failure state set): docker compose up -d succeeded but Hub did not become ready: Timed out waiting for Hub to become healthy (last status: running:starting). Open tray → View Logs for details."),
+            sentry::Level::Error
+        );
+        assert_eq!(
+            classify_log_level("Start failed (sticky failure state set): Database did not become healthy after bootstrap: Timed out waiting for Database to become healthy (last status: restarting:unhealthy)."),
+            sentry::Level::Error
+        );
+    }
+
+    #[test]
+    fn a_pending_automatic_retry_logs_a_warning_not_an_error() {
+        let message = crate::hub_manager::RetryOutcome::Scheduled {
+            retry: 1,
+            wait_secs: 300,
+        }
+        .log_message("docker compose up -d failed");
+        assert_eq!(classify_log_level(&message), sentry::Level::Warning);
+    }
+
+    #[test]
+    fn an_exhausted_automatic_retry_budget_logs_an_error_that_says_retries_were_tried() {
+        let message = crate::hub_manager::RetryOutcome::Exhausted { tries: 3 }
+            .log_message("Postgres did not restore TCP authentication");
+        assert!(message.contains("3 automatic retries were tried and failed"));
+        assert_eq!(classify_log_level(&message), sentry::Level::Error);
     }
 
     #[test]

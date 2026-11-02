@@ -419,15 +419,21 @@ export class DockerService {
   /**
    * Removes the images an uninstalled app brought onto this computer, and the images its own compose build made.
    *
-   * `appImageIds` are the IDs an install or an update recorded when it pulled the image for this app
-   * (`AppFilesManager.readPulledImageIds`). Nothing else is removed: an image that was on the computer before
-   * the app, or that another app uses, stays. Removal is never forced, so Docker refuses an image that a
-   * container, running or stopped, still uses. Missing or held images do not fail the uninstall.
+   * `appImageIds` are the IDs an install, an update, a start or a restart recorded when it brought the image in for
+   * this app (`AppFilesManager.readPulledImages`). Nothing else is removed: an image that was on the computer before
+   * the app stays. Removal is never forced, so Docker refuses an image that a container, running or stopped, still
+   * uses. Missing or held images do not fail the uninstall.
+   *
+   * ⚠ DOCKER DOES NOT REFUSE ONE TAG. Removing by ID takes an image with a single tag and its digest names. It asks
+   * nothing about that tag. Store apps pin `name:tag@digest`, which leaves no tag at all, so `docker pull name:tag` by
+   * hand after the install gives the image a tag the app never asked for. So a recorded image with a tag that isn't in
+   * `appImageTags` stays. So does one whose tags can't be read.
    *
    * @param appUrn App URN being uninstalled.
-   * @param appImageIds Image IDs the app's installs and updates pulled for it.
+   * @param appImageIds Image IDs the app's installs, updates, starts and restarts brought in for it.
+   * @param appImageTags The tags those images had when they arrived.
    */
-  public async removeAppImages(appUrn: AppUrn, appImageIds: string[] = []): Promise<void> {
+  public async removeAppImages(appUrn: AppUrn, appImageIds: string[] = [], appImageTags: string[] = []): Promise<void> {
     const projectName = this.getComposeProjectName(appUrn);
 
     const labeledImages = await this.docker.listImages({ filters: { label: [`com.docker.compose.project=${projectName}`] } }).catch((error) => {
@@ -435,8 +441,26 @@ export class DockerService {
       return [];
     });
 
+    const builtImageIds = labeledImages.map((image) => image.Id).filter(Boolean);
+    const ownTags = new Set(appImageTags);
+    const recordedImageIds: string[] = [];
+    for (const imageId of new Set(appImageIds)) {
+      try {
+        const otherTags = (await this.imageTagsLocally(imageId)).filter((tag) => !ownTags.has(tag));
+        if (otherTags.length === 0) {
+          recordedImageIds.push(imageId);
+        } else if (!builtImageIds.includes(imageId)) {
+          this.logger.warn(`Keeping image ${imageId} (${appUrn}): it has a tag this app did not bring in (${otherTags.join(', ')})`);
+        }
+      } catch (error) {
+        if (!this.isResourceMissingError(error)) {
+          this.logger.warn(`Keeping image ${imageId} (${appUrn}): could not read its tags: ${error}`);
+        }
+      }
+    }
+
     // The app's recorded pulls and its own compose builds. Never forced: an image another container uses stays.
-    const imageIds = new Set<string>([...appImageIds, ...labeledImages.map((image) => image.Id)].filter(Boolean));
+    const imageIds = new Set<string>([...recordedImageIds, ...builtImageIds]);
 
     for (const imageId of imageIds) {
       try {
@@ -1141,7 +1165,7 @@ export class DockerService {
 
   /**
    * The ID of the image `image` names on this computer, or `null` when it is not here. Read-only, never pulls.
-   * An install or an update compares it before and after a pull to tell the images the pull brought in.
+   * An install, an update, a start or a restart compares it before and after a pull to tell the images the pull brought in.
    */
   async imageIdLocally(image: string): Promise<string | null> {
     try {
@@ -1153,6 +1177,17 @@ export class DockerService {
       }
       throw error;
     }
+  }
+
+  /** The IDs of the images on this computer, under any name. Read-only, never pulls. */
+  async imageIdsLocally(): Promise<Set<string>> {
+    return new Set((await this.docker.listImages()).map((image) => image.Id));
+  }
+
+  /** The tags the image with this ID has. A digest name is not a tag, though the containerd image store lists it among them. */
+  async imageTagsLocally(imageId: string): Promise<string[]> {
+    const info = await this.docker.getImage(imageId).inspect();
+    return (info.RepoTags ?? []).filter((tag) => !tag.includes('@'));
   }
 
   public async pullImages(

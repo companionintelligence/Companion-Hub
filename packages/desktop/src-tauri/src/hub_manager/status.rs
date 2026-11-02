@@ -616,13 +616,16 @@ pub fn get_hub_status() -> HubStatus {
 
     match (state, health) {
         ("running", "healthy") => {
-            // Recovered after a prior failed start — drop the sticky failure marker.
+            // Recovered after a prior failed start — drop the sticky failure marker and the
+            // automatic-retry budget with it.
             clear_start_failed(&data_dir);
+            reset_start_retry_budget(&data_dir);
             HubStatus::Running
         }
         ("running", _) => {
             if probe_hub_api_live() {
                 clear_start_failed(&data_dir);
+                reset_start_retry_budget(&data_dir);
                 HubStatus::Running
             } else {
                 HubStatus::Starting
@@ -668,7 +671,9 @@ pub fn get_hub_status() -> HubStatus {
                 }
             }
         }
-        ("created", _) | ("exited", _) => {
+        // A dead container is not running and cannot be restarted in place, so it reads as
+        // stopped. Left to the fallthrough, it showed "Starting" and the watchdog never acted.
+        ("created", _) | ("exited", _) | ("dead", _) => {
             if let Some(message) = read_start_failed(&data_dir) {
                 HubStatus::Error { message }
             } else {

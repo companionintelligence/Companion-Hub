@@ -12,6 +12,7 @@ import { PgDialect, PgTable } from 'drizzle-orm/pg-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { FactoryResetService } from '../factory-reset.service';
+import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
 import { AuthMiddleware } from '@/modules/auth/auth.middleware';
@@ -748,6 +749,28 @@ describe('FactoryResetService: what the inference module keeps in state/', () =>
 
     await expect(credentials.lastHandout('openclaw')).resolves.toBeNull();
     expect(vol.existsSync(HANDOUT_RECORDS_PATH)).toBe(false);
+  });
+
+  // A record left behind would claim images for an app of the same name on the next Hub. Uninstalling that app would remove them.
+  it('forgets the images every app pulled, record by record and whatever the uninstalls left', async () => {
+    const logger = mock<LoggerService>();
+    const files = new AppFilesManager({ getConfig: () => ({ directories: { dataDir: '/data' } }) } as never, new FilesystemService(logger), logger);
+    const pulledImages = path.join('/data', 'state', 'pulled-images');
+    vol.mkdirSync(path.join(pulledImages, '_user'), { recursive: true });
+    vol.writeFileSync(path.join(pulledImages, '_user', 'left-behind.json'), '{"imageIds":["sha256:a"]}');
+
+    await resetWith(new Map([[AppFilesManager, files]])).execute();
+
+    expect(vol.existsSync(pulledImages)).toBe(false);
+    expect(Object.keys(onDisk())).toEqual(['hubLocalKey']);
+  });
+
+  it('finishes the reset when no app ever pulled an image', async () => {
+    const logger = mock<LoggerService>();
+    const files = new AppFilesManager({ getConfig: () => ({ directories: { dataDir: '/data' } }) } as never, new FilesystemService(logger), logger);
+
+    await expect(resetWith(new Map([[AppFilesManager, files]])).execute()).resolves.toMatchObject({ success: true });
+    expect(logger.error).not.toHaveBeenCalled();
   });
 
   it('keeps the footprint sightings, which describe this hardware, not the Hub', async () => {

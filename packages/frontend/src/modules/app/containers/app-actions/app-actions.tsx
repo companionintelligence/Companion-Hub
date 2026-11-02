@@ -44,7 +44,7 @@ import { useUpdatePhase } from '../../helpers/use-update-phase';
 import { useMemoryConnection } from '../../helpers/use-memory-connection';
 import { useLocation, useNavigate, Link, useSearchParams } from 'react-router';
 import { invalidateAppQueries, type AppInstallErrorCache } from '../../helpers/app-sse-cache';
-import type { AppUrn } from '@ci-hub/common/types';
+import { type AppUrn, servedExposureMode } from '@ci-hub/common/types';
 import type { UpdatePhase } from '@ci-hub/common/schemas';
 import { openExternal } from '@/lib/helpers/open-external';
 import { canOpenFolderInFileExplorer, openPathInFileExplorer } from '@/lib/helpers/open-folder';
@@ -264,7 +264,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   // The same for an update: the Hub stops it at its next safe point and rolls it back.
   const [isCancellingUpdate, setIsCancellingUpdate] = useState(false);
 
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const { architecture } = useAppContext();
   const { setOptimisticStatus } = useAppStatus();
@@ -684,13 +684,23 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     );
   };
 
+  // `install_error` carries a translation key for a refusal (`describePortalBundleFailure`) and plain text for most other failures.
+  // Only the key travels (`reportAndTranslateAppError`), so copy that asks for values would print `{{status}}` as written.
+  const describeInstallFailure = (message: string) => {
+    if (!i18n.exists(message)) {
+      return message;
+    }
+    const copy = t(message);
+    return copy.includes('{{') ? t('COMMON_AN_ERROR_OCCURRED') : copy;
+  };
+
   // If there was an install error for this app, show it under the open/action area
   const installErrorMessage =
     installError?.errorCode === 'rocm_kfd_missing'
       ? t('APP_ERROR_ROCM_KFD_MISSING')
       : installError?.errorCode === 'network_overlap'
         ? t('APP_ERROR_NETWORK_OVERLAP')
-        : installError?.message;
+        : installError?.message && describeInstallFailure(installError.message);
   const installErrorSettingsPath =
     installError?.settingsPath ?? (installError?.errorCode === 'rocm_kfd_missing' ? '/settings?tab=ai&section=rocm' : undefined);
 
@@ -1065,7 +1075,13 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
 
   return (
     <>
-      <InstallDialog isOpen={installDisclosure.isOpen} onClose={installDisclosure.close} info={info} boundCustomDomain={app?.customDomain ?? null} />
+      <InstallDialog
+        isOpen={installDisclosure.isOpen}
+        onClose={installDisclosure.close}
+        info={info}
+        boundCustomDomain={app?.customDomain ?? null}
+        retryExposureMode={app?.status === 'install_failed' ? servedExposureMode(app) : undefined}
+      />
       <CancelInstallDialog
         isOpen={cancelInstallDisclosure.isOpen}
         onClose={cancelInstallDisclosure.close}
@@ -1146,6 +1162,12 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
            * success toast.
            */
           ...(app ? { customDomainExpected: app.customDomain ?? '' } : {}),
+          /*
+           * The mode the app runs in, which its form does not always name: a custom app's holds only
+           * its port. Left out, the dialog would open on what a new install gets (Public Web on a
+           * paired Hub) and the next save would publish the app.
+           */
+          ...(app ? { exposureMode: servedExposureMode(app) } : {}),
         }}
         status={app?.status}
       />

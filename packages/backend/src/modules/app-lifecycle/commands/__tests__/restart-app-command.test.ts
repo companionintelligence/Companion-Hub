@@ -161,6 +161,33 @@ describe('RestartAppCommand — pull policy', () => {
     expect(upCmd).toContain('--pull always');
   });
 
+  // Saving an edited custom app restarts it, so a new image it names arrives here rather than in a start.
+  it('records an image compose pulled during the restart and leaves one that was already there', async () => {
+    const onComputer = new Map([['traefik/whoami:v1.10.3', 'sha256:mine']]);
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [
+        { name: 'web', image: 'traefik/whoami:v1.10.2', isMain: true, internalPort: 80 },
+        { name: 'side', image: 'traefik/whoami:v1.10.3' },
+      ],
+      overrides: [],
+    } as any);
+    dockerService.imageIdLocally = vi.fn(async (ref: string) => onComputer.get(ref) ?? null);
+    dockerService.imageIdsLocally = vi.fn(async () => new Set(onComputer.values()));
+    dockerService.imageTagsLocally = vi.fn(async () => []);
+    appFilesManager.readPulledImages.mockResolvedValue({ imageIds: [], imageTags: [] });
+    appFilesManager.writePulledImages.mockResolvedValue(true);
+    dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+      if (args.startsWith('up')) {
+        onComputer.set('traefik/whoami:v1.10.2', 'sha256:whoami');
+      }
+    });
+
+    const result = await command.execute('port-test:_user' as AppUrn, {});
+
+    expect(result.success).toBe(true);
+    expect(appFilesManager.writePulledImages).toHaveBeenCalledWith('port-test:_user', { imageIds: ['sha256:whoami'], imageTags: [] });
+  });
+
   // A device present at install time can be gone by a later restart (ROCm/KVM modules not yet
   // loaded at boot, host reconfigured) — restart needs the same host-device preflight as
   // install/start, rather than only finding out via Docker's raw compose-up error.
@@ -268,6 +295,37 @@ describe('RestartAppCommand — pull policy', () => {
       expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(2);
       expect(appEnv).toContain('APP_PORT=10000');
       expect(form.port).toBe(10000);
+      expect(result).toMatchObject({ movedHostPort: { from: 8080, to: 10000 } });
+    });
+
+    it('moves an app off a port set by hand when the table still names an older one', async () => {
+      appEnv = ['APP_HOSTNAME=127.0.0.1', 'APP_PORT=18558', 'APP_URL=http://127.0.0.1:18558'].join('\n');
+      portManager.getMainPort.mockResolvedValue(10000);
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10001));
+      refusals = [18558];
+
+      const result = await command.execute(appUrn, { port: 18558 });
+
+      expect(result).toMatchObject({ success: true, movedHostPort: { from: 18558, to: 10001 } });
+      expect(portManager.moveMainPort).toHaveBeenCalledExactlyOnceWith(appUrn, new Set([18558]));
+    });
+
+    it('does not move the main port when only the stale table port matches the conflict', async () => {
+      appEnv = ['APP_HOSTNAME=127.0.0.1', 'APP_PORT=18558', 'APP_URL=http://127.0.0.1:18558'].join('\n');
+      portManager.getMainPort.mockResolvedValue(10000);
+      refusals = [10000];
+
+      const result = await command.execute(appUrn, { port: 18558 });
+
+      expect(result).toMatchObject({ success: false, movedHostPort: undefined });
+      expect(portManager.moveMainPort).not.toHaveBeenCalled();
+    });
+
+    it('reports no move when the app came back on its port', async () => {
+      const result = await command.execute(appUrn, { port: 8080 });
+
+      expect(result.success).toBe(true);
+      expect(result.movedHostPort).toBeUndefined();
     });
   });
 });

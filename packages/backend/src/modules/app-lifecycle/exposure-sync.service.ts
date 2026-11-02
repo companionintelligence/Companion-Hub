@@ -33,7 +33,13 @@ import {
 } from '../apps/app-public-routing.helpers';
 import { ADDRESS_KEPT_STATUSES } from '../apps/app-starting-page';
 import { isPortExposeApp, PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
-import { CloudflareClientService, AppInfo, type PublicDnsFailure, type PublicDnsFailureReason } from '../cloudflare/cloudflare-client.service';
+import {
+  CloudflareClientService,
+  AppInfo,
+  type PublicDnsFailure,
+  type PublicDnsFailureReason,
+  isTransientAppFailure,
+} from '../cloudflare/cloudflare-client.service';
 import { DockerReadFacade } from '../docker/docker-read.facade';
 import { RegistrationService } from '../registration/registration.service';
 import { isServePermissionDenied, servePermissionRemedy, TailscaleService, type TailscaleServeEntry } from '../tailscale/tailscale.service';
@@ -271,6 +277,8 @@ export class ExposureSyncService implements OnModuleDestroy {
   private lastPublicDnsFailureReportAt = 0;
   private readonly lastPublicDnsToastAt = new Map<string, number>();
   private static readonly PUBLIC_DNS_FAILURE_COOLDOWN_MS = 5 * 60_000;
+  /** A Portal outage repeats every pass; Sentry gets one warning for it per interval, not one per pass. */
+  private static readonly PUBLIC_DNS_TRANSIENT_REPORT_INTERVAL_MS = 60 * 60_000;
   /**
    * The refusal each app's toast last reported, for refusals that stand until someone acts.
    *
@@ -647,18 +655,29 @@ export class ExposureSyncService implements OnModuleDestroy {
    * and toast floods when availability remediation repeats the sync for an app
    * that remains unavailable. A refusal that stands until someone acts is toasted
    * once instead, and `reportError: false` keeps a sync with no Hub fault out of
-   * Sentry.
+   * Sentry. A `transient` failure is a warning, and Sentry hears of it once per
+   * interval, because the Portal is usually back on the next pass.
    */
   private surfacePublicDnsFailure(
     message: string,
     failedAppNames: string[],
     toastTargets: PublicDnsToastTarget[] = [],
-    { reportError = true }: { reportError?: boolean } = {},
+    { reportError = true, transient = false }: { reportError?: boolean; transient?: boolean } = {},
   ): void {
-    this.logger.error(message);
+    if (transient) {
+      this.logger.warn(message);
+    } else {
+      this.logger.error(message);
+    }
 
     const now = Date.now();
-    if (reportError && now - this.lastPublicDnsFailureReportAt >= ExposureSyncService.PUBLIC_DNS_FAILURE_COOLDOWN_MS) {
+    if (reportError && transient) {
+      this.errorReportingService?.captureWarning(
+        message,
+        { failedApps: failedAppNames },
+        { debounceKey: 'cloudflare:public-dns:transient', debounceMs: ExposureSyncService.PUBLIC_DNS_TRANSIENT_REPORT_INTERVAL_MS },
+      );
+    } else if (reportError && now - this.lastPublicDnsFailureReportAt >= ExposureSyncService.PUBLIC_DNS_FAILURE_COOLDOWN_MS) {
       this.lastPublicDnsFailureReportAt = now;
       this.errorReportingService?.captureMessage(message, 'error', { failedApps: failedAppNames });
     }
@@ -1117,6 +1136,8 @@ export class ExposureSyncService implements OnModuleDestroy {
             cause ? ` Cause: ${cause}.` : ''
           }`,
           appEntries.map((entry) => entry.name),
+          [],
+          { transient: result.transient === true },
         );
       } else if (refusedNames.length > 0) {
         // Map Companion Portal's failed app names to URNs and hostnames so the
@@ -1162,6 +1183,12 @@ export class ExposureSyncService implements OnModuleDestroy {
         // fault, so a sync refused only for those reports nothing to Sentry. Any
         // other failure in the same sync, including one with no reason, still does.
         const onlyUserActionRefusals = refusedNames.every((name) => isUserActionRefusal(failureByApp.get(name)?.reason));
+        // Every refusal passes on its own (the sync already retried it): a warning, on the hourly interval.
+        // An app whose failure carries no reason (an older Portal) is not known to be transient, so it stays an error.
+        const onlyTransientRefusals = refusedNames.every((name) => {
+          const failure = failureByApp.get(name);
+          return failure !== undefined && isTransientAppFailure(failure);
+        });
 
         this.surfacePublicDnsFailure(
           `[Cloudflare] Public DNS records were NOT created for ${refusedNames.length} app(s): ${failedLabels.join(', ')}. ` +
@@ -1170,7 +1197,7 @@ export class ExposureSyncService implements OnModuleDestroy {
             )}`,
           refusedNames,
           toastTargets,
-          { reportError: !onlyUserActionRefusals },
+          { reportError: !onlyUserActionRefusals, transient: onlyTransientRefusals },
         );
       } else if (appEntries.length > 0) {
         // Log success only after the request and every per-app operation complete.
