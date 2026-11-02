@@ -93,7 +93,7 @@ const USER_ENVIRONMENT_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: st
 const APP_CONFIG_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: string }> = [
   { pattern: /invalid dynamic compose schema/i, errorClass: 'invalid-compose-schema' },
   // The catalog this Hub reads has no entry for the app: a catalog gap, not a Hub defect.
-  { pattern: /Store not found for/i, errorClass: 'app-not-in-catalog' },
+  { pattern: /Store not found for|App \S+ not found/i, errorClass: 'app-not-in-catalog' },
   // A compose file or port the app's manifest (a custom app's, in practice) cannot turn into containers.
   { pattern: /Error generating docker-compose\.yml|invalid containerPort/i, errorClass: 'invalid-app-manifest' },
   // The image reference names a tag or repository that does not exist.
@@ -114,6 +114,8 @@ const APP_RUNTIME_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: string 
     pattern: /could not delete the data|failed to restore the backup|failed to copy the app files|could not snapshot/i,
     errorClass: 'app-data-step-failed',
   },
+  // A container of the app that is restarting or has exited, as Docker names it in the message.
+  { pattern: /\((?:Restarting|Exited|Dead)\b/i, errorClass: 'container-exited' },
   // A data volume the app still holds: the app has to be stopped first, which the user does.
   { pattern: /is in use by .*which is still running/i, errorClass: 'volume-in-use' },
 ];

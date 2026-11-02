@@ -140,6 +140,7 @@ describe('ErrorReportingService', () => {
     ['a failed health probe after an update', 'Update failed health probe: Health probe did not pass', 'health-probe-failed'],
     ['an app that refused a connection on its own port', 'connect ECONNREFUSED 127.0.0.9:443', 'app-not-listening'],
     ['a backup the app could not finish', 'Could not delete the data of rb-perm-check, so it was not reset', 'app-data-step-failed'],
+    ['a container of the app that keeps restarting', 'mixpost_ci-marketplace-mixpost-1 (Restarting (1) 3 seconds ago)', 'container-exited'],
     [
       'a data volume the app still holds',
       'Volume wordpress_ci-marketplace_data-mariadb is in use by review1965-holder, which is still running; stop the app and try again',
@@ -183,6 +184,17 @@ describe('ErrorReportingService', () => {
 
     expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'error');
     expect(lastScope().setFingerprint).toHaveBeenCalledWith(['app-failure', 'start', 'image-reference-invalid']);
+  });
+
+  it('groups a catalog that has no entry for the app under the same app-config class', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({ appUrn: 'burner:ci-marketplace', phase: 'install', message: 'App burner:ci-marketplace not found' });
+
+    expect(lastScope().setFingerprint).toHaveBeenCalledWith(['app-failure', 'install', 'app-not-in-catalog']);
   });
 
   it('groups a missing catalog entry as an app-config error, not per app', () => {
