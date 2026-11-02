@@ -399,6 +399,13 @@ export const InstallForm: React.FC<IProps> = ({
     [setValue, getValues, enableAuthFallback, hasAuthSwitch, authSwitchShown],
   );
 
+  // The mode a form asking for `requested` goes out on. An app that is not exposable offers no choice.
+  const offeredExposureMode = useCallback(
+    (requested: FormValues['exposureMode'] | undefined) =>
+      info.exposable ? resolveExposureMode(requested, { cloudflareAvailable, tailscaleAvailable }) : 'local',
+    [info.exposable, cloudflareAvailable, tailscaleAvailable],
+  );
+
   /**
    * Leaves out the access settings this Hub does not offer. An exposure mode it lacks would be
    * submitted as the next mode `resolveExposureMode` finds, so a Private VPN config brought to a Hub
@@ -410,10 +417,7 @@ export const InstallForm: React.FC<IProps> = ({
     (values: Record<string, unknown>): { values: Record<string, unknown>; dropped: string[] } => {
       const { exposureMode, publicDomain } = values;
       const dropped: string[] = [];
-      if (
-        exposureMode !== undefined &&
-        resolveExposureMode(exposureMode as FormValues['exposureMode'], { cloudflareAvailable, tailscaleAvailable }) !== exposureMode
-      ) {
+      if (exposureMode !== undefined && offeredExposureMode(exposureMode as FormValues['exposureMode']) !== exposureMode) {
         dropped.push('exposureMode');
       }
       if (
@@ -425,7 +429,7 @@ export const InstallForm: React.FC<IProps> = ({
       }
       return { values: Object.fromEntries(Object.entries(values).filter(([key]) => !dropped.includes(key))), dropped };
     },
-    [cloudflareAvailable, tailscaleAvailable, availableDomains],
+    [offeredExposureMode, availableDomains],
   );
 
   const handleExportConfig = useCallback(async () => {
@@ -659,6 +663,11 @@ export const InstallForm: React.FC<IProps> = ({
         if (hiddenEnvVars.has(key)) continue;
         setValue(key, value as string);
       }
+    }
+    // A stored form can still name a route on an app that is not exposable. What watches the mode, such
+    // as the suggested base URL, has to read what a save will send.
+    if (shouldSeed && !info.exposable && getValues('exposureMode') && getValues('exposureMode') !== 'local') {
+      setValue('exposureMode', 'local');
     }
     // Seed catalog form_field defaults into RHF so empty installs submit working env values
     // (uncontrolled defaultValue alone is easy to miss on validate/submit).
@@ -1100,7 +1109,7 @@ export const InstallForm: React.FC<IProps> = ({
   };
 
   const validate = async (values: FormValues) => {
-    const exposureMode = resolveExposureMode(values.exposureMode, { cloudflareAvailable, tailscaleAvailable });
+    const exposureMode = offeredExposureMode(values.exposureMode);
     const withFieldDefaults: FormValues = { ...values };
     for (const field of formFields) {
       if (isHiddenFieldType(field.type)) continue;
