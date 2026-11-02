@@ -59,6 +59,22 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     );
   };
 
+  // A move is the news of this outcome, so it takes the place of the success toast: stacked under or
+  // over a "started successfully", it is easy to miss that the app's address has changed.
+  const showPortMoved = (appUrn: string, appName: string, moved: NonNullable<AppSsePayload['movedHostPort']>) => {
+    toast.warning(t('APP_NOTICE_HOST_PORT_MOVED', { id: cachedAppName(queryClient, appUrn, appName), port: moved.to, previousPort: moved.from }), {
+      duration: 20000,
+    });
+  };
+
+  const showSuccessOrPortMoved = (successKey: string, appUrn: string, appName: string, moved: AppSsePayload['movedHostPort']) => {
+    if (moved) {
+      showPortMoved(appUrn, appName, moved);
+    } else {
+      toast.success(t(successKey, { id: appName }));
+    }
+  };
+
   // The service's name comes from the app's compose file, so it stays plain text: `Trans` would read tags in it.
   const showServiceFailureToast = (i18nKey: string, appName: string, failure: AppServiceFailure) => {
     toast.error(t(i18nKey, { id: appName, reason: appServiceFailureText(t, failure) }), { duration: 10000 });
@@ -68,7 +84,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     topic: 'app',
     onEvent: (data) => {
       const payload = data as AppSsePayload;
-      const { event, appUrn, error, errorCode, settingsPath, serviceFailure, warningCode, warningDetail } = payload;
+      const { event, appUrn, error, errorCode, settingsPath, serviceFailure, warningCode, warningDetail, movedHostPort } = payload;
 
       // The Hub's own greeting, first on every (re)connect. After a stack update this is
       // the new container announcing itself — the moment the Settings panel is waiting for.
@@ -117,9 +133,19 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
         navigate('/store', { replace: true });
       }
 
+      // A start that failed after the move leaves the app on the new port, so the error alone would hide it.
+      if (movedHostPort && (event === 'start_error' || event === 'restart_error')) {
+        showPortMoved(appUrn, appName, movedHostPort);
+      }
+
       switch (event) {
+        case 'host_port_moved':
+          if (movedHostPort) {
+            showPortMoved(appUrn, appName, movedHostPort);
+          }
+          break;
         case 'install_success':
-          toast.success(t('APP_INSTALL_SUCCESS', { id: appName }));
+          showSuccessOrPortMoved('APP_INSTALL_SUCCESS', appUrn, appName, movedHostPort);
           break;
         case 'install_error':
           if (errorCode === 'rocm_kfd_missing') {
@@ -154,7 +180,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           toast.success(t('APP_INSTALL_CANCELLED', { id: appName }));
           break;
         case 'start_success':
-          toast.success(t('APP_START_SUCCESS', { id: appName }));
+          showSuccessOrPortMoved('APP_START_SUCCESS', appUrn, appName, movedHostPort);
           break;
         case 'start_error':
           if (errorCode === 'network_overlap') {
@@ -222,7 +248,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           showLogsErrorToast('APP_ERROR_APP_FAILED_TO_RESET_TOAST', appName);
           break;
         case 'restart_success':
-          toast.success(t('APP_RESTART_SUCCESS', { id: appName }));
+          showSuccessOrPortMoved('APP_RESTART_SUCCESS', appUrn, appName, movedHostPort);
           break;
         case 'restart_error':
           if (serviceFailure) {

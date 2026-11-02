@@ -325,6 +325,37 @@ describe('RestartAppCommand — pull policy', () => {
       expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(2);
       expect(appEnv).toContain('APP_PORT=10000');
       expect(form.port).toBe(10000);
+      expect(result).toMatchObject({ movedHostPort: { from: 8080, to: 10000 } });
+    });
+
+    it('moves an app off a port set by hand when the table still names an older one', async () => {
+      appEnv = ['APP_HOSTNAME=127.0.0.1', 'APP_PORT=18558', 'APP_URL=http://127.0.0.1:18558'].join('\n');
+      portManager.getMainPort.mockResolvedValue(10000);
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10001));
+      refusals = [18558];
+
+      const result = await command.execute(appUrn, { port: 18558 });
+
+      expect(result).toMatchObject({ success: true, movedHostPort: { from: 18558, to: 10001 } });
+      expect(portManager.moveMainPort).toHaveBeenCalledExactlyOnceWith(appUrn, new Set([18558]));
+    });
+
+    it('does not move the main port when only the stale table port matches the conflict', async () => {
+      appEnv = ['APP_HOSTNAME=127.0.0.1', 'APP_PORT=18558', 'APP_URL=http://127.0.0.1:18558'].join('\n');
+      portManager.getMainPort.mockResolvedValue(10000);
+      refusals = [10000];
+
+      const result = await command.execute(appUrn, { port: 18558 });
+
+      expect(result).toMatchObject({ success: false, movedHostPort: undefined });
+      expect(portManager.moveMainPort).not.toHaveBeenCalled();
+    });
+
+    it('reports no move when the app came back on its port', async () => {
+      const result = await command.execute(appUrn, { port: 8080 });
+
+      expect(result.success).toBe(true);
+      expect(result.movedHostPort).toBeUndefined();
     });
   });
 });

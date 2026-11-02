@@ -90,10 +90,12 @@ import type {
 
 import {
   type AppServiceFailure,
+  type HostPortMove,
   type SSE,
   type Topic,
   type UpdatePhase,
   appServiceFailureSchema,
+  hostPortMoveSchema,
   lifecycleOperationSchema,
   sseSchema,
 } from './sse.js';
@@ -194,6 +196,8 @@ export {
   type RandomEncoding,
   type InferenceVariable,
   type AppCategory,
+  type HostPortMove,
+  hostPortMoveSchema,
   type AppServiceFailure,
   type SSE,
   type Topic,
