@@ -922,8 +922,12 @@ export class MarketplaceWhoIsService {
    * learn our own identity silently widened every grant on the appliance. It
    * now ends here as `null`, before any Portal call, and logs as a failed read
    * rather than as a device with no organization.
+   *
+   * The paid app requests name the same organization (`MarketplaceEntitlementService`,
+   * `ReposHelpers.downloadAppFiles`, `RegistryService`). On `null` they name none, since a device in
+   * one organization needs no name and a tied one gets a refusal that says so.
    */
-  private async deviceOrganizationId(): Promise<string | null> {
+  async deviceOrganizationId(): Promise<string | null> {
     let registration: Awaited<ReturnType<RegistrationService['getDeviceRegistrationInfo']>>;
 
     try {
@@ -938,7 +942,7 @@ export class MarketplaceWhoIsService {
     }
 
     if (!registration?.id) {
-      this.warnOnce('no-org-id', 'whois_org_unresolved: this device has no organization id; refusing to guess');
+      this.warnOnce('no-org-id', 'whois_org_unresolved: this device has no organization id');
 
       return null;
     }

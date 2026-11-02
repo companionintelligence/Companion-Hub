@@ -34,11 +34,11 @@ const APP_CONTEXT_DEFAULTS: AppContextDto = {
 
 // Optimistically prefetch pages that are likely to be visited
 const prefetch = async (queryClient: QueryClient) => {
-  queryClient.ensureQueryData(systemLoadOptions());
+  await Promise.allSettled([queryClient.ensureQueryData(systemLoadOptions())]);
 };
 
 const prefetchStoreShell = async (queryClient: QueryClient) => {
-  await Promise.all([
+  await Promise.allSettled([
     queryClient.ensureQueryData(getInstalledAppUrnsOptions()),
     ...FEATURED_STORE_SECTIONS.map((section) => queryClient.ensureQueryData(getFeaturedStoreSectionOptions(section.id))),
   ]);
@@ -136,6 +136,19 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 };
+
+const GUEST_APP_CONTEXT: AppContextValue = {
+  ...APP_CONTEXT_DEFAULTS,
+  isLoading: false,
+  loadFailed: false,
+  refreshAppContext: async () => undefined,
+  setAppContext: () => undefined,
+};
+
+/** For the page a signed-out visitor sees. `/api/app-context` needs a session, and its 401 sends the visitor to /login. */
+export const GuestAppContextProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <AppContext.Provider value={GUEST_APP_CONTEXT}>{children}</AppContext.Provider>
+);
 
 export const useAppContext = () => {
   const context = useContext(AppContext);

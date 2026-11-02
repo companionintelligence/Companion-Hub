@@ -1,5 +1,11 @@
 import { safeParseKeepingBuilderEnforcedLabels } from '../builder-enforced-labels.js';
-import { type dynamicComposeSchema, dynamicComposeUnion, MIN_SCHEMA_VERSION } from '../dynamic-compose.js';
+import {
+  type AppSecurityGrants,
+  type dynamicComposeSchema,
+  type dynamicComposeUnion,
+  dynamicComposeUnionFor,
+  MIN_SCHEMA_VERSION,
+} from '../dynamic-compose.js';
 import type { z } from 'zod';
 import { composeV1ToLatest } from './converters/v1.js';
 
@@ -7,10 +13,11 @@ type ParsedCompose = z.infer<typeof dynamicComposeSchema> & { _schemaVersion: nu
 
 /**
  * A compose coming into the Hub: a store app being installed, or anything else held to every rule.
- * Throws on any refusal.
+ * Throws on any refusal. `grants` are the sandbox grants the app holds (see `TRUSTED_APP_SECURITY_ALLOWLIST`);
+ * omit them for anything that is not an official store app, which gets the strict rule.
  */
-export const parseComposeJson = (data: unknown): ParsedCompose => {
-  const parsed = dynamicComposeUnion.safeParse(data);
+export const parseComposeJson = (data: unknown, grants?: AppSecurityGrants): ParsedCompose => {
+  const parsed = dynamicComposeUnionFor(grants).safeParse(data);
 
   if (!parsed.success) {
     throw new Error(`Invalid dynamic compose schema: ${parsed.error.message}`);
@@ -23,10 +30,11 @@ export const parseComposeJson = (data: unknown): ParsedCompose => {
  * A compose already on the Hub, read to start, restart or update its app or to look something up in
  * it. Like {@link parseComposeJson}, except that a label refusal the compose builder enforces itself
  * doesn't stop it: those labels stay in the result and the builder leaves them out. So an app saved
- * before a label rule existed keeps working. Every other refusal throws as in `parseComposeJson`.
+ * before a label rule existed keeps working. Every other refusal throws as in `parseComposeJson`, and
+ * `grants` mean the same there.
  */
-export const parseInstalledComposeJson = (data: unknown): ParsedCompose => {
-  const parsed = safeParseKeepingBuilderEnforcedLabels(dynamicComposeUnion, data);
+export const parseInstalledComposeJson = (data: unknown, grants?: AppSecurityGrants): ParsedCompose => {
+  const parsed = safeParseKeepingBuilderEnforcedLabels(dynamicComposeUnionFor(grants), data);
 
   if (!parsed.success) {
     throw new Error(`Invalid dynamic compose schema: ${parsed.error.message}`);

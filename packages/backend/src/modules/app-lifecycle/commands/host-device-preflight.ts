@@ -1,6 +1,7 @@
 import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { isRocmKfdPassthroughAvailable } from '@/modules/inference/host-rocm-availability';
 import { isConfidentialRuntime, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -82,7 +83,7 @@ export async function assertHostDevicesAvailable(moduleRef: ModuleRef, appUrn: A
   let requiresKvm = false;
   const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
   if (composeJson.content) {
-    const { services, overrides } = parseInstalledComposeJson(composeJson.content);
+    const { services, overrides } = parseInstalledComposeJson(composeJson.content, securityGrantsFor(appUrn));
     const architecture = config.get('architecture');
     const mergedServices = mergeArchitectureOverrides(services, overrides, architecture);
     for (const service of mergedServices) {

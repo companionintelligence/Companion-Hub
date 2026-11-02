@@ -14,6 +14,7 @@ vi.mock('@/context/user-context', () => ({
 }));
 vi.mock('@/context/app-context', () => ({
   AppContextProvider: ({ children }: { children: React.ReactNode }) => children,
+  GuestAppContextProvider: ({ children }: { children: React.ReactNode }) => children,
   useAppContext: () => appContext,
 }));
 vi.mock('react-router', async () => ({

@@ -3,7 +3,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import messages from '@ci-hub/common/i18n/translations/en.json';
 import type { HostPortMove, SSE } from '@ci-hub/common/schemas';
-import { isPortExposeApp, manifestDefaultsEdgeAuthOn } from '@ci-hub/common/schemas';
+import { isPortExposeApp, manifestDefaultsEdgeAuthOn, servedOpenPort } from '@ci-hub/common/schemas';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
@@ -44,6 +44,7 @@ import { toAppCommandFailureResult } from './commands/app-lifecycle-errors';
 import type { CommandExecutionContext } from './commands/command';
 import { assertHostDevicesAvailable } from './commands/host-device-preflight';
 import { extractComposeImages } from './commands/install-app-command';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { toCheckResult, planImages, planPorts, planFormFields } from './planning/install-plan';
 import type { InstallPlan, InstallPlanChecks } from './planning/install-plan.types';
 import { configAfterMove } from './commands/main-host-port';
@@ -65,7 +66,8 @@ import type { ActorCheckContext, LifecycleActor, SystemLifecycleReason } from '@
 import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
-import { publishesHostPort } from '../apps/app-exposure.helpers';
+import { getEffectiveExposureMode, publishesHostPort } from '../apps/app-exposure.helpers';
+import { canonicalJson } from '../queue/message-signing';
 import {
   canServeOnCustomDomain,
   didPublicRoutingIdentityChange,
@@ -115,6 +117,15 @@ export const RESTARTS_THAT_WAIT_FOR_THE_APP: ReadonlySet<SystemLifecycleReason> 
 
 /** How often a waiting command looks at the app again, besides being woken when its slot empties. */
 const OPERATION_WAIT_POLL_MS = 5_000;
+
+/**
+ * A start the queue refused because RabbitMQ was still connecting is published again, the delay
+ * doubling from QUEUE_RECONNECT_FIRST_DELAY_MS up to QUEUE_RECONNECT_MAX_DELAY_MS, for
+ * QUEUE_RECONNECT_WAIT_MS in all. The boot gives a start it refused the same ten minutes (app.service.ts).
+ */
+const QUEUE_RECONNECT_FIRST_DELAY_MS = 1_000;
+const QUEUE_RECONNECT_MAX_DELAY_MS = 15_000;
+const QUEUE_RECONNECT_WAIT_MS = 10 * 60_000;
 
 /**
  * The restart a caller of {@link AppLifecycleService.withAppHeld} applies its change with, under the
@@ -260,11 +271,63 @@ function normalizeSubmittedForm(parsedForm: ParsedAppForm): ParsedAppForm {
     normalized = { ...normalized, localSubdomain: sanitizeAppSubdomain(normalized.localSubdomain) || undefined };
   }
 
-  if ((normalized.exposureMode ?? 'local') === 'local' && !normalized.openPort) {
+  // A form public through the legacy `exposedLocal` flag closes its host port only by saying so. The
+  // queue serves one that says nothing on an open port, so the row and the custom-domain gate must too.
+  const publicByFlag = !normalized.exposureMode && Boolean(normalized.exposedLocal);
+  if (publicByFlag ? normalized.openPort === undefined : getEffectiveExposureMode(normalized) === 'local' && !normalized.openPort) {
     normalized = { ...normalized, openPort: true };
   }
 
+  // Such a form always had the Hub login, through the host port the Hub used to open for it. Closing
+  // the port must not take the login off a public route unless the form says so.
+  if (publicByFlag && normalized.openPort === false && normalized.enableAuth === undefined) {
+    normalized = { ...normalized, enableAuth: true };
+  }
+
   return normalized;
+}
+
+/**
+ * Keep the exposure the app runs with when a save says nothing about it.
+ *
+ * A save and a reinstall replace the stored form whole, so a form naming no mode, an MCP or API call
+ * changing one setting, took the app off Public Web or the Private VPN and released its public name.
+ * Naming another `exposureMode` is a decision. So is an `exposedLocal` that
+ * differs from what the app is. One that repeats it is not: `false` says only "not public", which a
+ * Private VPN app already is. Repeating the mode the app is in gives up neither its name nor a closed
+ * host port.
+ *
+ * `submitted` is the form as it came in: `normalizeSubmittedForm` has already opened the host port
+ * of any form naming no mode, which would open it here on an app that is not on This Machine Only.
+ * `stored` is read as the no-change check reads it, so a value kept here cannot compare as a change.
+ */
+function keepStoredExposure(parsedForm: ParsedAppForm, submitted: ParsedAppForm, storedConfig: unknown): void {
+  const stored = normalizeConfigForCompare((storedConfig ?? {}) as Record<string, unknown>) as Partial<ParsedAppForm>;
+  const storedMode = getEffectiveExposureMode(stored);
+  // `parsedForm` may be `submitted` itself, so what it named is read before anything is written.
+  const namedMode = submitted.exposureMode;
+  const moves =
+    namedMode === undefined
+      ? submitted.exposedLocal !== undefined && submitted.exposedLocal !== (storedMode === 'cloudflare')
+      : namedMode !== storedMode;
+  if (moves) return;
+
+  if (namedMode === undefined) {
+    parsedForm.exposureMode = stored.exposureMode;
+    parsedForm.exposedLocal = stored.exposedLocal;
+  } else {
+    parsedForm.exposedLocal ??= stored.exposedLocal;
+  }
+  // This Machine Only always publishes the host port. Elsewhere a stored form with no `openPort` stays
+  // that way, or the save would read as a change and restart the app.
+  const mode = getEffectiveExposureMode(parsedForm);
+  parsedForm.openPort = mode === 'local' ? true : (submitted.openPort ?? stored.openPort);
+  parsedForm.localSubdomain ??= stored.localSubdomain;
+  parsedForm.publicDomain ??= stored.publicDomain;
+  // A form with no `enableAuth` has the Hub login only while its host port is open, so closing the port
+  // here must not take the login off an app that stays public.
+  const closesPortOnLogin = mode === 'cloudflare' && parsedForm.openPort === false && servedOpenPort(stored);
+  parsedForm.enableAuth ??= stored.enableAuth ?? (closesPortOnLogin || undefined);
 }
 
 /**
@@ -349,6 +412,9 @@ function buildInstallRowPatch(parsedForm: ParsedAppForm, storedConfig: unknown):
   return {
     config,
     ...rowFields,
+    // What compose runs the form as, as a first install and a save record it. A form naming no mode has
+    // no `exposureMode` to spread, which left the row on whatever mode the app had before.
+    exposureMode: getEffectiveExposureMode(parsedForm),
     ...customDomainColumns(parsedForm),
   };
 }
@@ -1146,10 +1212,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Check if the configuration has changed in a way that requires a restart
    */
   private hasConfigChanged(oldConfig: Record<string, unknown>, newConfig: Record<string, unknown>): boolean {
-    const oldJSON = JSON.stringify(oldConfig);
-    const newJSON = JSON.stringify(newConfig);
-
-    return oldJSON !== newJSON;
+    // Canonical, because the order means nothing: Postgres stores `config` as jsonb, which sets its
+    // own. A setting a save inherits also lands after the ones it named.
+    return canonicalJson(oldConfig) !== canonicalJson(newConfig);
   }
 
   /**
@@ -1185,7 +1250,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'start');
-    this.publishRegistered(appUrn, requestId, {
+    this.publishStartWhenQueueUp(appUrn, requestId, {
       appUrn,
       command: 'start',
       requestId,
@@ -1230,7 +1295,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             },
           });
         } else {
-          this.logger.error(`Failed to start app ${appUrn}: ${message}`);
+          // The queue never took the command, so nothing ran and the app settles on the status it had. That is a
+          // warning: the queue was not up, which is the device's, not a failure of the start itself.
+          if (errorCode === QUEUE_UNAVAILABLE_CODE) {
+            this.logger.warn(`Failed to start app ${appUrn}: ${message}`);
+          } else {
+            this.logger.error(`Failed to start app ${appUrn}: ${message}`);
+          }
           await this.settleCommandOutcome({
             appId: app.id,
             appUrn,
@@ -1325,7 +1396,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       this.marketplaceService.getDockerComposeJson(appUrn),
     ]);
 
-    const images = composeJson.content ? await planImages(this.dockerService, extractComposeImages(composeJson.content)) : [];
+    const images = composeJson.content
+      ? await planImages(this.dockerService, extractComposeImages(composeJson.content, securityGrantsFor(appUrn)))
+      : [];
 
     // Parsed the same way `validateAppConfig`/`installApp` do; an invalid form still produces a
     // usable (if empty) basis here — `checks.config` is what reports the validation failure.
@@ -1339,7 +1412,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
     if (composeJson.content) {
       try {
-        portRequests.push(...buildComposePortRequests(composeJson.content));
+        portRequests.push(...buildComposePortRequests(composeJson.content, securityGrantsFor(appUrn)));
       } catch {
         // Malformed compose — already surfaced via `checks.config`/`images`; the port plan just omits extras.
       }
@@ -1721,6 +1794,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       );
     }
 
+    // As a save does: the form replaces the stored one whole. Not for a retry, whose app was never served.
+    if (reinstall && existingApp && appInfo.exposable) {
+      keepStoredExposure(parsedForm, parsedFormResult.data, existingApp.config);
+    }
+
     if (!appInfo.exposable) {
       if (exposed || exposedLocal || enableAuth) {
         this.logger.warn(`App ${appUrn} is not exposable, resetting proxy settings`);
@@ -1732,7 +1810,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       parsedForm.publicDomain = undefined;
     }
 
-    if (parsedForm.exposureMode !== 'cloudflare') {
+    if (getEffectiveExposureMode(parsedForm) !== 'cloudflare') {
       parsedForm.publicDomain = undefined;
     }
 
@@ -1871,7 +1949,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           ...customDomainColumns(parsedForm),
           openPort: openPort ?? false,
           exposedLocal: exposedLocal ?? !!appInfo.exposable,
-          exposureMode: parsedForm.exposureMode ?? 'local',
+          exposureMode: getEffectiveExposureMode(parsedForm),
           appStoreSlug: appStoreId,
           isVisibleOnGuestDashboard,
           enableAuth: parsedForm.enableAuth ?? false,
@@ -1932,7 +2010,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         ...customDomainColumns(parsedForm),
         openPort: openPort ?? false,
         exposedLocal: exposedLocal ?? !!appInfo.exposable,
-        exposureMode: parsedForm.exposureMode ?? 'local',
+        exposureMode: getEffectiveExposureMode(parsedForm),
         isVisibleOnGuestDashboard,
         enableAuth: parsedForm.enableAuth ?? false,
         ...autoRestartColumn(parsedForm),
@@ -2793,6 +2871,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
 
+    // An app that is not exposable offers no choice of mode, so there is none to keep.
+    if (appInfo.exposable) {
+      keepStoredExposure(parsedForm, parsedFormResult.data, app.config);
+    }
+
     // A custom app's config.json keeps its internal port, and the host port the Hub gave it lives on
     // the row (see `allocateCustomAppHostPort`). A save that leaves the port out would fall back to
     // config.json below and publish the internal port again, which for port 80 can never bind.
@@ -2887,6 +2970,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     if (!settingsChanged) {
+      // Nothing to apply, but a legacy form re-submitted by a version bump is still public through
+      // `exposedLocal` on a row that says local. Writing the mode restarts nothing.
+      const servedMode = getEffectiveExposureMode(parsedForm);
+      if ((app.exposureMode || 'local') !== servedMode) {
+        await this.appRepository.updateAppById(app.id, { exposureMode: servedMode });
+      }
       this.logger.debug(`App ${appUrn} config update skipped — no changes detected`);
       return { requestId: crypto.randomUUID() };
     }
@@ -2907,7 +2996,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       parsedForm.publicDomain = undefined;
     }
 
-    if (parsedForm.exposureMode !== 'cloudflare') {
+    if (getEffectiveExposureMode(parsedForm) !== 'cloudflare') {
       parsedForm.publicDomain = undefined;
     }
 
@@ -2986,7 +3075,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // `config` blob stored in this same call, which does carry the corrected form.
       exposed: parsedForm.exposed ?? false,
       exposedLocal: parsedForm.exposedLocal ?? false,
-      exposureMode: parsedForm.exposureMode ?? 'local',
+      // What compose runs the form as: a legacy form's `exposedLocal` is Public Web, not This Machine Only.
+      exposureMode: getEffectiveExposureMode(parsedForm),
       openPort: parsedForm.openPort,
       port: parsedForm.port ?? appInfo.port,
       domain: parsedForm.domain ?? null,
@@ -3273,6 +3363,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const runningApps = apps.filter((app: AppFromDb) => app.status === 'running');
 
     (async () => {
+      // A boot can come before RabbitMQ has connected, and every start is refused until it has. Wait for it
+      // rather than fail each start at once. If it never connects, the apps are left as they are.
+      if (runningApps.length > 0 && !(await this.waitForAppEventsQueue(QUEUE_RECONNECT_WAIT_MS))) {
+        this.logger.warn(
+          `RabbitMQ did not connect within ${QUEUE_RECONNECT_WAIT_MS / 60_000} minutes, so ${runningApps.length} running app(s) were not restarted.`,
+        );
+        return;
+      }
       for (const app of runningApps) {
         try {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
@@ -3399,7 +3497,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Turn a failed Portal bundle fetch into the error the caller throws, and report it first.
    *
    * The user sees a translation key: the one `downloadAppFiles` chose when Portal's status had a
-   * meaning of its own (401/402/403), else `COMMON_AN_ERROR_OCCURRED`. Everything else about the
+   * meaning of its own (401/402/403, or a refusal about the organization), else `COMMON_AN_ERROR_OCCURRED`. Everything else about the
    * failure — `timeout of 20000ms exceeded`, `Failed to fetch app files: 503 …` — used to stop
    * here: it was replaced by that key before being reported, so every non-auth Portal failure
    * reached Sentry as `COMMON_AN_ERROR_OCCURRED`, unclassified, with the cause only in a log on
@@ -3591,6 +3689,43 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       this.operationRegistry.clear(appUrn, requestId);
       throw error;
     });
+  }
+
+  /**
+   * Resolves true once the app-events queue can take a command, polling on the backoff of the
+   * QUEUE_RECONNECT_* constants. Resolves false when it still cannot after `waitMs`.
+   */
+  private async waitForAppEventsQueue(waitMs: number): Promise<boolean> {
+    const deadline = Date.now() + waitMs;
+    let delay = QUEUE_RECONNECT_FIRST_DELAY_MS;
+    while (this.appEventsQueue.unavailableReason() !== undefined) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(delay, remaining)));
+      delay = Math.min(delay * 2, QUEUE_RECONNECT_MAX_DELAY_MS);
+    }
+    return true;
+  }
+
+  /**
+   * Publish a start. While the queue refuses it because RabbitMQ is still connecting, wait for the queue
+   * (waitForAppEventsQueue) and publish it again, until the queue takes it or QUEUE_RECONNECT_WAIT_MS has
+   * passed. Only the refusal the queue makes before it sends anything (QUEUE_UNAVAILABLE_CODE, see
+   * queue.entity.ts) is repeated, so the start cannot run twice. A refusal while the queue reports itself
+   * ready is returned at once, as before.
+   */
+  private async publishStartWhenQueueUp(appUrn: AppUrn, requestId: string, event: z.input<typeof appEventSchema>) {
+    const deadline = Date.now() + QUEUE_RECONNECT_WAIT_MS;
+    let raw = (await this.publishRegistered(appUrn, requestId, event)) as z.output<typeof appEventResultSchema>;
+    while (!raw.success && raw.errorCode === QUEUE_UNAVAILABLE_CODE && this.appEventsQueue.unavailableReason() !== undefined) {
+      if (!(await this.waitForAppEventsQueue(Math.max(deadline - Date.now(), 0)))) {
+        break;
+      }
+      raw = (await this.publishRegistered(appUrn, requestId, event)) as z.output<typeof appEventResultSchema>;
+    }
+    return raw;
   }
 
   private operationBusyError(appUrn: AppUrn, busy: OperationCommand): TranslatableError {

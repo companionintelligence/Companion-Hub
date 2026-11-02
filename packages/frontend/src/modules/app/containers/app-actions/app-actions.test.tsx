@@ -158,11 +158,20 @@ vi.mock('sonner', () => ({
   },
 }));
 
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({
-    t: (key: string) => key,
-  }),
-}));
+vi.mock('react-i18next', () => {
+  // Every key reads as itself but those the install error banner is handed, so a key left untranslated shows.
+  const copy: Record<string, string> = {
+    APP_INSTALL_PORTAL_ORGANIZATION_REQUIRED: 'Translated refusal',
+    PORTAL_REQUEST_FAILED: 'CI Account request failed ({{status}}) for {{path}}.',
+  };
+
+  return {
+    useTranslation: () => ({
+      t: (key: string) => copy[key] ?? key,
+      i18n: { exists: (key: string) => key in copy },
+    }),
+  };
+});
 
 vi.mock('react-tooltip', () => ({
   Tooltip: () => null,
@@ -372,6 +381,49 @@ describe('AppActions', () => {
     });
   });
 
+  describe('the exposure mode the settings dialog opens on', () => {
+    const openedMode = (app: AppDetails) => {
+      render(<AppActions app={app} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+      return (hoisted.updateSettingsProps?.config as Record<string, unknown> | undefined)?.exposureMode;
+    };
+
+    it('is the mode a custom app runs in when its form holds only a port', () => {
+      expect(openedMode(makeApp({ exposureMode: 'local', config: { port: 9898 } }))).toBe('local');
+    });
+
+    it('is the mode the stored form names', () => {
+      expect(openedMode(makeApp({ exposureMode: 'tailscale', config: { port: 9898, exposureMode: 'tailscale' } }))).toBe('tailscale');
+    });
+
+    it('stays Public Web for an app saved that way', () => {
+      expect(
+        openedMode(makeApp({ exposureMode: 'cloudflare', exposedLocal: true, config: { exposureMode: 'cloudflare', exposedLocal: true } })),
+      ).toBe('cloudflare');
+    });
+
+    it('is what compose runs when the row and the form disagree', () => {
+      // An install that sent no exposure settings stored `exposed_local = true` beside a local form.
+      expect(openedMode(makeApp({ exposureMode: 'cloudflare', exposedLocal: true, config: { openPort: true } }))).toBe('local');
+    });
+  });
+
+  describe('the exposure mode the install dialog opens on', () => {
+    const installMode = (app: AppDetails | null) => {
+      render(<AppActions app={app} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+      return hoisted.installDialogProps?.retryExposureMode;
+    };
+
+    it('is what a failed install asked for when it is retried', () => {
+      expect(installMode(makeApp({ status: 'install_failed', exposureMode: 'local', config: { exposureMode: 'local', openPort: true } }))).toBe(
+        'local',
+      );
+    });
+
+    it('is left to the new-install default for an app that is not installed', () => {
+      expect(installMode(null)).toBeUndefined();
+    });
+  });
+
   describe('the restart setting for a newly connected domain', () => {
     /*
      * The stored config snapshot leaves this setting out, so that flipping it never
@@ -512,6 +564,32 @@ describe('AppActions', () => {
     expect(install).toHaveAttribute('aria-disabled', 'true');
     await userEvent.click(install);
     expect(hoisted.toastError).toHaveBeenCalledWith('APP_ACTION_WRONG_ARCHITECTURE');
+  });
+
+  describe('the install error under the actions', () => {
+    const renderWithInstallError = (message: string) => {
+      hoisted.queryClient.getQueryData.mockImplementation((key: unknown[]) => (key[0] === 'app-install-error' ? { message, ts: 1 } : null));
+
+      render(<AppActions app={null} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+    };
+
+    it('translates a refused bundle download, which arrives as a key', () => {
+      renderWithInstallError('APP_INSTALL_PORTAL_ORGANIZATION_REQUIRED');
+
+      expect(screen.getByRole('alert')).toHaveTextContent('Translated refusal');
+    });
+
+    it('shows the general message for a key whose copy asks for values the event does not carry', () => {
+      renderWithInstallError('PORTAL_REQUEST_FAILED');
+
+      expect(screen.getByRole('alert')).toHaveTextContent('COMMON_AN_ERROR_OCCURRED');
+    });
+
+    it('shows an install that failed later as the text it sent', () => {
+      renderWithInstallError('One or more containers exited after install.');
+
+      expect(screen.getByRole('alert')).toHaveTextContent('One or more containers exited after install.');
+    });
   });
 
   describe('a saved link to install this app', () => {
