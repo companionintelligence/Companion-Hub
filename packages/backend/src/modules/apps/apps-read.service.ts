@@ -20,7 +20,7 @@ import { AppsRepository } from './apps.repository';
 type AppList = Awaited<ReturnType<AppsRepository['getApps']>>;
 
 /** Jobs that leave an app as it was, so the last failure still describes it after one of them. */
-const OPERATIONS_LEAVING_AN_APP_AS_IT_WAS: ReadonlySet<string> = new Set(['backup', 'generate_env']);
+const OPERATIONS_LEAVING_AN_APP_AS_IT_WAS = ['backup', 'generate_env'];
 
 /** A failed command's job ends just before its row is settled, so a row written later than this has moved on. */
 const FAILURE_OUTLIVED_AFTER_MS = 60_000;
@@ -331,8 +331,10 @@ export class AppsReadService {
       return null;
     }
     try {
-      const jobs = (await this.moduleRef?.get(LifecycleJobService, { strict: false })?.listJobs({ appUrn, limit: 10 })) ?? [];
-      const job = jobs.find(({ operation }) => !OPERATIONS_LEAVING_AN_APP_AS_IT_WAS.has(operation));
+      const jobs = await this.moduleRef
+        ?.get(LifecycleJobService, { strict: false })
+        ?.listJobs({ appUrn, excludeOperations: OPERATIONS_LEAVING_AN_APP_AS_IT_WAS, limit: 1 });
+      const job = jobs?.[0];
       const failure = (job?.metadata as { failure?: Omit<AppFailureFromJob, 'message'> } | null)?.failure;
       if (job?.status !== 'failed' || !job.error || !failure) {
         return null;

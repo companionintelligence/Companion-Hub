@@ -138,12 +138,13 @@ describe('AppsReadService.getApp failure', () => {
   const serviceFailure = { kind: 'restarting', service: 'summary-service', exitCode: 126 };
 
   const failedAt = '2026-11-02T10:00:00.000Z';
+  let jobService: ReturnType<typeof mock<LifecycleJobService>>;
 
   function build(status: string, jobs: unknown[], updatedAt = '2026-11-02T10:00:01.000Z') {
     const appsRepository = mock<AppsRepository>();
     const appFilesManager = mock<AppFilesManager>();
     const marketplaceService = mock<MarketplaceService>();
-    const jobService = mock<LifecycleJobService>();
+    jobService = mock<LifecycleJobService>();
     const moduleRef = mock<ModuleRef>();
     appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status, updatedAt } as never);
     appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'ci-memory' } as never);
@@ -152,7 +153,10 @@ describe('AppsReadService.getApp failure', () => {
     appFilesManager.getDockerComposeJson.mockResolvedValue({ content: null } as never);
     marketplaceService.getAppUpdateInfo.mockResolvedValue({ latestVersion: 1, latestDockerVersion: '1' } as never);
     marketplaceService.resolveAppDescription.mockResolvedValue({ id: 'ci-memory' } as never);
-    jobService.listJobs.mockResolvedValue(jobs as never);
+    jobService.listJobs.mockImplementation((async ({ excludeOperations = [], limit }: { excludeOperations?: string[]; limit?: number }) =>
+      (jobs as Array<{ operation?: string }>)
+        .filter(({ operation }) => !operation || !excludeOperations.includes(operation))
+        .slice(0, limit)) as never);
     moduleRef.get.mockImplementation(((token: unknown) => (token === LifecycleJobService ? jobService : undefined)) as never);
     const portAllocationRepository = mock<PortAllocationRepository>();
     portAllocationRepository.getByAppUrn.mockResolvedValue([] as never);
@@ -242,5 +246,6 @@ describe('AppsReadService.getApp failure', () => {
     const service = build('running', [failedJob({ serviceFailure })]);
 
     await expect(service.getApp(appUrn)).resolves.toMatchObject({ failure: null });
+    expect(jobService.listJobs).not.toHaveBeenCalled();
   });
 });
