@@ -12,18 +12,39 @@ const js = ts.transpileModule(block[1], { compilerOptions: { target: ts.ScriptTa
 const {
   classifyQaRoute,
   scoreReadyQaApp,
+  hasKnownProtocolListener,
+  acceptsWireProtocolReadiness,
+  isKnownWireProtocolEndpoint,
+  listenerProbeFailureNote,
+  unsupportedHeadlessProbeNote,
   isUnsupportedSilentHeadlessTcp,
   hasValidTcpProcSnapshot,
   tcpListenerFromProcSnapshot,
   isKnownWireProtocolImage,
 } = new Function(
-  `${js}\nreturn { classifyQaRoute, scoreReadyQaApp, isUnsupportedSilentHeadlessTcp, hasValidTcpProcSnapshot, tcpListenerFromProcSnapshot, isKnownWireProtocolImage };`,
+  `${js}\nreturn { classifyQaRoute, scoreReadyQaApp, hasKnownProtocolListener, acceptsWireProtocolReadiness, isKnownWireProtocolEndpoint, listenerProbeFailureNote, unsupportedHeadlessProbeNote, isUnsupportedSilentHeadlessTcp, hasValidTcpProcSnapshot, tcpListenerFromProcSnapshot, isKnownWireProtocolImage };`,
 )() as {
   classifyQaRoute: (
     config: { no_gui?: boolean; mcp?: unknown },
     compose?: { services?: unknown[] },
   ) => { kind: 'mcp' } | { kind: 'http' } | { kind: 'headless'; port: number } | { kind: 'skip'; reason: string };
   scoreReadyQaApp: (hasScreenshot: boolean, noGui: boolean, backendHealthy: boolean) => 'pass' | 'warn';
+  hasKnownProtocolListener: (
+    noGui: boolean,
+    httpStatus: number,
+    listener: 'listening' | 'not-listening' | 'unknown',
+    knownWireProtocol: boolean,
+    publishedEndpointReachable: boolean,
+  ) => boolean;
+  acceptsWireProtocolReadiness: (
+    httpStatus: number,
+    listener: 'listening' | 'not-listening' | 'unknown',
+    greeted: boolean,
+    knownWireProtocolEndpoint: boolean,
+  ) => boolean;
+  isKnownWireProtocolEndpoint: (image: string, port: number) => boolean;
+  listenerProbeFailureNote: (detail: string) => string;
+  unsupportedHeadlessProbeNote: (listener: 'listening' | 'not-listening' | 'unknown', detail: string, port: number) => string;
   isUnsupportedSilentHeadlessTcp: (
     noGui: boolean,
     httpStatus: number,
@@ -32,7 +53,7 @@ const {
     knownWireProtocol: boolean,
   ) => boolean;
   hasValidTcpProcSnapshot: (output: string) => boolean;
-  tcpListenerFromProcSnapshot: (output: string, port: number) => 'listening' | 'not-listening' | 'unknown';
+  tcpListenerFromProcSnapshot: (output: string, port: number, reachableAddresses?: string[]) => 'listening' | 'not-listening' | 'unknown';
   isKnownWireProtocolImage: (image: string) => boolean;
 };
 
@@ -146,6 +167,40 @@ describe('ready QA scoring', () => {
     expect(scoreReadyQaApp(false, true, false)).toBe('warn');
   });
 
+  it('accepts a verified listener promptly only for known headless wire-protocol images', () => {
+    expect(hasKnownProtocolListener(true, 0, 'listening', true, true)).toBe(true);
+    expect(hasKnownProtocolListener(true, 0, 'listening', true, false)).toBe(false);
+    expect(hasKnownProtocolListener(true, 503, 'listening', true, true)).toBe(false);
+    expect(hasKnownProtocolListener(true, 0, 'unknown', true, true)).toBe(false);
+    expect(hasKnownProtocolListener(true, 0, 'not-listening', true, true)).toBe(false);
+    expect(hasKnownProtocolListener(true, 0, 'listening', false, true)).toBe(false);
+    expect(hasKnownProtocolListener(false, 0, 'listening', true, true)).toBe(false);
+  });
+
+  it('only treats the declared wire-protocol port as an early readiness endpoint', () => {
+    expect(isKnownWireProtocolEndpoint('postgres:18.4@sha256:abc', 5432)).toBe(true);
+    expect(isKnownWireProtocolEndpoint('mcr.microsoft.com/mssql/server:2022@sha256:abc', 1433)).toBe(true);
+    expect(isKnownWireProtocolEndpoint('elasticsearch:9.2@sha256:abc', 9200)).toBe(false);
+    expect(isKnownWireProtocolEndpoint('elasticsearch:9.2@sha256:abc', 9300)).toBe(true);
+    expect(isKnownWireProtocolEndpoint('quay.io/coreos/etcd:v3.6', 2379)).toBe(false);
+  });
+
+  it('does not let a known image listener override an observed HTTP failure', () => {
+    expect(acceptsWireProtocolReadiness(0, 'listening', false, true)).toBe(true);
+    expect(acceptsWireProtocolReadiness(0, 'listening', true, false)).toBe(true);
+    expect(acceptsWireProtocolReadiness(503, 'listening', false, true)).toBe(false);
+    expect(acceptsWireProtocolReadiness(0, 'not-listening', true, true)).toBe(false);
+    expect(acceptsWireProtocolReadiness(0, 'unknown', false, true)).toBe(false);
+  });
+
+  it('preserves a bounded container listener probe diagnostic', () => {
+    expect(listenerProbeFailureNote('EPERM while reading /proc/123/net/tcp')).toContain('EPERM');
+    expect(listenerProbeFailureNote('x'.repeat(500)).length).toBeLessThanOrEqual(210);
+    expect(listenerProbeFailureNote('')).toBe('container listener could not be verified');
+    expect(unsupportedHeadlessProbeNote('unknown', 'EPERM reading /proc/123/net/tcp', 5432)).toContain('EPERM');
+    expect(unsupportedHeadlessProbeNote('listening', '', 5432)).toContain('TCP listener on :5432 is live');
+  });
+
   it('marks only silent headless protocols without a supported HTTP or wire probe as unsupported', () => {
     expect(isUnsupportedSilentHeadlessTcp(true, 0, 'listening', false, false)).toBe(true);
     expect(isUnsupportedSilentHeadlessTcp(true, 0, 'unknown', false, false)).toBe(true);
@@ -175,8 +230,47 @@ describe('ready QA scoring', () => {
     expect(tcpListenerFromProcSnapshot(snapshot, 5432)).toBe('listening');
     expect(tcpListenerFromProcSnapshot(snapshot, 1433)).toBe('not-listening');
     expect(tcpListenerFromProcSnapshot('', 5432)).toBe('unknown');
-    expect(tcpListenerFromProcSnapshot(`__PROC__:/proc/net/tcp6\n${header}\n${listener.replace('1538', '0599')}\n`, 1433)).toBe('listening');
+    const ipv6WildcardListener = listener.replace('00000000:1538', '00000000000000000000000000000000:0599');
+    expect(tcpListenerFromProcSnapshot(`__PROC__:/proc/net/tcp6\n${header}\n${ipv6WildcardListener}\n`, 1433)).toBe('unknown');
     expect(tcpListenerFromProcSnapshot(`__PROC__:/proc/net/tcp\n${header}\nmalformed row\n`, 5432)).toBe('not-listening');
+  });
+
+  it('does not pass a Docker proxy handshake when the container listener is loopback-only', () => {
+    const header = '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode';
+    const loopbackListener = '   0: 0100007F:1538 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 12345';
+    const snapshot = `__PROC__:/proc/net/tcp\n${header}\n${loopbackListener}\n`;
+    expect(tcpListenerFromProcSnapshot(snapshot, 5432, ['172.17.0.2'])).toBe('not-listening');
+    // Docker can accept the host-side handshake even though the mapped container address cannot reach loopback.
+    expect(hasKnownProtocolListener(true, 0, 'not-listening', true, true)).toBe(false);
+  });
+
+  it('matches a listener bound to the container IP as well as wildcard binds', () => {
+    const header = '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode';
+    const containerIpListener = '   0: 020011AC:1538 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 12345';
+    const snapshot = `__PROC__:/proc/net/tcp\n${header}\n${containerIpListener}\n`;
+    expect(tcpListenerFromProcSnapshot(snapshot, 5432, ['172.17.0.2'])).toBe('listening');
+    expect(tcpListenerFromProcSnapshot(snapshot, 5432, ['172.17.0.3'])).toBe('not-listening');
+  });
+
+  it('does not infer published IPv4 reachability from a specific IPv6 listener', () => {
+    const header =
+      '  sl  local_address                         rem_address                           st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode';
+    const listener =
+      '   0: B80D0120000000000000000002000000:1538 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 12345';
+    const snapshot = `__PROC__:/proc/net/tcp6\n${header}\n${listener}\n`;
+    expect(tcpListenerFromProcSnapshot(snapshot, 5432, ['2001:db8::2'])).toBe('unknown');
+    expect(tcpListenerFromProcSnapshot(snapshot, 5432, ['2001:db8::3'])).toBe('unknown');
+  });
+
+  it('keeps an IPv6 wildcard listener unknown when the published probe is IPv4', () => {
+    const header =
+      '  sl  local_address                         rem_address                           st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode';
+    const listener =
+      '   0: 00000000000000000000000000000000:1538 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 12345';
+    const snapshot = `__PROC__:/proc/net/tcp6\n${header}\n${listener}\n`;
+    const state = tcpListenerFromProcSnapshot(snapshot, 5432, ['172.17.0.2']);
+    expect(state).toBe('unknown');
+    expect(hasKnownProtocolListener(true, 0, state, true, true)).toBe(false);
   });
 
   it('recognizes SQL Server images as supported silent wire-protocol services', () => {
@@ -197,7 +291,12 @@ describe('qa-stream wiring', () => {
     expect(source).toContain('if (SKIP_SCREENSHOT || config.no_gui)');
     expect(source).toContain("if (route.kind === 'headless') result.port = route.port;");
     expect(source).toContain('unsupportedHeadlessTcp && bh.healthy && !deadReason');
-    expect(source).toContain('httpStatus === 0 && listening && (greets || knownWireProtocol)');
+    expect(source).toContain('acceptsWireProtocolReadiness(httpStatus, listener, greets, knownSilentEndpoint)');
+    expect(source).toContain('hasKnownProtocolListener(true, httpStatus, probe.state, knownSilentEndpoint, publishedEndpointReachable)');
+    expect(source).toContain('await tcpAccepts(hostPort, 1000)');
+    expect(source).toContain('isKnownWireProtocolEndpoint(imageRef, Number(result.port))');
+    expect(source).toContain('if (config.no_gui === true && knownSilentEndpoint) continue;');
+    expect(source).toContain('result.notes = unsupportedHeadlessProbeNote(lastListenerState, listenerProbeDetail, Number(result.port));');
     expect(source).toContain('docker inspect ${shq(container)} --format');
     expect(source).toContain('/proc/${pid}/net/');
     expect(source).not.toContain('docker exec ${shq(container)} cat');
