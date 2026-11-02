@@ -522,9 +522,10 @@ export const AppActions = ({
     initialData: () => queryClient.getQueryData<AppInstallErrorCache | null>(['app-install-error', info.urn]) ?? null,
     staleTime: Number.POSITIVE_INFINITY,
   });
-  // A tab opened after the failure heard no event, so it reads the reason off the app. While the app
-  // is being worked on again that read is out of date.
-  const installError = installErrorFromEvent ?? (app?.status === 'install_failed' || app?.status === 'stopped' ? failure : null);
+  // The reason on the app comes first: an event goes to every session, so it leaves out the log line,
+  // and a tab opened after the failure heard no event. While the app is being worked on again that
+  // read is out of date.
+  const installError = (app?.status === 'install_failed' || app?.status === 'stopped' ? failure : null) ?? installErrorFromEvent;
 
   // `||`, not `??`: an empty/unset mode means a pre-exposureMode install, which
   // is treated as local access — the same fallback the backend applies.

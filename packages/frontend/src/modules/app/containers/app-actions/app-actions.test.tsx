@@ -634,6 +634,47 @@ describe('AppActions', () => {
       expect(screen.getByRole('alert')).toHaveTextContent(text);
     });
 
+    it('takes the reason on the app over the event, which leaves out the log line', () => {
+      hoisted.queryClient.getQueryData.mockReturnValue({
+        message: 'from the event',
+        serviceFailure: { kind: 'restarting', service: 'summary-service' },
+      });
+
+      render(
+        <AppActions
+          app={makeApp({ status: 'install_failed' })}
+          metadata={metadata}
+          info={info}
+          failure={{ message: 'keeps restarting in English', errorDetail: 'the logs', serviceFailure }}
+          urlAvailability={idleAvailability}
+          layout="hero"
+        />,
+      );
+
+      expect(screen.getByRole('alert')).toHaveTextContent(text);
+      expect(screen.getByRole('alert')).toHaveAttribute('title', 'the logs');
+    });
+
+    it('falls back on the event for someone the app does not give the reason to', () => {
+      hoisted.queryClient.getQueryData.mockReturnValue({
+        message: 'from the event',
+        serviceFailure: { kind: 'restarting', service: 'summary-service' },
+      });
+
+      render(
+        <AppActions
+          app={makeApp({ status: 'stopped' })}
+          metadata={metadata}
+          info={info}
+          failure={null}
+          urlAvailability={idleAvailability}
+          layout="hero"
+        />,
+      );
+
+      expect(screen.getByRole('alert')).toHaveTextContent('APP_ERROR_SERVICE_KEEPS_RESTARTING');
+    });
+
     it('drops it while the app is being worked on again, before the read catches up', () => {
       hoisted.queryClient.getQueryData.mockReturnValue(null);
 

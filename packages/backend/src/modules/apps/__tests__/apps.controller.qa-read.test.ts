@@ -15,7 +15,13 @@ import { AppsController } from '../apps.controller';
 
 const APP_URN = 'open-webui:ci-marketplace';
 
-function controllerServing(config: Record<string, unknown>) {
+function grantingEverything() {
+  const whois = mock<MarketplaceWhoIsService>();
+  whois.assertSessionAction.mockResolvedValue(undefined);
+  return whois;
+}
+
+function controllerServing(config: Record<string, unknown>, whois = grantingEverything()) {
   const read = mock<AppsReadService>();
   read.getApp.mockResolvedValue({
     app: { id: 3, status: 'running', config, version: 1, port: 8080 },
@@ -25,8 +31,6 @@ function controllerServing(config: Record<string, unknown>) {
     appDataHostPath: null,
     failure: { message: 'web exited (exit 1): OPENAI_API_KEY=sk-live-abc is invalid' },
   } as never);
-  const whois = mock<MarketplaceWhoIsService>();
-  whois.assertSessionAction.mockResolvedValue(undefined);
   return new AppsController(read, mock<AppsService>(), mock<AppRuntimeMonitorService>(), mock<ModuleRef>(), whois);
 }
 
@@ -50,6 +54,27 @@ describe('AppsController.getApp for a qa:read key', () => {
 
   it('still returns the last failure to an operator', async () => {
     const result = await controllerServing(secrets).getApp(APP_URN, { hubPrincipal: 'session', user: { id: 1 } } as Request);
+
+    expect(result.failure?.message).toContain('web exited');
+  });
+
+  it('leaves it out for a member who may see a custom app but not read its logs', async () => {
+    const whois = mock<MarketplaceWhoIsService>();
+    whois.assertSessionAction.mockImplementation(async (_req, _urn, action) => {
+      if (action !== 'view') {
+        throw new Error('APP_ACTION_GRANT_DENIED');
+      }
+    });
+    const member = { hubPrincipal: 'session', user: { id: 2 } } as Request;
+
+    const result = await controllerServing(secrets, whois).getApp('my-app:_user', member);
+
+    expect(whois.assertSessionAction).toHaveBeenCalledWith(member, 'my-app:_user', 'configure');
+    expect(result.failure).toBeNull();
+  });
+
+  it('still returns the last failure of a custom app to someone who may read its logs', async () => {
+    const result = await controllerServing(secrets).getApp('my-app:_user', { hubPrincipal: 'session', user: { id: 1 } } as Request);
 
     expect(result.failure?.message).toContain('web exited');
   });

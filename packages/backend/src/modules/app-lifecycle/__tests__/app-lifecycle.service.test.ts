@@ -6153,11 +6153,42 @@ describe('AppLifecycleService', () => {
         expect.objectContaining({
           event: 'start_error',
           appStatus: 'stopped',
-          error: 'summary-service keeps restarting (exit 126): permission denied',
-          serviceFailure,
+          error: 'summary-service keeps restarting (exit 126)',
+          serviceFailure: { kind: 'restarting', service: 'summary-service', exitCode: 126 },
         }),
       );
       expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(expect.anything(), { status: 'stopped' });
+    });
+
+    it.each([
+      ['start_error', (s: AppLifecycleService) => s.startApp({ actor: TEST_ACTOR, appUrn })],
+      ['restart_error', (s: AppLifecycleService) => s.restartApp({ actor: TEST_ACTOR, appUrn })],
+    ])('%s carries no log text, since the app topic reaches every signed-in session', async (event, send) => {
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'web keeps restarting (exit 1): API_KEY=sk-live-abc is invalid',
+        errorDetail: 'app-web-1 (restarting, exit 1): API_KEY=sk-live-abc is invalid',
+        serviceFailure: { kind: 'restarting', service: 'web', exitCode: 1, logLine: 'API_KEY=sk-live-abc is invalid' },
+      } as any);
+
+      await send(service);
+      await flushMicrotasks();
+
+      const emitted = sseService.emit.mock.calls.find(([, data]) => (data as { event?: string }).event === event);
+      expect(emitted).toBeDefined();
+      expect(JSON.stringify(emitted)).not.toContain('sk-live-abc');
+    });
+
+    it('a failure with no service keeps its message and detail on the event', async () => {
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'compose failed', errorDetail: 'port is taken' } as any);
+
+      await service.startApp({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'start_error', error: 'compose failed', errorDetail: 'port is taken' }),
+      );
     });
 
     it('startApp error: a failed install stays one when a start sent to it through the API fails too', async () => {

@@ -139,7 +139,7 @@ export class AppsController {
    * `config` is the form the operator filled in at install: admin passwords, provider API keys,
    * anything a manifest asks for. A test polling for `running` needs none of it, and a leaked test key
    * must not be a way to read every app's secrets, so it is removed for that principal rather than the
-   * route being opened as it is. The same goes for `failure`.
+   * route being opened as it is. `failure` is left out for the same principal; see `mayReadFailure`.
    */
   @Get(':urn')
   @UseGuards(ObservabilityReadGuard)
@@ -150,11 +150,29 @@ export class AppsController {
     await this.whois.assertSessionAction(req, appUrn, 'view');
     const res = await this.appsReadService.getApp(appUrn);
     const mcpExtras = await this.buildMcpExtras(appUrn, res.info);
-    const qaRead = req.hubPrincipal === 'qa-read';
-    const app = qaRead && res.app ? { ...res.app, config: undefined } : res.app;
-    // A failure can quote the app's own log, which a test key has no more business reading than `config`.
-    const failure = qaRead ? null : res.failure;
+    const app = req.hubPrincipal === 'qa-read' && res.app ? { ...res.app, config: undefined } : res.app;
+    const failure = res.failure && (await this.mayReadFailure(req, appUrn)) ? res.failure : null;
     return GetAppDto.parse({ ...res, app, failure, operation: this.operationFor(appUrn), ...mcpExtras }, { reportOnly: true });
+  }
+
+  /**
+   * A failure can quote the app's own log, so reading it takes what reading that log takes
+   * (`settingsReadAction`). A member who may only see a custom app does not get it. A test key has no
+   * more business reading it than `config`.
+   */
+  private async mayReadFailure(req: Request, appUrn: AppUrn): Promise<boolean> {
+    if (req.hubPrincipal === 'qa-read') {
+      return false;
+    }
+    const action = settingsReadAction(appUrn);
+    // `getApp` has just asserted `view`.
+    if (action === 'view') {
+      return true;
+    }
+    return this.whois.assertSessionAction(req, appUrn, action).then(
+      () => true,
+      () => false,
+    );
   }
 
   /** What the lifecycle has under way for the app, an install still in its checks included. */

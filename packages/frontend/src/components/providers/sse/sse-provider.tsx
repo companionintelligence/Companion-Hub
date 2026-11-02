@@ -59,7 +59,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     );
   };
 
-  // The reason can quote an app's log, so it stays plain text: `Trans` would read tags in it.
+  // The service's name comes from the app's compose file, so it stays plain text: `Trans` would read tags in it.
   const showServiceFailureToast = (i18nKey: string, appName: string, failure: AppServiceFailure) => {
     toast.error(t(i18nKey, { id: appName, reason: appServiceFailureText(t, failure) }), { duration: 10000 });
   };

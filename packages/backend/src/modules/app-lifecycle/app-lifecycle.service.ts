@@ -2,7 +2,7 @@ import { AppCommandDeadline, appEventsQueueTimeoutMs } from '@/common/helpers/ap
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import messages from '@ci-hub/common/i18n/translations/en.json';
-import type { SSE } from '@ci-hub/common/schemas';
+import type { AppServiceFailure, SSE } from '@ci-hub/common/schemas';
 import { isPortExposeApp, manifestDefaultsEdgeAuthOn } from '@ci-hub/common/schemas';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -72,6 +72,7 @@ import {
   type AppPublicRoutingSnapshot,
 } from '../apps/app-public-routing.helpers';
 import { DockerService } from '../docker/docker.service';
+import { describeAppServiceFailure } from '../docker/managed-app-containers';
 import { AppIntentSyncService } from '../apps/app-intent-sync.service';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 import type { MemoryConnectService } from '../memory-connect/memory-connect.service';
@@ -419,6 +420,20 @@ function toStoredConfig(parsedForm: ParsedAppForm): Record<string, unknown> {
 }
 
 /** Apply the same schema defaults/normalization used on save so unchanged configs compare equal. */
+/**
+ * A failed command's reason as its event says it. The `app` topic reaches every signed-in session
+ * whatever it may read, and a container's log takes `settingsReadAction`. So when the reason quotes a
+ * log the event names the service and the exit code. The app page reads the rest off
+ * `GET /api/apps/:urn`, which asks.
+ */
+function failureForEveryone(result: { message?: string; errorDetail?: string; serviceFailure?: AppServiceFailure }) {
+  if (!result.serviceFailure) {
+    return { error: result.message, errorDetail: result.errorDetail };
+  }
+  const { logLine: _logLine, ...serviceFailure } = result.serviceFailure;
+  return { error: describeAppServiceFailure(serviceFailure), serviceFailure };
+}
+
 function normalizeConfigForCompare(raw: Record<string, unknown>): Record<string, unknown> {
   const parsed = appFormSchema.safeParse(raw);
   if (!parsed.success) {
@@ -1038,11 +1053,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       event: 'install_error',
       appUrn,
       appStatus: 'install_failed',
-      error: result.message,
+      ...failureForEveryone(result),
       errorCode: result.errorCode,
-      errorDetail: result.errorDetail,
       settingsPath: result.settingsPath,
-      serviceFailure: result.serviceFailure,
     });
     if (emitQueueUpdate) {
       void this.emitInstallQueueUpdate();
@@ -3652,11 +3665,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         event: params.failureOutcome.event,
         appUrn: params.appUrn,
         appStatus: params.failureOutcome.status,
-        error: params.message,
+        ...failureForEveryone(params),
         errorCode: params.errorCode,
-        errorDetail: params.errorDetail,
         settingsPath: params.settingsPath,
-        serviceFailure: params.serviceFailure,
       });
       this.agentNotifyService?.notify(params.failureOutcome.notifyEvent, { appUrn: params.appUrn }, params.failureOutcome.notifySeverity ?? 'high');
       this.reportAppFailure(params.appUrn, params.failureOutcome.failurePhase, params.message ?? 'Unknown error', params.errorCode);
