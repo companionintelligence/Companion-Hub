@@ -37,7 +37,7 @@
  */
 
 import type { ErrorEvent, EventHint } from '@sentry/node';
-import { ApiKeyStoreUnavailableError, isTransientDbError } from '@/modules/api-keys/api-key.errors';
+import { ApiKeyStoreUnavailableError, isDatabaseCredentialError, isTransientDbError } from '@/modules/api-keys/api-key.errors';
 
 const SECRET_PATTERNS = [
   /Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi,
@@ -226,14 +226,76 @@ function isTransientDbSentryNoise(event: ErrorEvent, hint: EventHint | undefined
   );
 }
 
-export function scrubEvent(event: ErrorEvent, hint: EventHint): ErrorEvent | null {
-  // Docker DNS blips (`EAI_AGAIN ci-hub-db`) and exhausted auth-store retries are
-  // infrastructure noise, not hub bugs. Keep one grouped warning so outages stay
-  // visible without creating a new high-priority issue per failing query.
+function isDatabaseCredentialSentryNoise(hint: EventHint | undefined): boolean {
+  // The message is scrubbed before it leaves (`password authentication failed` reads
+  // `[Filtered]`), so the SQLSTATE on the original error is the only reliable signal.
+  return isDatabaseCredentialError(hint?.originalException);
+}
+
+/** Text of every exception value, the message and the original error's chain, one per line. */
+function infrastructureText(event: ErrorEvent, hint: EventHint | undefined): string {
+  const parts = (event.exception?.values ?? []).map((value) => `${value.type ?? ''}: ${value.value ?? ''}`);
+  if (event.message) {
+    parts.push(event.message);
+  }
+  let current: unknown = hint?.originalException;
+  for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+    parts.push(`${current.name}: ${current.message}`);
+    current = current.cause;
+  }
+  return parts.join('\n');
+}
+
+/**
+ * Host, network and client conditions that are not hub bugs. Ordered: the first match names the event.
+ * Each keeps its own fingerprint, so one cause stays one issue and a new failure mode is not hidden.
+ */
+const INFRASTRUCTURE_NOISE_RULES: ReadonlyArray<{ errorClass: string; pattern: RegExp }> = [
+  // The queue refused or dropped a command that no consumer took; it clears when RabbitMQ does.
+  { errorClass: 'queue-unavailable', pattern: /channel is closed|connection is closing|AMQPConnectionError|channel creation failed/i },
+  { errorClass: 'docker-socket-permission', pattern: /docker\.sock[\s\S]*EACCES|EACCES[\s\S]*docker\.sock/ },
+  { errorClass: 'host-permission-denied', pattern: /\b(EACCES|EPERM)\b/ },
+  { errorClass: 'host-database-file', pattern: /attempt to write a readonly database|disk image is malformed|unable to open database file/i },
+  { errorClass: 'tailscale-command-failed', pattern: /Command failed: \S*tailscale/ },
+  // The client hung up or the upstream reset the body. Nothing on the Hub side failed.
+  {
+    errorClass: 'client-aborted',
+    pattern: /^(?:TypeError|RelayError|Error): (?:terminated|aborted)$|Premature close|upstream response failed mid-body: terminated/m,
+  },
+  // A model or peer took longer than the Hub waits for its answer.
+  {
+    errorClass: 'upstream-timeout',
+    pattern: /No response headers within \d+ms|No completion within \d+ms|timeout of \d+ms exceeded|operation was aborted due to timeout/i,
+  },
+];
+
+/**
+ * The infrastructure cause an event is noise from, if any. Capture sites that already classified an
+ * event (an app failure's `error_class`) keep their own grouping.
+ */
+export function classifyInfrastructureNoise(event: ErrorEvent, hint: EventHint | undefined): string | undefined {
+  // Docker DNS blips (`EAI_AGAIN ci-hub-db`) and exhausted auth-store retries are infrastructure noise, not
+  // hub bugs. Keep one grouped warning so outages stay visible without a high-priority issue per failing query.
   if (isTransientDbSentryNoise(event, hint)) {
+    return 'transient-db-unreachable';
+  }
+  if (isDatabaseCredentialSentryNoise(hint)) {
+    return 'database-credentials-rejected';
+  }
+  if (event.tags?.error_class) {
+    return undefined;
+  }
+
+  const text = infrastructureText(event, hint);
+  return INFRASTRUCTURE_NOISE_RULES.find(({ pattern }) => pattern.test(text))?.errorClass;
+}
+
+export function scrubEvent(event: ErrorEvent, hint: EventHint): ErrorEvent | null {
+  const infrastructureClass = classifyInfrastructureNoise(event, hint);
+  if (infrastructureClass) {
     event.level = 'warning';
-    event.fingerprint = ['transient-db-unreachable'];
-    event.tags = { ...event.tags, error_class: 'transient-db-unreachable' };
+    event.fingerprint = [infrastructureClass];
+    event.tags = { ...event.tags, error_class: infrastructureClass };
   }
 
   if (event.message) {
