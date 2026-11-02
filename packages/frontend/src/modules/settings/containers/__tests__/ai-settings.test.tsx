@@ -573,6 +573,29 @@ describe('AiSettingsContainer', () => {
     expect(fetchInferenceOnboardingProfile.mock.calls.length).toBe(before + 1);
   });
 
+  it('says so when the profile for the engine switched to cannot be loaded, because the Hub stopped answering', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+
+    try {
+      const user = userEvent.setup();
+      renderAiSettings();
+      await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('vllm'));
+
+      fetchInferenceOnboardingProfile.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+      await user.click(screen.getByTestId('select-lemonade'));
+
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Failed to load AI settings: Failed to fetch'));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
   it('re-seeds the selection for the backend it switches to', async () => {
     // `installedCatalogIds` is scoped to the backend the profile was fetched for, so carrying the
     // previous backend's ids across a switch leaves everything the new backend serves unticked —

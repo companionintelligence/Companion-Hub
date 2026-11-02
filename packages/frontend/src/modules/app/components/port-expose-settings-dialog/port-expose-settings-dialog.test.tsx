@@ -97,6 +97,22 @@ describe('PortExposeSettingsDialog', () => {
     vi.clearAllMocks();
   });
 
+  it('keeps a Private VPN app on the Private VPN while Tailscale is down, rather than moving it to the Web', async () => {
+    const { container } = renderDialog({ exposureMode: 'tailscale' });
+
+    const vpn = screen.getByRole('button', { name: 'COMMON_PRIVATE_VPN' });
+    expect(vpn).toBeDisabled();
+    expect(vpn).toHaveClass('bg-primary');
+    expect(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' })).not.toHaveClass('bg-primary');
+
+    await act(async () => {
+      fireEvent.submit(container.ownerDocument.querySelector('form') as HTMLFormElement);
+    });
+
+    await waitFor(() => expect(saved).toHaveBeenCalledTimes(1));
+    expect(saved).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'tailscale', publicDomain: undefined }));
+  });
+
   it("moves an app to the Web on the domain Companion Portal preselects, never the Hub's own", async () => {
     renderDialog({ exposureMode: 'local' });
 

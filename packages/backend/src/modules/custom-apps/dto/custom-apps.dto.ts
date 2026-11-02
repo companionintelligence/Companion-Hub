@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { HUB_INGRESS_HOST_PORTS } from '@/common/constants';
 import { createZodDto } from '@/common/zod-dto';
 import { dynamicComposeSchema } from '@ci-hub/common/schemas';
 import { HUB_ACTIONS } from '@/core/portal/hub-actions';
@@ -23,7 +24,22 @@ const createCustomAppSchema = z.object({
 
 const createPortExposeAppSchema = z.object({
   name: displayNameSchema,
-  port: z.number().min(1024).max(65535),
+  port: z
+    .number()
+    .superRefine((port, ctx) => {
+      // Checked before the range, so a port the Hub holds is named instead of "must be at least 1024".
+      if (HUB_INGRESS_HOST_PORTS.includes(port)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'CUSTOM_APP_ERROR_PORT_HELD_BY_HUB',
+          params: { port: String(port) },
+          input: port,
+          continue: false,
+        });
+      }
+    })
+    .min(1024)
+    .max(65535),
   exposureMode: z.enum(['local', 'cloudflare', 'tailscale']),
   localSubdomain: z
     .string()

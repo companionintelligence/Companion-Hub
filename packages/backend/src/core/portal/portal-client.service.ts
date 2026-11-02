@@ -203,17 +203,21 @@ export class PortalClientService {
     }
   }
 
-  async fetchAppInstall(slug: string): Promise<unknown> {
-    return this.fetchJson(`/store/${encodeURIComponent(slug)}/install`, { authenticated: true });
-  }
-
   /**
    * Hub-facing till check. Returns the HTTP status so callers can tell 402
    * (pay) from 404 (unknown / local app) from a network failure.
    *
    * `null` means Portal is not configured on this Hub — skip the check.
+   *
+   * `organizationId` names the organization this Hub is in, as on WhoIs: Portal honours it only to
+   * settle a device tied between organizations. One that predates that ignores it. With `null`
+   * (`MarketplaceWhoIsService.deviceOrganizationId` couldn't learn it) nothing is named, which a device
+   * in one organization doesn't need and a tied one gets 409 `ORGANIZATION_REQUIRED` for.
    */
-  async checkAppEntitlement(appId: string): Promise<{
+  async checkAppEntitlement(
+    appId: string,
+    organizationId: string | null,
+  ): Promise<{
     status: number;
     entitled?: boolean;
     reason?: string;
@@ -231,7 +235,7 @@ export class PortalClientService {
       code?: string;
     }>('entitlements/check', {
       headers: this.getDeviceAuthHeaders(),
-      params: { appId },
+      params: organizationId ? { appId, organizationId } : { appId },
       validateStatus: () => true,
       timeout: 10_000,
     });

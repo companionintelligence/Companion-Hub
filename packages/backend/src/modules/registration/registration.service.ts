@@ -6,7 +6,7 @@ import axios from 'axios';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DatabaseService } from '@/core/database/database.service';
 import { withTransientDbRetry } from '@/core/database/transient-db-retry';
-import { whoisCache } from '@/core/database/drizzle/schema';
+import { entitlementCache, whoisCache } from '@/core/database/drizzle/schema';
 import { scrubString } from '@/core/error-reporting/sentry-scrubber';
 import { LoggerService } from '@/core/logger/logger.service';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR, tunnelUserClearedMarkerPath } from '@/common/constants';
@@ -377,9 +377,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * service's tests build this class without it.
    */
   /**
-   * The WhoIs cache has no organization column. A reset, or a pair into a
-   * different organization, has to empty it or the next request treats the
-   * previous tenant's grants as current.
+   * The WhoIs and entitlement caches have no organization column. A reset, or a
+   * pair into a different organization, has to empty them or the next request
+   * treats the previous tenant's grants and purchases as current.
    */
   private async forgetCachedGrants(): Promise<void> {
     let database: DatabaseService | undefined;
@@ -395,6 +395,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     try {
       await database.db.delete(whoisCache);
+      await database.db.delete(entitlementCache);
       this.logger.info('Cleared cached app grants');
     } catch (error) {
       this.logger.warn(`Could not clear cached app grants: ${error instanceof Error ? error.message : String(error)}`);

@@ -9,7 +9,7 @@ import {
 import { tailscaleStatusQueryKey } from '@/lib/api-routes/named-status-routes';
 import { PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY } from '@/lib/cloudflare-api';
 import { getInstalledAppUrnsQueryKey } from '@/lib/installed-app-urns-query';
-import type { UpdatePhase } from '@ci-hub/common/schemas';
+import type { HostPortMove, UpdatePhase } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { QueryClient } from '@tanstack/react-query';
 import { installQueueQueryKey, type InstallQueueState } from './install-queue';
@@ -56,6 +56,8 @@ export type AppSsePayload = {
   warningCode?: string;
   /** Optional detail for the caveat (e.g. the host path of an uninstall remnant) used to render an actionable message. */
   warningDetail?: string;
+  /** A start, restart or install outcome, or `host_port_moved`: the host port the app could not have and the one it is on now. */
+  movedHostPort?: HostPortMove;
   progress?: number;
   /** Install ticks only, once Docker has reported layer sizes: the image download so far. */
   downloadedBytes?: number;
@@ -93,6 +95,8 @@ const LIFECYCLE_INVALIDATE_EVENTS = new Set([
   'custom_domain_changed',
   // The row's public domain moved, so every URL the app page shows is stale.
   'public_domain_changed',
+  // Carries no appStatus. A tab that was away still shows the old port until it refetches.
+  'host_port_moved',
 ]);
 
 const TERMINAL_PROGRESS_STATUSES = new Set(['running', 'missing', 'install_failed']);

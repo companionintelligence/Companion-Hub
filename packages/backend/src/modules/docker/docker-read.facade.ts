@@ -493,7 +493,9 @@ export class DockerReadFacade {
         const [containerName, status] = line.split('|');
         if (!containerName || !status) continue;
 
-        const isUnhealthy = status.includes('Restarting') || status.includes('Exited') || status.includes('Created') || status.includes('Dead');
+        // A clean exit is a finished one-shot job (migrate, setup, admin-sync), not a failure.
+        const exitedWithError = /Exited \((?!0\))/.test(status);
+        const isUnhealthy = status.includes('Restarting') || exitedWithError || status.includes('Created') || status.includes('Dead');
 
         if (isUnhealthy) {
           // Capture last 20 lines of logs

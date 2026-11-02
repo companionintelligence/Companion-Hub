@@ -12,6 +12,7 @@ import { reportAndTranslateAppError } from './failure-reporting';
 import { assertHostDevicesAvailable } from './host-device-preflight';
 import { moveMainPortOffHostConflict, writeMainHostPort } from './main-host-port';
 import { type ComposeRecoveryDeps, removeAppProjectNetworks, runComposeWithNetworkRecovery } from './network-recovery';
+import { recordComposeUpPulls } from './pull-app-images';
 
 /**
  * Optional cancellation context threaded into a command's `execute()`.
@@ -106,6 +107,13 @@ export class AppLifecycleCommand {
       recoverHostPortConflict: recovery?.recoverHostPortConflict,
     };
     return runComposeWithNetworkRecovery(deps, appUrn, form, command, maxAttempts, signal);
+  }
+
+  /** `composeAppWithNetworkRecovery` for an `up` that can pull images, which records them for the uninstall; see `recordComposeUpPulls`. */
+  protected async composeUpRecordingPulls(...args: Parameters<AppLifecycleCommand['composeAppWithNetworkRecovery']>): Promise<void> {
+    return recordComposeUpPulls(this.moduleRef, args[0], () => this.composeAppWithNetworkRecovery(...args), {
+      forced: args[2].includes('--pull always'),
+    });
   }
 
   /** Point the app at the host port of its main allocation; see `writeMainHostPort`. */

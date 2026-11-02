@@ -1,10 +1,12 @@
+import { HUB_INGRESS_HOST_PORTS } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Injectable } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 import type { AppUrn } from '@ci-hub/common/types';
 import { KVM_MISSING_CODE, NETWORK_OVERLAP_CODE, ROCM_KFD_MISSING_CODE } from '@/modules/app-lifecycle/commands/app-lifecycle-errors';
 import { PORTAL_HTTP_ERROR_CODE, PORTAL_TIMEOUT_CODE, PORTAL_UNREACHABLE_CODE } from '@/core/portal/portal.constants';
-import { DOCKER_HOST_PORT_CONFLICT_PATTERN } from '@/modules/network/docker-port-errors';
+import { QUEUE_UNAVAILABLE_CODE } from '@/modules/queue/queue.constants';
+import { DOCKER_HOST_PORT_CONFLICT_PATTERN, extractConflictingHostPort } from '@/modules/network/docker-port-errors';
 import { snapshotHostHealth } from './host-health';
 import { scrubString } from './sentry-scrubber';
 import { type UserConsent, currentUserConsent, resolveTelemetryDecision } from './telemetry-consent';
@@ -28,17 +30,25 @@ export interface AppFailureContext {
   message: string;
   /** Structured error code from AppLifecycleError (e.g. 'rocm_kfd_missing'), when available. */
   errorCode?: string;
+  /**
+   * The underlying error text behind `message`. A translation key such as COMMON_AN_ERROR_OCCURRED names
+   * what the user saw, not what broke: the cause is attached as an extra, and when `message` is only a key
+   * it becomes the headline that the title and the classifier read.
+   */
+  cause?: string;
   containers?: Array<{ name: string; state: string; logs?: string }>;
 }
 
 /**
  * - `user_environment`: the device — Docker, disk, network, host load. A warning.
+ * - `app_runtime`: the app's own containers or data steps failed (a dependency, a health probe, a backup,
+ *   a container that would not start). A warning: the app failed, the Hub did not.
  * - `app_config`: the marketplace manifest. An error, the app's author's to fix.
  * - `platform`: a Companion service the Hub depends on answered wrongly (Portal 5xx). An error,
  *   ours, grouped by cause across apps like the other classified kinds.
  * - `unknown`: nothing matched; grouped per app so a new failure mode stays its own issue.
  */
-export type AppFailureCategory = 'user_environment' | 'app_config' | 'platform' | 'unknown';
+export type AppFailureCategory = 'user_environment' | 'app_runtime' | 'app_config' | 'platform' | 'unknown';
 
 export interface AppFailureClassification {
   category: AppFailureCategory;
@@ -71,11 +81,50 @@ const USER_ENVIRONMENT_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: st
   { pattern: /mounts denied|invalid mount config/i, errorClass: 'mount-denied' },
   { pattern: /failed to set up container networking|driver failed programming external connectivity/i, errorClass: 'docker-networking' },
   { pattern: /failed to pull image|tls handshake timeout|i\/o timeout/i, errorClass: 'image-pull-failed' },
+  // The queue dropped the channel a command went out on. The command may already have run, so it is reported
+  // and not retried; the queue reconnects on its own.
+  {
+    pattern: /channel is closed|connection is closing|channel creation failed|is unavailable while RabbitMQ is|RPC response timed out/i,
+    errorClass: 'queue-unavailable',
+  },
+  // The Hub restarted mid-install, so the user is asked to retry it; nothing in the app failed.
+  { pattern: /Install did not finish before Hub restarted/i, errorClass: 'hub-restarted' },
+  // The host refused a file or a socket the Hub writes to. Permissions are the device's to fix.
+  { pattern: /\b(?:EACCES|EPERM)\b|permission denied/i, errorClass: 'host-permission-denied' },
+  { pattern: /attempt to write a readonly database|disk image is malformed/i, errorClass: 'host-database-file' },
+  // Companion Portal would not hand this device the app for its account.
+  { pattern: /APP_INSTALL_PORTAL_DOWNLOAD_UNAUTHORIZED/i, errorClass: 'entitlement-refused' },
 ];
 
 /** Failures caused by a broken app manifest in the marketplace. */
 const APP_CONFIG_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: string }> = [
   { pattern: /invalid dynamic compose schema/i, errorClass: 'invalid-compose-schema' },
+  // The catalog this Hub reads has no entry for the app: a catalog gap, not a Hub defect.
+  { pattern: /Store not found for|App \S+ not found/i, errorClass: 'app-not-in-catalog' },
+  // A compose file or port the app's manifest (a custom app's, in practice) cannot turn into containers.
+  { pattern: /Error generating docker-compose\.yml|invalid containerPort/i, errorClass: 'invalid-app-manifest' },
+  // The image reference names a tag or repository that does not exist.
+  { pattern: /failed to resolve reference/i, errorClass: 'image-reference-invalid' },
+];
+
+/**
+ * The app's own containers or data steps failed. Checked after the environment and manifest kinds, so a
+ * Docker or disk cause that shows up inside one of these messages is still the device's.
+ */
+const APP_RUNTIME_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: string }> = [
+  { pattern: /dependency failed to start/i, errorClass: 'dependency-failed' },
+  { pattern: /didn't complete successfully|did not complete successfully/i, errorClass: 'service-did-not-complete' },
+  { pattern: /OCI runtime create failed|unable to start container process/i, errorClass: 'container-start-failed' },
+  { pattern: /health probe/i, errorClass: 'health-probe-failed' },
+  { pattern: /connect ECONNREFUSED 127\.0\.0\.\d+:\d+|ECONNABORTED|timeout of \d+ms exceeded/i, errorClass: 'app-not-listening' },
+  {
+    pattern: /could not delete the data|failed to restore the backup|failed to copy the app files|could not snapshot/i,
+    errorClass: 'app-data-step-failed',
+  },
+  // A container of the app that is restarting or has exited, as Docker names it in the message.
+  { pattern: /\((?:Restarting|Exited|Dead)\b/i, errorClass: 'container-exited' },
+  // A data volume the app still holds: the app has to be stopped first, which the user does.
+  { pattern: /is in use by .*which is still running/i, errorClass: 'volume-in-use' },
 ];
 
 /**
@@ -95,6 +144,9 @@ const ERROR_CODE_CLASSIFICATIONS: Readonly<Record<string, AppFailureClassificati
   [PORTAL_TIMEOUT_CODE]: { category: 'user_environment', errorClass: 'portal-unreachable' },
   [PORTAL_UNREACHABLE_CODE]: { category: 'user_environment', errorClass: 'portal-unreachable' },
   [PORTAL_HTTP_ERROR_CODE]: { category: 'platform', errorClass: 'portal-http-error' },
+  // The queue refused the command before RabbitMQ was connected to take it. A condition that clears on its
+  // own, so it is a warning, grouped by cause across apps.
+  [QUEUE_UNAVAILABLE_CODE]: { category: 'user_environment', errorClass: 'queue-unavailable' },
 };
 
 export function classifyAppFailure(message: string, errorCode?: string): AppFailureClassification {
@@ -112,7 +164,23 @@ export function classifyAppFailure(message: string, errorCode?: string): AppFail
       return { category: 'app_config', errorClass };
     }
   }
+  for (const { pattern, errorClass } of APP_RUNTIME_PATTERNS) {
+    if (pattern.test(message)) {
+      return { category: 'app_runtime', errorClass };
+    }
+  }
   return { category: 'unknown', errorClass: 'unclassified' };
+}
+
+/** Longest cause the event carries as an extra; a whole response body is not worth more. */
+const CAUSE_EXTRA_MAX_LENGTH = 1024;
+
+/** Longest detail a Sentry title carries; the event keeps the full message as an extra. */
+const TITLE_DETAIL_MAX_LENGTH = 300;
+
+/** A translation key such as COMMON_AN_ERROR_OCCURRED: it names what the user saw, not what broke. */
+function isTranslationKeyShaped(message: string): boolean {
+  return /^[A-Z][A-Z0-9_]+$/.test(message.trim());
 }
 
 function appFailureTitle(phase: AppFailurePhase, appUrn: string, detail: string): string {
@@ -235,10 +303,26 @@ export class ErrorReportingService {
     }
     this.debounce.set(debounceKey, now);
 
-    const classification = classifyAppFailure(context.message, context.errorCode);
-    // User-environment failures (Docker down, disk full, unsupported arch, …)
-    // are not hub bugs; keep them visible but below the error threshold.
-    const level: Sentry.SeverityLevel = context.phase === 'post_start' || classification.category === 'user_environment' ? 'warning' : 'error';
+    // A translation key says what the user was shown, not what broke. When the cause is known it is the
+    // headline: the classifier and the title both read it.
+    const headline = context.cause && isTranslationKeyShaped(context.message) ? context.cause : context.message;
+    const classification = classifyAppFailure(headline, context.errorCode);
+    // A port the Hub's ingress holds is refused when an app is saved. A conflict on it means the app was saved
+    // before that rule, so it is the user's configuration, not a Hub defect, and it is not captured.
+    const conflictingPort = classification.errorClass === 'port-conflict' ? extractConflictingHostPort(headline) : undefined;
+    if (conflictingPort !== undefined && HUB_INGRESS_HOST_PORTS.includes(conflictingPort)) {
+      return;
+    }
+    // User-environment failures (Docker down, disk full, unsupported arch, …) are not hub bugs, and neither
+    // is an app that failed on its own terms (a crash, a dependency, a health probe). Keep them visible but
+    // below the error threshold.
+    const level: Sentry.SeverityLevel =
+      context.phase === 'post_start' ||
+      context.phase === 'crash' ||
+      classification.category === 'user_environment' ||
+      classification.category === 'app_runtime'
+        ? 'warning'
+        : 'error';
 
     Sentry.withScope((scope) => {
       scope.setTag('component', 'backend');
@@ -255,6 +339,21 @@ export class ErrorReportingService {
           : ['app-failure', context.phase, classification.errorClass],
       );
       scope.setExtra('message', scrubString(context.message));
+      if (context.cause) {
+        // Scrubbed before it is bounded, so a secret cannot survive by straddling the cut.
+        scope.setExtra('cause', scrubString(context.cause).slice(0, CAUSE_EXTRA_MAX_LENGTH));
+      }
+      if (classification.errorClass === 'port-conflict') {
+        // Name the port and the remedy, so the report says what to change on this device.
+        const hostPort = extractConflictingHostPort(context.message);
+        if (hostPort !== undefined) {
+          scope.setTag('host_port', String(hostPort));
+          scope.setExtra(
+            'remedy',
+            `Host port ${hostPort} is already in use on this device. Stop the program or container using it, or change the port this app publishes.`,
+          );
+        }
+      }
       // Whether the host could have driven a socket when this failed. The difference between
       // "the device's network is broken" and "the device is too busy to notice its network" is
       // not in any message, and the device is a customer's: this is the only look we get.
@@ -285,8 +384,15 @@ export class ErrorReportingService {
         // Best-effort pairing context.
       }
 
-      const scrubbedMessage = scrubString(context.message).trim();
-      const detail = scrubbedMessage ? `: ${scrubbedMessage}` : '';
+      // Docker and compose put the cause on a later line than the headline, and a Sentry title keeps only
+      // the first line. Joining the lines keeps the cause in the title.
+      const titleDetail = scrubString(headline)
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .join(' — ')
+        .slice(0, TITLE_DETAIL_MAX_LENGTH);
+      const detail = titleDetail ? `: ${titleDetail}` : '';
       Sentry.captureMessage(appFailureTitle(context.phase, String(context.appUrn), detail), level);
     });
   }

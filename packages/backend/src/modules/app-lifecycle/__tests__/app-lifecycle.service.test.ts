@@ -1831,6 +1831,116 @@ describe('AppLifecycleService', () => {
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'start', appUrn }));
     });
 
+    describe('a reinstall form that names no mode', () => {
+      const lastPatch = () => appsRepository.updateAppById.mock.calls.find(([, patch]) => 'config' in patch)?.[1] as Record<string, any>;
+      const publicWeb = {
+        port: 8080,
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        enableAuth: true,
+        localSubdomain: 'shop',
+        publicDomain: 'example.com',
+      };
+      const onAppStored = (config: Record<string, unknown>) =>
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config, exposureMode: config.exposureMode ?? 'local' } as any);
+
+      it('leaves an app on Public Web under its name, with its closed host port and its login', async () => {
+        onAppStored(publicWeb);
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } } as any);
+
+        const expected = {
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          openPort: false,
+          enableAuth: true,
+          localSubdomain: 'shop',
+          publicDomain: 'example.com',
+        };
+        expect(lastPatch()).toMatchObject(expected);
+        expect(lastPatch().config).toMatchObject({ ...expected, port: 9090 });
+      });
+
+      it('leaves an app on the Private VPN', async () => {
+        onAppStored({ port: 8080, exposureMode: 'tailscale', exposedLocal: false, openPort: false });
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} } as any);
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'tailscale', openPort: false });
+        expect(lastPatch().config).toMatchObject({ exposureMode: 'tailscale' });
+      });
+
+      it('leaves an app on This Machine Only', async () => {
+        onAppStored({ port: 8080 });
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} } as any);
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', openPort: true });
+        expect(lastPatch().config.exposureMode).toBeUndefined();
+      });
+
+      it('still moves the app when the form names another mode', async () => {
+        onAppStored(publicWeb);
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'local' } } as any);
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', openPort: true });
+        expect(lastPatch().config.localSubdomain).toBeUndefined();
+        expect(lastPatch().config.publicDomain).toBeUndefined();
+      });
+
+      it('has no mode to keep on an app that is not exposable', async () => {
+        marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
+        onAppStored({ port: 8080, exposureMode: 'tailscale', openPort: false });
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} } as any);
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local' });
+      });
+
+      it('is not kept for a retry of a failed install, which goes through the form it was given', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'install_failed', config: publicWeb, exposureMode: 'cloudflare' } as any);
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} } as any);
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local' });
+      });
+    });
+
+    it('gives a first install of a legacy form with a closed host port the Hub login it always had', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposedLocal: true, openPort: false } } as any);
+
+      expect(appsRepository.createApp).toHaveBeenCalledWith(
+        expect.objectContaining({ exposureMode: 'cloudflare', openPort: false, enableAuth: true }),
+      );
+    });
+
+    it('records the mode compose runs when a reinstall form is public through exposedLocal alone', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 }, exposureMode: 'local' } as any);
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposedLocal: true, openPort: false } } as any);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ exposureMode: 'cloudflare' }));
+    });
+
+    it('keeps the public domain of an install form that is public through exposedLocal alone', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 }, exposureMode: 'local' } as any);
+
+      await service.installApp({
+        actor: TEST_ACTOR,
+        appUrn,
+        form: { port: 8080, exposedLocal: true, openPort: false, publicDomain: 'example.com' },
+      } as any);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ config: expect.objectContaining({ publicDomain: 'example.com' }) }),
+      );
+    });
+
     it('refuses the reinstall before it parks anything when another app holds the subdomain', async () => {
       /*
        * The release reaches CI-Cloud and writes the row, so it has to run AFTER
@@ -2836,6 +2946,236 @@ describe('AppLifecycleService', () => {
   });
 
   /*
+   * Update and a reinstall write the port to the row. The port manager's table has to follow. If it
+   * doesn't, the busy-port move can't tell the refused port is the app's own, while another app can be handed it.
+   */
+  describe('keeping the port allocation on the port a person set', () => {
+    const appUrn = 'port-test:_user' as AppUrn;
+    const storeUrn = 'testapp:ci-marketplace' as AppUrn;
+    const row = {
+      id: 1,
+      appName: 'port-test',
+      appStoreSlug: '_user',
+      status: 'stopped',
+      port: 10000,
+      config: { port: 10000, exposureMode: 'local', openPort: true },
+    };
+    let portManager: MockProxy<PortManagerService>;
+
+    beforeEach(() => {
+      portManager = mock<PortManagerService>();
+      portManager.setMainPort.mockResolvedValue(true);
+      portManager.getPortHolder.mockResolvedValue(undefined);
+      const moduleRef = (service as unknown as { moduleRef: { get: ReturnType<typeof vi.fn> } }).moduleRef;
+      moduleRef.get.mockImplementation((token: unknown) => (token === PortManagerService ? portManager : undefined));
+      appsRepository.getAppByUrn.mockResolvedValue(row as any);
+      appsRepository.getAppsByPort.mockResolvedValue([]);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
+      appsRepository.getApps.mockResolvedValue([]);
+      appsRepository.updateAppById.mockResolvedValue(row as any);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'port-test', urn: appUrn, port: 80, exposable: true } as any);
+      appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+    });
+
+    const save = (port: number | undefined, urn: AppUrn = appUrn) =>
+      service.updateAppConfig({
+        actor: TEST_ACTOR,
+        appUrn: urn,
+        form: { exposureMode: 'local', openPort: true, ...(port === undefined ? {} : { port }) },
+      });
+    const conflictOf = (promise: Promise<unknown>) =>
+      promise.then(
+        () => undefined,
+        (error: TranslatableError) => ({
+          message: error.message,
+          status: error.getStatus(),
+          params: (error.getResponse() as { intlParams?: unknown }).intlParams,
+        }),
+      );
+
+    it('records the port an Update names, in the table as on the row', async () => {
+      await save(18558);
+
+      expect(portManager.setMainPort).toHaveBeenCalledWith(appUrn, 18558);
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 18558 }));
+    });
+
+    it('answers 409 and writes nothing when another app holds the port in the table only', async () => {
+      // An `addPorts` port, or the port of an app not publishing it now: no row names it as published.
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'holder:_user', hostPort: 10001 } as any);
+
+      expect(await conflictOf(save(10001))).toEqual({
+        message: 'APP_ERROR_PORT_ALREADY_IN_USE',
+        status: 409,
+        params: { port: '10001', id: 'holder' },
+      });
+
+      expect(portManager.setMainPort).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(1, expect.objectContaining({ port: 10001 }));
+    });
+
+    // A boot leaves such an app on its row's port. Every save sends that port again.
+    it('still saves an app on a port it has already when another app holds that port in the table', async () => {
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'holder:_user', hostPort: 10000 } as any);
+      portManager.setMainPort.mockResolvedValue(false);
+
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'local', openPort: true, port: 10000, maxBackups: 5 } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 10000, maxBackups: 5 }));
+    });
+
+    it('still saves and logs it when the table cannot be written', async () => {
+      portManager.setMainPort.mockRejectedValue(new Error('connection lost'));
+
+      await save(18558);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 18558 }));
+    });
+
+    it('answers 409 when another app publishes the port', async () => {
+      appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'holder' }] as any);
+
+      expect(await conflictOf(save(10001))).toEqual({
+        message: 'APP_ERROR_PORT_ALREADY_IN_USE',
+        status: 409,
+        params: { port: '10001', id: 'holder' },
+      });
+    });
+
+    // An uninstall that could not give its ports back leaves an allocation under a name no app has.
+    it('does not refuse a port left allocated to an app that is gone', async () => {
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'gone:_user', hostPort: 18558 } as any);
+      appsRepository.getAppByUrn.mockImplementation(async (urn: string) => (urn === appUrn ? row : undefined) as any);
+
+      await save(18558);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 18558 }));
+    });
+
+    // An exposed port's save leaves the table behind until the next boot, so the allocation names a port its app left.
+    it('does not refuse a port the holding app has left', async () => {
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'exposed:_user', hostPort: 18558, label: 'main' } as any);
+      appsRepository.getAppByUrn.mockImplementation(async (urn: string) => (urn === appUrn ? row : { appName: 'exposed', port: 9500 }) as any);
+
+      await save(18558);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 18558 }));
+    });
+
+    it('refuses a port the holding app still publishes as its main port', async () => {
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'holder:_user', hostPort: 18558, label: 'main' } as any);
+      appsRepository.getAppByUrn.mockImplementation(async (urn: string) => (urn === appUrn ? row : { appName: 'holder', port: 18558 }) as any);
+
+      expect(await conflictOf(save(18558))).toMatchObject({ status: 409, params: { port: '18558', id: 'holder' } });
+    });
+
+    // A mapping's port is not the row's, so the row saying another port doesn't free it.
+    it('refuses a port the holding app has as a mapping', async () => {
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'holder:_user', hostPort: 18558, label: 'web-8443' } as any);
+      appsRepository.getAppByUrn.mockImplementation(async (urn: string) => (urn === appUrn ? row : { appName: 'holder', port: 10005 }) as any);
+
+      expect(await conflictOf(save(18558))).toMatchObject({ status: 409, params: { port: '18558', id: 'holder' } });
+    });
+
+    it('does not count the port the app holds itself as taken', async () => {
+      portManager.getPortHolder.mockResolvedValue({ appUrn, hostPort: 18558 } as any);
+
+      await save(18558);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 18558 }));
+    });
+
+    it('still saves and logs it when another app takes the port just after the check', async () => {
+      portManager.setMainPort.mockResolvedValue(false);
+
+      await save(18558);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 18558 }));
+      expect(warnings().some((line) => line.includes('18558'))).toBe(true);
+    });
+
+    it('leaves the table alone when the save could not be published', async () => {
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'queue down' } as any);
+
+      await expect(save(18558)).rejects.toThrow('APP_ERROR_APP_FAILED_TO_UPDATE');
+
+      expect(portManager.setMainPort).not.toHaveBeenCalled();
+    });
+
+    it("follows a store app's row back to the manifest's port when a save names none", async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        ...row,
+        appName: 'testapp',
+        appStoreSlug: 'ci-marketplace',
+        port: 10001,
+        config: { port: 10001 },
+      } as any);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'testapp', urn: storeUrn, port: 8080, exposable: true } as any);
+
+      await save(undefined, storeUrn);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 8080 }));
+      expect(portManager.setMainPort).toHaveBeenCalledWith(storeUrn, 8080);
+    });
+
+    it('records the port a reinstall form names', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...row, appName: 'testapp', appStoreSlug: 'ci-marketplace' } as any);
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ id: 'testapp', urn: storeUrn, port: 8080, exposable: true } as any);
+      vi.spyOn(service, 'validateAppConfig').mockResolvedValue({ valid: true, errors: [] });
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn: storeUrn, form: { exposureMode: 'local', openPort: true, port: 18558 } });
+
+      expect(portManager.setMainPort).toHaveBeenCalledWith(storeUrn, 18558);
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 18558 }));
+    });
+
+    it('refuses a reinstall onto a port another app holds in the table, before anything is written', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...row, appName: 'testapp', appStoreSlug: 'ci-marketplace' } as any);
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ id: 'testapp', urn: storeUrn, port: 8080, exposable: true } as any);
+      vi.spyOn(service, 'validateAppConfig').mockResolvedValue({ valid: true, errors: [] });
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'holder:_user', hostPort: 10001 } as any);
+
+      const refusal = await conflictOf(
+        service.installApp({ actor: TEST_ACTOR, appUrn: storeUrn, form: { exposureMode: 'local', openPort: true, port: 10001 } }),
+      );
+
+      expect(refusal).toMatchObject({ message: 'APP_ERROR_PORT_ALREADY_IN_USE', status: 409 });
+      expect(portManager.setMainPort).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
+    // Drizzle's message holds the query. The driver's code is on `cause`.
+    it('takes over the row a racing install wrote, though Drizzle wrapped the unique violation', async () => {
+      const raced = { ...row, id: 7, appName: 'testapp', appStoreSlug: 'ci-marketplace', status: 'install_failed' };
+      appsRepository.getAppByUrn.mockResolvedValue(undefined as any);
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ id: 'testapp', urn: storeUrn, port: 8080, exposable: true } as any);
+      vi.spyOn(service, 'validateAppConfig').mockResolvedValue({ valid: true, errors: [] });
+      appsRepository.createApp.mockImplementation(async () => {
+        appsRepository.getAppByUrn.mockResolvedValue(raced as any);
+        throw Object.assign(new Error('Failed query: insert into "app"'), { cause: { code: '23505' } });
+      });
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn: storeUrn, form: { exposureMode: 'local', openPort: true, port: 18558 } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, expect.objectContaining({ status: 'installing', port: 18558 }));
+    });
+
+    it('leaves a first install to the allocator, which takes a free port when this one is held', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(undefined as any);
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ id: 'testapp', urn: storeUrn, port: 8080, exposable: true } as any);
+      vi.spyOn(service, 'validateAppConfig').mockResolvedValue({ valid: true, errors: [] });
+      appsRepository.createApp.mockResolvedValue({ id: 2, status: 'installing', port: 10001, exposedLocal: false } as any);
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'holder:_user', hostPort: 10001 } as any);
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn: storeUrn, form: { exposureMode: 'local', openPort: true, port: 10001 } });
+
+      expect(appsRepository.createApp).toHaveBeenCalled();
+      expect(portManager.setMainPort).not.toHaveBeenCalled();
+    });
+  });
+
+  /*
    * Every call that acts on ONE app decides from its actor too, not only install and update-config:
    * the MCP start/stop/restart/uninstall/reset/update and cancel tools, and the admin runner behind
    * them, reached these with no grant check at all (CI-Hub#1397).
@@ -3510,10 +3850,14 @@ describe('AppLifecycleService', () => {
       await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
       await syncAfter(1, { excalidraw: 'api_error' });
 
-      expect(errorReportingService.captureMessage).toHaveBeenCalledTimes(1);
-      expect(errorReportingService.captureMessage).toHaveBeenCalledWith(expect.stringContaining('excalidraw: Cloudflare rejected'), 'error', {
-        failedApps: ['excalidraw'],
-      });
+      // A refusal Cloudflare may clear on a later pass is a warning, not an error; the quota one reports nothing.
+      expect(errorReportingService.captureMessage).not.toHaveBeenCalled();
+      expect(errorReportingService.captureWarning).toHaveBeenCalledTimes(1);
+      expect(errorReportingService.captureWarning).toHaveBeenCalledWith(
+        expect.stringContaining('excalidraw: Cloudflare rejected'),
+        { failedApps: ['excalidraw'] },
+        expect.objectContaining({ debounceKey: 'cloudflare:public-dns:transient' }),
+      );
     });
 
     it('still reports a sync that did not complete', async () => {
@@ -3778,9 +4122,11 @@ describe('AppLifecycleService', () => {
           },
         ],
       ]);
-      expect(errorReportingService.captureMessage).toHaveBeenCalledWith(expect.stringContaining('NOT created for 1 app(s)'), 'error', {
-        failedApps: ['docmost'],
-      });
+      expect(errorReportingService.captureWarning).toHaveBeenCalledWith(
+        expect.stringContaining('NOT created for 1 app(s)'),
+        { failedApps: ['docmost'] },
+        expect.objectContaining({ debounceKey: 'cloudflare:public-dns:transient' }),
+      );
       expect(errorReportingService.captureMessage).not.toHaveBeenCalledWith(expect.stringContaining('n8n:'), expect.anything(), expect.anything());
     });
   });
@@ -5898,6 +6244,257 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
     });
 
+    describe('a form that names no exposure mode', () => {
+      const lastPatch = () => appsRepository.updateAppById.mock.calls.find(([, patch]) => 'config' in patch)?.[1] as Record<string, unknown>;
+      const publicWeb = {
+        port: 8080,
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        enableAuth: true,
+        localSubdomain: 'shop',
+        publicDomain: 'example.com',
+      };
+      const onAppStored = (config: Record<string, unknown>, status = 'stopped') =>
+        appsRepository.getAppByUrn.mockResolvedValue({
+          id: 1,
+          appName: 'myapp',
+          appStoreSlug: 'ci-marketplace',
+          status,
+          config,
+          exposureMode: config.exposureMode ?? 'local',
+          localSubdomain: config.localSubdomain ?? null,
+          publicDomain: config.publicDomain ?? null,
+        } as any);
+
+      it('leaves an app on Public Web under the name it has', async () => {
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
+
+        expect(lastPatch()).toMatchObject({
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          openPort: false,
+          localSubdomain: 'shop',
+          publicDomain: 'example.com',
+          port: 9090,
+        });
+        expect(lastPatch().config).toMatchObject({
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          openPort: false,
+          localSubdomain: 'shop',
+          publicDomain: 'example.com',
+        });
+        expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('Public routing changed'));
+      });
+
+      it('leaves an app on the Private VPN', async () => {
+        onAppStored({ port: 8080, exposureMode: 'tailscale', exposedLocal: false, openPort: false });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'tailscale', exposedLocal: false, openPort: false });
+      });
+
+      it('leaves a form that never named one on This Machine Only, port open', async () => {
+        onAppStored({ port: 8080 });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', exposedLocal: false, openPort: true, port: 9090 });
+        expect((lastPatch().config as Record<string, unknown>).exposureMode).toBeUndefined();
+      });
+
+      it('changes and restarts nothing when it repeats what the app already has', async () => {
+        onAppStored(publicWeb, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(lastPatch()).toBeUndefined();
+      });
+
+      it('lets a renamed subdomain through on the app it was', async () => {
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { localSubdomain: 'store' } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare', localSubdomain: 'store', publicDomain: 'example.com', openPort: false });
+      });
+
+      it('still moves the app when the form does name a mode', async () => {
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposureMode: 'local' } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', openPort: true, publicDomain: null, localSubdomain: null });
+      });
+
+      it('takes exposedLocal: false as the decision a legacy client meant by it', async () => {
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposedLocal: false } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', exposedLocal: false, publicDomain: null });
+      });
+
+      it('leaves a Private VPN app there when exposedLocal: false only repeats that it is not public', async () => {
+        onAppStored({ port: 8080, exposureMode: 'tailscale', exposedLocal: false, openPort: false });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, exposedLocal: false } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'tailscale', exposedLocal: false, openPort: false, port: 9090 });
+      });
+
+      it('records a legacy form the way compose runs it and keeps its domain', async () => {
+        // A version bump re-submits the stored form verbatim. This one is public through `exposedLocal`.
+        onAppStored({ port: 8080, exposedLocal: true, openPort: false, localSubdomain: 'shop', publicDomain: 'example.com' });
+
+        await service.updateAppConfig({
+          actor: TEST_ACTOR,
+          appUrn,
+          form: { port: 9090, exposedLocal: true, openPort: false, localSubdomain: 'shop', publicDomain: 'example.com' },
+        });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare', exposedLocal: true, publicDomain: 'example.com', openPort: false });
+      });
+
+      it('does not restart an app on Public Web whose form never had an openPort', async () => {
+        const { openPort: _openPort, ...noOpenPort } = publicWeb;
+        onAppStored(noOpenPort, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(lastPatch()).toBeUndefined();
+      });
+
+      it('keeps the host port open on This Machine Only when a form asks to close it', async () => {
+        onAppStored({ port: 8080 });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, openPort: false } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', openPort: true });
+      });
+
+      it('does not restart an app on This Machine Only whose stored form says the port is closed', async () => {
+        onAppStored({ port: 8080, exposureMode: 'local', openPort: false }, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('does not read a jsonb reordering of a nested setting as a change', async () => {
+        onAppStored({ ...publicWeb, nested: { a: 1, b: 2 } }, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { ...publicWeb, nested: { b: 2, a: 1 } } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('records the mode compose runs when a version bump re-submits a legacy form and changes nothing', async () => {
+        const legacy = { port: 8080, exposedLocal: true, openPort: true, localSubdomain: 'shop' };
+        onAppStored(legacy, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: legacy });
+
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, { exposureMode: 'cloudflare' });
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('keeps the name and the closed host port when a form only repeats the mode the app is in', async () => {
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, exposureMode: 'cloudflare' } });
+
+        expect(lastPatch()).toMatchObject({
+          exposureMode: 'cloudflare',
+          localSubdomain: 'shop',
+          publicDomain: 'example.com',
+          openPort: false,
+          port: 9090,
+        });
+      });
+
+      it('does not read a subdomain stored before it was canonicalized as a change', async () => {
+        onAppStored({ ...publicWeb, localSubdomain: 'My-App' }, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('has no mode to keep on an app that is not exposable', async () => {
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
+        onAppStored({ port: 8080, exposureMode: 'tailscale', openPort: false });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', exposedLocal: false });
+      });
+
+      it('keeps exposedLocal when a form only repeats the mode the app is in', async () => {
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, exposureMode: 'cloudflare' } });
+
+        expect(lastPatch()).toMatchObject({ exposedLocal: true });
+      });
+
+      it('leaves the Hub login on when a form closes the host port of a public app that never chose one', async () => {
+        const { enableAuth: _enableAuth, openPort: _openPort, ...servedOpen } = publicWeb;
+        onAppStored(servedOpen);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { openPort: false } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare', openPort: false, enableAuth: true });
+      });
+
+      it('honors a login turned off in the form that closes the host port', async () => {
+        const { enableAuth: _enableAuth, openPort: _openPort, ...servedOpen } = publicWeb;
+        onAppStored(servedOpen);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { openPort: false, enableAuth: false } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare', openPort: false, enableAuth: false });
+      });
+
+      it('gives a legacy form that goes public with a closed host port the Hub login it always had', async () => {
+        onAppStored({ port: 8080 });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposedLocal: true, openPort: false } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare', openPort: false, enableAuth: true });
+      });
+
+      it('does not restart a legacy Public Web app with a closed host port and no login on a save that changes nothing', async () => {
+        onAppStored({ port: 8080, exposedLocal: true, openPort: false, localSubdomain: 'shop' }, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('opens the host port of a form public through exposedLocal that says nothing about it, as the queue will', async () => {
+        onAppStored({ port: 8080 });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposedLocal: true } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare', openPort: true });
+      });
+
+      it('does not restart a legacy Public Web app whose form never had an openPort', async () => {
+        onAppStored({ port: 8080, exposedLocal: true }, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+    });
+
     it('warns about the reset using the RESOLVED settings, not the ones the request arrived with', async () => {
       // The non-exposable reset runs after the edge-auth defaulting has already mutated the form,
       // so the warning must read the resolved values. Reading the destructured copies taken at the
@@ -7772,6 +8369,101 @@ describe('AppLifecycleService', () => {
       appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
     });
 
+    describe('a command that moved the app off a busy port', () => {
+      const movedHostPort = { from: 10000, to: 10001 };
+
+      it.each([
+        ['start', 'start_success', () => service.startApp({ actor: TEST_ACTOR, appUrn })],
+        ['restart', 'restart_success', () => service.restartApp({ actor: TEST_ACTOR, appUrn })],
+        ['start and wait', 'start_success', () => service.startAppAndWait({ appUrn })],
+        ['restart and wait', 'restart_success', () => service.restartAppAndWait({ appUrn })],
+      ])('%s tells the page where it moved the app', async (_name, event, run) => {
+        appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK', movedHostPort } as any);
+
+        await run();
+
+        await vi.waitFor(() => {
+          expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event, appUrn, appStatus: 'running', movedHostPort }));
+        });
+      });
+
+      // The move rewrote `config`, which read as settings saved during the start, so the "restart needed" badge stayed.
+      it('clears the restart a save was owed, though the move changed the stored config', async () => {
+        const config = { port: 10000, SITE_URL: 'http://localhost:10000' };
+        appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, config } as any);
+        appsRepository.getAppById.mockResolvedValue({ ...fakeApp, config: { port: 10001, SITE_URL: 'http://localhost:10001' } } as any);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ form_fields: [{ type: 'app_base_url', env_variable: 'SITE_URL' }] } as any);
+        appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK', movedHostPort } as any);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+
+        await vi.waitFor(() => {
+          expect(appsRepository.updateAppById).toHaveBeenCalledWith(fakeApp.id, { status: 'running', pendingRestart: false });
+        });
+      });
+
+      it('keeps the restart owed when another URL setting changes to the new port during the start', async () => {
+        const config = { port: 10000, CALLBACK_URL: 'http://localhost:10000/callback' };
+        appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, config } as any);
+        appsRepository.getAppById.mockResolvedValue({
+          ...fakeApp,
+          config: { port: 10001, CALLBACK_URL: 'http://localhost:10001/callback' },
+          pendingRestart: true,
+        } as any);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ form_fields: [{ type: 'url', env_variable: 'CALLBACK_URL' }] } as any);
+        appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK', movedHostPort } as any);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+
+        await vi.waitFor(() => expect(appsRepository.updateAppById).toHaveBeenCalledWith(fakeApp.id, { status: 'running' }));
+        expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(fakeApp.id, expect.objectContaining({ pendingRestart: false }));
+      });
+
+      it('keeps the restart owed for settings saved during a start that also moved the app', async () => {
+        appsRepository.getAppById.mockResolvedValue({
+          ...fakeApp,
+          config: { ...(fakeApp.config as object), port: 10001, saved: 'meanwhile' },
+        } as any);
+        appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK', movedHostPort } as any);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+
+        await vi.waitFor(() => {
+          expect(appsRepository.updateAppById).toHaveBeenCalledWith(fakeApp.id, { status: 'running' });
+        });
+      });
+
+      // The move writes the port it moved to. Any other port is a save the running app never took up.
+      it('keeps the restart owed for a port saved during a start that also moved the app', async () => {
+        appsRepository.getAppById.mockResolvedValue({ ...fakeApp, config: { ...(fakeApp.config as object), port: 20000 } } as any);
+        appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK', movedHostPort } as any);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+
+        await vi.waitFor(() => {
+          expect(appsRepository.updateAppById).toHaveBeenCalledWith(fakeApp.id, { status: 'running' });
+        });
+      });
+
+      it('tells the page about a move the failed start left behind', async () => {
+        appEventsQueue.publish.mockResolvedValue({ success: false, message: 'mount failed', movedHostPort } as any);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+
+        await vi.waitFor(() => {
+          expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'start_error', appUrn, movedHostPort }));
+        });
+      });
+
+      it('sends nothing about a move when the app kept its port', async () => {
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+
+        await vi.waitFor(() => {
+          expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'start_success', movedHostPort: undefined }));
+        });
+      });
+    });
+
     // A second command no longer supersedes the first: it is refused while the first is under way.
     it('overlapping restarts: the second is refused and the first one settles the app', async () => {
       const resolvePublish = deferPublishResults({ success: true, message: 'OK' });
@@ -8372,15 +9064,45 @@ describe('AppLifecycleService', () => {
     // is connecting". All three were marked stopped while running until the status sync put them
     // back at 08:50:00.
     it('the boot-time start of running apps leaves them running while the queue is still connecting', async () => {
-      appsRepository.getApps.mockResolvedValue([{ id: 7, appName: 'ci-hermes', appStoreSlug: 'ci-marketplace', status: 'running' }] as any);
-      givenApp('running');
-      appEventsQueue.unavailableReason.mockReturnValue("Queue 'app-events-queue' is unavailable while RabbitMQ is connecting.");
+      vi.useFakeTimers();
+      try {
+        appsRepository.getApps.mockResolvedValue([{ id: 7, appName: 'ci-hermes', appStoreSlug: 'ci-marketplace', status: 'running' }] as any);
+        givenApp('running');
+        appEventsQueue.unavailableReason.mockReturnValue("Queue 'app-events-queue' is unavailable while RabbitMQ is connecting.");
 
-      await service.restartRunningApps();
+        await service.restartRunningApps();
+        await vi.advanceTimersByTimeAsync(11 * 60_000);
 
-      await vi.waitFor(() => expect(logger.error).toHaveBeenCalledWith('Failed to start app 7', expect.any(TranslatableError)));
-      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
-      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('were not restarted'));
+        expect(logger.error).not.toHaveBeenCalledWith('Failed to start app 7', expect.anything());
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('the boot-time start of running apps starts them once RabbitMQ connects during that wait', async () => {
+      vi.useFakeTimers();
+      try {
+        appsRepository.getApps.mockResolvedValue([{ id: 7, appName: 'ci-hermes', appStoreSlug: 'ci-marketplace', status: 'running' }] as any);
+        givenApp('running');
+        let connected = false;
+        appEventsQueue.unavailableReason.mockImplementation(() =>
+          connected ? undefined : "Queue 'app-events-queue' is unavailable while RabbitMQ is connecting.",
+        );
+        appEventsQueue.publish.mockResolvedValue({ success: true, message: 'started' } as any);
+        setTimeout(() => {
+          connected = true;
+        }, 2_500);
+
+        await service.restartRunningApps();
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'start', appUrn }));
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('refreshing inference apps logs a refused restart for that app instead of rejecting the whole refresh', async () => {
@@ -8392,6 +9114,67 @@ describe('AppLifecycleService', () => {
       await expect(service.restartAiApps()).resolves.toBeUndefined();
 
       expect(logger.error).toHaveBeenCalledWith('Failed to restart AI app 7', expect.any(TranslatableError));
+    });
+
+    // 6P (2026-09-17): the Hub booted while RabbitMQ was still connecting. The queue passed the start's
+    // pre-check, then refused its publish as the connection dropped, so the start was reported to Sentry as
+    // an error. The queue refuses such a publish before it sends anything, so the start is published again.
+    describe('a start the queue refuses because RabbitMQ is still connecting', () => {
+      const connecting = "Queue 'app-events-queue' is unavailable while RabbitMQ is connecting.";
+      const refused = { success: false, message: connecting, errorCode: QUEUE_UNAVAILABLE_CODE } as any;
+
+      beforeEach(() => {
+        vi.useFakeTimers();
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('publishes the same start again once the queue is back, and the app runs', async () => {
+        givenApp('stopped');
+        let connected = true;
+        appEventsQueue.unavailableReason.mockImplementation(() => (connected ? undefined : connecting));
+        appEventsQueue.publish
+          .mockImplementationOnce(async () => {
+            connected = false;
+            setTimeout(() => {
+              connected = true;
+            }, 2_500);
+            return refused;
+          })
+          .mockResolvedValueOnce({ success: true, message: 'started' } as any);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        expect(appEventsQueue.publish).toHaveBeenCalledTimes(2);
+        expect(appEventsQueue.publish.mock.calls[1][0]).toEqual(appEventsQueue.publish.mock.calls[0][0]);
+        expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, expect.objectContaining({ status: 'running' }));
+        expect(errorReportingService.reportAppFailure).not.toHaveBeenCalled();
+        expect(logger.error).not.toHaveBeenCalledWith(expect.stringContaining('Failed to start app'));
+      });
+
+      it('gives up after the bound with a warning rather than an error, and settles the app on the status it had', async () => {
+        givenApp('running');
+        appEventsQueue.unavailableReason.mockReturnValueOnce(undefined).mockReturnValue(connecting);
+        appEventsQueue.publish.mockResolvedValue(refused);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+        await vi.advanceTimersByTimeAsync(30 * 60_000);
+
+        // While the queue is down it is polled, not published to: the one publish is the refusal.
+        expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
+        expect(logger.warn).toHaveBeenCalledWith(`Failed to start app ${appUrn}: ${connecting}`);
+        expect(logger.error).not.toHaveBeenCalledWith(expect.stringContaining('Failed to start app'));
+        expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'running' });
+        expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
+          appUrn,
+          phase: 'start',
+          message: connecting,
+          errorCode: QUEUE_UNAVAILABLE_CODE,
+        });
+      });
     });
   });
 });

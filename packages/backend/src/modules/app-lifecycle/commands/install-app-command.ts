@@ -16,10 +16,12 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { AppLifecycleCommand, type CommandExecutionContext } from './command';
 import { AppLifecycleError, type AppCommandResult } from './app-lifecycle-errors';
-import { pullAppImagesRecorded } from './pull-app-images';
+import { hostPortMoveOf } from './main-host-port';
+import { pullAppImagesRecorded, uniqueServiceImages } from './pull-app-images';
 import { isAbortError, throwIfAborted } from '@/common/abort';
-import { parseComposeJson } from '@ci-hub/common/schemas';
+import { type AppSecurityGrants, type HostPortMove, parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { McpProbeService } from '@/modules/mcp/mcp-probe.service';
 import { buildComposePortRequests, buildMainPortRequest, type PortRequestInput } from '../planning/port-requests';
@@ -36,9 +38,9 @@ const DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS = 250;
  */
 const DOWNLOAD_SIZE_EMIT_INTERVAL_MS = 2_000;
 
-export function extractComposeImages(composeContent: unknown): string[] {
-  const { services } = parseComposeJson(composeContent);
-  return [...new Set(services.map((service) => service.image?.trim()).filter((image): image is string => Boolean(image)))];
+export function extractComposeImages(composeContent: unknown, grants?: AppSecurityGrants): string[] {
+  const { services } = parseComposeJson(composeContent, grants);
+  return uniqueServiceImages(services);
 }
 
 export function mapPullProgressToInstallProgress(completedBytes: number, totalBytes: number): number {
@@ -118,7 +120,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
         throw new Error(`Invalid marketplace compose payload for ${appUrn}`);
       }
       composeToInstallContent = composeToInstall.content;
-      parseComposeJson(composeToInstallContent);
+      parseComposeJson(composeToInstallContent, securityGrantsFor(appUrn));
     } catch (err) {
       logger.error(`Error parsing docker-compose.yml for app ${appUrn} from marketplace repository. Are you running the latest version of CI Hub?`);
       return this.handleAppError(err, appUrn, 'update_error');
@@ -128,7 +130,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
       ctx?.setPhase('preparing');
       await this.assertMarketplaceEntitlement(appUrn, 'install');
       await this.assertPlanConfigAndArchitecture(appUrn, form);
-      const appImages = extractComposeImages(composeToInstallContent);
+      const appImages = extractComposeImages(composeToInstallContent, securityGrantsFor(appUrn));
       await emitProgress(5);
       if (process.getuid && process.getgid) {
         logger.info(`Installing app ${appUrn} as User ID: ${process.getuid()}, Group ID: ${process.getgid()}`);
@@ -171,7 +173,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
           const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
           if (composeJson.content) {
             try {
-              portRequests.push(...buildComposePortRequests(composeJson.content));
+              portRequests.push(...buildComposePortRequests(composeJson.content, securityGrantsFor(appUrn)));
             } catch (parseErr) {
               logger.warn(`Failed to parse compose for extra ports: ${parseErr}`);
             }
@@ -352,39 +354,44 @@ export class InstallAppCommand extends AppLifecycleCommand {
         let lastPullBytes = 0;
         let sizeShown = false;
         dockerService.pullImages
-          ? await pullAppImagesRecorded({ docker: dockerService, files: appFilesManager, logger }, appUrn, appImages, () =>
-              dockerService.pullImages(appImages, {
-                forcePull,
-                signal: ctx?.signal,
-                layerSizes: (image, signal) => imageSizeService?.getImageLayerSizes?.(image, { signal }) ?? Promise.resolve(null),
-                onProgress: ({ completedBytes, totalBytes, totalBytesKnown, completedImages, totalImages }) => {
-                  // The size under the bar and the bar itself wait for a final total. "3.0 MB / 3.7 MB" for a
-                  // 26 MB download was a total still growing (CI-Hub#2177). A first layer of 405 bytes, done at
-                  // once, put the bar at 98. Until then the page says only "Downloading" and the bar counts images.
-                  const sizeKnown = totalBytes > 0 && totalBytesKnown !== false;
-                  const nextProgress = sizeKnown
-                    ? mapPullProgressToInstallProgress(completedBytes, totalBytes)
-                    : totalImages > 0
-                      ? mapPullProgressToInstallProgress(completedImages, totalImages)
-                      : DOWNLOAD_PROGRESS_START;
-                  const now = Date.now();
-                  const percentRose =
-                    nextProgress > lastPullProgress &&
-                    (nextProgress - lastPullProgress >= 2 ||
-                      now - lastPullProgressAt >= DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS ||
-                      nextProgress >= DOWNLOAD_PROGRESS_MAX_DURING_PULL);
-                  const sizeMoved = completedBytes !== lastPullBytes && now - lastPullProgressAt >= DOWNLOAD_SIZE_EMIT_INTERVAL_MS;
-                  const sizeAppeared = sizeKnown && !sizeShown;
-                  if (percentRose || sizeMoved || sizeAppeared) {
-                    // The bar never goes back.
-                    lastPullProgress = Math.max(lastPullProgress, nextProgress);
-                    lastPullProgressAt = now;
-                    lastPullBytes = completedBytes;
-                    sizeShown = sizeKnown;
-                    void emitProgress(lastPullProgress, sizeKnown ? { downloadedBytes: completedBytes, totalBytes } : undefined);
-                  }
-                },
-              }),
+          ? await pullAppImagesRecorded(
+              { docker: dockerService, files: appFilesManager, logger },
+              appUrn,
+              appImages,
+              () =>
+                dockerService.pullImages(appImages, {
+                  forcePull,
+                  signal: ctx?.signal,
+                  layerSizes: (image, signal) => imageSizeService?.getImageLayerSizes?.(image, { signal }) ?? Promise.resolve(null),
+                  onProgress: ({ completedBytes, totalBytes, totalBytesKnown, completedImages, totalImages }) => {
+                    // The size under the bar and the bar itself wait for a final total. "3.0 MB / 3.7 MB" for a
+                    // 26 MB download was a total still growing (CI-Hub#2177). A first layer of 405 bytes, done at
+                    // once, put the bar at 98. Until then the page says only "Downloading" and the bar counts images.
+                    const sizeKnown = totalBytes > 0 && totalBytesKnown !== false;
+                    const nextProgress = sizeKnown
+                      ? mapPullProgressToInstallProgress(completedBytes, totalBytes)
+                      : totalImages > 0
+                        ? mapPullProgressToInstallProgress(completedImages, totalImages)
+                        : DOWNLOAD_PROGRESS_START;
+                    const now = Date.now();
+                    const percentRose =
+                      nextProgress > lastPullProgress &&
+                      (nextProgress - lastPullProgress >= 2 ||
+                        now - lastPullProgressAt >= DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS ||
+                        nextProgress >= DOWNLOAD_PROGRESS_MAX_DURING_PULL);
+                    const sizeMoved = completedBytes !== lastPullBytes && now - lastPullProgressAt >= DOWNLOAD_SIZE_EMIT_INTERVAL_MS;
+                    const sizeAppeared = sizeKnown && !sizeShown;
+                    if (percentRose || sizeMoved || sizeAppeared) {
+                      // The bar never goes back.
+                      lastPullProgress = Math.max(lastPullProgress, nextProgress);
+                      lastPullProgressAt = now;
+                      lastPullBytes = completedBytes;
+                      sizeShown = sizeKnown;
+                      void emitProgress(lastPullProgress, sizeKnown ? { downloadedBytes: completedBytes, totalBytes } : undefined);
+                    }
+                  },
+                }),
+              { forced: forcePull },
             )
           : logger.warn(`Docker pull progress tracking is unavailable for ${appUrn}; falling back to compose up progress`);
       }
@@ -396,7 +403,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       await emitProgress(99);
       const refusedHostPorts = new Set<number>();
-      await this.composeAppWithNetworkRecovery(appUrn, form, 'up --detach --force-recreate --remove-orphans', 3, ctx?.signal, {
+      await this.composeUpRecordingPulls(appUrn, form, 'up --detach --force-recreate --remove-orphans', 3, ctx?.signal, {
         recoverHostPortConflict: (error) => this.moveMainPortOffConflict(appUrn, form, error, refusedHostPorts),
       });
       await appFilesManager.setAppDataDirPermissions(appUrn);
@@ -477,7 +484,8 @@ export class InstallAppCommand extends AppLifecycleCommand {
       }
 
       await emitProgress(99);
-      await this.markInstallSucceeded(appUrn, sseService, appsRepository, logger);
+      const movedHostPort = hostPortMoveOf(form, refusedHostPorts);
+      await this.markInstallSucceeded(appUrn, sseService, appsRepository, logger, movedHostPort);
 
       try {
         const mcpProbe = this.moduleRef.get(McpProbeService, { strict: false });
@@ -486,7 +494,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
         logger.debug(`MCP post-install probe not scheduled for ${appUrn}: ${probeErr}`);
       }
 
-      return { success: true, message: `App ${appUrn} installed successfully` };
+      return { success: true, message: `App ${appUrn} installed successfully`, movedHostPort };
     } catch (err) {
       // A user-requested cancel: tear down whatever was partially created and report a cancellation
       // (not a failure). The service finalizes the cancel (deletes the record + emits install_cancelled).
@@ -608,6 +616,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
     sseService: SSEService | undefined,
     appsRepository: AppsRepository | undefined,
     logger: LoggerService,
+    movedHostPort: HostPortMove | undefined,
   ): Promise<void> {
     if (!appsRepository) return;
 
@@ -622,6 +631,6 @@ export class InstallAppCommand extends AppLifecycleCommand {
     }
 
     await appsRepository.updateAppById(app.id, { status: 'running' });
-    sseService?.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
+    sseService?.emit('app', { event: 'install_success', appUrn, appStatus: 'running', movedHostPort });
   }
 }
