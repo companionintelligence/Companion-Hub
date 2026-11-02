@@ -18,8 +18,9 @@ import { AppLifecycleCommand, type CommandExecutionContext } from './command';
 import { AppLifecycleError, type AppCommandResult } from './app-lifecycle-errors';
 import { pullAppImagesRecorded, uniqueServiceImages } from './pull-app-images';
 import { isAbortError, throwIfAborted } from '@/common/abort';
-import { parseComposeJson } from '@ci-hub/common/schemas';
+import { type AppSecurityGrants, parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { McpProbeService } from '@/modules/mcp/mcp-probe.service';
 import { buildComposePortRequests, buildMainPortRequest, type PortRequestInput } from '../planning/port-requests';
@@ -36,8 +37,9 @@ const DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS = 250;
  */
 const DOWNLOAD_SIZE_EMIT_INTERVAL_MS = 2_000;
 
-export function extractComposeImages(composeContent: unknown): string[] {
-  return uniqueServiceImages(parseComposeJson(composeContent).services);
+export function extractComposeImages(composeContent: unknown, grants?: AppSecurityGrants): string[] {
+  const { services } = parseComposeJson(composeContent, grants);
+  return uniqueServiceImages(services);
 }
 
 export function mapPullProgressToInstallProgress(completedBytes: number, totalBytes: number): number {
@@ -117,7 +119,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
         throw new Error(`Invalid marketplace compose payload for ${appUrn}`);
       }
       composeToInstallContent = composeToInstall.content;
-      parseComposeJson(composeToInstallContent);
+      parseComposeJson(composeToInstallContent, securityGrantsFor(appUrn));
     } catch (err) {
       logger.error(`Error parsing docker-compose.yml for app ${appUrn} from marketplace repository. Are you running the latest version of CI Hub?`);
       return this.handleAppError(err, appUrn, 'update_error');
@@ -127,7 +129,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
       ctx?.setPhase('preparing');
       await this.assertMarketplaceEntitlement(appUrn, 'install');
       await this.assertPlanConfigAndArchitecture(appUrn, form);
-      const appImages = extractComposeImages(composeToInstallContent);
+      const appImages = extractComposeImages(composeToInstallContent, securityGrantsFor(appUrn));
       await emitProgress(5);
       if (process.getuid && process.getgid) {
         logger.info(`Installing app ${appUrn} as User ID: ${process.getuid()}, Group ID: ${process.getgid()}`);
@@ -170,7 +172,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
           const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
           if (composeJson.content) {
             try {
-              portRequests.push(...buildComposePortRequests(composeJson.content));
+              portRequests.push(...buildComposePortRequests(composeJson.content, securityGrantsFor(appUrn)));
             } catch (parseErr) {
               logger.warn(`Failed to parse compose for extra ports: ${parseErr}`);
             }

@@ -230,7 +230,7 @@ fn postgres_check_syncs_a_wrong_password_on_an_engine_that_drops_exec_output() {
     assert_eq!(result, Ok(()));
     assert_eq!(engine.db_password.borrow().as_str(), "new-secret");
     assert!(desktop_log(data_dir.path())
-        .contains("Postgres TCP auth failed for configured password; syncing role password."));
+        .contains("Postgres TCP auth rejected for configured password; syncing role password."));
     assert!(
         engine.container_dirs.borrow().is_empty(),
         "the detached route left its folders behind"

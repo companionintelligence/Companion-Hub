@@ -7,9 +7,10 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { DockerService } from '@/modules/docker/docker.service';
-import { isPortExposeApp, parseInstalledComposeJson } from '@ci-hub/common/schemas';
+import { isPortExposeApp, type AppSecurityGrants, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { ModuleRef } from '@nestjs/core';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
 
 type PullRecordDeps = {
   docker: Pick<DockerService, 'imageIdLocally' | 'imageIdsLocally' | 'imageTagsLocally'>;
@@ -130,8 +131,8 @@ export function uniqueServiceImages(services: Array<{ image?: string }>): string
 }
 
 /** The images an installed app's compose names on this computer's architecture. */
-export function installedComposeImages(composeContent: unknown, architecture: Architecture): string[] {
-  const { services, overrides } = parseInstalledComposeJson(composeContent);
+export function installedComposeImages(composeContent: unknown, architecture: Architecture, grants?: AppSecurityGrants): string[] {
+  const { services, overrides } = parseInstalledComposeJson(composeContent, grants);
 
   return uniqueServiceImages(mergeArchitectureOverrides(services, overrides, architecture));
 }
@@ -155,7 +156,9 @@ export async function recordComposeUpPulls(
   let imageRefs: string[] = [];
   try {
     const { content } = await files.getDockerComposeJson(appUrn);
-    imageRefs = content ? installedComposeImages(content, moduleRef.get(ConfigurationService, { strict: false })?.get('architecture')) : [];
+    imageRefs = content
+      ? installedComposeImages(content, moduleRef.get(ConfigurationService, { strict: false })?.get('architecture'), securityGrantsFor(appUrn))
+      : [];
   } catch (error) {
     logger.warn(`Could not read which images ${appUrn} uses, so none it pulls now is recorded: ${errorText(error)}`);
   }
@@ -197,7 +200,7 @@ export async function imagesNoOtherAppNames(moduleRef: ModuleRef, appUrn: AppUrn
       if (!content) {
         throw new Error(`the compose of ${otherUrn} can't be read`);
       }
-      for (const ref of installedComposeImages(content, architecture)) {
+      for (const ref of installedComposeImages(content, architecture, securityGrantsFor(otherUrn))) {
         if (!namedBy.has(ref)) {
           namedBy.set(ref, otherUrn);
         }

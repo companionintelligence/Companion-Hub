@@ -361,6 +361,25 @@ describe('pullAppImagesRecorded', () => {
       expect(recorded).toEqual(['sha256:whoami']);
     });
 
+    it('records images for an official app whose compose uses an audited security grant', async () => {
+      const image = 'homeassistant/home-assistant:stable';
+      compose = {
+        schemaVersion: 2,
+        services: [{ name: 'web', image, isMain: true, internalPort: 80, privileged: true }],
+      };
+
+      await recordComposeUpPulls(
+        moduleRef(),
+        'home-assistant:ci-marketplace' as AppUrn,
+        async () => {
+          onComputer.set(image, 'sha256:home-assistant');
+        },
+        { forced: false },
+      );
+
+      expect(recorded).toEqual(['sha256:home-assistant']);
+    });
+
     it('never records an image that was on the computer before the start', async () => {
       onComputer.set('traefik/whoami:v1.10.2', 'sha256:mine');
 

@@ -41,6 +41,9 @@ type LogLevel = (typeof LOG_LEVEL_ENUM)[keyof typeof LOG_LEVEL_ENUM];
 // this machine. `isFQDN` rejects every name without a dot, so `localhost` is allowed by name.
 const isValidLocalDomain = (value: string) => value.toLowerCase() === 'localhost' || validator.isFQDN(value);
 
+const trimmed = (value: string | undefined) => value?.trim() ?? '';
+const isIpv4 = (value: string) => z.ipv4().safeParse(value).success;
+
 const settingsSchema = z.object({
   appsRepoUrl: z.string().optional(),
   localDomain: z.string().optional(),
@@ -124,6 +127,12 @@ export const UserSettingsForm = (props: IProps) => {
       errors.appsRepoUrl = t('SETTINGS_GENERAL_INVALID_URL');
     }
 
+    // Check only an Internal IP the person changed. The Hub reports INTERNAL_IP as it was set, which need not
+    // be an IPv4 address (it can be empty, `::` or a name), and a value it already had must not block a save.
+    if (trimmed(values.internalIp) !== trimmed(initialValues?.internalIp) && !isIpv4(trimmed(values.internalIp))) {
+      errors.internalIp = t('SETTINGS_GENERAL_INVALID_IP');
+    }
+
     return errors;
   };
 
@@ -154,7 +163,9 @@ export const UserSettingsForm = (props: IProps) => {
     }
 
     if (Object.keys(validationErrors).length === 0) {
-      onSubmit(settingsSchema.parse(values));
+      // Past the checks above, an Internal IP that is not IPv4 is the Hub's own, so it stays out of the request.
+      const { internalIp, ...rest } = values;
+      onSubmit(settingsSchema.parse(isIpv4(trimmed(internalIp)) ? { ...rest, internalIp: trimmed(internalIp) } : rest));
     }
   };
 

@@ -6,6 +6,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { appIdOf } from '@/modules/apps/app-id.helpers';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { publishesCloudflarePublicRoute } from '@/modules/apps/app-public-routing.helpers';
 import { DockerComposeBuilder } from '@/modules/docker/builders/compose.builder';
@@ -105,7 +106,7 @@ export async function prepareAppComposeDir(
   }
 
   try {
-    const { services, overrides } = parseInstalledComposeJson(composeJson.content);
+    const { services, overrides } = parseInstalledComposeJson(composeJson.content, securityGrantsFor(appUrn));
 
     // A database read and a listing of every store's folder, which the builder needs only at the end:
     // started now so it runs beside the reads below. Handled at once so a failure that stops the

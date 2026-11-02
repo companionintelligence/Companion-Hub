@@ -129,14 +129,16 @@ if ($null -eq $gpu) { exit 3 };
             Ok(value) => value,
             Err(error) => {
                 clear_stale_probe();
-                let _ = append_desktop_log_for(
-                    data_dir,
-                    "gpu.probe",
-                    &format!(
+                let details = if error.kind() == std::io::ErrorKind::NotFound {
+                    "Skipping host NVIDIA probe cache refresh: nvidia-smi is not installed."
+                        .to_string()
+                } else {
+                    format!(
                         "Skipping host NVIDIA probe cache refresh (nvidia-smi unavailable): {}",
                         error
-                    ),
-                );
+                    )
+                };
+                let _ = append_desktop_log_for(data_dir, "gpu.probe", &details);
                 return;
             }
         };
@@ -363,23 +365,23 @@ fn nvidia_probe_payload(
 
 /// `nvidia-smi --query-gpu=name,memory.total,driver_version` on a Linux host, one CSV row per GPU.
 ///
-/// Run directly, not through `sh -lc`. A login shell sources `~/.profile` first. With dash, one
-/// bad line there ends the shell before nvidia-smi starts: on a laptop whose profile sourced a file
-/// that no longer existed, every start logged `nvidia-smi command failed: sh: 34: .: cannot open …`
-/// and no `nvidia.json` was written, which left the Hub without the card's real memory. The login
-/// shell stays as the fallback for an app started with a PATH that lacks nvidia-smi.
+/// Run directly, never through a login shell: `sh -l` sources `~/.profile`, and a line there that
+/// fails stops the shell before nvidia-smi runs. The driver's own binary is tried first, by absolute
+/// path, and PATH is the fallback. A nvidia-smi on PATH can be a wrapper script that sources a file
+/// which may be gone, and the wrapper then stops before the query runs.
 #[cfg(target_os = "linux")]
 fn linux_nvidia_smi_query() -> std::io::Result<std::process::Output> {
     const QUERY: [&str; 2] = [
         "--query-gpu=name,memory.total,driver_version",
         "--format=csv,noheader,nounits",
     ];
-    match Command::new("nvidia-smi").args(QUERY).output() {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Command::new("sh")
-            .arg("-lc")
-            .arg(format!("nvidia-smi {}", QUERY.join(" ")))
-            .output(),
-        result => result,
+    let installed = ["/usr/bin", "/usr/local/bin", "/usr/lib/wsl/lib"]
+        .iter()
+        .map(|dir| Path::new(dir).join("nvidia-smi"))
+        .find(|path| path.is_file());
+    match installed {
+        Some(path) => Command::new(path).args(QUERY).output(),
+        None => Command::new("nvidia-smi").args(QUERY).output(),
     }
 }
 

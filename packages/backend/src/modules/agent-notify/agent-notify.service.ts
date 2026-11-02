@@ -6,6 +6,7 @@ import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { buildWakeText, DEFAULT_MIN_URGENCY, isUrgency, passesUrgency, type Urgency } from './wake-text';
 
@@ -115,7 +116,7 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
     try {
       const composeJson = await appFilesManager.getDockerComposeJson(appUrn as AppUrn);
       if (composeJson.content) {
-        const parsed = parseInstalledComposeJson(composeJson.content);
+        const parsed = parseInstalledComposeJson(composeJson.content, securityGrantsFor(appUrn));
         const mainService = parsed.services.find((s) => s.isMain) || parsed.services[0];
         if (mainService?.name) {
           serviceName = mainService.name;

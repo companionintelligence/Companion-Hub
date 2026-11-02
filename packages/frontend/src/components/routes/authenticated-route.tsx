@@ -1,5 +1,5 @@
 import { MobileLoadError } from '@/components/mobile/mobile-load-error';
-import { AppContextProvider, useAppContext } from '@/context/app-context';
+import { AppContextProvider, GuestAppContextProvider, useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
 import { isMobileClient } from '@/lib/mobile-connection';
 import { useMobileLoadTimeout } from '@/lib/use-mobile-load-timeout';
@@ -144,41 +144,45 @@ export default () => {
   }
 
   if (isGuestDashboardEnabled && !isLoggedIn) {
-    return <GuestDashboard />;
+    return (
+      <GuestAppContextProvider>
+        <GuestDashboard />
+      </GuestAppContextProvider>
+    );
   }
 
   return (
     <RouteWrapper>
-      <QueryErrorResetBoundary>
-        {({ reset }) => (
-          <ErrorBoundary
-            fallbackRender={({ error, resetErrorBoundary }) => (
-              <DashboardLayoutSuspense>
-                <ErrorPage error={error as Error} onReset={resetErrorBoundary} />
-              </DashboardLayoutSuspense>
-            )}
-            onReset={reset}
-            onError={(error, info) => {
-              if (recoverFromChunkLoadError(error)) {
-                return;
-              }
-              captureHubException(error, { componentStack: info.componentStack ?? undefined });
-            }}
-          >
-            <Suspense
-              fallback={
-                <div className="flex min-h-[40vh] items-center justify-center p-5">
-                  <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-muted-foreground" />
-                </div>
-              }
+      <AppContextProvider>
+        <QueryErrorResetBoundary>
+          {({ reset }) => (
+            <ErrorBoundary
+              fallbackRender={({ error, resetErrorBoundary }) => (
+                <DashboardLayoutSuspense>
+                  <ErrorPage error={error as Error} onReset={resetErrorBoundary} />
+                </DashboardLayoutSuspense>
+              )}
+              onReset={reset}
+              onError={(error, info) => {
+                if (recoverFromChunkLoadError(error)) {
+                  return;
+                }
+                captureHubException(error, { componentStack: info.componentStack ?? undefined });
+              }}
             >
-              <AppContextProvider>
+              <Suspense
+                fallback={
+                  <div className="flex min-h-[40vh] items-center justify-center p-5">
+                    <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-muted-foreground" />
+                  </div>
+                }
+              >
                 <AuthenticatedContent>{outlet}</AuthenticatedContent>
-              </AppContextProvider>
-            </Suspense>
-          </ErrorBoundary>
-        )}
-      </QueryErrorResetBoundary>
+              </Suspense>
+            </ErrorBoundary>
+          )}
+        </QueryErrorResetBoundary>
+      </AppContextProvider>
     </RouteWrapper>
   );
 };

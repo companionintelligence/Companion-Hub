@@ -1,3 +1,4 @@
+import { TranslatableError } from '@/common/error/translatable-error';
 import { type AppFailureContext, ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { ModuleRef } from '@nestjs/core';
@@ -244,6 +245,16 @@ describe('reportAndTranslateAppError — error reporting side effect', () => {
       },
     ]);
     expect(reported[0]?.message).toContain('10.128.10.0/24');
+  });
+
+  it('reports the cause behind a generic translated error, and keeps the key the user sees', async () => {
+    const { moduleRef, reported } = createHarness();
+    const err = new TranslatableError('COMMON_AN_ERROR_OCCURRED', undefined, 502, { cause: new Error('timeout of 20000ms exceeded') });
+
+    const result = await reportAndTranslateAppError(moduleRef, err, 'urn:store:jaeger', 'install');
+
+    expect(reported).toEqual([expect.objectContaining({ message: 'COMMON_AN_ERROR_OCCURRED', cause: 'timeout of 20000ms exceeded' })]);
+    expect(result).toEqual({ success: false, message: 'COMMON_AN_ERROR_OCCURRED' });
   });
 
   it('reports the long detail rather than the short user-facing message when a detail exists', async () => {
