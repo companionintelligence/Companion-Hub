@@ -1647,6 +1647,24 @@ describe('AppLifecycleService', () => {
       }
     });
 
+    it('keeps the port an installed app is on when the reinstall names none', async () => {
+      /*
+       * The app was moved to 10000 (or saved there). A reinstall form that names no port replaced the
+       * stored config, so the Start it queued rebuilt APP_PORT from the manifest and the app came back
+       * on a port its row no longer matched.
+       */
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 10000 }, port: 10000 } as any);
+
+      await service.installApp({
+        actor: TEST_ACTOR,
+        appUrn,
+        form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false },
+      } as any);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ config: expect.objectContaining({ port: 10000 }) }));
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'start', appUrn }));
+    });
+
     it('refuses the reinstall before it parks anything when another app holds the subdomain', async () => {
       /*
        * The release reaches CI-Cloud and writes the row, so it has to run AFTER

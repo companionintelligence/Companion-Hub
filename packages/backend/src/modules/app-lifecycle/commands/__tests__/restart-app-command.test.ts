@@ -16,6 +16,7 @@ import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitle
 import { TranslatableError } from '@/common/error/translatable-error';
 import { HttpStatus } from '@nestjs/common';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
+import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppUrn } from '@ci-hub/common/types';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import { isRocmKfdPassthroughAvailable } from '@/modules/inference/host-rocm-availability';
@@ -53,6 +54,7 @@ describe('RestartAppCommand — pull policy', () => {
   let composeArgs: string[];
   let appFilesManager: any;
   let entitlements: ReturnType<typeof mock<MarketplaceEntitlementService>>;
+  let portManager: ReturnType<typeof mock<PortManagerService>>;
   let traefikConfigService: ReturnType<typeof mock<TraefikConfigService>>;
   const appUrn = 'urn:store:test-app' as AppUrn;
 
@@ -104,6 +106,7 @@ describe('RestartAppCommand — pull policy', () => {
     marketplaceService.copyAppFromRepoToInstalled.mockResolvedValue();
 
     entitlements = mock<MarketplaceEntitlementService>();
+    portManager = mock<PortManagerService>();
     entitlements.assertForStart.mockResolvedValue(undefined);
 
     const subnetManager = mock<SubnetManagerService>();
@@ -127,6 +130,7 @@ describe('RestartAppCommand — pull policy', () => {
         if (token === SubnetManagerService) return subnetManager;
         if (token === EnvUtils) return new EnvUtils();
         if (token === MarketplaceEntitlementService) return entitlements;
+        if (token === PortManagerService) return portManager;
         return mock();
       }),
     } as unknown as ModuleRef;
@@ -210,5 +214,60 @@ describe('RestartAppCommand — pull policy', () => {
     await command.execute(appUrn, {});
 
     expect(traefikConfigService.regenerateTraefikConfig).not.toHaveBeenCalled();
+  });
+
+  describe('when another program holds the host port the app restarts on', () => {
+    /** Docker Engine's wording when a program on the host already listens on the port. */
+    const portTaken = (port: number) =>
+      new Error(
+        `Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint test-app-1 (a65f29c5): failed to bind host port 127.0.0.1:${port}/tcp: address already in use`,
+      );
+    const mainAllocation = (hostPort: number) => ({
+      id: hostPort,
+      appUrn,
+      hostPort,
+      containerPort: 8080,
+      protocol: 'tcp' as const,
+      label: 'main',
+      createdAt: '',
+    });
+    /** Host ports Docker refuses, in the order `compose up` meets them. */
+    let refusals: number[];
+    /** app.env as the last write left it, which the next read returns, as the file would. */
+    let appEnv: string;
+
+    beforeEach(() => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'test-app', port: 8080, force_pull: false } as any);
+      appEnv = ['APP_HOSTNAME=127.0.0.1', 'APP_PORT=8080', 'APP_INTERNAL_AUTHORITY=127.0.0.1:8080', 'APP_URL=http://127.0.0.1:8080'].join('\n');
+      appFilesManager.getAppEnv.mockImplementation(async () => ({ content: appEnv, path: '/tmp/.env' }));
+      appFilesManager.writeAppEnv.mockImplementation(async (_urn: unknown, content: string) => {
+        appEnv = content;
+      });
+      const appsRepository = (command as unknown as { moduleRef: ModuleRef }).moduleRef.get(AppsRepository) as any;
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, config: { exposureMode: 'local' } } as any);
+      portManager.getMainPort.mockResolvedValue(8080);
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10000));
+      refusals = [];
+      dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+        composeArgs.push(args);
+        const refused = args.startsWith('up') ? refusals.shift() : undefined;
+        if (refused !== undefined) {
+          throw portTaken(refused);
+        }
+      });
+    });
+
+    it('restarts on a reassigned port when the default port is taken', async () => {
+      refusals = [8080];
+      const form: { port?: number } = {};
+
+      const result = await command.execute(appUrn, form);
+
+      expect(result.success).toBe(true);
+      expect(portManager.moveMainPort).toHaveBeenCalledExactlyOnceWith(appUrn, new Set([8080]));
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(2);
+      expect(appEnv).toContain('APP_PORT=10000');
+      expect(form.port).toBe(10000);
+    });
   });
 });

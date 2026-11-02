@@ -486,6 +486,77 @@ describe('StartAppCommand — pull policy', () => {
       expect(portManager.getMainPort).not.toHaveBeenCalled();
     });
   });
+
+  describe('when another program holds the host port the app starts on', () => {
+    /** Docker Engine's wording when a program on the host already listens on the port. */
+    const portTaken = (port: number) =>
+      new Error(
+        `Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint test-app-1 (a65f29c5): failed to bind host port 127.0.0.1:${port}/tcp: address already in use`,
+      );
+    const mainAllocation = (hostPort: number) => ({
+      id: hostPort,
+      appUrn,
+      hostPort,
+      containerPort: 8080,
+      protocol: 'tcp' as const,
+      label: 'main',
+      createdAt: '',
+    });
+    /** Host ports Docker refuses, in the order `compose up` meets them. */
+    let refusals: number[];
+    /** app.env as the last write left it, which the next read returns, as the file would. */
+    let appEnv: string;
+    let appsRepository: ReturnType<typeof mock<AppsRepository>>;
+
+    beforeEach(() => {
+      // The manifest's port is 8080, and the app was installed on it and is stopped now.
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'test-app', port: 8080, force_pull: false } as any);
+      appEnv = ['APP_HOSTNAME=127.0.0.1', 'APP_PORT=8080', 'APP_INTERNAL_AUTHORITY=127.0.0.1:8080', 'APP_URL=http://127.0.0.1:8080'].join('\n');
+      appFilesManager.getAppEnv.mockImplementation(async () => ({ content: appEnv, path: '/tmp/.env' }));
+      appFilesManager.writeAppEnv.mockImplementation(async (_urn: unknown, content: string) => {
+        appEnv = content;
+      });
+      appsRepository = (command as unknown as { moduleRef: ModuleRef }).moduleRef.get(AppsRepository) as any;
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, config: { exposureMode: 'local' } } as any);
+      portManager.getMainPort.mockResolvedValue(8080);
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10000));
+      refusals = [];
+      dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+        composeArgs.push(args);
+        const refused = args.startsWith('up') ? refusals.shift() : undefined;
+        if (refused !== undefined) {
+          throw portTaken(refused);
+        }
+      });
+    });
+
+    it('starts on a reassigned port when the default port is taken', async () => {
+      refusals = [8080];
+      const form: { port?: number } = {};
+
+      const result = await command.execute(appUrn, form);
+
+      expect(result.success).toBe(true);
+      expect(portManager.moveMainPort).toHaveBeenCalledExactlyOnceWith(appUrn, new Set([8080]));
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(2);
+      expect(appEnv).toContain('APP_PORT=10000');
+      expect(appEnv).toContain('APP_URL=http://127.0.0.1:10000');
+      // The next start rebuilds APP_PORT from the row's config, so the new port is recorded there too.
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, { config: { exposureMode: 'local', port: 10000 }, port: 10000 });
+      expect(form.port).toBe(10000);
+    });
+
+    it('fails as before when the port Docker refused is not the main port', async () => {
+      // An `addPorts` port from the manifest is published as written, so moving the main port would not help.
+      refusals = [51820];
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(portManager.moveMainPort).not.toHaveBeenCalled();
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(1);
+    });
+  });
 });
 
 type FakeContainer = { Id: string; Names: string[]; State: string; Labels: Record<string, string> };
