@@ -11875,6 +11875,61 @@
             ],
             "additionalProperties": false
           },
+          "failure": {
+            "nullable": true,
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "errorCode": {
+                "type": "string"
+              },
+              "errorDetail": {
+                "type": "string"
+              },
+              "settingsPath": {
+                "type": "string"
+              },
+              "serviceFailure": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "restarting",
+                      "exited",
+                      "none_running"
+                    ]
+                  },
+                  "service": {
+                    "type": "string"
+                  },
+                  "others": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "exitCode": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "logLine": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "message"
+            ],
+            "additionalProperties": false
+          },
           "info": {
             "type": "object",
             "properties": {

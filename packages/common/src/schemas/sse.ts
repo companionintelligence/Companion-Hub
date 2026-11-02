@@ -55,6 +55,19 @@ const installQueueEventSchema = z.object({
 const updatePhaseSchema = z.enum(['preparing', 'pulling', 'backing_up', 'replacing', 'starting', 'verifying', 'finalizing', 'rolling_back']);
 export type UpdatePhase = z.infer<typeof updatePhaseSchema>;
 
+/**
+ * Why an app's containers did not come up, in pieces the client can word in the person's language.
+ * `service` is the first one that failed, `others` how many more did.
+ */
+export const appServiceFailureSchema = z.object({
+  kind: z.enum(['restarting', 'exited', 'none_running']),
+  service: z.string().optional(),
+  others: z.number().int().nonnegative().optional(),
+  exitCode: z.number().int().optional(),
+  logLine: z.string().optional(),
+});
+export type AppServiceFailure = z.infer<typeof appServiceFailureSchema>;
+
 const appScopedEventSchema = z.object({
   event: z.enum([
     'status_change',
@@ -102,6 +115,7 @@ const appScopedEventSchema = z.object({
   errorCode: z.string().optional(),
   errorDetail: z.string().optional(),
   settingsPath: z.string().optional(),
+  serviceFailure: appServiceFailureSchema.optional(),
   hostname: z.string().optional(),
   progress: z.number().min(0).max(99).optional(),
   // An install's image download so far, beside `progress`, once Docker has reported layer sizes.

@@ -9,7 +9,7 @@ import {
 import { tailscaleStatusQueryKey } from '@/lib/api-routes/named-status-routes';
 import { PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY } from '@/lib/cloudflare-api';
 import { getInstalledAppUrnsQueryKey } from '@/lib/installed-app-urns-query';
-import type { UpdatePhase } from '@ci-hub/common/schemas';
+import type { AppServiceFailure, UpdatePhase } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { QueryClient } from '@tanstack/react-query';
 import { installQueueQueryKey, type InstallQueueState } from './install-queue';
@@ -32,6 +32,7 @@ export type AppInstallErrorCache = {
   errorCode?: string;
   errorDetail?: string;
   settingsPath?: string;
+  serviceFailure?: AppServiceFailure;
 };
 
 export type AppSsePayload = {
@@ -46,6 +47,8 @@ export type AppSsePayload = {
   errorCode?: string;
   errorDetail?: string;
   settingsPath?: string;
+  /** A failed install, start or restart only, when its containers did not come up: which service and why. */
+  serviceFailure?: AppServiceFailure;
   /** `public_domain_changed` only: the hostname CI-Cloud serves the app at now. */
   hostname?: string;
   /** `operation_change` only: the lifecycle command the Hub has under way for the app, `null` for none. */
@@ -96,6 +99,20 @@ const LIFECYCLE_INVALIDATE_EVENTS = new Set([
 ]);
 
 const TERMINAL_PROGRESS_STATUSES = new Set(['running', 'missing', 'install_failed']);
+
+/** The app is up, gone, or being worked on again, so the last failure no longer describes it. */
+const APP_STATUSES_ENDING_A_FAILURE = new Set([
+  'running',
+  'missing',
+  'installing',
+  'uninstalling',
+  'starting',
+  'restarting',
+  'stopping',
+  'updating',
+  'resetting',
+  'restoring',
+]);
 
 /** Lifecycle states where a transient Docker `stopped` snapshot must not clobber UI. */
 const TRANSITIONAL_APP_STATUSES = new Set([
@@ -243,7 +260,7 @@ export function cachedAppName(queryClient: Pick<QueryClient, 'getQueryData'>, ap
  * Progress-only install ticks do not invalidate queries.
  */
 export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload) {
-  const { event, appUrn, appStatus, error, errorCode, errorDetail, settingsPath } = data;
+  const { event, appUrn, appStatus, error, errorCode, errorDetail, settingsPath, serviceFailure } = data;
   const progress = data.progress;
 
   if (event === 'install_queue') {
@@ -288,6 +305,7 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
       errorCode,
       errorDetail,
       settingsPath,
+      serviceFailure,
     });
     updateInstallationProgress(urn, null);
     invalidateAppQueries(queryClient, appUrn);
@@ -343,6 +361,10 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
     if (appStatus === 'running') {
       queryClient.setQueryData(['app-install-error', urn], null);
     }
+    // A start or restart whose containers did not come up says so where a failed install does.
+    if ((event === 'start_error' || event === 'restart_error') && error && serviceFailure) {
+      queryClient.setQueryData<AppInstallErrorCache>(['app-install-error', urn], { message: error, ts: Date.now(), errorDetail, serviceFailure });
+    }
     // The picker's disabled options and its held-elsewhere note come from the domain listing, not the app row.
     if (event === 'custom_domain_changed') {
       void queryClient.invalidateQueries({ queryKey: getCustomDomainsQueryKey() });
@@ -395,7 +417,7 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
       errorDetail,
       settingsPath,
     });
-  } else if (appStatus === 'running' || appStatus === 'missing' || appStatus === 'installing') {
+  } else if (appStatus && APP_STATUSES_ENDING_A_FAILURE.has(appStatus)) {
     queryClient.setQueryData(['app-install-error', urn], null);
   }
 

@@ -409,16 +409,22 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // refused beyond this phase (see AppLifecycleService.cancelOperation).
       ctx?.setPhase('finalizing');
 
-      const containerVerification = await dockerService.waitForManagedAppContainersReady(appUrn);
-      if (!containerVerification.ok) {
-        logger.error(
-          `[AppDiag] Post-install container verification failed for ${appUrn}: ${containerVerification.message}${
-            containerVerification.errorDetail ? `\n${containerVerification.errorDetail}` : ''
-          }`,
-        );
-        throw new AppLifecycleError(containerVerification.message, {
-          detail: containerVerification.errorDetail ?? containerVerification.message,
-        });
+      const notUp = await this.appCameUpError(appUrn);
+
+      // Regenerate Traefik file-based config after app is installed and started. Also when a service
+      // failed, since the other containers stay up and the status sync moves the app to `running` once
+      // they all settle. The check above was the wait for the containers to start.
+      const effectiveExposure = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
+      if (effectiveExposure !== 'local' && !form.skipRun) {
+        const traefikConfigService = this.moduleRef.get(TraefikConfigService, { strict: false });
+        if (traefikConfigService) {
+          logger.debug(`Regenerating Traefik config for newly installed exposed app ${appUrn}`);
+          await traefikConfigService.regenerateTraefikConfig(0);
+        }
+      }
+
+      if (notUp) {
+        throw notUp;
       }
 
       // Supplemental health check for slow-fail crashes after the initial verification.
@@ -450,17 +456,6 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       // Cloudflare public DNS/tunnel sync runs in AppLifecycleService.syncExposure()
       // once the install completes and the app is marked running — not here.
-
-      // Regenerate Traefik file-based config after app is installed and started
-      const effectiveExposure = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
-      if (effectiveExposure !== 'local' && !form.skipRun) {
-        const traefikConfigService = this.moduleRef.get(TraefikConfigService, { strict: false });
-        if (traefikConfigService) {
-          logger.debug(`Regenerating Traefik config for newly installed exposed app ${appUrn}`);
-          // Wait longer for container to fully start and network to be attached
-          await traefikConfigService.regenerateTraefikConfig(5000); // Wait 5s for container to fully start
-        }
-      }
 
       // Register the agent wake webhook for MCP-client apps (R-HOOK-1).
       //

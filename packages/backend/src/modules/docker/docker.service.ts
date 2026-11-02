@@ -30,6 +30,7 @@ import { AppsRepository } from '../apps/apps.repository';
 import { APPLE_CONTAINER_ENGINE_NOTICE, isSocktainerVersion } from './container-engine';
 import { DOCKERODE } from './constants';
 import { DockerReadFacade, type ManagedAppContainerVerification } from './docker-read.facade';
+import { APP_CAME_UP_TIMING, AppCameUpWatch, type AppCameUpTiming } from './managed-app-containers';
 import { listContainersMatchingAnyLabelSets, managedAppLabelSets } from './hub-container-query';
 import {
   applyLayerEvent,
@@ -112,9 +113,6 @@ export interface ContainerHealthProbeResult {
 const HUB_APP_NETWORK_GAP = 'Not attaching the Hub to app networks';
 const HUB_APP_NETWORK_CONSEQUENCE =
   'Services that are not on the shared Hub network cannot resolve ci-hub, so an app that calls Hub inference from such a service fails with ENOTFOUND.';
-
-const MANAGED_APP_STARTUP_MAX_ATTEMPTS = 6;
-const MANAGED_APP_STARTUP_DELAY_MS = 2_000;
 
 // What Docker uses for a health check that leaves these unset.
 const DOCKER_DEFAULT_HEALTH_INTERVAL_MS = 30_000;
@@ -373,10 +371,6 @@ export class DockerService {
 
   public isContainerRunning(...args: Parameters<DockerReadFacade['isContainerRunning']>) {
     return this.dockerReadFacade.isContainerRunning(...args);
-  }
-
-  public getManagedAppContainerVerification(...args: Parameters<DockerReadFacade['getManagedAppContainerVerification']>) {
-    return this.dockerReadFacade.getManagedAppContainerVerification(...args);
   }
 
   public diagnoseAppContainers(...args: Parameters<DockerReadFacade['diagnoseAppContainers']>) {
@@ -2543,32 +2537,25 @@ export class DockerService {
   }
 
   /**
-   * Polls after `compose up` until labeled containers reach a stable running
-   * state, or returns the final failed verification.
+   * Whether an app came up after `compose up`: the one check install, retry, start and restart share.
+   * Looks at the containers until {@link AppCameUpWatch} has an answer.
    */
   public async waitForManagedAppContainersReady(
     appUrn: AppUrn,
-    options?: { maxAttempts?: number; delayMs?: number },
+    timing: AppCameUpTiming = APP_CAME_UP_TIMING,
   ): Promise<ManagedAppContainerVerification> {
-    const maxAttempts = options?.maxAttempts ?? MANAGED_APP_STARTUP_MAX_ATTEMPTS;
-    const delayMs = options?.delayMs ?? MANAGED_APP_STARTUP_DELAY_MS;
+    const watch = new AppCameUpWatch(Date.now(), timing);
 
-    let lastVerification: ManagedAppContainerVerification | undefined;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      lastVerification = await this.dockerReadFacade.getManagedAppContainerVerification(appUrn);
-      if (lastVerification.ok) {
-        return lastVerification;
+    for (;;) {
+      const verdict = watch.judge(await this.dockerReadFacade.lookAtManagedAppContainers(appUrn), Date.now());
+      if (verdict.outcome === 'up') {
+        return { ok: true, message: 'All containers came up' };
       }
-
-      const shouldRetry = attempt < maxAttempts && (lastVerification.appStatus === 'missing' || lastVerification.appStatus === 'stopped');
-      if (!shouldRetry) {
-        break;
+      if (verdict.outcome === 'failed') {
+        return this.dockerReadFacade.describeAppCameUpFailure(verdict);
       }
-
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      await new Promise((resolve) => setTimeout(resolve, timing.lookEveryMs));
     }
-
-    return lastVerification ?? (await this.dockerReadFacade.getManagedAppContainerVerification(appUrn));
   }
 
   /**

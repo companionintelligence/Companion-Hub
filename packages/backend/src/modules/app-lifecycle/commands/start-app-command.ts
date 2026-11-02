@@ -124,12 +124,19 @@ export class StartAppCommand extends AppLifecycleCommand {
         },
       );
 
-      // Regenerate Traefik file-based config after app starts
+      // `compose up` returning says nothing about a service that crashes as soon as it starts.
+      const notUp = await this.appCameUpError(appUrn);
+
+      // Regenerate Traefik file-based config after app starts. Also when a service failed, since the
+      // other containers stay up and go on serving. The check above is the wait for them to start.
       const effectiveExposure = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
       if (effectiveExposure !== 'local') {
         logger.debug(`Regenerating Traefik config for exposed app ${appUrn}`);
-        // Wait longer for container to fully start and network to be attached
-        await traefikConfigService.regenerateTraefikConfig(5000); // Wait 5s for container to fully start
+        await traefikConfigService.regenerateTraefikConfig(0);
+      }
+
+      if (notUp) {
+        throw notUp;
       }
 
       logger.info(`App ${appUrn} started`);

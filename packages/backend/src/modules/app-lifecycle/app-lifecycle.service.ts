@@ -817,7 +817,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         await this.syncExposure();
       } else {
         if (job) {
-          await this.lifecycleJobService?.failJob(job.id, result.message || 'Operation failed').catch(() => null);
+          // What the app page shows after a reload, when the event that carried it is gone (see `AppsReadService.lastFailure`).
+          const failure = {
+            errorCode: result.errorCode,
+            errorDetail: result.errorDetail,
+            settingsPath: result.settingsPath,
+            serviceFailure: result.serviceFailure,
+          };
+          await this.lifecycleJobService?.failJob(job.id, result.message || 'Operation failed', { failure }).catch(() => null);
         }
         await this.handleFailedResult(data.command, data.appUrn, result);
         if (isInstall) {
@@ -1035,6 +1042,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       errorCode: result.errorCode,
       errorDetail: result.errorDetail,
       settingsPath: result.settingsPath,
+      serviceFailure: result.serviceFailure,
     });
     if (emitQueueUpdate) {
       void this.emitInstallQueueUpdate();
@@ -1191,7 +1199,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       form: this.startCommandForm(app.config, { skipPull, onlyRecreateChanged }),
     })
       .then(async (raw) => {
-        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
+        const { success, message, errorCode, errorDetail, settingsPath, serviceFailure } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
           this.logger.info(`App ${appUrn} started successfully`);
           await this.settleCommandOutcome({
@@ -1239,6 +1247,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             errorCode,
             errorDetail,
             settingsPath,
+            serviceFailure,
             failureOutcome: {
               status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
               event: 'start_error',
@@ -2206,7 +2215,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.registerDispatchedCommand(appUrn, requestId, 'restart');
     this.publishRegistered(appUrn, requestId, { command: 'restart', appUrn, requestId, form: { ...app.config, skipPull } })
       .then(async (raw) => {
-        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
+        const { success, message, errorCode, errorDetail, settingsPath, serviceFailure } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
           this.logger.info(`App ${appUrn} restarted successfully`);
           await this.settleCommandOutcome({
@@ -2234,6 +2243,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             errorCode,
             errorDetail,
             settingsPath,
+            serviceFailure,
             failureOutcome: {
               status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
               event: 'restart_error',
@@ -2287,7 +2297,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       requestId,
       form: this.startCommandForm(app.config, { skipPull, onlyRecreateChanged }),
     });
-    const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
+    const { success, message, errorCode, errorDetail, settingsPath, serviceFailure } = raw as z.output<typeof appEventResultSchema>;
 
     if (success) {
       this.logger.info(`App ${appUrn} started successfully`);
@@ -2339,6 +2349,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       errorCode,
       errorDetail,
       settingsPath,
+      serviceFailure,
       failureOutcome: {
         status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
         event: 'start_error',
@@ -2390,7 +2401,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       requestId,
       form: { ...app.config, skipPull },
     });
-    const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
+    const { success, message, errorCode, errorDetail, settingsPath, serviceFailure } = raw as z.output<typeof appEventResultSchema>;
 
     if (success) {
       this.logger.info(`App ${appUrn} restarted successfully`);
@@ -2422,6 +2433,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       errorCode,
       errorDetail,
       settingsPath,
+      serviceFailure,
       failureOutcome: {
         status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
         event: 'restart_error',
@@ -3391,8 +3403,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * `restarting` (a public-route repair) would leave a spinner nothing settles. The
    * status sync skips transitional rows for its grace period, and it runs on the
    * queue that just failed.
+   *
+   * A failed install stays one when a start sent to it through the API fails too: `stopped` would take
+   * away its Retry install and send the next retry through Start, past install's port handling.
    */
   private statusAfterFailedCommand(errorCode: string | undefined, statusBefore: AppStatus, statusOnFailure: AppStatus): AppStatus {
+    if (statusBefore === 'install_failed') {
+      return statusBefore;
+    }
     const settled = statusBefore === 'running' || statusBefore === 'stopped';
     return errorCode === QUEUE_UNAVAILABLE_CODE && settled ? statusBefore : statusOnFailure;
   }
@@ -3573,6 +3591,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     errorCode?: string;
     errorDetail?: string;
     settingsPath?: string;
+    serviceFailure?: z.output<typeof appEventResultSchema>['serviceFailure'];
     successOutcome?: {
       status: AppStatus;
       event: AppOutcomeSseEvent;
@@ -3637,6 +3656,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         errorCode: params.errorCode,
         errorDetail: params.errorDetail,
         settingsPath: params.settingsPath,
+        serviceFailure: params.serviceFailure,
       });
       this.agentNotifyService?.notify(params.failureOutcome.notifyEvent, { appUrn: params.appUrn }, params.failureOutcome.notifySeverity ?? 'high');
       this.reportAppFailure(params.appUrn, params.failureOutcome.failurePhase, params.message ?? 'Unknown error', params.errorCode);

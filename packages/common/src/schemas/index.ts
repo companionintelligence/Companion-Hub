@@ -88,7 +88,15 @@ import type {
   AgentSkillConfig,
 } from './agent-config.js';
 
-import { type SSE, type Topic, type UpdatePhase, lifecycleOperationSchema, sseSchema } from './sse.js';
+import {
+  type AppServiceFailure,
+  type SSE,
+  type Topic,
+  type UpdatePhase,
+  appServiceFailureSchema,
+  lifecycleOperationSchema,
+  sseSchema,
+} from './sse.js';
 
 import { toJsonSchema } from './utils/to-json-schema.js';
 
@@ -152,6 +160,7 @@ export {
   mcpManifestSchema,
   type MarketplaceMcp,
   type McpTransport,
+  appServiceFailureSchema,
   sseSchema,
   lifecycleOperationSchema,
   frontmatterSchema,
@@ -185,6 +194,7 @@ export {
   type RandomEncoding,
   type InferenceVariable,
   type AppCategory,
+  type AppServiceFailure,
   type SSE,
   type Topic,
   type UpdatePhase,

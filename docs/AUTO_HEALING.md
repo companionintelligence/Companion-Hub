@@ -219,6 +219,28 @@ delete the directory, then run `cihub up` or relaunch the desktop app. When the 
 create the store at all, it doesn't restart a running Traefik for a changed `traefik.yml`,
 because that Traefik couldn't start again.
 
+### Did the app come up
+
+`compose up` returning says only that Docker started the containers. Install, a retry of a
+failed install, start and restart then look at them about once a second
+(`AppCameUpWatch`, `docker/managed-app-containers.ts`) and report failure if:
+
+- a container is `restarting` or its restart count climbs and it hasn't run for 10 s in a row
+  within 30 s of the first look;
+- a container exited with an error, or is `dead`;
+- no container is running after 10 s.
+
+A healthy app waits at most 5 s, less when its containers are already up. A boot that
+recreates nothing takes two looks. A one-shot that exited 0 and a container still `Created`
+are fine. A container whose health check says `starting` counts as up after 5 s of running:
+many apps take minutes to answer and the app page shows that as Initializing. A service that
+first crashes later than 5 s after it starts passes this check. The status sync reports it.
+
+A failed install ends `install_failed` and a failed start or restart ends `stopped`. The
+containers stay up either way, since the others may be useful. The person sees the service, the
+exit code and the log line that best says why, in a toast and on the app page. The Hub keeps that
+reason on the lifecycle job, so the page still shows it after a reload.
+
 ### App status sync (every 5 minutes)
 
 `syncAllAppStatuses` lists all containers labelled `ci-os-hub.managed=true`,
@@ -252,6 +274,14 @@ Guards prevent false alarms:
   past their window are logged as stuck.
 - **Mid-install protection.** An `installing` / `install_failed` app with no
   containers is **not** marked `missing` (the pull may simply be slow).
+- **A failed install stays failed.** An `install_failed` app stays that way
+  while it isn't fully running, whatever containers it left behind, so the page
+  keeps the failure and Retry install. A retry runs the install, not a start, so
+  it gets install's port handling. Once every container is up it moves to
+  `running` by itself.
+- **One look can land between two crashes.** A `stopped` or `install_failed` app
+  moves to `running` only when no container started under a minute ago. A
+  service that crashes every few seconds always has.
 
 When a status actually changes, it is written to the DB and broadcast over SSE
 (`status_change`). **Crash detection:** a `running → stopped` or

@@ -23,6 +23,7 @@ export async function reportAndTranslateAppError(moduleRef: ModuleRef, err: unkn
       errorCode: err.errorCode,
       errorDetail: err.errorDetail,
       settingsPath: err.settingsPath,
+      serviceFailure: err.serviceFailure,
     };
   }
 

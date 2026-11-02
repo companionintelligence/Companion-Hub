@@ -139,12 +139,7 @@ describe('App lifecycle', () => {
   dockerService.composeApp.mockResolvedValue({ success: true, stdout: '', stderr: '' });
   dockerService.removeAppNetworks.mockResolvedValue(undefined);
   dockerService.pullImages.mockResolvedValue(undefined);
-  dockerService.waitForManagedAppContainersReady.mockResolvedValue({
-    ok: true,
-    appStatus: 'running',
-    summary: { total: 1, running: 1, exitZero: 0 },
-    message: 'All containers are running',
-  });
+  dockerService.waitForManagedAppContainersReady.mockResolvedValue({ ok: true, message: 'All containers came up' });
   // Added alongside UpdateAppCommand's post-update auto-rollback check (#1277). Left
   // unmocked, an unconfigured `mock<DockerService>()` call resolves `undefined`, and
   // `probeResult.healthy` throws — not a failed health check, a crash before the

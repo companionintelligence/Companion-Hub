@@ -22,6 +22,12 @@ import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 
 const LONG_RUNNING_TRANSITIONAL_STATES: AppStatus[] = ['installing', 'updating'];
 
+/**
+ * Docker's `Status` for a container that started under a minute ago. A service that crashes every few
+ * seconds reads `running` between crashes and always reads like this.
+ */
+const STARTED_UNDER_A_MINUTE_AGO = /^Up (less than a second|\d+ seconds?)/i;
+
 const TRANSITIONAL_STATES: AppStatus[] = [
   'installing',
   'uninstalling',
@@ -107,20 +113,23 @@ export class AppStatusSyncService {
       const apps = await this.appRepository.getApps();
       const containers = await listContainersMatchingAnyLabelSets(this.docker, managedAppLabelSets());
 
-      const dockerStatusMap = new Map<string, { running: number; exitZero: number; total: number }>();
+      const dockerStatusMap = new Map<string, { running: number; exitZero: number; total: number; startedJustNow: boolean }>();
 
       for (const container of containers) {
         const appUrn = appUrnFromLabels(container.Labels);
         if (!appUrn) continue;
 
         if (!dockerStatusMap.has(appUrn)) {
-          dockerStatusMap.set(appUrn, { running: 0, exitZero: 0, total: 0 });
+          dockerStatusMap.set(appUrn, { running: 0, exitZero: 0, total: 0, startedJustNow: false });
         }
 
         const status = dockerStatusMap.get(appUrn);
         if (status) {
           status.total++;
-          if (container.State === 'running') status.running++;
+          if (container.State === 'running') {
+            status.running++;
+            status.startedJustNow ||= STARTED_UNDER_A_MINUTE_AGO.test(container.Status);
+          }
           if (container.State === 'exited' && /Exited \(0\)/.test(container.Status)) status.exitZero++;
         }
       }
@@ -226,10 +235,22 @@ export class AppStatusSyncService {
           // events — never as the durable status of an installed app.
           newStatus = 'stopped';
         } else if (dockerStatus.running > 0 && dockerStatus.running + dockerStatus.exitZero === dockerStatus.total) {
+          // An app that failed to come up gets back to `running` by itself once its containers do, but
+          // one look at a crash loop can land between two crashes. It waits for the next sync then.
+          if ((app.status === 'install_failed' || app.status === 'stopped') && dockerStatus.startedJustNow) {
+            skippedCount++;
+            continue;
+          }
           // A clean exit counts only beside a running container: that is a one-shot init service
           // that finished. Every container exited 0 is an app stopped with `docker stop`, such as
           // by the desktop's Stop Hub.
           newStatus = 'running';
+        } else if (app.status === 'install_failed') {
+          // Containers left by a failed install, crash-looping or stuck in `Created`, do not make it a
+          // stopped app. `stopped` lost the failure message and Retry install. It also sent the next
+          // try through Start, past install's port handling (#2041).
+          skippedCount++;
+          continue;
         } else {
           newStatus = 'stopped';
           everyContainerExitedCleanly = dockerStatus.exitZero === dockerStatus.total;

@@ -5,25 +5,23 @@ import { pLimit } from '@/common/helpers/file-helpers';
 import { withTimeout } from '@/common/helpers/with-timeout';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Inject, Injectable } from '@nestjs/common';
+import type { AppServiceFailure } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { DOCKERODE } from './constants';
-import {
-  managedAppStatusFromSummary,
-  summarizeManagedAppContainers,
-  type ManagedAppContainerAppStatus,
-  type ManagedAppContainerSummary,
-} from './managed-app-containers';
+import { type AppCameUpVerdict, type AppContainerLook, describeAppServiceFailure, reasonFromLogs } from './managed-app-containers';
 
 export type ManagedAppContainerVerification = {
   ok: boolean;
-  appStatus: ManagedAppContainerAppStatus;
-  summary: ManagedAppContainerSummary;
   message: string;
   errorDetail?: string;
+  serviceFailure?: AppServiceFailure;
 };
 
 const DOCKER_INSPECT_TIMEOUT_MS = 5_000;
+const LOGS_NOT_CAPTURED = '(failed to capture logs)';
+/** A failure's log tail is kept on its lifecycle job and sent with every read of the app. Log lines can be any length. */
+const MAX_FAILURE_LOG_CHARS = 2_000;
 const DOCKER_STATS_TIMEOUT_MS = 5_000;
 /** Container list states where docker stats() is skipped (crash-loops can hang indefinitely). */
 const SKIP_DOCKER_STATS_STATES = new Set(['restarting', 'created', 'dead']);
@@ -407,46 +405,78 @@ export class DockerReadFacade {
   }
 
   /**
-   * Verify Hub-labeled containers exist and match the same running/stopped/missing
-   * rules used by app status sync (ci-hub.managed + ci-hub.appurn labels, plus the retired ci-os-hub spellings).
+   * One look at an app's Hub-labelled containers (`ci-hub.managed` + `ci-hub.appurn`, plus the retired
+   * `ci-os-hub` spellings). The list says what a container is doing now; inspecting it adds what the
+   * list leaves out, its restart count and when it last started. A container that could not be
+   * inspected, because it was just removed or Docker is slow, counts by what the list said.
    */
-  public async getManagedAppContainerVerification(appUrn: AppUrn): Promise<ManagedAppContainerVerification> {
+  public async lookAtManagedAppContainers(appUrn: AppUrn): Promise<AppContainerLook[]> {
     const containers = await listContainersMatchingAnyLabelSets(this.docker, managedAppLabelSets(appUrn));
 
-    const summary = summarizeManagedAppContainers(containers);
-    const appStatus = managedAppStatusFromSummary(summary);
+    return Promise.all(
+      containers.map(async (container) => {
+        const inspect = await withTimeout(
+          this.docker.getContainer(container.Id).inspect(),
+          DOCKER_INSPECT_TIMEOUT_MS,
+          `Docker did not inspect ${container.Id} in time`,
+        ).catch(() => null);
+        const containerName = (inspect?.Name ?? container.Names?.[0] ?? container.Id).replace(/^\//, '');
+        const startedAtMs = inspect?.State?.StartedAt ? Date.parse(inspect.State.StartedAt) : Number.NaN;
+        const exitFromList = container.Status?.match(/\((-?\d+)\)/)?.[1];
 
-    if (appStatus === 'running') {
-      return {
-        ok: true,
-        appStatus,
-        summary,
-        message: 'All containers are running',
-      };
-    }
+        return {
+          id: container.Id,
+          service: container.Labels?.['com.docker.compose.service'] ?? containerName,
+          containerName,
+          state: inspect?.State?.Status ?? container.State,
+          exitCode: inspect?.State?.ExitCode ?? (exitFromList === undefined ? null : Number(exitFromList)),
+          restartCount: inspect?.RestartCount ?? 0,
+          // Docker's zero time, for a container that never started, is not a start.
+          startedAtMs: startedAtMs > 0 ? startedAtMs : null,
+          health: inspect?.State?.Health?.Status ?? null,
+        };
+      }),
+    );
+  }
 
-    const diagResults = appStatus === 'missing' ? { unhealthy: [], healthy: [] } : await this.diagnoseAppContainers(appUrn);
-    const logSummary =
-      diagResults.unhealthy.length > 0
-        ? diagResults.unhealthy.map((container) => `${container.name} (${container.state}): ${container.logs}`).join('\n')
-        : undefined;
-
-    if (appStatus === 'missing') {
+  /** What to tell the person when {@link AppCameUpWatch} says an app did not come up: which service and why. */
+  public async describeAppCameUpFailure(verdict: Extract<AppCameUpVerdict, { outcome: 'failed' }>): Promise<ManagedAppContainerVerification> {
+    const [first] = verdict.containers;
+    if (!first) {
+      const serviceFailure: AppServiceFailure = { kind: 'none_running' };
       return {
         ok: false,
-        appStatus,
-        summary,
-        message: 'Install finished but no Hub-managed containers were found. The app may have failed to start.',
-        errorDetail: logSummary,
+        message: describeAppServiceFailure(serviceFailure),
+        errorDetail: verdict.containersSeen === 0 ? 'Compose finished but no Hub-managed containers were found.' : undefined,
+        serviceFailure,
       };
     }
+
+    const logs = await Promise.all(
+      verdict.containers.map((container) =>
+        withTimeout(this.tailContainerLogs(container.containerName, 20), DOCKER_INSPECT_TIMEOUT_MS, 'Docker did not return the logs in time').catch(
+          () => '',
+        ),
+      ),
+    );
+    const serviceFailure: AppServiceFailure = {
+      kind: verdict.kind,
+      service: first.service,
+      others: verdict.containers.length > 1 ? verdict.containers.length - 1 : undefined,
+      exitCode: first.exitCode ?? undefined,
+      logLine: logs[0] === LOGS_NOT_CAPTURED ? undefined : reasonFromLogs(logs[0] ?? ''),
+    };
 
     return {
       ok: false,
-      appStatus,
-      summary,
-      message: 'One or more containers exited after install.',
-      errorDetail: logSummary,
+      message: describeAppServiceFailure(serviceFailure),
+      errorDetail: verdict.containers
+        .map(
+          (container, index) =>
+            `${container.containerName} (${container.state}, exit ${container.exitCode ?? '?'}): ${(logs[index] ?? '').slice(-MAX_FAILURE_LOG_CHARS)}`,
+        )
+        .join('\n'),
+      serviceFailure,
     };
   }
 
@@ -534,10 +564,10 @@ export class DockerReadFacade {
         logCmd.stdout.on('data', (data: Buffer) => chunks.push(String(data)));
         logCmd.stderr.on('data', (data: Buffer) => chunks.push(String(data)));
         logCmd.on('close', () => resolve(chunks.join('').trim()));
-        logCmd.on('error', () => resolve('(failed to capture logs)'));
+        logCmd.on('error', () => resolve(LOGS_NOT_CAPTURED));
       });
     } catch {
-      return '(failed to capture logs)';
+      return LOGS_NOT_CAPTURED;
     }
   }
 

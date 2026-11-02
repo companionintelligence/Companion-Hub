@@ -1,4 +1,5 @@
 import { extractOverlapCidrsFromError, isDockerNetworkOverlapError } from '@/modules/network/docker-network-errors';
+import type { AppServiceFailure } from '@ci-hub/common/schemas';
 
 export const ROCM_KFD_MISSING_CODE = 'rocm_kfd_missing';
 
@@ -33,6 +34,7 @@ export class AppLifecycleError extends Error {
   readonly errorCode?: string;
   readonly errorDetail?: string;
   readonly settingsPath?: string;
+  readonly serviceFailure?: AppServiceFailure;
 
   constructor(
     message: string,
@@ -40,6 +42,7 @@ export class AppLifecycleError extends Error {
       code?: string;
       detail?: string;
       settingsPath?: string;
+      serviceFailure?: AppServiceFailure;
     },
   ) {
     super(message);
@@ -47,6 +50,7 @@ export class AppLifecycleError extends Error {
     this.errorCode = options?.code;
     this.errorDetail = options?.detail;
     this.settingsPath = options?.settingsPath;
+    this.serviceFailure = options?.serviceFailure;
   }
 }
 
@@ -77,6 +81,8 @@ export type AppCommandFailureResult = {
   errorCode?: string;
   errorDetail?: string;
   settingsPath?: string;
+  /** The service that kept the app from coming up, when that is why the command failed. */
+  serviceFailure?: AppServiceFailure;
   /** True when the command stopped because the operation was cancelled (vs. failed). */
   cancelled?: boolean;
   /** Resting status a before-PONR cancel reverted to (e.g. 'stopped'); unused by install. */
@@ -95,6 +101,7 @@ export function toAppCommandFailureResult(err: unknown): AppCommandFailureResult
       errorCode: err.errorCode,
       errorDetail: err.errorDetail,
       settingsPath: err.settingsPath,
+      serviceFailure: err.serviceFailure,
     };
   }
 
