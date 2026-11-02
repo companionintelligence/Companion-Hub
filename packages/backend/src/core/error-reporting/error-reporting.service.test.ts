@@ -140,6 +140,11 @@ describe('ErrorReportingService', () => {
     ['a failed health probe after an update', 'Update failed health probe: Health probe did not pass', 'health-probe-failed'],
     ['an app that refused a connection on its own port', 'connect ECONNREFUSED 127.0.0.9:443', 'app-not-listening'],
     ['a backup the app could not finish', 'Could not delete the data of rb-perm-check, so it was not reset', 'app-data-step-failed'],
+    [
+      'a data volume the app still holds',
+      'Volume wordpress_ci-marketplace_data-mariadb is in use by review1965-holder, which is still running; stop the app and try again',
+      'volume-in-use',
+    ],
   ])('reports %s as a warning, grouped by cause', (_label, message, errorClass) => {
     const configuration = {
       get: vi.fn(() => ({ allowErrorMonitoring: true })),
@@ -162,6 +167,22 @@ describe('ErrorReportingService', () => {
 
     expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'error');
     expect(lastScope().setFingerprint).toHaveBeenCalledWith(['app-failure', 'start', 'invalid-app-manifest']);
+  });
+
+  it('groups an image reference that does not resolve as an app-config error', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'bad-image:_user',
+      phase: 'start',
+      message: 'Error response from daemon: failed to resolve reference "docker.io/library/nginx:tag-does-not-exist": not found',
+    });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'error');
+    expect(lastScope().setFingerprint).toHaveBeenCalledWith(['app-failure', 'start', 'image-reference-invalid']);
   });
 
   it('groups a missing catalog entry as an app-config error, not per app', () => {

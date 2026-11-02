@@ -264,6 +264,11 @@ const INFRASTRUCTURE_NOISE_RULES: ReadonlyArray<{ errorClass: string; pattern: R
   },
   // The other end of a fetch closed the socket before it answered (undici's SocketError under "fetch failed").
   { errorClass: 'upstream-closed', pattern: /SocketError: other side closed|UND_ERR_SOCKET/ },
+  // The device trusts no certificate for a service it calls (a self-signed one on the local network).
+  {
+    errorClass: 'upstream-tls-untrusted',
+    pattern: /self-signed certificate|unable to verify the first certificate|UNABLE_TO_VERIFY_LEAF_SIGNATURE|SELF_SIGNED_CERT_IN_CHAIN/,
+  },
   // A model or peer took longer than the Hub waits for its answer.
   {
     errorClass: 'upstream-timeout',

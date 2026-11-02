@@ -96,6 +96,8 @@ const APP_CONFIG_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: string }
   { pattern: /Store not found for/i, errorClass: 'app-not-in-catalog' },
   // A compose file or port the app's manifest (a custom app's, in practice) cannot turn into containers.
   { pattern: /Error generating docker-compose\.yml|invalid containerPort/i, errorClass: 'invalid-app-manifest' },
+  // The image reference names a tag or repository that does not exist.
+  { pattern: /failed to resolve reference/i, errorClass: 'image-reference-invalid' },
 ];
 
 /**
@@ -112,6 +114,8 @@ const APP_RUNTIME_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: string 
     pattern: /could not delete the data|failed to restore the backup|failed to copy the app files|could not snapshot/i,
     errorClass: 'app-data-step-failed',
   },
+  // A data volume the app still holds: the app has to be stopped first, which the user does.
+  { pattern: /is in use by .*which is still running/i, errorClass: 'volume-in-use' },
 ];
 
 /**

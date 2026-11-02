@@ -190,6 +190,7 @@ describe('scrubEvent infrastructure noise', () => {
     ['a tailscale CLI that failed', 'Error: Command failed: /usr/bin/tailscale down', 'tailscale-command-failed'],
     ['a model that stayed silent', 'Error: No response headers within 801000ms', 'upstream-timeout'],
     ['a peer that closed the socket mid-fetch', 'SocketError: other side closed', 'upstream-closed'],
+    ['a service behind a certificate the device does not trust', 'TypeError: self-signed certificate', 'upstream-tls-untrusted'],
   ])('groups %s as warning under its own fingerprint', (_label, message, errorClass) => {
     const result = scrub(errorEvent(message));
 
