@@ -2538,20 +2538,28 @@ export class DockerService {
 
   /**
    * Whether an app came up after `compose up`: the one check install, retry, start and restart share.
-   * Looks at the containers until {@link AppCameUpWatch} has an answer.
+   * Looks at the containers until {@link AppCameUpWatch} has an answer. A look Docker did not answer
+   * says nothing, so the watch goes on. It throws only once Docker has not answered for its whole window.
    */
   public async waitForManagedAppContainersReady(
     appUrn: AppUrn,
     timing: AppCameUpTiming = APP_CAME_UP_TIMING,
   ): Promise<ManagedAppContainerVerification> {
-    const watch = new AppCameUpWatch(Date.now(), timing);
+    const startedAtMs = Date.now();
+    const watch = new AppCameUpWatch(startedAtMs, timing);
 
     for (;;) {
-      const verdict = watch.judge(await this.dockerReadFacade.lookAtManagedAppContainers(appUrn), Date.now());
-      if (verdict.outcome === 'up') {
+      const look = await this.dockerReadFacade.lookAtManagedAppContainers(appUrn).catch((error: unknown) => {
+        if (Date.now() - startedAtMs >= timing.settleWithinMs) {
+          throw error;
+        }
+        return null;
+      });
+      const verdict = look && watch.judge(look, Date.now());
+      if (verdict?.outcome === 'up') {
         return { ok: true, message: 'All containers came up' };
       }
-      if (verdict.outcome === 'failed') {
+      if (verdict?.outcome === 'failed') {
         return this.dockerReadFacade.describeAppCameUpFailure(verdict);
       }
       await new Promise((resolve) => setTimeout(resolve, timing.lookEveryMs));

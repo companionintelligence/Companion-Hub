@@ -225,8 +225,11 @@ because that Traefik couldn't start again.
 failed install, start and restart then look at them about once a second
 (`AppCameUpWatch`, `docker/managed-app-containers.ts`) and report failure if:
 
-- a container is `restarting` or its restart count climbs and it hasn't run for 10 s in a row
-  within 30 s of the first look;
+- a container seen crashing (`restarting`, or a restart count that climbs) hasn't run for 10 s in
+  a row. It has 30 s from the first look, and a run under way when that ends gets to finish, so
+  40 s at most. Docker's retries back off, to one at about 13 s and the next at about 25 s, so a
+  service whose database takes longer than that fails the check. The status sync still moves it
+  to `running` once it settles;
 - a container exited with an error, or is `dead`;
 - no container is running after 10 s.
 
@@ -237,9 +240,11 @@ many apps take minutes to answer and the app page shows that as Initializing. A 
 first crashes later than 5 s after it starts passes this check. The status sync reports it.
 
 A failed install ends `install_failed` and a failed start or restart ends `stopped`. The
-containers stay up either way, since the others may be useful. The person sees the service, the
-exit code and the log line that best says why, in a toast and on the app page. The Hub keeps that
-reason on the lifecycle job, so the page still shows it after a reload.
+containers stay up either way, since the others may be useful. The toast names the service and the
+exit code. The app page adds the log line that best says why, also after a reload, because the Hub
+keeps the reason on the lifecycle job. That read takes what reading the app's logs takes, so a
+member who may only see a custom app doesn't get it. The toast's event goes to every signed-in
+session, so it carries no log text.
 
 ### App status sync (every 5 minutes)
 

@@ -9,7 +9,7 @@ import type { AppServiceFailure } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { DOCKERODE } from './constants';
-import { type AppCameUpVerdict, type AppContainerLook, describeAppServiceFailure, reasonFromLogs } from './managed-app-containers';
+import { type AppCameUpVerdict, type AppContainerLook, describeAppServiceFailure, logTailToKeep, reasonFromLogs } from './managed-app-containers';
 
 export type ManagedAppContainerVerification = {
   ok: boolean;
@@ -411,7 +411,12 @@ export class DockerReadFacade {
    * inspected, because it was just removed or Docker is slow, counts by what the list said.
    */
   public async lookAtManagedAppContainers(appUrn: AppUrn): Promise<AppContainerLook[]> {
-    const containers = await listContainersMatchingAnyLabelSets(this.docker, managedAppLabelSets(appUrn));
+    // Bounded like the inspects below: the wait for an app to come up holds the app's lock.
+    const containers = await withTimeout(
+      listContainersMatchingAnyLabelSets(this.docker, managedAppLabelSets(appUrn)),
+      DOCKER_INSPECT_TIMEOUT_MS,
+      `Docker did not list the containers of ${appUrn} in time`,
+    );
 
     return Promise.all(
       containers.map(async (container) => {
@@ -430,7 +435,7 @@ export class DockerReadFacade {
           containerName,
           state: inspect?.State?.Status ?? container.State,
           exitCode: inspect?.State?.ExitCode ?? (exitFromList === undefined ? null : Number(exitFromList)),
-          restartCount: inspect?.RestartCount ?? 0,
+          restartCount: inspect?.RestartCount ?? null,
           // Docker's zero time, for a container that never started, is not a start.
           startedAtMs: startedAtMs > 0 ? startedAtMs : null,
           health: inspect?.State?.Health?.Status ?? null,
@@ -473,7 +478,7 @@ export class DockerReadFacade {
       errorDetail: verdict.containers
         .map(
           (container, index) =>
-            `${container.containerName} (${container.state}, exit ${container.exitCode ?? '?'}): ${(logs[index] ?? '').slice(-MAX_FAILURE_LOG_CHARS)}`,
+            `${container.containerName} (${container.state}, exit ${container.exitCode ?? '?'}): ${logTailToKeep(logs[index] ?? '', MAX_FAILURE_LOG_CHARS)}`,
         )
         .join('\n'),
       serviceFailure,
@@ -548,8 +553,9 @@ export class DockerReadFacade {
 
   /**
    * Last `lines` lines of a container's combined stdout/stderr, or a short marker when they could
-   * not be read. Never throws — every caller is a diagnostic path where a missing log tail must not
-   * become the failure being diagnosed.
+   * not be read, as for a `dead` container or a logging driver that cannot be read back: what the
+   * CLI prints then is its own error, not the container's log. Never throws, since every caller is a
+   * diagnostic path where a missing log tail must not become the failure being diagnosed.
    *
    * Shells out rather than using Dockerode's `logs()` because a non-TTY container's log stream is
    * multiplexed with 8-byte frame headers that would need demultiplexing before the text is
@@ -563,7 +569,7 @@ export class DockerReadFacade {
         const chunks: string[] = [];
         logCmd.stdout.on('data', (data: Buffer) => chunks.push(String(data)));
         logCmd.stderr.on('data', (data: Buffer) => chunks.push(String(data)));
-        logCmd.on('close', () => resolve(chunks.join('').trim()));
+        logCmd.on('close', (code) => resolve(code === 0 ? chunks.join('').trim() : LOGS_NOT_CAPTURED));
         logCmd.on('error', () => resolve(LOGS_NOT_CAPTURED));
       });
     } catch {

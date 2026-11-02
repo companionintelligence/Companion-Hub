@@ -553,6 +553,45 @@ describe('DockerService', () => {
       expect(tail).toHaveBeenCalledWith('app-summary-service-1', 20);
     });
 
+    it('goes on watching after a look Docker did not answer, so a blip does not pass a crash loop', async () => {
+      containers([{ id: 'b', service: 'migrate', state: 'exited', exit: 1 }]);
+      dockerode.listContainers.mockRejectedValueOnce(new Error('socket hang up'));
+      vi.spyOn(dockerReadFacade, 'tailContainerLogs').mockResolvedValue('');
+
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
+
+      expect(result).toMatchObject({ ok: false, message: 'migrate exited (exit 1)' });
+    });
+
+    it('gives up once Docker has not answered for the whole window', async () => {
+      dockerode.listContainers.mockRejectedValue(new Error('socket hang up'));
+
+      await expect(service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast)).rejects.toThrow('socket hang up');
+    });
+
+    it('does not hang on a Docker list that never answers', async () => {
+      vi.useFakeTimers();
+      try {
+        dockerode.listContainers.mockReturnValue(new Promise(() => undefined) as any);
+
+        const answer = expect(service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast)).rejects.toThrow('did not list');
+        await vi.advanceTimersByTimeAsync(5_100);
+        await answer;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('takes no reason from a log Docker could not read', async () => {
+      containers([{ id: 'b', service: 'db', state: 'dead', exit: 137 }]);
+      vi.spyOn(dockerReadFacade, 'tailContainerLogs').mockResolvedValue('(failed to capture logs)');
+
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
+
+      expect(result.message).toBe('db exited (exit 137)');
+      expect(result.serviceFailure?.logLine).toBeUndefined();
+    });
+
     it('still names the service when its logs cannot be read', async () => {
       containers([{ id: 'b', service: 'migrate', state: 'exited', exit: 1 }]);
       vi.spyOn(dockerReadFacade, 'tailContainerLogs').mockRejectedValue(new Error('docker is gone'));

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { APP_CAME_UP_TIMING, type AppContainerLook, AppCameUpWatch, describeAppServiceFailure, reasonFromLogs } from '../managed-app-containers';
+import {
+  APP_CAME_UP_TIMING,
+  type AppContainerLook,
+  AppCameUpWatch,
+  describeAppServiceFailure,
+  logTailToKeep,
+  reasonFromLogs,
+} from '../managed-app-containers';
 
 const START = 1_800_000_000_000;
 
@@ -76,6 +83,45 @@ describe('AppCameUpWatch', () => {
       kind: 'restarting',
       containers: [{ service: 'summary-service', exitCode: 126 }],
     });
+    // The look at 30 s lands on a run, which gets to finish. It crashes a second later.
+    expect(verdict.elapsedMs).toBe(APP_CAME_UP_TIMING.settleWithinMs + APP_CAME_UP_TIMING.lookEveryMs);
+  });
+
+  it('lets a run under way when the time ends finish, since Docker retries a crash ever more slowly', () => {
+    // A service whose database took 20 s: Docker's retry after 12.7 s still failed and the next came at 25.5 s.
+    const verdict = watch((elapsedMs) =>
+      elapsedMs < 25_000
+        ? [container({ service: 'api', state: 'restarting', exitCode: 1, restartCount: Math.min(8, Math.floor(elapsedMs / 3000)) })]
+        : [container({ service: 'api', state: 'running', restartCount: 9, startedAtMs: START + 25_000 })],
+    );
+
+    expect(verdict.outcome).toBe('up');
+    expect(verdict.elapsedMs).toBe(25_000 + APP_CAME_UP_TIMING.upAfterCrashMs);
+  });
+
+  it('still fails a service that never stays down long enough to read restarting, once its last run has had its time', () => {
+    const verdict = watch((elapsedMs) => [
+      container({
+        service: 'api',
+        state: 'running',
+        restartCount: Math.floor(elapsedMs / 3000),
+        startedAtMs: START + Math.floor(elapsedMs / 3000) * 3000,
+      }),
+    ]);
+
+    expect(verdict).toMatchObject({ outcome: 'failed', kind: 'restarting', containers: [{ service: 'api' }] });
+    expect(verdict.elapsedMs).toBe(APP_CAME_UP_TIMING.settleWithinMs + APP_CAME_UP_TIMING.upAfterCrashMs);
+  });
+
+  it('does not wait for a run beside a service still restarting when the time ends', () => {
+    const verdict = watch((elapsedMs) => [
+      container({ service: 'worker', state: 'restarting', exitCode: 126, restartCount: Math.floor(elapsedMs / 1000) }),
+      elapsedMs < 29_000
+        ? container({ service: 'api', state: 'restarting', exitCode: 1, restartCount: Math.floor(elapsedMs / 1000) })
+        : container({ service: 'api', state: 'running', restartCount: 30, startedAtMs: START + 29_000 }),
+    ]);
+
+    expect(verdict).toMatchObject({ outcome: 'failed', kind: 'restarting', containers: [{ service: 'worker' }, { service: 'api' }] });
     expect(verdict.elapsedMs).toBe(APP_CAME_UP_TIMING.settleWithinMs);
   });
 
@@ -178,6 +224,35 @@ describe('AppCameUpWatch', () => {
     expect(verdict.outcome).toBe('up');
     expect(verdict.elapsedMs).toBe(APP_CAME_UP_TIMING.upAfterMs);
   });
+
+  it('does not read a look Docker could not inspect as a new run or a climbing restart count', () => {
+    const verdict = watch((elapsedMs) => {
+      const unanswered = elapsedMs === 0 || elapsedMs % 3000 === 0;
+      return [
+        container({
+          service: 'web',
+          state: 'running',
+          restartCount: unanswered ? null : 7,
+          startedAtMs: unanswered ? null : START - 2000,
+        }),
+      ];
+    });
+
+    expect(verdict.outcome).toBe('up');
+    expect(verdict.elapsedMs).toBeLessThanOrEqual(APP_CAME_UP_TIMING.upAfterMs);
+  });
+
+  it('wants a crashed container seen running for its whole window when the Docker clock runs behind the Hub', () => {
+    const behind = START - 3_600_000;
+    const verdict = watch((elapsedMs) =>
+      elapsedMs < 3000
+        ? [container({ service: 'api', state: 'restarting', exitCode: 1, restartCount: Math.floor(elapsedMs / 1000), startedAtMs: behind })]
+        : [container({ service: 'api', state: 'running', restartCount: 3, startedAtMs: behind + 3000 })],
+    );
+
+    expect(verdict.outcome).toBe('up');
+    expect(verdict.elapsedMs).toBe(3000 + APP_CAME_UP_TIMING.upAfterCrashMs);
+  });
 });
 
 describe('reasonFromLogs', () => {
@@ -203,6 +278,24 @@ describe('reasonFromLogs', () => {
 
   it('cuts a long line', () => {
     expect(reasonFromLogs('x'.repeat(500))).toBe(`${'x'.repeat(200)}...`);
+  });
+});
+
+describe('what is kept of a log', () => {
+  it('leaves no NUL, which Postgres refuses in text and jsonb', () => {
+    expect(logTailToKeep('bad\u0000 byte', 100)).toBe('bad byte');
+    expect(reasonFromLogs('bad\u0000 byte')).toBe('bad byte');
+  });
+
+  it('leaves no half of a character where it cut, which Postgres refuses in jsonb', () => {
+    const emoji = '\u{1F680}';
+
+    expect(logTailToKeep(`${emoji}tail`, 5).isWellFormed()).toBe(true);
+    expect(reasonFromLogs(`${'x'.repeat(199)}${emoji}`)?.isWellFormed()).toBe(true);
+  });
+
+  it('keeps the end of the log without its colour codes', () => {
+    expect(logTailToKeep('first\n\u001b[31mlast\u001b[0m', 4)).toBe('last');
   });
 });
 
