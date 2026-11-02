@@ -1446,6 +1446,8 @@
   "APP_INSTALL_PORTAL_DOWNLOAD_FORBIDDEN": "Your device is not authorized to install this app. Check your CI Account subscription or device registration.",
   "APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED": "This app requires an active subscription or payment. Check your CI Account before installing.",
   "APP_INSTALL_PORTAL_DOWNLOAD_ASK_ADMIN": "Ask an organization owner or admin to purchase this app before installing it on this Hub.",
+  "APP_INSTALL_PORTAL_ORGANIZATION_REQUIRED": "CI Account has this Hub registered to more than one organization and this Hub could not say which one it is in, so paid apps can't be installed or updated. An owner or admin should regenerate this Hub's pairing code in the organization it belongs to. Then choose Reset this Hub only in Settings > Network and pair with the new code.",
+  "APP_INSTALL_PORTAL_DEVICE_NOT_IN_ORGANIZATION": "CI Account does not have this Hub registered to the organization it is set up for, so paid apps can't be installed or updated. An owner or admin should regenerate this Hub's pairing code in the organization it belongs to. Then choose Reset this Hub only in Settings > Network and pair with the new code.",
   "APP_ACTION_GRANT_DENIED": "You are not allowed to {{action}} this app.",
   "CUSTOM_DOMAIN_ROLE_REQUIRED": "Only an organization owner or admin can change which custom domain an app uses.",
   "CUSTOM_APP_CREATE_ROLE_REQUIRED": "Only an organization owner or admin can create a custom app.",

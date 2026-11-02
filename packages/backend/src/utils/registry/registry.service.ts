@@ -6,6 +6,7 @@ import { HUB_STACK_REGISTRY_REPO } from '@/common/constants';
 import { describeNetworkError } from '@/common/helpers/network-error';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import * as semver from 'semver';
 
 /** How long successful tag lists are reused (avoids hammering Companion Portal on every UI version check). */
@@ -35,6 +36,7 @@ export class RegistryService {
     private readonly httpService: HttpService,
     private readonly configuration: ConfigurationService,
     private readonly logger: LoggerService,
+    private readonly whois: MarketplaceWhoIsService,
   ) {}
 
   public async getLatestVersion(repository: string) {
@@ -122,6 +124,11 @@ export class RegistryService {
    * back to an empty tag list (and `dl.ci.computer` for the Hub stack). That
    * looks like a slow or empty catalog, not a pairing error — pair first
    * (CI-Portal#634).
+   *
+   * The body names this Hub's organization, as the other paid app requests do. Portal only reads the
+   * name alongside an `appId`, and this asks for none: the answer is the listing token for the Hub
+   * stack, which names the device and no organization. So the cache isn't keyed on organization: the
+   * same token holds in any of them. A caller that asks for an app's token one day needs its own key.
    */
   private async getDeviceRegistryToken(base: string): Promise<string | null> {
     const deviceKey = this.configuration.get('ciHubApiKey');
@@ -134,16 +141,14 @@ export class RegistryService {
       return this.registryTokenCache.token;
     }
 
+    const organizationId = await this.whois.deviceOrganizationId();
+
     try {
       const { data } = await firstValueFrom(
-        this.httpService.post(
-          `${base}/api/devices/registry-token`,
-          {},
-          {
-            timeout: REGISTRY_HTTP_TIMEOUT_MS,
-            headers: { 'x-device-key': deviceKey, 'Content-Type': 'application/json' },
-          },
-        ),
+        this.httpService.post(`${base}/api/devices/registry-token`, organizationId ? { organizationId } : {}, {
+          timeout: REGISTRY_HTTP_TIMEOUT_MS,
+          headers: { 'x-device-key': deviceKey, 'Content-Type': 'application/json' },
+        }),
       );
       const token = typeof (data as { token?: unknown })?.token === 'string' ? (data as { token: string }).token : null;
       if (!token) {

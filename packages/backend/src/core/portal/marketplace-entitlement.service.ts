@@ -8,7 +8,9 @@ import { HttpStatus, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import { eq } from 'drizzle-orm';
 
+import { MarketplaceWhoIsService } from './marketplace-whois.service';
 import { PortalClientService } from './portal-client.service';
+import { portalOrganizationRefusal } from './portal.constants';
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 
 export const ENTITLEMENT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -35,6 +37,7 @@ export class MarketplaceEntitlementService {
     private readonly portal: PortalClientService,
     private readonly database: DatabaseService,
     private readonly logger: LoggerService,
+    private readonly whois: MarketplaceWhoIsService,
   ) {}
 
   async assertForInstall(appUrn: AppUrn): Promise<void> {
@@ -62,7 +65,7 @@ export class MarketplaceEntitlementService {
     let result: Awaited<ReturnType<PortalClientService['checkAppEntitlement']>>;
 
     try {
-      result = await this.portal.checkAppEntitlement(appName);
+      result = await this.portal.checkAppEntitlement(appName, await this.whois.deviceOrganizationId());
     } catch (error) {
       this.logger.warn(`Portal entitlement check failed for ${appUrn}: ${describeNetworkError(error)}`);
       this.applyUnreachable(cache, now, mode);
@@ -95,6 +98,26 @@ export class MarketplaceEntitlementService {
       }
 
       throw new TranslatableError('APP_INSTALL_PORTAL_DOWNLOAD_UNAUTHORIZED', undefined, HttpStatus.UNAUTHORIZED);
+    }
+
+    const organizationRefusal = portalOrganizationRefusal(result.status, result.code);
+
+    if (organizationRefusal) {
+      /*
+       * Portal couldn't tell which organization this Hub is asking for, so it never looked at a grant.
+       * That is no entitlement decision and stays out of the cache. Install and update refuse even on
+       * a fresh "entitled" row: that row answers for an outage, and Portal is up and saying it can't
+       * place this Hub. Starting an app already on disk needs nothing from Portal, so it gets the
+       * unreachable policy, as for a rejected device key above.
+       */
+      this.logger.warn(`Portal could not place this Hub in an organization while checking ${appUrn}: HTTP ${result.status} ${result.code}`);
+
+      if (mode === 'start') {
+        this.applyUnreachable(cache, now, mode);
+        return;
+      }
+
+      throw new TranslatableError(organizationRefusal.messageKey, undefined, organizationRefusal.status);
     }
 
     if (result.status === 402 || result.entitled === false) {

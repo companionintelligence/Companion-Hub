@@ -1,5 +1,7 @@
 import { RegistryService, REGISTRY_HTTP_TIMEOUT_MS } from '@/utils/registry/registry.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { LoggerService } from '@/core/logger/logger.service';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { HttpService } from '@nestjs/axios';
 import { Test } from '@nestjs/testing';
 import { of, throwError } from 'rxjs';
@@ -16,6 +18,8 @@ describe('RegistryService', () => {
   let registryService: RegistryService;
   let httpService = mock<HttpService>();
   let configurationService = mock<ConfigurationService>();
+  let logger = mock<LoggerService>();
+  let whois = mock<MarketplaceWhoIsService>();
 
   const mockConfig = (overrides: { ciCloudUrl?: string; ciHubApiKey?: string | null } = {}) => {
     configurationService.get.mockImplementation((key: string) => {
@@ -31,8 +35,12 @@ describe('RegistryService', () => {
   };
 
   beforeEach(async () => {
+    whois = mock<MarketplaceWhoIsService>();
+    whois.deviceOrganizationId.mockResolvedValue(null);
+    logger = mock<LoggerService>();
+
     const moduleRef = await Test.createTestingModule({
-      providers: [RegistryService],
+      providers: [RegistryService, { provide: MarketplaceWhoIsService, useValue: whois }, { provide: LoggerService, useValue: logger }],
     })
       .useMocker(mock)
       .compile();
@@ -71,6 +79,32 @@ describe('RegistryService', () => {
         timeout: REGISTRY_HTTP_TIMEOUT_MS,
         headers: { Authorization: `Bearer ${PULL_TOKEN}` },
       });
+    });
+
+    it("names this Hub's organization in the body of the token request", async () => {
+      whois.deviceOrganizationId.mockResolvedValue('org-of-this-hub');
+      mockPairedHub();
+      httpService.get.mockReturnValue(ok({ tags: ['1.1.0'] }));
+
+      await registryService.getLatestVersion('ci-hub');
+
+      expect(httpService.post).toHaveBeenCalledWith(`${PORTAL}/api/devices/registry-token`, { organizationId: 'org-of-this-hub' }, expect.anything());
+    });
+
+    it('keeps the token when the organization changes, since the Hub stack listing token names none', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-08-24T00:00:00Z'));
+      whois.deviceOrganizationId.mockResolvedValue('org-one');
+      mockPairedHub();
+      httpService.get.mockReturnValue(ok({ tags: ['1.1.0'] }));
+
+      await registryService.getLatestVersion('ci-hub');
+      whois.deviceOrganizationId.mockResolvedValue('org-two');
+      vi.advanceTimersByTime(11 * 60 * 1000);
+      await registryService.getLatestVersion('ci-hub');
+
+      expect(httpService.post).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
     });
 
     it('reuses a minted Bearer after the tags cache expires', async () => {

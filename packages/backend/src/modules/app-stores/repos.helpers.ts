@@ -7,11 +7,13 @@ import { describeNetworkError } from '@/common/helpers/network-error';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import {
   PORTAL_HTTP_ERROR_CODE,
   PORTAL_STORE_LISTING_TIMEOUT_MS,
   type PortalRequestErrorCode,
   portalErrorCodeFor,
+  portalOrganizationRefusal,
 } from '@/core/portal/portal.constants';
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import axios, { type AxiosHeaderValue, type AxiosRequestConfig } from 'axios';
@@ -22,8 +24,9 @@ import { buildCatalogSnapshotIndex, catalogSnapshotIndexPath, isSafeCatalogSlug 
 
 /**
  * Outcome of a repo or Portal operation. On failure `message` is either a translation key the
- * caller may show as-is (Portal 401/402/403) or the plain reason, and `errorCode` names the cause
- * when the operation was a Portal request so callers do not have to parse the message.
+ * caller may show as-is (Portal 401/402/403, or a refusal about the organization) or the plain
+ * reason, and `errorCode` names the cause when the operation was a Portal request so callers do
+ * not have to parse the message.
  */
 export type RepoOperationResult = { success: true; message: string } | { success: false; message: string; errorCode?: PortalRequestErrorCode };
 
@@ -39,6 +42,7 @@ export class ReposHelpers {
     private readonly configuration: ConfigurationService,
     private readonly filesystem: FilesystemService,
     @Inject(forwardRef(() => RegistrationService)) private readonly registrationService: RegistrationService,
+    private readonly whois: MarketplaceWhoIsService,
   ) {}
 
   /**
@@ -609,12 +613,19 @@ export class ReposHelpers {
         headers.Authorization = `Bearer ${ciHubApiKey}`;
         headers['x-device-key'] = ciHubApiKey;
       }
-      const response = await axios.get<{ files?: Record<string, string> }>(`${repoUrl}/store/${appSlug}/install`, {
+      const organizationId = await this.whois.deviceOrganizationId();
+      const response = await axios.get<{ files?: Record<string, string>; code?: unknown }>(`${repoUrl}/store/${appSlug}/install`, {
         timeout: 20_000,
         validateStatus: () => true,
         headers,
+        ...(organizationId ? { params: { organizationId } } : {}),
       });
       if (response.status < 200 || response.status >= 300) {
+        // Ahead of the plain 403 below: this one says what to do about it.
+        const organizationRefusal = portalOrganizationRefusal(response.status, response.data?.code);
+        if (organizationRefusal) {
+          return { success: false, message: organizationRefusal.messageKey };
+        }
         if (response.status === 402) {
           return { success: false, message: 'APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED' };
         }

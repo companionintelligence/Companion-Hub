@@ -57,7 +57,9 @@ Two different routes share the `/api/store/:id/install` path:
 | `POST` | Portal session (person in the store UI) | `sessionMiddleware` plus organization membership over the named device | Portal **pushes** an install command to that Hub. Missing `install` in `can` is 403 `GRANT_DENIED` **before** ASK_ADMIN / Checkout. Owner/admin may pay; members of an unpaid org get `ASK_ADMIN`. An existing org `app_entitlement` skips payment. |
 | `GET` | Hub (`downloadAppFiles`) | `deviceAuthMiddleware` (`x-device-key`) — [CI-Portal#634](https://github.com/companionintelligence/CI-Portal/pull/634) | Hub **pulls** the install bundle. Free apps (`priceModel === 'free'` only) succeed for a paired device. Paid apps need an **active org entitlement** for an org that device is registered to — not a device-scoped `store_transaction`. |
 
-`GET /api/entitlements/check?appId=` is the same device-key till, used by Hub's local cache. It is not a Hub-trusted claim: Portal re-checks on GET install and on registry mint.
+`GET /api/entitlements/check?appId=&organizationId=` is the same device-key till, used by Hub's local cache. It is not a Hub-trusted claim: Portal re-checks on GET install and on registry mint.
+
+Hub names its organization on the check, the install bundle (query string) and the registry token (JSON body). The name settles which organization is asking and proves nothing. Portal reads it only for a device tied between organizations on its last pairing, and only a member of the tied set is honoured: a tie with no name answers `409 ORGANIZATION_REQUIRED` and a name outside it `403 DEVICE_NOT_IN_ORGANIZATION`. A device in one organization is answered for that organization whatever the name says, and a Portal that predates this ignores the name. Hub caches neither refusal as "not entitled": install and update stop with a message saying how to repair it, and Start keeps the unreachable policy.
 
 ### Registry tokens
 

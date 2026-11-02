@@ -26,6 +26,21 @@ export const PORTAL_HTTP_ERROR_CODE = 'portal_http_error';
 export type PortalRequestErrorCode = typeof PORTAL_TIMEOUT_CODE | typeof PORTAL_UNREACHABLE_CODE | typeof PORTAL_HTTP_ERROR_CODE;
 
 /**
+ * Portal's answers on the entitlement check and the install bundle when it can't tell which
+ * organization this Hub is asking for: the Hub named none on a device tied between two, or named one
+ * outside the tie. Portal never read a grant, so neither says anything about payment. The code has to
+ * match too: a 403 or 409 from something in front of Portal carries none.
+ */
+const PORTAL_ORGANIZATION_REFUSALS = [
+  { status: 409, code: 'ORGANIZATION_REQUIRED', messageKey: 'APP_INSTALL_PORTAL_ORGANIZATION_REQUIRED' },
+  { status: 403, code: 'DEVICE_NOT_IN_ORGANIZATION', messageKey: 'APP_INSTALL_PORTAL_DEVICE_NOT_IN_ORGANIZATION' },
+] as const;
+
+export function portalOrganizationRefusal(status: number | undefined, code: unknown) {
+  return PORTAL_ORGANIZATION_REFUSALS.find((refusal) => refusal.status === status && refusal.code === code);
+}
+
+/**
  * Whether an axios error is the client's own `timeout` elapsing — reported as `ECONNABORTED` —
  * or a connection that never formed. A connect that ran out of time at the socket arrives as
  * `ETIMEDOUT` on the attempt and is the second kind: no request was ever sent.

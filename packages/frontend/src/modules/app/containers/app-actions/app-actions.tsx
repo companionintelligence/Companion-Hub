@@ -264,7 +264,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   // The same for an update: the Hub stops it at its next safe point and rolls it back.
   const [isCancellingUpdate, setIsCancellingUpdate] = useState(false);
 
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const { architecture } = useAppContext();
   const { setOptimisticStatus } = useAppStatus();
@@ -690,7 +690,10 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       ? t('APP_ERROR_ROCM_KFD_MISSING')
       : installError?.errorCode === 'network_overlap'
         ? t('APP_ERROR_NETWORK_OVERLAP')
-        : installError?.message;
+        : // `install_error` carries a translation key for a refusal (`describePortalBundleFailure`) and plain text for most other failures.
+          installError?.message && i18n.exists(installError.message)
+          ? t(installError.message)
+          : installError?.message;
   const installErrorSettingsPath =
     installError?.settingsPath ?? (installError?.errorCode === 'rocm_kfd_missing' ? '/settings?tab=ai&section=rocm' : undefined);
 
