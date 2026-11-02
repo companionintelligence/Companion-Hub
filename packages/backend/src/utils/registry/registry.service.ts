@@ -126,9 +126,9 @@ export class RegistryService {
    * (CI-Portal#634).
    *
    * The body names this Hub's organization, as the other paid app requests do. Portal only reads the
-   * name alongside an `appId`, and this asks for none: the answer is the listing token for the Hub
-   * stack, which names the device and no organization. So the cache isn't keyed on organization: the
-   * same token holds in any of them. A caller that asks for an app's token one day needs its own key.
+   * name alongside an `appId`. This asks for none: the answer is the listing token for the Hub stack,
+   * which names the device and no organization. So the cache isn't keyed on organization: the same
+   * token holds in any of them. A caller that asks for an app's token one day needs its own key.
    */
   private async getDeviceRegistryToken(base: string): Promise<string | null> {
     const deviceKey = this.configuration.get('ciHubApiKey');

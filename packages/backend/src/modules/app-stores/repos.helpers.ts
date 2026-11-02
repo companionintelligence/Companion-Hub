@@ -25,8 +25,8 @@ import { buildCatalogSnapshotIndex, catalogSnapshotIndexPath, isSafeCatalogSlug 
 /**
  * Outcome of a repo or Portal operation. On failure `message` is either a translation key the
  * caller may show as-is (Portal 401/402/403, or a refusal about the organization) or the plain
- * reason, and `errorCode` names the cause when the operation was a Portal request so callers do
- * not have to parse the message.
+ * reason. `errorCode` names the cause when the operation was a Portal request so callers do not
+ * have to parse the message.
  */
 export type RepoOperationResult = { success: true; message: string } | { success: false; message: string; errorCode?: PortalRequestErrorCode };
 

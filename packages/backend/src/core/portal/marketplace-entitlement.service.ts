@@ -106,9 +106,9 @@ export class MarketplaceEntitlementService {
       /*
        * Portal couldn't tell which organization this Hub is asking for, so it never looked at a grant.
        * That is no entitlement decision and stays out of the cache. Install and update refuse even on
-       * a fresh "entitled" row: that row answers for an outage, and Portal is up and saying it can't
-       * place this Hub. Starting an app already on disk needs nothing from Portal, so it gets the
-       * unreachable policy, as for a rejected device key above.
+       * a fresh "entitled" row: that row answers for an outage. Portal is up and saying it can't place
+       * this Hub. Starting an app already on disk needs nothing from Portal, so it gets the unreachable
+       * policy, as for a rejected device key above.
        */
       this.logger.warn(`Portal could not place this Hub in an organization while checking ${appUrn}: HTTP ${result.status} ${result.code}`);
 

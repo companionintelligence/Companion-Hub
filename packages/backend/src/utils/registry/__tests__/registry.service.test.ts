@@ -5,7 +5,7 @@ import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service
 import { HttpService } from '@nestjs/axios';
 import { Test } from '@nestjs/testing';
 import { of, throwError } from 'rxjs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 
 const PORTAL = 'https://portal.ci.computer';
@@ -51,6 +51,10 @@ describe('RegistryService', () => {
     httpService.get.mockReset();
     httpService.post.mockReset();
     configurationService.get.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   describe('getTags / getTagsSince', () => {
@@ -104,7 +108,6 @@ describe('RegistryService', () => {
       await registryService.getLatestVersion('ci-hub');
 
       expect(httpService.post).toHaveBeenCalledTimes(1);
-      vi.useRealTimers();
     });
 
     it('reuses a minted Bearer after the tags cache expires', async () => {
@@ -119,7 +122,6 @@ describe('RegistryService', () => {
 
       expect(httpService.post).toHaveBeenCalledTimes(1);
       expect(httpService.get).toHaveBeenCalledTimes(2);
-      vi.useRealTimers();
     });
 
     it('should return empty array when no newer tags exist', async () => {

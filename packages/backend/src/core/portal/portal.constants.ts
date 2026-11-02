@@ -36,7 +36,7 @@ const PORTAL_ORGANIZATION_REFUSALS = [
   { status: 403, code: 'DEVICE_NOT_IN_ORGANIZATION', messageKey: 'APP_INSTALL_PORTAL_DEVICE_NOT_IN_ORGANIZATION' },
 ] as const;
 
-export function portalOrganizationRefusal(status: number | undefined, code: unknown) {
+export function portalOrganizationRefusal(status: number, code: unknown) {
   return PORTAL_ORGANIZATION_REFUSALS.find((refusal) => refusal.status === status && refusal.code === code);
 }
 

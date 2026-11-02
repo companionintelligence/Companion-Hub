@@ -76,7 +76,7 @@ describe('MarketplaceEntitlementService', () => {
       expect(portal.checkAppEntitlement).toHaveBeenCalledWith('immich', ORGANIZATION_ID);
     });
 
-    it('names nothing when this Hub could not learn its organization, and a device in one organization still gets its answer', async () => {
+    it('names nothing when this Hub could not learn its organization while a device in one organization still gets its answer', async () => {
       whois.deviceOrganizationId.mockResolvedValue(null);
       portal.checkAppEntitlement.mockResolvedValue({ status: 200, entitled: true, reason: 'org_entitled' });
 
@@ -85,7 +85,7 @@ describe('MarketplaceEntitlementService', () => {
       expect(portal.checkAppEntitlement).toHaveBeenCalledWith('immich', null);
     });
 
-    it('reads a 402 for the named organization as payment needed, and keeps it', async () => {
+    it('reads a 402 for the named organization as payment needed and keeps it', async () => {
       portal.checkAppEntitlement.mockResolvedValue({
         status: 402,
         entitled: false,
@@ -102,8 +102,8 @@ describe('MarketplaceEntitlementService', () => {
   });
 
   describe.each([
-    { status: 409, code: 'ORGANIZATION_REQUIRED', key: 'APP_INSTALL_PORTAL_ORGANIZATION_REQUIRED', error: 'name the one you mean' },
-    { status: 403, code: 'DEVICE_NOT_IN_ORGANIZATION', key: 'APP_INSTALL_PORTAL_DEVICE_NOT_IN_ORGANIZATION', error: 'not in that organization' },
+    { status: 409, code: 'ORGANIZATION_REQUIRED', key: 'APP_INSTALL_PORTAL_ORGANIZATION_REQUIRED' },
+    { status: 403, code: 'DEVICE_NOT_IN_ORGANIZATION', key: 'APP_INSTALL_PORTAL_DEVICE_NOT_IN_ORGANIZATION' },
   ])('Portal answering $status $code, which is about the organization and not about payment', ({ status, code, key }) => {
     const row = (entitled: boolean, ageMs = 0) => ({
       appUrn: APP_URN,
@@ -140,7 +140,7 @@ describe('MarketplaceEntitlementService', () => {
       await expect(service.assertForStart(APP_URN)).resolves.toBeUndefined();
     });
 
-    it('starts an installed app on an expired "not entitled" row, and leaves the row alone', async () => {
+    it('starts an installed app on an expired "not entitled" row and leaves the row alone', async () => {
       const expired = row(false, ENTITLEMENT_CACHE_TTL_MS + 1000);
       cacheRows = [expired];
 

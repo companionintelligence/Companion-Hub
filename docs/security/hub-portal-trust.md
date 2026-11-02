@@ -59,7 +59,7 @@ Two different routes share the `/api/store/:id/install` path:
 
 `GET /api/entitlements/check?appId=&organizationId=` is the same device-key till, used by Hub's local cache. It is not a Hub-trusted claim: Portal re-checks on GET install and on registry mint.
 
-Hub names its organization on the check, the install bundle (query string) and the registry token (JSON body). The name settles which organization is asking and proves nothing. Portal reads it only for a device tied between organizations on its last pairing, and only a member of the tied set is honoured: a tie with no name answers `409 ORGANIZATION_REQUIRED` and a name outside it `403 DEVICE_NOT_IN_ORGANIZATION`. A device in one organization is answered for that organization whatever the name says, and a Portal that predates this ignores the name. Hub caches neither refusal as "not entitled": install and update stop with a message saying how to repair it, and Start keeps the unreachable policy.
+Hub names its organization on the check, the install bundle (query string) and the registry token (JSON body). The name settles which organization is asking and proves nothing. Portal reads it only for a device tied between organizations on its last pairing, and only a member of the tied set is honoured: a tie with no name answers `409 ORGANIZATION_REQUIRED` and a name outside it `403 DEVICE_NOT_IN_ORGANIZATION`. A device in one organization is answered for that organization whatever the name says. A Portal that predates this ignores the name. Hub caches neither refusal as "not entitled": install and update stop with a message saying how to repair it while Start keeps the unreachable policy.
 
 ### Registry tokens
 
@@ -67,7 +67,7 @@ Hub names its organization on the check, the install bundle (query string) and t
 
 | Body | JWT |
 |---|---|
-| none | Pull-only for `ci-hub` (Hub stack listing) |
+| none, or no `appId` (Hub sends only `organizationId`) | Pull-only for `ci-hub` (Hub stack listing) |
 | `{ appId }` | Pull-only `repos[]` from that app's compose, after an org entitlement check |
 
 Registry `/v2` accepts `payload.repos` (array) or legacy `payload.repo` (string). Tokens without write scope cannot PUT. Repos with a `docker/<repo>/public` marker are readable **without** a JWT. Portal refuses to write those markers for any app whose `priceModel` is not `free` (`PAID_APP_NOT_PUBLIC`).
@@ -99,13 +99,14 @@ Assume the operator controls the appliance: they can patch Hub, skip local check
 
 ## Hub cache (#722 / #1212)
 
-`MarketplaceEntitlementService` caches Portal `/api/entitlements/check` for 24h.
+`MarketplaceEntitlementService` caches Portal `/api/entitlements/check` for 24h. The cache has no organization column, so a reset or a pair into another organization empties it.
 
 - **Install / update:** fail closed if Portal is unreachable and there is no fresh entitled cache.
 - **Start / restart:** best-effort so an already-installed app can come up when Portal is down, unless a fresh cache says not entitled. A restart a person or MCP key asks for shares Start's policy, checked before the status changes. The Hub's own restarts (credential rotation, config, inference, custom-domain) are not gated, because a refused one leaves the app running on revoked credentials.
 - **404 / free:** skip (local or unsigned apps still run).
 - **402:** `APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED`.
 - **401:** install and update refuse with the existing unauthorized string. Start and restart use the unreachable policy, because a rejected device key is not an entitlement decision. See [`portal-check-in.md`](../portal-check-in.md#entitlement-checks-on-start-and-restart).
+- **409 `ORGANIZATION_REQUIRED` / 403 `DEVICE_NOT_IN_ORGANIZATION`:** install and update refuse with a message saying how to repair it, even on a fresh entitled cache. Start and restart use the unreachable policy. Neither is cached.
 
 Skipping or forging this cache cannot download a paid bundle or mint an app registry JWT.
 
