@@ -446,15 +446,31 @@ pub fn restart_wedged_hub_container() -> Result<String, String> {
         "tray.watchdog",
         &format!("Restarting wedged {name} container (API unreachable while Docker reports up)."),
     );
-    let output = docker_command()
-        .args(["restart", name])
-        .output()
-        .map_err(|e| format!("Failed to restart {name}: {e}"))?;
-    if !output.status.success() {
+    let mut attempt = 1;
+    loop {
+        let output = docker_command()
+            .args(["restart", name])
+            .output()
+            .map_err(|e| format!("Failed to restart {name}: {e}"))?;
+        if output.status.success() {
+            return Ok(format!("Restarted {name}"));
+        }
         let stderr = String::from_utf8_lossy(&output.stderr);
+        // Removed after the check above: a start or stop is recreating it. Nothing is left to
+        // restart, and the next watchdog check finds the Hub stopped and starts it.
+        if is_docker_missing_resource_message(&stderr) {
+            return Ok(format!("{name} was already gone; nothing to restart"));
+        }
+        if attempt < WEDGED_RESTART_ATTEMPTS && is_transient_container_removal_failure(&stderr) {
+            attempt += 1;
+            std::thread::sleep(WEDGED_RESTART_RETRY_DELAY);
+            continue;
+        }
         return Err(format!("docker restart {name} failed: {stderr}"));
     }
-    Ok(format!("Restarted {name}"))
 }
+
+const WEDGED_RESTART_ATTEMPTS: u32 = 3;
+const WEDGED_RESTART_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 // ─── Desktop log reader ───────────────────────────────────────────────────────
