@@ -5,6 +5,7 @@ import { withMovedPort } from '../main-host-port';
 import type { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
+import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { SSEService } from '@/core/sse/sse.service';
@@ -594,6 +595,36 @@ describe('InstallAppCommand — pull policy', () => {
 
     expect(result).toMatchObject({ success: false, message: 'ghost keeps restarting (exit 1): bootstrap failed', serviceFailure });
     expect(result.success === false && result.errorDetail).toContain('bootstrap failed');
+  });
+
+  it('reports post-start diagnostics without app-owned log text', async () => {
+    vi.useFakeTimers();
+    try {
+      const privateLog = 'DATABASE_URL=private-value';
+      dockerReadFacade.diagnoseAppContainers.mockResolvedValue({
+        unhealthy: [{ name: 'ghost-1', state: 'restarting', logs: privateLog }],
+        healthy: [],
+      });
+      const errorReportingService = { reportAppFailure: vi.fn() };
+      const moduleRef = (command as any).moduleRef;
+      const originalGet = moduleRef.get.getMockImplementation() as (token: unknown) => unknown;
+      moduleRef.get.mockImplementation((token: unknown) => (token === ErrorReportingService ? errorReportingService : originalGet(token)));
+
+      const result = await command.execute(appUrn, {});
+      expect(result.success).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
+        appUrn,
+        phase: 'post_start',
+        message: 'ghost-1 (restarting)',
+        containers: [{ name: 'ghost-1', state: 'restarting' }],
+      });
+      expect(JSON.stringify(errorReportingService.reportAppFailure.mock.calls)).not.toContain(privateLog);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // ── cancellation ──────────────────────────────────────────────────────────

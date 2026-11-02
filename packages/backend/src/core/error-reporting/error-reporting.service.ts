@@ -146,6 +146,7 @@ const ERROR_CODE_CLASSIFICATIONS: Readonly<Record<string, AppFailureClassificati
   // The report's text ends in the app's own log, which can say anything. A crash that logs "Permission denied"
   // would read as the device's, and one that logs a bind on 443 would not be captured at all.
   [APP_SERVICE_FAILED_CODE]: { category: 'app_runtime', errorClass: 'container-exited' },
+  container_crash_loop: { category: 'app_runtime', errorClass: 'container-exited' },
   // A Portal request that got no answer is the device's path to Portal or a host too starved to
   // drive a socket, not Portal (#1912: one hub timed out against Portal, Cloudflare and its own
   // Postgres in the same minute). Both kinds share a class so one bad hub is one issue.

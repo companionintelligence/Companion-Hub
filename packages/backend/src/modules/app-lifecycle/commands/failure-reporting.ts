@@ -1,6 +1,7 @@
 import { type AppFailurePhase, ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { ModuleRef } from '@nestjs/core';
+import { describeAppServiceFailure } from '@/modules/docker/managed-app-containers';
 import {
   type AppCommandFailureResult,
   AppLifecycleError,
@@ -16,7 +17,10 @@ import {
  */
 export async function reportAndTranslateAppError(moduleRef: ModuleRef, err: unknown, appId: string, event: string): Promise<AppCommandFailureResult> {
   if (err instanceof AppLifecycleError) {
-    reportCommandFailure(moduleRef, appId, event, err.errorDetail ?? err.message, err.errorCode);
+    const telemetryMessage = err.serviceFailure
+      ? describeAppServiceFailure({ ...err.serviceFailure, logLine: undefined })
+      : (err.errorDetail ?? err.message);
+    reportCommandFailure(moduleRef, appId, event, telemetryMessage, err.errorCode);
     return {
       success: false,
       message: err.message,

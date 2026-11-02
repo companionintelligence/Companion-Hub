@@ -148,9 +148,9 @@ export class TelemetryFeedbackService implements OnApplicationShutdown {
         this.errorReporting.reportAppFailure({
           appUrn,
           phase: 'crash',
-          message: errorMsg,
+          message: `Container ${params.containerName || params.containerId || 'unknown'} is crash looping (restarts: ${restartCount}, exit code: ${params.exitCode ?? 'unknown'})`,
           errorCode: 'container_crash_loop',
-          containers: params.containerName ? [{ name: params.containerName, state: 'restarting', logs: params.logs }] : undefined,
+          containers: params.containerName ? [{ name: params.containerName, state: 'restarting' }] : undefined,
         });
       } catch (err) {
         this.logger.warn(`Failed to report crash loop to ErrorReportingService: ${err}`);
@@ -212,9 +212,9 @@ export class TelemetryFeedbackService implements OnApplicationShutdown {
         this.errorReporting.reportAppFailure({
           appUrn: params.appUrn,
           phase: 'install',
-          message: errorMessage,
+          message: 'App install failure',
           errorCode: params.errorCode,
-          containers: params.containers,
+          containers: params.containers?.map(({ name, state }) => ({ name, state })),
         });
       } catch (err) {
         this.logger.warn(`Failed to report install failure to ErrorReportingService: ${err}`);

@@ -190,6 +190,23 @@ describe('ErrorReportingService', () => {
     expect(lastScope().setFingerprint).toHaveBeenCalledWith(['app-failure', 'start', 'container-exited']);
   });
 
+  it('classifies a structured crash-loop report without needing its app log text', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'some-app:ci-marketplace',
+      phase: 'crash',
+      message: 'Container app-1 is crash looping (restarts: 5, exit code: 137)',
+      errorCode: 'container_crash_loop',
+    });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'warning');
+    expect(lastScope().setFingerprint).toHaveBeenCalledWith(['app-failure', 'crash', 'container-exited']);
+  });
+
   it('groups a manifest a compose file cannot turn into containers as an app-config error', () => {
     const configuration = {
       get: vi.fn(() => ({ allowErrorMonitoring: true })),

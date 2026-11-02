@@ -458,15 +458,16 @@ export class InstallAppCommand extends AppLifecycleCommand {
           }
           const diagResults = await dockerReadFacade.diagnoseAppContainers(appUrn);
           if (diagResults.unhealthy.length > 0) {
-            const errorSummary = diagResults.unhealthy.map((c) => `${c.name} (${c.state}): ${c.logs}`).join('\n');
-            logger.warn(`[AppDiag] App ${appUrn} has unhealthy containers:\n${errorSummary}`);
+            const errorSummary = diagResults.unhealthy.map((c) => `${c.name} (${c.state})`).join('\n');
+            const localDetails = diagResults.unhealthy.map((c) => `${c.name} (${c.state}): ${c.logs}`).join('\n');
+            logger.warn(`[AppDiag] App ${appUrn} has unhealthy containers:\n${localDetails}`);
 
             const errorReportingService = this.moduleRef.get(ErrorReportingService, { strict: false });
             errorReportingService?.reportAppFailure({
               appUrn,
               phase: 'post_start',
               message: errorSummary,
-              containers: diagResults.unhealthy,
+              containers: diagResults.unhealthy.map(({ name, state }) => ({ name, state })),
             });
           } else {
             logger.info(`[AppDiag] All containers healthy for ${appUrn}`);

@@ -658,7 +658,7 @@ describe('AppStatusSyncService', () => {
     expect(errorReportingService.captureWarning).not.toHaveBeenCalled();
   });
 
-  it('attaches container logs when reporting a running → stopped crash', async () => {
+  it('reports a running → stopped crash without sending app logs to telemetry', async () => {
     appRepository.getApps.mockResolvedValue([
       {
         id: 9,
@@ -686,9 +686,10 @@ describe('AppStatusSyncService', () => {
     expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
       appUrn: 'remotion-studio:ci-marketplace',
       phase: 'crash',
-      message: expect.stringContaining('Error: out of memory'),
-      containers: [{ name: 'remotion-studio_ci-marketplace-1', state: 'Exited (1)', logs: 'Error: out of memory' }],
+      message: 'App transitioned from running to stopped during status sync\nremotion-studio_ci-marketplace-1 (Exited (1))',
+      containers: [{ name: 'remotion-studio_ci-marketplace-1', state: 'Exited (1)' }],
     });
+    expect(JSON.stringify(errorReportingService.reportAppFailure.mock.calls)).not.toContain('Error: out of memory');
   });
 
   describe('app containers without an app row', () => {

@@ -396,9 +396,9 @@ export class AppStatusSyncService {
       try {
         const diag = await this.dockerReadFacade.diagnoseAppContainers(appUrn);
         if (diag.unhealthy.length > 0) {
-          containers = diag.unhealthy;
-          const logSummary = diag.unhealthy.map((container) => `${container.name} (${container.state}): ${container.logs || '(no logs)'}`).join('\n');
-          message = `${message}\n${logSummary}`;
+          containers = diag.unhealthy.map(({ name, state }) => ({ name, state }));
+          const containerSummary = diag.unhealthy.map((container) => `${container.name} (${container.state})`).join('\n');
+          message = `${message}\n${containerSummary}`;
         }
       } catch (diagError) {
         this.logger.warn(`Failed to capture container logs for crashed app ${appUrn}: ${String(diagError)}`);
