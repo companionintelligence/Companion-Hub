@@ -858,6 +858,50 @@ describe('AppActions', () => {
    * account with no linked Portal identity also gets start, stop and restart. Nothing is shown that the
    * Hub would refuse.
    */
+  describe.each(['running', 'stopped'] as const)('offering an update on a %s app', (status) => {
+    const UPDATE = 'icon-action-common_update';
+    const IGNORE = 'icon-action-app_action_ignore_version';
+    const UNIGNORE = 'icon-action-app_action_unignore_version';
+    const shown = () => [UPDATE, IGNORE, UNIGNORE].filter((id) => screen.queryByTestId(id));
+
+    const renderOffer = (latest: AppMetadata, ignoredVersion?: number) =>
+      render(
+        <MemoryRouter>
+          <AppActions
+            app={makeApp({ status, version: 8, ignoredVersion })}
+            metadata={latest}
+            info={makeInfo({ version: '2026.10.28', cihub_app_version: 8 })}
+            urlAvailability={idleAvailability}
+          />
+        </MemoryRouter>,
+      );
+
+    it('offers nothing when the app is up to date', () => {
+      renderOffer({ latestVersion: 8, latestDockerVersion: '2026.10.28' });
+      expect(shown()).toEqual([]);
+    });
+
+    it('offers a newer version whose counter did not change, without an ignore that could not hide it', () => {
+      renderOffer({ latestVersion: 8, latestDockerVersion: '2026.11.2' });
+      expect(shown()).toEqual([UPDATE]);
+    });
+
+    it('offers a raised counter and lets it be ignored', () => {
+      renderOffer({ latestVersion: 9, latestDockerVersion: '2026.10.28' });
+      expect(shown()).toEqual([UPDATE, IGNORE]);
+    });
+
+    it('hides an ignored counter and offers to stop ignoring it', () => {
+      renderOffer({ latestVersion: 9, latestDockerVersion: '2026.10.28' }, 9);
+      expect(shown()).toEqual([UNIGNORE]);
+    });
+
+    it('still offers a newer version beside an ignored counter', () => {
+      renderOffer({ latestVersion: 9, latestDockerVersion: '2026.11.2' }, 9);
+      expect(shown()).toEqual([UPDATE, UNIGNORE]);
+    });
+  });
+
   describe('the actions a person may use', () => {
     const customInfo = makeInfo({ urn: 'whoami-check:_user', id: 'whoami-check', no_gui: false });
     const renderCustom = (status: AppDetails['status'], allowedActions?: readonly string[]) =>

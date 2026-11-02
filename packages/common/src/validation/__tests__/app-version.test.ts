@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compareAppVersions, hasUpdateAvailable, parseAppVersion } from './app-version';
+import { compareAppVersions, hasUpdateAvailable, parseAppVersion } from '../app-version';
 
 describe('parseAppVersion', () => {
   it('parses date-shaped release tags, dot-separated integers', () => {

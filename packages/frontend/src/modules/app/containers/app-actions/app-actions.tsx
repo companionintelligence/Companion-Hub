@@ -48,6 +48,7 @@ import { invalidateAppQueries, type AppInstallErrorCache } from '../../helpers/a
 import { appServiceFailureText } from '../../helpers/app-service-failure';
 import { type AppUrn, servedExposureMode } from '@ci-hub/common/types';
 import type { UpdatePhase } from '@ci-hub/common/schemas';
+import { hasUpdateAvailable } from '@ci-hub/common/validation';
 import { openExternal } from '@/lib/helpers/open-external';
 import { canOpenFolderInFileExplorer, openPathInFileExplorer } from '@/lib/helpers/open-folder';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
@@ -399,7 +400,17 @@ export const AppActions = ({
   }, [app?.status, appSlug, storeId, installDisclosure.open, archSupported, showWrongArchitectureToast]);
 
   const versionIsIgnored = app?.ignoredVersion === metadata?.latestVersion;
-  const updateAvailable = Number(app?.version ?? 0) < Number(metadata?.latestVersion || 0);
+  // The one definition the tile's badge and the update-all sweep use, so a newer version with an
+  // unchanged counter can be acted on here too.
+  const updateAvailable = hasUpdateAvailable({
+    installedCounter: app?.version ?? 0,
+    latestCounter: metadata?.latestVersion,
+    ignoredCounter: app?.ignoredVersion,
+    installedVersion: info.version,
+    latestVersion: metadata?.latestDockerVersion,
+  });
+  // Ignoring is recorded against the counter only, so it can hide nothing but a counter bump.
+  const canIgnoreVersion = Number(app?.version ?? 0) < Number(metadata?.latestVersion || 0) && !versionIsIgnored;
 
   const startMutation = useMutation({
     ...startAppMutation(),
@@ -919,7 +930,7 @@ export const AppActions = ({
         );
       }
       if (openDataFolderButton) secondaryActions.push(openDataFolderButton);
-      if (updateAvailable && !versionIsIgnored) {
+      if (updateAvailable) {
         secondaryActions.push(
           <IconActionButton
             key="update"
@@ -927,6 +938,10 @@ export const AppActions = ({
             label={t('COMMON_UPDATE')}
             onClick={() => navigate(`${location.pathname}/update`, { state: { from: location.pathname } })}
           />,
+        );
+      }
+      if (canIgnoreVersion) {
+        secondaryActions.push(
           <IconActionButton
             key="ignore-version"
             icon={Ban}
@@ -971,7 +986,7 @@ export const AppActions = ({
       const openArea = renderOpenButtonArea();
       if (openArea) buttons.push(openArea);
 
-      if (updateAvailable && !versionIsIgnored) {
+      if (updateAvailable) {
         secondaryActions.push(
           <IconActionButton
             key="update"
@@ -979,6 +994,10 @@ export const AppActions = ({
             label={t('COMMON_UPDATE')}
             onClick={() => navigate(`${location.pathname}/update`, { state: { from: location.pathname } })}
           />,
+        );
+      }
+      if (canIgnoreVersion) {
+        secondaryActions.push(
           <IconActionButton
             key="ignore-version"
             icon={Ban}
