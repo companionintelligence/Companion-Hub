@@ -44,6 +44,7 @@ import { toAppCommandFailureResult } from './commands/app-lifecycle-errors';
 import type { CommandExecutionContext } from './commands/command';
 import { assertHostDevicesAvailable } from './commands/host-device-preflight';
 import { extractComposeImages } from './commands/install-app-command';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { toCheckResult, planImages, planPorts, planFormFields } from './planning/install-plan';
 import type { InstallPlan, InstallPlanChecks } from './planning/install-plan.types';
 import { buildComposePortRequests, buildMainPortRequest, type PortRequestInput } from './planning/port-requests';
@@ -1337,7 +1338,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       this.marketplaceService.getDockerComposeJson(appUrn),
     ]);
 
-    const images = composeJson.content ? await planImages(this.dockerService, extractComposeImages(composeJson.content)) : [];
+    const images = composeJson.content
+      ? await planImages(this.dockerService, extractComposeImages(composeJson.content, securityGrantsFor(appUrn)))
+      : [];
 
     // Parsed the same way `validateAppConfig`/`installApp` do; an invalid form still produces a
     // usable (if empty) basis here — `checks.config` is what reports the validation failure.
@@ -1351,7 +1354,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
     if (composeJson.content) {
       try {
-        portRequests.push(...buildComposePortRequests(composeJson.content));
+        portRequests.push(...buildComposePortRequests(composeJson.content, securityGrantsFor(appUrn)));
       } catch {
         // Malformed compose — already surfaced via `checks.config`/`images`; the port plan just omits extras.
       }
