@@ -242,6 +242,19 @@ describe('AppCameUpWatch', () => {
     expect(verdict.elapsedMs).toBeLessThanOrEqual(APP_CAME_UP_TIMING.upAfterMs);
   });
 
+  it('does not start the run of a container that crashed over again at a look Docker could not inspect', () => {
+    const verdict = watch((elapsedMs) => {
+      if (elapsedMs < 3000) {
+        return [container({ service: 'api', state: 'restarting', exitCode: 1, restartCount: 1, startedAtMs: START - 1000 })];
+      }
+      const unanswered = elapsedMs % 3000 === 0;
+      return [container({ service: 'api', state: 'running', restartCount: unanswered ? null : 2, startedAtMs: unanswered ? null : START + 4000 })];
+    });
+
+    expect(verdict.outcome).toBe('up');
+    expect(verdict.elapsedMs).toBe(4000 + APP_CAME_UP_TIMING.upAfterCrashMs);
+  });
+
   it('wants a crashed container seen running for its whole window when the Docker clock runs behind the Hub', () => {
     const behind = START - 3_600_000;
     const verdict = watch((elapsedMs) =>
