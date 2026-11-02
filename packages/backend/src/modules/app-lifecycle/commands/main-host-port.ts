@@ -3,6 +3,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
 import { deriveAppBaseWsOrigin, parseAppBaseUrl } from '@/modules/apps/app.helpers';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { extractConflictingHostBinding } from '@/modules/network/docker-port-errors';
@@ -110,8 +111,6 @@ export async function writeMainHostPort(
   }
 }
 
-export type { HostPortMove };
-
 /**
  * A stored config as `writeMainHostPort` leaves it after `move`, with its keys sorted because the
  * database does not keep their order. Run on both sides, it tells settings saved during a command from
@@ -149,8 +148,9 @@ async function publishedMainPort(moduleRef: ModuleRef, appUrn: AppUrn): Promise<
  * Only the main port moves. A port from the manifest's `addPorts` is published as written, so a
  * conflict on one fails the install as before. The refused port counts as the main port when it is
  * the allocated one or the one the app publishes. Those differ on a Hub whose table fell behind a
- * saved port before saves kept it in step, or when another app holds the saved port in the table. The
- * move only ever takes a free port and gives up this app's own allocation, so no other app loses one.
+ * saved port before saves kept it in step, or when another app holds the saved port in the table. An
+ * app that doesn't publish its main port has no such port, so `APP_PORT` says nothing about a refusal.
+ * The move only ever takes a free port and gives up this app's own allocation, so no other app loses one.
  */
 export async function moveMainPortOffHostConflict(
   moduleRef: ModuleRef,
@@ -166,7 +166,10 @@ export async function moveMainPortOffHostConflict(
   if (!portManager || !conflict || conflict.protocol === 'udp') {
     return false;
   }
-  if ((await portManager.getMainPort(appUrn)) !== conflict.port && (await publishedMainPort(moduleRef, appUrn)) !== conflict.port) {
+  const refusedMainPort =
+    (await portManager.getMainPort(appUrn)) === conflict.port ||
+    (publishesHostPort(form) && (await publishedMainPort(moduleRef, appUrn)) === conflict.port);
+  if (!refusedMainPort) {
     return false;
   }
 

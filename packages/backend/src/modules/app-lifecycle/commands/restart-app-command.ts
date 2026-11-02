@@ -4,9 +4,10 @@ import { AppHelpers } from '@/modules/apps/app.helpers';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
+import type { HostPortMove } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { AppLifecycleCommand } from './command';
-import { type HostPortMove, hostPortMoveOf } from './main-host-port';
+import { hostPortMoveOf } from './main-host-port';
 
 export class RestartAppCommand extends AppLifecycleCommand {
   public async execute(appUrn: AppUrn, form: AppEventFormInput): Promise<{ success: boolean; message: string; movedHostPort?: HostPortMove }> {
@@ -15,6 +16,7 @@ export class RestartAppCommand extends AppLifecycleCommand {
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
     const appHelpers = this.moduleRef.get(AppHelpers, { strict: false });
     const traefikConfigService = this.moduleRef.get(TraefikConfigService, { strict: false });
+    const portOnRestart = form.port;
     const refusedHostPorts = new Set<number>();
 
     try {
@@ -75,10 +77,10 @@ export class RestartAppCommand extends AppLifecycleCommand {
 
       logger.info(`App ${appUrn} restarted`);
 
-      return { success: true, message: `App ${appUrn} restarted successfully`, movedHostPort: hostPortMoveOf(form, refusedHostPorts) };
+      return { success: true, message: `App ${appUrn} restarted successfully`, movedHostPort: hostPortMoveOf(form, refusedHostPorts, portOnRestart) };
     } catch (err) {
       // The row, config and app.env stay on a port the run moved to, whatever failed after the move.
-      return { ...(await this.handleAppError(err, appUrn, 'restart')), movedHostPort: hostPortMoveOf(form, refusedHostPorts) };
+      return { ...(await this.handleAppError(err, appUrn, 'restart')), movedHostPort: hostPortMoveOf(form, refusedHostPorts, portOnRestart) };
     }
   }
 }

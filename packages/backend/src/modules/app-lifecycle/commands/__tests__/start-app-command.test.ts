@@ -618,6 +618,18 @@ describe('StartAppCommand — pull policy', () => {
       expect(form.port).toBe(10001);
     });
 
+    // Only an `addPorts` mapping can hold that number on an app whose main service publishes nothing.
+    it('leaves an app that does not publish its main port where it is', async () => {
+      appEnv = ['APP_HOSTNAME=127.0.0.1', 'APP_PORT=18558', 'APP_URL=http://127.0.0.1:18558'].join('\n');
+      portManager.getMainPort.mockResolvedValue(10000);
+      refusals = [18558];
+
+      const result = await command.execute(appUrn, { port: 18558, openPort: false, exposureMode: 'cloudflare' });
+
+      expect(result).toMatchObject({ success: false });
+      expect(portManager.moveMainPort).not.toHaveBeenCalled();
+    });
+
     it('fails as before when the port Docker refused is not the main port', async () => {
       // An `addPorts` port from the manifest is published as written, so moving the main port would not help.
       refusals = [51820];

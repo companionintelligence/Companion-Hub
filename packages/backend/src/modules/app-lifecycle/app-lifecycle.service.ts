@@ -2,7 +2,7 @@ import { AppCommandDeadline, appEventsQueueTimeoutMs } from '@/common/helpers/ap
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import messages from '@ci-hub/common/i18n/translations/en.json';
-import type { SSE } from '@ci-hub/common/schemas';
+import type { HostPortMove, SSE } from '@ci-hub/common/schemas';
 import { isPortExposeApp, manifestDefaultsEdgeAuthOn } from '@ci-hub/common/schemas';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -46,9 +46,9 @@ import { assertHostDevicesAvailable } from './commands/host-device-preflight';
 import { extractComposeImages } from './commands/install-app-command';
 import { toCheckResult, planImages, planPorts, planFormFields } from './planning/install-plan';
 import type { InstallPlan, InstallPlanChecks } from './planning/install-plan.types';
-import { type HostPortMove, configAfterMove } from './commands/main-host-port';
+import { configAfterMove } from './commands/main-host-port';
 import { buildComposePortRequests, buildMainPortRequest, type PortRequestInput } from './planning/port-requests';
-import { PortManagerService } from '../network/port-manager.service';
+import { PortManagerService, isUniqueViolation } from '../network/port-manager.service';
 import { EnvUtils } from '../env/env.utils';
 import { appFormSchema } from './dto/app-lifecycle.dto';
 import { INSTALL_PIPELINE_MUTEX_KEY } from '@/common/constants';
@@ -1201,12 +1201,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             requestId,
             command: 'start',
             success: true,
+            movedHostPort,
             successOutcome: {
               status: 'running',
               event: 'start_success',
               clearPendingRestart: true,
               configAtDispatch: app.config,
-              movedHostPort,
               afterApply: async () => {
                 /*
                  * NOT GATED ON `isProduction`, and that is the fix.
@@ -1241,9 +1241,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             errorCode,
             errorDetail,
             settingsPath,
+            movedHostPort,
             failureOutcome: {
               status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
-              movedHostPort,
               event: 'start_error',
               notifyEvent: 'start_error',
               failurePhase: 'start',
@@ -1880,13 +1880,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         installRecord = { id: created.id, status: created.status, port: created.port, exposedLocal: created.exposedLocal };
         await this.claimCustomDomainIntent(created.id, parsedForm.customDomain);
       } catch (createError) {
-        const isUniqueViolation =
-          createError instanceof Error &&
-          (createError.message.includes('23505') ||
-            createError.message.includes('unique') ||
-            createError.message.includes('duplicate') ||
-            (createError as { code?: string }).code === '23505');
-        if (!isUniqueViolation) {
+        if (!isUniqueViolation(createError)) {
           throw createError;
         }
 
@@ -2229,12 +2223,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             requestId,
             command: 'restart',
             success: true,
+            movedHostPort,
             successOutcome: {
               status: 'running',
               event: 'restart_success',
               clearPendingRestart: true,
               configAtDispatch: app.config,
-              movedHostPort,
             },
           });
         } else {
@@ -2249,9 +2243,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             errorCode,
             errorDetail,
             settingsPath,
+            movedHostPort,
             failureOutcome: {
               status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
-              movedHostPort,
               event: 'restart_error',
               notifyEvent: 'restart_error',
               failurePhase: 'restart',
@@ -2313,12 +2307,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         requestId,
         command: 'start',
         success: true,
+        movedHostPort,
         successOutcome: {
           status: 'running',
           event: 'start_success',
           clearPendingRestart: true,
           configAtDispatch: app.config,
-          movedHostPort,
           afterApply: async () => {
             /*
              * NOT GATED ON `isProduction`, and that is the fix.
@@ -2356,9 +2350,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       errorCode,
       errorDetail,
       settingsPath,
+      movedHostPort,
       failureOutcome: {
         status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
-        movedHostPort,
         event: 'start_error',
         notifyEvent: 'start_error',
         failurePhase: 'start',
@@ -2418,12 +2412,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         requestId,
         command: 'restart',
         success: true,
+        movedHostPort,
         successOutcome: {
           status: 'running',
           event: 'restart_success',
           clearPendingRestart: true,
           configAtDispatch: app.config,
-          movedHostPort,
         },
       });
 
@@ -2441,9 +2435,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       errorCode,
       errorDetail,
       settingsPath,
+      movedHostPort,
       failureOutcome: {
         status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
-        movedHostPort,
         event: 'restart_error',
         notifyEvent: 'restart_error',
         failurePhase: 'restart',
@@ -3047,14 +3041,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Refuse a port the port manager gave another app. The check on the rows beside this one can't see
    * an `addPorts` mapping or the main port of an app that isn't publishing it right now. Either would
-   * fail that app's next start if this one took the port.
+   * fail that app's next start if this one took the port. Two allocations hold nothing a next start
+   * needs: one a removal could not give back, which names an app with no row, and a main allocation
+   * whose app has left that port, as an exposed port's save does until the next boot corrects the table.
    */
   private async refusePortAllocatedToAnotherApp(appUrn: AppUrn, port: number): Promise<void> {
     const holder = await this.moduleRef.get(PortManagerService, { strict: false })?.getPortHolder(port);
-    if (holder && holder.appUrn !== appUrn) {
-      const { appName } = extractAppUrn(holder.appUrn as AppUrn);
-      throw new TranslatableError('APP_ERROR_PORT_ALREADY_IN_USE', { port: port.toString(), id: appName }, HttpStatus.CONFLICT);
+    if (!holder || holder.appUrn === appUrn) {
+      return;
     }
+    const holderApp = await this.appRepository.getAppByUrn(holder.appUrn as AppUrn);
+    if (!holderApp || (holder.label === 'main' && holderApp.port !== port)) {
+      return;
+    }
+    const { appName } = extractAppUrn(holder.appUrn as AppUrn);
+    throw new TranslatableError('APP_ERROR_PORT_ALREADY_IN_USE', { port: port.toString(), id: appName }, HttpStatus.CONFLICT);
   }
 
   /**
@@ -3069,7 +3070,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
     try {
       if ((await this.moduleRef.get(PortManagerService, { strict: false })?.setMainPort(appUrn, port)) === false) {
-        this.logger.warn(`Port ${port} of ${appUrn} is allocated to another app, so its port allocation stays as it was`);
+        this.logger.warn(`Port ${port} of ${appUrn} is already allocated, so its main allocation stays as it was`);
       }
     } catch (error) {
       this.logger.warn(`Could not record port ${port} of ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
@@ -3636,6 +3637,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     errorCode?: string;
     errorDetail?: string;
     settingsPath?: string;
+    /** The host port the command moved the app off and onto, which the person is told about. If it then failed, the row stays on the new one. */
+    movedHostPort?: HostPortMove;
     successOutcome?: {
       status: AppStatus;
       event: AppOutcomeSseEvent;
@@ -3645,8 +3648,6 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
        * (while the app was starting, say) is still owed, so it is not cleared then.
        */
       configAtDispatch?: unknown;
-      /** The host port the command moved the app off and onto, which the person is told about. */
-      movedHostPort?: HostPortMove;
       afterApply?: () => Promise<void>;
     };
     failureOutcome?: {
@@ -3655,8 +3656,6 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       notifyEvent: string;
       failurePhase: AppFailurePhase;
       notifySeverity?: 'high' | 'info';
-      /** The host port the command moved the app off and onto before it failed. The row stays on the new one. */
-      movedHostPort?: HostPortMove;
     };
   }): Promise<boolean> {
     // The app stays claimed while the outcome is written: a command waiting for it (see
@@ -3671,7 +3670,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       try {
         const clearPendingRestart =
           params.successOutcome.clearPendingRestart &&
-          (await this.configUnchangedSince(params.appId, params.successOutcome.configAtDispatch, params.successOutcome.movedHostPort));
+          (await this.configUnchangedSince(params.appId, params.successOutcome.configAtDispatch, params.movedHostPort));
         await this.appRepository.updateAppById(params.appId, {
           status: params.successOutcome.status,
           ...(clearPendingRestart ? { pendingRestart: false } : {}),
@@ -3680,7 +3679,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           event: params.successOutcome.event,
           appUrn: params.appUrn,
           appStatus: params.successOutcome.status,
-          movedHostPort: params.successOutcome.movedHostPort,
+          movedHostPort: params.movedHostPort,
         });
       } finally {
         // Before `afterApply`, whose own restarts (a custom domain bound meanwhile) need the app.
@@ -3706,7 +3705,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         errorCode: params.errorCode,
         errorDetail: params.errorDetail,
         settingsPath: params.settingsPath,
-        movedHostPort: params.failureOutcome.movedHostPort,
+        movedHostPort: params.movedHostPort,
       });
       this.agentNotifyService?.notify(params.failureOutcome.notifyEvent, { appUrn: params.appUrn }, params.failureOutcome.notifySeverity ?? 'high');
       this.reportAppFailure(params.appUrn, params.failureOutcome.failurePhase, params.message ?? 'Unknown error', params.errorCode);
@@ -3720,7 +3719,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Whether the app's stored config is still the one a command was dispatched with. Settings saved
    * while a start ran were not in it, so the restart they asked for is still owed. A move rewrites the
-   * stored config itself, so its own rewrite doesn't count (`configAfterMove`).
+   * stored config itself, so its own rewrite doesn't count (`configAfterMove`). A port other than the one
+   * it moved to is not its rewrite: that is a save the app hasn't taken up.
    */
   private async configUnchangedSince(appId: number, configAtDispatch: unknown, move?: HostPortMove): Promise<boolean> {
     if (configAtDispatch === undefined) {
@@ -3729,8 +3729,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     try {
       const current = await this.appRepository.getAppById(appId);
+      if (!current) {
+        return true;
+      }
+      const storedPort = (current.config as { port?: unknown } | null)?.port;
+      if (move && storedPort !== undefined && storedPort !== move.to) {
+        return false;
+      }
       const comparable = (config: unknown) => JSON.stringify(move ? configAfterMove(config, move) : (config ?? null));
-      return !current || comparable(current.config) === comparable(configAtDispatch);
+      return comparable(current.config) === comparable(configAtDispatch);
     } catch {
       // Unknown: clear it, as before this check existed.
       return true;

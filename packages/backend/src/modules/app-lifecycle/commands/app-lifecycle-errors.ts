@@ -1,4 +1,4 @@
-import type { HostPortMove } from './main-host-port';
+import type { HostPortMove } from '@ci-hub/common/schemas';
 import { extractOverlapCidrsFromError, isDockerNetworkOverlapError } from '@/modules/network/docker-network-errors';
 
 export const ROCM_KFD_MISSING_CODE = 'rocm_kfd_missing';

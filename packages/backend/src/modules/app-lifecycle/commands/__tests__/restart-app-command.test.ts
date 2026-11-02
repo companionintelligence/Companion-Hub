@@ -283,6 +283,17 @@ describe('RestartAppCommand — pull policy', () => {
       expect(portManager.moveMainPort).toHaveBeenCalledExactlyOnceWith(appUrn, new Set([18558]));
     });
 
+    it('names the port the app was on when the port Docker refused was the older one in the table', async () => {
+      appEnv = ['APP_HOSTNAME=127.0.0.1', 'APP_PORT=18558', 'APP_URL=http://127.0.0.1:18558'].join('\n');
+      portManager.getMainPort.mockResolvedValue(10000);
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10001));
+      refusals = [10000];
+
+      const result = await command.execute(appUrn, { port: 18558 });
+
+      expect(result).toMatchObject({ success: true, movedHostPort: { from: 18558, to: 10001 } });
+    });
+
     it('reports no move when the app came back on its port', async () => {
       const result = await command.execute(appUrn, { port: 8080 });
 

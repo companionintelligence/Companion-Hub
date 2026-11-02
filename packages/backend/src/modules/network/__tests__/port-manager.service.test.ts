@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { PortManagerService } from '../port-manager.service';
+import { PortManagerService, isUniqueViolation } from '../port-manager.service';
 import type { PortAllocationRepository } from '../port-allocation.repository';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -47,8 +47,8 @@ const createMockRepo = () => {
         allocation.hostPort = hostPort;
       }
     }),
-    deleteByHostPort: vi.fn(async (port: number, protocol: string) => {
-      const index = allocations.findIndex((a) => a.hostPort === port && a.protocol === protocol);
+    deleteById: vi.fn(async (id: number) => {
+      const index = allocations.findIndex((a) => a.id === id);
       if (index !== -1) {
         allocations.splice(index, 1);
       }
@@ -211,6 +211,23 @@ describe('PortManagerService', () => {
     });
   });
 
+  // Drizzle puts the query in the message and the driver's error, with its code, on `cause`.
+  describe('isUniqueViolation', () => {
+    it('recognises a driver error Drizzle wrapped', () => {
+      expect(isUniqueViolation(Object.assign(new Error('Failed query: insert into "app"'), { cause: { code: '23505' } }))).toBe(true);
+    });
+
+    it('recognises a bare driver error', () => {
+      expect(isUniqueViolation(Object.assign(new Error('boom'), { code: '23505' }))).toBe(true);
+      expect(isUniqueViolation(new Error('duplicate key value violates unique constraint'))).toBe(true);
+    });
+
+    it('turns down any other failure', () => {
+      expect(isUniqueViolation(Object.assign(new Error('Failed query: insert into "app"'), { cause: { code: '08006' } }))).toBe(false);
+      expect(isUniqueViolation('23505')).toBe(false);
+    });
+  });
+
   describe('getPortHolder', () => {
     it('names the allocation that holds a port but nothing for a free one', async () => {
       await service.migrateExistingApp('holder:_user' as AppUrn, 10001, 80);
@@ -221,6 +238,20 @@ describe('PortManagerService', () => {
   });
 
   describe('moveMainPort', () => {
+    it('leaves one main allocation when a save changes its host port during the move', async () => {
+      const appUrn = 'openclaw:store' as AppUrn;
+      await service.migrateExistingApp(appUrn, 18789, 18789);
+      const findPort = repo.getAllHostPorts.getMockImplementation();
+      repo.getAllHostPorts.mockImplementationOnce(async (protocol: 'tcp' | 'udp') => {
+        await service.setMainPort(appUrn, 20000);
+        return findPort ? findPort(protocol) : [];
+      });
+
+      const moved = await service.moveMainPort(appUrn, new Set([18789]));
+
+      expect(repo._allocations).toEqual([expect.objectContaining({ hostPort: moved?.hostPort, label: 'main' })]);
+    });
+
     it('gives the main port a new host port, skipping the refused one and every port in avoid', async () => {
       const appUrn = 'openclaw:store' as AppUrn;
       await service.allocatePorts(appUrn, [

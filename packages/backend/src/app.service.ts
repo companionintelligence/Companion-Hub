@@ -673,7 +673,7 @@ export class AppService implements OnApplicationShutdown {
         try {
           await this.portManager.migrateExistingApp(appUrn, installedApp.port, installedApp.port);
           if (!(await this.portManager.setMainPort(appUrn, installedApp.port))) {
-            this.logger.warn(`Port ${installedApp.port} of ${appUrn} is allocated to another app, so its port allocation stays as it was`);
+            this.logger.warn(`Port ${installedApp.port} of ${appUrn} is already allocated, so its main allocation stays as it was`);
           }
           migrated++;
         } catch (err) {

@@ -2767,6 +2767,41 @@ describe('AppLifecycleService', () => {
       });
     });
 
+    // An uninstall that could not give its ports back leaves an allocation under a name no app has.
+    it('does not refuse a port left allocated to an app that is gone', async () => {
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'gone:_user', hostPort: 18558 } as any);
+      appsRepository.getAppByUrn.mockImplementation(async (urn: string) => (urn === appUrn ? row : undefined) as any);
+
+      await save(18558);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 18558 }));
+    });
+
+    // An exposed port's save leaves the table behind until the next boot, so the allocation names a port its app left.
+    it('does not refuse a port the holding app has left', async () => {
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'exposed:_user', hostPort: 18558, label: 'main' } as any);
+      appsRepository.getAppByUrn.mockImplementation(async (urn: string) => (urn === appUrn ? row : { appName: 'exposed', port: 9500 }) as any);
+
+      await save(18558);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 18558 }));
+    });
+
+    it('refuses a port the holding app still publishes as its main port', async () => {
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'holder:_user', hostPort: 18558, label: 'main' } as any);
+      appsRepository.getAppByUrn.mockImplementation(async (urn: string) => (urn === appUrn ? row : { appName: 'holder', port: 18558 }) as any);
+
+      expect(await conflictOf(save(18558))).toMatchObject({ status: 409, params: { port: '18558', id: 'holder' } });
+    });
+
+    // A mapping's port is not the row's, so the row saying another port doesn't free it.
+    it('refuses a port the holding app has as a mapping', async () => {
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'holder:_user', hostPort: 18558, label: 'web-8443' } as any);
+      appsRepository.getAppByUrn.mockImplementation(async (urn: string) => (urn === appUrn ? row : { appName: 'holder', port: 10005 }) as any);
+
+      expect(await conflictOf(save(18558))).toMatchObject({ status: 409, params: { port: '18558', id: 'holder' } });
+    });
+
     it('does not count the port the app holds itself as taken', async () => {
       portManager.getPortHolder.mockResolvedValue({ appUrn, hostPort: 18558 } as any);
 
@@ -2832,6 +2867,22 @@ describe('AppLifecycleService', () => {
       expect(refusal).toMatchObject({ message: 'APP_ERROR_PORT_ALREADY_IN_USE', status: 409 });
       expect(portManager.setMainPort).not.toHaveBeenCalled();
       expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
+    // Drizzle's message holds the query. The driver's code is on `cause`.
+    it('takes over the row a racing install wrote, though Drizzle wrapped the unique violation', async () => {
+      const raced = { ...row, id: 7, appName: 'testapp', appStoreSlug: 'ci-marketplace', status: 'install_failed' };
+      appsRepository.getAppByUrn.mockResolvedValue(undefined as any);
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ id: 'testapp', urn: storeUrn, port: 8080, exposable: true } as any);
+      vi.spyOn(service, 'validateAppConfig').mockResolvedValue({ valid: true, errors: [] });
+      appsRepository.createApp.mockImplementation(async () => {
+        appsRepository.getAppByUrn.mockResolvedValue(raced as any);
+        throw Object.assign(new Error('Failed query: insert into "app"'), { cause: { code: '23505' } });
+      });
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn: storeUrn, form: { exposureMode: 'local', openPort: true, port: 18558 } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, expect.objectContaining({ status: 'installing', port: 18558 }));
     });
 
     it('leaves a first install to the allocator, which takes a free port when this one is held', async () => {
@@ -7691,6 +7742,18 @@ describe('AppLifecycleService', () => {
           ...fakeApp,
           config: { ...(fakeApp.config as object), port: 10001, saved: 'meanwhile' },
         } as any);
+        appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK', movedHostPort } as any);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+
+        await vi.waitFor(() => {
+          expect(appsRepository.updateAppById).toHaveBeenCalledWith(fakeApp.id, { status: 'running' });
+        });
+      });
+
+      // The move writes the port it moved to. Any other port is a save the running app never took up.
+      it('keeps the restart owed for a port saved during a start that also moved the app', async () => {
+        appsRepository.getAppById.mockResolvedValue({ ...fakeApp, config: { ...(fakeApp.config as object), port: 20000 } } as any);
         appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK', movedHostPort } as any);
 
         await service.startApp({ actor: TEST_ACTOR, appUrn });

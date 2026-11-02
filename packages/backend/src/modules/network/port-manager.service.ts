@@ -27,8 +27,8 @@ const DYNAMIC_PORT_MAX = 60000;
 /** How many times to retry if a port turns out to be in use */
 const MAX_PROBE_RETRIES = 10;
 
-/** The database turned an insert or update down because another row has that port. */
-function isUniqueViolation(err: unknown): boolean {
+/** The database turned an insert or update down on a unique index. Drizzle wraps the driver's error, whose code is then on `cause`. */
+export function isUniqueViolation(err: unknown): boolean {
   if (!(err instanceof Error)) {
     return false;
   }
@@ -152,7 +152,8 @@ export class PortManagerService {
     // The new port is taken before the old one goes, so a failed allocation leaves the app on the
     // main port it had instead of with none. The old port is still allocated, so the search skips it.
     const moved = await this.allocateWithRetry(appUrn, main.containerPort, main.protocol, 'main', undefined, 0, new Set([...avoid, main.hostPort]));
-    await this.portAllocationRepo.deleteByHostPort(main.hostPort, main.protocol);
+    // By its id: a save can have changed its host port (`setMainPort`) since it was read above.
+    await this.portAllocationRepo.deleteById(main.id);
     this.logger.info(`Port moved: ${main.hostPort} to ${moved.hostPort} for ${main.containerPort}/${main.protocol} [main] of ${appUrn}`);
     return moved;
   }

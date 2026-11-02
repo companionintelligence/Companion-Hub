@@ -505,13 +505,13 @@ describe('AppService', () => {
       expect(portManagerService.setMainPort).toHaveBeenCalledExactlyOnceWith('port-test:_user', 18558);
     });
 
-    it('logs an app whose port another app holds in the table', async () => {
+    it('logs an app whose port another allocation holds in the table', async () => {
       appsRepository.getApps.mockResolvedValue([{ appName: 'port-test', appStoreSlug: '_user', port: 18558 }] as never);
       portManagerService.setMainPort.mockResolvedValue(false);
 
       await appService.bootstrap();
 
-      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Port 18558 of port-test:_user is allocated to another app'));
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Port 18558 of port-test:_user is already allocated'));
     });
 
     it('prunes only Hub-managed networks, never every idle network on the host', async () => {
