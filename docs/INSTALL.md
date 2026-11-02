@@ -116,14 +116,11 @@ The full walkthrough is in [Installation](https://docs.ci.computer/docs/getting-
 
 - **macOS (Homebrew):** `brew uninstall --cask companion-hub`
 - **Windows (Scoop):** `scoop uninstall companion-hub`
-- **Linux:** remove the package with `sudo apt remove companion-hub` or `sudo dnf remove companion-hub`.
-
-Removing the app does not remove Docker volumes or your data. Check the uninstall notes in [`distribution/README.md`](../distribution/README.md) before deleting anything.
+- **Other installs:** use the normal uninstall for your system. The uninstall cleanup notes are in [`distribution/README.md`](../distribution/README.md).
 
 ## Troubleshooting
 
-- **The dashboard does not open.** Check that Docker is running, then start Hub again. On Linux, `companion-hub --detached` prints where the stack is listening.
-- **Installs fail with `401`.** Pairing has not completed. See step 3 above.
+- **The dashboard does not open.** Check that Docker is running, then start Hub again.- **Installs fail with `401`.** Pairing has not completed. See step 3 above.
 - **Windows says WebView2 is missing.** Install the [WebView2 runtime](https://developer.microsoft.com/microsoft-edge/webview2/).
 
 For anything else, see [`docs/README.md`](README.md) for the documentation map.
