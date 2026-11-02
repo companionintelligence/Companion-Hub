@@ -162,12 +162,15 @@ describe('UninstallAppCommand', () => {
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('leaves its images in place'));
     });
 
-    it("leaves every image in place when another app's image cannot be looked up", async () => {
-      dockerService.imageIdLocally.mockRejectedValue(new Error('engine went away'));
+    it("leaves every image in place when another app's image cannot be looked up, and names that app", async () => {
+      dockerService.imageIdLocally.mockRejectedValue(new Error('invalid reference format'));
 
       await command.execute(appUrn);
 
       expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, [], []);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('other-app:store names postgres:16-alpine@sha256:d: invalid reference format'),
+      );
     });
 
     it("leaves every image in place when another app's compose cannot be read", async () => {

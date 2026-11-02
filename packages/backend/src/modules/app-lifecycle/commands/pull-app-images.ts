@@ -206,7 +206,10 @@ export async function imagesNoOtherAppNames(moduleRef: ModuleRef, appUrn: AppUrn
 
     const named = new Set<string>();
     for (const [ref, otherUrn] of namedBy) {
-      const imageId = await inTime(docker.imageIdLocally(ref));
+      // Named in the log: this leaves images behind on every uninstall until someone changes that app.
+      const imageId = await inTime(docker.imageIdLocally(ref)).catch((error: unknown) => {
+        throw new Error(`${otherUrn} names ${ref}: ${errorText(error)}`);
+      });
       if (imageId && imageIds.includes(imageId)) {
         logger.info(`Keeping image ${imageId} after uninstalling ${appUrn}: ${otherUrn} uses it`);
         named.add(imageId);
