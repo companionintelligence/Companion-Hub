@@ -614,6 +614,13 @@ jobs:
           find artifacts -type f \( -name "*.dmg" -o -name "*.deb" -o -name "*.rpm" -o -name "*.msi" -o -name "*-setup.exe" -o -name "cihub-linux-*" -o -name "cihub-macos-*" -o -name "cihub-windows-*" \) -exec cp {} release-files/ \;
           echo "=== All release files ==="
           ls -lh release-files/
+      # Users verify a download against SHA256SUMS before installing it (see README "Install").
+      # Written after the collect step so it lists exactly the files that are published.
+      - name: Write SHA256SUMS
+        working-directory: release-files
+        run: |
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -639,6 +646,13 @@ jobs:
             - Windows: Windows 10+ with WebView2 (ships with Windows 11)
             - macOS: macOS 11.0+
             - Linux: WebKitGTK 4.1
+            ### Verify your download
+            `SHA256SUMS` lists the SHA-256 of every file above. Hash the file you downloaded and compare it with its line before you install:
+            ```bash
+            shasum -a 256 Companion.Hub_*.dmg     # macOS
+            sha256sum Companion.Hub_*.deb         # Linux
+            ```
+            On Windows, `Get-FileHash <file> -Algorithm SHA256` does the same.
             ${{ inputs.environment != 'production' && format('### Dev CDN — https://dl-dev.ci.computer/{0}/', inputs.tag) || '' }}
 
   upload-r2:
