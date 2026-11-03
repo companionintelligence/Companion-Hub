@@ -59,7 +59,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getAppQueryKey: (options: { path: { urn: string } }) => ['getApp', options.path.urn],
 }));
 
-// Most tests render the dialog closed, so none of this markup mounts — stub it out to keep them on the
+// Most tests render the dialog closed, so none of this markup mounts. Stubbing it out keeps them on the
 // mutation's cache handling rather than on Radix. An open one only has to reach the form.
 vi.mock('@/components/ui/Dialog', () => ({
   Dialog: ({ open, children }: { open: boolean; children: ReactNode }) => (open ? children : null),
@@ -101,6 +101,7 @@ describe('InstallDialog', () => {
     vi.clearAllMocks();
     calls.length = 0;
     capturedOptions.current = null;
+    capturedFormProps.current = null;
   });
 
   // The app left the listing's port because another program held it, so that address is not where it is.
@@ -113,7 +114,7 @@ describe('InstallDialog', () => {
   it('leaves the port to the listing on a first install', () => {
     render(<InstallDialog info={INFO} isOpen onClose={vi.fn()} />);
 
-    expect(capturedFormProps.current?.initialValues).not.toHaveProperty('port');
+    expect(capturedFormProps.current?.initialValues).toEqual({ customDomainExpected: '' });
   });
 
   it('seeds an optimistic row so the app appears immediately', async () => {

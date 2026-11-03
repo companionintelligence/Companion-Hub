@@ -88,8 +88,9 @@ export class SSEService implements OnApplicationShutdown {
       } else {
         this.installProgress.delete(data.appUrn);
       }
-      // Nobody needs to hear where an app they uninstalled had moved to.
-      if (data.event === 'uninstall_success') {
+      // Nobody needs to hear where an app they uninstalled had moved to. A failed install can leave a move
+      // unheard, and cancelling its retry deletes the row unless the cancel came before the queue.
+      if (data.event === 'uninstall_success' || (data.event === 'install_cancelled' && data.appStatus !== 'install_failed')) {
         this.unseenPortMoves.delete(data.appUrn);
       }
     }

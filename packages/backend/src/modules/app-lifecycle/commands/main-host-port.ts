@@ -86,29 +86,29 @@ export async function writeMainHostPort(
     }
   }
 
-  // Also update form.port so ensureAppDir uses the right port
-  form.port = hostPort;
-
   await appFilesManager.writeAppEnv(appUrn, envUtils.envMapToString(envMap));
 
   const app = await appsRepository?.getAppByUrn(appUrn);
-  if (!app) {
-    return;
-  }
-  const storedConfig = (app.config ?? {}) as Record<string, unknown>;
-  const nextConfig: Record<string, unknown> = { ...storedConfig, port: hostPort };
-  for (const field of baseUrlFields) {
-    if (storedConfig[field.env_variable] !== undefined) {
-      nextConfig[field.env_variable] = follow(storedConfig[field.env_variable]);
+  if (app) {
+    const storedConfig = (app.config ?? {}) as Record<string, unknown>;
+    const nextConfig: Record<string, unknown> = { ...storedConfig, port: hostPort };
+    for (const field of baseUrlFields) {
+      if (storedConfig[field.env_variable] !== undefined) {
+        nextConfig[field.env_variable] = follow(storedConfig[field.env_variable]);
+      }
+    }
+    // A start rebuilds APP_PORT from config.port, or from the manifest's port (the container port)
+    // when config has none, so that is the port to compare, not the row's port column alone.
+    const portOnNextStart = storedConfig.port ?? main.containerPort;
+    const baseUrlsMoved = baseUrlFields.some((field) => nextConfig[field.env_variable] !== storedConfig[field.env_variable]);
+    if (app.port !== hostPort || portOnNextStart !== hostPort || baseUrlsMoved) {
+      await appsRepository.updateAppById(app.id, { config: nextConfig, port: hostPort });
     }
   }
-  // A start rebuilds APP_PORT from config.port, or from the manifest's port (the container port)
-  // when config has none, so that is the port to compare, not the row's port column alone.
-  const portOnNextStart = storedConfig.port ?? main.containerPort;
-  const baseUrlsMoved = baseUrlFields.some((field) => nextConfig[field.env_variable] !== storedConfig[field.env_variable]);
-  if (app.port !== hostPort || portOnNextStart !== hostPort || baseUrlsMoved) {
-    await appsRepository.updateAppById(app.id, { config: nextConfig, port: hostPort });
-  }
+
+  // So ensureAppDir uses the right port. Last, because `hostPortMoveOf` reports a changed form.port as
+  // a move: a write that failed above left the row on the old port, and that is where the app stays.
+  form.port = hostPort;
 }
 
 /**

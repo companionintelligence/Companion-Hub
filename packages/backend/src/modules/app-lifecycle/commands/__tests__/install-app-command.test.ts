@@ -790,7 +790,6 @@ describe('InstallAppCommand — pull policy', () => {
 
       it('reports the move beside the failure, since the app stays on the new port', async () => {
         refusals = [8080];
-        portManager.getMainPort.mockResolvedValue(8080);
         portManager.moveMainPort.mockResolvedValue(mainAllocation(10000));
 
         const result = await command.execute(appUrn, {});
@@ -805,7 +804,6 @@ describe('InstallAppCommand — pull policy', () => {
 
       it('reports the first port refused and the last one taken after two moves', async () => {
         refusals = [8080, 10000];
-        portManager.getMainPort.mockResolvedValueOnce(8080).mockResolvedValueOnce(10000);
         portManager.moveMainPort.mockResolvedValueOnce(mainAllocation(10000)).mockResolvedValueOnce(mainAllocation(10001));
 
         const result = await command.execute(appUrn, {});
@@ -823,8 +821,24 @@ describe('InstallAppCommand — pull policy', () => {
 
     it('reports no move when no free port could be found', async () => {
       refusals = [8080];
-      portManager.getMainPort.mockResolvedValue(8080);
       portManager.moveMainPort.mockResolvedValue(null);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(result.movedHostPort).toBeUndefined();
+    });
+
+    // The row and app.env still name the old port, so a notice of the new one would send the person nowhere.
+    it('reports no move when the new port could not be written down', async () => {
+      refusals = [8080];
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10000));
+      appFilesManager.writeAppEnv.mockImplementation(async (_urn, content) => {
+        if (content.includes('APP_PORT=10000')) {
+          throw new Error('ENOSPC: no space left on device');
+        }
+        appEnv = content;
+      });
 
       const result = await command.execute(appUrn, {});
 

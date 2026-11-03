@@ -39,7 +39,7 @@ interface IProps {
   retryExposureMode?: string;
   /**
    * The port a failed install left the app on, for its retry. It can differ from the listing's when
-   * another program held that one, and the dialog would otherwise show the address the app left.
+   * another program held that one. The dialog would otherwise show the address the app left.
    */
   retryPort?: number;
 }
