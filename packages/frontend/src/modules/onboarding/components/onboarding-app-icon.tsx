@@ -15,7 +15,7 @@ interface OnboardingAppIconProps {
 function InitialFallback({ name, size, className, fallback }: { name: string; size: number; className?: string; fallback?: ReactNode }) {
   return (
     <span
-      className={cn('flex shrink-0 items-center justify-center rounded-md bg-foreground/10 text-sm font-semibold text-muted-foreground', className)}
+      className={cn('flex shrink-0 items-center justify-center rounded-md bg-foreground/10 text-sm font-medium text-muted-foreground', className)}
       style={{ width: size, height: size }}
       aria-hidden
     >

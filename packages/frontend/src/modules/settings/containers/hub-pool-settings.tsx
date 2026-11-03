@@ -1371,7 +1371,7 @@ export const HubPoolSection = () => {
                     are held in this component's state, never re-fetched. A reload loses them, which
                     is correct — the operator mints a new one. */}
                 <span>
-                  <span className="block font-mono text-2xl tracking-[0.3em]" data-testid="hub-pool-minted-pin">
+                  <span className="block font-mono text-2xl" data-testid="hub-pool-minted-pin">
                     {mintedPin.pin}
                   </span>
                   {mintedPin.expiresAt ? (

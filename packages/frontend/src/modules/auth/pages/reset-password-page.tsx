@@ -112,7 +112,7 @@ export default () => {
     if (tokenStatus === 'loading') {
       return (
         <div className="flex items-center justify-center p-8">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+          <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-muted-foreground" />
         </div>
       );
     }
@@ -120,7 +120,7 @@ export default () => {
     if (tokenStatus === 'invalid') {
       return (
         <div className="text-center">
-          <h2 className="text-xl font-semibold text-center mb-3">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
+          <h2 className="text-xl font-medium text-center mb-3">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
           <p className="text-sm text-muted-foreground mb-4">{t('AUTH_RESET_PASSWORD_INVALID_LINK')}</p>
           <Button asChild intent="primary" className="w-full">
             <Link to="/login">{t('AUTH_RESET_PASSWORD_BACK_TO_LOGIN')}</Link>
@@ -132,7 +132,7 @@ export default () => {
     if (isCompleteSuccess) {
       return (
         <>
-          <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_RESET_PASSWORD_SUCCESS_TITLE')}</h2>
+          <h2 className="text-xl font-medium text-center mb-4">{t('AUTH_RESET_PASSWORD_SUCCESS_TITLE')}</h2>
           <p className="text-sm text-muted-foreground mb-4">{t('AUTH_RESET_PASSWORD_COMPLETE_SUCCESS')}</p>
           <Button onClick={() => navigate('/login')} type="button" intent="primary" className="w-full">
             {t('AUTH_RESET_PASSWORD_BACK_TO_LOGIN')}
@@ -147,7 +147,7 @@ export default () => {
   if (requestSubmitted) {
     return (
       <>
-        <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_RESET_PASSWORD_SUCCESS_TITLE')}</h2>
+        <h2 className="text-xl font-medium text-center mb-4">{t('AUTH_RESET_PASSWORD_SUCCESS_TITLE')}</h2>
         <p className="text-sm text-muted-foreground mb-4">{t('AUTH_RESET_PASSWORD_REQUEST_SUCCESS')}</p>
         <Button onClick={() => navigate('/login')} type="button" intent="primary" className="w-full">
           {t('AUTH_RESET_PASSWORD_BACK_TO_LOGIN')}
@@ -158,13 +158,14 @@ export default () => {
 
   return (
     <>
-      <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
+      <h2 className="text-xl font-medium text-center mb-4">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
       <p className="text-sm text-muted-foreground mb-4">{t('AUTH_RESET_PASSWORD_REQUEST_DESCRIPTION')}</p>
       <form onSubmit={submitRequest}>
         <Input
           {...register('email')}
           name="email"
           type="email"
+          autoComplete="email"
           className="mb-3"
           label={t('AUTH_FORM_EMAIL')}
           placeholder={t('AUTH_FORM_EMAIL_PLACEHOLDER')}

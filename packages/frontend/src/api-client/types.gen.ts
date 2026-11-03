@@ -1082,6 +1082,19 @@ export type GetAppDto = {
     operation?: {
         command: 'install' | 'start' | 'stop' | 'restart' | 'update' | 'uninstall' | 'reset' | 'backup' | 'restore' | 'generate_env';
     };
+    failure?: {
+        message: string;
+        errorCode?: string;
+        errorDetail?: string;
+        settingsPath?: string;
+        serviceFailure?: {
+            kind: 'restarting' | 'exited' | 'none_running';
+            service?: string;
+            others?: number;
+            exitCode?: number;
+            logLine?: string;
+        };
+    };
     info: {
         id: string;
         urn: string;

@@ -133,7 +133,7 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
       {!key && <Switch onCheckedChange={handleTotp} checked={totpEnabled} label={t('SETTINGS_SECURITY_ENABLE_2FA')} />}
       {getTotpUri.isPending && (
         <div className="w-1/2 h-1.5 rounded-full bg-muted overflow-hidden">
-          <div className="h-full bg-primary rounded-full animate-pulse" />
+          <div className="h-full bg-primary rounded-full " />
         </div>
       )}
       {renderSetupQr()}

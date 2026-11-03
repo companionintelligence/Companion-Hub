@@ -2,8 +2,10 @@ import { appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { useSSE } from '@/lib/hooks/use-sse';
 import { applyHubHello } from '@/lib/hub-hello';
 import { usesSameOriginHubApi } from '@/lib/hub-runtime-mode';
+import { appServiceFailureText } from '@/modules/app/helpers/app-service-failure';
 import { cachedAppName, handleAppSseEvent, type AppSsePayload } from '@/modules/app/helpers/app-sse-cache';
 import { extractAppUrn } from '@/utils/app-helpers';
+import type { AppServiceFailure } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { useQueryClient } from '@tanstack/react-query';
 import type { PropsWithChildren } from 'react';
@@ -73,11 +75,16 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     }
   };
 
+  // The service's name comes from the app's compose file, so it stays plain text: `Trans` would read tags in it.
+  const showServiceFailureToast = (i18nKey: string, appName: string, failure: AppServiceFailure) => {
+    toast.error(t(i18nKey, { id: appName, reason: appServiceFailureText(t, failure) }), { duration: 10000 });
+  };
+
   useSSE({
     topic: 'app',
     onEvent: (data) => {
       const payload = data as AppSsePayload;
-      const { event, appUrn, error, errorCode, settingsPath, warningCode, warningDetail, movedHostPort } = payload;
+      const { event, appUrn, error, errorCode, settingsPath, serviceFailure, warningCode, warningDetail, movedHostPort } = payload;
 
       // The Hub's own greeting, first on every (re)connect. After a stack update this is
       // the new container announcing itself — the moment the Settings panel is waiting for.
@@ -163,6 +170,10 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
             toast.error(t('APP_ERROR_NETWORK_OVERLAP_TOAST', { id: appName }));
             break;
           }
+          if (serviceFailure) {
+            showServiceFailureToast('APP_ERROR_APP_FAILED_TO_INSTALL_BECAUSE', appName, serviceFailure);
+            break;
+          }
           showLogsErrorToast('APP_ERROR_APP_FAILED_TO_INSTALL_TOAST', appName);
           break;
         case 'install_cancelled':
@@ -174,6 +185,10 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
         case 'start_error':
           if (errorCode === 'network_overlap') {
             toast.error(t('APP_ERROR_NETWORK_OVERLAP_TOAST', { id: appName }));
+            break;
+          }
+          if (serviceFailure) {
+            showServiceFailureToast('APP_ERROR_APP_FAILED_TO_START_BECAUSE', appName, serviceFailure);
             break;
           }
           showLogsErrorToast('APP_ERROR_APP_FAILED_TO_START_TOAST', appName);
@@ -236,6 +251,10 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           showSuccessOrPortMoved('APP_RESTART_SUCCESS', appUrn, appName, movedHostPort);
           break;
         case 'restart_error':
+          if (serviceFailure) {
+            showServiceFailureToast('APP_ERROR_APP_FAILED_TO_RESTART_BECAUSE', appName, serviceFailure);
+            break;
+          }
           showLogsErrorToast('APP_ERROR_APP_FAILED_TO_RESTART_TOAST', appName);
           break;
         case 'backup_success':

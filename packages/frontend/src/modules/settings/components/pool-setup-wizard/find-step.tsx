@@ -102,7 +102,7 @@ export function FindStep({ pool, ts, readiness, demoMode, onBack, onSend, onRevi
   return (
     <div className="flex flex-1 flex-col gap-4" data-testid="pool-setup-step-find">
       <div className="space-y-0.5">
-        <h3 tabIndex={-1} data-step-heading className="text-base font-semibold outline-none">
+        <h3 tabIndex={-1} data-step-heading className="text-base font-medium outline-none">
           {t('HUB_POOL_SETUP_FIND_TITLE')}
         </h3>
         <p className="text-sm text-muted-foreground">{t('HUB_POOL_SETUP_FIND_INTRO')}</p>
@@ -135,7 +135,7 @@ export function FindStep({ pool, ts, readiness, demoMode, onBack, onSend, onRevi
       {scanning ? (
         <div data-testid="pool-setup-scanning" aria-hidden="true" className="grid gap-2 sm:grid-cols-2">
           {[0, 1, 2, 3].map((index) => (
-            <div key={index} className="flex animate-pulse gap-3 rounded-lg border p-3">
+            <div key={index} className="flex  gap-3 rounded-lg border p-3">
               <span className="size-9 shrink-0 rounded-md bg-muted" />
               <span className="flex flex-1 flex-col gap-2">
                 <span className="h-3.5 w-1/2 rounded bg-muted" />
@@ -272,7 +272,7 @@ function EmptyState({ pool, ts }: { pool: PoolStatus; ts: TailscaleSetupStatus |
   return (
     <section data-testid="pool-setup-empty" className="space-y-3 rounded-lg border px-3 py-3">
       <div className="space-y-1">
-        <h4 className="text-sm font-semibold">{t('HUB_POOL_SETUP_EMPTY_TITLE')}</h4>
+        <h4 className="text-sm font-medium">{t('HUB_POOL_SETUP_EMPTY_TITLE')}</h4>
         <p className="text-xs text-muted-foreground">{t('HUB_POOL_SETUP_EMPTY_INTRO')}</p>
       </div>
       <ul className="list-disc space-y-1 pl-5 text-xs text-muted-foreground">
@@ -307,7 +307,7 @@ function EmptyState({ pool, ts }: { pool: PoolStatus; ts: TailscaleSetupStatus |
       </a>
 
       <div className="space-y-1.5 border-t pt-3">
-        <h4 className="text-sm font-semibold">{t('HUB_POOL_SETUP_EMPTY_ADDRESS_TITLE')}</h4>
+        <h4 className="text-sm font-medium">{t('HUB_POOL_SETUP_EMPTY_ADDRESS_TITLE')}</h4>
         <p className="text-xs text-muted-foreground">{t('HUB_POOL_SETUP_EMPTY_ADDRESS_BODY')}</p>
         <code
           data-testid="pool-setup-pair-command"

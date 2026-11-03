@@ -50,7 +50,7 @@ function StepSectionBadge({ badge }: { badge: 'required' | 'recommended' | 'opti
   return <span className={cn('rounded-full border px-2.5 py-0.5 text-xs font-medium', BADGE_STYLES[badge])}>{t(BADGE_KEYS[badge])}</span>;
 }
 
-/** A numbered panel: cyan step badge + uppercase title + description, wrapping its content. */
+/** A numbered panel: cyan step badge +  title + description, wrapping its content. */
 export function StepSection({
   number,
   title,
@@ -74,7 +74,7 @@ export function StepSection({
   const section = (
     <section
       className={cn(
-        'rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6',
+        'rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6',
         selectable && 'relative cursor-pointer transition-colors',
         selectable && selected && 'border-primary ring-1 ring-primary/30',
         selectable && selectionDisabled && 'cursor-not-allowed opacity-60',
@@ -105,12 +105,12 @@ export function StepSection({
             >
               <ChevronRight className={cn('h-4 w-4 transition-transform', open && 'rotate-90')} aria-hidden="true" />
             </button>
-            <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-primary/40 bg-primary/10 text-sm font-semibold text-primary">
+            <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-primary/40 bg-primary/10 text-sm font-medium text-primary">
               {number}
             </span>
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">
+                <h2 className="text-base font-medium   sm:text-lg">
                   {titleHint ? (
                     <HintText id={`step-${number}-title`} hint={titleHint}>
                       {title}
@@ -126,12 +126,12 @@ export function StepSection({
           </div>
         ) : (
           <div className="flex items-start gap-3">
-            <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-primary/40 bg-primary/10 text-sm font-semibold text-primary">
+            <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-primary/40 bg-primary/10 text-sm font-medium text-primary">
               {number}
             </span>
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">
+                <h2 className="text-base font-medium   sm:text-lg">
                   {titleHint ? (
                     <HintText id={`step-${number}-title`} hint={titleHint}>
                       {title}
@@ -206,7 +206,7 @@ export function OptionCard({
       data-testid={testId}
       onClick={onSelect}
       className={cn(
-        'group relative flex w-full items-start gap-4 rounded-md border p-4 text-left transition-all',
+        'group relative flex w-full items-start gap-4 rounded-md border p-4 text-left transition-[color,background-color,border-color,box-shadow,opacity,transform]',
         selected
           ? 'border-primary bg-primary/[0.06] shadow-lg shadow-primary/20'
           : 'border-border bg-foreground/[0.015] hover:border-primary/50 hover:bg-foreground/[0.03]',
@@ -219,7 +219,7 @@ export function OptionCard({
       </span>
       <span className="min-w-0 flex-1 pr-6">
         <span className="flex flex-wrap items-center gap-2">
-          <span className="text-base font-semibold">
+          <span className="text-base font-medium">
             {hint ? (
               <HintText id={`option-${testId ?? title}`} hint={hint}>
                 {title}
@@ -228,9 +228,7 @@ export function OptionCard({
               title
             )}
           </span>
-          {badge && (
-            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">{badge}</span>
-          )}
+          {badge && <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium   text-primary">{badge}</span>}
         </span>
         <span className="mt-0.5 block text-sm text-muted-foreground">{description}</span>
       </span>
@@ -279,7 +277,7 @@ function ScoreBar({ label, value, testId }: { label: string; value: number; test
       <span className="h-1 w-10 overflow-hidden rounded-full bg-muted">
         <span className={cn('block h-full rounded-full', LEVEL_BG[color])} style={{ width: `${pct}%` }} />
       </span>
-      <span className={cn('text-[11px] font-semibold tabular-nums', LEVEL_TEXT[color])}>{Math.round(value)}</span>
+      <span className={cn('text-[11px] font-medium tabular-nums', LEVEL_TEXT[color])}>{Math.round(value)}</span>
     </span>
   );
 }
@@ -307,7 +305,7 @@ export function ModelCard({
     <label
       data-testid={testId}
       className={cn(
-        'group relative flex h-full cursor-pointer flex-col gap-2.5 rounded-md border p-4 text-left transition-all',
+        'group relative flex h-full cursor-pointer flex-col gap-2.5 rounded-md border p-4 text-left transition-[color,background-color,border-color,box-shadow,opacity,transform]',
         selected ? 'border-primary bg-primary/[0.06] shadow-lg shadow-primary/20' : 'border-border bg-foreground/[0.015] hover:border-primary/50',
         'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-primary has-[:focus-visible]:ring-offset-2',
       )}
@@ -321,7 +319,7 @@ export function ModelCard({
         <span className={cn('flex-shrink-0 [&>*]:size-8', selected ? 'text-primary' : 'text-foreground/70 group-hover:text-foreground')}>{icon}</span>
         <span className="min-w-0">
           <span className="flex flex-wrap items-center gap-1.5">
-            <span className="break-words text-sm font-semibold leading-tight">{title}</span>
+            <span className="break-words text-sm font-medium leading-tight">{title}</span>
             {agentDefault && (
               <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">
                 {t('ONBOARDING_AGENT_DEFAULT')}
@@ -339,10 +337,7 @@ export function ModelCard({
           {tags.length > 0 ? (
             <span className="flex min-w-0 flex-wrap gap-1.5">
               {tags.map((tag) => (
-                <span
-                  key={tag}
-                  className="rounded-md border border-primary/40 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary"
-                >
+                <span key={tag} className="rounded-md border border-primary/40 px-1.5 py-0.5 text-[10px] font-medium   text-primary">
                   {tag}
                 </span>
               ))}

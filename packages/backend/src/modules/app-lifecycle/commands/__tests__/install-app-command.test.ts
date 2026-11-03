@@ -4,6 +4,8 @@ import { InstallAppCommand, extractComposeImages, mapPullProgressToInstallProgre
 import { withMovedPort } from '../main-host-port';
 import type { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
+import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
+import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { SSEService } from '@/core/sse/sse.service';
@@ -100,6 +102,7 @@ describe('withMovedPort', () => {
 });
 
 describe('InstallAppCommand — pull policy', () => {
+  let traefikConfigService: ReturnType<typeof mock<TraefikConfigService>>;
   let command: InstallAppCommand;
   let dockerService: any;
   let imageSizeService: ReturnType<typeof mock<ImageSizeService>>;
@@ -123,12 +126,7 @@ describe('InstallAppCommand — pull policy', () => {
         composeArgs.push(args);
       }),
       pullImages: vi.fn().mockResolvedValue(undefined),
-      waitForManagedAppContainersReady: vi.fn().mockResolvedValue({
-        ok: true,
-        appStatus: 'running',
-        summary: { total: 1, running: 1, exitZero: 0 },
-        message: 'All containers are running',
-      }),
+      waitForManagedAppContainersReady: vi.fn().mockResolvedValue({ ok: true, message: 'All containers came up' }),
       removeAppNetworks: vi.fn().mockResolvedValue(undefined),
       // Used by install-cancel compensation.
       imageIdLocally: vi.fn().mockResolvedValue(null),
@@ -177,7 +175,7 @@ describe('InstallAppCommand — pull policy', () => {
 
     const sseService = mock<SSEService>();
     const envUtils = new EnvUtils();
-    const traefikConfigService = mock<TraefikConfigService>();
+    traefikConfigService = mock<TraefikConfigService>();
     traefikConfigService.regenerateTraefikConfig.mockResolvedValue();
 
     const portManager = mock<PortManagerService>();
@@ -536,35 +534,97 @@ describe('InstallAppCommand — pull policy', () => {
     expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
   });
 
-  it('SHOULD fail install when labeled containers are missing after compose up', async () => {
+  it('SHOULD fail install when nothing is running after compose up', async () => {
     dockerService.waitForManagedAppContainersReady.mockResolvedValue({
       ok: false,
-      appStatus: 'missing',
-      summary: { total: 0, running: 0, exitZero: 0 },
-      message: 'Install finished but no Hub-managed containers were found. The app may have failed to start.',
+      message: "None of this app's services are running.",
+      errorDetail: 'Compose finished but no Hub-managed containers were found.',
+      serviceFailure: { kind: 'none_running' },
     });
 
     const result = await command.execute(appUrn, {});
 
     expect(result.success).toBe(false);
-    expect(result.message).toContain('no Hub-managed containers were found');
+    expect(result.message).toContain("None of this app's services");
     expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn);
   });
 
-  it('SHOULD fail install with container logs when containers exit after compose up', async () => {
+  it('SHOULD regenerate Traefik for an exposed app when a service failed, since the rest stay up', async () => {
     dockerService.waitForManagedAppContainersReady.mockResolvedValue({
       ok: false,
-      appStatus: 'stopped',
-      summary: { total: 1, running: 0, exitZero: 0 },
-      message: 'One or more containers exited after install.',
-      errorDetail: 'ghost-ghost-ci-marketplace (Exited (1)): bootstrap failed',
+      message: 'ghost keeps restarting',
+      serviceFailure: { kind: 'restarting', service: 'ghost' },
     });
+
+    const result = await command.execute(appUrn, { exposureMode: 'cloudflare' });
+
+    expect(result.success).toBe(false);
+    expect(traefikConfigService.regenerateTraefikConfig).toHaveBeenCalledWith(0);
+  });
+
+  it('SHOULD register the agent webhook when a service failed, since the status sync can bring the app to running', async () => {
+    dockerService.waitForManagedAppContainersReady.mockResolvedValue({
+      ok: false,
+      message: 'ghost keeps restarting',
+      serviceFailure: { kind: 'restarting', service: 'ghost' },
+    });
+    const agentNotifyService = {
+      resolveWebhookTarget: vi.fn().mockResolvedValue({ url: 'http://agent/hook', token: 'token' }),
+      registerWebhook: vi.fn(),
+    };
+    const moduleRef = (command as any).moduleRef;
+    const resolve = moduleRef.get.getMockImplementation();
+    moduleRef.get.mockImplementation((token: unknown) => (token === AgentNotifyService ? agentNotifyService : resolve(token)));
 
     const result = await command.execute(appUrn, {});
 
     expect(result.success).toBe(false);
-    expect(result.message).toContain('exited after install');
-    expect(result.errorDetail).toContain('bootstrap failed');
+    expect(agentNotifyService.registerWebhook).toHaveBeenCalledWith(appUrn, 'http://agent/hook', 'token');
+  });
+
+  it('SHOULD name the failing service and keep its logs when it crashes after compose up', async () => {
+    const serviceFailure = { kind: 'restarting', service: 'ghost', exitCode: 1, logLine: 'bootstrap failed' };
+    dockerService.waitForManagedAppContainersReady.mockResolvedValue({
+      ok: false,
+      message: 'ghost keeps restarting (exit 1): bootstrap failed',
+      errorDetail: 'ghost-ghost-ci-marketplace (restarting, exit 1): bootstrap failed',
+      serviceFailure,
+    });
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result).toMatchObject({ success: false, message: 'ghost keeps restarting (exit 1): bootstrap failed', serviceFailure });
+    expect(result.success === false && result.errorDetail).toContain('bootstrap failed');
+  });
+
+  it('reports post-start diagnostics without app-owned log text', async () => {
+    vi.useFakeTimers();
+    try {
+      const privateLog = 'DATABASE_URL=private-value';
+      dockerReadFacade.diagnoseAppContainers.mockResolvedValue({
+        unhealthy: [{ name: 'ghost-1', state: 'restarting', logs: privateLog }],
+        healthy: [],
+      });
+      const errorReportingService = { reportAppFailure: vi.fn() };
+      const moduleRef = (command as any).moduleRef;
+      const originalGet = moduleRef.get.getMockImplementation() as (token: unknown) => unknown;
+      moduleRef.get.mockImplementation((token: unknown) => (token === ErrorReportingService ? errorReportingService : originalGet(token)));
+
+      const result = await command.execute(appUrn, {});
+      expect(result.success).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
+        appUrn,
+        phase: 'post_start',
+        message: 'ghost-1 (restarting)',
+        containers: [{ name: 'ghost-1', state: 'restarting' }],
+      });
+      expect(JSON.stringify(errorReportingService.reportAppFailure.mock.calls)).not.toContain(privateLog);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // ── cancellation ──────────────────────────────────────────────────────────
@@ -1063,12 +1123,7 @@ describe('InstallAppCommand — plan-based pre-flight', () => {
     dockerService = {
       composeApp: vi.fn().mockResolvedValue(undefined),
       pullImages: vi.fn().mockResolvedValue(undefined),
-      waitForManagedAppContainersReady: vi.fn().mockResolvedValue({
-        ok: true,
-        appStatus: 'running',
-        summary: { total: 1, running: 1, exitZero: 0 },
-        message: 'All containers are running',
-      }),
+      waitForManagedAppContainersReady: vi.fn().mockResolvedValue({ ok: true, message: 'All containers came up' }),
       removeAppNetworks: vi.fn().mockResolvedValue(undefined),
       imageIdLocally: vi.fn().mockResolvedValue(null),
       imageIdsLocally: vi.fn().mockResolvedValue(new Set()),

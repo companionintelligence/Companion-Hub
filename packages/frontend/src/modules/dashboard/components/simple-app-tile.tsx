@@ -96,7 +96,7 @@ export const SimpleAppTile = ({
         </div>
         {isInstalling && (
           <div className="mt-1 h-1 rounded-full bg-muted overflow-hidden">
-            <div className="h-full bg-primary rounded-full animate-pulse w-2/3" />
+            <div className="h-full bg-primary rounded-full  w-2/3" />
           </div>
         )}
       </div>

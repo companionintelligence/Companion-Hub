@@ -33,7 +33,7 @@ const command = "sh -c 'while :; do :; done'";
 
 function openJsonEditorWith(json: unknown) {
   editorJson.value = typeof json === 'string' ? json : JSON.stringify(json, null, 2);
-  fireEvent.click(screen.getByRole('button', { name: 'JSON Editor' }));
+  fireEvent.click(screen.getByRole('button', { name: 'JSON editor' }));
   expect(screen.getByTestId('json-editor')).toBeInTheDocument();
 }
 
@@ -175,7 +175,7 @@ describe('MultiServiceForm Save JSON', () => {
     const [submitted] = onSubmit.mock.calls[0] as [{ services: Array<Record<string, unknown>> }];
     expect(submitted.services).toEqual([expect.objectContaining({ name: 'web', image: 'alpine:3.20', command })]);
     expect(submitted.services[0]).not.toHaveProperty('_id');
-    // The save's own toast ("Custom app ... updated successfully!") reports the outcome, not a second one here.
+    // The save's own toast ("Custom app ... updated successfully.") reports the outcome, not a second one here.
     expect(toastSuccess).not.toHaveBeenCalled();
     expect(useMultiServiceStore.getState().services[0]).toMatchObject({ _id: 'web-id', command });
   });

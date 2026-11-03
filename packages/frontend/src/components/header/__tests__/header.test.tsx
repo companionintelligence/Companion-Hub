@@ -144,9 +144,8 @@ describe('Header', () => {
     renderHeader(true);
 
     await userEvent.click(screen.getByTestId('mobile-app-menu-btn'));
-    const logoLink = screen.getByAltText('Companion Hub logo').closest('a');
-    expect(logoLink).not.toBeNull();
-    await userEvent.click(logoLink as HTMLAnchorElement);
+    const logoLink = screen.getByRole('link', { name: 'core 2' });
+    await userEvent.click(logoLink);
 
     expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
     expect(screen.queryByTestId('mobile-app-menu-scrim')).not.toBeInTheDocument();

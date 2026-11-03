@@ -81,7 +81,7 @@ export function TunnelStatusBanner() {
       <div className="flex items-start gap-2.5">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden />
         <span className="leading-relaxed text-foreground">
-          <strong className="font-semibold text-warning">{t('TUNNEL_DEGRADED_BANNER_TITLE')}</strong>
+          <strong className="font-medium text-warning">{t('TUNNEL_DEGRADED_BANNER_TITLE')}</strong>
           <span className="text-muted-foreground"> {t('TUNNEL_DEGRADED_BANNER_MESSAGE')}</span>
         </span>
       </div>

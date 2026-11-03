@@ -101,7 +101,7 @@ const SIGNATURES: readonly SignatureRule[] = [
     // still ahead is known to run no larger one.
     signature: 'context-length',
     pattern:
-      /exceeds? the available context size|maximum context length|context[_ ]length[_ ]exceeded|exceeds (?:the )?(?:model's )?context (?:length|window)/i,
+      /exceeds? the available context size|larger than the max context size|too large to process|maximum context length|context[_ ]length[_ ]exceeded|exceeds (?:the )?(?:model's )?context (?:length|window)/i,
     strikesModel: false,
     mayDifferBy: 'window',
   },

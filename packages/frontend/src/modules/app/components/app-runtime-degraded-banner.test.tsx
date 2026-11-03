@@ -16,7 +16,7 @@ describe('AppRuntimeDegradedBanner', () => {
     const banner = screen.getByRole('alert');
     // The shared warning box of `Alert`, the one TunnelStatusBanner draws.
     expect(banner).toHaveClass('rounded-lg', 'border', 'border-warning/30', 'bg-warning/10', 'px-4', 'py-3');
-    expect(screen.getByRole('heading', { name: 'Hub is degraded by cpu-hog' })).toHaveClass('font-semibold', 'text-[color:var(--alert-heading)]');
+    expect(screen.getByRole('heading', { name: 'Hub is degraded by cpu-hog' })).toHaveClass('font-medium', 'text-[color:var(--alert-heading)]');
     expect(screen.getByText(degraded.reason as string)).toHaveClass('[.alert-heading+&]:text-muted-foreground');
   });
 

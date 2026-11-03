@@ -491,7 +491,7 @@ export const McpSettingsContainer = () => {
                       data-testid={`mcp-tool-category-${category}`}
                     >
                       <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden="true" />
-                      <h4 className="text-sm font-semibold">{category}</h4>
+                      <h4 className="text-sm font-medium">{category}</h4>
                       <span className="text-xs tabular-nums text-muted-foreground">{groupTools.length}</span>
                       {/* Said on the closed row, because it is the reason to open it. */}
                       {destructiveCount > 0 ? (

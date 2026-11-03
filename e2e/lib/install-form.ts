@@ -5,7 +5,7 @@
  *   1. Reads the app's config.json from ci-marketplace
  *   2. Classifies each field: auto-fill silently vs. show to user
  *   3. Fills the install form in the hub UI
- *   4. Selects "Public Web" exposure (default in hub)
+ *   4. Selects "Public web" exposure (default in hub)
  *   5. Submits and waits for the app to reach running state
  *
  * Field classification rules:
@@ -118,7 +118,7 @@ export async function installApp(
   await page.goto(`${hubUrl}/store`);
   await expect(page.getByRole('heading', { name: /app store/i })).toBeVisible({ timeout: 20_000 });
 
-  const searchBox = page.getByPlaceholder('Search apps...').first();
+  const searchBox = page.getByPlaceholder('Search apps').first();
   await searchBox.fill(appName);
   await page.waitForTimeout(800);
 
@@ -171,18 +171,18 @@ export async function installApp(
     }
   }
 
-  // ── Select "Public Web" exposure (default, but be explicit) ──
+  // ── Select "Public web" exposure (default, but be explicit) ──
   try {
     const exposureSelect = page.locator('select[name*="exposure"], [data-testid*="exposure"]').first();
     if (await exposureSelect.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await exposureSelect.selectOption({ label: 'Public Web' });
-      notes.push('Selected: Public Web exposure');
+      await exposureSelect.selectOption({ label: 'Public web' });
+      notes.push('Selected: Public web exposure');
     } else {
       // Try radio/button pattern
       const publicWebOption = page.getByLabel(/public web/i).first();
       if (await publicWebOption.isVisible({ timeout: 1500 }).catch(() => false)) {
         await publicWebOption.click();
-        notes.push('Selected: Public Web exposure (radio)');
+        notes.push('Selected: Public web exposure (radio)');
       }
     }
   } catch {

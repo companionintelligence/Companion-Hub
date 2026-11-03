@@ -107,7 +107,10 @@ const ProgressBar = ({ percent }: { percent: number }) => {
   const barColor = percent > 90 ? 'bg-red-500' : percent > 70 ? 'bg-warning' : 'bg-primary';
   return (
     <div className="w-full h-1.5 bg-foreground/10 rounded-full overflow-hidden">
-      <div className={`h-full rounded-full transition-all duration-500 ${barColor}`} style={{ width: `${Math.min(percent, 100)}%` }} />
+      <div
+        className={`h-full rounded-full transition-[color,background-color,border-color,box-shadow,opacity,transform] duration-500 ${barColor}`}
+        style={{ width: `${Math.min(percent, 100)}%` }}
+      />
     </div>
   );
 };
@@ -130,8 +133,8 @@ const StatCard = ({
       <Icon className="h-6 w-6" />
     </span>
     <div className="min-w-0 flex-1">
-      <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{title}</div>
-      <div className="truncate text-sm font-semibold">{value}</div>
+      <div className="text-[11px] font-medium   text-muted-foreground">{title}</div>
+      <div className="truncate text-sm font-medium">{value}</div>
       {subtitle && <div className="truncate text-xs text-muted-foreground">{subtitle}</div>}
       {percent !== undefined && (
         <div className="mt-1.5">
@@ -162,17 +165,15 @@ const HostResourcesSection = ({ hostResources }: { hostResources: NonNullable<Sy
   const { t } = useTranslation();
 
   return (
-    <section className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+    <section className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6">
       <div className="flex items-center gap-3 mb-5">
         <Server className="h-6 w-6 text-primary" />
-        <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">{t('SYSTEM_INSPECTOR_HOST_CONTAINER_RESOURCES')}</h2>
+        <h2 className="text-base font-medium   sm:text-lg">{t('SYSTEM_INSPECTOR_HOST_CONTAINER_RESOURCES')}</h2>
         {hostResources.hasVmWedge && <Badge variant="warning">{t('SYSTEM_INSPECTOR_VM_WEDGE_DETECTED')}</Badge>}
       </div>
 
       <div className="rounded-md border border-border bg-muted/30 p-4 mb-4">
-        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-2">
-          {t('SYSTEM_INSPECTOR_DOCKER_RESOURCE_LIMITS')}
-        </div>
+        <div className="text-[11px] font-medium   text-muted-foreground mb-2">{t('SYSTEM_INSPECTOR_DOCKER_RESOURCE_LIMITS')}</div>
         <p className="text-sm text-muted-foreground leading-relaxed">{hostResources.platformGuidance}</p>
         {hostResources.recommendedDockerRamMb && (
           <p className="text-sm font-medium mt-2">
@@ -183,7 +184,7 @@ const HostResourcesSection = ({ hostResources }: { hostResources: NonNullable<Sy
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 border-t border-border pt-5">
         <div className="rounded-md border border-border p-4">
-          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-2">{t('SYSTEM_INSPECTOR_PHYSICAL_HOST')}</div>
+          <div className="text-[11px] font-medium   text-muted-foreground mb-2">{t('SYSTEM_INSPECTOR_PHYSICAL_HOST')}</div>
           <div className="text-sm">
             {t('COMMON_MEMORY')}: {hostResources.hostMemoryUsedGb} / {hostResources.hostMemoryTotalGb} GB
           </div>
@@ -193,9 +194,7 @@ const HostResourcesSection = ({ hostResources }: { hostResources: NonNullable<Sy
         </div>
         {hostResources.hasVmWedge && (
           <div className="rounded-md border border-border p-4">
-            <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-2">
-              {t('SYSTEM_INSPECTOR_DOCKER_VM_ALLOCATED')}
-            </div>
+            <div className="text-[11px] font-medium   text-muted-foreground mb-2">{t('SYSTEM_INSPECTOR_DOCKER_VM_ALLOCATED')}</div>
             <div className="text-sm">
               {t('COMMON_MEMORY')}: {hostResources.containerMemoryUsedGb ?? '—'} / {hostResources.containerMemoryTotalGb ?? '—'} GB
             </div>
@@ -227,10 +226,10 @@ const SystemHealthSection = ({ health }: { health: SystemHealth }) => {
   const { t } = useTranslation();
 
   return (
-    <section className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+    <section className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6">
       <div className="flex items-center gap-3 mb-5">
         <Activity className="h-6 w-6 text-primary" />
-        <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">{t('SYSTEM_INSPECTOR_SYSTEM_HEALTH')}</h2>
+        <h2 className="text-base font-medium   sm:text-lg">{t('SYSTEM_INSPECTOR_SYSTEM_HEALTH')}</h2>
       </div>
 
       <div className="grid grid-cols-2 gap-x-4 gap-y-5 border-t border-border pt-5 sm:grid-cols-2 lg:grid-cols-4">
@@ -260,17 +259,17 @@ const SystemHealthSection = ({ health }: { health: SystemHealth }) => {
 
       <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border pt-5 sm:grid-cols-4 text-sm">
         <div>
-          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">{t('COMMON_HOSTNAME')}</div>
+          <div className="text-[11px] font-medium   text-muted-foreground mb-0.5">{t('COMMON_HOSTNAME')}</div>
           <div className="text-xs truncate font-medium" title={health.hostname}>
             {health.hostname}
           </div>
         </div>
         <div>
-          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">{t('SYSTEM_INSPECTOR_DOCKER')}</div>
+          <div className="text-[11px] font-medium   text-muted-foreground mb-0.5">{t('SYSTEM_INSPECTOR_DOCKER')}</div>
           <div className="font-mono text-xs">{health.dockerVersion || t('COMMON_NOT_AVAILABLE_SHORT')}</div>
         </div>
         <div>
-          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">{t('SYSTEM_INSPECTOR_CONTAINERS')}</div>
+          <div className="text-[11px] font-medium   text-muted-foreground mb-0.5">{t('SYSTEM_INSPECTOR_CONTAINERS')}</div>
           <div className="flex gap-1.5 items-center flex-wrap">
             <Badge variant="success">
               {health.containerCount.running} {t('SYSTEM_INSPECTOR_RUNNING')}
@@ -283,7 +282,7 @@ const SystemHealthSection = ({ health }: { health: SystemHealth }) => {
           </div>
         </div>
         <div>
-          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">{t('SYSTEM_INSPECTOR_CPU_MODEL')}</div>
+          <div className="text-[11px] font-medium   text-muted-foreground mb-0.5">{t('SYSTEM_INSPECTOR_CPU_MODEL')}</div>
           <div className="text-xs truncate font-medium" title={health.cpu.model}>
             {health.cpu.model}
           </div>
@@ -302,10 +301,10 @@ const ContainersSection = ({ containers }: { containers: ContainerInfo[] }) => {
   const sorted = [...running, ...stopped];
 
   return (
-    <section className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+    <section className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6">
       <div className="flex items-center gap-3 mb-5">
         <Container className="h-6 w-6 text-primary shrink-0" />
-        <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">{t('SYSTEM_INSPECTOR_DOCKER_CONTAINERS')}</h2>
+        <h2 className="text-base font-medium   sm:text-lg">{t('SYSTEM_INSPECTOR_DOCKER_CONTAINERS')}</h2>
         <Badge>
           {containers.length} {t('SYSTEM_INSPECTOR_TOTAL')}
         </Badge>
@@ -382,10 +381,10 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
   const [showUntracked, setShowUntracked] = useState(true);
 
   return (
-    <section className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+    <section className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6">
       <div className="flex items-center gap-3 mb-5 flex-wrap">
         <Network className="h-6 w-6 text-primary shrink-0" />
-        <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">{t('SYSTEM_INSPECTOR_PORT_ALLOCATIONS')}</h2>
+        <h2 className="text-base font-medium   sm:text-lg">{t('SYSTEM_INSPECTOR_PORT_ALLOCATIONS')}</h2>
         <Badge>
           {ports.allocations.length} {t('SYSTEM_INSPECTOR_MANAGED')}
         </Badge>
@@ -433,7 +432,7 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
                           </span>
                         )}
                       </td>
-                      <td className="p-2 font-mono text-xs font-semibold">{p.hostPort}</td>
+                      <td className="p-2 font-mono text-xs font-medium">{p.hostPort}</td>
                       <td className="p-2 font-mono text-xs">{p.containerPort}</td>
                       <td className="p-2">
                         <Badge variant={p.protocol === 'udp' ? 'warning' : 'default'}>{p.protocol.toUpperCase()}</Badge>
@@ -453,7 +452,7 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
                             <AlertTriangle className="h-4 w-4 text-warning" />
                           </span>
                         </td>
-                        <td className="p-2 font-mono text-xs font-semibold">{u.port}</td>
+                        <td className="p-2 font-mono text-xs font-medium">{u.port}</td>
                         <td className="p-2 font-mono text-xs text-muted-foreground">-</td>
                         <td className="p-2">
                           <Badge variant="warning">?</Badge>
@@ -479,7 +478,7 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
                 )}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs font-semibold">
+                    <span className="font-mono text-xs font-medium">
                       {p.hostPort}→{p.containerPort}
                     </span>
                     <Badge variant={p.protocol === 'udp' ? 'warning' : 'default'}>{p.protocol.toUpperCase()}</Badge>
@@ -496,7 +495,7 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
                   <AlertTriangle className="h-4 w-4 text-warning shrink-0" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="font-mono text-xs font-semibold">{u.port}</span>
+                      <span className="font-mono text-xs font-medium">{u.port}</span>
                       <Badge variant="warning">{t('SYSTEM_INSPECTOR_UNTRACKED')}</Badge>
                     </div>
                     <div className="text-xs text-muted-foreground truncate">{u.process}</div>
@@ -522,10 +521,10 @@ const StorageSection = ({ appDataRootHostPath }: { appDataRootHostPath: string }
   const canOpen = canOpenFolderInFileExplorer();
 
   return (
-    <section className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+    <section className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6">
       <div className="flex items-center gap-3 mb-5">
         <HardDrive className="h-6 w-6 text-primary" />
-        <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">{t('SYSTEM_INSPECTOR_STORAGE')}</h2>
+        <h2 className="text-base font-medium   sm:text-lg">{t('SYSTEM_INSPECTOR_STORAGE')}</h2>
       </div>
 
       <div className="flex flex-col gap-3 border-t border-border pt-5 sm:flex-row sm:items-center sm:justify-between">

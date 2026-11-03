@@ -24,7 +24,7 @@ async function signInAndStartOnboarding(page: import('@playwright/test').Page) {
   await page.getByRole('button', { name: 'Login' }).click();
 
   // Wait for the onboarding wizard to appear
-  await expect(page.getByRole('heading', { name: 'Set Up Companion Hub' })).toBeVisible({ timeout: 15000 });
+  await expect(page.getByRole('heading', { name: 'Set up Companion Hub' })).toBeVisible({ timeout: 15000 });
 }
 
 /** Advance through Welcome → Discover to reach the AI Setup step. */

@@ -3,7 +3,7 @@ import { lifecycleJob } from '@/core/database/drizzle/schema';
 import type { LifecycleJob, NewLifecycleJob } from '@/core/database/drizzle/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Inject, Injectable } from '@nestjs/common';
-import { and, desc, eq, inArray, lt } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, notInArray } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 
 export type LifecycleJobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -31,6 +31,7 @@ export interface UpdateLifecycleJobParams {
 export interface ListLifecycleJobsFilter {
   appUrn?: string;
   operation?: string;
+  excludeOperations?: string[];
   status?: string | string[];
   limit?: number;
   offset?: number;
@@ -239,6 +240,9 @@ export class LifecycleJobService {
     }
     if (filter.operation) {
       conditions.push(eq(lifecycleJob.operation, filter.operation));
+    }
+    if (filter.excludeOperations?.length) {
+      conditions.push(notInArray(lifecycleJob.operation, filter.excludeOperations));
     }
     if (filter.status) {
       if (Array.isArray(filter.status)) {

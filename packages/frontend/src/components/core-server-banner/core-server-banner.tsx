@@ -19,7 +19,7 @@ export function CoreServerBanner({ onDismiss }: CoreServerBannerProps) {
       className="flex flex-col gap-3 rounded-lg border border-border/60 bg-muted/40 px-4 py-3 text-sm shadow-sm md:flex-row md:items-center md:justify-between"
     >
       <span className="leading-relaxed text-foreground">
-        <strong className="font-semibold text-foreground">{t('CORE_SERVER_BANNER_LOW_DISK_TITLE')}</strong>{' '}
+        <strong className="font-medium text-foreground">{t('CORE_SERVER_BANNER_LOW_DISK_TITLE')}</strong>{' '}
         <span className="text-muted-foreground">{t('CORE_SERVER_BANNER_LOW_DISK_MESSAGE')}</span>
       </span>
       <div className="flex shrink-0 items-center gap-2 self-start md:self-auto">

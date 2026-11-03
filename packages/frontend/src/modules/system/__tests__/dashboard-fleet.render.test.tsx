@@ -103,9 +103,7 @@ function feed(container: HTMLElement): HTMLTableElement {
 
 /** A rail stat's text, found by its label. */
 function railStat(container: HTMLElement, label: string): string {
-  const cell = [...container.querySelectorAll('span')].find(
-    (span) => span.textContent === label && span.className.includes('uppercase'),
-  )?.parentElement;
+  const cell = [...container.querySelectorAll('span')].find((span) => span.textContent === label)?.parentElement;
   expect(cell, `no rail stat labelled ${label}`).toBeTruthy();
 
   return cell?.textContent ?? '';

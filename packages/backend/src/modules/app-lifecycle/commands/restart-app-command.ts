@@ -1,5 +1,6 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { getEffectiveExposureMode } from '@/modules/apps/app-exposure.helpers';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
@@ -34,6 +35,9 @@ export class RestartAppCommand extends AppLifecycleCommand {
 
       await this.ensureAppDir(appUrn, form);
 
+      // Not `form.exposedLocal`, which a Private VPN app leaves off: its routes go through Traefik too.
+      const exposedThroughTraefik = getEffectiveExposureMode(form) !== 'local';
+
       logger.info(`Stopping app ${appUrn}`);
 
       await dockerService.composeApp(appUrn, 'down --remove-orphans').catch((err) => {
@@ -44,7 +48,7 @@ export class RestartAppCommand extends AppLifecycleCommand {
       // apps.yml still sends the app's routes to the addresses its old containers had, and a route
       // whose middlewares all live in the file provider (a Private VPN one, say) outlives them. Rebuilt
       // now, only the app's routes to the starting page stay (CI-Hub#1944) until compose up is done.
-      if (form.exposedLocal) {
+      if (exposedThroughTraefik) {
         await traefikConfigService.regenerateTraefikConfig(0);
       }
       await this.ensureAppDir(appUrn, form);
@@ -67,12 +71,20 @@ export class RestartAppCommand extends AppLifecycleCommand {
         },
       );
 
+      // `compose up` returning says nothing about a service that crashes as soon as it starts.
+      const notUp = await this.appCameUpError(appUrn);
+
       // TODO(#244): revisit on next Traefik upgrade
-      // Regenerate Traefik file-based config after app restarts (workaround for Docker API version issue)
-      if (form.exposedLocal) {
+      // Regenerate Traefik file-based config after app restarts (workaround for Docker API version issue).
+      // Also when a service failed, since the other containers stay up and go on serving. The check
+      // above is the wait for them to start.
+      if (exposedThroughTraefik) {
         logger.debug(`Regenerating Traefik config for restarted exposed app ${appUrn}`);
-        // Wait longer for container to fully start and network to be attached
-        await traefikConfigService.regenerateTraefikConfig(5000); // Wait 5s for container to fully start
+        await traefikConfigService.regenerateTraefikConfig(0);
+      }
+
+      if (notUp) {
+        throw notUp;
       }
 
       logger.info(`App ${appUrn} restarted`);

@@ -328,11 +328,11 @@ export function PoolActivity({
                           {inbound ? '↓' : '↑'}
                         </span>
                         {exhausted ? (
-                          <span className="italic text-destructive" title={t('DASHBOARD_ACTIVITY_FAILOVER_FROM', { nodes: failoverDetail })}>
+                          <span className=" text-destructive" title={t('DASHBOARD_ACTIVITY_FAILOVER_FROM', { nodes: failoverDetail })}>
                             {t('DASHBOARD_ROUTING_EXHAUSTED', { count: triedCount })}
                           </span>
                         ) : unplaced ? (
-                          <span className="italic text-destructive">{t('DASHBOARD_ROUTING_UNPLACED')}</span>
+                          <span className=" text-destructive">{t('DASHBOARD_ROUTING_UNPLACED')}</span>
                         ) : (
                           (entry.node ?? DASH).split('.')[0]
                         )}

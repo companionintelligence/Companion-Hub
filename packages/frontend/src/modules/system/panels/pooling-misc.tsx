@@ -125,7 +125,7 @@ export function PoolSummary({ pool, state, className }: { pool: PoolStatusSummar
         </StatChipRow>
         {pins.length > 0 ? (
           <div className="flex flex-wrap items-center gap-1.5 pt-1.5 text-[11px]">
-            <span className="uppercase tracking-[0.5px] text-muted-foreground">{t('DASHBOARD_PINS')}</span>
+            <span className="  text-muted-foreground">{t('DASHBOARD_PINS')}</span>
             {pins.map((pin) => (
               <span
                 key={`${pin.scope}-${pin.model ?? ''}-${pin.peerId ?? pin.targetKind}`}
@@ -168,7 +168,7 @@ export function CloudProviders({
         {rows.length === 0 ? (
           /* Empty is the normal state: cloud fallback is opt-in and most Hubs run local
              only. It must not read like a fetch that came back short. */
-          <p className="py-2.5 text-center text-[13px] italic text-muted-foreground">{t('DASHBOARD_CLOUD_EMPTY')}</p>
+          <p className="py-2.5 text-center text-[13px]  text-muted-foreground">{t('DASHBOARD_CLOUD_EMPTY')}</p>
         ) : (
           <div className="flex flex-wrap gap-1.5">
             {rows.map((provider) => (
@@ -270,7 +270,7 @@ export function MiscPanel({
         >
           {rows.map((row) => (
             <Tr key={row.label}>
-              <Td className="w-[42%] text-[11px] uppercase tracking-[0.5px] text-muted-foreground">{row.label}</Td>
+              <Td className="w-[42%] text-[11px]   text-muted-foreground">{row.label}</Td>
               <Td className={TONE_TEXT[row.tone ?? 'plain']}>
                 <span className="font-mono text-[12px]">{row.value}</span>
               </Td>

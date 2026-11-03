@@ -43,8 +43,7 @@ function renderTile(own: OwnInference, overrides: Partial<Parameters<typeof Infe
 }
 
 const chip = (container: HTMLElement, label: string) =>
-  [...container.querySelectorAll('span')].find((span) => span.textContent === label && span.className.includes('uppercase'))?.parentElement
-    ?.textContent;
+  [...container.querySelectorAll('span')].find((span) => span.textContent === label)?.parentElement?.textContent;
 
 describe('InferenceFromHere', () => {
   const EMPTY = inferenceFromHere([], WINDOW);

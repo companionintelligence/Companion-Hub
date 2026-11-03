@@ -198,6 +198,123 @@ describe('AppDetailsPage', () => {
     expect(screen.getByRole('img', { name: 'Test App' })).toHaveAttribute('src', '/app-not-found.jpg');
   });
 
+  describe('before the Hub has said whether the app is installed', () => {
+    const LISTING = { urn: 'test-app:community', name: 'Test App', categories: ['utilities'], version: '2026.11.2' };
+
+    const withRecord = (record: Record<string, unknown>) => {
+      useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
+        if (options.queryKey?.[0] === 'app-listing') {
+          return { data: { info: LISTING }, isLoading: false, isError: false };
+        }
+        if (options.queryKey?.[0] === 'app-image-size') {
+          return { data: { totalBytes: 1234, formatted: '1.2 KB' }, isLoading: false };
+        }
+        if (options.queryKey?.[0] === 'app') {
+          return record;
+        }
+        return { data: undefined, isLoading: false };
+      });
+    };
+
+    it('holds the actions and the version instead of offering Install from the listing', () => {
+      withRecord({ data: undefined, isLoading: true, isError: false });
+
+      render(<AppDetailsPage />);
+
+      expect(screen.getByRole('heading', { name: 'Test App' })).toBeInTheDocument();
+      expect(screen.queryByTestId('app-actions')).not.toBeInTheDocument();
+      expect(screen.getByTestId('app-actions-skeleton')).toBeInTheDocument();
+      expect(screen.queryByTestId('app-version')).not.toBeInTheDocument();
+      expect(screen.getByTestId('app-version-skeleton')).toBeInTheDocument();
+    });
+
+    it('shows the controls and the installed version once the Hub answers, not the catalog version', () => {
+      withRecord({
+        data: { info: { ...LISTING, version: '2026.10.28' }, app: { status: 'running' }, metadata: {} },
+        isLoading: false,
+        isError: false,
+      });
+
+      render(<AppDetailsPage />);
+
+      expect(screen.getByTestId('app-actions')).toHaveAttribute('data-status', 'running');
+      expect(screen.queryByTestId('app-actions-skeleton')).not.toBeInTheDocument();
+      expect(screen.getByTestId('app-version')).toHaveTextContent('v2026.10.28');
+    });
+
+    it('offers Install and the catalog version once the Hub says the app is not installed', () => {
+      withRecord({ data: { info: LISTING, app: null, metadata: {} }, isLoading: false, isError: false });
+
+      render(<AppDetailsPage />);
+
+      expect(screen.getByTestId('app-actions')).toHaveAttribute('data-status', 'none');
+      expect(screen.getByTestId('app-version')).toHaveTextContent('v2026.11.2');
+    });
+
+    it('does not hold the page when the record is refused', () => {
+      withRecord({ data: undefined, isLoading: false, isError: true, error: { message: 'APP_ACTION_GRANT_DENIED' } });
+
+      render(<AppDetailsPage />);
+
+      expect(screen.getByTestId('app-actions')).toBeInTheDocument();
+      expect(screen.getByTestId('app-version')).toHaveTextContent('v2026.11.2');
+    });
+
+    it('shows an install this page has out while the record is still on its way', () => {
+      useIsMutating.mockReturnValue(1);
+      withRecord({ data: undefined, isLoading: true, isError: false });
+
+      render(<AppDetailsPage />);
+
+      expect(screen.getByTestId('app-actions')).toHaveAttribute('data-status', 'installing');
+    });
+  });
+
+  describe('the version on the stats row', () => {
+    const withVersion = (version: string | undefined) => {
+      useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) =>
+        options.queryKey?.[0] === 'app-image-size'
+          ? { data: { totalBytes: 1234, formatted: '1.2 KB' }, isLoading: false }
+          : {
+              data: {
+                info: { urn: 'test-app:community', name: 'Test App', categories: ['utilities'], version },
+                app: { status: 'running' },
+                metadata: {},
+              },
+              isLoading: false,
+            },
+      );
+    };
+
+    it('comes first on the row', () => {
+      withVersion('2026.11.2');
+
+      render(<AppDetailsPage />);
+
+      expect(screen.getByTestId('app-header-stats').firstElementChild).toBe(screen.getByTestId('app-version'));
+    });
+
+    it.each([
+      ['2026.11.2', 'v2026.11.2'],
+      ['v2026.8.9', 'v2026.8.9'],
+      ['latest', 'latest'],
+    ])('reads %s as %s', (version, shown) => {
+      withVersion(version);
+
+      render(<AppDetailsPage />);
+
+      expect(screen.getByTestId('app-version').textContent).toBe(shown);
+    });
+
+    it('leaves the row as it was when the app names no version', () => {
+      withVersion(undefined);
+
+      render(<AppDetailsPage />);
+
+      expect(screen.queryByTestId('app-version')).not.toBeInTheDocument();
+    });
+  });
+
   it('keeps the summary card content and actions visible', () => {
     render(<AppDetailsPage />);
 

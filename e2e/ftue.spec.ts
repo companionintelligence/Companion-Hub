@@ -24,6 +24,6 @@ test.describe('First-Time User Experience', () => {
     await page.getByRole('button', { name: 'Login' }).click();
 
     // The first admin goes on to the onboarding wizard
-    await expect(page.getByRole('heading', { name: 'Set Up Companion Hub' })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('heading', { name: 'Set up Companion Hub' })).toBeVisible({ timeout: 15000 });
   });
 });

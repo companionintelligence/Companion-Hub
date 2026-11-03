@@ -679,6 +679,89 @@ describe('AppActions', () => {
     expect(container.querySelector('.hero-action-bar')).toBeInTheDocument();
   });
 
+  describe('why the app is down', () => {
+    const serviceFailure = { kind: 'restarting' as const, service: 'summary-service', exitCode: 126, logLine: 'permission denied' };
+    // This file's `t` answers with the key. `app-service-failure.test.ts` covers the words.
+    const text = 'APP_ERROR_SERVICE_WITH_LOG_LINE';
+
+    it('names the service and the reason where it said one or more containers exited', () => {
+      hoisted.queryClient.getQueryData.mockReturnValue({ message: 'keeps restarting in English', errorDetail: 'the logs', serviceFailure });
+
+      render(
+        <AppActions app={makeApp({ status: 'install_failed' })} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />,
+      );
+
+      expect(screen.getByRole('alert')).toHaveTextContent(text);
+      expect(screen.getByRole('alert')).toHaveAttribute('title', 'the logs');
+    });
+
+    it.each(['install_failed', 'stopped'] as const)('reads it off the app in a tab that heard no event, when the app is %s', (status) => {
+      hoisted.queryClient.getQueryData.mockReturnValue(null);
+
+      render(
+        <AppActions
+          app={makeApp({ status })}
+          metadata={metadata}
+          info={info}
+          failure={{ message: 'keeps restarting in English', serviceFailure }}
+          urlAvailability={idleAvailability}
+          layout="hero"
+        />,
+      );
+
+      expect(screen.getByRole('alert')).toHaveTextContent(text);
+    });
+
+    it('takes the reason on the app over the event, which leaves out the log line', () => {
+      hoisted.queryClient.getQueryData.mockReturnValue({
+        message: 'from the event',
+        serviceFailure: { kind: 'restarting', service: 'summary-service' },
+      });
+
+      render(
+        <AppActions
+          app={makeApp({ status: 'install_failed' })}
+          metadata={metadata}
+          info={info}
+          failure={{ message: 'keeps restarting in English', errorDetail: 'the logs', serviceFailure }}
+          urlAvailability={idleAvailability}
+          layout="hero"
+        />,
+      );
+
+      expect(screen.getByRole('alert')).toHaveTextContent(text);
+      expect(screen.getByRole('alert')).toHaveAttribute('title', 'the logs');
+    });
+
+    it('falls back on the event for someone the app does not give the reason to', () => {
+      hoisted.queryClient.getQueryData.mockReturnValue({
+        message: 'from the event',
+        serviceFailure: { kind: 'restarting', service: 'summary-service' },
+      });
+
+      render(<AppActions app={makeApp({ status: 'stopped' })} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+
+      expect(screen.getByRole('alert')).toHaveTextContent('APP_ERROR_SERVICE_KEEPS_RESTARTING');
+    });
+
+    it('drops it while the app is being worked on again, before the read catches up', () => {
+      hoisted.queryClient.getQueryData.mockReturnValue(null);
+
+      render(
+        <AppActions
+          app={makeApp({ status: 'starting' })}
+          metadata={metadata}
+          info={info}
+          failure={{ message: 'keeps restarting in English', serviceFailure }}
+          urlAvailability={idleAvailability}
+          layout="hero"
+        />,
+      );
+
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+  });
+
   it('uses the taller amber retry install button styling for failed installs', () => {
     hoisted.queryClient.getQueryData.mockReturnValue(null);
 
@@ -775,6 +858,50 @@ describe('AppActions', () => {
    * account with no linked Portal identity also gets start, stop and restart. Nothing is shown that the
    * Hub would refuse.
    */
+  describe.each(['running', 'stopped'] as const)('offering an update on a %s app', (status) => {
+    const UPDATE = 'icon-action-common_update';
+    const IGNORE = 'icon-action-app_action_ignore_version';
+    const UNIGNORE = 'icon-action-app_action_unignore_version';
+    const shown = () => [UPDATE, IGNORE, UNIGNORE].filter((id) => screen.queryByTestId(id));
+
+    const renderOffer = (latest: AppMetadata, ignoredVersion?: number) =>
+      render(
+        <MemoryRouter>
+          <AppActions
+            app={makeApp({ status, version: 8, ignoredVersion })}
+            metadata={latest}
+            info={makeInfo({ version: '2026.10.28', cihub_app_version: 8 })}
+            urlAvailability={idleAvailability}
+          />
+        </MemoryRouter>,
+      );
+
+    it('offers nothing when the app is up to date', () => {
+      renderOffer({ latestVersion: 8, latestDockerVersion: '2026.10.28' });
+      expect(shown()).toEqual([]);
+    });
+
+    it('offers a newer version whose counter did not change, without an ignore that could not hide it', () => {
+      renderOffer({ latestVersion: 8, latestDockerVersion: '2026.11.2' });
+      expect(shown()).toEqual([UPDATE]);
+    });
+
+    it('offers a raised counter and lets it be ignored', () => {
+      renderOffer({ latestVersion: 9, latestDockerVersion: '2026.10.28' });
+      expect(shown()).toEqual([UPDATE, IGNORE]);
+    });
+
+    it('hides an ignored counter and offers to stop ignoring it', () => {
+      renderOffer({ latestVersion: 9, latestDockerVersion: '2026.10.28' }, 9);
+      expect(shown()).toEqual([UNIGNORE]);
+    });
+
+    it('still offers a newer version beside an ignored counter', () => {
+      renderOffer({ latestVersion: 9, latestDockerVersion: '2026.11.2' }, 9);
+      expect(shown()).toEqual([UPDATE, UNIGNORE]);
+    });
+  });
+
   describe('the actions a person may use', () => {
     const customInfo = makeInfo({ urn: 'whoami-check:_user', id: 'whoami-check', no_gui: false });
     const renderCustom = (status: AppDetails['status'], allowedActions?: readonly string[]) =>

@@ -264,11 +264,12 @@ export default function PortExposeCreatePage() {
                   </>
                 }
                 {...register('name')}
+                aria-describedby="port-expose-name-help"
                 error={errors.name?.message}
                 placeholder={t('CUSTOM_APP_NAME_PLACEHOLDER')}
                 disabled={createPortExpose.isPending}
               />
-              <p className="text-xs text-muted-foreground -mt-2">
+              <p id="port-expose-name-help" className="text-xs text-muted-foreground -mt-2">
                 {t('CUSTOM_APP_NAME_HELP')}
                 {watchName && derivedSlug ? ` ${t('CUSTOM_APP_NAME_DERIVED', { slug: derivedSlug })}` : ''}
               </p>
@@ -283,19 +284,24 @@ export default function PortExposeCreatePage() {
                 min={1024}
                 max={65535}
                 {...register('port')}
+                aria-describedby="port-expose-port-help"
                 error={errors.port?.message}
                 placeholder={t('PORT_EXPOSE_PORT_PLACEHOLDER')}
                 disabled={createPortExpose.isPending}
               />
-              <p className="text-xs text-muted-foreground -mt-2">{t('PORT_EXPOSE_PORT_HELP')}</p>
+              <p id="port-expose-port-help" className="text-xs text-muted-foreground -mt-2">
+                {t('PORT_EXPOSE_PORT_HELP')}
+              </p>
 
               <div>
-                <span className="block text-sm font-medium mb-1">{t('APP_INSTALL_FORM_EXPOSURE_MODE')}</span>
+                <span id="port-expose-exposure-mode-label" className="block text-sm font-medium mb-1">
+                  {t('APP_INSTALL_FORM_EXPOSURE_MODE')}
+                </span>
                 <Controller
                   control={control}
                   name="exposureMode"
                   render={({ field: { onChange, value } }) => (
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    <fieldset aria-labelledby="port-expose-exposure-mode-label" className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-3">
                       {(
                         [
                           { key: 'local', label: t('APP_INSTALL_FORM_EXPOSURE_LOCAL'), available: true, tooltip: '' },
@@ -318,6 +324,7 @@ export default function PortExposeCreatePage() {
                           <div key={option.key} className="relative">
                             <button
                               type="button"
+                              aria-pressed={value === option.key}
                               disabled={isDisabled}
                               data-tooltip-id={`port-expose-exposure-${option.key}`}
                               data-tooltip-content={option.available ? undefined : option.tooltip}
@@ -336,7 +343,7 @@ export default function PortExposeCreatePage() {
                           </div>
                         );
                       })}
-                    </div>
+                    </fieldset>
                   )}
                 />
                 {!tailscaleAvailable && (

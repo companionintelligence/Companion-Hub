@@ -25,7 +25,7 @@ const VllmProbeError = ({ error }: { error: string }) => {
     >
       <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
       <div className="min-w-0">
-        <p className="text-sm font-semibold text-destructive">
+        <p className="text-sm font-medium text-destructive">
           {authFailure ? t('ONBOARDING_VLLM_PROBE_ERROR_AUTH_TITLE') : t('ONBOARDING_VLLM_PROBE_ERROR_TITLE')}
         </p>
         <p className="mt-1 break-all font-mono text-xs text-destructive/90">{error}</p>

@@ -138,7 +138,7 @@ export const BackendSelectionCard = ({
     <>
       {!embedded && (
         <>
-          <h3 className="mb-1 text-sm font-semibold" data-testid="backend-card-title">
+          <h3 className="mb-1 text-sm font-medium" data-testid="backend-card-title">
             {t('ONBOARDING_INFERENCE_BACKEND')}
           </h3>
           <p className="mb-3 text-xs text-muted-foreground">{t('ONBOARDING_INFERENCE_BACKEND_DESC')}</p>

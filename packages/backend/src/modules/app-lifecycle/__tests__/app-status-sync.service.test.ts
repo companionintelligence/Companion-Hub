@@ -85,6 +85,75 @@ describe('AppStatusSyncService', () => {
     expect(result.skippedCount).toBe(1);
   });
 
+  describe('an app that failed to come up', () => {
+    const failed = (status: string) => [{ id: 7, appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status, updatedAt: new Date().toISOString() }];
+    const labelled = (id: string, State: string, Status: string) => ({
+      Id: id,
+      State,
+      Status,
+      Labels: { 'ci-hub.appurn': 'ci-memory:ci-marketplace' },
+    });
+
+    it.each([
+      ['a service crash-looping', [labelled('web', 'running', 'Up 4 minutes'), labelled('summary', 'restarting', 'Restarting (126) 3 seconds ago')]],
+      ['a container left Created by a compose up that failed (#2041)', [labelled('openclaw', 'created', 'Created')]],
+      [
+        'a service that exited with an error',
+        [labelled('web', 'running', 'Up 4 minutes'), labelled('migrate', 'exited', 'Exited (1) 4 minutes ago')],
+      ],
+      ['every container stopped', [labelled('web', 'exited', 'Exited (0) 4 minutes ago')]],
+    ])('stays install_failed with %s, so the failure message and Retry install stay', async (_name, containers) => {
+      appRepository.getApps.mockResolvedValue(failed('install_failed') as never);
+      docker.listContainers.mockResolvedValue(containers as never);
+
+      await service.syncAllAppStatuses();
+
+      expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+      expect(sseService.emit).not.toHaveBeenCalled();
+      expect(agentNotifyService.notify).not.toHaveBeenCalled();
+      expect(errorReportingService.reportAppFailure).not.toHaveBeenCalled();
+    });
+
+    it('reaches running by itself once its containers have come good', async () => {
+      appRepository.getApps.mockResolvedValue(failed('install_failed') as never);
+      docker.listContainers.mockResolvedValue([labelled('web', 'running', 'Up 4 minutes'), labelled('summary', 'running', 'Up 2 minutes')] as never);
+
+      await service.syncAllAppStatuses();
+
+      expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'install_failed', { status: 'running' });
+      expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'status_change', appUrn: 'ci-memory:ci-marketplace', appStatus: 'running' });
+      expect(agentNotifyService.notify).not.toHaveBeenCalled();
+    });
+
+    it.each(['install_failed', 'stopped'])('stays %s when the look lands on a crash loop between two crashes', async (status) => {
+      appRepository.getApps.mockResolvedValue(failed(status) as never);
+      docker.listContainers.mockResolvedValue([labelled('web', 'running', 'Up 4 minutes'), labelled('summary', 'running', 'Up 3 seconds')] as never);
+
+      await service.syncAllAppStatuses();
+
+      expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    });
+
+    it('still moves a stopped app whose containers have been up a while to running', async () => {
+      appRepository.getApps.mockResolvedValue(failed('stopped') as never);
+      docker.listContainers.mockResolvedValue([labelled('web', 'running', 'Up About a minute')] as never);
+
+      await service.syncAllAppStatuses();
+
+      expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'stopped', { status: 'running' });
+    });
+
+    it('still reports a running app that started crashing as a crash', async () => {
+      appRepository.getApps.mockResolvedValue(failed('running') as never);
+      docker.listContainers.mockResolvedValue([labelled('summary', 'restarting', 'Restarting (126) 3 seconds ago')] as never);
+
+      await service.syncAllAppStatuses();
+
+      expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { status: 'stopped' });
+      expect(agentNotifyService.notify).toHaveBeenCalledWith('app.crashed', expect.objectContaining({ appUrn: 'ci-memory:ci-marketplace' }), 'high');
+    });
+  });
+
   it('does not mark installing apps as missing while no containers exist within the pull grace', async () => {
     const updatedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
     appRepository.getApps.mockResolvedValue([
@@ -589,7 +658,7 @@ describe('AppStatusSyncService', () => {
     expect(errorReportingService.captureWarning).not.toHaveBeenCalled();
   });
 
-  it('attaches container logs when reporting a running → stopped crash', async () => {
+  it('reports a running → stopped crash without sending app logs to telemetry', async () => {
     appRepository.getApps.mockResolvedValue([
       {
         id: 9,
@@ -617,9 +686,10 @@ describe('AppStatusSyncService', () => {
     expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
       appUrn: 'remotion-studio:ci-marketplace',
       phase: 'crash',
-      message: expect.stringContaining('Error: out of memory'),
-      containers: [{ name: 'remotion-studio_ci-marketplace-1', state: 'Exited (1)', logs: 'Error: out of memory' }],
+      message: 'App transitioned from running to stopped during status sync\nremotion-studio_ci-marketplace-1 (Exited (1))',
+      containers: [{ name: 'remotion-studio_ci-marketplace-1', state: 'Exited (1)' }],
     });
+    expect(JSON.stringify(errorReportingService.reportAppFailure.mock.calls)).not.toContain('Error: out of memory');
   });
 
   describe('app containers without an app row', () => {

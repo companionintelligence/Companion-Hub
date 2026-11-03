@@ -166,7 +166,7 @@ describe('DeviceRegistrationPage', () => {
     expect(deviceId).toHaveClass('truncate');
     expect(deviceId).toHaveAttribute('title', 'device-123');
     expect(setHubSentryDeviceId).toHaveBeenCalledWith('device-123');
-    expect(screen.getByLabelText('Enter Pairing Code:')).toBeInTheDocument();
+    expect(screen.getByLabelText('Enter pairing code:')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Sign in to CI Account' })).toHaveAttribute('href', 'https://portal.example.com');
     expect(screen.getByRole('link', { name: 'Create account' })).toHaveAttribute(
       'href',
@@ -228,7 +228,7 @@ describe('DeviceRegistrationPage', () => {
     render(<DeviceRegistrationPage />);
 
     expect(await screen.findByRole('heading', { name: 'Registration status temporarily unavailable' })).toBeInTheDocument();
-    expect(screen.queryByLabelText('Enter Pairing Code:')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Enter pairing code:')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry status check' })).toBeInTheDocument();
     expect(navigate).not.toHaveBeenCalled();
   });
@@ -378,7 +378,7 @@ describe('DeviceRegistrationPage', () => {
       await vi.advanceTimersByTimeAsync(0);
     });
 
-    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.change(screen.getByLabelText('Enter pairing code:'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
@@ -410,7 +410,7 @@ describe('DeviceRegistrationPage', () => {
       await vi.advanceTimersByTimeAsync(0);
     });
 
-    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.change(screen.getByLabelText('Enter pairing code:'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
     for (let interval = 0; interval < 12; interval++) {
       await act(async () => {
@@ -427,7 +427,7 @@ describe('DeviceRegistrationPage', () => {
     fetchRegistrationStatusResult.mockResolvedValueOnce(statusOk('unregistered')).mockResolvedValue(statusOk('paired'));
 
     render(<DeviceRegistrationPage />);
-    fireEvent.change(await screen.findByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.change(await screen.findByLabelText('Enter pairing code:'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
     expect(await screen.findByRole('heading', { name: 'Provisioning your domain' })).toBeInTheDocument();
@@ -443,7 +443,7 @@ describe('DeviceRegistrationPage', () => {
 
     expect(screen.getByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.change(screen.getByLabelText('Enter pairing code:'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
     await waitFor(() => {
@@ -472,7 +472,7 @@ describe('DeviceRegistrationPage', () => {
     render(<DeviceRegistrationPage />);
     await flushAsyncWork();
 
-    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.change(screen.getByLabelText('Enter pairing code:'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
     await waitFor(() => {
@@ -496,7 +496,7 @@ describe('DeviceRegistrationPage', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.change(screen.getByLabelText('Enter pairing code:'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
@@ -513,7 +513,7 @@ describe('DeviceRegistrationPage', () => {
     expect(screen.getByText(portalTimeout)).toBeInTheDocument();
 
     // Once the person starts on a new code, the dialog asks for its choice again.
-    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'XYZ789' } });
+    fireEvent.change(screen.getByLabelText('Enter pairing code:'), { target: { value: 'XYZ789' } });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
@@ -549,7 +549,7 @@ describe('DeviceRegistrationPage', () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
     expect(fetchRegistrationStateDrift).toHaveBeenCalledTimes(2);
-    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.change(screen.getByLabelText('Enter pairing code:'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
     // It answers mid-attempt: the attempt reached the Portal, so it finds the device there.
@@ -670,7 +670,7 @@ describe('DeviceRegistrationPage', () => {
       pairWithCode.mockResolvedValue({ ok: true, status: 201, data: { success: false, ...data } });
 
       render(<DeviceRegistrationPage />);
-      fireEvent.change(await screen.findByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+      fireEvent.change(await screen.findByLabelText('Enter pairing code:'), { target: { value: 'ABC123' } });
       fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
       await waitFor(() => {
@@ -851,7 +851,7 @@ describe('DeviceRegistrationPage', () => {
     render(<DeviceRegistrationPage />);
 
     // The pairing form renders so the user can re-pair...
-    expect(await screen.findByLabelText('Enter Pairing Code:')).toBeInTheDocument();
+    expect(await screen.findByLabelText('Enter pairing code:')).toBeInTheDocument();
     // ...with an explanation of why remote access needs attention...
     expect(screen.getByText(/public URL is offline/i)).toBeInTheDocument();
     // ...device info is loaded so the device ID is shown (not stuck "Loading device ID...")...
@@ -976,7 +976,7 @@ describe('DeviceRegistrationPage', () => {
 
       await waitFor(() => expect(toast.error).toHaveBeenCalledWith('That pairing code is no longer valid. Ask for a new one.'));
       // The code stays in the box, so Register can still retry it by hand.
-      expect(screen.getByLabelText('Enter Pairing Code:')).toHaveValue('GHI789');
+      expect(screen.getByLabelText('Enter pairing code:')).toHaveValue('GHI789');
 
       first.unmount();
       await openScreenAgain();

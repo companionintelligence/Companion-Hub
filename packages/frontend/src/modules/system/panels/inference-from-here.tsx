@@ -88,7 +88,7 @@ export function InferenceFromHere({
         <div data-testid="inference-from-here" className="space-y-2">
           {own.requests === 0 ? (
             emptyLine ? (
-              <p className="py-3 text-center text-[13px] italic text-muted-foreground">{emptyLine}</p>
+              <p className="py-3 text-center text-[13px]  text-muted-foreground">{emptyLine}</p>
             ) : null
           ) : (
             <>
@@ -153,7 +153,7 @@ export function InferenceFromHere({
 
               {own.models.length > 0 ? (
                 <div className="space-y-0.5 border-t border-border pt-1.5 text-[11px]">
-                  <p className="uppercase tracking-[0.5px] text-muted-foreground">{t('DASHBOARD_OWN_TOP_MODELS')}</p>
+                  <p className="  text-muted-foreground">{t('DASHBOARD_OWN_TOP_MODELS')}</p>
                   <ul data-testid="inference-from-here-models" className="space-y-0.5">
                     {own.models.map((row) => (
                       <li key={row.model} className="flex items-baseline gap-2">
