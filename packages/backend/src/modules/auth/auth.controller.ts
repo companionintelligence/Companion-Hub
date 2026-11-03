@@ -1,3 +1,4 @@
+import { isUtf8 } from 'node:buffer';
 import crypto from 'node:crypto';
 import net from 'node:net';
 import { APP_SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME } from '@/common/constants';
@@ -162,9 +163,65 @@ interface EdgeSsoTicket {
  */
 const FORWARD_AUTH_APP_PUBLIC_PREFIXES = ['/api/authenticate', '/api/health', '/api/keys', '/powersync', '/static'] as const;
 
+/** Memory's object keys are UUIDs, so its signed links need no decoding. A literal `%2F` in a key would take two rounds. */
+const MAX_FORWARDED_PATH_DECODE_ROUNDS = 4;
+
+/**
+ * One round of percent-decoding, or null when the bytes are not text a path can hold: invalid UTF-8
+ * or a control character. A `%` with no two hex digits after it stays as it is, because after the
+ * first round that is a percent sign in a file name.
+ */
+function decodeForwardedPathOnce(path: string): string | null {
+  let readable = true;
+  const decoded = path.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+    const bytes = Buffer.from(run.replaceAll('%', ''), 'hex');
+    readable &&= isUtf8(bytes) && !bytes.some((byte) => byte < 0x20 || byte === 0x7f);
+    return bytes.toString('utf8');
+  });
+  return readable ? decoded : null;
+}
+
+/** Whether one form of a path is inside an exempt prefix with no dot segment, a backslash counting as a slash. */
+function staysInsidePublicPrefix(path: string): boolean {
+  if (!FORWARD_AUTH_APP_PUBLIC_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`))) {
+    return false;
+  }
+  return !path
+    .replaceAll('\\', '/')
+    .split('/')
+    .some((segment) => segment === '.' || segment === '..');
+}
+
+/**
+ * Whether a forwarded request is for one of those paths, judged on what Memory ends up serving.
+ *
+ * `X-Forwarded-Uri` holds the path as the client sent it. Memory's gateway decodes it and resolves
+ * dot segments before it picks a route. How many times a path gets decoded on its way depends on the
+ * hop, so the text as sent says little about the route it reaches. The path therefore has to pass as
+ * sent and again after every round of decoding. Only the path counts: the query belongs to the app,
+ * so a signed link's `%2F`s there mean nothing here. A path that cannot be read, or is still encoded
+ * after the last round, is not exempt and goes to the login like any other request.
+ */
 function isForwardAuthAppPublicPath(uri: string): boolean {
-  const path = (uri.split('?')[0] || '/').replace(/\/+$/, '') || '/';
-  return FORWARD_AUTH_APP_PUBLIC_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+  let path = uri.split('?')[0] || '/';
+  // Neither Traefik nor the gateway accepts this in a request line, so only a malformed request has it.
+  if (/%(?![0-9a-f]{2})/i.test(path)) {
+    return false;
+  }
+  for (let round = 0; round <= MAX_FORWARDED_PATH_DECODE_ROUNDS; round++) {
+    if (!staysInsidePublicPrefix(path)) {
+      return false;
+    }
+    const decoded = decodeForwardedPathOnce(path);
+    if (decoded === null) {
+      return false;
+    }
+    if (decoded === path) {
+      return true;
+    }
+    path = decoded;
+  }
+  return false;
 }
 
 function translatableErrorKey(error: unknown): string {
@@ -1614,7 +1671,7 @@ export class AuthController {
     // any other anonymous one. Resolved from the forwarded host, which Traefik sets from the
     // router that matched — not from anything the client sent.
     const apiKey = requestApiKey(req);
-    const selfAuthenticating = isForwardAuthAppPublicPath(cleanUri) || isCorsPreflight(req);
+    const selfAuthenticating = !forwardAuthUser && (isForwardAuthAppPublicPath(cleanUri) || isCorsPreflight(req));
     if (!forwardAuthUser && (selfAuthenticating || apiKey)) {
       if (await this.isMemoryProviderHost(forwardedHost)) {
         if (selfAuthenticating || !apiKey) {

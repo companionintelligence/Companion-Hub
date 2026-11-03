@@ -625,6 +625,153 @@ describe('AuthController', () => {
       }
     });
 
+    describe('which forwarded paths on Memory skip the Hub login', () => {
+      const memoryHost = 'ci-memory-core3-team.companionintelligence.com';
+
+      async function forwardAuth(uri: string, headers: Record<string, string> = {}) {
+        const req = {
+          user: undefined,
+          headers: { 'x-forwarded-host': memoryHost, 'x-forwarded-uri': uri, 'x-forwarded-proto': 'https', ...headers },
+        } as unknown as Request;
+        const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), redirect: vi.fn(), setHeader: vi.fn() } as unknown as Response;
+
+        await authController.traefik(req, res);
+
+        return res;
+      }
+
+      beforeEach(() => {
+        forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('ci-memory:ci-marketplace' as never);
+      });
+
+      it.each([
+        // Resolve to a path outside the prefix, through an encoded slash.
+        '/powersync/..%2f',
+        '/powersync/..%2fapi/graphql',
+        '/powersync/..%2Fapi/graphql',
+        '/static/..%2f',
+        '/static/..%2fapi/graphql',
+        '/api/health/..%2f..%2f',
+        '/api/health/..%2f..%2fapi/graphql',
+        '/api/keys/..%2f..%2f',
+        '/api/keys/..%2f..%2fapi/graphql',
+        '/api/authenticate/..%2f..%2f',
+        '/api/authenticate/..%2f..%2fapi/graphql',
+        '/api/authenticate/hub-bridge/..%2f..%2f..%2fapi/graphql',
+        // Encoded dots, then a query that must not hide the path.
+        '/powersync/%2e%2e/api/graphql',
+        '/powersync/%2E%2E%2Fapi%2Fgraphql',
+        '/powersync/.%2e/api/graphql',
+        '/powersync/%2e./api/graphql',
+        '/powersync/%2e/sync/stream',
+        '/powersync/..%2fapi/graphql?x=1',
+        // Literal dot segments, which Traefik normally resolves before this check.
+        '/powersync/../api/graphql',
+        '/static/../',
+        '/powersync/./sync/stream',
+        '/powersync/..',
+        // Encoded more than once.
+        '/powersync/%252e%252e%252fapi/graphql',
+        '/powersync/..%252fapi/graphql',
+        '/static/%25252e%25252e%25252f',
+        '/powersync/%%32%65%%32%65/api/graphql',
+        '/powersync/%25%32%65%25%32%65%25%32%66api/graphql',
+        // Backslashes count as slashes.
+        '/powersync/..%5capi/graphql',
+        '/powersync/..%5Capi/graphql',
+        '/powersync/..\\api/graphql',
+        '/static/%2e%2e%5c',
+        '/static/..%255c',
+        // Not safely readable, or still encoded after the last round.
+        '/powersync/%c0%ae%c0%ae%c0%af',
+        '/powersync/%ff/sync/stream',
+        '/powersync/x%00/sync/stream',
+        '/powersync/x%0a/sync/stream',
+        '/powersync/%zz',
+        '/powersync/%',
+        '/powersync/%2525252525252e',
+        // Exempt only once decoded. The gateway may not decode these as far as this check could.
+        '/%70owersync/sync/stream',
+        '/%2570owersync/sync/stream',
+        '/%2573tatic/ci-files/824bc2c5-f25c-4b6d-b836-7cd0accdae4c',
+        '/powersync%2fsync/stream',
+        '/powersync%5csync/stream',
+        '/powersync\\sync/stream',
+        '/static%252fci-files/x',
+        '/x/..%2fpowersync/sync/stream',
+        '/x/../powersync/sync/stream',
+        // Start like a prefix without being under it.
+        '/powersyncx/sync/stream',
+        '/static..%2fapi/graphql',
+        // The app itself.
+        '/',
+        '/api/graphql',
+        '/index.html',
+      ])('sends %s to the login', async (uri) => {
+        const res = await forwardAuth(uri);
+
+        expect(res.status).toHaveBeenCalledWith(302);
+        expect(res.status).not.toHaveBeenCalledWith(200);
+        expect(res.redirect).toHaveBeenCalledTimes(1);
+      });
+
+      it.each([
+        '/api/health',
+        '/api/health/',
+        '/api/keys',
+        '/api/keys/verify',
+        '/api/authenticate',
+        '/api/authenticate/csrf',
+        '/api/authenticate/hub-bridge',
+        '/api/authenticate/oidc/native/exchange',
+        '/api/authenticate/oidc?client=native&code_challenge=abc%2Fdef&redirect=%2Fshared%2Fabc',
+        '/powersync',
+        '/powersync/',
+        '/powersync//',
+        '/powersync/%2f',
+        '/powersync/sync/stream',
+        '/powersync/sync/stream?connection_id=a%2Fb',
+        '/powersync/write-checkpoint2.json?client_id=b1f4c2d0-9a3e-4d11-8c55-1e2f3a4b5c6d',
+        '/powersync/probes/liveness',
+        // What Memory's API signs: the object key is a path, the file's name is in the query.
+        '/static/ci-files/824bc2c5-f25c-4b6d-b836-7cd0accdae4c?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=minio%2F20261102%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20261102T101500Z&X-Amz-Expires=300&X-Amz-Signature=abc&X-Amz-SignedHeaders=host&response-content-disposition=attachment%3B%20filename%3D%22a%2F..%2Fb.pdf%22&response-content-type=application%2Fpdf',
+        // Object keys Memory does not mint today (its keys are UUIDs), encoded as its signer would.
+        '/static/ci-files/folder/photo.jpg?X-Amz-Signature=abc',
+        '/static/ci-files/my%20photo%20%281%29.jpg?X-Amz-Signature=abc',
+        '/static/ci-files/caf%C3%A9.jpg?X-Amz-Signature=abc',
+        '/static/ci-files/100%25.jpg?X-Amz-Signature=abc',
+        '/static/ci-files/50%25%20off.jpg?X-Amz-Signature=abc',
+        '/static/ci-files/a%252Fb.jpg?X-Amz-Signature=abc',
+        '/static/ci-files/a%2Fb.jpg?X-Amz-Signature=abc',
+        '/static/ci-files/a..b/c...d.jpg?X-Amz-Signature=abc',
+        '/static/ci-files/.hidden/..photo.jpg?X-Amz-Signature=abc',
+      ])('lets %s through', async (uri) => {
+        const res = await forwardAuth(uri);
+
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(res.redirect).not.toHaveBeenCalled();
+      });
+
+      it('leaves a preflight alone whatever its path, since it returns no data', async () => {
+        const res = await forwardAuth('/powersync/..%2fapi/graphql', {
+          'x-forwarded-method': 'OPTIONS',
+          origin: 'https://localhost',
+          'access-control-request-method': 'POST',
+        });
+
+        expect(res.status).toHaveBeenCalledWith(200);
+      });
+
+      it('asks Memory about an API key on a path that is not exempt once decoded', async () => {
+        memoryApiKeys.check.mockResolvedValue('invalid');
+
+        const res = await forwardAuth('/powersync/..%2fapi/graphql', { 'x-api-key': 'mem_live_abc' });
+
+        expect(memoryApiKeys.check).toHaveBeenCalledWith('mem_live_abc');
+        expect(res.status).toHaveBeenCalledWith(401);
+      });
+    });
+
     describe('a Memory API key is checked with Memory before it passes', () => {
       const memoryHost = 'ci-memory-core3-team.companionintelligence.com';
 
