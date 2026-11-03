@@ -92,6 +92,9 @@ export default defineConfig(({ mode }) => {
 
   const alias: Record<string, string> = {
     '@': path.resolve(__dirname, './src'),
+    // The vendored native sign-in runtime imports the Portal identity subpaths (`@companionintelligence/auth/<name>`),
+    // which live in the vendored CI Common auth copy. See ci-common.vendor.json.
+    '@companionintelligence/auth': path.resolve(__dirname, './src/vendor/ci-common/auth'),
   };
   // failOnExternalizedBuiltins turns Vite's "Module "node:x" has been externalized for browser compatibility" warning into a
   // build error (#2037: better-ajv-errors 3.x imported node:util, the build passed, the compose editor broke in the browser).

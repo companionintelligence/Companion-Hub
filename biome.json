@@ -28,7 +28,9 @@
       "!**/src-tauri/gen",
       "!**/*.generated.ts",
       "!**/*.lottie.json",
-      "!**/packages/frontend/index.html"
+      "!**/packages/frontend/index.html",
+      "!**/packages/frontend/src/vendor",
+      "!**/packages/desktop/src-tauri/vendor"
     ]
   },
   "formatter": {
