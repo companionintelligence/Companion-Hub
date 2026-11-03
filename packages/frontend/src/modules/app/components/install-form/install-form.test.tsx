@@ -319,6 +319,88 @@ describe('InstallForm', () => {
     ]);
   });
 
+  describe('an app whose listing needs a public address', () => {
+    const info = {
+      urn: 'matrix-conduit:store',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+      force_expose: true,
+      port: 6167,
+    } as unknown as AppInfo;
+    const onValidityChange = vi.fn();
+
+    const renderForm = (props: Partial<ComponentProps<typeof InstallForm>> = {}, context: { cloudflareAvailable?: boolean } = {}) => {
+      vi.mocked(useAppContext).mockReturnValue({
+        ...createContext(false),
+        tailscaleAvailable: true,
+        ...context,
+      } as unknown as ReturnType<typeof useAppContext>);
+
+      return render(
+        <MemoryRouter>
+          <InstallForm info={info} onSubmit={vi.fn()} formId="test-form" formFields={[]} onValidityChange={onValidityChange} {...props} />
+        </MemoryRouter>,
+      );
+    };
+
+    it('offers only Public web and says why', async () => {
+      renderForm();
+
+      expect(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_LOCAL' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'COMMON_PRIVATE_VPN' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' })).toBeEnabled();
+      expect(screen.getByText('APP_INSTALL_FORM_EXPOSURE_PUBLIC_WEB_ONLY')).toBeInTheDocument();
+      await waitFor(() => expect(onValidityChange).toHaveBeenLastCalledWith(true));
+    });
+
+    it('submits Public web with nothing that needs a typed domain', async () => {
+      const onSubmit = vi.fn();
+      renderForm({ onSubmit });
+
+      await waitFor(() => expect(onValidityChange).toHaveBeenLastCalledWith(true));
+      fireEvent.submit(document.getElementById('test-form') as HTMLFormElement);
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+      const [submitted] = onSubmit.mock.calls[0] as [Record<string, unknown>];
+      expect(submitted).toMatchObject({ exposureMode: 'cloudflare', exposedLocal: true });
+      expect(submitted.exposed).toBeUndefined();
+    });
+
+    it('keeps Install off where this Hub has no Public web', async () => {
+      renderForm({}, { cloudflareAvailable: false });
+
+      expect(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' })).toBeDisabled();
+      await waitFor(() => expect(onValidityChange).toHaveBeenCalled());
+      expect(onValidityChange).not.toHaveBeenCalledWith(true);
+    });
+
+    it('still lets an installed app save while the tunnel is down', async () => {
+      renderForm(
+        { isEdit: true, initialValues: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false } },
+        { cloudflareAvailable: false },
+      );
+
+      await waitFor(() => expect(onValidityChange).toHaveBeenLastCalledWith(true));
+    });
+
+    it('still requires what the listing marks required', async () => {
+      const required = { label: 'Open registration', type: 'text', required: true, env_variable: 'REGISTRATION_OPEN' } as FormField;
+      renderForm({ formFields: [required] });
+
+      await waitFor(() => expect(onValidityChange).toHaveBeenCalled());
+      expect(onValidityChange).not.toHaveBeenCalledWith(true);
+    });
+
+    it('keeps the other modes for an app with no such need', () => {
+      renderForm({ info: { ...info, force_expose: false } });
+
+      expect(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_LOCAL' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'COMMON_PRIVATE_VPN' })).toBeEnabled();
+      expect(screen.queryByText('APP_INSTALL_FORM_EXPOSURE_PUBLIC_WEB_ONLY')).not.toBeInTheDocument();
+    });
+  });
+
   it('shows advanced settings toggle in simple mode when optional fields exist', () => {
     vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
 

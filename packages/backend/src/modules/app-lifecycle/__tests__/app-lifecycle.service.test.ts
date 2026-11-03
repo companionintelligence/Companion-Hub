@@ -1830,6 +1830,53 @@ describe('AppLifecycleService', () => {
       });
     });
 
+    describe('an app whose listing needs a public address', () => {
+      beforeEach(() => {
+        marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ ...baseAppInfo, force_expose: true } as any);
+      });
+
+      it('installs on Public Web', async () => {
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false } });
+
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'cloudflare' }));
+      });
+
+      it.each([
+        ['This machine only', { exposureMode: 'local', exposedLocal: false }],
+        ['Private VPN', { exposureMode: 'tailscale', exposedLocal: false }],
+        ['a form that names no mode', {}],
+      ])('refuses %s', async (_mode, form) => {
+        await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form })).rejects.toThrow('APP_ERROR_APP_FORCE_EXPOSED');
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
+      });
+
+      it('refuses a named domain in production, where the Hub drops it before the app is stored', async () => {
+        configService.getConfig.mockReturnValue({
+          isProduction: true,
+          architecture: 'amd64',
+          version: '1.0.0',
+          userSettings: { localDomain: 'lan', guestDashboard: false },
+        } as any);
+
+        await expect(
+          service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposed: true, domain: 'chat.example.com', exposureMode: 'local' } }),
+        ).rejects.toThrow('APP_ERROR_APP_FORCE_EXPOSED');
+      });
+
+      it('accepts a named domain where the Hub still allows one', async () => {
+        configService.getConfig.mockReturnValue({
+          isProduction: false,
+          architecture: 'amd64',
+          version: '1.0.0',
+          userSettings: { localDomain: 'lan', guestDashboard: false },
+        } as any);
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposed: true, domain: 'chat.example.com', exposureMode: 'local' } });
+
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposed: true, domain: 'chat.example.com' }));
+      });
+    });
+
     it('keeps the port an installed app is on when the reinstall names none', async () => {
       /*
        * The app was moved to 10000 (or saved there). A reinstall form that names no port replaced the
@@ -6485,6 +6532,24 @@ describe('AppLifecycleService', () => {
         await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
 
         expect(lastPatch()).toMatchObject({ exposureMode: 'local', exposedLocal: false });
+      });
+
+      it('lets an app that needs a public address save settings on Public Web', async () => {
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, force_expose: true } as any);
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, exposureMode: 'cloudflare' } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare' });
+      });
+
+      it('refuses to move an app that needs a public address off Public Web', async () => {
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, force_expose: true } as any);
+        onAppStored(publicWeb);
+
+        await expect(
+          service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, exposureMode: 'local', exposedLocal: false } }),
+        ).rejects.toThrow('APP_ERROR_APP_FORCE_EXPOSED');
       });
 
       it('keeps exposedLocal when a form only repeats the mode the app is in', async () => {

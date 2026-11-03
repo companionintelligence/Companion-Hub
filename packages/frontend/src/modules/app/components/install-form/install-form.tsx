@@ -405,9 +405,12 @@ export const InstallForm: React.FC<IProps> = ({
 
   // The mode a form asking for `requested` goes out on. An app that is not exposable offers no choice.
   const offeredExposureMode = useCallback(
-    (requested: FormValues['exposureMode'] | undefined) =>
-      info.exposable ? resolveExposureMode(requested, { cloudflareAvailable, tailscaleAvailable }) : 'local',
-    [info.exposable, cloudflareAvailable, tailscaleAvailable],
+    (requested: FormValues['exposureMode'] | undefined) => {
+      if (!info.exposable) return 'local';
+      if (info.force_expose) return 'cloudflare';
+      return resolveExposureMode(requested, { cloudflareAvailable, tailscaleAvailable });
+    },
+    [info.exposable, info.force_expose, cloudflareAvailable, tailscaleAvailable],
   );
 
   /**
@@ -612,6 +615,12 @@ export const InstallForm: React.FC<IProps> = ({
       return;
     }
 
+    // An installed app keeps its Public Web mode while the tunnel is down, as any other app does.
+    if (info.force_expose && (watchExposureMode !== 'cloudflare' || (!isEdit && !cloudflareAvailable))) {
+      onValidityChange(false);
+      return;
+    }
+
     const withDefaults = mergeFormFieldDefaults(watchedFormValues as Record<string, unknown>, formFields);
     const formValues = {
       ...withDefaults,
@@ -626,7 +635,20 @@ export const InstallForm: React.FC<IProps> = ({
     }
 
     onValidityChange(isInstallFormValid(formValues, formFields, { requirePortWhenExposedLocal: isProduction }));
-  }, [onValidityChange, info.exposable, info.dynamic_config, info.port, watchExposureMode, watchPort, formFields, watchedFormValues, isProduction]);
+  }, [
+    onValidityChange,
+    info.exposable,
+    info.dynamic_config,
+    info.force_expose,
+    info.port,
+    isEdit,
+    cloudflareAvailable,
+    watchExposureMode,
+    watchPort,
+    formFields,
+    watchedFormValues,
+    isProduction,
+  ]);
 
   // Only fields the operator changed, and only while they differ from what the form opened with.
   // Not `isDirty`: the form has no defaultValues (the seeding effect fills it with setValue), so
@@ -692,18 +714,12 @@ export const InstallForm: React.FC<IProps> = ({
       }
     }
     if (info.force_expose) {
-      setValue('exposed', true);
       setValue('openPort', false);
     }
     // Set default exposure mode and port for exposable apps
     if (info.exposable && info.dynamic_config) {
       // A new install auto-selects the first available mode: cloudflare > tailscale > local
-      const defaultMode =
-        savedExposureMode ??
-        resolveExposureMode(initialValues?.exposureMode as FormValues['exposureMode'] | undefined, {
-          cloudflareAvailable,
-          tailscaleAvailable,
-        });
+      const defaultMode = savedExposureMode ?? offeredExposureMode(initialValues?.exposureMode as FormValues['exposureMode'] | undefined);
       if (shouldSeed) {
         setValue('exposureMode', defaultMode);
         setValue('exposedLocal', true); // backward compat
@@ -754,9 +770,8 @@ export const InstallForm: React.FC<IProps> = ({
     initialValues?.publicDomain,
     keepsPublished,
     resetField,
-    cloudflareAvailable,
+    offeredExposureMode,
     domain,
-    tailscaleAvailable,
     enableAuthFallback,
     isEdit,
     savedExposureMode,
@@ -903,12 +918,19 @@ export const InstallForm: React.FC<IProps> = ({
             <div className="grid grid-cols-3 gap-2">
               {(
                 [
-                  { key: 'local', label: t('APP_INSTALL_FORM_EXPOSURE_LOCAL'), available: true, tooltip: '' },
+                  {
+                    key: 'local',
+                    label: t('APP_INSTALL_FORM_EXPOSURE_LOCAL'),
+                    available: !info.force_expose,
+                    tooltip: t('APP_INSTALL_FORM_EXPOSURE_PUBLIC_WEB_ONLY'),
+                  },
                   {
                     key: 'tailscale',
                     label: t('COMMON_PRIVATE_VPN'),
-                    available: tailscaleAvailable,
-                    tooltip: t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE_UNAVAILABLE'),
+                    available: tailscaleAvailable && !info.force_expose,
+                    tooltip: info.force_expose
+                      ? t('APP_INSTALL_FORM_EXPOSURE_PUBLIC_WEB_ONLY')
+                      : t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE_UNAVAILABLE'),
                   },
                   {
                     key: 'cloudflare',
@@ -944,7 +966,8 @@ export const InstallForm: React.FC<IProps> = ({
             </div>
           )}
         />
-        {!tailscaleAvailable && info.exposable && info.dynamic_config && (
+        {info.force_expose && <p className="mt-2 text-xs text-muted-foreground">{t('APP_INSTALL_FORM_EXPOSURE_PUBLIC_WEB_ONLY')}</p>}
+        {!tailscaleAvailable && info.exposable && info.dynamic_config && !info.force_expose && (
           <p className="mt-2 text-xs text-muted-foreground">
             <Link to="/settings?tab=network" className="text-primary underline-offset-2 hover:underline">
               {t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE_SETUP_LINK')}

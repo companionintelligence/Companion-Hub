@@ -66,7 +66,7 @@ import type { ActorCheckContext, LifecycleActor, SystemLifecycleReason } from '@
 import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
-import { getEffectiveExposureMode, publishesHostPort } from '../apps/app-exposure.helpers';
+import { getEffectiveExposureMode, publishesHostPort, servesForcedExposure } from '../apps/app-exposure.helpers';
 import { canonicalJson } from '../queue/message-signing';
 import {
   canServeOnCustomDomain,
@@ -1885,7 +1885,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       parsedForm.enableAuth = manifestDefaultsEdgeAuthOn(appInfo) || undefined;
     }
 
-    if (appInfo.force_expose && !exposed) {
+    if (appInfo.force_expose && !servesForcedExposure(parsedForm)) {
       throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn });
     }
 
@@ -3074,7 +3074,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       parsedForm.publicDomain = undefined;
     }
 
-    if (appInfo.force_expose && !exposed) {
+    if (appInfo.force_expose && !servesForcedExposure(parsedForm)) {
       throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn });
     }
 

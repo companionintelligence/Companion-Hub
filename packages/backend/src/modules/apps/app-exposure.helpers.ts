@@ -16,3 +16,11 @@ export function getEffectiveExposureMode(form: AppFormHostPortFields): 'local' |
 export function publishesHostPort(form: AppFormHostPortFields): boolean {
   return servedOpenPort(form) || getEffectiveExposureMode(form) === 'local' || Boolean(form.exposedLocal);
 }
+
+/**
+ * True when a form gives an app with `force_expose` the public address it needs: Public Web, or a
+ * named domain on a Hub that still allows one. Read it after the production guard clears `exposed`.
+ */
+export function servesForcedExposure(form: AppFormHostPortFields & { exposed?: boolean }): boolean {
+  return Boolean(form.exposed) || getEffectiveExposureMode(form) === 'cloudflare';
+}
