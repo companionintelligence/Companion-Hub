@@ -139,7 +139,7 @@ const appScopedEventSchema = z.object({
   warningDetail: z.string().optional(),
   // On a start, restart or install outcome: the app could not have the host port it was to publish
   // (`from`) so it is on `to` now. The client says so, in place of a plain success, because its local address changed.
-  // A start or restart can fail after the move. The app stays on `to` then too.
+  // A start, restart or install can fail after the move. The app stays on `to` then too.
   movedHostPort: hostPortMoveSchema.optional(),
 });
 

@@ -1120,6 +1120,7 @@ export const AppActions = ({
         info={info}
         boundCustomDomain={app?.customDomain ?? null}
         retryExposureMode={app?.status === 'install_failed' ? servedExposureMode(app) : undefined}
+        retryPort={app?.status === 'install_failed' ? app.port : undefined}
       />
       <CancelInstallDialog
         isOpen={cancelInstallDisclosure.isOpen}

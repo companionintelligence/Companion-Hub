@@ -1,3 +1,4 @@
+import { servedOpenPort } from '@ci-hub/common/schemas';
 import { effectiveExposureMode } from '@ci-hub/common/types';
 
 export type AppFormHostPortFields = {
@@ -11,7 +12,7 @@ export function getEffectiveExposureMode(form: AppFormHostPortFields): 'local' |
   return effectiveExposureMode(form);
 }
 
-/** True when the main service binds ${APP_PORT} on the Docker host. */
+/** True when the main service binds ${APP_PORT} on the Docker host. A form with no `openPort` is served on an open one (`servedOpenPort`). */
 export function publishesHostPort(form: AppFormHostPortFields): boolean {
-  return Boolean(form.openPort || getEffectiveExposureMode(form) === 'local' || form.exposedLocal);
+  return servedOpenPort(form) || getEffectiveExposureMode(form) === 'local' || Boolean(form.exposedLocal);
 }

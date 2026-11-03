@@ -2945,6 +2945,15 @@ describe('AppLifecycleService', () => {
       );
     });
 
+    // The queue serves a form with no `openPort` on an open port, so another app's port is no more free to it.
+    it('MUST reject duplicate port for a cloudflare form with no openPort', async () => {
+      appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'taken-port' }] as any);
+
+      await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', port: 8080 } })).rejects.toThrow(
+        'APP_ERROR_PORT_ALREADY_IN_USE',
+      );
+    });
+
     it('MUST reject duplicate port for cloudflare exposedLocal when openPort is false', async () => {
       appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'taken-port' }] as any);
 
@@ -3058,6 +3067,31 @@ describe('AppLifecycleService', () => {
         status: 409,
         params: { port: '10001', id: 'holder' },
       });
+    });
+
+    it('answers 409 for a public app whose stored form has no openPort, which is served on an open port', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        appName: 'myapp',
+        appStoreSlug: 'ci-marketplace',
+        status: 'stopped',
+        port: 10000,
+        exposureMode: 'cloudflare',
+        exposedLocal: false,
+        config: { exposureMode: 'cloudflare', exposedLocal: false, port: 10000 },
+      } as any);
+      appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'holder' }] as any);
+
+      expect(
+        await conflictOf(
+          service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: false, port: 10001 } }),
+        ),
+      ).toEqual({
+        message: 'APP_ERROR_PORT_ALREADY_IN_USE',
+        status: 409,
+        params: { port: '10001', id: 'holder' },
+      });
+      expect(portManager.setMainPort).not.toHaveBeenCalled();
     });
 
     // An uninstall that could not give its ports back leaves an allocation under a name no app has.
@@ -7654,6 +7688,25 @@ describe('AppLifecycleService', () => {
         expect.objectContaining({ event: 'install_error', appUrn, appStatus: 'install_failed', error: 'fail' }),
       );
       expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("Failed to persist 'install_failed' status"));
+    });
+
+    it('installApp error: says where the app is now when the install failed after moving it', async () => {
+      const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getApps.mockResolvedValue([]);
+      appsRepository.getAppsByDomain.mockResolvedValue([]);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
+      appsRepository.getAppsByPort.mockResolvedValue([]);
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail', movedHostPort: { from: 8080, to: 10003 } } as any);
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'install_error', appUrn, appStatus: 'install_failed', movedHostPort: { from: 8080, to: 10003 } }),
+      );
     });
 
     it('installApp retry: re-queues install when status is install_failed', async () => {

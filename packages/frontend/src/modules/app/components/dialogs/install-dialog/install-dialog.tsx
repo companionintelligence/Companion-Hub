@@ -37,9 +37,14 @@ interface IProps {
    * gets, which is Public Web on a paired Hub whatever the person picked the first time.
    */
   retryExposureMode?: string;
+  /**
+   * The port a failed install left the app on, for its retry. It can differ from the listing's when
+   * another program held that one. The dialog would otherwise show the address the app left.
+   */
+  retryPort?: number;
 }
 
-export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose, boundCustomDomain, retryExposureMode }) => {
+export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose, boundCustomDomain, retryExposureMode, retryPort }) => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { setOptimisticStatus } = useAppStatus();
@@ -97,8 +102,12 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose, boundCu
    * operator types.
    */
   const initialValues = useMemo(
-    () => ({ customDomainExpected: boundCustomDomain ?? '', ...(retryExposureMode ? { exposureMode: retryExposureMode } : {}) }),
-    [boundCustomDomain, retryExposureMode],
+    () => ({
+      customDomainExpected: boundCustomDomain ?? '',
+      ...(retryExposureMode ? { exposureMode: retryExposureMode } : {}),
+      ...(retryPort ? { port: retryPort.toString() } : {}),
+    }),
+    [boundCustomDomain, retryExposureMode, retryPort],
   );
 
   const normalizeFormValues = (values: FormValues) => {

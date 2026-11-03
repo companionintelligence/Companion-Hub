@@ -1162,6 +1162,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       ...failureForEveryone(result),
       errorCode: result.errorCode,
       settingsPath: result.settingsPath,
+      movedHostPort: result.movedHostPort,
     });
     if (emitQueueUpdate) {
       void this.emitInstallQueueUpdate();

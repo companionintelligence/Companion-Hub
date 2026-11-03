@@ -197,7 +197,7 @@ describe('SSEProvider', () => {
       );
     });
 
-    it.each(['start_error', 'restart_error'])('%s still says where the app is now, beside the error', (event) => {
+    it.each(['start_error', 'restart_error', 'install_error'])('%s still says where the app is now, beside the error', (event) => {
       const getOnEvent = renderProvider();
 
       act(() => {
@@ -211,6 +211,7 @@ describe('SSEProvider', () => {
     it.each([
       ['start_error', 'excalidraw did not start: summary-service keeps restarting (exit 126)'],
       ['restart_error', 'excalidraw did not restart: summary-service keeps restarting (exit 126)'],
+      ['install_error', 'excalidraw did not install: summary-service keeps restarting (exit 126)'],
     ])('%s names the failing service and still says where the app is now', (event, text) => {
       const getOnEvent = renderProvider();
 
