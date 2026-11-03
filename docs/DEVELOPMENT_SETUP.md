@@ -100,7 +100,7 @@ Building the desktop app for release needs a few more (`patchelf`, `libfuse2`, `
 pnpm run check:pr
 ```
 
-That is `lint:ci`, `knip:ci`, `tsc`, `check:openapi`, `test`, and `cargo test`. Because automatic CI
+That is `lint:ci`, `knip:ci`, `check:workflows`, `tsc`, `check:openapi`, `test`, and `cargo test`. Because automatic CI
 triggers are gated (see [`CI.md`](CI.md)), running this locally is not optional — nothing runs it
 for you on push.
 

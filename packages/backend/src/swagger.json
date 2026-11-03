@@ -2214,6 +2214,45 @@
         ]
       }
     },
+    "/api/.well-known/keri/oobi": {
+      "get": {
+        "operationId": "getHubOobi",
+        "parameters": [],
+        "responses": {
+          "503": {
+            "description": "The Hub cannot publish a verifiable OOBI until a persisted KERI key event log is configured."
+          }
+        },
+        "summary": "KERI Out-Of-Band Introduction (OOBI) metadata for the Hub appliance",
+        "tags": [
+          "KERI / Trust Over IP"
+        ]
+      }
+    },
+    "/api/.well-known/keri/oobi/{aid}": {
+      "get": {
+        "operationId": "getOobiForAid",
+        "parameters": [
+          {
+            "name": "aid",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "503": {
+            "description": "The Hub cannot resolve OOBIs until it can verify and serve persisted KERI key event logs."
+          }
+        },
+        "summary": "Resolve OOBI for a specific AID",
+        "tags": [
+          "KERI / Trust Over IP"
+        ]
+      }
+    },
     "/api/apps/installed": {
       "get": {
         "operationId": "getInstalledApps",
@@ -8508,6 +8547,9 @@
           "confirmation": {
             "type": "string",
             "minLength": 1
+          },
+          "removeAppsFromPortal": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -11830,6 +11872,61 @@
             },
             "required": [
               "command"
+            ],
+            "additionalProperties": false
+          },
+          "failure": {
+            "nullable": true,
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "errorCode": {
+                "type": "string"
+              },
+              "errorDetail": {
+                "type": "string"
+              },
+              "settingsPath": {
+                "type": "string"
+              },
+              "serviceFailure": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "restarting",
+                      "exited",
+                      "none_running"
+                    ]
+                  },
+                  "service": {
+                    "type": "string"
+                  },
+                  "others": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "exitCode": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "logLine": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "message"
             ],
             "additionalProperties": false
           },
@@ -15214,6 +15311,10 @@
                     },
                     "platform": {
                       "type": "string"
+                    },
+                    "runtime": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_.-]+$"
                     }
                   },
                   "required": [
@@ -15797,6 +15898,10 @@
                           },
                           "platform": {
                             "type": "string"
+                          },
+                          "runtime": {
+                            "type": "string",
+                            "pattern": "^[a-zA-Z0-9_.-]+$"
                           }
                         },
                         "additionalProperties": false
@@ -16429,6 +16534,10 @@
                     },
                     "platform": {
                       "type": "string"
+                    },
+                    "runtime": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_.-]+$"
                     }
                   },
                   "required": [
@@ -17012,6 +17121,10 @@
                           },
                           "platform": {
                             "type": "string"
+                          },
+                          "runtime": {
+                            "type": "string",
+                            "pattern": "^[a-zA-Z0-9_.-]+$"
                           }
                         },
                         "additionalProperties": false

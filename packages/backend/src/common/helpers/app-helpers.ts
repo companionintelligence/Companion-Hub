@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 
 export const extractAppUrn = (id: AppUrn) => {
@@ -68,14 +69,14 @@ const APP_URN_SEGMENT = /^[^.\-\s/\\\0][^\s/\\\0]*$/;
 export const castAppUrn = (id: string): AppUrn => {
   const separatorIndex = id.indexOf(':');
   if (separatorIndex === -1) {
-    throw new Error(`Invalid namespaced app id: ${id}`);
+    throw new BadRequestException(`Invalid namespaced app id: ${id}`);
   }
 
   const appName = id.substring(0, separatorIndex);
   const appStoreId = id.substring(separatorIndex + 1);
 
   if (!APP_URN_SEGMENT.test(appName) || !APP_URN_SEGMENT.test(appStoreId)) {
-    throw new Error(`Invalid namespaced app id: ${id}`);
+    throw new BadRequestException(`Invalid namespaced app id: ${id}`);
   }
 
   return id as AppUrn;

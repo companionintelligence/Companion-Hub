@@ -1302,6 +1302,7 @@ describe('InstallForm', () => {
       ];
       // A `t` that shows its values, which the module-wide mock drops.
       const t = (key: string, values?: Record<string, string>) => (values ? `${key} ${Object.values(values).join(' ')}` : key);
+      // biome-ignore lint/correctness/noComponentHookFactories: this one-shot test harness is rendered once for this assertion.
       const Harness = () => {
         const { control } = useForm();
 
@@ -2931,6 +2932,238 @@ describe('InstallForm - Public Web routing drift', () => {
     await waitFor(() => {
       expect(screen.getByTestId('public-web-repair-button')).toBeEnabled();
     });
+  });
+});
+
+/**
+ * Settings opened on what a new install gets, Public Web on a paired Hub, for any app whose stored
+ * form named no mode (every custom app). The next save published the app. A new install still
+ * takes the first mode on offer.
+ */
+describe('InstallForm - the exposure mode of an app already installed', () => {
+  const customApp = {
+    id: 'exp-test',
+    urn: 'exp-test:_user',
+    form_fields: [],
+    exposable: true,
+    dynamic_config: true,
+    port: 9898,
+  } as unknown as AppInfo;
+  const LOCAL = 'APP_INSTALL_FORM_EXPOSURE_LOCAL';
+  const VPN = 'COMMON_PRIVATE_VPN';
+  const PUBLIC = 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE';
+
+  class RecordingBlob {
+    parts: unknown[];
+    constructor(parts: unknown[]) {
+      this.parts = parts;
+    }
+  }
+
+  const hubOffers = ({ cloudflareAvailable = true, tailscaleAvailable = false } = {}) =>
+    vi.mocked(useAppContext).mockReturnValue({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'example.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: false },
+      isProduction: true,
+      cloudflareAvailable,
+      tailscaleAvailable,
+    } as unknown as ReturnType<typeof useAppContext>);
+
+  const renderForm = (
+    initialValues: Record<string, unknown> | undefined,
+    {
+      isEdit = true,
+      info = customApp,
+      onSubmit = vi.fn(),
+    }: { isEdit?: boolean; info?: AppInfo; onSubmit?: (values: Record<string, unknown>) => void } = {},
+  ) => {
+    const utils = render(
+      <MemoryRouter>
+        <InstallForm info={info} onSubmit={onSubmit} formId="exposure-form" formFields={[]} initialValues={initialValues} isEdit={isEdit} />
+      </MemoryRouter>,
+    );
+    return { ...utils, onSubmit };
+  };
+
+  const selectedMode = () => [LOCAL, VPN, PUBLIC].filter((name) => screen.getByRole('button', { name }).classList.contains('bg-primary'));
+
+  const submit = async (container: HTMLElement) => {
+    await act(async () => {
+      fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+    });
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    MOCK_AVAILABLE_DOMAINS.domains = [{ id: 'd1', domain: 'example.com', isDefault: true, offered: true }];
+    fetchDnsAvailability.mockImplementation(async () => new Response(JSON.stringify({ available: true }), { status: 200 }));
+    hubOffers();
+  });
+
+  afterEach(() => {
+    MOCK_AVAILABLE_DOMAINS.domains = [];
+    fetchDnsAvailability.mockReset();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('opens a form that names no mode on This Machine Only and saves it there', async () => {
+    const { container, onSubmit } = renderForm({ port: 9898 });
+
+    expect(selectedMode()).toEqual([LOCAL]);
+
+    await submit(container);
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'local', exposedLocal: false, port: 9898 }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.not.objectContaining({ publicDomain: expect.anything() }));
+    expect(fetchDnsAvailability).not.toHaveBeenCalled();
+  });
+
+  it('keeps a Private VPN app on the Private VPN while Tailscale is down, rather than moving it to Public Web', async () => {
+    const { container, onSubmit } = renderForm({ port: 9898, exposureMode: 'tailscale' });
+
+    expect(selectedMode()).toEqual([VPN]);
+    expect(screen.getByRole('button', { name: VPN })).toBeDisabled();
+
+    await submit(container);
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'tailscale', exposedLocal: false }));
+  });
+
+  it('keeps a Public Web app on Public Web while the tunnel is down, rather than taking it off', async () => {
+    hubOffers({ cloudflareAvailable: false });
+    const { container, onSubmit } = renderForm({ port: 9898, exposureMode: 'cloudflare', localSubdomain: 'exp-test', publicDomain: 'example.com' });
+
+    expect(selectedMode()).toEqual([PUBLIC]);
+
+    await submit(container);
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'cloudflare', exposedLocal: true, publicDomain: 'example.com' })),
+    );
+  });
+
+  it('shows an app saved on Public Web as Public Web, on a Hub that offers it', async () => {
+    const { container, onSubmit } = renderForm({ port: 9898, exposureMode: 'cloudflare', localSubdomain: 'exp-test', publicDomain: 'example.com' });
+
+    expect(selectedMode()).toEqual([PUBLIC]);
+
+    await submit(container);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'cloudflare', exposedLocal: true })));
+  });
+
+  it('reads a legacy form that carried only exposedLocal as the Public Web app it is', () => {
+    renderForm({ port: 9898, exposedLocal: true, localSubdomain: 'exp-test' });
+
+    expect(selectedMode()).toEqual([PUBLIC]);
+  });
+
+  it('saves This Machine Only for a form that names no mode and shows no modes to pick from', async () => {
+    const notExposable = { ...customApp, exposable: false } as AppInfo;
+    const { container, onSubmit } = renderForm({ port: 9898 }, { info: notExposable });
+
+    expect(screen.queryByRole('button', { name: PUBLIC })).not.toBeInTheDocument();
+
+    await submit(container);
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'local', exposedLocal: false }));
+  });
+
+  it('moves the app only when somebody picks another mode, with nothing to save after going back', async () => {
+    const onDirtyChange = vi.fn();
+    render(
+      <MemoryRouter>
+        <InstallForm
+          info={customApp}
+          onSubmit={vi.fn()}
+          formId="exposure-form"
+          formFields={[]}
+          initialValues={{ port: 9898, exposureMode: 'local' }}
+          onDirtyChange={onDirtyChange}
+          isEdit
+        />
+      </MemoryRouter>,
+    );
+
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+
+    fireEvent.click(screen.getByRole('button', { name: PUBLIC }));
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
+    expect(selectedMode()).toEqual([PUBLIC]);
+
+    fireEvent.click(screen.getByRole('button', { name: LOCAL }));
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
+  });
+
+  it('exports the mode the app is in, with an exposedLocal that agrees with it', async () => {
+    vi.stubGlobal('Blob', RecordingBlob);
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const createObjectUrl = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:export');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+
+    renderForm({ port: 9898, exposureMode: 'local' });
+    fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPORT_CONFIG' }));
+
+    await waitFor(() => expect(createObjectUrl).toHaveBeenCalled());
+    const blob = createObjectUrl.mock.calls[0]?.[0] as unknown as RecordingBlob;
+    const { values } = JSON.parse(String(blob.parts[0]));
+
+    expect(values).toMatchObject({ exposureMode: 'local', exposedLocal: false, openPort: true, port: 9898 });
+  });
+
+  it('still lets an imported file ask for Public Web and saves what it asked for', async () => {
+    const { container, onSubmit } = renderForm({ port: 9898, exposureMode: 'local' });
+    const file = new File(
+      [
+        JSON.stringify({
+          schemaVersion: 1,
+          appId: 'exp-test',
+          exportedAt: '2026-11-02T00:00:00.000Z',
+          values: { exposureMode: 'cloudflare', localSubdomain: 'exp-test' },
+        }),
+      ],
+      'exp-test-install-config.json',
+      { type: 'application/json' },
+    );
+
+    await act(async () => {
+      fireEvent.change(container.querySelector('input[type="file"]') as HTMLInputElement, { target: { files: [file] } });
+    });
+    await waitFor(() => expect(selectedMode()).toEqual([PUBLIC]));
+
+    await submit(container);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'cloudflare', exposedLocal: true })));
+  });
+
+  it('opens the retry of a failed install on the mode it asked for', () => {
+    renderForm({ exposureMode: 'local' }, { isEdit: false });
+
+    expect(selectedMode()).toEqual([LOCAL]);
+  });
+
+  it('gives a new install the first mode on offer, as before', async () => {
+    const paired = renderForm(undefined, { isEdit: false });
+    expect(selectedMode()).toEqual([PUBLIC]);
+    paired.unmount();
+
+    hubOffers({ cloudflareAvailable: false, tailscaleAvailable: true });
+    const vpnOnly = renderForm(undefined, { isEdit: false });
+    expect(selectedMode()).toEqual([VPN]);
+    vpnOnly.unmount();
+
+    hubOffers({ cloudflareAvailable: false, tailscaleAvailable: false });
+    renderForm(undefined, { isEdit: false });
+    expect(selectedMode()).toEqual([LOCAL]);
   });
 });
 

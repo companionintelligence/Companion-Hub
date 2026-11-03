@@ -3,6 +3,7 @@ import { ReposHelpers } from './repos.helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import {
   PORTAL_HTTP_ERROR_CODE,
   PORTAL_STORE_LISTING_TIMEOUT_MS,
@@ -52,6 +53,7 @@ describe('ReposHelpers', () => {
   let filesystemService = mock<FilesystemService>();
   const logger = mockDeep<LoggerService>();
   let registrationService = mock<RegistrationService>();
+  let whois = mock<MarketplaceWhoIsService>();
 
   const axiosMock = vi.mocked(axios);
 
@@ -69,6 +71,9 @@ describe('ReposHelpers', () => {
     registrationService = mock<RegistrationService>();
     registrationService.getDeviceId.mockResolvedValue('test-uuid');
 
+    whois = mock<MarketplaceWhoIsService>();
+    whois.deviceOrganizationId.mockResolvedValue('org-of-this-hub');
+
     const moduleRef = await Test.createTestingModule({
       providers: [
         ReposHelpers,
@@ -76,6 +81,7 @@ describe('ReposHelpers', () => {
         { provide: FilesystemService, useValue: filesystemService },
         { provide: LoggerService, useValue: logger },
         { provide: RegistrationService, useValue: registrationService },
+        { provide: MarketplaceWhoIsService, useValue: whois },
       ],
     }).compile();
 
@@ -799,6 +805,47 @@ describe('ReposHelpers', () => {
       const result = await service.downloadAppFiles('http://cloud.api', 'ci-marketplace', 'app1');
       expect(result.success).toBe(false);
       expect(result.message).toBe('APP_INSTALL_PORTAL_DOWNLOAD_UNAUTHORIZED');
+    });
+
+    describe("this Hub's organization", () => {
+      it('names it in the query string of the bundle request', async () => {
+        axiosMock.get.mockResolvedValue({ status: 200, statusText: 'OK', data: { files: {} } });
+
+        await service.downloadAppFiles('http://cloud.api', 'ci-marketplace', 'paid-app');
+
+        expect(axiosMock.get).toHaveBeenCalledWith(
+          'http://cloud.api/store/paid-app/install',
+          expect.objectContaining({ params: { organizationId: 'org-of-this-hub' } }),
+        );
+      });
+
+      it('sends no organizationId at all when this Hub does not know it, never an empty one', async () => {
+        whois.deviceOrganizationId.mockResolvedValue(null);
+        axiosMock.get.mockResolvedValue({ status: 200, statusText: 'OK', data: { files: {} } });
+
+        await service.downloadAppFiles('http://cloud.api', 'ci-marketplace', 'paid-app');
+
+        expect(axiosMock.get.mock.calls[0]?.[1]).not.toHaveProperty('params');
+      });
+
+      it.each([
+        { status: 409, statusText: 'Conflict', code: 'ORGANIZATION_REQUIRED', key: 'APP_INSTALL_PORTAL_ORGANIZATION_REQUIRED' },
+        { status: 403, statusText: 'Forbidden', code: 'DEVICE_NOT_IN_ORGANIZATION', key: 'APP_INSTALL_PORTAL_DEVICE_NOT_IN_ORGANIZATION' },
+      ])('shows $status $code by its own key, with no Portal error code', async ({ status, statusText, code, key }) => {
+        axiosMock.get.mockResolvedValue({ status, statusText, data: { error: 'refused', code } });
+
+        const result = await service.downloadAppFiles('http://cloud.api', 'ci-marketplace', 'paid-app');
+
+        expect(result).toEqual({ success: false, message: key });
+      });
+
+      it('takes a 409 without the code as any other Portal status: a proxy says nothing about organizations', async () => {
+        axiosMock.get.mockResolvedValue({ status: 409, statusText: 'Conflict', data: '<html>conflict</html>' });
+
+        const result = await service.downloadAppFiles('http://cloud.api', 'ci-marketplace', 'paid-app');
+
+        expect(result).toEqual({ success: false, message: 'Failed to fetch app files: 409 Conflict', errorCode: PORTAL_HTTP_ERROR_CODE });
+      });
     });
 
     it('should map portal 403 to a translatable install error key', async () => {

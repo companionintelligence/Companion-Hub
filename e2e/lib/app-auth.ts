@@ -54,6 +54,7 @@ async function fillIfFound(page: Page, selectors: string[], value: string, label
 }
 
 function bodyText(page: Page): Promise<string> {
+  // biome-ignore lint/performance/useDomNodeTextContent: auth detection must use the rendered text shown to the user.
   return page.evaluate(() => document.body.innerText ?? '').catch(() => '');
 }
 
@@ -149,6 +150,7 @@ export async function attemptAppAuth(page: Page): Promise<AuthResult> {
               .slice(0, 25)
               .map((el) => ({
                 tag: el.tagName.toLowerCase(),
+                // biome-ignore lint/performance/useDomNodeTextContent: auth controls are selected from visible labels.
                 text: (el as HTMLElement).innerText?.slice(0, 50),
                 type: (el as HTMLInputElement).type,
                 placeholder: (el as HTMLInputElement).placeholder,

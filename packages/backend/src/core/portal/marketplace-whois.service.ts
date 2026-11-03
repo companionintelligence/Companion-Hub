@@ -27,6 +27,7 @@ import type { LifecycleActor } from './lifecycle-actor';
 import { PortalClientService, type PortalWhoIsResponse } from './portal-client.service';
 import { assertHubManageAllowed, type HubManageVerdict } from './hub-manage-verdict';
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
+import { linksForCurrentPortal } from '@/modules/user/portal-links';
 
 export type GrantSurface = 'hub' | 'store';
 
@@ -477,7 +478,7 @@ export class MarketplaceWhoIsService {
 
   /**
    * {@link hubManageVerdict} from the Hub's own records, with no Portal call. The claiming operator is
-   * read from the database. Anyone else's role is the one the Hub stored at sign-in or at the hourly
+   * read from the database. Anyone else's role is the one the Hub stored at sign-in or at the
    * membership check (`user.orgRole`), as for {@link customAppActionsHint}. A stored owner or admin role
    * counts only where the routes can read one: a linked person on a paired Hub. `unknown` when no role is
    * stored for someone the Portal could be asked about, or when the records can't be read.
@@ -748,7 +749,7 @@ export class MarketplaceWhoIsService {
 
   /**
    * What the UI should offer the person behind a request on a custom app, answered without a Portal
-   * call. A linked operator's role is the one the Hub stored at sign-in and refreshes with the hourly
+   * call. A linked operator's role is the one the Hub stored at sign-in and refreshes with the
    * membership check (`user.orgRole`); asking the Portal fresh took one to five seconds, and the custom
    * app page waited on it. When no role is stored, the Portal is asked now ({@link customAppActions}).
    *
@@ -803,7 +804,8 @@ export class MarketplaceWhoIsService {
   }
 
   private async portalSubject(userId: number): Promise<string | null> {
-    const links = await this.federatedIdentities.findByUserId(userId);
+    // The link the paired Portal issued, when there is one: it has never heard of another Portal's subject (#2178).
+    const links = linksForCurrentPortal(await this.federatedIdentities.findByUserId(userId), this.portal.getPublicPortalUrl());
     const link = links[0];
     return link?.subject ?? null;
   }
@@ -920,8 +922,12 @@ export class MarketplaceWhoIsService {
    * learn our own identity silently widened every grant on the appliance. It
    * now ends here as `null`, before any Portal call, and logs as a failed read
    * rather than as a device with no organization.
+   *
+   * The paid app requests name the same organization (`MarketplaceEntitlementService`,
+   * `ReposHelpers.downloadAppFiles`, `RegistryService`). On `null` they name none, since a device in
+   * one organization needs no name and a tied one gets a refusal that says so.
    */
-  private async deviceOrganizationId(): Promise<string | null> {
+  async deviceOrganizationId(): Promise<string | null> {
     let registration: Awaited<ReturnType<RegistrationService['getDeviceRegistrationInfo']>>;
 
     try {
@@ -936,7 +942,7 @@ export class MarketplaceWhoIsService {
     }
 
     if (!registration?.id) {
-      this.warnOnce('no-org-id', 'whois_org_unresolved: this device has no organization id; refusing to guess');
+      this.warnOnce('no-org-id', 'whois_org_unresolved: this device has no organization id');
 
       return null;
     }

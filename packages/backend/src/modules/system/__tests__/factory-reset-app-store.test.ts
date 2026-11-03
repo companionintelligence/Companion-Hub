@@ -11,6 +11,7 @@ import type { LoggerService } from '@/core/logger/logger.service';
 import type { PortalClientService } from '@/core/portal/portal-client.service';
 import type { AppRehydrationService } from '@/modules/app-lifecycle/app-rehydration.service';
 import type { DeviceKeyRefreshService } from '@/modules/app-lifecycle/device-key-refresh.service';
+import type { OriginHostRefreshService } from '@/modules/app-lifecycle/origin-host-refresh.service';
 import type { ExposureSyncService } from '@/modules/app-lifecycle/exposure-sync.service';
 import { PairingAppRestoreService } from '@/modules/app-lifecycle/pairing-app-restore.service';
 import type { PairingAppCheckFile } from '@/modules/app-lifecycle/registration-recovery-state';
@@ -205,6 +206,8 @@ function hub() {
   });
   const keyRefresh = mock<DeviceKeyRefreshService>();
   keyRefresh.refreshStaleDeviceKeys.mockResolvedValue([]);
+  const originRefresh = mock<OriginHostRefreshService>();
+  originRefresh.refreshStaleOriginHosts.mockResolvedValue([]);
   const exposureSync = mock<ExposureSyncService>();
   exposureSync.syncExposurePublic.mockResolvedValue(undefined);
   const portExpose = mock<PortExposeService>();
@@ -222,6 +225,7 @@ function hub() {
     rehydration,
     exposureSync,
     keyRefresh,
+    originRefresh,
     moduleRef,
   );
 

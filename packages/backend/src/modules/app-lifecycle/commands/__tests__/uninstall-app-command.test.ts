@@ -4,9 +4,11 @@ import type { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { AppsRepository } from '@/modules/apps/apps.repository';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
+import { PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { UninstallAppCommand } from '../uninstall-app-command';
 
@@ -17,11 +19,12 @@ describe('UninstallAppCommand', () => {
   let logger: DeepMockProxy<LoggerService>;
   let dockerService: {
     composeApp: ReturnType<typeof vi.fn>;
-    snapshotAppImageIds: ReturnType<typeof vi.fn>;
     removeAppImages: ReturnType<typeof vi.fn>;
     removeAppNetworks: ReturnType<typeof vi.fn>;
     removeAppDataDirAsRoot: ReturnType<typeof vi.fn>;
+    imageIdLocally: ReturnType<typeof vi.fn>;
   };
+  let appsRepository: { getApps: ReturnType<typeof vi.fn> };
   let appFilesManager: MockProxy<AppFilesManager>;
   let portManager: MockProxy<PortManagerService>;
   let traefikConfigService: MockProxy<TraefikConfigService>;
@@ -36,6 +39,7 @@ describe('UninstallAppCommand', () => {
         if (token === DockerService) return dockerService;
         if (token === PortManagerService) return portManager;
         if (token === TraefikConfigService) return traefikConfigService;
+        if (token === AppsRepository) return appsRepository;
         return null;
       }),
     }) as unknown as ModuleRef;
@@ -47,6 +51,10 @@ describe('UninstallAppCommand', () => {
     appFilesManager.deleteAppDataDir.mockResolvedValue(true);
     appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: true, permissionDenied: false });
     appFilesManager.getAppDataHostDir.mockReturnValue('/srv/app-data/store/test-app');
+    appFilesManager.readPulledImages.mockResolvedValue({ imageIds: ['sha256:a'], imageTags: [] });
+    appFilesManager.deletePulledImages.mockResolvedValue(undefined);
+
+    appsRepository = { getApps: vi.fn().mockResolvedValue([{ appName: 'test-app', appStoreSlug: 'store' }]) };
 
     portManager = mock<PortManagerService>();
     portManager.releaseAll.mockResolvedValue(1);
@@ -56,8 +64,8 @@ describe('UninstallAppCommand', () => {
 
     dockerService = {
       composeApp: vi.fn().mockResolvedValue({ success: true }),
-      snapshotAppImageIds: vi.fn().mockResolvedValue(['sha256:a']),
       removeAppImages: vi.fn().mockResolvedValue(undefined),
+      imageIdLocally: vi.fn().mockResolvedValue(null),
       removeAppNetworks: vi.fn().mockResolvedValue(undefined),
       removeAppDataDirAsRoot: vi.fn().mockResolvedValue(true),
     };
@@ -65,29 +73,164 @@ describe('UninstallAppCommand', () => {
     command = new UninstallAppCommand(makeModuleRef(), mock<Dockerode>());
   });
 
-  it('runs compose down with --rmi all and explicit image/network cleanup', async () => {
+  it('runs compose down with --rmi local and removes only the images the app recorded pulling', async () => {
     const result = await command.execute(appUrn);
 
     expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
-    expect(dockerService.snapshotAppImageIds).toHaveBeenCalledWith(appUrn);
-    expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans -v --rmi all');
-    expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, ['sha256:a']);
+    expect(appFilesManager.readPulledImages).toHaveBeenCalledWith(appUrn);
+    expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans -v --rmi local');
+    expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, ['sha256:a'], []);
     expect(dockerService.removeAppNetworks).toHaveBeenCalledWith(appUrn);
+    expect(appFilesManager.deletePulledImages).toHaveBeenCalledWith(appUrn);
     expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
     expect(appFilesManager.deleteAppDataDirDetailed).toHaveBeenCalledWith(appUrn);
     // Clean delete → no privileged escalation.
     expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
 
-    const snapshotOrder = dockerService.snapshotAppImageIds.mock.invocationCallOrder[0];
+    const readOrder = appFilesManager.readPulledImages.mock.invocationCallOrder[0];
     const downOrder = dockerService.composeApp.mock.invocationCallOrder[0];
     const removeImagesOrder = dockerService.removeAppImages.mock.invocationCallOrder[0];
     const removeNetworksOrder = dockerService.removeAppNetworks.mock.invocationCallOrder[0];
+    const forgetImagesOrder = appFilesManager.deletePulledImages.mock.invocationCallOrder[0];
     const deleteFolderOrder = appFilesManager.deleteAppFolder.mock.invocationCallOrder[0];
 
-    expect(snapshotOrder).toBeLessThan(downOrder);
+    expect(readOrder).toBeLessThan(downOrder);
     expect(downOrder).toBeLessThan(removeImagesOrder);
     expect(removeImagesOrder).toBeLessThan(removeNetworksOrder);
-    expect(removeNetworksOrder).toBeLessThan(deleteFolderOrder);
+    expect(removeNetworksOrder).toBeLessThan(forgetImagesOrder);
+    expect(forgetImagesOrder).toBeLessThan(deleteFolderOrder);
+  });
+
+  it('removes no pulled image when the app recorded none', async () => {
+    appFilesManager.readPulledImages.mockResolvedValue({ imageIds: [], imageTags: [] });
+
+    const result = await command.execute(appUrn);
+
+    expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
+    expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, [], []);
+    expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans -v --rmi local');
+  });
+
+  it('passes on the tags the record holds, so an image with any other tag stays', async () => {
+    appFilesManager.readPulledImages.mockResolvedValue({ imageIds: ['sha256:a'], imageTags: ['app:1'] });
+
+    await command.execute(appUrn);
+
+    expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, ['sha256:a'], ['app:1']);
+  });
+
+  describe('an image another installed app names', () => {
+    const otherUrn = 'other-app:store';
+    const composeNaming = (image: string) => ({ schemaVersion: 2, services: [{ name: 'web', image, isMain: true, internalPort: 80 }] });
+
+    beforeEach(() => {
+      appsRepository.getApps.mockResolvedValue([
+        { appName: 'test-app', appStoreSlug: 'store' },
+        { appName: 'other-app', appStoreSlug: 'store' },
+      ]);
+      appFilesManager.getDockerComposeJson.mockImplementation(async (urn: AppUrn) => ({
+        path: '/tmp',
+        content: urn === otherUrn ? composeNaming('postgres:16-alpine@sha256:d') : composeNaming('app:1'),
+      }));
+    });
+
+    it('stays even when that app is stopped and no container holds it, while the record goes', async () => {
+      dockerService.imageIdLocally.mockImplementation(async (ref: string) => (ref === 'postgres:16-alpine@sha256:d' ? 'sha256:a' : null));
+      appFilesManager.readPulledImages.mockResolvedValue({ imageIds: ['sha256:a', 'sha256:b'], imageTags: [] });
+
+      await command.execute(appUrn);
+
+      expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, ['sha256:b'], []);
+      expect(appFilesManager.deletePulledImages).toHaveBeenCalledWith(appUrn);
+    });
+
+    it("goes when only the app's own compose names it", async () => {
+      dockerService.imageIdLocally.mockImplementation(async (ref: string) => (ref === 'app:1' ? 'sha256:a' : null));
+
+      await command.execute(appUrn);
+
+      expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, ['sha256:a'], []);
+    });
+
+    it('leaves every image in place and goes on with the uninstall when the other apps cannot be listed', async () => {
+      appsRepository.getApps.mockRejectedValue(new Error('database went away'));
+
+      const result = await command.execute(appUrn);
+
+      expect(result.success).toBe(true);
+      expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, [], []);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('leaves its images in place'));
+    });
+
+    it("leaves every image in place when another app's image cannot be looked up, and names that app", async () => {
+      dockerService.imageIdLocally.mockRejectedValue(new Error('invalid reference format'));
+
+      await command.execute(appUrn);
+
+      expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, [], []);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('other-app:store names postgres:16-alpine@sha256:d: invalid reference format'),
+      );
+    });
+
+    it("leaves every image in place when another app's compose cannot be read", async () => {
+      appFilesManager.getDockerComposeJson.mockResolvedValue({ path: '/tmp', content: { services: 'not services' } });
+
+      await command.execute(appUrn);
+
+      expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, [], []);
+    });
+
+    // `getDockerComposeJson` gives no content for a file that is cut short or can't be opened, as for one that isn't there.
+    it("leaves every image in place when another app's compose gives no content", async () => {
+      appFilesManager.getDockerComposeJson.mockImplementation(async (urn: AppUrn) => ({
+        path: '/tmp',
+        content: urn === otherUrn ? null : composeNaming('app:1'),
+      }));
+
+      await command.execute(appUrn);
+
+      expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, [], []);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('leaves its images in place'));
+    });
+
+    // Its compose is `{ services: [] }`, which the parser refuses. It must not cost every other uninstall its images.
+    it('still removes the images when the other app is a port expose', async () => {
+      appFilesManager.getDockerComposeJson.mockResolvedValue({ path: '/tmp', content: { schemaVersion: 2, services: [] } });
+      appsRepository.getApps.mockResolvedValue([
+        { appName: 'test-app', appStoreSlug: 'store' },
+        { appName: 'by-config', appStoreSlug: 'store', config: { kind: PORT_EXPOSE_KIND } },
+        { appName: 'by-manifest', appStoreSlug: '_user' },
+      ]);
+      appFilesManager.getInstalledAppInfo.mockImplementation(async (urn: AppUrn) =>
+        urn === 'by-manifest:_user' ? ({ kind: PORT_EXPOSE_KIND } as never) : null,
+      );
+
+      await command.execute(appUrn);
+
+      expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, ['sha256:a'], []);
+    });
+
+    it('looks up a reference once however many apps name it', async () => {
+      appsRepository.getApps.mockResolvedValue([
+        { appName: 'test-app', appStoreSlug: 'store' },
+        { appName: 'other-app', appStoreSlug: 'store' },
+        { appName: 'third-app', appStoreSlug: 'store' },
+      ]);
+      appFilesManager.getDockerComposeJson.mockResolvedValue({ path: '/tmp', content: composeNaming('postgres:16-alpine') });
+
+      await command.execute(appUrn);
+
+      expect(dockerService.imageIdLocally).toHaveBeenCalledTimes(1);
+    });
+
+    it('reads nothing about the other apps when the app recorded no image', async () => {
+      appFilesManager.readPulledImages.mockResolvedValue({ imageIds: [], imageTags: [] });
+
+      await command.execute(appUrn);
+
+      expect(appsRepository.getApps).not.toHaveBeenCalled();
+    });
   });
 
   it('preserves Docker volumes when deleteAllData is false', async () => {
@@ -96,9 +239,18 @@ describe('UninstallAppCommand', () => {
     const result = await preserveDataCommand.execute(appUrn);
 
     expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
-    expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans --rmi all');
+    expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans --rmi local');
     expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
     expect(appFilesManager.deleteAppDataDirDetailed).not.toHaveBeenCalled();
+  });
+
+  it("removes the images the app pulled with Delete all data off too, since an image is not the app's data", async () => {
+    const preserveDataCommand = new UninstallAppCommand(makeModuleRef(), mock<Dockerode>(), false);
+
+    await preserveDataCommand.execute(appUrn);
+
+    expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, ['sha256:a'], []);
+    expect(appFilesManager.deletePulledImages).toHaveBeenCalledWith(appUrn);
   });
 
   it('reports the remnant with the host path when app-data deletion fails without a permission error (#907)', async () => {
@@ -202,13 +354,13 @@ describe('UninstallAppCommand', () => {
   });
 
   it('continues uninstall when compose down fails and cleanup helpers remain non-fatal', async () => {
-    dockerService.snapshotAppImageIds.mockResolvedValueOnce([]);
+    appFilesManager.readPulledImages.mockResolvedValueOnce({ imageIds: [], imageTags: [] });
     dockerService.composeApp.mockRejectedValueOnce(new Error('compose failed'));
 
     const result = await command.execute(appUrn);
 
     expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
-    expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, []);
+    expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, [], []);
     expect(dockerService.removeAppNetworks).toHaveBeenCalledWith(appUrn);
     expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
   });

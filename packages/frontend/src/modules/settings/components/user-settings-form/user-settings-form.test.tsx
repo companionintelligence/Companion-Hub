@@ -116,6 +116,83 @@ describe('UserSettingsForm Local domain check', () => {
   });
 });
 
+describe('UserSettingsForm Internal IP check', () => {
+  const advancedSettings = { ...newHubSettings, advancedSettings: true };
+  const internalIpField = () => screen.getByLabelText(/^internal ip/i);
+
+  async function typeInternalIp(value: string) {
+    await userEvent.clear(internalIpField());
+    if (value) {
+      await userEvent.type(internalIpField(), value);
+    }
+  }
+
+  // INTERNAL_IP is read as it was set, so the Hub can report something that is not an IPv4 address.
+  it.each([
+    ['empty', ''],
+    ['an IPv6 address', '::'],
+    ['a name', 'hub.lan'],
+  ])('saves a change when the Hub reported an Internal IP that is %s, and leaves it out of the request', async (_kind, internalIp) => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={{ ...newHubSettings, internalIp }} onSubmit={onSubmit} />);
+
+    await userEvent.click(screen.getByRole('switch', { name: 'Enable guest dashboard' }));
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ guestDashboard: true }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.not.objectContaining({ internalIp: expect.anything() }));
+  });
+
+  it('saves with the field shown and left alone, whatever the Hub reported in it', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={{ ...advancedSettings, internalIp: '::' }} onSubmit={onSubmit} />);
+
+    expect(internalIpField()).toHaveValue('::');
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('Invalid IP address')).not.toBeInTheDocument();
+  });
+
+  it('sends an Internal IP the Hub reported as it is when it is an IPv4 address', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={newHubSettings} onSubmit={onSubmit} />);
+
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ internalIp: '192.168.1.10' }));
+  });
+
+  it('saves an Internal IP typed with stray spaces, without them', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={advancedSettings} onSubmit={onSubmit} />);
+
+    await typeInternalIp('  10.0.0.5 ');
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ internalIp: '10.0.0.5' }));
+  });
+
+  it.each([
+    ['a name', 'hub.lan'],
+    ['an IPv6 address', 'fd00::1'],
+    ['an address with a part too many', '10.0.0.5.1'],
+    ['nothing, which the Hub cannot take in place of its address', ''],
+  ])('rejects a typed Internal IP that is %s', async (_kind, typed) => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={advancedSettings} onSubmit={onSubmit} />);
+
+    await typeInternalIp(typed);
+    await submit();
+
+    expect(await screen.findByText('Invalid IP address')).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
 describe('UserSettingsForm Default app CPU limit', () => {
   it('sends an emptied field, so the saved default is cleared rather than kept', async () => {
     const onSubmit = vi.fn();

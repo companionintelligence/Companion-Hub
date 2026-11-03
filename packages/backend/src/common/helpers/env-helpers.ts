@@ -49,7 +49,7 @@ const generateSeed = async (log: StateFileLog) => {
   if (!fs.existsSync(seedFilePath)) {
     const randomBytes = crypto.randomBytes(32);
     const seed = randomBytes.toString('hex');
-    await fs.promises.writeFile(seedFilePath, seed, { mode: PRIVATE_STATE_FILE_MODE });
+    await fs.promises.writeFile(seedFilePath, seed, { mode: PRIVATE_STATE_FILE_MODE }).catch(rethrowDataFileDenied(seedFilePath));
     return;
   }
   await restrictStateFileMode(seedFilePath, log);
@@ -454,6 +454,22 @@ function settingsJsonPermissionError(settingsFilePath: string, cause: unknown): 
 }
 
 /**
+ * Names the file and the ownership repair for a boot-time file the Hub cannot access, in place of the
+ * bare errno. Any other error passes through unchanged.
+ */
+function rethrowDataFileDenied(filePath: string): (error: unknown) => never {
+  return (error: unknown): never => {
+    if (isFsErrorWithCode(error, 'EACCES')) {
+      throw new Error(
+        `Cannot read or write ${filePath}: permission denied. This usually means bind-mounted Hub data was written by a prior container running as a different user. Stop the Hub, fix ownership on the host data directory (for example: chown -R "$(id -u):$(id -g)" "$ROOT_FOLDER_HOST"), and start it again.`,
+        { cause: error },
+      );
+    }
+    throw error;
+  };
+}
+
+/**
  * Ensures settings.json exists, is readable and writable by the Hub process, and is readable by
  * nobody else.
  *
@@ -473,6 +489,11 @@ async function prepareSettingsJson(settingsFilePath: string): Promise<void> {
   const createEmpty = async () => {
     await fs.promises.writeFile(settingsFilePath, '{}', { encoding: 'utf8', mode: PRIVATE_STATE_FILE_MODE });
   };
+  // After the permission repair above, a second refusal gets the same explanation as every other one.
+  const createEmptyAfterRepair = () =>
+    createEmpty().catch((error: unknown) => {
+      throw settingsJsonPermissionError(settingsFilePath, error);
+    });
 
   if (!fs.existsSync(settingsFilePath)) {
     try {
@@ -483,7 +504,7 @@ async function prepareSettingsJson(settingsFilePath: string): Promise<void> {
         throw error;
       }
       await retrySettingsJsonPermissions(settingsFilePath, stateDir);
-      await createEmpty();
+      await createEmptyAfterRepair();
       return;
     }
   }
@@ -493,7 +514,7 @@ async function prepareSettingsJson(settingsFilePath: string): Promise<void> {
   } catch (error) {
     await retrySettingsJsonPermissions(settingsFilePath, stateDir);
     if (!fs.existsSync(settingsFilePath)) {
-      await createEmpty();
+      await createEmptyAfterRepair();
       return;
     }
     try {
@@ -749,7 +770,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   // Preserve the source environment; resolved values are written to state/.env.resolved.
   let envFile = '';
   if (fs.existsSync(envFilePath)) {
-    envFile = await fs.promises.readFile(envFilePath, 'utf-8');
+    envFile = await fs.promises.readFile(envFilePath, 'utf-8').catch(rethrowDataFileDenied(envFilePath));
   }
 
   const envMap: Map<string, string> = envUtils.envStringToMap(envFile);

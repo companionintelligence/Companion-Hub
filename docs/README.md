@@ -4,6 +4,8 @@ User documentation lives at **[docs.ci.computer](https://docs.ci.computer)**: in
 
 Use this index so Hub, Portal, Memory, and agent-only material stay distinct.
 
+To report a vulnerability, read [`../SECURITY.md`](../SECURITY.md) first.
+
 ## Product names
 
 | Name | What it is | Open source? |

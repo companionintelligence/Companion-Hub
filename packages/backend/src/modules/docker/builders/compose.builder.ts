@@ -9,7 +9,6 @@ import {
   collectTraefikLabelIssues,
   isReservedHubLabel,
   LOOPBACK_HOST_PORT_INTERFACE,
-  TRUSTED_APP_SECURITY_ALLOWLIST,
 } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import * as yaml from 'yaml';
@@ -17,7 +16,7 @@ import { type BuiltService, ServiceBuilder } from './service.builder';
 import { labelsOfRoutersLosingTheirChain, TraefikLabelsBuilder, withAppStartingPage, withHubMiddlewaresFirst } from './traefik-labels.builder';
 import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
 import { requiresHubLoginOnPublicRoute } from '@/modules/apps/app-public-routing.helpers';
-import { isOfficialStoreApp } from '@/modules/apps/official-store.predicate';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { z } from 'zod';
 
 export const INTERNAL_INFRASTRUCTURE_PORTS = [6543, 5672] as const;
@@ -385,10 +384,10 @@ export class DockerComposeBuilder {
     // The grant is keyed on provenance, not on the name. `TRUSTED_APP_SECURITY_ALLOWLIST` is keyed
     // by bare app name, so looking it up without asking where the app came from let any user-added
     // store — and `_user`, the custom-app path — claim `privileged: true` by naming its app
-    // `home-assistant`. `isOfficialStoreApp` is the provenance gate, and its doc comment explains
+    // `home-assistant`. `securityGrantsFor` applies that gate, and its doc comment explains
     // why the store segment is the one signal a manifest cannot forge. Everything else gets
     // `undefined` and is held to the bare reject-list.
-    const securityGrants = isOfficialStoreApp({ urn: appUrn }) ? TRUSTED_APP_SECURITY_ALLOWLIST[appName] : undefined;
+    const securityGrants = securityGrantsFor(appUrn);
     const securityViolations = collectServiceSecurityViolations(params, securityGrants);
     if (securityViolations.length > 0) {
       const details = securityViolations.map((v) => `${v.path.join('.')}${v.hostPath ? ` (${v.hostPath})` : ''} [${v.message}]`).join(', ');

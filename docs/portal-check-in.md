@@ -6,7 +6,7 @@ A registered Hub checks in with Companion Portal to confirm that Portal still ac
 
 The Hub sends `POST /api/devices/check-in` with its device key in `x-device-key`:
 
-- About 10 seconds after boot, then every hour.
+- About 10 seconds after boot, then every 15 minutes. A tick sends nothing when another check-in ran in the last 14½ minutes, so on a Hub whose status report runs the report's check-in is the only one. The longest gap between check-ins is just under 30 minutes.
 - Whenever something reads the live registration status, at most once every 30 seconds. That includes `GET /api/registration/status`, the marketplace routes behind `RegistrationGuard`, the MCP registration tool, app rehydration, and the status report that writes `CI_HUB_STATUS.md`. On the fleet, check-ins landed every 15 minutes, in step with that report.
 
 Each accepted check-in updates the device's `last_seen` in Portal. Portal's organization status report marks a device stale after 3 hours without one.
@@ -128,6 +128,7 @@ The Hub's own restarts skip the check. Each of them updates an app that is alrea
 | Entitled, free, or unknown app | Allowed | Allowed |
 | `402` | Refused | Refused |
 | `401`: device key rejected | Refused, because the bundle download and registry token that follow need the same key | Allowed, unless a check in the last 24 hours returned `402` |
+| `409 ORGANIZATION_REQUIRED` or `403 DEVICE_NOT_IN_ORGANIZATION`: Portal can't place this Hub | Refused with a message saying how to repair it, even with an entitled answer cached | Allowed, unless a check in the last 24 hours returned `402` |
 | Portal unreachable or `5xx` | Allowed only with an entitled answer cached in the last 24 hours | Allowed, unless a check in the last 24 hours returned `402` |
 
 ## The push key

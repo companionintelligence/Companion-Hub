@@ -12,6 +12,10 @@ const NEW_DIRECTORY_ID = '7a2d3b5f-3a4c-4d6e-9fa0-1b2c3d4e5f60';
 const NEW_PUBLIC_ID = '0293b4c5-d6e7-4f80-8b1c-2d3e4f5a6b7c';
 const PORTAL = 'https://hub.ci.computer';
 
+function stableIdentity(publicId = PUBLIC_ID, directoryId = DIRECTORY_ID) {
+  return { issuer: `urn:ci-hub:${directoryId}`, userId: publicId };
+}
+
 /** A drizzle client answering only the two statements the resolver issues for the directory. */
 function fakeDb({ failInsert = 0, directory = () => DIRECTORY_ID } = {}) {
   let failuresLeft = failInsert;
@@ -45,7 +49,16 @@ describe('ForwardAuthIdentityResolver', () => {
   });
 
   it('names a user by their public id under this Hub directory', async () => {
-    await expect(make(fakeDb()).stableIdFor(7)).resolves.toEqual({ issuer: `urn:ci-hub:${DIRECTORY_ID}`, userId: PUBLIC_ID });
+    await expect(make(fakeDb()).stableIdFor(7)).resolves.toEqual(stableIdentity());
+  });
+
+  // A hash of the issuer and the id is no key and names no one, but a `did:keri:` string made of it
+  // reads as proof of a key. The AID fields are reserved until a persisted key event log supplies them.
+  it('carries the issuer and the id only: no key-derived identifier of any kind', async () => {
+    const stableId = await make(fakeDb()).stableIdFor(7);
+
+    expect(Object.keys(stableId ?? {}).sort()).toEqual(['issuer', 'userId']);
+    expect(JSON.stringify(stableId)).not.toContain('did:keri');
   });
 
   it('reads the directory once and each public id once: forward auth runs on every request', async () => {
@@ -67,7 +80,7 @@ describe('ForwardAuthIdentityResolver', () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('signing the username alone'));
 
     // The failure is not remembered.
-    await expect(resolver.stableIdFor(7)).resolves.toEqual({ issuer: `urn:ci-hub:${DIRECTORY_ID}`, userId: PUBLIC_ID });
+    await expect(resolver.stableIdFor(7)).resolves.toEqual(stableIdentity());
   });
 
   it('names nobody by id for a user with no row', async () => {
@@ -82,7 +95,7 @@ describe('ForwardAuthIdentityResolver', () => {
 
     await expect(make(fakeDb()).personForPortalSubject(PORTAL, 'portal-sub')).resolves.toEqual({
       username: 'owner@example.com',
-      stableId: { issuer: `urn:ci-hub:${DIRECTORY_ID}`, userId: PUBLIC_ID },
+      stableId: stableIdentity(),
     });
     expect(federated.findByIssuerSubject).toHaveBeenCalledWith(PORTAL, 'portal-sub');
   });
@@ -115,13 +128,13 @@ describe('ForwardAuthIdentityResolver', () => {
   it('reads the directory and each public id again after forget', async () => {
     let directoryId = DIRECTORY_ID;
     const resolver = make(fakeDb({ directory: () => directoryId }));
-    await expect(resolver.stableIdFor(1)).resolves.toEqual({ issuer: `urn:ci-hub:${DIRECTORY_ID}`, userId: PUBLIC_ID });
+    await expect(resolver.stableIdFor(1)).resolves.toEqual(stableIdentity());
 
     directoryId = NEW_DIRECTORY_ID;
     users.getPublicId.mockResolvedValue(NEW_PUBLIC_ID);
     resolver.forget();
 
-    await expect(resolver.stableIdFor(1)).resolves.toEqual({ issuer: `urn:ci-hub:${NEW_DIRECTORY_ID}`, userId: NEW_PUBLIC_ID });
+    await expect(resolver.stableIdFor(1)).resolves.toEqual(stableIdentity(NEW_PUBLIC_ID, NEW_DIRECTORY_ID));
   });
 
   it('forgets which Hub person a Portal subject was', async () => {

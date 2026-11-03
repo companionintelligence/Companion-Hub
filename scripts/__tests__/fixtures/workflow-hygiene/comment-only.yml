@@ -1,0 +1,15 @@
+name: Fixture comments only
+# Notes that mention the words the guard looks for, none of them in effect:
+#   secrets: inherit
+#   on: pull_request_target
+#   - uses: example-org/example-action@v1
+on:
+  workflow_dispatch: # not pull_request_target and not workflow_run
+permissions:
+  contents: read
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      # - uses: example-org/example-action@v1
+      - run: echo ok # secrets: inherit

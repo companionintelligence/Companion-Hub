@@ -107,7 +107,7 @@ tunnel.stale-*
 # only the dated per-run reports written by the fleet QA runner are ignored).
 /e2e/results/fleet-report-*.json
 /e2e/results/fleet-report-*.md
-# Built CLI binaries — do not commit (historical blobs embedded Tipi-era strings).
+# Built CLI binaries — do not commit (historical blobs embedded strings from before the rename).
 /bin/cihub
 /packages/desktop/src-tauri/resources/cihub
 /packages/desktop/src-tauri/resources/cihub.exe

@@ -22,6 +22,12 @@ import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 
 const LONG_RUNNING_TRANSITIONAL_STATES: AppStatus[] = ['installing', 'updating'];
 
+/**
+ * Docker's `Status` for a container that started under a minute ago. A service that crashes every few
+ * seconds reads `running` between crashes and always reads like this.
+ */
+const STARTED_UNDER_A_MINUTE_AGO = /^Up (less than a second|\d+ seconds?)/i;
+
 const TRANSITIONAL_STATES: AppStatus[] = [
   'installing',
   'uninstalling',
@@ -33,6 +39,21 @@ const TRANSITIONAL_STATES: AppStatus[] = [
   'backing_up',
   'restoring',
 ];
+
+/** The Docker socket is missing, refusing connections, or not readable by the Hub's user. */
+function isDockerSocketUnavailable(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { code, address, message } = error as { code?: unknown; address?: unknown; message?: unknown };
+  const names = [address, message].some((value) => typeof value === 'string' && value.includes('docker.sock'));
+  return names && ['EACCES', 'EPERM', 'ENOENT', 'ECONNREFUSED'].includes(String(code));
+}
+
+/** A Docker call the read-only proxy in front of the socket refused: docker-modem's "(HTTP code 403) ..." error, with the status as `statusCode`. */
+function isReadOnlyDockerProxyRefusal(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { statusCode, message } = error as { statusCode?: unknown; message?: unknown };
+  return statusCode === 403 && typeof message === 'string' && message.includes('blocked by the read-only test proxy');
+}
 
 @Injectable()
 export class AppStatusSyncService {
@@ -107,20 +128,23 @@ export class AppStatusSyncService {
       const apps = await this.appRepository.getApps();
       const containers = await listContainersMatchingAnyLabelSets(this.docker, managedAppLabelSets());
 
-      const dockerStatusMap = new Map<string, { running: number; exitZero: number; total: number }>();
+      const dockerStatusMap = new Map<string, { running: number; exitZero: number; total: number; startedJustNow: boolean }>();
 
       for (const container of containers) {
         const appUrn = appUrnFromLabels(container.Labels);
         if (!appUrn) continue;
 
         if (!dockerStatusMap.has(appUrn)) {
-          dockerStatusMap.set(appUrn, { running: 0, exitZero: 0, total: 0 });
+          dockerStatusMap.set(appUrn, { running: 0, exitZero: 0, total: 0, startedJustNow: false });
         }
 
         const status = dockerStatusMap.get(appUrn);
         if (status) {
           status.total++;
-          if (container.State === 'running') status.running++;
+          if (container.State === 'running') {
+            status.running++;
+            status.startedJustNow ||= STARTED_UNDER_A_MINUTE_AGO.test(container.Status);
+          }
           if (container.State === 'exited' && /Exited \(0\)/.test(container.Status)) status.exitZero++;
         }
       }
@@ -226,10 +250,22 @@ export class AppStatusSyncService {
           // events — never as the durable status of an installed app.
           newStatus = 'stopped';
         } else if (dockerStatus.running > 0 && dockerStatus.running + dockerStatus.exitZero === dockerStatus.total) {
+          // An app that failed to come up gets back to `running` by itself once its containers do, but
+          // one look at a crash loop can land between two crashes. It waits for the next sync then.
+          if ((app.status === 'install_failed' || app.status === 'stopped') && dockerStatus.startedJustNow) {
+            skippedCount++;
+            continue;
+          }
           // A clean exit counts only beside a running container: that is a one-shot init service
           // that finished. Every container exited 0 is an app stopped with `docker stop`, such as
           // by the desktop's Stop Hub.
           newStatus = 'running';
+        } else if (app.status === 'install_failed') {
+          // Containers left by a failed install, crash-looping or stuck in `Created`, do not make it a
+          // stopped app. `stopped` lost the failure message and Retry install. It also sent the next
+          // try through Start, past install's port handling (#2041).
+          skippedCount++;
+          continue;
         } else {
           newStatus = 'stopped';
           everyContainerExitedCleanly = dockerStatus.exitZero === dockerStatus.total;
@@ -277,10 +313,28 @@ export class AppStatusSyncService {
         totalApps: apps.length,
       };
     } catch (error) {
-      this.logger.error('Error during app status sync:', error);
-      // Status sync is what detects app crashes. If the loop itself dies and we
-      // only log locally, crash detection goes dark with no Sentry signal.
-      this.errorReportingService?.captureException(error, { surface: 'app-status-sync' });
+      if (isDockerSocketUnavailable(error)) {
+        // Every pass fails the same way until the socket is readable, so one warning an hour says so.
+        this.logger.warn(`App status sync skipped: the Docker socket is not reachable. ${String(error)}`);
+        this.errorReportingService?.captureWarning(
+          'App status sync cannot reach the Docker socket',
+          { surface: 'app-status-sync' },
+          { debounceKey: 'app-status-sync:docker-socket', debounceMs: 60 * 60_000 },
+        );
+      } else if (isReadOnlyDockerProxyRefusal(error)) {
+        // The proxy refuses the same listing on every pass, so one warning an hour says so.
+        this.logger.warn(`App status sync refused by the read-only Docker proxy. ${String(error)}`);
+        this.errorReportingService?.captureWarning(
+          'App status sync was refused by the read-only Docker proxy',
+          { surface: 'app-status-sync' },
+          { debounceKey: 'app-status-sync:docker-proxy-refused', debounceMs: 60 * 60_000 },
+        );
+      } else {
+        this.logger.error('Error during app status sync:', error);
+        // Status sync is what detects app crashes. If the loop itself dies and we
+        // only log locally, crash detection goes dark with no Sentry signal.
+        this.errorReportingService?.captureException(error, { surface: 'app-status-sync' });
+      }
 
       return {
         success: false,
@@ -342,9 +396,9 @@ export class AppStatusSyncService {
       try {
         const diag = await this.dockerReadFacade.diagnoseAppContainers(appUrn);
         if (diag.unhealthy.length > 0) {
-          containers = diag.unhealthy;
-          const logSummary = diag.unhealthy.map((container) => `${container.name} (${container.state}): ${container.logs || '(no logs)'}`).join('\n');
-          message = `${message}\n${logSummary}`;
+          containers = diag.unhealthy.map(({ name, state }) => ({ name, state }));
+          const containerSummary = diag.unhealthy.map((container) => `${container.name} (${container.state})`).join('\n');
+          message = `${message}\n${containerSummary}`;
         }
       } catch (diagError) {
         this.logger.warn(`Failed to capture container logs for crashed app ${appUrn}: ${String(diagError)}`);

@@ -26,7 +26,7 @@ import {
   REGISTRATION_PROVISIONING_HINT,
 } from '@/components/hub-status/hub-status-tooltips';
 import { forgetPendingPairingCode, normalizePairingCode, resolvePendingPairingCode, stashPendingPairingCode } from '@/lib/deep-link-pair';
-import { captureHubWarning, setHubSentryDeviceId } from '@/lib/sentry';
+import { addHubBreadcrumb, setHubSentryDeviceId } from '@/lib/sentry';
 import { getStoredDriftChoice, storeDriftChoice, type RegistrationDriftChoice, type RegistrationStateDrift } from '@/lib/registration-state-drift';
 import {
   RegistrationFreshBanner,
@@ -249,13 +249,7 @@ export default function DeviceRegistrationPage() {
     try {
       const deviceResult = await fetchDeviceRegistrationInfoResult();
       if (!deviceResult.ok) {
-        captureHubWarning(
-          'Device registration page could not load device info',
-          {
-            status: deviceResult.status,
-          },
-          { dedupeKey: `device-registration-device-info:${deviceResult.status}` },
-        );
+        addHubBreadcrumb('Device registration page could not load device info', { status: deviceResult.status });
         setDeviceInfoError(t('DEVICE_REGISTRATION_DEVICE_INFO_FAILED'));
         return;
       }
@@ -277,13 +271,7 @@ export default function DeviceRegistrationPage() {
       setDeviceInfoError(null);
     } catch (error) {
       console.error(error);
-      captureHubWarning(
-        'Device registration page could not load device info',
-        {
-          error: error instanceof Error ? error.message : String(error),
-        },
-        { dedupeKey: 'device-registration-device-info:exception' },
-      );
+      addHubBreadcrumb('Device registration page could not load device info', { error: error instanceof Error ? error.message : String(error) });
       setDeviceInfoError(t('DEVICE_REGISTRATION_DEVICE_INFO_FAILED'));
     }
   }, [t]);
@@ -308,13 +296,7 @@ export default function DeviceRegistrationPage() {
     try {
       const statusResult = await fetchRegistrationStatusResult();
       if (!statusResult.ok) {
-        captureHubWarning(
-          'Device registration status temporarily unavailable',
-          {
-            status: statusResult.status,
-          },
-          { dedupeKey: `device-registration-status:${statusResult.status}` },
-        );
+        addHubBreadcrumb('Device registration status temporarily unavailable', { status: statusResult.status });
         throw new Error(t('DEVICE_REGISTRATION_FETCH_STATUS_FAILED'));
       }
 
@@ -369,13 +351,7 @@ export default function DeviceRegistrationPage() {
     } catch (error) {
       console.error(error);
       lastStatusFetchSucceededRef.current = false;
-      captureHubWarning(
-        'Device registration status temporarily unavailable',
-        {
-          error: error instanceof Error ? error.message : String(error),
-        },
-        { dedupeKey: 'device-registration-status:exception' },
-      );
+      addHubBreadcrumb('Device registration status temporarily unavailable', { error: error instanceof Error ? error.message : String(error) });
       setStatusError(t('DEVICE_REGISTRATION_STATUS_TEMPORARY_UNAVAILABLE'));
       setRegistrationStatus((previous) => {
         if (!previous) {

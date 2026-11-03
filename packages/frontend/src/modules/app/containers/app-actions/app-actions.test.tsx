@@ -158,11 +158,20 @@ vi.mock('sonner', () => ({
   },
 }));
 
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({
-    t: (key: string) => key,
-  }),
-}));
+vi.mock('react-i18next', () => {
+  // Every key reads as itself but those the install error banner is handed, so a key left untranslated shows.
+  const copy: Record<string, string> = {
+    APP_INSTALL_PORTAL_ORGANIZATION_REQUIRED: 'Translated refusal',
+    PORTAL_REQUEST_FAILED: 'CI Account request failed ({{status}}) for {{path}}.',
+  };
+
+  return {
+    useTranslation: () => ({
+      t: (key: string) => copy[key] ?? key,
+      i18n: { exists: (key: string) => key in copy },
+    }),
+  };
+});
 
 vi.mock('react-tooltip', () => ({
   Tooltip: () => null,
@@ -372,6 +381,49 @@ describe('AppActions', () => {
     });
   });
 
+  describe('the exposure mode the settings dialog opens on', () => {
+    const openedMode = (app: AppDetails) => {
+      render(<AppActions app={app} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+      return (hoisted.updateSettingsProps?.config as Record<string, unknown> | undefined)?.exposureMode;
+    };
+
+    it('is the mode a custom app runs in when its form holds only a port', () => {
+      expect(openedMode(makeApp({ exposureMode: 'local', config: { port: 9898 } }))).toBe('local');
+    });
+
+    it('is the mode the stored form names', () => {
+      expect(openedMode(makeApp({ exposureMode: 'tailscale', config: { port: 9898, exposureMode: 'tailscale' } }))).toBe('tailscale');
+    });
+
+    it('stays Public Web for an app saved that way', () => {
+      expect(
+        openedMode(makeApp({ exposureMode: 'cloudflare', exposedLocal: true, config: { exposureMode: 'cloudflare', exposedLocal: true } })),
+      ).toBe('cloudflare');
+    });
+
+    it('is what compose runs when the row and the form disagree', () => {
+      // An install that sent no exposure settings stored `exposed_local = true` beside a local form.
+      expect(openedMode(makeApp({ exposureMode: 'cloudflare', exposedLocal: true, config: { openPort: true } }))).toBe('local');
+    });
+  });
+
+  describe('the exposure mode the install dialog opens on', () => {
+    const installMode = (app: AppDetails | null) => {
+      render(<AppActions app={app} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+      return hoisted.installDialogProps?.retryExposureMode;
+    };
+
+    it('is what a failed install asked for when it is retried', () => {
+      expect(installMode(makeApp({ status: 'install_failed', exposureMode: 'local', config: { exposureMode: 'local', openPort: true } }))).toBe(
+        'local',
+      );
+    });
+
+    it('is left to the new-install default for an app that is not installed', () => {
+      expect(installMode(null)).toBeUndefined();
+    });
+  });
+
   describe('the restart setting for a newly connected domain', () => {
     /*
      * The stored config snapshot leaves this setting out, so that flipping it never
@@ -514,6 +566,32 @@ describe('AppActions', () => {
     expect(hoisted.toastError).toHaveBeenCalledWith('APP_ACTION_WRONG_ARCHITECTURE');
   });
 
+  describe('the install error under the actions', () => {
+    const renderWithInstallError = (message: string) => {
+      hoisted.queryClient.getQueryData.mockImplementation((key: unknown[]) => (key[0] === 'app-install-error' ? { message, ts: 1 } : null));
+
+      render(<AppActions app={null} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+    };
+
+    it('translates a refused bundle download, which arrives as a key', () => {
+      renderWithInstallError('APP_INSTALL_PORTAL_ORGANIZATION_REQUIRED');
+
+      expect(screen.getByRole('alert')).toHaveTextContent('Translated refusal');
+    });
+
+    it('shows the general message for a key whose copy asks for values the event does not carry', () => {
+      renderWithInstallError('PORTAL_REQUEST_FAILED');
+
+      expect(screen.getByRole('alert')).toHaveTextContent('COMMON_AN_ERROR_OCCURRED');
+    });
+
+    it('shows an install that failed later as the text it sent', () => {
+      renderWithInstallError('One or more containers exited after install.');
+
+      expect(screen.getByRole('alert')).toHaveTextContent('One or more containers exited after install.');
+    });
+  });
+
   describe('a saved link to install this app', () => {
     // A link held during setup opens the dialog from the stash while the desktop shell still has the
     // same link parked. Left there, it brought the user back here with the dialog open on the next
@@ -599,6 +677,89 @@ describe('AppActions', () => {
     expect(alert).toHaveClass('hero-inline-install-error');
     expect(alert).toHaveTextContent('Install completed with warnings and needs your attention before the app is fully usable.');
     expect(container.querySelector('.hero-action-bar')).toBeInTheDocument();
+  });
+
+  describe('why the app is down', () => {
+    const serviceFailure = { kind: 'restarting' as const, service: 'summary-service', exitCode: 126, logLine: 'permission denied' };
+    // This file's `t` answers with the key. `app-service-failure.test.ts` covers the words.
+    const text = 'APP_ERROR_SERVICE_WITH_LOG_LINE';
+
+    it('names the service and the reason where it said one or more containers exited', () => {
+      hoisted.queryClient.getQueryData.mockReturnValue({ message: 'keeps restarting in English', errorDetail: 'the logs', serviceFailure });
+
+      render(
+        <AppActions app={makeApp({ status: 'install_failed' })} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />,
+      );
+
+      expect(screen.getByRole('alert')).toHaveTextContent(text);
+      expect(screen.getByRole('alert')).toHaveAttribute('title', 'the logs');
+    });
+
+    it.each(['install_failed', 'stopped'] as const)('reads it off the app in a tab that heard no event, when the app is %s', (status) => {
+      hoisted.queryClient.getQueryData.mockReturnValue(null);
+
+      render(
+        <AppActions
+          app={makeApp({ status })}
+          metadata={metadata}
+          info={info}
+          failure={{ message: 'keeps restarting in English', serviceFailure }}
+          urlAvailability={idleAvailability}
+          layout="hero"
+        />,
+      );
+
+      expect(screen.getByRole('alert')).toHaveTextContent(text);
+    });
+
+    it('takes the reason on the app over the event, which leaves out the log line', () => {
+      hoisted.queryClient.getQueryData.mockReturnValue({
+        message: 'from the event',
+        serviceFailure: { kind: 'restarting', service: 'summary-service' },
+      });
+
+      render(
+        <AppActions
+          app={makeApp({ status: 'install_failed' })}
+          metadata={metadata}
+          info={info}
+          failure={{ message: 'keeps restarting in English', errorDetail: 'the logs', serviceFailure }}
+          urlAvailability={idleAvailability}
+          layout="hero"
+        />,
+      );
+
+      expect(screen.getByRole('alert')).toHaveTextContent(text);
+      expect(screen.getByRole('alert')).toHaveAttribute('title', 'the logs');
+    });
+
+    it('falls back on the event for someone the app does not give the reason to', () => {
+      hoisted.queryClient.getQueryData.mockReturnValue({
+        message: 'from the event',
+        serviceFailure: { kind: 'restarting', service: 'summary-service' },
+      });
+
+      render(<AppActions app={makeApp({ status: 'stopped' })} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+
+      expect(screen.getByRole('alert')).toHaveTextContent('APP_ERROR_SERVICE_KEEPS_RESTARTING');
+    });
+
+    it('drops it while the app is being worked on again, before the read catches up', () => {
+      hoisted.queryClient.getQueryData.mockReturnValue(null);
+
+      render(
+        <AppActions
+          app={makeApp({ status: 'starting' })}
+          metadata={metadata}
+          info={info}
+          failure={{ message: 'keeps restarting in English', serviceFailure }}
+          urlAvailability={idleAvailability}
+          layout="hero"
+        />,
+      );
+
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
   });
 
   it('uses the taller amber retry install button styling for failed installs', () => {
@@ -697,6 +858,50 @@ describe('AppActions', () => {
    * account with no linked Portal identity also gets start, stop and restart. Nothing is shown that the
    * Hub would refuse.
    */
+  describe.each(['running', 'stopped'] as const)('offering an update on a %s app', (status) => {
+    const UPDATE = 'icon-action-common_update';
+    const IGNORE = 'icon-action-app_action_ignore_version';
+    const UNIGNORE = 'icon-action-app_action_unignore_version';
+    const shown = () => [UPDATE, IGNORE, UNIGNORE].filter((id) => screen.queryByTestId(id));
+
+    const renderOffer = (latest: AppMetadata, ignoredVersion?: number) =>
+      render(
+        <MemoryRouter>
+          <AppActions
+            app={makeApp({ status, version: 8, ignoredVersion })}
+            metadata={latest}
+            info={makeInfo({ version: '2026.10.28', cihub_app_version: 8 })}
+            urlAvailability={idleAvailability}
+          />
+        </MemoryRouter>,
+      );
+
+    it('offers nothing when the app is up to date', () => {
+      renderOffer({ latestVersion: 8, latestDockerVersion: '2026.10.28' });
+      expect(shown()).toEqual([]);
+    });
+
+    it('offers a newer version whose counter did not change, without an ignore that could not hide it', () => {
+      renderOffer({ latestVersion: 8, latestDockerVersion: '2026.11.2' });
+      expect(shown()).toEqual([UPDATE]);
+    });
+
+    it('offers a raised counter and lets it be ignored', () => {
+      renderOffer({ latestVersion: 9, latestDockerVersion: '2026.10.28' });
+      expect(shown()).toEqual([UPDATE, IGNORE]);
+    });
+
+    it('hides an ignored counter and offers to stop ignoring it', () => {
+      renderOffer({ latestVersion: 9, latestDockerVersion: '2026.10.28' }, 9);
+      expect(shown()).toEqual([UNIGNORE]);
+    });
+
+    it('still offers a newer version beside an ignored counter', () => {
+      renderOffer({ latestVersion: 9, latestDockerVersion: '2026.11.2' }, 9);
+      expect(shown()).toEqual([UPDATE, UNIGNORE]);
+    });
+  });
+
   describe('the actions a person may use', () => {
     const customInfo = makeInfo({ urn: 'whoami-check:_user', id: 'whoami-check', no_gui: false });
     const renderCustom = (status: AppDetails['status'], allowedActions?: readonly string[]) =>

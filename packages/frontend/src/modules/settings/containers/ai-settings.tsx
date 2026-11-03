@@ -570,17 +570,21 @@ export const AiSettingsContainer = () => {
       selectedBackend === 'vllm' ? vllmUrlRef.current : undefined,
       selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
       selectedBackend === 'omlx' ? omlxUrlRef.current : undefined,
-    ).then((data) => {
-      // A reply for an engine the page has since left would seed its models and choices over the
-      // engine now shown.
-      if (lastHandledBackendRef.current !== selectedBackend) return;
-      setProfile(data);
-      // Re-seed the checkboxes for the new backend from server truth (see seedSelectedModelIds).
-      seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
-      // A model chosen on one engine is no choice on another.
-      setChosenChatModelId(storedChatModelId(data, selectedBackend, storedRoleModelsRef.current));
-      keepStoredRoleModels(data, selectedBackend);
-    });
+    )
+      .then((data) => {
+        // A reply for an engine the page has since left would seed its models and choices over the
+        // engine now shown.
+        if (lastHandledBackendRef.current !== selectedBackend) return;
+        setProfile(data);
+        // Re-seed the checkboxes for the new backend from server truth (see seedSelectedModelIds).
+        seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
+        // A model chosen on one engine is no choice on another.
+        setChosenChatModelId(storedChatModelId(data, selectedBackend, storedRoleModelsRef.current));
+        keepStoredRoleModels(data, selectedBackend);
+      })
+      .catch((e: Error) => {
+        toast.error(t('AI_SETTINGS_LOAD_FAILED', { error: e.message }));
+      });
     fetchRuntimeModels(selectedBackend);
     if (selectedBackend === 'vllm') {
       void checkVllmStatus();
@@ -589,7 +593,7 @@ export const AiSettingsContainer = () => {
     } else if (selectedBackend === 'lemonade') {
       void checkLemonadeStatus();
     }
-  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, checkOmlxStatus, checkLemonadeStatus, seedSelectedModelIds, keepStoredRoleModels]);
+  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, checkOmlxStatus, checkLemonadeStatus, seedSelectedModelIds, keepStoredRoleModels, t]);
 
   const hasActiveTransfers = Object.values(trackedModels).some((model) => ['pulling', 'loading', 'unloading'].includes(model.state));
 

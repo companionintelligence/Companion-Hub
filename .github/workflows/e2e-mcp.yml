@@ -19,6 +19,10 @@ concurrency:
   group: e2e-mcp-${{ github.ref }}
   cancel-in-progress: true
 
+# Read-only: this workflow checks out code and runs tests, and writes nothing back.
+permissions:
+  contents: read
+
 jobs:
   mcp:
     timeout-minutes: 45

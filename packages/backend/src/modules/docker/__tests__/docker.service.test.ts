@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { ComposeCliUnavailableError, DockerService } from '../docker.service';
+import { APP_CAME_UP_TIMING } from '../managed-app-containers';
 import { DockerReadFacade } from '../docker-read.facade';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -103,6 +104,35 @@ describe('DockerService', () => {
     // mockImplementation from one test cannot leak into the next.
     (child_process.spawn as any).mockReset();
     vi.clearAllMocks();
+  });
+
+  describe('diagnoseAppContainers', () => {
+    it('does not count a clean one-shot exit as an unhealthy container', async () => {
+      (dockerReadFacade.diagnoseAppContainers as unknown as { mockRestore?: () => void }).mockRestore?.();
+      const listing = createMockSpawnProcess();
+      (child_process.spawn as any)
+        .mockImplementationOnce(() => listing)
+        .mockImplementationOnce(() => {
+          const logs = createMockSpawnProcess();
+          setImmediate(() => logs.emit('close', 0));
+          return logs;
+        });
+
+      const diagnosis = dockerReadFacade.diagnoseAppContainers('ghost:ci-marketplace' as any);
+      setImmediate(() => {
+        listing.stdout.emit(
+          'data',
+          Buffer.from(
+            'ghost_ci-marketplace-migrate-1|Exited (0) 2 seconds ago\nghost_ci-marketplace-app-1|Up 2 hours\nghost_ci-marketplace-setup-1|Exited (1) 5 minutes ago\n',
+          ),
+        );
+        listing.emit('close', 0);
+      });
+      const result = await diagnosis;
+
+      expect(result.unhealthy.map((container) => container.name)).toEqual(['ghost_ci-marketplace-setup-1']);
+      expect(result.healthy).toEqual(['ghost_ci-marketplace-migrate-1', 'ghost_ci-marketplace-app-1']);
+    });
   });
 
   describe('getBaseComposeArgsApp', () => {
@@ -479,64 +509,138 @@ describe('DockerService', () => {
     });
   });
 
-  describe('snapshotAppImageIds', () => {
-    it('should return unique image IDs from compose project containers', async () => {
-      dockerode.listContainers.mockResolvedValue([{ ImageID: 'sha256:a' } as any, { ImageID: 'sha256:b' } as any, { ImageID: 'sha256:a' } as any]);
+  describe('waitForManagedAppContainersReady', () => {
+    const fast = { ...APP_CAME_UP_TIMING, lookEveryMs: 1, upAfterMs: 5, upAfterCrashMs: 10, settleWithinMs: 30, runningWithinMs: 10 };
+    const startedLongAgo = '2020-01-01T00:00:00.000Z';
 
-      const result = await service.snapshotAppImageIds('test:store' as any);
-
-      expect(dockerode.listContainers).toHaveBeenCalledWith({
-        all: true,
-        filters: { label: ['com.docker.compose.project=test_store'] },
+    function containers(list: Array<{ id: string; service: string; state: string; exit?: number; restarts?: number; startedAt?: string }>) {
+      dockerode.listContainers.mockResolvedValue(
+        list.map(({ id, service, state }) => ({
+          Id: id,
+          Names: [`/app-${service}-1`],
+          State: state,
+          Status: state,
+          Labels: { 'com.docker.compose.service': service },
+        })) as any,
+      );
+      dockerode.getContainer.mockImplementation((id: string) => {
+        const found = list.find((container) => container.id === id);
+        return {
+          inspect: vi.fn().mockResolvedValue({
+            Name: `/app-${found?.service}-1`,
+            RestartCount: found?.restarts ?? 0,
+            State: { Status: found?.state, ExitCode: found?.exit ?? 0, StartedAt: found?.startedAt ?? startedLongAgo },
+          }),
+        } as any;
       });
-      expect(result).toEqual(['sha256:a', 'sha256:b']);
-    });
-  });
+    }
 
-  describe('getManagedAppContainerVerification', () => {
-    it('returns ok when all labeled containers are running', async () => {
-      dockerode.listContainers.mockResolvedValue([{ State: 'running', Status: 'Up 1 second' }] as any);
+    it('looks for the Hub-labelled containers of the app, under both label spellings', async () => {
+      containers([{ id: 'a', service: 'web', state: 'running' }]);
 
-      const result = await service.getManagedAppContainerVerification('ghost:ci-marketplace' as any);
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
 
       expect(dockerode.listContainers).toHaveBeenCalledWith({
         all: true,
-        filters: {
-          label: ['ci-hub.managed=true', 'ci-hub.appurn=ghost:ci-marketplace'],
-        },
+        filters: { label: ['ci-hub.managed=true', 'ci-hub.appurn=ghost:ci-marketplace'] },
       });
       expect(dockerode.listContainers).toHaveBeenCalledWith({
         all: true,
-        filters: {
-          label: ['ci-os-hub.managed=true', 'ci-os-hub.appurn=ghost:ci-marketplace'],
-        },
+        filters: { label: ['ci-os-hub.managed=true', 'ci-os-hub.appurn=ghost:ci-marketplace'] },
       });
       expect(result.ok).toBe(true);
-      expect(result.appStatus).toBe('running');
     });
 
-    it('returns missing when no labeled containers exist', async () => {
+    it('reports nothing running when no labelled containers exist', async () => {
       dockerode.listContainers.mockResolvedValue([] as any);
 
-      const result = await service.getManagedAppContainerVerification('ghost:ci-marketplace' as any);
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
 
       expect(result.ok).toBe(false);
-      expect(result.appStatus).toBe('missing');
-      expect(result.message).toContain('no Hub-managed containers');
+      expect(result.serviceFailure).toEqual({ kind: 'none_running' });
+      expect(result.errorDetail).toContain('no Hub-managed containers');
     });
 
-    it('returns stopped with container logs when containers exited', async () => {
-      dockerode.listContainers.mockResolvedValue([{ State: 'exited', Status: 'Exited (1) 2 seconds ago' }] as any);
-      vi.spyOn(dockerReadFacade, 'diagnoseAppContainers').mockResolvedValue({
-        unhealthy: [{ name: 'ghost', state: 'Exited (1)', logs: 'boot error' }],
-        healthy: [],
-      });
+    it('names the crash-looping service with its exit code and last log line', async () => {
+      containers([
+        { id: 'a', service: 'web', state: 'running' },
+        { id: 'b', service: 'summary-service', state: 'restarting', exit: 126, restarts: 9 },
+      ]);
+      const tail = vi.spyOn(dockerReadFacade, 'tailContainerLogs').mockResolvedValue('booting\nexec /app/run: permission denied\n');
 
-      const result = await service.getManagedAppContainerVerification('ghost:ci-marketplace' as any);
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
 
       expect(result.ok).toBe(false);
-      expect(result.appStatus).toBe('stopped');
-      expect(result.errorDetail).toContain('boot error');
+      expect(result.message).toBe('summary-service keeps restarting (exit 126): exec /app/run: permission denied');
+      expect(result.serviceFailure).toEqual({
+        kind: 'restarting',
+        service: 'summary-service',
+        exitCode: 126,
+        logLine: 'exec /app/run: permission denied',
+      });
+      expect(result.errorDetail).toContain('app-summary-service-1 (restarting, exit 126): booting');
+      expect(tail).toHaveBeenCalledWith('app-summary-service-1', 20);
+    });
+
+    it('goes on watching after a look Docker did not answer, so a blip does not pass a crash loop', async () => {
+      containers([{ id: 'b', service: 'migrate', state: 'exited', exit: 1 }]);
+      dockerode.listContainers.mockRejectedValueOnce(new Error('socket hang up'));
+      vi.spyOn(dockerReadFacade, 'tailContainerLogs').mockResolvedValue('');
+
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
+
+      expect(result).toMatchObject({ ok: false, message: 'migrate exited (exit 1)' });
+    });
+
+    it('gives up once Docker has not answered for the whole window', async () => {
+      dockerode.listContainers.mockRejectedValue(new Error('socket hang up'));
+
+      await expect(service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast)).rejects.toThrow('socket hang up');
+    });
+
+    it('does not hang on a Docker list that never answers', async () => {
+      vi.useFakeTimers();
+      try {
+        dockerode.listContainers.mockReturnValue(new Promise(() => undefined) as any);
+
+        const answer = expect(service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast)).rejects.toThrow('did not list');
+        await vi.advanceTimersByTimeAsync(5_100);
+        await answer;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('takes no reason from a log Docker could not read', async () => {
+      containers([{ id: 'b', service: 'db', state: 'dead', exit: 137 }]);
+      vi.spyOn(dockerReadFacade, 'tailContainerLogs').mockResolvedValue('(failed to capture logs)');
+
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
+
+      expect(result.message).toBe('db exited (exit 137)');
+      expect(result.serviceFailure?.logLine).toBeUndefined();
+    });
+
+    it('still names the service when its logs cannot be read', async () => {
+      containers([{ id: 'b', service: 'migrate', state: 'exited', exit: 1 }]);
+      vi.spyOn(dockerReadFacade, 'tailContainerLogs').mockRejectedValue(new Error('docker is gone'));
+
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
+
+      expect(result.message).toBe('migrate exited (exit 1)');
+    });
+
+    it('counts a container it could not inspect by what the list said', async () => {
+      dockerode.listContainers.mockResolvedValue([
+        { Id: 'a', Names: ['/app-web-1'], State: 'running', Status: 'Up 2 hours', Labels: { 'com.docker.compose.service': 'web' } },
+        { Id: 'b', Names: ['/app-job-1'], State: 'exited', Status: 'Exited (3) 5 seconds ago', Labels: { 'com.docker.compose.service': 'job' } },
+      ] as any);
+      dockerode.getContainer.mockReturnValue({ inspect: vi.fn().mockRejectedValue(new Error('404 no such container')) } as any);
+      vi.spyOn(dockerReadFacade, 'tailContainerLogs').mockResolvedValue('');
+
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
+
+      expect(result.message).toBe('job exited (exit 3)');
     });
   });
 
@@ -635,27 +739,71 @@ describe('DockerService', () => {
   });
 
   describe('removeAppImages', () => {
-    it('should remove snapshot and labeled images with dedupe', async () => {
+    it('removes only the recorded images and the compose builds of the app, each once and never forced', async () => {
       dockerode.listImages.mockResolvedValue([{ Id: 'sha256:b' }, { Id: 'sha256:c' }] as any);
 
       const removeA = vi.fn().mockResolvedValue(undefined);
       const removeB = vi.fn().mockResolvedValue(undefined);
       const removeC = vi.fn().mockResolvedValue(undefined);
 
+      const inspect = vi.fn().mockResolvedValue({ RepoTags: [] });
       dockerode.getImage.mockImplementation((id: string) => {
-        if (id === 'sha256:a') return { remove: removeA } as any;
-        if (id === 'sha256:b') return { remove: removeB } as any;
-        return { remove: removeC } as any;
+        if (id === 'sha256:a') return { remove: removeA, inspect } as any;
+        if (id === 'sha256:b') return { remove: removeB, inspect } as any;
+        return { remove: removeC, inspect } as any;
       });
 
-      await service.removeAppImages('test:store' as any, ['sha256:a', 'sha256:b']);
+      await service.removeAppImages('test:store' as any, ['sha256:a', 'sha256:b', 'sha256:a']);
 
       expect(dockerode.listImages).toHaveBeenCalledWith({
         filters: { label: ['com.docker.compose.project=test_store'] },
       });
-      expect(removeA).toHaveBeenCalledWith({ force: true });
-      expect(removeB).toHaveBeenCalledWith({ force: true });
-      expect(removeC).toHaveBeenCalledWith({ force: true });
+      // No options at all: a forced removal would take an image that another container still uses.
+      expect(removeA).toHaveBeenCalledTimes(1);
+      expect(removeA).toHaveBeenCalledWith();
+      expect(removeB).toHaveBeenCalledWith();
+      expect(removeC).toHaveBeenCalledWith();
+    });
+
+    it('removes nothing but the compose builds when the app recorded no pull', async () => {
+      dockerode.listImages.mockResolvedValue([{ Id: 'sha256:c' }] as any);
+
+      const removeBuilt = vi.fn().mockResolvedValue(undefined);
+      dockerode.getImage.mockReturnValue({ remove: removeBuilt } as any);
+
+      await service.removeAppImages('test:store' as any, []);
+
+      // An image that was on the computer before the app is not in the record, so it is never asked for.
+      expect(dockerode.getImage).toHaveBeenCalledTimes(1);
+      expect(dockerode.getImage).toHaveBeenCalledWith('sha256:c');
+      expect(removeBuilt).toHaveBeenCalledWith();
+    });
+
+    it('skips an image something still holds (a container, or another tag of it) and goes on with the rest', async () => {
+      dockerode.listImages.mockResolvedValue([] as any);
+
+      const removeStillUsed = vi
+        .fn()
+        .mockRejectedValue(new Error('conflict: unable to delete sha256:a (cannot be forced) - image is being used by stopped container 1f2e3d'));
+      const removeOtherTag = vi
+        .fn()
+        .mockRejectedValue(new Error('conflict: unable to delete sha256:b (must be forced) - image is referenced in multiple repositories'));
+      const removeFree = vi.fn().mockResolvedValue(undefined);
+
+      const inspect = vi.fn().mockResolvedValue({ RepoTags: [] });
+      dockerode.getImage.mockImplementation((id: string) => {
+        if (id === 'sha256:a') return { remove: removeStillUsed, inspect } as any;
+        if (id === 'sha256:b') return { remove: removeOtherTag, inspect } as any;
+        return { remove: removeFree, inspect } as any;
+      });
+
+      await expect(service.removeAppImages('test:store' as any, ['sha256:a', 'sha256:b', 'sha256:c'])).resolves.toBeUndefined();
+
+      expect(removeStillUsed).toHaveBeenCalledWith();
+      expect(removeOtherTag).toHaveBeenCalledWith();
+      expect(removeFree).toHaveBeenCalledWith();
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Skipping image removal for sha256:a'));
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Skipping image removal for sha256:b'));
     });
 
     it('should swallow not found and in use removal errors', async () => {
@@ -664,13 +812,129 @@ describe('DockerService', () => {
       const removeMissing = vi.fn().mockRejectedValue(new Error('No such image: sha256:a'));
       const removeInUse = vi.fn().mockRejectedValue(new Error('image is being used by running container'));
 
+      const inspect = vi.fn().mockResolvedValue({ RepoTags: [] });
       dockerode.getImage.mockImplementation((id: string) => {
-        if (id === 'sha256:a') return { remove: removeMissing } as any;
-        return { remove: removeInUse } as any;
+        if (id === 'sha256:a') return { remove: removeMissing, inspect } as any;
+        return { remove: removeInUse, inspect } as any;
       });
 
       await expect(service.removeAppImages('test:store' as any, ['sha256:a', 'sha256:b'])).resolves.toBeUndefined();
       expect(loggerService.warn).toHaveBeenCalled();
+    });
+
+    describe('the tags on a recorded image', () => {
+      const image = (repoTags: string[] | undefined) => ({
+        remove: vi.fn().mockResolvedValue(undefined),
+        inspect: vi.fn().mockResolvedValue({ RepoTags: repoTags }),
+      });
+
+      beforeEach(() => {
+        dockerode.listImages.mockResolvedValue([] as any);
+      });
+
+      it('keeps an image with a tag the app did not bring in: Docker would remove one tag without asking', async () => {
+        const handPulled = image(['postgres:16-alpine', 'postgres@sha256:d']);
+        dockerode.getImage.mockReturnValue(handPulled as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:a'], []);
+
+        expect(handPulled.remove).not.toHaveBeenCalled();
+        expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('postgres:16-alpine'));
+      });
+
+      it('removes an image that holds only the tags it arrived with', async () => {
+        const own = image(['app:1']);
+        dockerode.getImage.mockReturnValue(own as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:a'], ['app:1']);
+
+        expect(own.remove).toHaveBeenCalledWith();
+      });
+
+      it('removes an image with no tags: a digest name is not one', async () => {
+        const pinned = image(['postgres@sha256:d']);
+        dockerode.getImage.mockReturnValue(pinned as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:a'], []);
+
+        expect(pinned.remove).toHaveBeenCalledWith();
+      });
+
+      it('removes an image Docker reports no tags for at all', async () => {
+        const untagged = image(undefined);
+        dockerode.getImage.mockReturnValue(untagged as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:a'], []);
+
+        expect(untagged.remove).toHaveBeenCalledWith();
+      });
+
+      it('keeps an image whose tags cannot be read', async () => {
+        const unknown = { remove: vi.fn(), inspect: vi.fn().mockRejectedValue(new Error('connect EACCES /var/run/docker.sock')) };
+        dockerode.getImage.mockReturnValue(unknown as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:a'], []);
+
+        expect(unknown.remove).not.toHaveBeenCalled();
+        expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('could not read its tags'));
+      });
+
+      it('passes over an image that has already gone, without a warning', async () => {
+        const gone = { remove: vi.fn(), inspect: vi.fn().mockRejectedValue(new Error('No such image: sha256:a')) };
+        dockerode.getImage.mockReturnValue(gone as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:a'], []);
+
+        expect(gone.remove).not.toHaveBeenCalled();
+        expect(loggerService.warn).not.toHaveBeenCalled();
+      });
+
+      it("still removes the app's own compose build, whatever its tags", async () => {
+        dockerode.listImages.mockResolvedValue([{ Id: 'sha256:built' }] as any);
+        const built = image(['test_store-web:latest']);
+        dockerode.getImage.mockReturnValue(built as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:built'], []);
+
+        expect(built.remove).toHaveBeenCalledWith();
+        expect(loggerService.warn).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('imageIdsLocally and imageTagsLocally', () => {
+    it('lists the IDs of the images here', async () => {
+      dockerode.listImages.mockResolvedValue([{ Id: 'sha256:a' }, { Id: 'sha256:b' }] as any);
+
+      await expect(service.imageIdsLocally()).resolves.toEqual(new Set(['sha256:a', 'sha256:b']));
+    });
+
+    it('leaves digest names out of the tags, which the containerd image store lists among them', async () => {
+      dockerode.getImage.mockReturnValue({ inspect: vi.fn().mockResolvedValue({ RepoTags: ['app:1', 'app@sha256:d'] }) } as any);
+
+      await expect(service.imageTagsLocally('sha256:a')).resolves.toEqual(['app:1']);
+    });
+  });
+
+  describe('imageIdLocally', () => {
+    it('returns the ID of the image the reference names on this computer', async () => {
+      const inspect = vi.fn().mockResolvedValue({ Id: 'sha256:a' });
+      dockerode.getImage.mockReturnValue({ inspect } as any);
+
+      await expect(service.imageIdLocally('python:3.13-alpine')).resolves.toBe('sha256:a');
+      expect(dockerode.getImage).toHaveBeenCalledWith('python:3.13-alpine');
+    });
+
+    it('returns null for an image that is not on this computer', async () => {
+      dockerode.getImage.mockReturnValue({ inspect: vi.fn().mockRejectedValue(new Error('No such image: python:3.13-alpine')) } as any);
+
+      await expect(service.imageIdLocally('python:3.13-alpine')).resolves.toBeNull();
+    });
+
+    it('rethrows a failure that is not a missing image, so a Docker that cannot be reached is not read as no image', async () => {
+      dockerode.getImage.mockReturnValue({ inspect: vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED /var/run/docker.sock')) } as any);
+
+      await expect(service.imageIdLocally('python:3.13-alpine')).rejects.toThrow('ECONNREFUSED');
     });
   });
 
@@ -1127,6 +1391,31 @@ describe('DockerService', () => {
 
       expect(child_process.spawn).toHaveBeenCalledWith('docker', expect.arrayContaining(['busybox:1.36']), { stdio: 'pipe' });
     });
+
+    it('empties the data folder of a custom app in the reserved _user store, which is where reset and uninstall look for it', async () => {
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(0));
+      const customUrn = 'my-compose:_user' as any;
+      const hostDir = getAppDataHostPath(customUrn, inputs);
+
+      await expect(service.removeAppDataDirAsRoot(customUrn)).resolves.toBe(true);
+
+      expect(hostDir).toBe('/host/root/app-data/_user/my-compose');
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        expect.arrayContaining(['-v', `${hostDir}:/target:rw`, 'find', '/target', '-mindepth', '1', '-delete']),
+        { stdio: 'pipe' },
+      );
+    });
+
+    it('still refuses a store that starts with an underscore when it is not the reserved _user store', async () => {
+      await expect(service.removeAppDataDirAsRoot('my-compose:_other' as any)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('still refuses a traversal in the app name of a _user app', async () => {
+      await expect(service.removeAppDataDirAsRoot('..:_user' as any)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
   });
 
   describe('privileged snapshot helpers (restore and remove a root-owned data snapshot)', () => {
@@ -1140,6 +1429,28 @@ describe('DockerService', () => {
       delete process.env.CI_HUB_APP_DATA_PATH;
       delete process.env.CI_HUB_CLEANUP_IMAGE;
       (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(0));
+    });
+
+    it('copies the data of a custom app in the reserved _user store into its snapshot, the way a store app is copied', async () => {
+      const customUrn = 'my-compose:_user' as any;
+      const customSnapshot = 'pre-update-my-compose-1792500000000';
+
+      await expect(service.copyAppDataDirAsRoot(customUrn, customSnapshot)).resolves.toBe(true);
+
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        expect.arrayContaining([
+          '-v',
+          '/host/root/app-data/_user/my-compose:/src:ro',
+          '-v',
+          `/host/root/backups/.pre-update-snapshots/_user/my-compose/${customSnapshot}/app-data:/dest:rw`,
+          'cp',
+          '-a',
+          '/src/.',
+          '/dest/',
+        ]),
+        { stdio: 'pipe' },
+      );
     });
 
     it('restores by emptying the data folder and copying the snapshot over it, both mounts confined to this app', async () => {

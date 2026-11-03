@@ -9,6 +9,7 @@ This guide covers conventions for issues and pull requests.
 - [Code structure](#code-structure)
 - [AI agents](#ai-agents)
 - [Screenshot requirements](#screenshot-requirements)
+- [Security issues](#security-issues)
 - [Issue templates](#issue-templates)
 - [Pull requests](#pull-requests)
 
@@ -116,6 +117,10 @@ Before marking a PR ready for review:
 - [ ] Screenshots attached for all UI/UX changes
 - [ ] Before/after screenshots for changes to existing UI
 
+## Security issues
+
+Don't open a public issue or pull request for a vulnerability. Report it privately as [`SECURITY.md`](SECURITY.md) describes.
+
 ## Issue templates
 
 Use the provided bug and feature templates. They include a Screenshots section that states what each ticket type needs.
@@ -125,3 +130,4 @@ Use the provided bug and feature templates. They include a Screenshots section t
 - Reference the related issue (`Closes #123`).
 - Keep one logical change per PR.
 - Ensure CI checks pass before requesting review.
+- If you change a file in `.github/workflows/`, run `pnpm run check:workflows`. It refuses a blanket `secrets: inherit`, `pull_request_target`, and a workflow with no `permissions`; the rules are in [`.github/workflows/README.md`](.github/workflows/README.md).

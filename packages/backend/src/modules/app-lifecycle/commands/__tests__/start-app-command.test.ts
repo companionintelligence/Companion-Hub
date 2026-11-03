@@ -15,7 +15,7 @@ import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import type { AppUrn } from '@ci-hub/common/types';
-import { parseComposeJson } from '@ci-hub/common/schemas';
+import { PORT_EXPOSE_KIND, parseComposeJson } from '@ci-hub/common/schemas';
 import { isRocmKfdPassthroughAvailable } from '@/modules/inference/host-rocm-availability';
 import fs from 'node:fs';
 
@@ -53,6 +53,7 @@ describe('StartAppCommand — pull policy', () => {
   let appFilesManager: any;
   let dockerode: ReturnType<typeof mock<Dockerode>>;
   let portManager: ReturnType<typeof mock<PortManagerService>>;
+  let traefikConfigService: ReturnType<typeof mock<TraefikConfigService>>;
   const appUrn = 'urn:store:test-app' as AppUrn;
 
   beforeEach(() => {
@@ -66,6 +67,7 @@ describe('StartAppCommand — pull policy', () => {
         composeArgs.push(args);
       }),
       removeAppNetworks: vi.fn().mockResolvedValue(undefined),
+      waitForManagedAppContainersReady: vi.fn().mockResolvedValue({ ok: true, message: 'All containers came up' }),
     };
 
     const logger = mockDeep<LoggerService>();
@@ -92,7 +94,7 @@ describe('StartAppCommand — pull policy', () => {
     const appHelpers = mock<AppHelpers>();
     appHelpers.generateEnvFile.mockResolvedValue();
 
-    const traefikConfigService = mock<TraefikConfigService>();
+    traefikConfigService = mock<TraefikConfigService>();
     traefikConfigService.regenerateTraefikConfig.mockResolvedValue();
 
     const marketplaceService = mock<MarketplaceService>();
@@ -392,6 +394,22 @@ describe('StartAppCommand — pull policy', () => {
       );
     });
 
+    it('says so when it moves the app off the Hub port it was saved on', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-nginx', port: 80, force_pull: false } as any);
+      portManager.getMainPort.mockResolvedValue(8080);
+
+      const result = await command.execute(customUrn, { port: 8080 });
+
+      expect(result).toMatchObject({ success: true, movedHostPort: { from: 8080, to: 10000 } });
+    });
+
+    it('reports no move for an app given its first host port', async () => {
+      const result = (await command.execute(customUrn, {})) as { movedHostPort?: unknown };
+
+      expect(result.success).toBe(true);
+      expect(result.movedHostPort).toBeUndefined();
+    });
+
     it('keeps the port a settings save stored when nothing else holds it, and records it', async () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-nginx', port: 8081, force_pull: false } as any);
 
@@ -484,6 +502,292 @@ describe('StartAppCommand — pull policy', () => {
 
       expect(portManager.allocatePorts).not.toHaveBeenCalled();
       expect(portManager.getMainPort).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the record of the images the start pulled', () => {
+    const whoami = 'traefik/whoami:v1.10.2';
+    let onComputer: Map<string, string>;
+
+    beforeEach(() => {
+      onComputer = new Map();
+      vi.mocked(parseComposeJson).mockReturnValue({
+        services: [{ name: 'web', image: whoami, isMain: true, internalPort: 80 }],
+        overrides: [],
+      } as any);
+      dockerService.imageIdLocally = vi.fn(async (ref: string) => onComputer.get(ref) ?? null);
+      dockerService.imageIdsLocally = vi.fn(async () => new Set(onComputer.values()));
+      dockerService.imageTagsLocally = vi.fn(async () => []);
+      appFilesManager.readPulledImages.mockResolvedValue({ imageIds: [], imageTags: [] });
+      appFilesManager.writePulledImages.mockResolvedValue(true);
+    });
+
+    it('lists the images here for a forced pull, which can move a tag, and not for a start that pulls nothing', async () => {
+      onComputer.set(whoami, 'sha256:whoami');
+      appFilesManager.readPulledImages.mockResolvedValue({ imageIds: ['sha256:whoami'], imageTags: [] });
+
+      await command.execute(appUrn, {});
+      expect(dockerService.imageIdsLocally).not.toHaveBeenCalled();
+
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'test-app', force_pull: true } as any);
+      await command.execute(appUrn, {});
+      expect(dockerService.imageIdsLocally).toHaveBeenCalledTimes(1);
+    });
+
+    it('records an image compose pulled during the start', async () => {
+      dockerService.composeApp.mockImplementation(async () => {
+        onComputer.set(whoami, 'sha256:whoami');
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+      expect(appFilesManager.writePulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:whoami'], imageTags: [] });
+    });
+
+    it('does not record an image that was on the computer before the start', async () => {
+      onComputer.set(whoami, 'sha256:mine');
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+      expect(appFilesManager.writePulledImages).not.toHaveBeenCalled();
+    });
+
+    it('does not fail the start when the record cannot be written', async () => {
+      appFilesManager.writePulledImages.mockResolvedValue(false);
+      dockerService.composeApp.mockImplementation(async () => {
+        onComputer.set(whoami, 'sha256:whoami');
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe('after compose up', () => {
+    const crashLoop = {
+      ok: false,
+      message: 'summary-service keeps restarting (exit 126): permission denied',
+      errorDetail: 'app-summary-service-1 (restarting, exit 126): permission denied',
+      serviceFailure: { kind: 'restarting', service: 'summary-service', exitCode: 126, logLine: 'permission denied' },
+    };
+
+    it('does not report success while a service crash-loops and says which one and why', async () => {
+      dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({
+        success: false,
+        message: 'summary-service keeps restarting (exit 126): permission denied',
+        errorCode: 'app_service_failed',
+        errorDetail: crashLoop.errorDetail,
+        serviceFailure: crashLoop.serviceFailure,
+      });
+    });
+
+    it('leaves the other containers up when a service fails', async () => {
+      dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
+
+      await command.execute(appUrn, {});
+
+      expect(composeArgs.some((args) => args.startsWith('down') || args.startsWith('stop'))).toBe(false);
+    });
+
+    it('still routes an exposed app when a service fails, since its other containers go on serving', async () => {
+      dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
+
+      await command.execute(appUrn, { exposedLocal: true });
+
+      expect(traefikConfigService.regenerateTraefikConfig).toHaveBeenCalled();
+    });
+
+    it('reports success when the containers came up', async () => {
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: true, message: `App ${appUrn} started successfully` });
+      expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn);
+    });
+
+    it('checks an unchanged boot start too', async () => {
+      dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
+
+      const result = await command.execute(appUrn, { onlyRecreateChanged: true });
+
+      expect(result.success).toBe(false);
+    });
+
+    it('does not fail a start because Docker could not answer the check', async () => {
+      dockerService.waitForManagedAppContainersReady.mockRejectedValue(new Error('socket hang up'));
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+    });
+
+    it('never checks a port-expose workload, which has no containers', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'test-app', kind: PORT_EXPOSE_KIND } as any);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+      expect(dockerService.waitForManagedAppContainersReady).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('when another program holds the host port the app starts on', () => {
+    /** Docker Engine's wording when a program on the host already listens on the port. */
+    const portTaken = (port: number) =>
+      new Error(
+        `Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint test-app-1 (a65f29c5): failed to bind host port 127.0.0.1:${port}/tcp: address already in use`,
+      );
+    const mainAllocation = (hostPort: number) => ({
+      id: hostPort,
+      appUrn,
+      hostPort,
+      containerPort: 8080,
+      protocol: 'tcp' as const,
+      label: 'main',
+      createdAt: '',
+    });
+    /** Host ports Docker refuses, in the order `compose up` meets them. */
+    let refusals: number[];
+    /** app.env as the last write left it, which the next read returns, as the file would. */
+    let appEnv: string;
+    let appsRepository: ReturnType<typeof mock<AppsRepository>>;
+
+    beforeEach(() => {
+      // The manifest's port is 8080, and the app was installed on it and is stopped now.
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'test-app', port: 8080, force_pull: false } as any);
+      appEnv = ['APP_HOSTNAME=127.0.0.1', 'APP_PORT=8080', 'APP_INTERNAL_AUTHORITY=127.0.0.1:8080', 'APP_URL=http://127.0.0.1:8080'].join('\n');
+      appFilesManager.getAppEnv.mockImplementation(async () => ({ content: appEnv, path: '/tmp/.env' }));
+      appFilesManager.writeAppEnv.mockImplementation(async (_urn: unknown, content: string) => {
+        appEnv = content;
+      });
+      appsRepository = (command as unknown as { moduleRef: ModuleRef }).moduleRef.get(AppsRepository) as any;
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, config: { exposureMode: 'local' } } as any);
+      portManager.getMainPort.mockResolvedValue(8080);
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10000));
+      refusals = [];
+      dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+        composeArgs.push(args);
+        const refused = args.startsWith('up') ? refusals.shift() : undefined;
+        if (refused !== undefined) {
+          throw portTaken(refused);
+        }
+      });
+    });
+
+    it('starts on a reassigned port when the default port is taken', async () => {
+      refusals = [8080];
+      const form: { port?: number } = {};
+
+      const result = await command.execute(appUrn, form);
+
+      expect(result.success).toBe(true);
+      expect(portManager.moveMainPort).toHaveBeenCalledExactlyOnceWith(appUrn, new Set([8080]));
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(2);
+      expect(appEnv).toContain('APP_PORT=10000');
+      expect(appEnv).toContain('APP_URL=http://127.0.0.1:10000');
+      // The next start rebuilds APP_PORT from the row's config, so the new port is recorded there too.
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, { config: { exposureMode: 'local', port: 10000 }, port: 10000 });
+      expect(form.port).toBe(10000);
+    });
+
+    it('says where it moved the app from and to', async () => {
+      refusals = [8080];
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: true, movedHostPort: { from: 8080, to: 10000 } });
+    });
+
+    it('reports the move and the failure when the app moved and a service then crash-looped', async () => {
+      refusals = [8080];
+      const serviceFailure = { kind: 'restarting', service: 'summary-service', exitCode: 126 };
+      dockerService.waitForManagedAppContainersReady.mockResolvedValue({
+        ok: false,
+        message: 'summary-service keeps restarting (exit 126)',
+        errorDetail: 'app-summary-service-1 (restarting, exit 126): ',
+        serviceFailure,
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: false, serviceFailure, movedHostPort: { from: 8080, to: 10000 } });
+    });
+
+    it('names the port the app started on when Docker refuses a second one too', async () => {
+      refusals = [8080, 10000];
+      portManager.getMainPort.mockResolvedValueOnce(8080).mockResolvedValueOnce(10000);
+      portManager.moveMainPort.mockResolvedValueOnce(mainAllocation(10000)).mockResolvedValueOnce(mainAllocation(10001));
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: true, movedHostPort: { from: 8080, to: 10001 } });
+    });
+
+    it('reports the move when the start fails on the port it moved to', async () => {
+      refusals = [8080, 10000, 10001];
+      portManager.getMainPort.mockResolvedValueOnce(8080).mockResolvedValueOnce(10000);
+      portManager.moveMainPort.mockResolvedValueOnce(mainAllocation(10000)).mockResolvedValueOnce(mainAllocation(10001));
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: false, movedHostPort: { from: 8080, to: 10001 } });
+    });
+
+    it('reports no move when the app kept its port', async () => {
+      const result = (await command.execute(appUrn, { port: 8080 })) as { movedHostPort?: unknown };
+
+      expect(result.movedHostPort).toBeUndefined();
+    });
+
+    /*
+     * Saves used to leave the table behind, so a Hub can hold a row, a config and an app.env on 18558
+     * with an allocation still on 10000. The start is refused on 18558. Comparing that to the table
+     * alone gave up with "see logs".
+     */
+    it('moves an app off a port set by hand when the table still names an older one', async () => {
+      appEnv = ['APP_HOSTNAME=127.0.0.1', 'APP_PORT=18558', 'APP_URL=http://127.0.0.1:18558'].join('\n');
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, port: 18558, config: { exposureMode: 'local', port: 18558 } } as any);
+      portManager.getMainPort.mockResolvedValue(10000);
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10001));
+      refusals = [18558];
+      const form = { port: 18558 };
+
+      const result = await command.execute(appUrn, form);
+
+      expect(result).toMatchObject({ success: true, movedHostPort: { from: 18558, to: 10001 } });
+      expect(portManager.moveMainPort).toHaveBeenCalledExactlyOnceWith(appUrn, new Set([18558]));
+      expect(appEnv).toContain('APP_PORT=10001');
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, { config: { exposureMode: 'local', port: 10001 }, port: 10001 });
+      expect(form.port).toBe(10001);
+    });
+
+    // Only an `addPorts` mapping can hold that number on an app whose main service publishes nothing.
+    it('leaves an app that does not publish its main port where it is', async () => {
+      appEnv = ['APP_HOSTNAME=127.0.0.1', 'APP_PORT=18558', 'APP_URL=http://127.0.0.1:18558'].join('\n');
+      portManager.getMainPort.mockResolvedValue(10000);
+      refusals = [18558];
+
+      const result = await command.execute(appUrn, { port: 18558, openPort: false, exposureMode: 'cloudflare' });
+
+      expect(result).toMatchObject({ success: false });
+      expect(portManager.moveMainPort).not.toHaveBeenCalled();
+    });
+
+    it('fails as before when the port Docker refused is not the main port', async () => {
+      // An `addPorts` port from the manifest is published as written, so moving the main port would not help.
+      refusals = [51820];
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(portManager.moveMainPort).not.toHaveBeenCalled();
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(1);
     });
   });
 });

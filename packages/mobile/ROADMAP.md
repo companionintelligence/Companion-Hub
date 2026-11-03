@@ -27,9 +27,10 @@ appliance chosen from the cloud device picker. Everything mobile is gated by
 
 ## P0 — ship v1 (now)
 
-Close out [`STORE-READINESS.md`](./STORE-READINESS.md). The code is done; the
-work is accounts, the App Review demo Hub, account deletion, and **TestFlight
-validation on a real device** (nothing has ever run on physical hardware).
+Close out [`STORE-READINESS.md`](./STORE-READINESS.md). The remaining work is
+signing and store metadata, App Review demo access, confirming the new account
+deletion link in a store build, and **TestFlight validation on a real device**
+(nothing has ever run on physical hardware).
 
 ---
 

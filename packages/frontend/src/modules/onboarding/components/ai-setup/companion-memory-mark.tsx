@@ -14,6 +14,7 @@ import brainMarkSvg from '@/assets/companion-memory-brain.svg';
 const LottieMark = lazy(async () => {
   const [{ Lottie }, animation] = await Promise.all([import('lottie-react'), import('@/assets/companion-memory-brain.lottie.json')]);
 
+  // biome-ignore lint/correctness/noComponentHookFactories: React.lazy runs this loader once, keeping the resolved component stable.
   const Mark: ComponentType<{ style?: CSSProperties; className?: string }> = ({ style, className }) => (
     <Lottie src={animation.default} loop autoplay style={style} className={className} />
   );

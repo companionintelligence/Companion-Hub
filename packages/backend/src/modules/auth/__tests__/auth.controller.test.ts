@@ -2,6 +2,7 @@ import { CacheService } from '@/core/cache/cache.service';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
 import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
@@ -15,6 +16,7 @@ import { AuthController } from '../auth.controller';
 import { AuthRateLimiter } from '../auth-rate-limiter';
 import { ForwardAuthIdentityResolver } from '../forward-auth-identity.resolver';
 import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
+import { MemoryApiKeyCheck } from '../memory-api-key.check';
 import { BearerOrgMembershipCache } from '../bearer-org-membership.cache';
 import { AuthService } from '../auth.service';
 import { HUB_FAVICON_LINK_TAG, HUB_FAVICON_PATH, HUB_FAVICON_PNG } from '../hub-favicon';
@@ -61,6 +63,7 @@ describe('AuthController', () => {
   let sessionManager: MockProxy<SessionManager>;
   let deviceRegistration: MockProxy<DeviceRegistrationRepository>;
   let forwardAuthIdentities: MockProxy<ForwardAuthIdentityResolver>;
+  let memoryApiKeys: MockProxy<MemoryApiKeyCheck>;
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -77,6 +80,8 @@ describe('AuthController', () => {
         { provide: DeviceRegistrationRepository, useValue: mock<DeviceRegistrationRepository>() },
         // Unset by default: forward auth then signs the username alone, as before stable ids.
         { provide: ForwardAuthIdentityResolver, useValue: mock<ForwardAuthIdentityResolver>() },
+        // Memory's answer about an API key; tests that care set what Memory would answer.
+        { provide: MemoryApiKeyCheck, useValue: mock<MemoryApiKeyCheck>() },
         // Real instance, not a mock: its TTL/coalescing behaviour is what the caching tests assert.
         BearerOrgMembershipCache,
         SessionUserCache,
@@ -95,6 +100,8 @@ describe('AuthController', () => {
     sessionManager = moduleRef.get(SessionManager);
     deviceRegistration = moduleRef.get(DeviceRegistrationRepository);
     forwardAuthIdentities = moduleRef.get(ForwardAuthIdentityResolver);
+    memoryApiKeys = moduleRef.get(MemoryApiKeyCheck);
+    memoryApiKeys.check.mockResolvedValue('valid');
     cache.getByPrefix.mockReturnValue([]);
   });
 
@@ -495,6 +502,23 @@ describe('AuthController', () => {
       { uri: '/api/authenticate?client=native' },
       { uri: '/api/keys' },
       { uri: '/graphql', extra: { 'x-api-key': 'mem_live_abc' } },
+      // Memory's sync engine, which verifies its own JWT (not a Portal token).
+      { uri: '/powersync/sync/stream', extra: { authorization: 'Bearer powersync.jwt.not-portal' } },
+      { uri: '/powersync/write-checkpoint2.json' },
+      // Memory's object store: an <img> of a signed link carries no key; the store checks the signature.
+      {
+        uri: '/static/companion/824bc2c5-f25c-4b6d-b836-7cd0accdae4c?X-Amz-Expires=300&X-Amz-Signature=abc',
+      },
+      // A CORS preflight from Phone Memory's webview: no credentials, by design.
+      {
+        uri: '/api/powersync/token?cutoff=2026-10-16T17%3A21%3A46.395Z',
+        extra: {
+          'x-forwarded-method': 'OPTIONS',
+          origin: 'https://localhost',
+          'access-control-request-method': 'GET',
+          'access-control-request-headers': 'x-api-key',
+        },
+      },
     ];
 
     it('lets Memory login and API-key traffic through without a Hub session', async () => {
@@ -561,6 +585,107 @@ describe('AuthController', () => {
           expect(res.status, `${host} ${uri}`).not.toHaveBeenCalledWith(200);
         }
       }
+    });
+
+    it('SECURITY: on Memory, only a real preflight passes; other credential-less requests still need a session', async () => {
+      forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('ci-memory:ci-marketplace' as never);
+      const notPreflights: Array<[string, Record<string, string>]> = [
+        ['OPTIONS with no Access-Control-Request-Method', { 'x-forwarded-method': 'OPTIONS', origin: 'https://localhost' }],
+        ['OPTIONS with no Origin', { 'x-forwarded-method': 'OPTIONS', 'access-control-request-method': 'GET' }],
+        ['a GET dressed in preflight headers', { 'x-forwarded-method': 'GET', origin: 'https://localhost', 'access-control-request-method': 'GET' }],
+        ['a path that only starts like /powersync', {}],
+        ['a path that only starts like /static', {}],
+      ];
+
+      for (const [label, extra] of notPreflights) {
+        const uri = label.includes('/powersync')
+          ? '/powersyncx/sync/stream'
+          : label.includes('/static')
+            ? '/staticx/companion/824bc2c5-f25c-4b6d-b836-7cd0accdae4c'
+            : '/graphql';
+        const req = {
+          user: undefined,
+          headers: {
+            'x-forwarded-host': 'ci-memory-core3-team.companionintelligence.com',
+            'x-forwarded-uri': uri,
+            'x-forwarded-proto': 'https',
+            ...extra,
+          },
+        } as unknown as Request;
+        const res = {
+          status: vi.fn().mockReturnThis(),
+          send: vi.fn(),
+          redirect: vi.fn(),
+          setHeader: vi.fn(),
+        } as unknown as Response;
+
+        await authController.traefik(req, res);
+
+        expect(res.status, label).not.toHaveBeenCalledWith(200);
+      }
+    });
+
+    describe('a Memory API key is checked with Memory before it passes', () => {
+      const memoryHost = 'ci-memory-core3-team.companionintelligence.com';
+
+      function keyRequest(uri = '/graphql', key = 'mem_live_abc') {
+        return {
+          user: undefined,
+          headers: { 'x-forwarded-host': memoryHost, 'x-forwarded-uri': uri, 'x-forwarded-proto': 'https', 'x-api-key': key },
+        } as unknown as Request;
+      }
+
+      function response() {
+        return { status: vi.fn().mockReturnThis(), send: vi.fn(), redirect: vi.fn(), setHeader: vi.fn() } as unknown as Response;
+      }
+
+      beforeEach(() => {
+        forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('ci-memory:ci-marketplace' as never);
+      });
+
+      it('lets a key Memory accepts through, having asked about that key', async () => {
+        const res = response();
+        await authController.traefik(keyRequest(), res);
+
+        expect(memoryApiKeys.check).toHaveBeenCalledWith('mem_live_abc');
+        expect(res.status).toHaveBeenCalledWith(200);
+      });
+
+      it('SECURITY: refuses a key Memory does not accept with a 401, not a login redirect', async () => {
+        memoryApiKeys.check.mockResolvedValue('invalid');
+        const res = response();
+        await authController.traefik(keyRequest(), res);
+
+        expect(res.status).toHaveBeenCalledWith(401);
+        expect(res.status).not.toHaveBeenCalledWith(200);
+        expect(res.redirect).not.toHaveBeenCalled();
+      });
+
+      it('lets the request through when Memory could not be asked; Memory still checks the key itself', async () => {
+        memoryApiKeys.check.mockResolvedValue('unknown');
+        const res = response();
+        await authController.traefik(keyRequest(), res);
+
+        expect(res.status).toHaveBeenCalledWith(200);
+      });
+
+      it('does not ask about a key on a path that checks its own credentials', async () => {
+        memoryApiKeys.check.mockResolvedValue('invalid');
+        const res = response();
+        await authController.traefik(keyRequest('/api/authenticate/oidc/native/exchange'), res);
+
+        expect(memoryApiKeys.check).not.toHaveBeenCalled();
+        expect(res.status).toHaveBeenCalledWith(200);
+      });
+
+      it('SECURITY: never asks Memory about a key sent to another app', async () => {
+        forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('opencode:ci-marketplace' as never);
+        const res = response();
+        await authController.traefik(keyRequest(), res);
+
+        expect(memoryApiKeys.check).not.toHaveBeenCalled();
+        expect(res.status).not.toHaveBeenCalledWith(200);
+      });
     });
 
     it('does not treat a Memory JWT on /api/keys as an invalid Portal Bearer', async () => {
@@ -757,6 +882,98 @@ describe('AuthController', () => {
         ),
       );
       expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    /*
+     * `X-CI-Hub-User-AID`, `X-CI-Hub-AID` and `X-CI-Hub-KEL-Digest` are reserved names: the Hub never sets
+     * them. The controller's resolver is a mock everywhere else in this file, and a mock only echoes what a
+     * test hands it, so these cases answer from the REAL resolver on a fake directory. A resolver that
+     * starts to derive an AID again then reaches the reply, and the case fails.
+     */
+    describe('reserved AID headers', () => {
+      const AID_HEADERS = ['x-ci-hub-user-aid', 'x-ci-hub-aid', 'x-ci-hub-kel-digest'];
+      const DIRECTORY_ID = STABLE_ISSUER.slice('urn:ci-hub:'.length);
+      const APP_URN = 'ci-memory:ci-marketplace' as never;
+
+      // The three shapes of key an app can have: each builds its headers on its own code path.
+      const KEYS = {
+        'a per-app secret': { secret: 'per-app-secret', appUrn: APP_URN, source: 'app-env' as const },
+        'a key for the bound assertion only': {
+          secret: null,
+          assertion: { secret: 'memory-own-secret', audience: 'ci-memory:ci-marketplace' },
+          appUrn: APP_URN,
+          source: 'app-env' as const,
+        },
+        'a hub-wide secret and a key for the bound assertion': {
+          secret: 'hub-wide-secret',
+          assertion: { secret: 'memory-own-secret', audience: 'ci-memory:ci-marketplace' },
+          appUrn: APP_URN,
+          source: 'app-env' as const,
+        },
+      };
+
+      beforeEach(() => {
+        const users = mock<UserRepository>();
+        users.getPublicId.mockResolvedValue(PUBLIC_ID);
+        users.getUserDtoById.mockResolvedValue({ id: 7, username: 'owner@example.com', accessStatus: 'active' } as never);
+        const federated = mock<FederatedIdentityRepository>();
+        federated.findByIssuerSubject.mockResolvedValue({ userId: 7 } as never);
+        const directory = {
+          insert: () => ({ values: () => ({ onConflictDoNothing: async () => undefined }) }),
+          select: () => ({ from: () => ({ where: async () => [{ directoryId: DIRECTORY_ID }] }) }),
+        };
+        const resolver = new ForwardAuthIdentityResolver(directory as never, users, federated, new SessionUserCache(), mock<LoggerService>());
+        forwardAuthIdentities.stableIdFor.mockImplementation((userId) => resolver.stableIdFor(userId));
+        forwardAuthIdentities.personForPortalSubject.mockImplementation((issuer, subject) => resolver.personForPortalSubject(issuer, subject));
+      });
+
+      /** Everything the reply set, so a case can say what is there and what is not. */
+      const replyOf = (calls: unknown[][]) => ({
+        headers: Object.fromEntries(calls) as Record<string, string>,
+        names: calls.map(([name]) => String(name).toLowerCase()),
+      });
+
+      it.each(Object.entries(KEYS))('sets no AID header in the reply for a signed-in person when the app has %s', async (_shape, resolved) => {
+        forwardAuthSecrets.resolveForHost.mockResolvedValue(resolved as never);
+        const req = { user: { id: 7, username: 'owner@example.com' }, headers: { 'x-forwarded-host': 'ci-memory.ci.lan' } } as unknown as Request;
+        const setHeader = vi.fn();
+        const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader } as unknown as Response;
+
+        await authController.traefik(req, res);
+
+        const { headers, names } = replyOf(setHeader.mock.calls);
+        // The stable id did reach the reply, so the absence below is not a reply that never carried an identity.
+        expect(headers['X-CI-Hub-User-Issuer']).toBe(STABLE_ISSUER);
+        expect(headers['X-CI-Hub-User-Id']).toBe(PUBLIC_ID);
+        for (const reserved of AID_HEADERS) {
+          expect(names, reserved).not.toContain(reserved);
+        }
+        expect(res.status).toHaveBeenCalledWith(200);
+      });
+
+      it.each(Object.entries(KEYS))('sets no AID header in the reply for a Portal Bearer caller when the app has %s', async (_shape, resolved) => {
+        config.get.mockImplementation((key: string) => (key === 'ciCloudUrl' ? 'https://hub.ci.computer' : (undefined as never)));
+        vi.mocked(verifyPortalIdToken).mockResolvedValue({ sub: 'portal-sub', email: 'new-portal@example.com', name: 'Owner' });
+        authService.resolvePairedOrgMembership.mockResolvedValue('member');
+        forwardAuthSecrets.resolveForHost.mockResolvedValue(resolved as never);
+        const req = {
+          user: undefined,
+          headers: { authorization: 'Bearer portal.id.token', 'x-forwarded-host': 'ci-memory.ci.lan' },
+        } as unknown as Request;
+        const setHeader = vi.fn();
+        const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn() } as unknown as Response;
+
+        await authController.traefik(req, res);
+
+        const { headers, names } = replyOf(setHeader.mock.calls);
+        expect(headers['X-CI-Hub-User']).toBe('owner@example.com');
+        expect(headers['X-CI-Hub-User-Issuer']).toBe(STABLE_ISSUER);
+        expect(headers['X-CI-Hub-User-Id']).toBe(PUBLIC_ID);
+        for (const reserved of AID_HEADERS) {
+          expect(names, reserved).not.toContain(reserved);
+        }
+        expect(res.status).toHaveBeenCalledWith(200);
+      });
     });
 
     it('routes an unauthenticated LAN visitor into edge-sso on the derived root-domain origin', async () => {
@@ -3376,6 +3593,8 @@ describe('AuthController — GET /api/auth/favicon.png, real HTTP dispatch', () 
         { provide: BearerOrgMembershipCache, useValue: mock<BearerOrgMembershipCache>() },
         { provide: SessionUserCache, useValue: mock<SessionUserCache>() },
         { provide: ForwardAuthIdentityResolver, useValue: mock<ForwardAuthIdentityResolver>() },
+        // Memory's answer about an API key; tests that care set what Memory would answer.
+        { provide: MemoryApiKeyCheck, useValue: mock<MemoryApiKeyCheck>() },
         AuthRateLimiter,
       ],
     }).compile();
@@ -3427,6 +3646,8 @@ describe('AuthController — POST /api/auth/portal/desktop-waiting, real HTTP di
         { provide: BearerOrgMembershipCache, useValue: mock<BearerOrgMembershipCache>() },
         { provide: SessionUserCache, useValue: mock<SessionUserCache>() },
         { provide: ForwardAuthIdentityResolver, useValue: mock<ForwardAuthIdentityResolver>() },
+        // Memory's answer about an API key; tests that care set what Memory would answer.
+        { provide: MemoryApiKeyCheck, useValue: mock<MemoryApiKeyCheck>() },
         AuthRateLimiter,
       ],
     }).compile();

@@ -39,7 +39,7 @@
     "lineEnding": "lf",
     "lineWidth": 150,
     "attributePosition": "auto",
-    "includes": ["**"]
+    "includes": ["**", "!**/*.md", "!**/*.yml", "!**/*.yaml"]
   },
   "assist": { "actions": { "source": { "recommended": true } } },
   "linter": {

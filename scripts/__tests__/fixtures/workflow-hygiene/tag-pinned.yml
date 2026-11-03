@@ -1,0 +1,10 @@
+name: Fixture tag pinned
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: example-org/example-action@v1

@@ -33,6 +33,7 @@ import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { TotpAuthenticator } from './utils/totp-authenticator';
 import { BearerOrgMembershipCache } from './bearer-org-membership.cache';
 import type { User } from '@/core/database/drizzle/types';
+import { linksForCurrentPortal } from '@/modules/user/portal-links';
 
 /** How long a password-verified sign-in waits for its 2FA code before it must start over. */
 const TOTP_SESSION_EXPIRATION_SECONDS = 5 * 60;
@@ -455,7 +456,8 @@ export class AuthService {
   }
 
   /**
-   * Hourly check-in sweep: WhoIs every active federated operator. Definitive removal revokes.
+   * Check-in sweep, after every accepted check-in (at least every 15 minutes): WhoIs every active
+   * federated operator. Definitive removal revokes.
    * A Portal blip (`unknown`) leaves the row alone.
    */
   public async reconcileOperatorMemberships() {
@@ -480,7 +482,7 @@ export class AuthService {
         continue;
       }
 
-      const links = await this.federatedIdentityRepository.findByUserId(operator.id);
+      const links = linksForCurrentPortal(await this.federatedIdentityRepository.findByUserId(operator.id), this.config.get('ciCloudUrl'));
       for (const link of links) {
         const detail = await this.resolvePairedOrgMembershipDetail(link.subject);
         if (detail.membership === 'not-member') {
@@ -1009,7 +1011,7 @@ export class AuthService {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
     }
 
-    const links = await this.federatedIdentityRepository.findByUserId(userId);
+    const links = linksForCurrentPortal(await this.federatedIdentityRepository.findByUserId(userId), this.config.get('ciCloudUrl'));
     const subject = links[0]?.subject;
     if (subject) {
       const registration = await this.deviceRegistration.getFirstDeviceRegistration();

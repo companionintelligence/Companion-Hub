@@ -1,15 +1,20 @@
 import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
+import { LoggerService } from '@/core/logger/logger.service';
 import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
+import { DockerService } from '@/modules/docker/docker.service';
+import type { PortAllocation } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { ModuleRef } from '@nestjs/core';
 import Dockerode from 'dockerode';
-import type { AppCommandFailureResult } from './app-lifecycle-errors';
+import { APP_SERVICE_FAILED_CODE, type AppCommandFailureResult, AppLifecycleError } from './app-lifecycle-errors';
 import type { OperationPhase } from '../app-operation-registry';
 import { prepareAppComposeDir } from './compose-preparation';
 import { reportAndTranslateAppError } from './failure-reporting';
 import { assertHostDevicesAvailable } from './host-device-preflight';
+import { moveMainPortOffHostConflict, writeMainHostPort } from './main-host-port';
 import { type ComposeRecoveryDeps, removeAppProjectNetworks, runComposeWithNetworkRecovery } from './network-recovery';
+import { recordComposeUpPulls } from './pull-app-images';
 
 /**
  * Optional cancellation context threaded into a command's `execute()`.
@@ -104,6 +109,54 @@ export class AppLifecycleCommand {
       recoverHostPortConflict: recovery?.recoverHostPortConflict,
     };
     return runComposeWithNetworkRecovery(deps, appUrn, form, command, maxAttempts, signal);
+  }
+
+  /** `composeAppWithNetworkRecovery` for an `up` that can pull images, which records them for the uninstall; see `recordComposeUpPulls`. */
+  protected async composeUpRecordingPulls(...args: Parameters<AppLifecycleCommand['composeAppWithNetworkRecovery']>): Promise<void> {
+    return recordComposeUpPulls(this.moduleRef, args[0], () => this.composeAppWithNetworkRecovery(...args), {
+      forced: args[2].includes('--pull always'),
+    });
+  }
+
+  /** Point the app at the host port of its main allocation; see `writeMainHostPort`. */
+  protected async applyMainHostPort(
+    appUrn: AppUrn,
+    form: AppEventFormInput,
+    main: Pick<PortAllocation, 'hostPort' | 'containerPort'>,
+  ): Promise<void> {
+    return writeMainHostPort(this.moduleRef, appUrn, form, main);
+  }
+
+  /**
+   * Move the app's main port off a host port another program holds, once Docker has refused it. Install,
+   * start and restart pass it to `composeAppWithNetworkRecovery`; see `moveMainPortOffHostConflict`.
+   */
+  protected async moveMainPortOffConflict(appUrn: AppUrn, form: AppEventFormInput, error: unknown, refused: Set<number>): Promise<boolean> {
+    return moveMainPortOffHostConflict(this.moduleRef, appUrn, form, error, refused);
+  }
+
+  /**
+   * The error to fail with if the app did not come up after `compose up`, or null if it did. Install,
+   * retry, start and restart all ask this. A check Docker could not answer says nothing against the
+   * app, so it counts as up: the status sync reads the containers again.
+   */
+  protected async appCameUpError(appUrn: AppUrn): Promise<AppLifecycleError | null> {
+    const logger = this.moduleRef.get(LoggerService, { strict: false });
+    try {
+      const verification = await this.moduleRef.get(DockerService, { strict: false }).waitForManagedAppContainersReady(appUrn);
+      if (verification.ok) {
+        return null;
+      }
+      logger.error(`[AppDiag] ${appUrn} did not come up: ${verification.message}${verification.errorDetail ? `\n${verification.errorDetail}` : ''}`);
+      return new AppLifecycleError(verification.message, {
+        code: APP_SERVICE_FAILED_CODE,
+        detail: verification.errorDetail ?? verification.message,
+        serviceFailure: verification.serviceFailure,
+      });
+    } catch (error) {
+      logger.warn(`Could not check whether ${appUrn} came up: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
   }
 
   protected handleAppError = async (err: unknown, appId: string, event: string): Promise<AppCommandFailureResult> => {

@@ -156,6 +156,20 @@ export class FilesystemService {
     }
   }
 
+  /**
+   * Leaves a file readable and writable by its owner alone (mode 0600), so no other account on the computer can read
+   * it. Returns `false`, logged, when the mode cannot be set; the caller then must not keep the file.
+   */
+  async restrictToOwner(filePath: string): Promise<boolean> {
+    try {
+      await fs.promises.chmod(this.getSafeFilePath(filePath), 0o600);
+      return true;
+    } catch (error) {
+      this.logger.error(`Error restricting ${filePath} to its owner:`, error);
+      return false;
+    }
+  }
+
   async createDirectory(dirPath: string): Promise<boolean> {
     try {
       // Always validate the path for safety

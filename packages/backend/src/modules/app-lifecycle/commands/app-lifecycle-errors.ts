@@ -1,10 +1,15 @@
+import type { HostPortMove } from '@ci-hub/common/schemas';
 import { extractOverlapCidrsFromError, isDockerNetworkOverlapError } from '@/modules/network/docker-network-errors';
+import type { AppServiceFailure } from '@ci-hub/common/schemas';
 
 export const ROCM_KFD_MISSING_CODE = 'rocm_kfd_missing';
 
 export const KVM_MISSING_CODE = 'kvm_missing';
 
 export const NETWORK_OVERLAP_CODE = 'network_overlap';
+
+/** A service did not come up after `compose up`, which the Hub read from Docker (`AppLifecycleCommand.appCameUpError`). */
+export const APP_SERVICE_FAILED_CODE = 'app_service_failed';
 
 export const NETWORK_OVERLAP_USER_MESSAGE = 'App network range conflict — Hub is reassigning a new internal network. Retry install or start.';
 
@@ -33,6 +38,7 @@ export class AppLifecycleError extends Error {
   readonly errorCode?: string;
   readonly errorDetail?: string;
   readonly settingsPath?: string;
+  readonly serviceFailure?: AppServiceFailure;
 
   constructor(
     message: string,
@@ -40,6 +46,7 @@ export class AppLifecycleError extends Error {
       code?: string;
       detail?: string;
       settingsPath?: string;
+      serviceFailure?: AppServiceFailure;
     },
   ) {
     super(message);
@@ -47,6 +54,7 @@ export class AppLifecycleError extends Error {
     this.errorCode = options?.code;
     this.errorDetail = options?.detail;
     this.settingsPath = options?.settingsPath;
+    this.serviceFailure = options?.serviceFailure;
   }
 }
 
@@ -77,15 +85,19 @@ export type AppCommandFailureResult = {
   errorCode?: string;
   errorDetail?: string;
   settingsPath?: string;
+  /** The service that kept the app from coming up, when that is why the command failed. */
+  serviceFailure?: AppServiceFailure;
   /** True when the command stopped because the operation was cancelled (vs. failed). */
   cancelled?: boolean;
   /** Resting status a before-PONR cancel reverted to (e.g. 'stopped'); unused by install. */
   cancelledStatus?: string;
   /** A failed update put the previous version back (and running again, if it was running), or a backup was refused before it stopped the app. */
   rolledBack?: boolean;
+  /** The host port the command moved the app off and onto before it failed. */
+  movedHostPort?: HostPortMove;
 };
 
-export type AppCommandResult = { success: true; message: string } | AppCommandFailureResult;
+export type AppCommandResult = { success: true; message: string; movedHostPort?: HostPortMove } | AppCommandFailureResult;
 
 export function toAppCommandFailureResult(err: unknown): AppCommandFailureResult {
   if (err instanceof AppLifecycleError) {
@@ -95,6 +107,7 @@ export function toAppCommandFailureResult(err: unknown): AppCommandFailureResult
       errorCode: err.errorCode,
       errorDetail: err.errorDetail,
       settingsPath: err.settingsPath,
+      serviceFailure: err.serviceFailure,
     };
   }
 

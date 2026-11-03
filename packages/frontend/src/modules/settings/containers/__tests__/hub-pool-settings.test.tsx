@@ -727,6 +727,32 @@ describe('HubPoolSection', () => {
     });
   });
 
+  it('lists the first five discoverable Hubs and the rest behind Show all', async () => {
+    fixtures.discoverable = Array.from({ length: 7 }, (_, index) => ({
+      tailscaleDeviceId: `ts-${index}`,
+      nodeFqdn: `hub-${index}.example-tailnet.ts.net`,
+      hostname: `hub-${index}`,
+    }));
+    renderSection();
+
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' })).toHaveLength(5));
+    const toggle = screen.getByTestId('hub-pool-discoverable-toggle');
+    expect(toggle.textContent).toBe('HUB_POOL_DISCOVERABLE_SHOW_ALL');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+
+    await userEvent.click(toggle);
+    expect(screen.getAllByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' })).toHaveLength(7);
+    expect(toggle.textContent).toBe('HUB_POOL_DISCOVERABLE_SHOW_FEWER');
+  });
+
+  it('shows no Show all toggle when every discoverable Hub fits', async () => {
+    fixtures.discoverable = [{ tailscaleDeviceId: 'ts-1', nodeFqdn: 'hub-b.example-tailnet.ts.net', hostname: 'hub-b' }];
+    renderSection();
+
+    await screen.findByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' });
+    expect(screen.queryByTestId('hub-pool-discoverable-toggle')).toBeNull();
+  });
+
   it('names the missing tailnet-enumeration credential instead of showing a bare empty device list', async () => {
     fixtures.status = baseStatus({ tailscaleAdminApiConfigured: false, reason: 'no_peers', routingActive: false });
 

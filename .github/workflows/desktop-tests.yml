@@ -16,6 +16,10 @@ concurrency:
   group: desktop-tests-${{ github.ref }}
   cancel-in-progress: true
 
+# Read-only: this workflow builds and tests the crate and writes nothing back.
+permissions:
+  contents: read
+
 env:
   MANIFEST: packages/desktop/src-tauri/Cargo.toml
 

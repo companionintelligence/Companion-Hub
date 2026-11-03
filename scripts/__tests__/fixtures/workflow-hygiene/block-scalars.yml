@@ -1,0 +1,22 @@
+name: Fixture block scalars
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  script:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Text that only looks like workflow structure
+        run: |
+          cat <<'TEXT'
+          on: pull_request_target
+          on: workflow_run
+          secrets: inherit
+          - uses: example-org/example-action@v1
+          # >>> ci-local:gated
+          TEXT
+      - name: The same in a folded scalar
+        run: >-
+          secrets: inherit
+          uses: example-org/example-action@v1

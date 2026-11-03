@@ -11,6 +11,8 @@ import { isOperational } from '@/modules/registration/registration-state';
 import { CatalogStillDownloadingError, IN_FLIGHT_STATUSES, restoreRanSince } from './app-rehydration';
 import { AppRehydrationService } from './app-rehydration.service';
 import { DeviceKeyRefreshService } from './device-key-refresh.service';
+import { OriginHostRefreshService } from './origin-host-refresh.service';
+import type { AppUrn } from '@ci-hub/common/types';
 import { ExposureSyncService } from './exposure-sync.service';
 import {
   type PairingAppCheckFile,
@@ -100,6 +102,7 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
     private readonly appRehydrationService: AppRehydrationService,
     private readonly exposureSyncService: ExposureSyncService,
     private readonly deviceKeyRefreshService: DeviceKeyRefreshService,
+    private readonly originHostRefreshService: OriginHostRefreshService,
     private readonly moduleRef: ModuleRef,
   ) {}
 
@@ -130,8 +133,11 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
         this.startupKeyRefreshPasses -= 1;
         if (isOperational((await this.registrationService.getLiveRegistrationStatus()).phase)) {
           this.startupKeyRefreshPasses = 0;
-          await this.deviceKeyRefreshService.refreshStaleDeviceKeys();
+          await this.refreshAppsAfterPairing();
         }
+      } else if (outcome === 'none' && this.originHostRefreshService.hasRefusedRestarts()) {
+        // An app that was busy, or a queue that was down, refused its move onto the new name.
+        await this.originHostRefreshService.refreshStaleOriginHosts([], { onlyRefused: true });
       }
     } catch (error) {
       this.logger.error(`[PairingAppRestore] Check failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -371,19 +377,48 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
     return localApps.filter((app) => wanted.has(app.appName) && IN_FLIGHT_STATUSES.has(app.status)).map((app) => app.appName);
   }
 
+  /**
+   * Bring the apps a pairing left stale up to date: the app that calls the Portal as this device gets
+   * the new device key, and a running app or exposed port still routed under an old device or
+   * organization name moves onto the new one (#2178). One restart writes both, so an app restarted for
+   * its key isn't restarted again for its name.
+   */
+  private async refreshAppsAfterPairing(): Promise<void> {
+    let restarted: AppUrn[] = [];
+    try {
+      restarted = await this.deviceKeyRefreshService.refreshStaleDeviceKeys();
+    } catch (error) {
+      this.logger.error(
+        `[PairingAppRestore] Could not refresh the device key held by apps: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    try {
+      await this.originHostRefreshService.refreshStaleOriginHosts(restarted);
+    } catch (error) {
+      this.logger.error(
+        `[PairingAppRestore] Could not move apps onto this Hub's new name: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    // An exposed port's public route lives in Traefik's file provider, not in a compose file.
+    try {
+      const { PortExposeService } = await import('@/modules/custom-apps/port-expose.service');
+      await this.moduleRef.get(PortExposeService, { strict: false })?.syncPortExposeRoutes();
+    } catch (error) {
+      this.logger.error(
+        `[PairingAppRestore] Could not move exposed ports onto this Hub's new name: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
   private async release(): Promise<PairingAppCheckOutcome> {
     await clearPairingAppCheck();
     this.failures = 0;
     this.retryAt = 0;
     this.startupKeyRefreshPasses = 0;
 
-    try {
-      await this.deviceKeyRefreshService.refreshStaleDeviceKeys();
-    } catch (error) {
-      this.logger.error(
-        `[PairingAppRestore] Could not refresh the device key held by apps: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
+    await this.refreshAppsAfterPairing();
 
     void this.exposureSyncService.syncExposurePublic().catch((error) => {
       this.logger.error(`[PairingAppRestore] App sync after the apps check failed: ${error instanceof Error ? error.message : String(error)}`);

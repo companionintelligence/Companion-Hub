@@ -23,6 +23,7 @@ import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import './app-actions.css';
+import type { GetAppDto } from '@/api-client';
 import { ignoreAppVersionMutation, startAppMutation, unignoreAppVersionMutation } from '@/api-client/@tanstack/react-query.gen';
 import type { AppDetails, AppInfo, AppMetadata, AppStatus } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
@@ -44,8 +45,10 @@ import { useUpdatePhase } from '../../helpers/use-update-phase';
 import { useMemoryConnection } from '../../helpers/use-memory-connection';
 import { useLocation, useNavigate, Link, useSearchParams } from 'react-router';
 import { invalidateAppQueries, type AppInstallErrorCache } from '../../helpers/app-sse-cache';
-import type { AppUrn } from '@ci-hub/common/types';
+import { appServiceFailureText } from '../../helpers/app-service-failure';
+import { type AppUrn, servedExposureMode } from '@ci-hub/common/types';
 import type { UpdatePhase } from '@ci-hub/common/schemas';
+import { hasUpdateAvailable } from '@ci-hub/common/validation';
 import { openExternal } from '@/lib/helpers/open-external';
 import { canOpenFolderInFileExplorer, openPathInFileExplorer } from '@/lib/helpers/open-folder';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
@@ -129,6 +132,8 @@ interface IProps {
   metadata?: AppMetadata;
   /** Absolute host path of the app's data folder (desktop "Open data folder" button). */
   appDataHostPath?: string | null;
+  /** Why the app is down, from the Hub. Outlives a reload, unlike the event that first told this tab. */
+  failure?: GetAppDto['failure'];
   localDomain?: string;
   sslPort?: number;
   runtimeHealth?: AppRuntimeHealth;
@@ -245,7 +250,17 @@ const LOADING_STATUS_LABEL_KEYS: Partial<Record<AppStatus, string>> = {
   restoring: 'APP_STATUS_RESTORING',
 };
 
-export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth, urlAvailability, layout = 'default', allowedActions }: IProps) => {
+export const AppActions = ({
+  app,
+  info,
+  metadata,
+  appDataHostPath,
+  failure,
+  runtimeHealth,
+  urlAvailability,
+  layout = 'default',
+  allowedActions,
+}: IProps) => {
   const installDisclosure = useDisclosure();
   const cancelInstallDisclosure = useDisclosure();
   const cancelUpdateDisclosure = useDisclosure();
@@ -264,7 +279,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   // The same for an update: the Hub stops it at its next safe point and rolls it back.
   const [isCancellingUpdate, setIsCancellingUpdate] = useState(false);
 
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const { architecture } = useAppContext();
   const { setOptimisticStatus } = useAppStatus();
@@ -385,7 +400,17 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   }, [app?.status, appSlug, storeId, installDisclosure.open, archSupported, showWrongArchitectureToast]);
 
   const versionIsIgnored = app?.ignoredVersion === metadata?.latestVersion;
-  const updateAvailable = Number(app?.version ?? 0) < Number(metadata?.latestVersion || 0);
+  // The one definition the tile's badge and the update-all sweep use, so a newer version with an
+  // unchanged counter can be acted on here too.
+  const updateAvailable = hasUpdateAvailable({
+    installedCounter: app?.version ?? 0,
+    latestCounter: metadata?.latestVersion,
+    ignoredCounter: app?.ignoredVersion,
+    installedVersion: info.version,
+    latestVersion: metadata?.latestDockerVersion,
+  });
+  // Ignoring is recorded against the counter only, so it can hide nothing but a counter bump.
+  const canIgnoreVersion = Number(app?.version ?? 0) < Number(metadata?.latestVersion || 0) && !versionIsIgnored;
 
   const startMutation = useMutation({
     ...startAppMutation(),
@@ -502,12 +527,16 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   );
 
   // Show install errors surfaced from SSE via query cache
-  const { data: installError } = useQuery({
+  const { data: installErrorFromEvent } = useQuery({
     queryKey: ['app-install-error', info.urn],
     queryFn: () => queryClient.getQueryData<AppInstallErrorCache | null>(['app-install-error', info.urn]) ?? null,
     initialData: () => queryClient.getQueryData<AppInstallErrorCache | null>(['app-install-error', info.urn]) ?? null,
     staleTime: Number.POSITIVE_INFINITY,
   });
+  // The reason on the app comes first: an event goes to every session, so it leaves out the log line,
+  // and a tab opened after the failure heard no event. While the app is being worked on again that
+  // read is out of date.
+  const installError = (app?.status === 'install_failed' || app?.status === 'stopped' ? failure : null) ?? installErrorFromEvent;
 
   // `||`, not `??`: an empty/unset mode means a pre-exposureMode install, which
   // is treated as local access — the same fallback the backend applies.
@@ -684,13 +713,25 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     );
   };
 
+  // `install_error` carries a translation key for a refusal (`describePortalBundleFailure`) and plain text for most other failures.
+  // Only the key travels (`reportAndTranslateAppError`), so copy that asks for values would print `{{status}}` as written.
+  const describeInstallFailure = (message: string) => {
+    if (!i18n.exists(message)) {
+      return message;
+    }
+    const copy = t(message);
+    return copy.includes('{{') ? t('COMMON_AN_ERROR_OCCURRED') : copy;
+  };
+
   // If there was an install error for this app, show it under the open/action area
   const installErrorMessage =
     installError?.errorCode === 'rocm_kfd_missing'
       ? t('APP_ERROR_ROCM_KFD_MISSING')
       : installError?.errorCode === 'network_overlap'
         ? t('APP_ERROR_NETWORK_OVERLAP')
-        : installError?.message;
+        : installError?.serviceFailure
+          ? appServiceFailureText(t, installError.serviceFailure)
+          : installError?.message && describeInstallFailure(installError.message);
   const installErrorSettingsPath =
     installError?.settingsPath ?? (installError?.errorCode === 'rocm_kfd_missing' ? '/settings?tab=ai&section=rocm' : undefined);
 
@@ -889,7 +930,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
         );
       }
       if (openDataFolderButton) secondaryActions.push(openDataFolderButton);
-      if (updateAvailable && !versionIsIgnored) {
+      if (updateAvailable) {
         secondaryActions.push(
           <IconActionButton
             key="update"
@@ -897,6 +938,10 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
             label={t('COMMON_UPDATE')}
             onClick={() => navigate(`${location.pathname}/update`, { state: { from: location.pathname } })}
           />,
+        );
+      }
+      if (canIgnoreVersion) {
+        secondaryActions.push(
           <IconActionButton
             key="ignore-version"
             icon={Ban}
@@ -941,7 +986,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       const openArea = renderOpenButtonArea();
       if (openArea) buttons.push(openArea);
 
-      if (updateAvailable && !versionIsIgnored) {
+      if (updateAvailable) {
         secondaryActions.push(
           <IconActionButton
             key="update"
@@ -949,6 +994,10 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
             label={t('COMMON_UPDATE')}
             onClick={() => navigate(`${location.pathname}/update`, { state: { from: location.pathname } })}
           />,
+        );
+      }
+      if (canIgnoreVersion) {
+        secondaryActions.push(
           <IconActionButton
             key="ignore-version"
             icon={Ban}
@@ -1065,7 +1114,13 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
 
   return (
     <>
-      <InstallDialog isOpen={installDisclosure.isOpen} onClose={installDisclosure.close} info={info} boundCustomDomain={app?.customDomain ?? null} />
+      <InstallDialog
+        isOpen={installDisclosure.isOpen}
+        onClose={installDisclosure.close}
+        info={info}
+        boundCustomDomain={app?.customDomain ?? null}
+        retryExposureMode={app?.status === 'install_failed' ? servedExposureMode(app) : undefined}
+      />
       <CancelInstallDialog
         isOpen={cancelInstallDisclosure.isOpen}
         onClose={cancelInstallDisclosure.close}
@@ -1146,6 +1201,12 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
            * success toast.
            */
           ...(app ? { customDomainExpected: app.customDomain ?? '' } : {}),
+          /*
+           * The mode the app runs in, which its form does not always name: a custom app's holds only
+           * its port. Left out, the dialog would open on what a new install gets (Public Web on a
+           * paired Hub) and the next save would publish the app.
+           */
+          ...(app ? { exposureMode: servedExposureMode(app) } : {}),
         }}
         status={app?.status}
       />

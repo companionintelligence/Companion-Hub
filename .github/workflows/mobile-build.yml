@@ -319,25 +319,42 @@ jobs:
   ios-release:
     name: Build — iOS (release IPA)
     runs-on: macos-latest
+    # Apple signing material lives in the production Environment, alongside the
+    # desktop signing credentials. Keep it out of the debug/simulator jobs.
+    environment: production
     timeout-minutes: 60
     if: ${{ github.event_name == 'workflow_dispatch' }}
     steps:
       - name: Check for signing secrets
         id: secrets
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          APPSTORE_API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          APPSTORE_API_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          APPSTORE_API_PRIVATE_KEY_BASE64: ${{ secrets.APPSTORE_API_PRIVATE_KEY_BASE64 }}
         run: |
-          if [ -n "${{ secrets.APPLE_CERTIFICATE_BASE64 }}" ] && [ -n "${{ secrets.APPLE_DEVELOPMENT_TEAM }}" ]; then
+          missing=()
+          for name in APPLE_CERTIFICATE_BASE64 APPLE_CERTIFICATE_PASSWORD APPLE_PROVISIONING_PROFILE_BASE64 APPLE_DEVELOPMENT_TEAM; do
+            if [ -z "${!name}" ]; then missing+=("$name"); fi
+          done
+
+          if [ "${#missing[@]}" -eq 0 ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::APPLE_CERTIFICATE_BASE64 / APPLE_DEVELOPMENT_TEAM not set — skipping the release IPA. See packages/mobile/STORE-READINESS.md."
+            echo "::notice::Missing production Environment secrets for the signed iOS IPA: ${missing[*]}. The release lane will skip; see packages/mobile/STORE-READINESS.md."
           fi
-          # TestFlight upload is independently optional: the IPA is still
-          # produced and uploaded as an artifact without an ASC API key.
-          if [ -n "${{ secrets.APPSTORE_API_KEY_ID }}" ]; then
+
+          # TestFlight upload is optional until all three App Store Connect API
+          # key values exist. The signed IPA artifact is still produced without them.
+          if [ -n "$APPSTORE_API_KEY_ID" ] && [ -n "$APPSTORE_API_ISSUER_ID" ] && [ -n "$APPSTORE_API_PRIVATE_KEY_BASE64" ]; then
             echo "testflight=true" >> "$GITHUB_OUTPUT"
           else
             echo "testflight=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::APPSTORE_API_KEY_ID not set — IPA will be built but not uploaded to TestFlight."
+            echo "::notice::APPSTORE_API_KEY_ID, APPSTORE_API_ISSUER_ID, and APPSTORE_API_PRIVATE_KEY_BASE64 are needed to upload automatically to TestFlight."
           fi
 
       - name: Checkout
@@ -381,28 +398,30 @@ jobs:
           pnpm run --filter=frontend build
 
       # ASC requires CFBundleVersion to strictly increase per upload of a given
-      # marketing version. `github.run_number` is monotonic per workflow, so it
-      # is a valid build number and never repeats.
+      # marketing version. The date component sorts after the date-based builds
+      # already uploaded manually (for example, 20261027); the workflow run and
+      # attempt components make same-day uploads and reruns unique.
       #
       # NOTE: do NOT use tauri's `--build-number` flag here. It *appends* to the
       # app version, yielding `0.1.0.<n>` — four components. Apple allows a
       # CFBundleVersion of at most THREE period-separated integers, so ASC
-      # rejects that build at upload (verified against a real archive).
+      # rejects that build at upload.
       - name: Stamp version + build number
         if: steps.secrets.outputs.present == 'true'
         working-directory: packages/mobile
-        env:
-          IOS_BUILD_NUMBER: ${{ github.run_number }}
         run: |
+          IOS_BUILD_NUMBER="$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          export IOS_BUILD_NUMBER
           node scripts/set-ios-version.mjs
-          grep -E 'CFBundleShortVersionString|CFBundleVersion' src-tauri/gen/apple/project.yml
+          node scripts/set-ios-version.mjs --check
+          plutil -lint src-tauri/gen/apple/ci-os-hub-mobile_iOS/Info.plist
 
       # Certificate goes into a throwaway keychain scoped to this runner, so it
       # never touches the default login keychain and dies with the job.
       - name: Import signing certificate
         if: steps.secrets.outputs.present == 'true'
         env:
-          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
@@ -441,7 +460,7 @@ jobs:
         if: steps.secrets.outputs.present == 'true'
         working-directory: packages/mobile
         env:
-          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
           IPHONEOS_DEPLOYMENT_TARGET: '16.0'
         run: |
           pnpm exec tauri ios build --ci \

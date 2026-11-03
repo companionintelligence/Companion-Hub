@@ -184,6 +184,30 @@ describe('UpdateAppCommand', () => {
     expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'up --detach --force-recreate --remove-orphans');
   });
 
+  // The previous version's `compose pull` gets whatever its tag names by now. Unrecorded, that image would stay after an uninstall.
+  it('records an image the pull of a rollback brought in', async () => {
+    dockerService.verifyContainerHealthProbe.mockResolvedValue({ ok: false, healthy: false, containers: [], message: 'exited with code 1' });
+    vi.mocked(parseComposeJson).mockReturnValue({ services: [{ name: 'web', image: 'app:1' }], overrides: [] } as any);
+    appFilesManager.getDockerComposeJson.mockResolvedValue({ path: '/tmp', content: {} });
+    appFilesManager.readPulledImages.mockResolvedValue({ imageIds: ['sha256:v1'], imageTags: [] });
+    appFilesManager.writePulledImages.mockResolvedValue(true);
+    dockerService.imageIdsLocally.mockResolvedValue(new Set(['sha256:v1']));
+    dockerService.imageTagsLocally.mockResolvedValue(['app:1']);
+    let imageHere = 'sha256:v1';
+    let rollingBack = false;
+    dockerService.imageIdLocally.mockImplementation(async () => imageHere);
+    dockerService.composeApp.mockImplementation(async (_urn, cmd) => {
+      rollingBack ||= cmd === 'down --remove-orphans';
+      if (rollingBack && cmd === 'pull') {
+        imageHere = 'sha256:v2';
+      }
+    });
+
+    await command.execute(appUrn, {});
+
+    expect(appFilesManager.writePulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:v1', 'sha256:v2'], imageTags: ['app:1'] });
+  });
+
   it('triggers auto-rollback from snapshot when no backup was performed and probe fails', async () => {
     command = new UpdateAppCommand(moduleRef, docker, false);
     (command as any).assertMarketplaceEntitlement = vi.fn().mockResolvedValue(undefined);
@@ -308,6 +332,23 @@ describe('UpdateAppCommand', () => {
       expect(pulled).toBeLessThan(dockerService.composeApp.mock.invocationCallOrder[stopped] as number);
       expect(pulled).toBeLessThan(order(backupManager.backupApp));
       expect(pulled).toBeLessThan(order(appFilesManager.deleteAppFolder));
+    });
+
+    it('records the new version of an image the app recorded before, so an uninstall removes it too', async () => {
+      vi.mocked(parseComposeJson).mockReturnValue({ services: [{ name: 'app', image: 'app-image:1' }], overrides: [] } as any);
+      let pulled = false;
+      dockerService.pullImages.mockImplementation(async () => {
+        pulled = true;
+      });
+      dockerService.imageIdLocally.mockImplementation(async () => (pulled ? 'sha256:v2' : 'sha256:v1'));
+      dockerService.imageIdsLocally.mockResolvedValue(new Set(['sha256:v1']));
+      dockerService.imageTagsLocally.mockResolvedValue([]);
+      appFilesManager.readPulledImages.mockResolvedValue({ imageIds: ['sha256:v1'], imageTags: [] });
+      appFilesManager.writePulledImages.mockResolvedValue(true);
+
+      await command.execute(appUrn, {});
+
+      expect(appFilesManager.writePulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:v1', 'sha256:v2'], imageTags: [] });
     });
 
     it('leaves a running app exactly as it was when the pull fails', async () => {

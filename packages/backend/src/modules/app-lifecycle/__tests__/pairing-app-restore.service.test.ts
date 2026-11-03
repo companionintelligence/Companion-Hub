@@ -11,6 +11,7 @@ import type { MarketplaceService } from '@/modules/marketplace/marketplace.servi
 import type { RegistrationService } from '@/modules/registration/registration.service';
 import type { AppRehydrationService, RehydrationExecuteResult } from '../app-rehydration.service';
 import type { DeviceKeyRefreshService } from '../device-key-refresh.service';
+import type { OriginHostRefreshService } from '../origin-host-refresh.service';
 import type { ExposureSyncService } from '../exposure-sync.service';
 import { PairingAppRestoreService } from '../pairing-app-restore.service';
 import * as recovery from '../registration-recovery-state';
@@ -62,6 +63,7 @@ describe('PairingAppRestoreService', () => {
   let rehydration: MockProxy<AppRehydrationService>;
   let exposureSync: MockProxy<ExposureSyncService>;
   let keyRefresh: MockProxy<DeviceKeyRefreshService>;
+  let originRefresh: MockProxy<OriginHostRefreshService>;
   let portExpose: MockProxy<PortExposeService>;
   let moduleRef: MockProxy<ModuleRef>;
   let config: { getConfig: () => { ciHubApiKey: string | null } };
@@ -111,6 +113,8 @@ describe('PairingAppRestoreService', () => {
     exposureSync.syncExposurePublic.mockResolvedValue(undefined);
     keyRefresh = mock<DeviceKeyRefreshService>();
     keyRefresh.refreshStaleDeviceKeys.mockResolvedValue([]);
+    originRefresh = mock<OriginHostRefreshService>();
+    originRefresh.refreshStaleOriginHosts.mockResolvedValue([]);
     config = { getConfig: () => ({ ciHubApiKey: 'new-device-key' }) };
     portExpose = mock<PortExposeService>();
     portExpose.releaseUnrestoredRegistryEntries.mockResolvedValue([]);
@@ -128,6 +132,7 @@ describe('PairingAppRestoreService', () => {
       rehydration,
       exposureSync,
       keyRefresh,
+      originRefresh,
       moduleRef,
     );
   });
@@ -473,6 +478,36 @@ describe('PairingAppRestoreService', () => {
     expect(keyRefresh.refreshStaleDeviceKeys).toHaveBeenCalledTimes(1);
   });
 
+  it('moves running apps onto a new device name, skipping the ones the key refresh already restarted (#2178)', async () => {
+    cloudflare.getDeviceApplications.mockResolvedValue([portalApp('wordpress'), portalApp('ci-memory')]);
+    apps.getApps.mockResolvedValue([localApp('wordpress'), localApp('ci-memory')]);
+    keyRefresh.refreshStaleDeviceKeys.mockResolvedValue(['ci-memory:ci-marketplace'] as never);
+
+    await expect(service.runCheck()).resolves.toBe('released');
+
+    expect(originRefresh.refreshStaleOriginHosts).toHaveBeenCalledWith(['ci-memory:ci-marketplace']);
+  });
+
+  it('moves exposed ports onto a new device name too, since their routes are not in a compose file', async () => {
+    cloudflare.getDeviceApplications.mockResolvedValue([portalApp('wordpress')]);
+    apps.getApps.mockResolvedValue([localApp('wordpress')]);
+
+    await expect(service.runCheck()).resolves.toBe('released');
+
+    expect(portExpose.syncPortExposeRoutes).toHaveBeenCalledTimes(1);
+  });
+
+  it('still moves apps onto a new device name when the key refresh fails', async () => {
+    cloudflare.getDeviceApplications.mockResolvedValue([portalApp('wordpress')]);
+    apps.getApps.mockResolvedValue([localApp('wordpress')]);
+    keyRefresh.refreshStaleDeviceKeys.mockRejectedValue(new Error('env unreadable'));
+
+    await expect(service.runCheck()).resolves.toBe('released');
+
+    expect(originRefresh.refreshStaleOriginHosts).toHaveBeenCalledWith([]);
+    expect(exposureSync.syncExposurePublic).toHaveBeenCalledTimes(1);
+  });
+
   it('waits while an app the Portal lists is still installing, so the sync does not leave it out', async () => {
     cloudflare.getDeviceApplications.mockResolvedValue([portalApp('wordpress')]);
     apps.getApps.mockResolvedValue([localApp('wordpress', 'installing')]);
@@ -553,6 +588,24 @@ describe('PairingAppRestoreService', () => {
         await vi.advanceTimersByTimeAsync(PairingAppRestoreService.POLL_MS * 3);
 
         expect(keyRefresh.refreshStaleDeviceKeys).toHaveBeenCalledTimes(1);
+      } finally {
+        service.onApplicationShutdown();
+        vi.useRealTimers();
+      }
+    });
+
+    it('tries a refused move onto the new name again on the next passes', async () => {
+      vi.useFakeTimers();
+      try {
+        state.check = null;
+        originRefresh.hasRefusedRestarts.mockReturnValueOnce(false).mockReturnValueOnce(true).mockReturnValue(false);
+        service.onApplicationBootstrap();
+
+        await vi.advanceTimersByTimeAsync(PairingAppRestoreService.POLL_MS * 4);
+
+        expect(originRefresh.refreshStaleOriginHosts).toHaveBeenNthCalledWith(1, []);
+        expect(originRefresh.refreshStaleOriginHosts).toHaveBeenNthCalledWith(2, [], { onlyRefused: true });
+        expect(originRefresh.refreshStaleOriginHosts).toHaveBeenCalledTimes(2);
       } finally {
         service.onApplicationShutdown();
         vi.useRealTimers();

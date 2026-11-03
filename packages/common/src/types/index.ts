@@ -49,7 +49,7 @@ export {
   parseTunnelCustomDomains,
   selectCustomDomain,
 } from '../public-web/custom-domains.js';
-export { publishesPublicWebRoute, storedExposureForm } from '../public-web/exposure.js';
+export { effectiveExposureMode, publishesPublicWebRoute, servedExposureMode, storedExposureForm } from '../public-web/exposure.js';
 export { buildTailscaleNodeFqdn, buildTailscalePortHost, buildTailscalePortUrl, buildTailscaleWebIdentity } from '../tailscale/identity.js';
 export type { DesktopReleaseManifest } from './desktop-release.js';
 export { desktopInstallerUrl, desktopReleaseCdn, isTrustedDownloadUrlForHost, platformManifestKey } from './desktop-release.js';

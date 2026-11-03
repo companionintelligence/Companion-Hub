@@ -247,7 +247,7 @@ pub(crate) fn ensure_postgres_password_matches(
     let _ = append_desktop_log_for(
         data_dir,
         "hub.start",
-        "Postgres TCP auth failed for configured password; syncing role password.",
+        "Postgres TCP auth rejected for configured password; syncing role password.",
     );
 
     sync_postgres_password(&db, password, data_dir)?;
@@ -384,7 +384,7 @@ pub(crate) fn ensure_rabbitmq_password_matches_env(
     let _ = append_desktop_log_for(
         data_dir,
         "hub.start",
-        "RabbitMQ auth failed for configured password; syncing broker password.",
+        "RabbitMQ auth rejected for configured password; syncing broker password.",
     );
 
     match sync_rabbitmq_password(&queue, &password, data_dir) {

@@ -49,6 +49,66 @@ describe('handleAppSseEvent', () => {
     };
   });
 
+  describe('a failure the page keeps showing', () => {
+    const urn = 'ci-memory:ci-marketplace';
+    const serviceFailure = { kind: 'restarting' as const, service: 'summary-service', exitCode: 126, logLine: 'permission denied' };
+    const cachedError = () => queryClient.setQueryData.mock.calls.filter(([key]) => key[0] === 'app-install-error').map(([, value]) => value);
+
+    it.each(['start_error', 'restart_error'])('keeps a %s that names a failing service', (event) => {
+      handleAppSseEvent(queryClient as unknown as QueryClient, {
+        event,
+        appUrn: urn,
+        appStatus: 'stopped',
+        error: 'summary-service keeps restarting (exit 126): permission denied',
+        errorDetail: 'the logs',
+        serviceFailure,
+      });
+
+      expect(cachedError()).toEqual([
+        expect.objectContaining({
+          message: 'summary-service keeps restarting (exit 126): permission denied',
+          errorDetail: 'the logs',
+          serviceFailure,
+        }),
+      ]);
+    });
+
+    it('does not keep a start error that names no service, which its toast told', () => {
+      handleAppSseEvent(queryClient as unknown as QueryClient, {
+        event: 'start_error',
+        appUrn: urn,
+        appStatus: 'stopped',
+        error: 'address already in use',
+      });
+
+      expect(cachedError()).toEqual([]);
+    });
+
+    it('keeps the failing service of a failed install', () => {
+      handleAppSseEvent(queryClient as unknown as QueryClient, {
+        event: 'install_error',
+        appUrn: urn,
+        appStatus: 'install_failed',
+        error: 'summary-service keeps restarting (exit 126)',
+        serviceFailure,
+      });
+
+      expect(cachedError()).toEqual([expect.objectContaining({ serviceFailure })]);
+    });
+
+    it.each(['starting', 'restarting', 'stopping', 'running'])('forgets it when the app goes %s', (appStatus) => {
+      handleAppSseEvent(queryClient as unknown as QueryClient, { event: 'status_change', appUrn: urn, appStatus });
+
+      expect(cachedError()).toEqual([null]);
+    });
+
+    it('keeps it when a status sync says nothing new about the app', () => {
+      handleAppSseEvent(queryClient as unknown as QueryClient, { event: 'status_change', appUrn: urn, appStatus: 'stopped' });
+
+      expect(cachedError()).toEqual([]);
+    });
+  });
+
   it('refetches the Tailscale status and the served ports when tailscaled starts or stops refusing the Hub (CI-Hub#1766)', () => {
     for (const denied of [true, false]) {
       queryClient.invalidateQueries.mockClear();
@@ -318,6 +378,17 @@ describe('handleAppSseEvent', () => {
     expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ['getCustomDomains'] });
   });
 
+  it('refetches an app whose host port moved while no page was connected and leaves its status alone', () => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, {
+      event: 'host_port_moved',
+      appUrn: 'n8n:ci-marketplace',
+      movedHostPort: { from: 10000, to: 10001 },
+    });
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['getApp', 'n8n:ci-marketplace'] });
+    expect(queryClient.setQueryData).not.toHaveBeenCalled();
+  });
+
   // #2101: another tab's install has no row during its checks. The event says what is under way, so
   // every open page shows it at once, and the read that follows brings the rest.
   it('marks the operation an install began on the app at once, and reads the app again', () => {
@@ -336,6 +407,12 @@ describe('handleAppSseEvent', () => {
 
     const [, update] = queryClient.setQueryData.mock.calls[0] as [unknown, (current: unknown) => unknown];
     expect(update({ app: null, operation: { command: 'install' } })).toEqual({ app: null, operation: undefined });
+  });
+
+  it.each(['updating', 'resetting', 'restoring', 'uninstalling'])('forgets the last failure when the app starts %s', (appStatus) => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, { event: 'status_change', appUrn: 'comfyui:ci-marketplace', appStatus });
+
+    expect(queryClient.setQueryData).toHaveBeenCalledWith(['app-install-error', 'comfyui:ci-marketplace'], null);
   });
 
   it('leaves the custom-domain listing alone on other lifecycle events', () => {

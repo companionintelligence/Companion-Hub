@@ -1,6 +1,7 @@
 import { type AppFailurePhase, ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { ModuleRef } from '@nestjs/core';
+import { describeAppServiceFailure } from '@/modules/docker/managed-app-containers';
 import {
   type AppCommandFailureResult,
   AppLifecycleError,
@@ -16,13 +17,17 @@ import {
  */
 export async function reportAndTranslateAppError(moduleRef: ModuleRef, err: unknown, appId: string, event: string): Promise<AppCommandFailureResult> {
   if (err instanceof AppLifecycleError) {
-    reportCommandFailure(moduleRef, appId, event, err.errorDetail ?? err.message, err.errorCode);
+    const telemetryMessage = err.serviceFailure
+      ? describeAppServiceFailure({ ...err.serviceFailure, logLine: undefined })
+      : (err.errorDetail ?? err.message);
+    reportCommandFailure(moduleRef, appId, event, telemetryMessage, err.errorCode);
     return {
       success: false,
       message: err.message,
       errorCode: err.errorCode,
       errorDetail: err.errorDetail,
       settingsPath: err.settingsPath,
+      serviceFailure: err.serviceFailure,
     };
   }
 
@@ -50,7 +55,7 @@ export async function reportAndTranslateAppError(moduleRef: ModuleRef, err: unkn
       };
     }
 
-    reportCommandFailure(moduleRef, appId, event, err.message);
+    reportCommandFailure(moduleRef, appId, event, err.message, undefined, causeOf(err));
     return { success: false, message: err.message };
   }
 
@@ -68,7 +73,19 @@ export async function reportAndTranslateAppError(moduleRef: ModuleRef, err: unkn
  * too, not only on the settleCommandOutcome side, or a classified failure can still surface in
  * Sentry as unclassified depending on timing.
  */
-function reportCommandFailure(moduleRef: ModuleRef, appId: string, event: string, message: string, errorCode?: string): void {
+/**
+ * The text of an error's `cause`. A TranslatableError keeps the real reason there while its message is
+ * only the key the user sees, so the report reads the cause, or the reason is lost.
+ */
+function causeOf(err: Error): string | undefined {
+  const cause: unknown = err.cause;
+  if (cause instanceof Error) {
+    return cause.message || undefined;
+  }
+  return typeof cause === 'string' && cause ? cause : undefined;
+}
+
+function reportCommandFailure(moduleRef: ModuleRef, appId: string, event: string, message: string, errorCode?: string, cause?: string): void {
   const phase = mapEventToFailurePhase(event);
   if (!phase) {
     return;
@@ -86,6 +103,7 @@ function reportCommandFailure(moduleRef: ModuleRef, appId: string, event: string
       phase,
       message,
       errorCode,
+      cause,
     });
   } catch (reportErr) {
     // Telemetry must never change control flow here. The classified AppCommandFailureResult the

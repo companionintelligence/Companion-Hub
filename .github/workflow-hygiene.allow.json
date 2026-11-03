@@ -1,0 +1,26 @@
+{
+  "secretsInherit": [],
+  "pem": [],
+  "missingPermissions": [
+    {
+      "file": ".github/workflows/desktop-release.yml",
+      "job": "build-container",
+      "reason": "release workflow with signing and registry secrets; the callee's needs cannot be rehearsed here; the owner narrows it after a dispatch rehearsal"
+    },
+    {
+      "file": ".github/workflows/desktop-release.yml",
+      "job": "upload-r2",
+      "reason": "release workflow with signing and registry secrets; the callee's needs cannot be rehearsed here; the owner narrows it after a dispatch rehearsal"
+    },
+    {
+      "file": ".github/workflows/desktop-release.yml",
+      "job": "publish-package-managers",
+      "reason": "release workflow with signing and registry secrets; the callee's needs cannot be rehearsed here; the owner narrows it after a dispatch rehearsal"
+    },
+    {
+      "file": ".github/workflows/nightly-release.yml",
+      "job": "e2e-tests",
+      "reason": "release workflow with signing and registry secrets; the callee's needs cannot be rehearsed here; the owner narrows it after a dispatch rehearsal"
+    }
+  ]
+}

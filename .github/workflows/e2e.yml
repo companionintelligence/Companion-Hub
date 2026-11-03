@@ -31,6 +31,10 @@ concurrency:
   group: e2e-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
+# Read-only. A caller can only lower the token this workflow gets, never raise it.
+permissions:
+  contents: read
+
 jobs:
   e2e:
     timeout-minutes: 45

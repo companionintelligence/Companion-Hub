@@ -1,0 +1,16 @@
+name: Fixture clean
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: example-org/example-action@0123456789abcdef0123456789abcdef01234567 # v1.2.3
+      - uses: ./.github/actions/example
+      - uses: docker://registry.example.test/org/app@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  call:
+    uses: ./.github/workflows/callee.yml
+    secrets:
+      EXAMPLE_TOKEN: ${{ secrets.EXAMPLE_TOKEN }}

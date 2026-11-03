@@ -5,7 +5,7 @@
 > **Key paths:** `e2e/`, `e2e/visual/`, `e2e/helpers/screenshot.ts`, `scripts/agent/benchmark-gate.ts`
 > **Commands:** `pnpm run test:e2e:ci`, `pnpm run test:visual`, `pnpm run benchmark:gate`
 > **Owner persona:** code-quality + performance
-> **Last updated:** 2026-07-12
+> **Last updated:** 2026-10-30
 > **Related:** docs/agent/TESTING.md, docs/agent/TEST_INVENTORY.md, docs/FLYWHEEL.md
 
 ---
@@ -27,15 +27,24 @@ Local full stack: `pnpm run test:e2e` (docker-compose + Playwright via `scripts/
 |----------|---------|-----------|
 | `ci.yml` | Every PR | lint, tsc, unit tests (not e2e) |
 | `image-boot.yml` | Every PR | Builds the Dockerfile `runner` stage and boots it against Postgres + RabbitMQ (`scripts/smoke-boot-image.sh`) |
+| `e2e-platform.yml` | Manual dispatch on `dev` or `main` | Runs app install, lifecycle, networking, storage, and web UI checks against the Hub on the self-hosted `ci-core` runner |
 | `e2e.yml` | Release / manual | Default Playwright |
 | `e2e-extended.yml` | Nightly / label | Cross-domain + future |
 | `e2e-mcp.yml` | Manual dispatch only | MCP connect recipe — protocol handshake + app env injection (12 tests) |
 | `agent-gates.yml` | PR (optional) | Visual + benchmark gates |
 
+These workflows run with a read-only repository token: each declares `permissions: contents: read` at the top, and
+`ci.yml` and `agent-gates.yml` add `packages: read`. `pnpm run check:workflows` refuses a workflow that has no
+`permissions` at the top and not on every job; the rules are in [`.github/workflows/README.md`](../../.github/workflows/README.md).
+
 `e2e-mcp.yml` is dispatch-only on purpose: it boots a backend, so it earns its runner minutes only
 when the MCP surface, its auth, or the connect docs change. Run it with
 `gh workflow run e2e-mcp.yml --ref <branch>`, or `pnpm e2e:mcp` locally for the full 18-test lane
 including the Docker-heavy install layer.
+
+The image-boot smoke test pulls Postgres and RabbitMQ from Docker Hub first, then falls back to
+public ECR if a registry is unavailable. `SMOKE_POSTGRES_IMAGE` / `SMOKE_RABBITMQ_IMAGE` override
+the primary images; the corresponding `*_FALLBACK_IMAGE` variables override the fallbacks.
 
 ## Visual regression
 
@@ -58,6 +67,15 @@ pnpm run benchmark:gate
 Baselines: `e2e/results/benchmarks/baseline.json`
 
 Fleet QA orchestration (private ops) lives in companionintelligence/CI-Engineering `tools/fleet-qa/` (issue #211) — inventories and multi-node runners are not in this tree.
+
+The copied `scripts/qa-stream.ts` captures app pages with the Hub checkout's `@playwright/test`
+Chromium API. It stops navigation at `DOMContentLoaded`, then gives client-rendered apps a bounded
+wait for visible text or a visual surface before taking a viewport screenshot. It does not wait for
+`load` or `networkidle`, because apps with WebSockets and event streams can keep those conditions
+open. Each attempt has a deadline; shutdown has its own short bound and kills the launched Chromium
+process if graceful cleanup hangs. `QA_HUB_ROOT` points at the checkout that supplies Playwright;
+older nodes without the package retain the Chromium CLI fallback. These captures verify app rendering
+during real container boot, while visual regression remains a separate baseline-based lane.
 
 ## Agent notes
 

@@ -39,7 +39,7 @@ const HUB_MAP = {
   '../desktop/bootstrap/assets/hub-logo.png': 'icons/png/mark-small-160.png', // the bootstrap page ships the same file
   '../desktop/bootstrap/assets/hub-icon.png': 'icons/png/mark-40.png',
   '../desktop/src-tauri/icons/tray.png': 'icons/png/tray-64.png', // loaded by tray.rs
-  // Unreferenced by Tauri, but it used to hold the Runtipi teepee. Keep it the Hub mark so it cannot go stale again.
+  // Unreferenced by Tauri, but it used to hold an earlier mark. Keep it the Hub mark so it cannot go stale again.
   '../desktop/src-tauri/icons/icon.svg': 'logos/mark-tight.svg',
   '../mobile/src-tauri/icons/icon.svg': 'logos/mark-tight.svg',
 };

@@ -57,7 +57,9 @@ Two different routes share the `/api/store/:id/install` path:
 | `POST` | Portal session (person in the store UI) | `sessionMiddleware` plus organization membership over the named device | Portal **pushes** an install command to that Hub. Missing `install` in `can` is 403 `GRANT_DENIED` **before** ASK_ADMIN / Checkout. Owner/admin may pay; members of an unpaid org get `ASK_ADMIN`. An existing org `app_entitlement` skips payment. |
 | `GET` | Hub (`downloadAppFiles`) | `deviceAuthMiddleware` (`x-device-key`) — [CI-Portal#634](https://github.com/companionintelligence/CI-Portal/pull/634) | Hub **pulls** the install bundle. Free apps (`priceModel === 'free'` only) succeed for a paired device. Paid apps need an **active org entitlement** for an org that device is registered to — not a device-scoped `store_transaction`. |
 
-`GET /api/entitlements/check?appId=` is the same device-key till, used by Hub's local cache. It is not a Hub-trusted claim: Portal re-checks on GET install and on registry mint.
+`GET /api/entitlements/check?appId=&organizationId=` is the same device-key till, used by Hub's local cache. It is not a Hub-trusted claim: Portal re-checks on GET install and on registry mint.
+
+Hub names its organization on the check, the install bundle (query string) and the registry token (JSON body). The name settles which organization is asking and proves nothing. Portal reads it only for a device tied between organizations on its last pairing, and only a member of the tied set is honoured: a tie with no name answers `409 ORGANIZATION_REQUIRED` and a name outside it `403 DEVICE_NOT_IN_ORGANIZATION`. A device in one organization is answered for that organization whatever the name says. A Portal that predates this ignores the name. Hub caches neither refusal as "not entitled": install and update stop with a message saying how to repair it while Start keeps the unreachable policy.
 
 ### Registry tokens
 
@@ -65,7 +67,7 @@ Two different routes share the `/api/store/:id/install` path:
 
 | Body | JWT |
 |---|---|
-| none | Pull-only for `ci-hub` (Hub stack listing) |
+| none, or no `appId` (Hub sends only `organizationId`) | Pull-only for `ci-hub` (Hub stack listing) |
 | `{ appId }` | Pull-only `repos[]` from that app's compose, after an org entitlement check |
 
 Registry `/v2` accepts `payload.repos` (array) or legacy `payload.repo` (string). Tokens without write scope cannot PUT. Repos with a `docker/<repo>/public` marker are readable **without** a JWT. Portal refuses to write those markers for any app whose `priceModel` is not `free` (`PAID_APP_NOT_PUBLIC`).
@@ -97,13 +99,14 @@ Assume the operator controls the appliance: they can patch Hub, skip local check
 
 ## Hub cache (#722 / #1212)
 
-`MarketplaceEntitlementService` caches Portal `/api/entitlements/check` for 24h.
+`MarketplaceEntitlementService` caches Portal `/api/entitlements/check` for 24h. The cache has no organization column, so a reset or a pair into another organization empties it.
 
 - **Install / update:** fail closed if Portal is unreachable and there is no fresh entitled cache.
 - **Start / restart:** best-effort so an already-installed app can come up when Portal is down, unless a fresh cache says not entitled. A restart a person or MCP key asks for shares Start's policy, checked before the status changes. The Hub's own restarts (credential rotation, config, inference, custom-domain) are not gated, because a refused one leaves the app running on revoked credentials.
 - **404 / free:** skip (local or unsigned apps still run).
 - **402:** `APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED`.
 - **401:** install and update refuse with the existing unauthorized string. Start and restart use the unreachable policy, because a rejected device key is not an entitlement decision. See [`portal-check-in.md`](../portal-check-in.md#entitlement-checks-on-start-and-restart).
+- **409 `ORGANIZATION_REQUIRED` / 403 `DEVICE_NOT_IN_ORGANIZATION`:** install and update refuse with a message saying how to repair it, even on a fresh entitled cache. Start and restart use the unreachable policy. Neither is cached.
 
 Skipping or forging this cache cannot download a paid bundle or mint an app registry JWT.
 
@@ -122,6 +125,13 @@ Each app's headers are signed with that app's own key, read from its `app.env`:
 - An app with `CI_HUB_FORWARD_AUTH_SECRET` gets the username, timestamp, and stable id signed with it, plus `X-CI-Hub-User-Assertion: 2.<nonce>.<hex>`, an HMAC under its own key over `ci-hub-forward-auth/2\n<app urn>\n<nonce>\n<timestampMs>\n<username>\n<issuer>\n<user id>`. The assertion names the app it was signed for, and the nonce is fresh per request.
 - Companion Memory's `CI_HUB_FORWARD_AUTH_SECRET` is the Hub-wide secret, because it also authenticates the connect exchange and the agent doorbell. Its own key is `CI_HUB_FORWARD_AUTH_IDENTITY_SECRET`, written with `CI_APP_URN` (its audience). The username triple is still signed with the Hub-wide secret for Memory releases that predate the assertion.
 - An app with no key (every third-party app), or a host that matches no installed app, gets `X-CI-Hub-User` alone, unsigned. Such an app cannot check a signature, and the Hub-wide secret never stands in for a missing key.
+- The Hub produces no AID header. `X-CI-Hub-User-AID`, `X-CI-Hub-AID`, and `X-CI-Hub-KEL-Digest` are reserved names, and an app must ignore them. On a route that uses the `ci-hub` forward-auth middleware, with the current header list, Traefik deletes a visitor's own copy of each, so an app behind it does not receive a value. That has not been exercised against a running Traefik, and an existing install gets the longer list only when its compose or dynamic file is rewritten. The stable id that forward auth signs is the issuer and the person's id, with nothing derived from them. The in-tree KERI module is frozen and not interoperable; see [`FROZEN.md`](../../packages/common/src/keri/FROZEN.md).
+
+## Identity bindings
+
+The Hub is a client of Portal and of the box, never a source of identity bindings. Portal decides which person owns a computer, and the box records it. The Hub has no route, table, or module that reads, writes, or names that record: no file under `packages/` carries its file name, its service name, its client's name, or its state folder, and `scripts/__tests__/hub-binding-authority.test.ts` fails if one does.
+
+Treat that as a property of the code, not as a security boundary. The Hub controls Docker on the appliance, so a Hub compromise reaches root, and the box has to defend its own record.
 
 ## Review checklist for publication
 

@@ -5,6 +5,7 @@ import {
   HUB_REMOVAL_WATCH_INTERVAL_MS,
   HUB_REMOVAL_WATCH_TIMEOUT_MS,
   type HubRemovalCheck,
+  portalAccountSettingsUrl,
   portalRemoveDeviceUrl,
   watchForHubRemoval,
 } from './hub-removal-watch';
@@ -20,6 +21,18 @@ const sdkAnswer = (status: number, data?: unknown) => ({
 describe('portalRemoveDeviceUrl', () => {
   it("opens the Portal's delete confirmation for this hardware device", () => {
     expect(portalRemoveDeviceUrl('https://portal.example.com/', 'hw id/1')).toBe('https://portal.example.com/home?remove_device=hw%20id%2F1');
+  });
+});
+
+describe('portalAccountSettingsUrl', () => {
+  it('opens the account settings on the configured Portal origin', () => {
+    expect(portalAccountSettingsUrl('https://portal.example.com/custom/path/')).toBe('https://portal.example.com/user-settings');
+  });
+
+  it('uses the Companion Portal when the configured URL is missing or unsafe', () => {
+    expect(portalAccountSettingsUrl(null)).toBe('https://hub.ci.computer/user-settings');
+    expect(portalAccountSettingsUrl('javascript:alert(1)')).toBe('https://hub.ci.computer/user-settings');
+    expect(portalAccountSettingsUrl('http://portal.example.com')).toBe('https://hub.ci.computer/user-settings');
   });
 });
 

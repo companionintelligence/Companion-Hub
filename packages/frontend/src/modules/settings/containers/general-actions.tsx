@@ -10,6 +10,7 @@ import { sdkResult, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
 import { Markdown } from '@/components/markdown/markdown';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { Checkbox } from '@/components/ui/Checkbox/Checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { useAppContext } from '@/context/app-context';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
@@ -115,6 +116,10 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   const [factoryResetOpen, setFactoryResetOpen] = useState(false);
   const [factoryResetPhrase, setFactoryResetPhrase] = useState('');
   const [factoryResetting, setFactoryResetting] = useState(false);
+  // Off by default: the apps stay listed in Companion Portal, so pairing this Hub again reinstalls them.
+  const [factoryResetRemovePortalApps, setFactoryResetRemovePortalApps] = useState(false);
+  // The reset ran, but the Portal couldn't be told to drop the apps. The dialog stays to say so.
+  const [factoryResetPortalAppsLeft, setFactoryResetPortalAppsLeft] = useState(false);
   const [shellUpdate, setShellUpdate] = useState<UpdateInfo | null>(null);
   const [shellVersion, setShellVersion] = useState<string | null>(null);
   const [updatingShell, setUpdatingShell] = useState(false);
@@ -160,12 +165,24 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
     }
   }, [t]);
 
-  const setFactoryResetDialogOpen = useCallback((open: boolean) => {
-    setFactoryResetOpen(open);
-    // Cancel, the X, and a click outside all close through here. A phrase left in state would
-    // still match the device name, so the next open could wipe the Hub in one click.
-    if (!open) setFactoryResetPhrase('');
-  }, []);
+  const setFactoryResetDialogOpen = useCallback(
+    (open: boolean) => {
+      // The Hub is already reset when the dialog is only left open to say the Portal still lists its
+      // apps. Closing it goes on to sign in, as a reset that needed no warning does.
+      if (!open && factoryResetPortalAppsLeft) {
+        window.location.href = '/login';
+        return;
+      }
+      setFactoryResetOpen(open);
+      // Cancel, the X, and a click outside all close through here. A phrase left in state would
+      // still match the device name, so the next open could wipe the Hub in one click.
+      if (!open) {
+        setFactoryResetPhrase('');
+        setFactoryResetRemovePortalApps(false);
+      }
+    },
+    [factoryResetPortalAppsLeft],
+  );
 
   const handleFactoryReset = useCallback(async () => {
     if (demoMode) {
@@ -180,11 +197,20 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
 
     setFactoryResetting(true);
     try {
-      const result = await factoryReset({ body: { confirmation: typedName } });
+      const result = await factoryReset({ body: { confirmation: typedName, removeAppsFromPortal: factoryResetRemovePortalApps } });
       if (result.error) {
         throw result.error instanceof Error ? result.error : new Error(String(result.error));
       }
       clearClientHubState();
+      // Asked to take the apps off the Portal and it couldn't be reached: say so before leaving, since a
+      // toast would go with the page. The X, Escape and a click outside can close the dialog while the
+      // reset runs, so it opens again to say it. Closed, it left the page on a Hub that was reset.
+      if ((result.data as { portalApps?: string } | undefined)?.portalApps === 'failed') {
+        setFactoryResetting(false);
+        setFactoryResetPortalAppsLeft(true);
+        setFactoryResetOpen(true);
+        return;
+      }
       toast.success(t('SETTINGS_FACTORY_RESET_SUCCESS'));
       window.location.href = '/login';
     } catch (error) {
@@ -199,7 +225,7 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
           : t('SETTINGS_FACTORY_RESET_ERROR'),
       );
     }
-  }, [demoMode, deviceName, factoryResetPhrase, t]);
+  }, [demoMode, deviceName, factoryResetPhrase, factoryResetRemovePortalApps, t]);
 
   const refreshShellUpdateState = useCallback(async () => {
     const installedVersion = desktop ? await getInstalledDesktopVersion() : null;
@@ -868,41 +894,70 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
               <DialogHeader>
                 <DialogTitle>{t('SETTINGS_FACTORY_RESET_DIALOG_TITLE')}</DialogTitle>
               </DialogHeader>
-              <DialogDescription className="space-y-4 py-2">
-                <p>{t('SETTINGS_FACTORY_RESET_DIALOG_BODY')}</p>
-                <div className="space-y-3 text-left">
-                  {deviceName ? (
-                    <>
-                      <label htmlFor="factory-reset-confirmation" className="block text-sm font-medium">
-                        {t('SETTINGS_FACTORY_RESET_CONFIRMATION_LABEL', { phrase: deviceName })}
-                      </label>
-                      <Input
-                        id="factory-reset-confirmation"
-                        value={factoryResetPhrase}
-                        onChange={(event) => setFactoryResetPhrase(event.target.value)}
-                        autoComplete="off"
-                        data-testid="factory-reset-confirmation-input"
-                      />
-                    </>
-                  ) : (
-                    <p data-testid="factory-reset-no-device-name">{t('SETTINGS_FACTORY_RESET_NO_DEVICE_NAME')}</p>
-                  )}
-                </div>
-              </DialogDescription>
-              <DialogFooter>
-                <Button variant="ghost" onClick={() => setFactoryResetDialogOpen(false)} disabled={factoryResetting}>
-                  {t('COMMON_CANCEL')}
-                </Button>
-                <Button
-                  intent="danger"
-                  loading={factoryResetting}
-                  disabled={!deviceName || factoryResetPhrase.trim() !== deviceName}
-                  onClick={handleFactoryReset}
-                  data-testid="factory-reset-confirm-btn"
-                >
-                  {t('SETTINGS_FACTORY_RESET_BUTTON')}
-                </Button>
-              </DialogFooter>
+              {factoryResetPortalAppsLeft ? (
+                <>
+                  <DialogDescription className="py-2">
+                    <span role="alert" data-testid="factory-reset-portal-apps-left">
+                      {t('SETTINGS_FACTORY_RESET_PORTAL_APPS_LEFT')}
+                    </span>
+                  </DialogDescription>
+                  <DialogFooter>
+                    <Button onClick={() => setFactoryResetDialogOpen(false)} data-testid="factory-reset-continue-btn">
+                      {t('SETTINGS_FACTORY_RESET_CONTINUE')}
+                    </Button>
+                  </DialogFooter>
+                </>
+              ) : (
+                <>
+                  <DialogDescription className="space-y-4 py-2">
+                    <p>{t('SETTINGS_FACTORY_RESET_DIALOG_BODY')}</p>
+                    {deviceName && !factoryResetRemovePortalApps ? (
+                      <p data-testid="factory-reset-portal-apps-kept">{t('SETTINGS_FACTORY_RESET_PORTAL_APPS_KEPT')}</p>
+                    ) : null}
+                    <div className="space-y-3 text-left">
+                      {deviceName ? (
+                        <>
+                          <label htmlFor="factory-reset-confirmation" className="block text-sm font-medium">
+                            {t('SETTINGS_FACTORY_RESET_CONFIRMATION_LABEL', { phrase: deviceName })}
+                          </label>
+                          <Input
+                            id="factory-reset-confirmation"
+                            value={factoryResetPhrase}
+                            onChange={(event) => setFactoryResetPhrase(event.target.value)}
+                            autoComplete="off"
+                            data-testid="factory-reset-confirmation-input"
+                          />
+                          <div className="space-y-1">
+                            <Checkbox
+                              name="factory-reset-remove-portal-apps"
+                              checked={factoryResetRemovePortalApps}
+                              onCheckedChange={(checked) => setFactoryResetRemovePortalApps(checked === true)}
+                              label={t('SETTINGS_FACTORY_RESET_REMOVE_PORTAL_APPS')}
+                            />
+                            <p className="pl-6 text-xs text-muted-foreground">{t('SETTINGS_FACTORY_RESET_REMOVE_PORTAL_APPS_HINT')}</p>
+                          </div>
+                        </>
+                      ) : (
+                        <p data-testid="factory-reset-no-device-name">{t('SETTINGS_FACTORY_RESET_NO_DEVICE_NAME')}</p>
+                      )}
+                    </div>
+                  </DialogDescription>
+                  <DialogFooter>
+                    <Button variant="ghost" onClick={() => setFactoryResetDialogOpen(false)} disabled={factoryResetting}>
+                      {t('COMMON_CANCEL')}
+                    </Button>
+                    <Button
+                      intent="danger"
+                      loading={factoryResetting}
+                      disabled={!deviceName || factoryResetPhrase.trim() !== deviceName}
+                      onClick={handleFactoryReset}
+                      data-testid="factory-reset-confirm-btn"
+                    >
+                      {t('SETTINGS_FACTORY_RESET_BUTTON')}
+                    </Button>
+                  </DialogFooter>
+                </>
+              )}
             </DialogContent>
           </Dialog>
         </>

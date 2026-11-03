@@ -25,10 +25,13 @@
  * Env vars:
  *   APP_STORE_DIR   path to CI-Marketplace/apps  (default: ~/devel/CI-Marketplace/apps
  *                   with fallback to ~/devel/CI-App-Store/apps)
+ *   QA_HUB_ROOT     Hub checkout used to resolve @playwright/test (default: ~/devel/CI-Hub)
  *   RESULTS_DIR     local results output dir      (default: ~/qa-results)
  *   QA_MIN_FREE_MB  minimum free space to keep before accepting another app (default: 4096)
  *   QA_MIN_FREE_PERCENT  minimum free percentage to keep before accepting another app (default: 5)
  *   SKIP_SCREENSHOT set to "1" to skip Playwright screenshot
+ *   QA_KEEP_FAILED  set to "1" to retain non-pass containers and scratch files for inspection
+ *   QA_POSIX_VOLUME_FALLBACK set to "1" to use Docker volumes for ownership-sensitive binds; defaults on macOS/Windows
  *   QA_ENV_FILE     set to "1" to attach a production-style app.env (system variables + form fields) to every service, as the
  *                   Hub does. Off by default. Safe at any QA_CONCURRENCY: each app's form-field specs and manifest are passed
  *                   down explicitly, never read from module state after an await.
@@ -36,7 +39,8 @@
  *   QA_NO_TEMPLATES set to "1" to seed the .template files under an app's data/ as they are. By default each is rendered into the
  *                   mount without the suffix, from the app.env map, as the Hub's copyDataDir does.
  *   QA_RUN_PID_FILE optional run-specific marker path. The runner writes its PID there and drains active apps on SIGTERM/SIGINT,
- *                   allowing a fleet controller to stop only its own remote run.
+ *                   allowing a fleet controller to stop only its own remote run. A fleet token in this path namespaces Docker
+ *                   containers and compose projects so a stale resource from an earlier run cannot block a new run.
  *
  * Restart policy and host ports (an app is started here as the Hub starts it):
  *   - Each service runs under its manifest's `restart` (no | always | unless-stopped | on-failure), else `unless-stopped`: the Hub's
@@ -56,8 +60,8 @@
  *     and a persistent failure is still actionable. Other start failures are not retried.
  */
 
-import { exec, execSync, spawnSync } from 'node:child_process';
-import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import { exec, execSync, spawn, spawnSync } from 'node:child_process';
+import { createHash, generateKeyPairSync, randomBytes, randomInt } from 'node:crypto';
 import {
   chmodSync,
   cpSync,
@@ -72,26 +76,137 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
-import { connect } from 'node:net';
+import { createRequire } from 'node:module';
+import { connect, isIP } from 'node:net';
 import { EOL, homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const home = homedir();
+const QA_HUB_ROOT = process.env.QA_HUB_ROOT?.trim() || join(home, 'devel/CI-Hub');
 const APP_STORE_DIR =
   process.env.APP_STORE_DIR ??
   (existsSync(join(home, 'devel/CI-Marketplace/apps')) ? join(home, 'devel/CI-Marketplace/apps') : join(home, 'devel/CI-App-Store/apps'));
 const RESULTS_DIR = process.env.RESULTS_DIR ?? join(home, 'qa-results');
 const SCREENSHOTS_DIR = join(RESULTS_DIR, 'screenshots');
 const SKIP_SCREENSHOT = process.env.SKIP_SCREENSHOT === '1';
+const KEEP_FAILED = process.env.QA_KEEP_FAILED === '1';
+const QA_POSIX_VOLUME_OVERRIDE = process.env.QA_POSIX_VOLUME_FALLBACK;
+const QA_POSIX_VOLUME_FALLBACK =
+  QA_POSIX_VOLUME_OVERRIDE === undefined ? ['darwin', 'win32'].includes(process.platform) : QA_POSIX_VOLUME_OVERRIDE === '1';
 const QA_ENV_FILE = process.env.QA_ENV_FILE === '1';
 const QA_NO_PROXY_HEADERS = process.env.QA_NO_PROXY_HEADERS === '1';
 const QA_NO_TEMPLATES = process.env.QA_NO_TEMPLATES === '1';
 /** A per-run marker used by the fleet controller to request a graceful remote stop. */
 const QA_RUN_PID_FILE = process.env.QA_RUN_PID_FILE?.trim() ?? '';
+// The fleet controller embeds the numeric run token in QA_RUN_PID_FILE. Use it to namespace every
+// Docker resource this process owns; otherwise an orphaned `qa-stream-${appId}` from an earlier
+// run can make a fresh `docker run --name ...` fail before the app is tested. Direct CLI use keeps
+// the legacy names when no run token is supplied.
+const QA_RUN_NAMESPACE = (process.env.QA_RUN_TOKEN?.trim() || QA_RUN_PID_FILE.match(/fleet-qa-run-(\d+)/)?.[1] || '')
+  .replace(/[^A-Za-z0-9_.-]/g, '')
+  .slice(-20);
+
+function qaContainerName(appId: string): string {
+  return `qa-stream-${QA_RUN_NAMESPACE ? `${QA_RUN_NAMESPACE}-` : ''}${appId}`;
+}
+
+function qaProjectName(appId: string): string {
+  return `qa-${QA_RUN_NAMESPACE ? `${QA_RUN_NAMESPACE}-` : ''}${appId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+}
+
+// <single-service-managed-volumes>
+/** Resolve a run-scoped Docker volume for the single-service `docker run` smoke path. */
+function singleServiceManagedVolumeName(containerName: string, key: string): string {
+  const stem =
+    containerName
+      .toLowerCase()
+      .replace(/[^a-z0-9_.-]+/g, '-')
+      .replace(/^[^a-z0-9]+/, '')
+      .slice(0, 80) || 'qa';
+  const digest = createHash('sha256').update(`${containerName}\0${key}`).digest('hex').slice(0, 16);
+  return `qa-${stem}-${digest}`;
+}
+
+function resolveSingleServiceManagedVolume(
+  volume: { volumeName?: string; requiresPosixPermissions?: boolean },
+  containerName: string,
+  hostPath: string,
+  seeded: boolean,
+  fallback: boolean,
+  managedVolumes: Map<string, string>,
+): string | null {
+  const key = volume.volumeName
+    ? `named:${volume.volumeName}`
+    : volume.requiresPosixPermissions === true && fallback && hostPath && !seeded
+      ? `host:${hostPath}`
+      : null;
+  if (!key) return null;
+  let name = managedVolumes.get(key);
+  if (!name) {
+    name = singleServiceManagedVolumeName(containerName, key);
+    managedVolumes.set(key, name);
+  }
+  return name;
+}
+// </single-service-managed-volumes>
+
+const SINGLE_SERVICE_MANAGED_VOLUMES = new Map<string, Set<string>>();
 // The fleet command intentionally uses `~/...` so the remote shell expands its home directory.
 // Node's filesystem APIs do not perform shell expansion, so normalize that spelling before the
 // marker is written or removed; otherwise Stop would signal a path the runner never created.
 const RUN_PID_PATH = QA_RUN_PID_FILE.startsWith('~/') ? join(home, QA_RUN_PID_FILE.slice(2)) : QA_RUN_PID_FILE;
+
+interface PlaywrightPage {
+  goto(url: string, options: { waitUntil: 'domcontentloaded'; timeout: number }): Promise<unknown>;
+  url(): string;
+  waitForFunction(fn: () => boolean, arg?: undefined, options?: { timeout: number; polling: number }): Promise<PlaywrightJSHandle>;
+  screenshot(options: { path: string; fullPage: boolean; timeout: number; animations: 'disabled'; caret: 'hide' }): Promise<Uint8Array>;
+}
+interface PlaywrightJSHandle {
+  dispose(): Promise<void>;
+}
+interface PlaywrightContext {
+  newPage(): Promise<PlaywrightPage>;
+}
+interface PlaywrightBrowser {
+  newContext(options: { ignoreHTTPSErrors: boolean; viewport: { width: number; height: number } }): Promise<PlaywrightContext>;
+  close(): Promise<void>;
+}
+interface PlaywrightBrowserProcess {
+  exitCode: number | null;
+  kill(signal?: 'SIGKILL'): boolean;
+}
+interface PlaywrightBrowserServer {
+  wsEndpoint(): string;
+  process(): PlaywrightBrowserProcess;
+  close(): Promise<void>;
+}
+interface PlaywrightChromium {
+  launchServer(options: { executablePath: string; headless: boolean; args: string[]; timeout: number }): Promise<PlaywrightBrowserServer>;
+  connect(wsEndpoint: string, options: { timeout: number }): Promise<PlaywrightBrowser>;
+}
+
+let _playwrightChromium: PlaywrightChromium | null | undefined;
+/** Resolve the Hub's installed Playwright from the same checkout that provides the remote tsx binary. */
+function resolvePlaywrightChromium(): PlaywrightChromium | null {
+  if (_playwrightChromium !== undefined) return _playwrightChromium;
+  _playwrightChromium = null;
+  const roots = [...new Set([QA_HUB_ROOT, join(home, 'devel/CI-Hub'), process.cwd()])];
+  for (const root of roots) {
+    const packageJson = resolve(root, 'package.json');
+    if (!existsSync(packageJson)) continue;
+    try {
+      const module = createRequire(packageJson)('@playwright/test') as { chromium?: PlaywrightChromium };
+      if (module.chromium && typeof module.chromium.launchServer === 'function' && typeof module.chromium.connect === 'function') {
+        _playwrightChromium = module.chromium;
+        break;
+      }
+    } catch {
+      // Some nodes have the Chromium CLI but not the Playwright package; keep the CLI fallback below.
+    }
+  }
+  return _playwrightChromium;
+}
 
 // A fleet Stop closes the work feed and then signals this process through its own marker file.
 // Do not call process.exit() from the signal handler: active qaApp() calls still own Docker
@@ -317,30 +432,35 @@ const CHROME_SHOT_FLAGS = [
  * process; null when it cannot be taken, and the caller falls back to BLANK_SCREENSHOT_FALLBACK_BYTES.
  */
 let _blankReference: number | null | undefined;
-function blankReferenceBytes(chromeBin: string): number | null {
+function blankReferenceBytes(chromeBin: string, timeoutMs = 30_000): number | null {
   if (_blankReference !== undefined) return _blankReference;
-  _blankReference = null;
   const refPath = join(SCREENSHOTS_DIR, '.blank-reference.png');
+  let blankBytes: number | null = null;
+  let timedOut = false;
   try {
     rmSync(refPath, { force: true });
     const r = spawnSync(chromeBin, [...CHROME_SHOT_FLAGS, `--screenshot=${refPath}`, 'about:blank'], {
-      timeout: 30_000,
+      timeout: Math.max(1, timeoutMs),
       killSignal: 'SIGKILL',
       stdio: 'pipe',
     });
-    if (r.status === 0 && existsSync(refPath)) _blankReference = statSync(refPath).size;
+    if (r.error?.code === 'ETIMEDOUT') timedOut = true;
+    else if (r.status === 0 && existsSync(refPath)) blankBytes = statSync(refPath).size;
   } catch {
     /* no reference: the fallback constant applies */
   } finally {
     rmSync(refPath, { force: true });
   }
-  return _blankReference;
+  // Do not cache a short capture deadline as a permanent browser failure; a later app may have
+  // enough budget to measure the actual blank-page size before falling back to the calibrated limit.
+  if (!timedOut) _blankReference = blankBytes;
+  return timedOut ? null : _blankReference;
 }
 
 /** True only for a file that is as small as an empty white page. A missing file is not blank: the capture produced nothing. */
-function isBlankScreenshot(path: string, chromeBin: string): boolean {
+function isBlankScreenshot(path: string, chromeBin: string, timeoutMs = 30_000): boolean {
   try {
-    return statSync(path).size <= (blankReferenceBytes(chromeBin) ?? BLANK_SCREENSHOT_FALLBACK_BYTES) + BLANK_SCREENSHOT_SLACK_BYTES;
+    return statSync(path).size <= (blankReferenceBytes(chromeBin, timeoutMs) ?? BLANK_SCREENSHOT_FALLBACK_BYTES) + BLANK_SCREENSHOT_SLACK_BYTES;
   } catch {
     return false;
   }
@@ -376,16 +496,192 @@ function screenshotFailureKind(input: {
 }
 // </screenshot-diagnostics>
 
-function captureScreenshot(
+// <playwright-screenshot-capture>
+function withinCaptureDeadline<T>(operation: Promise<T>, deadline: number, label: string): Promise<T> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    // The operation was evaluated before this helper received it. Consume a later rejection even
+    // though the caller only receives the deadline error, or Node may report an unhandled rejection.
+    void operation.catch(() => undefined);
+    return Promise.reject(new Error(`${label} exceeded the screenshot deadline`));
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    operation,
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} exceeded the screenshot deadline`)), remainingMs);
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+async function closePlaywrightServer(browser: PlaywrightBrowser | null, server: PlaywrightBrowserServer | null, timeoutMs: number): Promise<void> {
+  const closes: Promise<void>[] = [];
+  if (browser) closes.push(browser.close());
+  if (server) closes.push(server.close());
+  if (!closes.length) return;
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const closeResults = await Promise.race([
+    Promise.allSettled(closes).then((results) => results.every((result) => result.status === 'fulfilled')),
+    new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), Math.max(1, timeoutMs));
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+  if (closeResults) return;
+
+  // BrowserServer exposes the launched child process. If Playwright's graceful close wedges,
+  // terminate Chromium itself so an app worker cannot keep a fleet run open indefinitely.
+  try {
+    const child = server?.process();
+    if (child && child.exitCode === null) child.kill('SIGKILL');
+  } catch {
+    // The process can exit between the timeout and the kill; cleanup is best-effort after that.
+  }
+}
+
+async function captureScreenshotWithPlaywright(
+  chromium: PlaywrightChromium,
+  chromeBin: string,
+  screenshotPath: string,
+  url: string,
+  opts: {
+    captureTimeoutMs: number;
+    cleanupTimeoutMs: number;
+    domContentLoadedTimeoutMs: number;
+    contentWaitTimeoutMs: number;
+    screenshotTimeoutMs: number;
+  },
+  insecureTls: boolean,
+): Promise<{ ok: boolean; diag: string; fallback: boolean }> {
+  const deadline = Date.now() + opts.captureTimeoutMs;
+  const remainingMs = () => Math.max(0, deadline - Date.now());
+  let server: PlaywrightBrowserServer | null = null;
+  let browser: PlaywrightBrowser | null = null;
+  try {
+    server = await withinCaptureDeadline(
+      chromium.launchServer({
+        executablePath: chromeBin,
+        headless: true,
+        // Playwright supplies its own headless switch. Keep the rest of the fleet's browser flags.
+        args: CHROME_SHOT_FLAGS.filter((flag) => flag !== '--headless=new'),
+        timeout: Math.max(1, remainingMs()),
+      }),
+      deadline,
+      'Chromium launch',
+    );
+    browser = await withinCaptureDeadline(
+      chromium.connect(server.wsEndpoint(), { timeout: Math.max(1, remainingMs()) }),
+      deadline,
+      'Chromium connection',
+    );
+    const context = await withinCaptureDeadline(
+      browser.newContext({
+        ignoreHTTPSErrors: insecureTls,
+        viewport: { width: 1280, height: 800 },
+      }),
+      deadline,
+      'browser context creation',
+    );
+    const page = await withinCaptureDeadline(context.newPage(), deadline, 'page creation');
+    let navigationFailed = false;
+    try {
+      // `load` waits for every request, including websocket and event-stream apps. DOMContentLoaded
+      // is enough to capture their first usable frame and does not wait for those connections.
+      await withinCaptureDeadline(
+        page.goto(url, { waitUntil: 'domcontentloaded', timeout: Math.min(opts.domContentLoadedTimeoutMs, Math.max(1, remainingMs())) }),
+        deadline,
+        'DOM content load',
+      );
+    } catch {
+      // A response may have committed and painted useful content even if a slow script delayed the
+      // event. Keep the partial page and capture it instead of turning a navigation timeout into a
+      // blank-page false negative.
+      navigationFailed = true;
+    }
+    if (page.url() === 'about:blank') {
+      return { ok: false, diag: 'Playwright navigation did not reach the app document', fallback: true };
+    }
+
+    // Many SPA shells fire DOMContentLoaded before their first API response renders the UI. Wait
+    // briefly for actual text or a visible visual/application surface before deciding that the
+    // screenshot is blank. This wait does not depend on `load`, WebSockets, or event streams.
+    let visibleContent = false;
+    const contentWaitMs = Math.min(opts.contentWaitTimeoutMs, remainingMs());
+    if (contentWaitMs > 0) {
+      try {
+        const content = await withinCaptureDeadline(
+          page.waitForFunction(
+            () => {
+              const body = document.body;
+              if (!body) return false;
+              // This probe must ignore hidden DOM text because it is checking whether the screenshot visibly rendered content.
+              // biome-ignore lint/performance/useDomNodeTextContent: rendered-text semantics are required for screenshot validation.
+              if (body.innerText.trim()) return true;
+              return Array.from(body.querySelectorAll('canvas, img, svg, video, iframe, [role="img"], [role="application"]')).some((element) => {
+                const rect = element.getBoundingClientRect();
+                const style = window.getComputedStyle(element);
+                return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) > 0;
+              });
+            },
+            undefined,
+            { timeout: contentWaitMs, polling: 100 },
+          ),
+          deadline,
+          'rendered-content wait',
+        );
+        visibleContent = true;
+        await withinCaptureDeadline(content.dispose(), deadline, 'rendered-content handle cleanup');
+      } catch {
+        // No visible content before the bounded wait expired; capture the partial document and
+        // use the calibrated blank-page check below.
+      }
+    }
+
+    const screenshotTimeoutMs = Math.min(opts.screenshotTimeoutMs, remainingMs());
+    if (screenshotTimeoutMs <= 0) throw new Error('screenshot deadline expired before capture');
+    await withinCaptureDeadline(
+      page.screenshot({
+        path: screenshotPath,
+        fullPage: false,
+        timeout: screenshotTimeoutMs,
+        animations: 'disabled',
+        caret: 'hide',
+      }),
+      deadline,
+      'screenshot capture',
+    );
+    // DOM content avoids treating small valid pages as blank; the calibrated image-size check still
+    // catches an empty SPA root that has not painted anything.
+    const blank = !visibleContent && isBlankScreenshot(screenshotPath, chromeBin, Math.max(1, remainingMs()));
+    if (blank) {
+      return {
+        ok: false,
+        diag: navigationFailed ? 'screenshot blank after DOMContentLoaded wait expired' : 'screenshot blank after rendered-content wait',
+        fallback: false,
+      };
+    }
+    return { ok: true, diag: '', fallback: false };
+  } catch {
+    // Old or partially provisioned nodes may have Chromium but no usable Playwright module/browser.
+    // Preserve the CLI path as a fallback for those nodes.
+    return { ok: false, diag: 'Playwright capture failed; trying Chromium CLI', fallback: true };
+  } finally {
+    await closePlaywrightServer(browser, server, opts.cleanupTimeoutMs);
+  }
+}
+// </playwright-screenshot-capture>
+
+function captureScreenshotWithCli(
   chromeBin: string,
   screenshotPath: string,
   url: string,
   opts: { virtualTimeBudgetMs: number; timeoutMs: number; spawnTimeoutMs: number },
   insecureTls = false, // an httpsBackend app serves a self-signed certificate
 ): { ok: boolean; diag: string } {
-  // Whatever is at this path is from an EARLIER run (the directory is reused). If this capture is killed before it writes, an old file
-  // would be judged as if it were this attempt's: jellyfin's "blank" in 2026-10 was a 4,714-byte PNG from June.
-  rmSync(screenshotPath, { force: true });
   const startedAt = Date.now();
   const ss = spawnSync(
     chromeBin,
@@ -414,6 +710,47 @@ function captureScreenshot(
     elapsedMs,
   });
   return { ok: false, diag };
+}
+
+async function captureScreenshot(
+  chromeBin: string,
+  screenshotPath: string,
+  url: string,
+  opts: {
+    virtualTimeBudgetMs: number;
+    timeoutMs: number;
+    spawnTimeoutMs: number;
+    captureTimeoutMs: number;
+    cleanupTimeoutMs: number;
+    domContentLoadedTimeoutMs: number;
+    contentWaitTimeoutMs: number;
+    screenshotTimeoutMs: number;
+  },
+  insecureTls = false, // an httpsBackend app serves a self-signed certificate
+): Promise<{ ok: boolean; diag: string }> {
+  // Whatever is at this path is from an EARLIER run (the directory is reused). If this capture is killed before it writes, an old file
+  // would be judged as if it were this attempt's: jellyfin's "blank" in 2026-10 was a 4,714-byte PNG from June.
+  rmSync(screenshotPath, { force: true });
+  const chromium = resolvePlaywrightChromium();
+  if (chromium) {
+    const shot = await captureScreenshotWithPlaywright(
+      chromium,
+      chromeBin,
+      screenshotPath,
+      url,
+      {
+        captureTimeoutMs: opts.captureTimeoutMs,
+        cleanupTimeoutMs: opts.cleanupTimeoutMs,
+        domContentLoadedTimeoutMs: opts.domContentLoadedTimeoutMs,
+        contentWaitTimeoutMs: opts.contentWaitTimeoutMs,
+        screenshotTimeoutMs: opts.screenshotTimeoutMs,
+      },
+      insecureTls,
+    );
+    if (shot.ok || !shot.fallback) return { ok: shot.ok, diag: shot.diag };
+    rmSync(screenshotPath, { force: true });
+  }
+  return captureScreenshotWithCli(chromeBin, screenshotPath, url, opts, insecureTls);
 }
 
 function computeChromiumBinary(): string | null {
@@ -535,17 +872,18 @@ function shQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-function execQuiet(cmd: string, timeoutMs = 120_000): { ok: boolean; out: string; err: string; ms: number } {
+function execQuiet(cmd: string, timeoutMs = 120_000): { ok: boolean; out: string; err: string; ms: number; timedOut: boolean; interrupted: boolean } {
   const t = Date.now();
   try {
     // killSignal SIGKILL (not the default SIGTERM): a `docker` CLI blocked on a wedged daemon
     // socket ignores SIGTERM, which would let the call hang past `timeoutMs` and freeze the whole
     // node's pool. SIGKILL force-reaps it so the timeout is a real wall.
     const out = execSync(cmd, { encoding: 'utf-8', stdio: 'pipe', timeout: timeoutMs, killSignal: 'SIGKILL' }).trim();
-    return { ok: true, out, err: '', ms: Date.now() - t };
+    return { ok: true, out, err: '', ms: Date.now() - t, timedOut: false, interrupted: false };
   } catch (e: unknown) {
     const err = e instanceof Error ? e.message : String(e);
-    return { ok: false, out: '', err, ms: Date.now() - t };
+    const timedOut = typeof e === 'object' && e !== null && 'code' in e && e.code === 'ETIMEDOUT';
+    return { ok: false, out: '', err, ms: Date.now() - t, timedOut, interrupted: commandWasInterrupted(e, timedOut) };
   }
 }
 
@@ -600,7 +938,8 @@ function headTail(text: string, max = 600): string {
  * A compose dependency can be reported as unhealthy while its first boot is still converging. This
  * is deliberately narrower than "compose failed": registry/auth/missing-image/port/config failures
  * are not made slower or less truthful by an automatic retry. The caller records the first attempt
- * regardless of whether the second attempt recovers.
+ * regardless of whether the second attempt recovers, and retries readiness/compose failures only
+ * after the daemon confirms that the prior run's resources are gone.
  */
 function isRetryableComposeFailure(text: string): boolean {
   return /dependency(?: .*?)?failed to start|container .*\bis unhealthy\b|health ?check .*\b(?:unhealthy|starting)\b|\bhealth(?:check)?\s*[:=]\s*(?:unhealthy|starting)\b|context deadline exceeded|network is unreachable|connection (?:timed out|reset by peer)|i\/o timeout|temporary failure in name resolution|tls handshake timeout/i.test(
@@ -609,7 +948,220 @@ function isRetryableComposeFailure(text: string): boolean {
 }
 
 function isDockerStartTimeout(text: string): boolean {
-  return /spawn(?:sync)?\/bin\/sh\s+etimedout|docker(?: run)?[^\n]{0,80}\b(?:timed out|timeout)\b|\bETIMEDOUT\b/i.test(text);
+  return /spawn(?:sync)?\s+\/bin\/sh\s+etimedout|docker run\b[^\n]{0,80}\b(?:timed out|timeout)\b/i.test(text);
+}
+
+/** Docker's documented host-port bind race wordings. */
+function isPortBindRace(err: string): boolean {
+  return /address already in use|failed to bind host port|port is already allocated/i.test(err);
+}
+
+function commandWasInterrupted(error: unknown, timedOut: boolean): boolean {
+  if (timedOut) return true;
+  if (typeof error !== 'object' || error === null) return false;
+  const metadata = error as { code?: unknown; signal?: unknown; status?: unknown };
+  return (
+    (typeof metadata.signal === 'string' && metadata.signal.length > 0) ||
+    (typeof metadata.status === 'number' && metadata.status >= 128) ||
+    metadata.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+  );
+}
+
+/** True when a failed docker start can safely be retried after reserving another host port. */
+function isRetryableHostPortBindRace(text: string, interrupted = false): boolean {
+  return !interrupted && !isDockerStartTimeout(text) && isPortBindRace(text);
+}
+
+function classifyComposeStartFailure(
+  err: string,
+  out: string,
+  timedOut: boolean,
+  interrupted = timedOut,
+): { startTimedOut: boolean; retryableBindRace: boolean } {
+  const diagnostics = `${err}\n${out}`;
+  // Only the process runner knows whether its command was interrupted. ETIMEDOUT text can describe
+  // a normally-exited Compose dependency or registry failure, which remains eligible for retry.
+  const startTimedOut = timedOut;
+  return { startTimedOut, retryableBindRace: isRetryableHostPortBindRace(diagnostics, interrupted) };
+}
+
+function cleanupVerificationPassed(result: { ok: boolean; out: string }): boolean {
+  return result.ok && result.out.trim().length === 0;
+}
+
+/**
+ * Single-quote a string for the HOST shell. JSON.stringify is the wrong tool here: it emits DOUBLE
+ * quotes, so the host shell expands `$4`/`$2` inside an awk script before the command reaches a container.
+ */
+function shq(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+async function verifyQaResourceCleanup(
+  run: (command: string, timeoutMs: number) => Promise<{ ok: boolean; out: string }>,
+  project: string,
+  containerName: string,
+  managedVolumes: string[] = [],
+): Promise<boolean> {
+  const projectFilter = shq(`label=com.docker.compose.project=${project}`);
+  const checks = [
+    `docker ps -aq --filter ${projectFilter}`,
+    `docker network ls -q --filter ${projectFilter}`,
+    `docker volume ls -q --filter ${projectFilter}`,
+    `docker ps -aq --filter ${shq(`name=^/${containerName}$`)}`,
+    ...managedVolumes.map((name) => `docker volume ls -q --filter ${shq(`name=${name}`)}`),
+  ];
+  for (const command of checks) {
+    if (!cleanupVerificationPassed(await run(command, 15_000))) return false;
+  }
+  return true;
+}
+
+function makeExecAsync(spawnImpl: typeof spawn) {
+  return (
+    cmd: string,
+    timeoutMs = 120_000,
+  ): Promise<{ ok: boolean; out: string; err: string; ms: number; timedOut: boolean; interrupted: boolean }> => {
+    const startedAt = Date.now();
+    return new Promise((resolve) => {
+      let timedOut = false;
+      let interrupted = false;
+      let settled = false;
+      let out = '';
+      let stderr = '';
+      let outBytes = 0;
+      let stderrBytes = 0;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (result: { ok: boolean; err: string; timedOut: boolean; interrupted: boolean }) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        resolve({ ...result, out: out.trim(), ms: Date.now() - startedAt });
+      };
+      const child = spawnImpl(cmd, {
+        shell: true,
+        detached: process.platform !== 'win32',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const killProcessGroup = () => {
+        let groupKilled = false;
+        if (process.platform !== 'win32' && child.pid) {
+          try {
+            process.kill(-child.pid, 'SIGKILL');
+            groupKilled = true;
+          } catch {
+            // The process group may already be gone; fall back to the direct child below.
+          }
+        }
+        if (!groupKilled) {
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            // The command may have exited between the deadline and the kill.
+          }
+        }
+      };
+      const stopForOutputLimit = () => {
+        if (settled) return;
+        killProcessGroup();
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        interrupted = true;
+        finish({ ok: false, err: `${stderr}Command output exceeded 16 MiB`, timedOut: false, interrupted: true });
+      };
+      child.stdout?.setEncoding('utf8').on('data', (chunk: string) => {
+        if (settled) return;
+        outBytes += Buffer.byteLength(chunk, 'utf8');
+        if (outBytes > 16 * 1024 * 1024) {
+          stopForOutputLimit();
+          return;
+        }
+        out += chunk;
+      });
+      child.stderr?.setEncoding('utf8').on('data', (chunk: string) => {
+        if (settled) return;
+        stderrBytes += Buffer.byteLength(chunk, 'utf8');
+        if (stderrBytes > 16 * 1024 * 1024) {
+          stopForOutputLimit();
+          return;
+        }
+        stderr += chunk;
+      });
+      child.on('error', (error) => {
+        finish({ ok: false, err: `${stderr}${error.message}`, timedOut, interrupted });
+      });
+      child.on('close', (code, signal) => {
+        if (timedOut) {
+          finish({ ok: false, err: `${stderr}Command timed out after ${timeoutMs}ms`, timedOut: true, interrupted: true });
+        } else if (signal !== null || (code !== null && code >= 128)) {
+          const detail = signal ? `Command interrupted by ${signal}` : `Command exited with signal-style code ${code}`;
+          finish({ ok: false, err: `${stderr}${detail}`, timedOut: false, interrupted: true });
+        } else if (code === 0) {
+          finish({ ok: true, err: '', timedOut: false, interrupted: false });
+        } else {
+          const detail = signal ? `Command failed: ${cmd} (signal ${signal})` : `Command failed: ${cmd} (exit code ${code})`;
+          finish({ ok: false, err: `${stderr}${detail}`, timedOut: false, interrupted: false });
+        }
+      });
+      timer = setTimeout(
+        () => {
+          // A shell can exit while a descendant still holds stdout/stderr open. Do not wait for
+          // `close`: kill the whole process group and settle independently of inherited pipes.
+          if (settled) return;
+          timedOut = true;
+          interrupted = true;
+          killProcessGroup();
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          finish({ ok: false, err: `${stderr}Command timed out after ${timeoutMs}ms`, timedOut: true, interrupted: true });
+        },
+        Math.max(1, timeoutMs),
+      );
+    });
+  };
+}
+
+/** A timed-out `docker run` may have created the named container before its CLI was killed. */
+function isRetryableTimeout(text: string): boolean {
+  return !/^container start timed out\b/i.test(text);
+}
+
+function isRetryableTransient(result: Record<string, unknown>): boolean {
+  const notes = String(result.notes ?? '');
+  if (result.interrupted === true || result.retrySuppressed === true) return false;
+  return (
+    result.failKind === 'pull' ||
+    (result.failKind === 'timeout' && isRetryableTimeout(notes) && result.cleanupConfirmed === true) ||
+    (result.failKind === 'compose' && isRetryableComposeFailure(notes) && result.cleanupConfirmed === true)
+  );
+}
+
+async function attemptOnceWithRetry(
+  attempt: () => Promise<Record<string, unknown>>,
+  onRetry?: (first: Record<string, unknown>) => void,
+): Promise<Record<string, unknown>> {
+  let result = await attempt();
+  if (isRetryableTransient(result)) {
+    const firstScore = String(result.score);
+    const firstNotes = String(result.notes ?? '');
+    const firstFailKind = String(result.failKind ?? '');
+    onRetry?.(result);
+    const retry = await attempt();
+    retry.retried = true;
+    retry.attempts = 2;
+    retry.firstAttemptScore = firstScore;
+    retry.firstAttemptFailKind = firstFailKind;
+    retry.firstAttemptNotes = firstNotes;
+    result = retry;
+  } else {
+    result.attempts = 1;
+    if (result.retrySuppressed === true) {
+      result.notes = `${String(result.notes ?? '')} | retry suppressed because the command was interrupted`;
+    } else if ((result.failKind === 'timeout' || result.failKind === 'compose') && result.cleanupConfirmed === false) {
+      result.notes = `${String(result.notes ?? '')} | retry suppressed because Docker cleanup could not be confirmed`;
+    }
+  }
+  return result;
 }
 // </compose-transient>
 
@@ -620,25 +1172,18 @@ function isDockerStartTimeout(text: string): boolean {
  * backend health, stats, teardown) runs through this instead, keeping the event loop free so the
  * watchdog timer and the readiness deadline check stay live. SIGKILL on timeout (see execQuiet).
  */
-function execAsync(cmd: string, timeoutMs = 120_000): Promise<{ ok: boolean; out: string; err: string; ms: number }> {
-  const t = Date.now();
-  return new Promise((resolve) => {
-    exec(cmd, { encoding: 'utf-8', timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 }, (e, stdout, stderr) => {
-      const out = (stdout ?? '').toString().trim();
-      if (e) resolve({ ok: false, out, err: `${(stderr ?? '').toString()}${e.message ?? ''}`, ms: Date.now() - t });
-      else resolve({ ok: true, out, err: '', ms: Date.now() - t });
-    });
-  });
-}
+const execAsync = makeExecAsync(spawn);
 
 // Teardowns the watchdog kicks off in the background (it must NOT block dispatch). Tracked so the
 // process can give them a bounded grace to finish before it force-exits — otherwise process.exit(0)
 // races the `docker rm -f` and leaks the container.
 const pendingTeardowns = new Set<Promise<void>>();
-function trackTeardown(p: Promise<void>): void {
-  const tracked = p.catch(() => {
-    /* best-effort */
-  });
+function trackTeardown(p: Promise<unknown>): void {
+  const tracked = p
+    .then(() => undefined)
+    .catch(() => {
+      /* best-effort */
+    });
   pendingTeardowns.add(tracked);
   void tracked.finally(() => pendingTeardowns.delete(tracked));
 }
@@ -651,9 +1196,10 @@ async function drainTeardowns(graceMs: number): Promise<void> {
 /**
  * Tear an app's containers down without ever blocking — called from attemptApp's `finally` AND from
  * the per-app watchdog (which only knows the appId/containerName, not the live compose handles).
- * Best-effort and SIGKILL-bounded: a wedged daemon can't stall it. Idempotent — `docker rm -f` and
- * `compose down` on a nonexistent container/project are fast no-ops — so it's safe to call from both
- * paths (and twice for one app: watchdog + the abandoned attempt's finally).
+ * SIGKILL-bounded: a wedged daemon can't stall it. Idempotent — `docker rm -f` and `compose down` on
+ * a nonexistent container/project are fast no-ops — so it's safe to call from both paths (and twice
+ * for one app: watchdog + the abandoned attempt's finally). Optional verification ensures transient
+ * retries do not reuse a name while old resources may remain.
  */
 async function forceTeardown(o: {
   appId: string;
@@ -661,9 +1207,11 @@ async function forceTeardown(o: {
   composeProject?: string;
   composeYml?: string;
   scratchDirs?: string[];
-}): Promise<void> {
-  const project = (o.composeProject || `qa-${o.appId}`).toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  verify?: boolean;
+}): Promise<boolean> {
+  const project = (o.composeProject || qaProjectName(o.appId)).toLowerCase().replace(/[^a-z0-9-]/g, '-');
   const ymlRef = o.composeYml ? `-f ${o.composeYml}` : '';
+  const managedVolumes = [...(SINGLE_SERVICE_MANAGED_VOLUMES.get(o.containerName) ?? [])];
   // Compose teardown (operates on the project by name when we have no yml — compose v2 matches the
   // project label), then a single-container force-remove. One of the two is a no-op per app shape.
   await execAsync(`docker compose -p ${project} ${ymlRef} down -v --remove-orphans 2>/dev/null`, 150_000);
@@ -672,6 +1220,8 @@ async function forceTeardown(o: {
   await execAsync(`docker rm -f -v $(docker ps -aq --filter label=com.docker.compose.project=${project}) 2>/dev/null`, 60_000);
   await execAsync(`docker stop -t 3 ${o.containerName} 2>/dev/null`, 30_000);
   await execAsync(`docker rm -f -v ${o.containerName} 2>/dev/null`, 30_000);
+  const volumesRemoved =
+    !managedVolumes.length || (await execAsync(`docker volume rm -f ${managedVolumes.map(shq).join(' ')} 2>/dev/null`, 30_000)).ok;
   for (const d of o.scratchDirs ?? []) {
     try {
       wipeScratchTree(d);
@@ -679,6 +1229,17 @@ async function forceTeardown(o: {
       /* best-effort — a wipe failure must never block dispatch */
     }
   }
+  if (!o.verify) {
+    if (volumesRemoved) SINGLE_SERVICE_MANAGED_VOLUMES.delete(o.containerName);
+    return volumesRemoved;
+  }
+  // A readiness/compose retry reuses the run-scoped name and project. Do not retry if the daemon
+  // could not confirm removal of the project containers, networks, volumes, and named container;
+  // otherwise the second attempt can reuse stale resources or overwrite the real timeout with a
+  // misleading container-name conflict.
+  const cleaned = volumesRemoved && (await verifyQaResourceCleanup(execAsync, project, o.containerName, managedVolumes));
+  if (cleaned) SINGLE_SERVICE_MANAGED_VOLUMES.delete(o.containerName);
+  return cleaned;
 }
 
 /**
@@ -728,6 +1289,7 @@ interface DockerService {
   image?: string;
   isMain?: boolean;
   internalPort?: number;
+  addPorts?: { containerPort?: number | string; tcp?: boolean; udp?: boolean }[];
   httpsBackend?: boolean; // the upstream only speaks TLS (self-signed): the Hub's Traefik dials it over https, so the probe must too
   user?: string; // run-as user (uid[:gid] or name) — honored by the real Hub builder (service.builder.ts setUser); mirrored here
   command?: string[] | string; // entrypoint override; carries DB migration/predeploy steps for some apps
@@ -744,7 +1306,13 @@ interface DockerService {
   extraHosts?: string[];
   networkMode?: string; // e.g. 'service:<main>' for a sidecar sharing the main service's namespace — honored by the Hub builder
   restart?: string; // no | always | unless-stopped | on-failure; the Hub's default when absent is unless-stopped (see restartPolicyOf)
-  volumes?: { hostPath?: string; containerPath?: string; readOnly?: boolean }[];
+  volumes?: {
+    hostPath?: string;
+    volumeName?: string;
+    containerPath?: string;
+    readOnly?: boolean;
+    requiresPosixPermissions?: boolean;
+  }[];
   environment?: { key?: string; value?: string }[];
   dependsOn?: unknown; // map {svc:{condition}} (Hub) or string[] — handled in composeUp
   healthCheck?: HealthCheck;
@@ -766,6 +1334,185 @@ interface ComposeJson {
   qaReadyTimeoutMs?: number; // optional QA hint: raise the readiness ceiling for a legit-slow app
   qaSkip?: unknown; // optional QA hint: non-empty string = why the app cannot run headless; scores skip. Anything else is ignored (see declaredQaSkip)
 }
+
+// <qa-route-policy>
+type QaRoute = { kind: 'mcp' } | { kind: 'http' } | { kind: 'headless'; port: number } | { kind: 'skip'; reason: string };
+
+function qaPortNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65_535) return value;
+  if (typeof value !== 'string') return null;
+  const literal = value.trim().match(/^(\d+)$/)?.[1];
+  const fallback = value.trim().match(/^\$\{[A-Z0-9_]+:-([0-9]+)\}$/)?.[1];
+  const port = Number(literal ?? fallback);
+  return Number.isInteger(port) && port >= 1 && port <= 65_535 ? port : null;
+}
+
+/**
+ * `no_gui` disables screenshots; it does not mean a network service cannot be probed. No-GUI MCP
+ * apps use their stdio protocol lane, while other headless network services need a declared
+ * main-service port that supports TCP.
+ */
+function classifyQaRoute(
+  config: { no_gui?: boolean; mcp?: unknown },
+  compose?: {
+    services?: Array<{
+      isMain?: boolean;
+      internalPort?: number;
+      addPorts?: { containerPort?: number | string; tcp?: boolean; udp?: boolean }[];
+    } | null>;
+  },
+): QaRoute {
+  if (!config.no_gui) return { kind: 'http' };
+  if (config.mcp) return { kind: 'mcp' };
+
+  const services = compose?.services ?? [];
+  const main = services.find((service) => service?.isMain) ?? services[0];
+  const port = typeof main?.internalPort === 'number' ? qaPortNumber(main.internalPort) : null;
+  if (!port) return { kind: 'skip', reason: 'no declared main-service probe port' };
+
+  const matchingMappings = (main?.addPorts ?? []).filter((mapping) => qaPortNumber(mapping.containerPort) === port);
+  const udpOnly = matchingMappings.length > 0 && matchingMappings.every((mapping) => mapping.udp === true && mapping.tcp !== true);
+  if (udpOnly) return { kind: 'skip', reason: `main-service port ${port} is declared UDP-only` };
+
+  return { kind: 'headless', port };
+}
+
+/** A headless service has no screenshot requirement; a degraded backend still warns. */
+function scoreReadyQaApp(hasScreenshot: boolean, noGui: boolean, backendHealthy: boolean): 'pass' | 'warn' {
+  return backendHealthy && (hasScreenshot || noGui) ? 'pass' : 'warn';
+}
+
+function isUnsupportedSilentHeadlessTcp(
+  noGui: boolean,
+  httpStatus: number,
+  listener: 'listening' | 'not-listening' | 'unknown',
+  greeted: boolean,
+  knownWireProtocol: boolean,
+): boolean {
+  const noSupportedProbe = listener === 'unknown' || (listener === 'listening' && !knownWireProtocol);
+  return noGui && httpStatus === 0 && !greeted && noSupportedProbe;
+}
+
+function hasKnownProtocolListener(
+  noGui: boolean,
+  httpStatus: number,
+  listener: 'listening' | 'not-listening' | 'unknown',
+  knownWireProtocol: boolean,
+  publishedEndpointReachable: boolean,
+): boolean {
+  return noGui && publishedEndpointReachable && acceptsWireProtocolReadiness(httpStatus, listener, false, knownWireProtocol);
+}
+
+function acceptsWireProtocolReadiness(
+  httpStatus: number,
+  listener: 'listening' | 'not-listening' | 'unknown',
+  greeted: boolean,
+  knownWireProtocolEndpoint: boolean,
+): boolean {
+  return httpStatus === 0 && listener === 'listening' && (greeted || knownWireProtocolEndpoint);
+}
+
+function hasValidTcpProcSnapshot(output: string): boolean {
+  const sections = output.split(/^__PROC__:/m).slice(1);
+  if (sections.length === 0) return false;
+  return sections.every((section) => {
+    const [path, header] = section.split(/\r?\n/);
+    return /^\/proc\/net\/tcp6?$/.test(path?.trim() ?? '') && /^\s*sl\s+local_address\s+rem_address\s+st\b/.test(header ?? '');
+  });
+}
+
+function procIpv4Address(hex: string): string | null {
+  if (!/^[A-Fa-f0-9]{8}$/.test(hex)) return null;
+  const bytes = hex.match(/../g);
+  return bytes
+    ? bytes
+        .reverse()
+        .map((byte) => Number.parseInt(byte, 16))
+        .join('.')
+    : null;
+}
+
+function tcpListenerFromProcSnapshot(output: string, port: number, reachableAddresses: string[] = []): 'listening' | 'not-listening' | 'unknown' {
+  if (!hasValidTcpProcSnapshot(output)) return 'unknown';
+  const hex = port.toString(16).toUpperCase().padStart(4, '0');
+  const reachable = new Set(reachableAddresses);
+  let unverifiedIpv6Listener = false;
+  for (const section of output.split(/^__PROC__:/m).slice(1)) {
+    const [path, ...lines] = section.split(/\r?\n/);
+    const isIpv4 = path?.trim() === '/proc/net/tcp';
+    const isIpv6 = path?.trim() === '/proc/net/tcp6';
+    if (!isIpv4 && !isIpv6) continue;
+    for (const line of lines) {
+      const columns = line.trim().split(/\s+/);
+      const [addressHex, portHex] = columns[1]?.split(':') ?? [];
+      if (columns.length < 4 || columns[3] !== '0A' || portHex !== hex || !addressHex) continue;
+      if (/^0+$/.test(addressHex)) {
+        if (isIpv4) return 'listening'; // IPv4 wildcard bind is reachable through the IPv4 published mapping
+        unverifiedIpv6Listener = true;
+        continue;
+      }
+      if (isIpv4 && reachable.has(procIpv4Address(addressHex) ?? '')) return 'listening';
+      if (isIpv6) unverifiedIpv6Listener = true;
+    }
+  }
+  return unverifiedIpv6Listener ? 'unknown' : 'not-listening';
+}
+
+function isKnownWireProtocolImage(image: string): boolean {
+  const reference = (image.toLowerCase().split('@')[0] ?? '').trim();
+  const slash = reference.lastIndexOf('/');
+  const colon = reference.lastIndexOf(':');
+  const repository = colon > slash ? reference.slice(0, colon) : reference;
+  const name = repository.slice(repository.lastIndexOf('/') + 1);
+  // SQL Server is silent until it receives a TDS prelogin packet. Treat only Microsoft's known
+  // repository paths as that protocol; a custom image named `mssql` is not evidence of SQL Server.
+  if (repository === 'mcr.microsoft.com/mssql/server' || repository === 'microsoft/mssql-server-linux') return true;
+  if (name === 'mssql' || name === 'sqlserver') {
+    return false;
+  }
+  return /(^|\/)(mongo|redis|memcached|postgres|mariadb|mysql|percona|cassandra|clickhouse|elasticsearch|opensearch|rabbitmq|nats|etcd|valkey)(:|$)/.test(
+    repository,
+  );
+}
+
+function isKnownWireProtocolEndpoint(image: string, port: number): boolean {
+  if (!isKnownWireProtocolImage(image)) return false;
+  const reference = (image.toLowerCase().split('@')[0] ?? '').trim();
+  const slash = reference.lastIndexOf('/');
+  const colon = reference.lastIndexOf(':');
+  const repository = colon > slash ? reference.slice(0, colon) : reference;
+  if (repository === 'mcr.microsoft.com/mssql/server' || repository === 'microsoft/mssql-server-linux') return port === 1433;
+
+  const name = repository.slice(repository.lastIndexOf('/') + 1);
+  const protocolPorts: Record<string, number> = {
+    cassandra: 9042,
+    clickhouse: 9000,
+    elasticsearch: 9300,
+    mariadb: 3306,
+    memcached: 11211,
+    mongo: 27017,
+    mysql: 3306,
+    nats: 4222,
+    opensearch: 9300,
+    percona: 3306,
+    postgres: 5432,
+    rabbitmq: 5672,
+    redis: 6379,
+    valkey: 6379,
+  };
+  return protocolPorts[name] === port;
+}
+
+function listenerProbeFailureNote(detail: string): string {
+  const bounded = detail.trim().slice(0, 180);
+  return bounded ? `container listener probe: ${bounded}` : 'container listener could not be verified';
+}
+
+function unsupportedHeadlessProbeNote(listener: 'listening' | 'not-listening' | 'unknown', detail: string, port: number): string {
+  const evidence = listener === 'unknown' ? listenerProbeFailureNote(detail) : `TCP listener on :${port} is live`;
+  return `no_gui service has no supported protocol-specific readiness probe; ${evidence}`;
+}
+// </qa-route-policy>
 
 /**
  * True if ANY service in the stack requires a GPU — either it reserves an nvidia/gpu device via
@@ -833,7 +1580,7 @@ function isValidImageRef(ref: string): boolean {
 async function attemptApp(appId: string): Promise<Record<string, unknown>> {
   emit({ event: 'app_start', appId, ts: Date.now() });
 
-  const containerName = `qa-stream-${appId}`;
+  const containerName = qaContainerName(appId);
   const scratchDirs: string[] = [];
   let runFlags = '';
   let cmdSuffix = ''; // single-service manifest `command`, appended after the image in `docker run`
@@ -884,6 +1631,18 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     result.hostAccess = !!config.host_access;
     result.formFieldsCount = Array.isArray(config.form_fields) ? config.form_fields.length : 0;
 
+    const composeJsonPath = join(APP_STORE_DIR, appId, 'docker-compose.json');
+    const composeYmlPath = join(APP_STORE_DIR, appId, 'docker-compose.yml');
+    let composeConfig: ComposeJson | undefined;
+    let composeConfigLoaded = false;
+    const loadComposeConfig = (): ComposeJson | undefined => {
+      if (!composeConfigLoaded) {
+        composeConfigLoaded = true;
+        if (existsSync(composeJsonPath)) composeConfig = JSON.parse(readFileSync(composeJsonPath, 'utf-8')) as ComposeJson;
+      }
+      return composeConfig;
+    };
+
     // The manifest's own verdict that the app cannot run headless by nature. Decided before anything is pulled or started, and
     // before the no_gui/MCP routing below so it holds for every kind of app. A malformed hint is noted, never fatal.
     const declared = declaredQaSkip(appId);
@@ -899,35 +1658,32 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       return result;
     }
 
-    // Non-HTTP apps have no web surface to check. MCP-server apps (a `.mcp` block) speak JSON-RPC
-    // over stdio — route them to the protocol smoke (boot → initialize → tools/list → manifest
-    // assertion + read-only exec probe) so they get a real verdict instead of a blind skip. The
-    // dynamic import is GUARDED: if qa-mcp.ts isn't shipped alongside this file (manual partial scp),
-    // only MCP apps degrade to skip — every web app still runs. Reusing `containerName`
-    // (`qa-stream-${appId}`) means the per-app watchdog + forceTeardown already cover the MCP container.
-    if (config.no_gui) {
-      if (config.mcp) {
-        try {
-          const { qaMcpApp } = await import('./qa-mcp.ts');
-          return await qaMcpApp(appId, { emit, containerName, result });
-        } catch (e) {
-          result.score = 'skip' as Score;
-          result.failKind = 'mcp-module';
-          result.notes = `MCP app but qa-mcp module unavailable: ${e instanceof Error ? e.message : String(e)}`;
-          return result;
-        }
+    // MCP apps use JSON-RPC over stdio. Other no-GUI apps still get the normal HTTP/TCP service
+    // readiness smoke when their main service declares a testable port; no_gui only suppresses the
+    // screenshot. Reuse `containerName` so the per-app watchdog and forceTeardown cover MCP too.
+    const route = classifyQaRoute(config, config.no_gui && !config.mcp ? loadComposeConfig() : undefined);
+    if (route.kind === 'mcp') {
+      try {
+        const { qaMcpApp } = await import('./qa-mcp.ts');
+        return await qaMcpApp(appId, { emit, containerName, result });
+      } catch (e) {
+        result.score = 'skip' as Score;
+        result.failKind = 'mcp-module';
+        result.notes = `MCP app but qa-mcp module unavailable: ${e instanceof Error ? e.message : String(e)}`;
+        return result;
       }
+    }
+    if (route.kind === 'skip') {
       result.score = 'skip' as Score;
-      result.notes = 'no_gui: non-MCP CLI service, no HTTP to verify';
+      result.notes = `no_gui: ${route.reason}`;
       return result;
     }
+    if (route.kind === 'headless') result.port = route.port;
 
     // Image from docker-compose.json (Hub V2 format) or .yml
-    const composeJsonPath = join(APP_STORE_DIR, appId, 'docker-compose.json');
-    const composeYmlPath = join(APP_STORE_DIR, appId, 'docker-compose.yml');
-
     if (existsSync(composeJsonPath)) {
-      const compose: ComposeJson = JSON.parse(readFileSync(composeJsonPath, 'utf-8'));
+      const compose = loadComposeConfig();
+      if (!compose) throw new Error('docker-compose.json must contain an object');
       services = compose.services ?? [];
       isMulti = services.length > 1;
       composeReadyTimeoutMs = compose.qaReadyTimeoutMs;
@@ -954,8 +1710,20 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         wipeScratchTree(join(RESULTS_DIR, 'scratch', appId));
         // Mount an ephemeral scratch dir per declared volume so stateful apps can
         // boot for the smoke test (e.g. vaultwarden refuses to start without /data).
+        const managedVolumes = new Map<string, string>();
         for (const v of main?.volumes ?? []) {
           if (!v.containerPath) continue;
+          const hostPath = String(v.hostPath ?? '');
+          const seeded = Boolean(seedSourceFor(appId, v.hostPath));
+          const managedVolume = resolveSingleServiceManagedVolume(v, containerName, hostPath, seeded, QA_POSIX_VOLUME_FALLBACK, managedVolumes);
+          if (managedVolume) {
+            const tracked = SINGLE_SERVICE_MANAGED_VOLUMES.get(containerName) ?? new Set<string>();
+            tracked.add(managedVolume);
+            SINGLE_SERVICE_MANAGED_VOLUMES.set(containerName, tracked);
+            const readonly = v.readOnly ? ',readonly' : '';
+            runFlags += ` --mount ${shQuote(`type=volume,source=${managedVolume},target=${v.containerPath}${readonly}`)}`;
+            continue;
+          }
           // Absolute host paths that exist (e.g. /etc/localtime) bind DIRECTLY, mirroring the Hub
           // builder — mounting an ephemeral scratch *dir* onto a host *file* makes `docker run` fail
           // ("mount a directory onto a file"; frigate's /etc/localtime). Templated ${APP_DATA_DIR}/...
@@ -1105,9 +1873,13 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       // `compose up` can lose the race for the host port composeUp reserved (a peer app, QA_CONCURRENCY > 1). Take down whatever it
       // did start and build the stack afresh: composeUp wipes the scratch tree, reserves a new port and mints new secrets, so the
       // retry is a clean start rather than a stack half-initialised under the old port.
-      for (let bindTry = 1; !up.ok && bindTry <= BIND_RETRIES && isPortBindRace(up.err); bindTry++) {
+      for (let bindTry = 1; !up.ok && bindTry <= BIND_RETRIES && up.retryableBindRace; bindTry++) {
+        const cleanupConfirmed = await forceTeardown({ appId, containerName, composeProject, composeYml, verify: true });
+        if (!cleanupConfirmed) {
+          result.bindRetrySuppressed = true;
+          break;
+        }
         phase(appId, 'starting', `Host port was taken before compose could bind it; retrying with a new reservation (${bindTry}/${BIND_RETRIES})`);
-        await forceTeardown({ appId, containerName, composeProject, composeYml });
         up = await composeUp(appId, services, scratchBase, composeYml, config as unknown as Record<string, unknown>);
         result.bindRetries = bindTry;
       }
@@ -1119,6 +1891,20 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         // the operator with an opaque tail of a serialized compose error (seen in the fleet Pixelfed
         // run). Keep both channels in the same bounded diagnostic; never persist the full output.
         const composeOutput = commandOutput(up.err, up.out);
+        if (up.startTimedOut) {
+          result.score = 'timeout';
+          result.failKind = 'timeout';
+          result.retrySuppressed = up.interrupted;
+          result.notes = `container start timed out during compose: ${headTail(composeOutput, 600)}`;
+          return result;
+        }
+        if (up.interrupted) {
+          result.score = 'error';
+          result.failKind = 'compose';
+          result.retrySuppressed = true;
+          result.notes = `compose command was interrupted before a complete result: ${headTail(composeOutput, 600)}`;
+          return result;
+        }
         const sig = registryFailureSignals(composeOutput);
         // A rate limit first: it is neither a missing image nor missing credentials, and its text contains both of those words.
         if (sig.rateLimited) {
@@ -1139,7 +1925,9 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         }
         result.score = 'error';
         result.failKind = 'compose';
-        result.notes = `compose up failed${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${headTail(composeOutput, 600)}`;
+        result.notes =
+          `compose up failed${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${headTail(composeOutput, 600)}` +
+          (result.bindRetrySuppressed ? ' | bind retry suppressed because Docker cleanup could not be confirmed' : '');
         return result;
       }
       hostPort = up.hostPort;
@@ -1216,14 +2004,18 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
           `docker run -d --name ${containerName} --restart ${restartPolicy} -p ${publishFlag}${capFlags}${envFileFlag}${runFlags} ${result.image}${cmdSuffix}`,
           60_000,
         );
-        if (run.ok || bindTry >= BIND_RETRIES || !isPortBindRace(run.err)) break;
+        if (run.ok || bindTry >= BIND_RETRIES || !isRetryableHostPortBindRace(run.err, run.interrupted)) break;
+        // `docker run` creates the container before it binds, so the failed one still holds the name.
+        const cleanupConfirmed = await forceTeardown({ appId, containerName, verify: true });
+        if (!cleanupConfirmed) {
+          result.bindRetrySuppressed = true;
+          break;
+        }
         phase(
           appId,
           'starting',
           `Host port :${reserved} was taken before docker could bind it; retrying with a new reservation (${bindTry + 1}/${BIND_RETRIES})`,
         );
-        // `docker run` creates the container before it binds, so the failed one still holds the name.
-        execQuiet(`docker rm -f -v ${containerName}`, 30_000);
         result.bindRetries = bindTry + 1;
       }
       if (!run.ok) {
@@ -1233,15 +2025,19 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
           result.notes = `needs a host device the node does not have: ${run.err.slice(-240)}`;
           return result;
         }
-        if (isDockerStartTimeout(run.err)) {
+        if (run.timedOut || isDockerStartTimeout(run.err)) {
           result.score = 'timeout';
           result.failKind = 'timeout';
-          result.notes = `container start timed out${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${run.err.slice(-300)}`;
+          result.notes =
+            `container start timed out${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${run.err.slice(-300)}` +
+            (result.bindRetrySuppressed ? ' | bind retry suppressed because Docker cleanup could not be confirmed' : '');
           return result;
         }
         result.score = 'error';
         result.failKind = 'start';
-        result.notes = `Container start failed${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${run.err.slice(-300)}`;
+        result.notes =
+          `Container start failed${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${run.err.slice(-300)}` +
+          (result.bindRetrySuppressed ? ' | bind retry suppressed because Docker cleanup could not be confirmed' : '');
         return result;
       }
       // Resolve the host port. When reserveHostPort() succeeded above, `publishFlag` already asked
@@ -1332,7 +2128,12 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     let httpStatus = 0;
     let ready = false;
     let readyVia = '';
+    let unsupportedHeadlessTcp = false;
     let deadReason = '';
+    let listenerProbeDetail = '';
+    let lastListenerState: 'listening' | 'not-listening' | 'unknown' = 'unknown';
+    const imageRef = String(result.image ?? '').toLowerCase();
+    const knownSilentEndpoint = isKnownWireProtocolEndpoint(imageRef, Number(result.port));
 
     while (!ready && Date.now() - readyStart < maxWaitMs) {
       await new Promise((r) => setTimeout(r, 3000));
@@ -1343,8 +2144,10 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         `docker inspect ${statsName} --format '{{.State.Status}}|{{.RestartCount}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'`,
         8_000,
       );
+      let containerRunning = false;
       if (ins.ok) {
         const [st, rc, health] = (ins.out || '').split('|');
+        containerRunning = st === 'running';
         const restarts = Number(rc || 0);
         mainRestarts = restarts;
         // `exited` is final only when the policy does not restart it (`no`, or `on-failure` after a clean exit). Otherwise the container
@@ -1365,6 +2168,28 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         }
       }
       if (ready) break;
+      // Use the same evidence as the final raw-TCP fallback as soon as a known database/protocol
+      // image has a listener in its own network namespace. Waiting the whole HTTP deadline for a
+      // service that cannot speak HTTP made a healthy PostgreSQL app take 7.5 minutes to score.
+      if (config.no_gui === true && knownSilentEndpoint && containerRunning && httpStatus === 0) {
+        const publishedEndpointReachable = await tcpAccepts(hostPort, 1000);
+        if (publishedEndpointReachable) {
+          const probe = await inspectInternalListener(statsName, Number(result.port));
+          lastListenerState = probe.state;
+          listenerProbeDetail =
+            probe.state === 'unknown' ? probe.detail : probe.state === 'not-listening' ? `no LISTEN entry on container port ${result.port}` : '';
+          if (hasKnownProtocolListener(true, httpStatus, probe.state, knownSilentEndpoint, publishedEndpointReachable)) {
+            ready = true;
+            readyVia = 'tcp';
+            result.notes = `ready via reachable published endpoint and verified in-container TCP listener on :${result.port} for known protocol image (${imageRef.split('@')[0]})`;
+            break;
+          }
+        } else {
+          listenerProbeDetail = `published TCP endpoint :${hostPort} did not accept a connection`;
+        }
+      }
+      // HTTP bytes sent to a known silent protocol port are garbage and provide no readiness evidence.
+      if (config.no_gui === true && knownSilentEndpoint) continue;
       // (2) HTTP probe. `redirect: 'manual'` is load-bearing, not a detail: Node's fetch defaults
       // to redirect:'follow', so an app answering / with a 302 to its own configured hostname sends
       // us chasing a host this machine cannot resolve, and fetch THROWS ECONNREFUSED instead of
@@ -1419,19 +2244,20 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         //
         // Two accepted forms of evidence, because one alone is not enough:
         //   (a) the server GREETS unsolicited — mysql/postgres announce themselves on connect.
-        //   (b) the image is a known datastore family. mongodb neither greets NOR answers an HTTP
+        //   (b) the image and declared port identify a known wire-protocol endpoint. MongoDB neither greets NOR answers an HTTP
         //       request (verified: both probes return zero bytes), so at the socket level it is
         //       indistinguishable from a stalled web app. An explicit list is a heuristic, but it is
         //       auditable and wrong in a bounded way — whereas accepting every silent listener is
         //       what manufactured ~12 false passes per run.
-        const listening = await hasInternalListener(statsName, result.port);
-        const img = (result.image || '').toLowerCase();
-        const knownWireProtocol =
-          /(^|\/)(mongo|redis|memcached|postgres|mariadb|mysql|percona|cassandra|clickhouse|elasticsearch|opensearch|rabbitmq|nats|etcd|valkey)(:|$|\/)/.test(
-            img.split('@')[0],
-          );
+        const probe = await inspectInternalListener(statsName, Number(result.port));
+        const listener = probe.state;
+        lastListenerState = listener;
+        listenerProbeDetail =
+          probe.state === 'unknown' ? probe.detail : probe.state === 'not-listening' ? `no LISTEN entry on container port ${result.port}` : '';
+        const listening = listener === 'listening';
+        const img = imageRef;
         const greets = listening && (await serverGreets(hostPort));
-        if (listening && (greets || knownWireProtocol)) {
+        if (acceptsWireProtocolReadiness(httpStatus, listener, greets, knownSilentEndpoint)) {
           ready = true;
           readyVia = 'tcp';
           // Name the evidence that ACTUALLY applied. The old note asserted "no HTTP listener
@@ -1442,16 +2268,19 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
             result.notes,
             greets
               ? `ready via raw TCP on :${hostPort} — in-container listener on :${result.port} sent an unsolicited protocol greeting (non-HTTP service)`
-              : `ready via raw TCP on :${hostPort} — in-container listener on :${result.port}; no greeting, accepted on known datastore image (${img.split('@')[0]})`,
+              : `ready via raw TCP on :${hostPort} — in-container listener on :${result.port}; no greeting, accepted for known protocol endpoint (${img.split('@')[0]}:${result.port})`,
           ]
             .filter(Boolean)
             .join(' | ');
         } else {
+          unsupportedHeadlessTcp = isUnsupportedSilentHeadlessTcp(config.no_gui === true, httpStatus, listener, greets, knownSilentEndpoint);
           result.notes = [
             result.notes,
-            listening
-              ? `:${result.port} is listening but never served HTTP and sends no protocol greeting — treated as not ready, not as a non-HTTP service`
-              : `port :${hostPort} accepts TCP but nothing is listening on :${result.port} inside the container (docker-proxy artifact)`,
+            listener === 'listening'
+              ? `:${result.port} is listening but never served HTTP or identified a supported wire protocol`
+              : listener === 'not-listening'
+                ? `port :${hostPort} accepts TCP but nothing is listening on :${result.port} inside the container (docker-proxy artifact)`
+                : listenerProbeFailureNote(listenerProbeDetail),
           ]
             .filter(Boolean)
             .join(' | ');
@@ -1472,12 +2301,19 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       const bh = await captureBackendHealth({ composeProject, composeYml, containerName, mainService });
       result.backendErrors = bh.errors;
       const waited = Math.round((Date.now() - readyStart) / 1000);
+      if (unsupportedHeadlessTcp && bh.healthy && !deadReason) {
+        result.score = 'skip' as Score;
+        result.failKind = 'unsupported-probe';
+        result.notes = unsupportedHeadlessProbeNote(lastListenerState, listenerProbeDetail, Number(result.port));
+        return result;
+      }
       // Container exited / restart-looped after a clean start = a real app FAIL; never becoming
       // ready with no death signal = an infra TIMEOUT (retryable on a warm second attempt).
       result.score = deadReason ? 'fail' : 'timeout';
       result.failKind = deadReason ? 'exit' : 'timeout';
       result.notes =
         (deadReason ? `backend ${deadReason} after ${waited}s` : `not ready within ${Math.round(maxWaitMs / 1000)}s`) +
+        (listenerProbeDetail ? ` | ${listenerProbeFailureNote(listenerProbeDetail)}` : '') +
         (bh.down.length ? ` — down: ${bh.down.join(', ')}` : '') +
         (bh.errors ? ` | ${bh.errors.replace(/\s+/g, ' ').slice(0, 200)}` : '');
       return result;
@@ -1496,19 +2332,45 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         // Let a just-became-ready app settle before shooting: heavy SPAs serve their first request
         // mid-bootstrap, and a request that hangs >45s gets the chromium SIGKILLed → no PNG → false warn.
         await new Promise((r) => setTimeout(r, 4000));
-        // Two-tier capture: Playwright's bundled headless Chromium on Linux fleet nodes often hits
-        // "Page load timed out" at the old 12s/20s budget and writes a 4714-byte white PNG that
-        // looked like a pass (hasScreenshot=true). A longer second attempt fixes gitea/arkanum and
-        // similar SSR/redirect apps without raising the default ceiling for websocket-hanging SPAs.
+        // Playwright waits for DOMContentLoaded, not the `load` event, so open websocket/event-stream
+        // connections do not hold capture until the timeout. A second, longer DOM wait gives slow
+        // client-rendered apps another chance before the calibrated blank-page check warns.
         const shotUrl = `${httpsBackend ? 'https' : 'http'}://localhost:${hostPort}${uiPath}`;
-        const shotAttempts: Array<{ virtualTimeBudgetMs: number; timeoutMs: number; spawnTimeoutMs: number }> = [
-          { virtualTimeBudgetMs: 30_000, timeoutMs: 45_000, spawnTimeoutMs: 55_000 },
-          { virtualTimeBudgetMs: 60_000, timeoutMs: 60_000, spawnTimeoutMs: 70_000 },
+        const shotAttempts: Array<{
+          virtualTimeBudgetMs: number;
+          timeoutMs: number;
+          spawnTimeoutMs: number;
+          captureTimeoutMs: number;
+          cleanupTimeoutMs: number;
+          domContentLoadedTimeoutMs: number;
+          contentWaitTimeoutMs: number;
+          screenshotTimeoutMs: number;
+        }> = [
+          {
+            virtualTimeBudgetMs: 30_000,
+            timeoutMs: 45_000,
+            spawnTimeoutMs: 55_000,
+            captureTimeoutMs: 35_000,
+            cleanupTimeoutMs: 2_000,
+            domContentLoadedTimeoutMs: 15_000,
+            contentWaitTimeoutMs: 10_000,
+            screenshotTimeoutMs: 15_000,
+          },
+          {
+            virtualTimeBudgetMs: 60_000,
+            timeoutMs: 60_000,
+            spawnTimeoutMs: 70_000,
+            captureTimeoutMs: 60_000,
+            cleanupTimeoutMs: 2_000,
+            domContentLoadedTimeoutMs: 30_000,
+            contentWaitTimeoutMs: 20_000,
+            screenshotTimeoutMs: 15_000,
+          },
         ];
         let ssDiag = '';
         for (const attempt of shotAttempts) {
           if (result.hasScreenshot) break;
-          const shot = captureScreenshot(chromeBin, screenshotPath, shotUrl, attempt, httpsBackend);
+          const shot = await captureScreenshot(chromeBin, screenshotPath, shotUrl, attempt, httpsBackend);
           result.hasScreenshot = shot.ok;
           if (!shot.ok) ssDiag = shot.diag;
         }
@@ -1576,7 +2438,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
 
     // ── Score ─────────────────────────────────────────────────
     // httpOk is guaranteed true here (the !httpOk early-return is above)
-    result.score = result.hasScreenshot ? 'pass' : 'warn';
+    result.score = scoreReadyQaApp(result.hasScreenshot === true, config.no_gui === true, result.backendHealthy !== false);
     // A served frontend with a crashed/restarting backend is NOT a pass — flag it as a
     // degraded warn with the failing service + error excerpt so it's fixable, not hidden.
     if (result.backendHealthy === false) {
@@ -1592,7 +2454,16 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
   } finally {
     // Non-blocking, SIGKILL-bounded teardown (see forceTeardown) — a wedged daemon here used to
     // hang the app's promise forever, which wedged the node's pool and the whole fleet run.
-    await forceTeardown({ appId, containerName, composeProject, composeYml, scratchDirs });
+    if (KEEP_FAILED && !['pass', 'skip'].includes(String(result.score))) {
+      // Keep an explicit diagnostic run available for browser inspection after the result is recorded.
+      result.artifactsRetained = true;
+    } else {
+      const notes = String(result.notes ?? '');
+      const verifyCleanup =
+        (result.failKind === 'timeout' && isRetryableTimeout(notes)) || (result.failKind === 'compose' && isRetryableComposeFailure(notes));
+      const cleanupConfirmed = await forceTeardown({ appId, containerName, composeProject, composeYml, scratchDirs, verify: verifyCleanup });
+      if (verifyCleanup) result.cleanupConfirmed = cleanupConfirmed;
+    }
   }
 
   return result;
@@ -1601,39 +2472,23 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
 /**
  * Per-app entry point used by the worker pool. Runs attemptApp, and on a transient failure
  * (cold-pull `error` from a `pull` failKind, a readiness `timeout`, or a narrow compose dependency
- * healthcheck race) retries ONCE — attemptApp
- * tears down its own containers in `finally`, so the retry starts clean and hits the now-warm
+ * healthcheck race) retries ONCE, after verified cleanup for readiness/compose failures. A timeout
+ * while the Docker start command is running is not retried:
+ * the daemon may have created the container even after the local CLI timed out, so reusing its name
+ * can turn a timeout into a misleading name conflict. attemptApp tears down its own containers in
+ * `finally`, and the daemon must confirm the resources are gone before the retry hits the warm
  * image cache. Emits exactly one app_result (the pool/server count `done` off it), so a retry
  * never double-counts. Real app crashes (`fail`), missing/404 images (`skip`), and structural
  * harness errors (port-map, dir-vs-file mount) are NOT retried.
  */
-function isRetryableTransient(result: Record<string, unknown>): boolean {
-  return (
-    result.failKind === 'pull' ||
-    result.failKind === 'timeout' ||
-    (result.failKind === 'compose' && isRetryableComposeFailure(String(result.notes ?? '')))
-  );
-}
-
 /** attemptApp + the single transient-failure retry, split out so qaApp can race it against the watchdog. */
 async function attemptWithRetry(appId: string): Promise<Record<string, unknown>> {
-  let result = await attemptApp(appId);
-  if (isRetryableTransient(result)) {
-    const firstScore = String(result.score);
-    const firstNotes = String(result.notes ?? '');
-    const firstFailKind = String(result.failKind ?? '');
-    if (firstFailKind === 'compose') phase(appId, 'starting', 'Transient compose dependency failure; retrying once after clean teardown');
-    const retry = await attemptApp(appId);
-    retry.retried = true;
-    retry.attempts = 2;
-    retry.firstAttemptScore = firstScore;
-    retry.firstAttemptFailKind = firstFailKind;
-    retry.firstAttemptNotes = firstNotes;
-    result = retry;
-  } else {
-    result.attempts = 1;
-  }
-  return result;
+  return attemptOnceWithRetry(
+    () => attemptApp(appId),
+    (first) => {
+      if (first.failKind === 'compose') phase(appId, 'starting', 'Transient compose dependency failure; retrying once after clean teardown');
+    },
+  );
 }
 
 /**
@@ -1661,7 +2516,7 @@ function appWatchdogMs(appId: string): number {
  * harness errors are returned by attemptApp and pass straight through (only pull/timeout retry once).
  */
 async function qaApp(appId: string): Promise<void> {
-  const containerName = `qa-stream-${appId}`;
+  const containerName = qaContainerName(appId);
   const budgetMs = appWatchdogMs(appId);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const watchdog = new Promise<Record<string, unknown>>((resolve) => {
@@ -2023,6 +2878,38 @@ function formatAppEnv(kv: Map<string, string>): string {
  */
 type FieldSpec = { min?: number; max?: number; type?: string; def?: string; encoding?: string; options?: string[] };
 
+// <qa-password-generator>
+/** Generate a policy-friendly QA password without punctuation that Compose may reinterpret. */
+function makeQaPassword(spec: { min?: number; max?: number } = {}): string {
+  const min = typeof spec.min === 'number' && Number.isFinite(spec.min) ? Math.max(3, Math.ceil(spec.min)) : 3;
+  const max = typeof spec.max === 'number' && Number.isFinite(spec.max) ? Math.floor(spec.max) : 4096;
+  if (max < 3 || min > max) {
+    throw new RangeError(`Password field must allow between 3 and ${max} characters to generate a QA password`);
+  }
+
+  const length = Math.max(min, Math.min(32, max));
+  const categories = ['ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz', '0123456789'];
+  const alphabet = categories.join('');
+  const chars = Array.from({ length }, () => alphabet.charAt(randomInt(alphabet.length)));
+  const positions = [0, 1, 2];
+  for (let index = positions.length - 1; index > 0; index--) {
+    const swapIndex = randomInt(index + 1);
+    const current = positions[index];
+    const swap = positions[swapIndex];
+    if (current === undefined || swap === undefined) throw new Error('Could not select password positions');
+    positions[index] = swap;
+    positions[swapIndex] = current;
+  }
+  for (let index = 0; index < categories.length; index++) {
+    const position = positions[index];
+    const category = categories[index];
+    if (position === undefined || category === undefined) throw new Error('Could not select password categories');
+    chars[position] = category.charAt(randomInt(category.length));
+  }
+  return chars.join('');
+}
+// </qa-password-generator>
+
 /**
  * Returned, not stored. A module-level map set per app was read after an await (reserveHostPort, then composeUp), so with apps
  * running side by side the last manifest loaded would win as soon as that await really yields. Today it is a single microtask
@@ -2057,40 +2944,59 @@ function hexOfLength(chars: number): string {
     .slice(0, chars);
 }
 
-/**
- * Single-quote a string for the HOST shell. JSON.stringify is the wrong tool here: it emits DOUBLE
- * quotes, so the host shell expands `$4`/`$2` inside an awk script to empty before the command ever
- * reaches the container — which silently broke the /proc listener probe and made every genuinely
- * non-HTTP app (mysql, mongodb, geth) look dead.
- */
-function shq(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
+type InternalListenerState = 'listening' | 'not-listening' | 'unknown';
+type InternalListenerProbe = { state: InternalListenerState; detail: string };
 
-/**
- * Is anything actually LISTENING on `port` inside the container? Guards the raw-TCP readiness
- * branch, which docker-proxy would otherwise satisfy for a container serving nothing at all.
- * Tries ss, then netstat, then /proc/net/tcp{,6} — many images ship none of the first two, so the
- * /proc parse is the one that works on distroless/alpine. Returns false only when we positively
- * determine there is no listener; an image where every probe is unavailable returns true rather
- * than manufacturing a failure we cannot substantiate.
- */
-async function hasInternalListener(container: string, port: number): Promise<boolean> {
-  const hex = port.toString(16).toUpperCase().padStart(4, '0');
-  // /proc/net/tcp col 2 is local_address (HEX_IP:HEX_PORT), col 4 is st; 0A = TCP_LISTEN. Both files
-  // are read because a container may bind v4, v6, or both (mysql listens on tcp6 only).
-  const procProbe = `cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$4=="0A"{split($2,a,":"); if (a[2]=="${hex}") found=1} END{exit found?0:1}'`;
-  const probes = [`ss -ltn 2>/dev/null | grep -q ':${port}[^0-9]'`, `netstat -ltn 2>/dev/null | grep -q ':${port}[^0-9]'`, procProbe];
-  for (const p of probes) {
-    const r = await execAsync(`docker exec ${container} sh -c ${shq(p)}`, 8_000);
-    // exit 0 => listener found. A non-zero exit can mean "no listener" OR "tool missing"; only the
-    // /proc probe can distinguish, so treat it as authoritative and the others as best-effort.
-    if (r.ok) return true;
+/** Inspect /proc directly so an unavailable `ss`/`netstat` binary cannot masquerade as a listener. */
+async function inspectInternalListener(container: string, port: number): Promise<InternalListenerProbe> {
+  // Read procfs without depending on a shell inside the app image. Minimal database images can
+  // expose /proc/net while omitting `/bin/sh`, which made a healthy in-container listener appear
+  // unknown and caused PostgreSQL/SQL Server QA to skip. An absent tcp6 file is fine; a permission
+  // or exec error keeps the answer unknown so a Docker proxy handshake cannot become a false pass.
+  // Read the container's network-namespace procfs from the host. Never execute `cat` (or another
+  // image-provided binary) inside the app: a custom image could fabricate a listener snapshot.
+  // Docker exposes the container init PID, and Linux exposes that process's net namespace at
+  // /proc/<pid>/net. On non-Linux hosts (including Docker Desktop's VM boundary) the evidence is
+  // unavailable, so keep the answer unknown instead of weakening the probe.
+  if (process.platform !== 'linux') return { state: 'unknown', detail: `host platform ${process.platform} does not expose container procfs` };
+  const inspected = await execAsync(
+    `docker inspect ${shq(container)} --format '{{.State.Pid}}|{{.State.Running}}|{{range .NetworkSettings.Networks}}{{.IPAddress}} {{.GlobalIPv6Address}} {{end}}'`,
+    8_000,
+  );
+  const [pidText, runningText, addressText = ''] = inspected.ok ? inspected.out.split('|') : [];
+  const pid = Number(pidText);
+  if (!inspected.ok) return { state: 'unknown', detail: `docker inspect failed: ${(inspected.err || 'no diagnostic output').slice(-180)}` };
+  if (runningText !== 'true' || !Number.isSafeInteger(pid) || pid <= 0) {
+    return {
+      state: 'unknown',
+      detail: `container state did not include a live PID (pid=${pidText || 'missing'}, running=${runningText || 'missing'})`,
+    };
   }
-  const proc = await execAsync(`docker exec ${container} sh -c ${shq('cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | wc -l')}`, 8_000);
-  // If we could not even read /proc/net/tcp, we have no evidence either way — do not fail on a guess.
-  if (!proc.ok || Number((proc.out || '0').trim()) === 0) return true;
-  return false;
+  const reachableAddresses = addressText.split(/\s+/).filter((address) => isIP(address) === 4);
+
+  const snapshots: string[] = [];
+  for (const path of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    try {
+      const contents = readFileSync(`/proc/${pid}/net/${path.endsWith('tcp6') ? 'tcp6' : 'tcp'}`, 'utf8');
+      snapshots.push(`__PROC__:${path}\n${contents}`);
+    } catch (error) {
+      // tcp6 can be absent in a kernel without IPv6. tcp is required; permission errors or any
+      // other unreadable snapshot are uncertainty, not evidence that the port is closed.
+      if (path.endsWith('/tcp6') && (error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      const code = (error as NodeJS.ErrnoException).code;
+      return { state: 'unknown', detail: `cannot read ${path} for PID ${pid}${code ? ` (${code})` : ''}` };
+    }
+  }
+  const state = tcpListenerFromProcSnapshot(snapshots.join('\n'), port, reachableAddresses);
+  return {
+    state,
+    detail:
+      state === 'unknown'
+        ? `procfs TCP snapshot for PID ${pid} was incomplete or malformed`
+        : state === 'not-listening'
+          ? `no listener on port ${port} was bound to a wildcard or container IP`
+          : `procfs TCP snapshot for PID ${pid} confirmed a reachable bind address`,
+  };
 }
 
 /** Split a command string into argv the way Docker Compose does (shlex: quotes and backslashes, NO shell). The single-container path used to run a string `command` as `sh -c '<cmd>'`, which an image whose ENTRYPOINT is not a shell receives as `-c` (openbooks: 'unknown shorthand flag: c' while compose starts it fine). */
@@ -2239,7 +3145,8 @@ function valueForVar(name: string, cache: Map<string, string>, scratchBase: stri
     cache.set(name, v);
     return v;
   }
-  if (/PASSWORD|SECRET|KEY|TOKEN|SALT|HASH/.test(name)) v = randomBytes(16).toString('hex');
+  if (spec?.type === 'password' || /PASSWORD/.test(name)) v = makeQaPassword(spec);
+  else if (/SECRET|KEY|TOKEN|SALT|HASH/.test(name)) v = randomBytes(16).toString('hex');
   else if (/USER(NAME)?$/.test(name)) v = 'ciadmin';
   // `.localhost` is a reserved TLD that strict validators reject (directus's UsersService.validateEmail
   // rejects it outright, crashing `cli.js bootstrap` before the app ever binds its port). RFC 2606
@@ -2414,15 +3321,6 @@ function restartPolicyOf(s: DockerService | undefined): string {
 /** How many times a start that lost the race for its reserved host port is retried with a fresh reservation. */
 const BIND_RETRIES = 2;
 
-/**
- * True when `docker run` / `compose up` failed because the host port it was asked to publish was taken in the meantime. Those are
- * the daemon's own wordings: "failed to bind host port ...: address already in use" (current engines) and "Bind for ...: port is
- * already allocated" (older ones). Nothing else counts, so any other start failure is scored on the first try.
- */
-function isPortBindRace(err: string): boolean {
-  return /address already in use|failed to bind host port|port is already allocated/i.test(err);
-}
-
 /** Reserve a host port via Docker so ${APP_BASE_URL} can include the mapped port before compose up. */
 async function reserveHostPort(): Promise<number> {
   const name = `qa-port-reserve-${randomBytes(4).toString('hex')}`;
@@ -2451,8 +3349,18 @@ async function composeUp(
   scratchBase: string,
   ymlPath: string,
   config: Record<string, unknown>,
-): Promise<{ ok: boolean; hostPort: number; statsName: string; project: string; err: string; out: string }> {
-  const project = `qa-${appId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+): Promise<{
+  ok: boolean;
+  hostPort: number;
+  statsName: string;
+  project: string;
+  err: string;
+  out: string;
+  startTimedOut: boolean;
+  retryableBindRace: boolean;
+  interrupted: boolean;
+}> {
+  const project = qaProjectName(appId);
   const specs = loadFieldSpecs(config);
   // Start from a clean scratch tree (scoped to THIS app's scratchBase). Postgres only applies
   // POSTGRES_PASSWORD on first init of an EMPTY data dir, but valueForVar mints a fresh
@@ -2497,6 +3405,7 @@ async function composeUp(
   // block below), plus the set of dirs already seeded so shared ones are prepared exactly once.
   const sharedMounts = new Map<string, string>();
   const seededMounts = new Set<string>();
+  const managedVolumes = new Map<string, string>();
   // Services that declare a healthcheck: a depends_on may only request `service_healthy`
   // against these — asking it of a service without one makes `compose up` error out.
   const hasHealthcheck = new Set(services.filter((s) => s.name && (s.healthCheck ?? s.healthcheck)?.test).map((s) => s.name as string));
@@ -2592,13 +3501,30 @@ async function composeUp(
       y += '    volumes:\n';
       for (const v of vols) {
         const cp = v.containerPath as string;
+        const hp = subst(String(v.hostPath ?? ''));
+        const seed = seedSourceFor(appId, v.hostPath);
+        // Mirror the Hub builder on hosts whose Docker bind shares cannot preserve chown/chmod.
+        // The manifest still uses the real hostPath on Linux; local macOS/Windows smoke uses a
+        // project-scoped named volume for ownership-sensitive, unseeded data.
+        if (v.volumeName || (v.requiresPosixPermissions === true && QA_POSIX_VOLUME_FALLBACK && hp && !seed)) {
+          const key = v.volumeName ? `named:${v.volumeName}` : `host:${hp}`;
+          let volume = managedVolumes.get(key);
+          if (!volume) {
+            let index = managedVolumes.size + 1;
+            let generated = `qa-posix-data-${index}`;
+            while ([...managedVolumes.values()].includes(generated)) generated = `qa-posix-data-${++index}`;
+            volume = v.volumeName ?? generated;
+            managedVolumes.set(key, volume);
+          }
+          y += `      - ${yamlStr(`${volume}:${cp}${v.readOnly ? ':ro' : ''}`)}\n`;
+          continue;
+        }
         // Key the scratch dir on the manifest's hostPath, so two services declaring the SAME
         // hostPath share one directory — which is what the appliance does, and what these manifests
         // rely on. Keying per (service, containerPath) silently gave each service its own private
         // dir: route96 has an init sidecar that writes config.toml to a shared hostPath, the main
         // service mounted a DIFFERENT empty dir, found no config, and exited. Falls back to the old
         // per-service path only when no hostPath is declared (a purely ephemeral runtime dir).
-        const hp = subst(String(v.hostPath ?? ''));
         const sc = hp
           ? (sharedMounts.get(hp) ??
             (() => {
@@ -2661,9 +3587,13 @@ async function composeUp(
       }
     }
     if (s === main) {
-      const publish = reservedHostPort > 0 ? reservedHostPort : 0;
+      const publish = Math.max(reservedHostPort, 0);
       y += `    ports:\n      - "${publish}:${mainPort}"\n`;
     }
+  }
+  if (managedVolumes.size) {
+    y += '\nvolumes:\n';
+    for (const volume of managedVolumes.values()) y += `  ${yamlStr(volume)}:\n`;
   }
   writeFileSync(ymlPath, y);
   // NON-BLOCKING `compose up` (execAsync, not execSync): the pull+create can take many minutes for a
@@ -2673,11 +3603,21 @@ async function composeUp(
   // stays the real backstop for a genuinely-stuck stack (force-fails to `timeout`, not `error`).
   const up = await execAsync(`docker compose -p ${project} -f ${ymlPath} up -d --quiet-pull`, 1_200_000);
   if (!up.ok) {
+    const startFailure = classifyComposeStartFailure(up.err, up.out, up.timedOut, up.interrupted);
     const snapshot = await composeFailureSnapshot(project, ymlPath);
     // Compose writes progress and some daemon diagnostics to stdout while the shell error is on
     // stderr. Preserve both channels: the caller classifies the combined text and bounds it for
     // the result row. Dropping stdout hid useful health/registry lines behind a `ps` tail.
-    return { ok: false, hostPort: 0, statsName: '', project, err: `${up.err.slice(-600)}\n${snapshot}`, out: up.out };
+    return {
+      ok: false,
+      hostPort: 0,
+      statsName: '',
+      project,
+      err: `${up.err.slice(-600)}\n${snapshot}`,
+      out: up.out,
+      interrupted: up.interrupted,
+      ...startFailure,
+    };
   }
   // docker compose port may fail if service exited before port was bound — retry briefly
   let portMap = await execAsync(`docker compose -p ${project} -f ${ymlPath} port ${main?.name} ${mainPort}`);
@@ -2686,13 +3626,19 @@ async function composeUp(
     portMap = await execAsync(`docker compose -p ${project} -f ${ymlPath} port ${main?.name} ${mainPort}`);
   }
   const hostPort = reservedHostPort > 0 ? reservedHostPort : portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
+  const startFailure =
+    hostPort > 0
+      ? { startTimedOut: false, retryableBindRace: false }
+      : classifyComposeStartFailure(portMap.err, portMap.out, portMap.timedOut, portMap.interrupted);
   return {
     ok: hostPort > 0,
     hostPort,
     statsName: `${project}-${main?.name}-1`,
     project,
-    err: hostPort > 0 ? '' : 'no host port mapping',
+    err: hostPort > 0 ? '' : portMap.err || 'no host port mapping',
     out: up.out,
+    interrupted: portMap.interrupted,
+    ...startFailure,
   };
 }
 

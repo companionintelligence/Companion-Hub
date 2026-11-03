@@ -30,7 +30,7 @@ import { Link } from 'react-router';
 import { Tooltip } from 'react-tooltip';
 import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import type { AvailableDomain } from '@ci-hub/common/types';
-import { buildPublicWebIdentity, sanitizeAppSubdomain, selectOfferedDomains } from '@ci-hub/common/types';
+import { buildPublicWebIdentity, sanitizeAppSubdomain, selectOfferedDomains, servedExposureMode } from '@ci-hub/common/types';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { saveBlobAsFile, splitSavedPath } from '@/lib/save-file';
 import { requiresHubLoginOnPublicRoute, servedOpenPort } from '@ci-hub/common/schemas';
@@ -214,8 +214,11 @@ export const InstallForm: React.FC<IProps> = ({
   const watchPort = watch('port', info.port ? info.port.toString() : '');
   const watchPublicDomainRaw = watch('publicDomain');
 
-  const initialExposureMode = typeof initialValues?.exposureMode === 'string' ? initialValues.exposureMode : undefined;
-  const keepsPublished = keepsPublishedDomain(isEdit, initialExposureMode);
+  // Only an edit has one. An installed app stays in the mode it runs in until somebody picks another,
+  // even while that mode's transport is down. `resolveExposureMode` would move a Private VPN app to
+  // Public Web. It would also give a form that names no mode whatever a new install gets.
+  const savedExposureMode = isEdit ? servedExposureMode({ config: initialValues }) : undefined;
+  const keepsPublished = keepsPublishedDomain(isEdit, savedExposureMode);
 
   const availableDomainsQuery = useQuery(getDomainsOptions());
   const availableDomainsData = availableDomainsQuery.data;
@@ -429,7 +432,13 @@ export const InstallForm: React.FC<IProps> = ({
   );
 
   const handleExportConfig = useCallback(async () => {
-    const json = serializeInstallConfig(info.id, getValues(), formFields);
+    const values = getValues();
+    // As a save works it out: the form seeds `exposedLocal` true whatever the mode says.
+    const json = serializeInstallConfig(
+      info.id,
+      values.exposureMode ? { ...values, exposedLocal: Boolean(info.exposable) && values.exposureMode === 'cloudflare' } : values,
+      formFields,
+    );
     const blob = new Blob([json], { type: 'application/json' });
     try {
       // Only the desktop app reports a path; a browser shows its own download UI.
@@ -447,7 +456,7 @@ export const InstallForm: React.FC<IProps> = ({
           : t('APP_INSTALL_FORM_EXPORT_CONFIG_ERROR', { defaultValue: 'Could not save the install config.' }),
       );
     }
-  }, [getValues, formFields, info.id, t]);
+  }, [getValues, formFields, info.id, info.exposable, t]);
 
   const handleImportButtonClick = useCallback(() => {
     importFileInputRef.current?.click();
@@ -678,11 +687,13 @@ export const InstallForm: React.FC<IProps> = ({
     }
     // Set default exposure mode and port for exposable apps
     if (info.exposable && info.dynamic_config) {
-      // Auto-select first available mode: cloudflare > tailscale > local
-      const defaultMode = resolveExposureMode(initialValues?.exposureMode as FormValues['exposureMode'] | undefined, {
-        cloudflareAvailable,
-        tailscaleAvailable,
-      });
+      // A new install auto-selects the first available mode: cloudflare > tailscale > local
+      const defaultMode =
+        savedExposureMode ??
+        resolveExposureMode(initialValues?.exposureMode as FormValues['exposureMode'] | undefined, {
+          cloudflareAvailable,
+          tailscaleAvailable,
+        });
       if (shouldSeed) {
         setValue('exposureMode', defaultMode);
         setValue('exposedLocal', true); // backward compat
@@ -738,6 +749,7 @@ export const InstallForm: React.FC<IProps> = ({
     tailscaleAvailable,
     enableAuthFallback,
     isEdit,
+    savedExposureMode,
     storedOpenPort,
   ]);
 
@@ -789,13 +801,13 @@ export const InstallForm: React.FC<IProps> = ({
       hubDomain: domain,
       dirty: Boolean(dirtyFields.publicDomain),
       isEdit,
-      initialExposureMode,
+      initialExposureMode: savedExposureMode,
     });
 
     if (next) {
       setValue('publicDomain', next);
     }
-  }, [availableDomains, dirtyFields.publicDomain, domain, getValues, initialExposureMode, isEdit, setValue, watchExposureMode, info.urn]);
+  }, [availableDomains, dirtyFields.publicDomain, domain, getValues, savedExposureMode, isEdit, setValue, watchExposureMode, info.urn]);
 
   useEffect(() => {
     if (appStatus !== 'running' || watchExposureMode !== 'cloudflare') {
@@ -1100,7 +1112,9 @@ export const InstallForm: React.FC<IProps> = ({
   };
 
   const validate = async (values: FormValues) => {
-    const exposureMode = resolveExposureMode(values.exposureMode, { cloudflareAvailable, tailscaleAvailable });
+    const exposureMode = savedExposureMode
+      ? (values.exposureMode ?? savedExposureMode)
+      : resolveExposureMode(values.exposureMode, { cloudflareAvailable, tailscaleAvailable });
     const withFieldDefaults: FormValues = { ...values };
     for (const field of formFields) {
       if (isHiddenFieldType(field.type)) continue;

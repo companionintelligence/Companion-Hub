@@ -163,6 +163,7 @@ describe('BackupManager.uploadBackup', () => {
     filesystem = mock<FilesystemService>();
     filesystem.createDirectory.mockResolvedValue(true);
     filesystem.writeBinaryFile.mockResolvedValue(true);
+    filesystem.restrictToOwner.mockResolvedValue(true);
     manager = new BackupManager(
       mock<ArchiveService>(),
       mock<LoggerService>(),
@@ -190,6 +191,24 @@ describe('BackupManager.uploadBackup', () => {
     await expect(manager.uploadBackup('app:store' as never, 'fresh.tar.gz', Buffer.from('x'))).resolves.toBeUndefined();
 
     expect(filesystem.writeBinaryFile).toHaveBeenCalledWith('/data/backups/store/app/fresh.tar.gz', expect.any(Buffer));
+  });
+
+  it('makes an uploaded backup owner-only, as one the Hub makes itself is', async () => {
+    filesystem.pathExists.mockResolvedValue(false);
+
+    await manager.uploadBackup('app:store' as never, 'fresh.tar.gz', Buffer.from('x'));
+
+    expect(filesystem.restrictToOwner).toHaveBeenCalledWith('/data/backups/store/app/fresh.tar.gz');
+    expect(filesystem.restrictToOwner.mock.invocationCallOrder[0]).toBeGreaterThan(filesystem.writeBinaryFile.mock.invocationCallOrder[0]);
+  });
+
+  it('does not keep an uploaded backup it could not make owner-only', async () => {
+    filesystem.pathExists.mockResolvedValue(false);
+    filesystem.restrictToOwner.mockResolvedValue(false);
+
+    await expect(manager.uploadBackup('app:store' as never, 'fresh.tar.gz', Buffer.from('x'))).rejects.toThrow('owner-only');
+
+    expect(filesystem.removeFile).toHaveBeenCalledWith('/data/backups/store/app/fresh.tar.gz');
   });
 });
 
@@ -382,6 +401,25 @@ describe('BackupManager: named Docker volumes', () => {
     await expect(fs.promises.readFile(path.join(appDataDir, 'app.env'), 'utf8')).resolves.toBe('DB_PASSWORD=changed');
     expect(appVolumes.importVolume).not.toHaveBeenCalled();
     expect(engine.get(database)?.files).toEqual({ ibdata1: 'live' });
+  });
+
+  it('leaves the backup archive readable by its owner alone', async () => {
+    const { filename } = await manager.backupApp(appUrn);
+
+    expect((await fs.promises.stat(path.join(backupDir, filename))).mode & 0o777).toBe(0o600);
+  });
+
+  it('keeps no backup whose archive could not be made owner-only', async () => {
+    // The first call restricts the archive before the copy; the second restricts the copy in the backups folder.
+    const restrict = vi.spyOn(FilesystemService.prototype, 'restrictToOwner').mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+    try {
+      await expect(manager.backupApp(appUrn)).rejects.toThrow('owner-only');
+
+      await expect(fs.promises.readdir(backupDir).catch(() => [])).resolves.toEqual([]);
+    } finally {
+      restrict.mockRestore();
+    }
   });
 
   it('restores a backup that has no volumes without asking Docker about them', async () => {

@@ -2,24 +2,27 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { SSEService } from '@/core/sse/sse.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
+import { getEffectiveExposureMode } from '@/modules/apps/app-exposure.helpers';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
-import { AppHelpers, deriveAppBaseWsOrigin, parseAppBaseUrl } from '@/modules/apps/app.helpers';
+import { AppHelpers } from '@/modules/apps/app.helpers';
 import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
+import { ImageSizeService } from '@/modules/marketplace/image-size.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
-import { extractConflictingHostBinding } from '@/modules/network/docker-port-errors';
-import { PortManagerService, type PortAllocation } from '@/modules/network/port-manager.service';
+import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
-import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { AppLifecycleCommand, type CommandExecutionContext } from './command';
 import { AppLifecycleError, type AppCommandResult } from './app-lifecycle-errors';
+import { hostPortMoveOf } from './main-host-port';
+import { pullAppImagesRecorded, uniqueServiceImages } from './pull-app-images';
 import { isAbortError, throwIfAborted } from '@/common/abort';
-import { parseComposeJson } from '@ci-hub/common/schemas';
+import { type AppSecurityGrants, type HostPortMove, parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { McpProbeService } from '@/modules/mcp/mcp-probe.service';
 import { buildComposePortRequests, buildMainPortRequest, type PortRequestInput } from '../planning/port-requests';
@@ -36,9 +39,9 @@ const DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS = 250;
  */
 const DOWNLOAD_SIZE_EMIT_INTERVAL_MS = 2_000;
 
-export function extractComposeImages(composeContent: unknown): string[] {
-  const { services } = parseComposeJson(composeContent);
-  return [...new Set(services.map((service) => service.image?.trim()).filter((image): image is string => Boolean(image)))];
+export function extractComposeImages(composeContent: unknown, grants?: AppSecurityGrants): string[] {
+  const { services } = parseComposeJson(composeContent, grants);
+  return uniqueServiceImages(services);
 }
 
 export function mapPullProgressToInstallProgress(completedBytes: number, totalBytes: number): number {
@@ -49,15 +52,6 @@ export function mapPullProgressToInstallProgress(completedBytes: number, totalBy
   const normalized = Math.max(0, Math.min(1, completedBytes / totalBytes));
   const mapped = DOWNLOAD_PROGRESS_START + Math.floor(normalized * (DOWNLOAD_PROGRESS_END - DOWNLOAD_PROGRESS_START));
   return Math.max(DOWNLOAD_PROGRESS_START, Math.min(DOWNLOAD_PROGRESS_MAX_DURING_PULL, mapped));
-}
-
-/**
- * `url` with the port `from` it names replaced by `to`. A URL that names another port or none (a
- * public `https` address), or a value that is not an http(s) URL, comes back unchanged.
- */
-export function withMovedPort(url: string, from: number, to: number): string {
-  const match = /^(https?:\/\/(?:\[[^\]]*\]|[^/:?#@]+)):(\d{1,5})(?=$|[/?#])/i.exec(url);
-  return match && Number(match[2]) === from ? `${match[1]}:${to}${url.slice(match[0].length)}` : url;
 }
 
 /**
@@ -87,6 +81,14 @@ export class InstallAppCommand extends AppLifecycleCommand {
     const envUtils = this.moduleRef.get(EnvUtils, { strict: false });
     const sseService = this.moduleRef.get(SSEService, { strict: false });
     const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
+    // Only for the download's size under the progress bar: an install never fails for want of it.
+    const imageSizeService = (() => {
+      try {
+        return this.moduleRef.get(ImageSizeService, { strict: false });
+      } catch {
+        return undefined;
+      }
+    })();
 
     // The job's last recorded percent. A tick that only moves the download size leaves it alone.
     let jobProgress: number | undefined;
@@ -119,7 +121,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
         throw new Error(`Invalid marketplace compose payload for ${appUrn}`);
       }
       composeToInstallContent = composeToInstall.content;
-      parseComposeJson(composeToInstallContent);
+      parseComposeJson(composeToInstallContent, securityGrantsFor(appUrn));
     } catch (err) {
       logger.error(`Error parsing docker-compose.yml for app ${appUrn} from marketplace repository. Are you running the latest version of CI Hub?`);
       return this.handleAppError(err, appUrn, 'update_error');
@@ -129,7 +131,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
       ctx?.setPhase('preparing');
       await this.assertMarketplaceEntitlement(appUrn, 'install');
       await this.assertPlanConfigAndArchitecture(appUrn, form);
-      const appImages = extractComposeImages(composeToInstallContent);
+      const appImages = extractComposeImages(composeToInstallContent, securityGrantsFor(appUrn));
       await emitProgress(5);
       if (process.getuid && process.getgid) {
         logger.info(`Installing app ${appUrn} as User ID: ${process.getuid()}, Group ID: ${process.getgid()}`);
@@ -172,7 +174,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
           const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
           if (composeJson.content) {
             try {
-              portRequests.push(...buildComposePortRequests(composeJson.content));
+              portRequests.push(...buildComposePortRequests(composeJson.content, securityGrantsFor(appUrn)));
             } catch (parseErr) {
               logger.warn(`Failed to parse compose for extra ports: ${parseErr}`);
             }
@@ -351,33 +353,47 @@ export class InstallAppCommand extends AppLifecycleCommand {
         let lastPullProgress = DOWNLOAD_PROGRESS_START;
         let lastPullProgressAt = 0;
         let lastPullBytes = 0;
+        let sizeShown = false;
         dockerService.pullImages
-          ? await dockerService.pullImages(appImages, {
-              forcePull,
-              signal: ctx?.signal,
-              onProgress: ({ completedBytes, totalBytes, completedImages, totalImages }) => {
-                const nextProgress =
-                  totalBytes > 0
-                    ? mapPullProgressToInstallProgress(completedBytes, totalBytes)
-                    : totalImages > 0
-                      ? mapPullProgressToInstallProgress(completedImages, totalImages)
-                      : DOWNLOAD_PROGRESS_START;
-                const now = Date.now();
-                const percentRose =
-                  nextProgress > lastPullProgress &&
-                  (nextProgress - lastPullProgress >= 2 ||
-                    now - lastPullProgressAt >= DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS ||
-                    nextProgress >= DOWNLOAD_PROGRESS_MAX_DURING_PULL);
-                const sizeMoved = completedBytes !== lastPullBytes && now - lastPullProgressAt >= DOWNLOAD_SIZE_EMIT_INTERVAL_MS;
-                if (percentRose || sizeMoved) {
-                  // The total grows as Docker reports more layers, so the percentage can dip; the bar never goes back.
-                  lastPullProgress = Math.max(lastPullProgress, nextProgress);
-                  lastPullProgressAt = now;
-                  lastPullBytes = completedBytes;
-                  void emitProgress(lastPullProgress, totalBytes > 0 ? { downloadedBytes: completedBytes, totalBytes } : undefined);
-                }
-              },
-            })
+          ? await pullAppImagesRecorded(
+              { docker: dockerService, files: appFilesManager, logger },
+              appUrn,
+              appImages,
+              () =>
+                dockerService.pullImages(appImages, {
+                  forcePull,
+                  signal: ctx?.signal,
+                  layerSizes: (image, signal) => imageSizeService?.getImageLayerSizes?.(image, { signal }) ?? Promise.resolve(null),
+                  onProgress: ({ completedBytes, totalBytes, totalBytesKnown, completedImages, totalImages }) => {
+                    // The size under the bar and the bar itself wait for a final total. "3.0 MB / 3.7 MB" for a
+                    // 26 MB download was a total still growing (CI-Hub#2177). A first layer of 405 bytes, done at
+                    // once, put the bar at 98. Until then the page says only "Downloading" and the bar counts images.
+                    const sizeKnown = totalBytes > 0 && totalBytesKnown !== false;
+                    const nextProgress = sizeKnown
+                      ? mapPullProgressToInstallProgress(completedBytes, totalBytes)
+                      : totalImages > 0
+                        ? mapPullProgressToInstallProgress(completedImages, totalImages)
+                        : DOWNLOAD_PROGRESS_START;
+                    const now = Date.now();
+                    const percentRose =
+                      nextProgress > lastPullProgress &&
+                      (nextProgress - lastPullProgress >= 2 ||
+                        now - lastPullProgressAt >= DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS ||
+                        nextProgress >= DOWNLOAD_PROGRESS_MAX_DURING_PULL);
+                    const sizeMoved = completedBytes !== lastPullBytes && now - lastPullProgressAt >= DOWNLOAD_SIZE_EMIT_INTERVAL_MS;
+                    const sizeAppeared = sizeKnown && !sizeShown;
+                    if (percentRose || sizeMoved || sizeAppeared) {
+                      // The bar never goes back.
+                      lastPullProgress = Math.max(lastPullProgress, nextProgress);
+                      lastPullProgressAt = now;
+                      lastPullBytes = completedBytes;
+                      sizeShown = sizeKnown;
+                      void emitProgress(lastPullProgress, sizeKnown ? { downloadedBytes: completedBytes, totalBytes } : undefined);
+                    }
+                  },
+                }),
+              { forced: forcePull },
+            )
           : logger.warn(`Docker pull progress tracking is unavailable for ${appUrn}; falling back to compose up progress`);
       }
 
@@ -388,7 +404,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       await emitProgress(99);
       const refusedHostPorts = new Set<number>();
-      await this.composeAppWithNetworkRecovery(appUrn, form, 'up --detach --force-recreate --remove-orphans', 3, ctx?.signal, {
+      await this.composeUpRecordingPulls(appUrn, form, 'up --detach --force-recreate --remove-orphans', 3, ctx?.signal, {
         recoverHostPortConflict: (error) => this.moveMainPortOffConflict(appUrn, form, error, refusedHostPorts),
       });
       await appFilesManager.setAppDataDirPermissions(appUrn);
@@ -401,16 +417,36 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // refused beyond this phase (see AppLifecycleService.cancelOperation).
       ctx?.setPhase('finalizing');
 
-      const containerVerification = await dockerService.waitForManagedAppContainersReady(appUrn);
-      if (!containerVerification.ok) {
-        logger.error(
-          `[AppDiag] Post-install container verification failed for ${appUrn}: ${containerVerification.message}${
-            containerVerification.errorDetail ? `\n${containerVerification.errorDetail}` : ''
-          }`,
-        );
-        throw new AppLifecycleError(containerVerification.message, {
-          detail: containerVerification.errorDetail ?? containerVerification.message,
-        });
+      const notUp = await this.appCameUpError(appUrn);
+
+      // Regenerate Traefik file-based config after app is installed and started. Also when a service
+      // failed, since the other containers stay up and the status sync moves the app to `running` once
+      // they all settle. The check above was the wait for the containers to start.
+      if (getEffectiveExposureMode(form) !== 'local') {
+        const traefikConfigService = this.moduleRef.get(TraefikConfigService, { strict: false });
+        if (traefikConfigService) {
+          logger.debug(`Regenerating Traefik config for newly installed exposed app ${appUrn}`);
+          await traefikConfigService.regenerateTraefikConfig(0);
+        }
+      }
+
+      // Register the agent wake webhook for MCP-client apps (R-HOOK-1). Also when a service failed: an
+      // app the status sync brings to `running` goes through nothing else that would register it.
+      //
+      // The target is resolved by AgentNotifyService from what is on disk. Install and the startup
+      // rehydration call the same code, so they cannot drift apart.
+      try {
+        const agentNotifyService = this.moduleRef.get(AgentNotifyService, { strict: false });
+        const target = await agentNotifyService?.resolveWebhookTarget(appUrn);
+        if (target) {
+          agentNotifyService.registerWebhook(appUrn, target.url, target.token);
+        }
+      } catch (hookErr) {
+        logger.warn(`Failed to register agent webhook for ${appUrn}: ${hookErr}`);
+      }
+
+      if (notUp) {
+        throw notUp;
       }
 
       // Supplemental health check for slow-fail crashes after the initial verification.
@@ -422,15 +458,16 @@ export class InstallAppCommand extends AppLifecycleCommand {
           }
           const diagResults = await dockerReadFacade.diagnoseAppContainers(appUrn);
           if (diagResults.unhealthy.length > 0) {
-            const errorSummary = diagResults.unhealthy.map((c) => `${c.name} (${c.state}): ${c.logs}`).join('\n');
-            logger.warn(`[AppDiag] App ${appUrn} has unhealthy containers:\n${errorSummary}`);
+            const errorSummary = diagResults.unhealthy.map((c) => `${c.name} (${c.state})`).join('\n');
+            const localDetails = diagResults.unhealthy.map((c) => `${c.name} (${c.state}): ${c.logs}`).join('\n');
+            logger.warn(`[AppDiag] App ${appUrn} has unhealthy containers:\n${localDetails}`);
 
             const errorReportingService = this.moduleRef.get(ErrorReportingService, { strict: false });
             errorReportingService?.reportAppFailure({
               appUrn,
               phase: 'post_start',
               message: errorSummary,
-              containers: diagResults.unhealthy,
+              containers: diagResults.unhealthy.map(({ name, state }) => ({ name, state })),
             });
           } else {
             logger.info(`[AppDiag] All containers healthy for ${appUrn}`);
@@ -443,33 +480,9 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // Cloudflare public DNS/tunnel sync runs in AppLifecycleService.syncExposure()
       // once the install completes and the app is marked running — not here.
 
-      // Regenerate Traefik file-based config after app is installed and started
-      const effectiveExposure = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
-      if (effectiveExposure !== 'local' && !form.skipRun) {
-        const traefikConfigService = this.moduleRef.get(TraefikConfigService, { strict: false });
-        if (traefikConfigService) {
-          logger.debug(`Regenerating Traefik config for newly installed exposed app ${appUrn}`);
-          // Wait longer for container to fully start and network to be attached
-          await traefikConfigService.regenerateTraefikConfig(5000); // Wait 5s for container to fully start
-        }
-      }
-
-      // Register the agent wake webhook for MCP-client apps (R-HOOK-1).
-      //
-      // The target is resolved by AgentNotifyService from what is on disk, so install and
-      // the startup rehydration cannot drift apart — they call the same code.
-      try {
-        const agentNotifyService = this.moduleRef.get(AgentNotifyService, { strict: false });
-        const target = await agentNotifyService?.resolveWebhookTarget(appUrn);
-        if (target) {
-          agentNotifyService.registerWebhook(appUrn, target.url, target.token);
-        }
-      } catch (hookErr) {
-        logger.warn(`Failed to register agent webhook for ${appUrn}: ${hookErr}`);
-      }
-
       await emitProgress(99);
-      await this.markInstallSucceeded(appUrn, sseService, appsRepository, logger);
+      const movedHostPort = hostPortMoveOf(form, refusedHostPorts);
+      await this.markInstallSucceeded(appUrn, sseService, appsRepository, logger, movedHostPort);
 
       try {
         const mcpProbe = this.moduleRef.get(McpProbeService, { strict: false });
@@ -478,7 +491,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
         logger.debug(`MCP post-install probe not scheduled for ${appUrn}: ${probeErr}`);
       }
 
-      return { success: true, message: `App ${appUrn} installed successfully` };
+      return { success: true, message: `App ${appUrn} installed successfully`, movedHostPort };
     } catch (err) {
       // A user-requested cancel: tear down whatever was partially created and report a cancellation
       // (not a failure). The service finalizes the cancel (deletes the record + emits install_cancelled).
@@ -595,126 +608,12 @@ export class InstallAppCommand extends AppLifecycleCommand {
     return `Install of ${appUrn} was cancelled and cleaned up`;
   }
 
-  /**
-   * Point the app at the host port of its main allocation: `APP_PORT` and the local URL variables in its
-   * app.env, its base URLs, `form.port`, and the `port` column and `config` of its row. Every later
-   * start, restart and update rebuilds app.env from the row's config, so a port kept only in app.env
-   * would go back to the manifest's port on the next start.
-   */
-  private async applyMainHostPort(appUrn: AppUrn, form: AppEventFormInput, main: Pick<PortAllocation, 'hostPort' | 'containerPort'>): Promise<void> {
-    const { hostPort } = main;
-    const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
-    const envUtils = this.moduleRef.get(EnvUtils, { strict: false });
-    const config = this.moduleRef.get(ConfigurationService, { strict: false });
-    const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
-
-    const appEnvData = await appFilesManager.getAppEnv(appUrn);
-    const envMap = envUtils.envStringToMap(appEnvData.content);
-    // The port app.env pointed the app at until now: the form's or the manifest's on a first
-    // allocation, the refused one on a move.
-    const previousPort = Number(envMap.get('APP_PORT'));
-    envMap.set('APP_PORT', String(hostPort));
-
-    // Keep URL/origin vars aligned with generateEnvFile (browser host, not bind address).
-    const bindHost = envMap.get('APP_HOSTNAME') || config.getConfig().internalIp;
-    const browserHost = resolveBrowserHost(bindHost);
-    const internalAuthority = `${browserHost}:${hostPort}`;
-    envMap.set('APP_INTERNAL_AUTHORITY', internalAuthority);
-    if (envMap.get('APP_EXPOSED') !== 'true') {
-      envMap.set('APP_HOST', browserHost);
-      envMap.set('APP_DOMAIN', internalAuthority);
-      envMap.set('APP_URL', `http://${internalAuthority}`);
-    }
-
-    // The app's own base URLs: APP_BASE_URL, which generateEnvFile copies from APP_URL when the app
-    // has no public address, and each `app_base_url` field, which the install dialog fills with
-    // `http://localhost:<port>` (or the tailnet name and port) and config replays on every start.
-    // One still naming the port the app left would send its redirects, sign-in callbacks and links to
-    // whatever holds that port now. A public address names no port, so it stays as it is.
-    const followsPort = Number.isInteger(previousPort) && previousPort !== hostPort;
-    const follow = (value: unknown) => (followsPort && typeof value === 'string' ? withMovedPort(value, previousPort, hostPort) : value);
-    const baseUrlFields = followsPort
-      ? ((await appFilesManager.getInstalledAppInfo(appUrn))?.form_fields ?? []).filter((field) => field.type === 'app_base_url')
-      : [];
-    const baseUrlBefore = envMap.get('APP_BASE_URL');
-    for (const envVar of ['APP_BASE_URL', ...baseUrlFields.flatMap((field) => [field.env_variable, ...(field.alias_env_variables ?? [])])]) {
-      const value = envMap.get(envVar);
-      if (value !== undefined) {
-        envMap.set(envVar, follow(value) as string);
-      }
-    }
-    const baseUrl = envMap.get('APP_BASE_URL');
-    if (baseUrl && baseUrl !== baseUrlBefore) {
-      try {
-        const parsed = parseAppBaseUrl(baseUrl);
-        envMap.set('APP_BASE_HOST', parsed.host);
-        envMap.set('APP_BASE_WSS_ORIGIN', deriveAppBaseWsOrigin(parsed));
-      } catch {
-        // generateEnvFile leaves the derived pair alone for a base URL it cannot parse, and so does this.
-      }
-    }
-
-    // Also update form.port so ensureAppDir uses the right port
-    form.port = hostPort;
-
-    await appFilesManager.writeAppEnv(appUrn, envUtils.envMapToString(envMap));
-
-    const app = await appsRepository?.getAppByUrn(appUrn);
-    if (!app) {
-      return;
-    }
-    const storedConfig = (app.config ?? {}) as Record<string, unknown>;
-    const nextConfig: Record<string, unknown> = { ...storedConfig, port: hostPort };
-    for (const field of baseUrlFields) {
-      if (storedConfig[field.env_variable] !== undefined) {
-        nextConfig[field.env_variable] = follow(storedConfig[field.env_variable]);
-      }
-    }
-    // A start rebuilds APP_PORT from config.port, or from the manifest's port (the container port)
-    // when config has none, so that is the port to compare, not the row's port column alone.
-    const portOnNextStart = storedConfig.port ?? main.containerPort;
-    const baseUrlsMoved = baseUrlFields.some((field) => nextConfig[field.env_variable] !== storedConfig[field.env_variable]);
-    if (app.port !== hostPort || portOnNextStart !== hostPort || baseUrlsMoved) {
-      await appsRepository.updateAppById(app.id, { config: nextConfig, port: hostPort });
-    }
-  }
-
-  /**
-   * Move the app's main port when `compose up` failed because something already holds it on the
-   * host, and report whether it moved. The port manager's probe runs inside the Hub container and
-   * cannot see a program listening on the host itself (a locally run OpenClaw gateway on 18789,
-   * say), so Docker's refusal is the first sign of it. `refused` collects every port Docker turned
-   * down during this install, so a retry never lands on one of them again.
-   *
-   * Only the main port moves. A port from the manifest's `addPorts` is published as written, so a
-   * conflict on one fails the install as before.
-   */
-  private async moveMainPortOffConflict(appUrn: AppUrn, form: AppEventFormInput, error: unknown, refused: Set<number>): Promise<boolean> {
-    const portManager = this.moduleRef.get(PortManagerService, { strict: false });
-    const logger = this.moduleRef.get(LoggerService, { strict: false });
-    const conflict = extractConflictingHostBinding(error);
-    // The main port is always TCP, so a UDP refusal on the same number is an `addPorts` mapping.
-    if (!portManager || !conflict || conflict.protocol === 'udp' || (await portManager.getMainPort(appUrn)) !== conflict.port) {
-      return false;
-    }
-
-    const { port } = conflict;
-    refused.add(port);
-    const moved = await portManager.moveMainPort(appUrn, refused);
-    if (!moved) {
-      return false;
-    }
-
-    logger.warn(`Host port ${port} for ${appUrn} is already in use on this computer; moving the app to port ${moved.hostPort}`);
-    await this.applyMainHostPort(appUrn, form, moved);
-    return true;
-  }
-
   private async markInstallSucceeded(
     appUrn: AppUrn,
     sseService: SSEService | undefined,
     appsRepository: AppsRepository | undefined,
     logger: LoggerService,
+    movedHostPort: HostPortMove | undefined,
   ): Promise<void> {
     if (!appsRepository) return;
 
@@ -729,6 +628,6 @@ export class InstallAppCommand extends AppLifecycleCommand {
     }
 
     await appsRepository.updateAppById(app.id, { status: 'running' });
-    sseService?.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
+    sseService?.emit('app', { event: 'install_success', appUrn, appStatus: 'running', movedHostPort });
   }
 }

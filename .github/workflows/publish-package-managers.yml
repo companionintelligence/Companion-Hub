@@ -12,6 +12,11 @@ on:
       tag:
         required: true
         type: string
+    # A called workflow accepts only the secrets it declares. The script that uses the token stops with
+    # its own message when it is empty, so a missing one does not need to block the call here.
+    secrets:
+      CI_PACKAGE_MANAGERS_TOKEN:
+        required: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

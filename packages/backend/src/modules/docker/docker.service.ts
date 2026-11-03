@@ -30,7 +30,18 @@ import { AppsRepository } from '../apps/apps.repository';
 import { APPLE_CONTAINER_ENGINE_NOTICE, isSocktainerVersion } from './container-engine';
 import { DOCKERODE } from './constants';
 import { DockerReadFacade, type ManagedAppContainerVerification } from './docker-read.facade';
+import { APP_CAME_UP_TIMING, AppCameUpWatch, type AppCameUpTiming } from './managed-app-containers';
 import { listContainersMatchingAnyLabelSets, managedAppLabelSets } from './hub-container-query';
+import {
+  applyLayerEvent,
+  type DockerPullLayerSnapshot,
+  type DockerPullStage,
+  imageSizeKnown,
+  isDownloadPhase,
+  isLayerEvent,
+  shortLayerId,
+  summarizePullLayers,
+} from './pull-progress';
 import { resolveEdgeHopAddress } from '../network/edge-hops';
 import { DEFAULT_HUB_EDGE_TRAEFIK_IP, HUB_EDGE_NETWORK_NAME, TRAEFIK_CONTAINER_NAME } from '../network/network-constants';
 
@@ -103,9 +114,6 @@ const HUB_APP_NETWORK_GAP = 'Not attaching the Hub to app networks';
 const HUB_APP_NETWORK_CONSEQUENCE =
   'Services that are not on the shared Hub network cannot resolve ci-hub, so an app that calls Hub inference from such a service fails with ENOTFOUND.';
 
-const MANAGED_APP_STARTUP_MAX_ATTEMPTS = 6;
-const MANAGED_APP_STARTUP_DELAY_MS = 2_000;
-
 // What Docker uses for a health check that leaves these unset.
 const DOCKER_DEFAULT_HEALTH_INTERVAL_MS = 30_000;
 const DOCKER_DEFAULT_HEALTH_TIMEOUT_MS = 30_000;
@@ -166,6 +174,9 @@ const PRIVILEGED_IMAGE_CHECK_TIMEOUT_MS = 120_000;
 const SNAPSHOT_ID_PATTERN = /^pre-update-[A-Za-z0-9][A-Za-z0-9._-]*-\d+$/;
 // `backup-<app>-<epoch ms>`, as createBackupStagingDir names a staging folder.
 const BACKUP_STAGING_ID_PATTERN = /^backup-[A-Za-z0-9][A-Za-z0-9._-]*-\d+$/;
+// The reserved per-user store every custom app lives in (`RESERVED_APP_STORE_SLUGS`). Its leading `_` fails the
+// segment pattern the privileged helpers apply, so it is accepted by name; no other store is.
+const USER_APP_STORE_SLUG = '_user';
 
 /** A folder under `backups/` that the privileged helpers may write one app's copy into and how its entries are named. */
 type PrivilegedCopyArea = { dirname: string; idPattern: RegExp; tag: string };
@@ -240,18 +251,14 @@ export function describeComposeCliUnavailable(input: { service: string; pluginDe
 interface DockerPullProgressDetail {
   current?: number;
   total?: number;
+  /** Set when the counts are not bytes, such as `s` while the containerd store extracts. */
+  units?: string;
 }
 
 interface DockerPullProgressEventMessage {
   id?: string;
   status?: string;
   progressDetail?: DockerPullProgressDetail;
-}
-
-interface DockerPullLayerSnapshot {
-  current: number;
-  total: number;
-  status: string;
 }
 
 /** How often a running pull logs where its layers are, so a stalled one shows in the log. */
@@ -264,9 +271,14 @@ export interface DockerPullProgressEvent {
   activeImage: string;
   completedBytes: number;
   totalBytes: number;
+  /**
+   * Whether `totalBytes` is final. It is not while some layer has neither reported its size nor
+   * had one read from the manifest. A total shown then only grows (CI-Hub#2177).
+   */
+  totalBytesKnown: boolean;
   completedImages: number;
   totalImages: number;
-  stage: 'downloading' | 'extracting' | 'complete';
+  stage: DockerPullStage;
 }
 
 /** The slice of a Docker network listing this Hub needs to join or leave an app network. */
@@ -331,6 +343,20 @@ export class DockerService {
     return message.includes('is being used') || message.includes('in use') || message.includes('has active endpoints');
   }
 
+  /**
+   * Whether Docker refused to remove an image because something still holds it: a container that uses it, or
+   * another tag of the same image (`must be forced`). Removal is never forced, so these are the refusals to expect.
+   *
+   * @param error Error from Dockerode.
+   */
+  private isImageHeldError(error: unknown): boolean {
+    if (this.isResourceInUseError(error)) {
+      return true;
+    }
+
+    return error instanceof Error && /conflict|must be forced/i.test(error.message);
+  }
+
   public getAppRuntimeStats(...args: Parameters<DockerReadFacade['getAppRuntimeStats']>) {
     return this.dockerReadFacade.getAppRuntimeStats(...args);
   }
@@ -347,39 +373,8 @@ export class DockerService {
     return this.dockerReadFacade.isContainerRunning(...args);
   }
 
-  public getManagedAppContainerVerification(...args: Parameters<DockerReadFacade['getManagedAppContainerVerification']>) {
-    return this.dockerReadFacade.getManagedAppContainerVerification(...args);
-  }
-
   public diagnoseAppContainers(...args: Parameters<DockerReadFacade['diagnoseAppContainers']>) {
     return this.dockerReadFacade.diagnoseAppContainers(...args);
-  }
-
-  /**
-   * Captures image IDs from all containers in an app's Compose project.
-   *
-   * Capture these immutable IDs before `compose down` so cleanup can remove
-   * pulled images even if tag or reference resolution changes later.
-   *
-   * @param appUrn App URN to inspect.
-   * @returns Unique Docker image IDs referenced by project containers.
-   */
-  public async snapshotAppImageIds(appUrn: AppUrn): Promise<string[]> {
-    const projectName = this.getComposeProjectName(appUrn);
-
-    try {
-      // Capture concrete IDs before teardown because Compose references can resolve
-      // differently after the containers are removed.
-      const containers = await this.docker.listContainers({
-        all: true,
-        filters: { label: [`com.docker.compose.project=${projectName}`] },
-      });
-
-      return [...new Set(containers.map((container) => container.ImageID).filter(Boolean))];
-    } catch (error) {
-      this.logger.warn(`Failed to snapshot image IDs for ${appUrn}: ${error}`);
-      return [];
-    }
   }
 
   public async forceStopApp(appUrn: AppUrn, graceSeconds = 10): Promise<{ stopped: string[]; killed: string[] }> {
@@ -416,16 +411,23 @@ export class DockerService {
   }
 
   /**
-   * Removes Docker images associated with an uninstalled app.
+   * Removes the images an uninstalled app brought onto this computer, and the images its own compose build made.
    *
-   * Candidates include image IDs captured before teardown and Compose-labeled
-   * images for local builds. Missing or in-use images do not fail the uninstall,
-   * allowing application-level cleanup to finish.
+   * `appImageIds` are the IDs an install, an update, a start or a restart recorded when it brought the image in for
+   * this app (`AppFilesManager.readPulledImages`). Nothing else is removed: an image that was on the computer before
+   * the app stays. Removal is never forced, so Docker refuses an image that a container, running or stopped, still
+   * uses. Missing or held images do not fail the uninstall.
+   *
+   * ⚠ DOCKER DOES NOT REFUSE ONE TAG. Removing by ID takes an image with a single tag and its digest names. It asks
+   * nothing about that tag. Store apps pin `name:tag@digest`, which leaves no tag at all, so `docker pull name:tag` by
+   * hand after the install gives the image a tag the app never asked for. So a recorded image with a tag that isn't in
+   * `appImageTags` stays. So does one whose tags can't be read.
    *
    * @param appUrn App URN being uninstalled.
-   * @param snapshotImageIds Image IDs captured before container teardown.
+   * @param appImageIds Image IDs the app's installs, updates, starts and restarts brought in for it.
+   * @param appImageTags The tags those images had when they arrived.
    */
-  public async removeAppImages(appUrn: AppUrn, snapshotImageIds: string[] = []): Promise<void> {
+  public async removeAppImages(appUrn: AppUrn, appImageIds: string[] = [], appImageTags: string[] = []): Promise<void> {
     const projectName = this.getComposeProjectName(appUrn);
 
     const labeledImages = await this.docker.listImages({ filters: { label: [`com.docker.compose.project=${projectName}`] } }).catch((error) => {
@@ -433,16 +435,33 @@ export class DockerService {
       return [];
     });
 
-    // Combine container IDs with Compose-labeled builds so cleanup covers partial
-    // installation and teardown states.
-    const imageIds = new Set<string>([...snapshotImageIds, ...labeledImages.map((image) => image.Id)].filter(Boolean));
+    const builtImageIds = labeledImages.map((image) => image.Id).filter(Boolean);
+    const ownTags = new Set(appImageTags);
+    const recordedImageIds: string[] = [];
+    for (const imageId of new Set(appImageIds)) {
+      try {
+        const otherTags = (await this.imageTagsLocally(imageId)).filter((tag) => !ownTags.has(tag));
+        if (otherTags.length === 0) {
+          recordedImageIds.push(imageId);
+        } else if (!builtImageIds.includes(imageId)) {
+          this.logger.warn(`Keeping image ${imageId} (${appUrn}): it has a tag this app did not bring in (${otherTags.join(', ')})`);
+        }
+      } catch (error) {
+        if (!this.isResourceMissingError(error)) {
+          this.logger.warn(`Keeping image ${imageId} (${appUrn}): could not read its tags: ${error}`);
+        }
+      }
+    }
+
+    // The app's recorded pulls and its own compose builds. Never forced: an image another container uses stays.
+    const imageIds = new Set<string>([...recordedImageIds, ...builtImageIds]);
 
     for (const imageId of imageIds) {
       try {
-        await this.docker.getImage(imageId).remove({ force: true });
+        await this.docker.getImage(imageId).remove();
       } catch (error) {
-        // Missing or in-use images must not block the remaining uninstall cleanup.
-        if (this.isResourceMissingError(error) || this.isResourceInUseError(error)) {
+        // Missing or held images must not block the remaining uninstall cleanup.
+        if (this.isResourceMissingError(error) || this.isImageHeldError(error)) {
           this.logger.warn(`Skipping image removal for ${imageId} (${appUrn}): ${error}`);
           continue;
         }
@@ -540,12 +559,13 @@ export class DockerService {
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const p = path.posix;
     const isSafeSegment = (segment: string) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment);
+    const isSafeStoreSegment = (segment: string) => segment === USER_APP_STORE_SLUG || isSafeSegment(segment);
     const expected = p.join(appDataRoot, appStoreId, appName);
 
     // Require the exact `{app-data-root}/{store}/{app}` path to confine the
     // privileged deletion to one app directory.
     if (
-      !isSafeSegment(appStoreId) ||
+      !isSafeStoreSegment(appStoreId) ||
       !isSafeSegment(appName) ||
       p.normalize(appDataRoot) === '/' ||
       p.normalize(hostAppDataDir) !== p.normalize(expected) ||
@@ -591,6 +611,7 @@ export class DockerService {
     };
     const p = path.posix;
     const isSafeSegment = (segment: string) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment);
+    const isSafeStoreSegment = (segment: string) => segment === USER_APP_STORE_SLUG || isSafeSegment(segment);
 
     try {
       const { appName, appStoreId } = extractAppUrn(appUrn);
@@ -605,7 +626,7 @@ export class DockerService {
       const hostSnapshotDir = p.join(rootFolderHost, 'backups', area.dirname, appStoreId, appName, snapshotId);
 
       if (
-        !isSafeSegment(appStoreId) ||
+        !isSafeStoreSegment(appStoreId) ||
         !isSafeSegment(appName) ||
         !area.idPattern.test(snapshotId) ||
         p.normalize(appDataRoot) === '/' ||
@@ -1136,48 +1157,31 @@ export class DockerService {
     }
   }
 
-  private summarizePullLayers(layers: Map<string, DockerPullLayerSnapshot>): {
-    completedBytes: number;
-    totalBytes: number;
-    stage: DockerPullProgressEvent['stage'];
-    /** Layers seen so far and how many are done, for the pull's status log. */
-    layersSeen: number;
-    layersDone: number;
-  } {
-    let completedBytes = 0;
-    let totalBytes = 0;
-    let hasExtractingLayer = false;
-    let hasActiveLayer = false;
-    let layersSeen = 0;
-    let layersDone = 0;
-
-    for (const layer of layers.values()) {
-      const total = Math.max(layer.total, layer.current);
-      totalBytes += total;
-
-      const normalizedStatus = layer.status.toLowerCase();
-      const isComplete = normalizedStatus.includes('pull complete') || normalizedStatus.includes('already exists');
-      const isExtracting = normalizedStatus.includes('extract');
-
-      // Docker's "Pulling from <repo>" line carries the tag as its id and is not a layer.
-      if (!normalizedStatus.startsWith('pulling from')) {
-        layersSeen += 1;
-        if (isComplete) layersDone += 1;
+  /**
+   * The ID of the image `image` names on this computer, or `null` when it is not here. Read-only, never pulls.
+   * An install, an update, a start or a restart compares it before and after a pull to tell the images the pull brought in.
+   */
+  async imageIdLocally(image: string): Promise<string | null> {
+    try {
+      const info = await this.docker.getImage(image).inspect();
+      return info.Id || null;
+    } catch (error) {
+      if (this.isResourceMissingError(error)) {
+        return null;
       }
-
-      if (isExtracting) {
-        hasExtractingLayer = true;
-      }
-
-      if (!isComplete) {
-        hasActiveLayer = true;
-      }
-
-      completedBytes += isComplete ? total : Math.min(layer.current, total);
+      throw error;
     }
+  }
 
-    const stage: DockerPullProgressEvent['stage'] = hasActiveLayer ? (hasExtractingLayer ? 'extracting' : 'downloading') : 'complete';
-    return { completedBytes, totalBytes, stage, layersSeen, layersDone };
+  /** The IDs of the images on this computer, under any name. Read-only, never pulls. */
+  async imageIdsLocally(): Promise<Set<string>> {
+    return new Set((await this.docker.listImages()).map((image) => image.Id));
+  }
+
+  /** The tags the image with this ID has. A digest name is not a tag, though the containerd image store lists it among them. */
+  async imageTagsLocally(imageId: string): Promise<string[]> {
+    const info = await this.docker.getImage(imageId).inspect();
+    return (info.RepoTags ?? []).filter((tag) => !tag.includes('@'));
   }
 
   public async pullImages(
@@ -1185,6 +1189,13 @@ export class DockerService {
     options: {
       forcePull?: boolean;
       onProgress?: (event: DockerPullProgressEvent) => void;
+      /**
+       * Each image's compressed layer sizes for this Hub's platform, by layer digest, read from its
+       * registry. Asked for once per image as its pull starts and never waited on: until it answers,
+       * or if it answers `null`, sizes come from Docker's events alone. `signal` fires if the pull is
+       * cancelled or times out.
+       */
+      layerSizes?: (image: string, signal: AbortSignal) => Promise<ReadonlyMap<string, number> | null | undefined>;
       signal?: AbortSignal;
       inactivityTimeoutMs?: number;
       firstEventTimeoutMs?: number;
@@ -1252,35 +1263,61 @@ export class DockerService {
 
     const completedImages = new Set<string>();
     const layerSnapshots = new Map<string, DockerPullLayerSnapshot>();
+    // Per image being downloaded: the layers Docker announced, whether its downloads have begun and
+    // its layer sizes from the manifest once they arrive. Together they say when the total is final.
+    const downloadingImages = new Set<string>();
+    const imageLayerIds = new Map<string, Set<string>>();
+    const imageDownloadStarted = new Set<string>();
+    const manifestSizes = new Map<string, ReadonlyMap<string, number>>();
+    // Every manifest's sizes in one map, by short layer id, added to as each manifest arrives.
+    const expectedLayerSizes = new Map<string, number>();
     // Set once this call has returned or thrown. When one image fails the others are not aborted,
     // and one still waiting on Docker must not later report a timeout for a pull that is over.
     let pullEnded = false;
 
     const pullStartedAt = Date.now();
     const statusLogTimer = globalThis.setInterval(() => {
-      const { completedBytes, totalBytes, layersDone, layersSeen } = this.summarizePullLayers(layerSnapshots);
+      const { completedBytes, totalBytes, layersDone, layersSeen } = summarizePullLayers(layerSnapshots, expectedLayerSizes);
       this.logger.info(
         `[pull] after ${secondsSince(pullStartedAt)}: ${completedImages.size} of ${uniqueImages.length} images done, ${layersDone} of ${layersSeen} layers, ${megabytes(completedBytes)} of ${megabytes(totalBytes)} MB`,
       );
     }, PULL_STATUS_LOG_INTERVAL_MS);
     statusLogTimer.unref?.();
 
-    const emitProgress = (activeImage: string, stageOverride?: DockerPullProgressEvent['stage']) => {
-      armInactivityTimer();
-
+    const reportProgress = (activeImage: string, stageOverride?: DockerPullProgressEvent['stage']) => {
       if (!options.onProgress) {
         return;
       }
 
-      const summary = this.summarizePullLayers(layerSnapshots);
+      const summary = summarizePullLayers(layerSnapshots, expectedLayerSizes);
+      // An image still being looked for locally may yet need a download, so it isn't known either.
+      const totalBytesKnown = uniqueImages.every(
+        (image) =>
+          completedImages.has(image) ||
+          (downloadingImages.has(image) &&
+            imageSizeKnown({
+              layerIds: imageLayerIds.get(image) ?? new Set(),
+              layers: layerSnapshots,
+              expected: manifestSizes.get(image),
+              downloadStarted: imageDownloadStarted.has(image),
+              complete: false,
+            })),
+      );
       options.onProgress({
         activeImage,
         completedBytes: summary.completedBytes,
         totalBytes: summary.totalBytes,
+        totalBytesKnown,
         completedImages: completedImages.size,
         totalImages: uniqueImages.length,
         stage: stageOverride ?? summary.stage,
       });
+    };
+
+    // An event from Docker: the pull is alive.
+    const emitProgress = (activeImage: string, stageOverride?: DockerPullProgressEvent['stage']) => {
+      armInactivityTimer();
+      reportProgress(activeImage, stageOverride);
     };
 
     try {
@@ -1295,6 +1332,36 @@ export class DockerService {
           }
           // An abort during the lookup above has already fired, so the listener below would never hear it.
           throwIfAborted(pullSignal);
+          downloadingImages.add(image);
+
+          // The registry's layer sizes give the download its full size before Docker reports them. Not
+          // waited on, so a slow registry never holds the pull up; and not a sign of life from Docker, so
+          // it doesn't arm the stall timer.
+          if (options.layerSizes) {
+            const lookupStartedAt = Date.now();
+            void Promise.resolve()
+              .then(() => options.layerSizes?.(image, pullSignal))
+              .then(
+                (sizes) => {
+                  if (!sizes || sizes.size === 0 || pullEnded || completedImages.has(image)) {
+                    return;
+                  }
+                  const byLayerId = new Map([...sizes].map(([digest, size]) => [shortLayerId(digest), size]));
+                  manifestSizes.set(image, byLayerId);
+                  for (const [id, size] of byLayerId) expectedLayerSizes.set(id, size);
+                  this.logger.info(`[pull] ${image}: ${sizes.size} layer sizes from the registry after ${secondsSince(lookupStartedAt)}`);
+                  reportProgress(image);
+                },
+                (error) => {
+                  if (!pullEnded && !pullSignal.aborted) {
+                    this.logger.warn(`[pull] ${image}: no layer sizes from the registry (${error instanceof Error ? error.message : String(error)})`);
+                  }
+                },
+              )
+              .catch((error) => {
+                this.logger.warn(`[pull] ${image}: progress update failed (${error instanceof Error ? error.message : String(error)})`);
+              });
+          }
 
           // A pull Docker never starts would otherwise wait out the whole inactivity timeout.
           const imageStartedAt = Date.now();
@@ -1383,14 +1450,16 @@ export class DockerService {
                   }
 
                   if (event?.id) {
-                    const snapshot = layerSnapshots.get(event.id) ?? { current: 0, total: 0, status: '' };
-                    const current = Math.max(snapshot.current, event.progressDetail?.current ?? snapshot.current);
-                    const total = Math.max(snapshot.total, event.progressDetail?.total ?? snapshot.total, current);
-                    layerSnapshots.set(event.id, {
-                      current,
-                      total,
-                      status: event.status ?? snapshot.status,
-                    });
+                    const status = event.status ?? '';
+                    if (isLayerEvent(status)) {
+                      const ids = imageLayerIds.get(image) ?? new Set<string>();
+                      ids.add(event.id);
+                      imageLayerIds.set(image, ids);
+                      if (isDownloadPhase(status)) {
+                        imageDownloadStarted.add(image);
+                      }
+                    }
+                    layerSnapshots.set(event.id, applyLayerEvent(layerSnapshots.get(event.id), event));
                   }
 
                   emitProgress(image);
@@ -2503,32 +2572,33 @@ export class DockerService {
   }
 
   /**
-   * Polls after `compose up` until labeled containers reach a stable running
-   * state, or returns the final failed verification.
+   * Whether an app came up after `compose up`: the one check install, retry, start and restart share.
+   * Looks at the containers until {@link AppCameUpWatch} has an answer. A look Docker did not answer
+   * says nothing, so the watch goes on. It throws only once Docker has not answered for its whole window.
    */
   public async waitForManagedAppContainersReady(
     appUrn: AppUrn,
-    options?: { maxAttempts?: number; delayMs?: number },
+    timing: AppCameUpTiming = APP_CAME_UP_TIMING,
   ): Promise<ManagedAppContainerVerification> {
-    const maxAttempts = options?.maxAttempts ?? MANAGED_APP_STARTUP_MAX_ATTEMPTS;
-    const delayMs = options?.delayMs ?? MANAGED_APP_STARTUP_DELAY_MS;
+    const startedAtMs = Date.now();
+    const watch = new AppCameUpWatch(startedAtMs, timing);
 
-    let lastVerification: ManagedAppContainerVerification | undefined;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      lastVerification = await this.dockerReadFacade.getManagedAppContainerVerification(appUrn);
-      if (lastVerification.ok) {
-        return lastVerification;
+    for (;;) {
+      const look = await this.dockerReadFacade.lookAtManagedAppContainers(appUrn).catch((error: unknown) => {
+        if (Date.now() - startedAtMs >= timing.settleWithinMs) {
+          throw error;
+        }
+        return null;
+      });
+      const verdict = look && watch.judge(look, Date.now());
+      if (verdict?.outcome === 'up') {
+        return { ok: true, message: 'All containers came up' };
       }
-
-      const shouldRetry = attempt < maxAttempts && (lastVerification.appStatus === 'missing' || lastVerification.appStatus === 'stopped');
-      if (!shouldRetry) {
-        break;
+      if (verdict?.outcome === 'failed') {
+        return this.dockerReadFacade.describeAppCameUpFailure(verdict);
       }
-
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      await new Promise((resolve) => setTimeout(resolve, timing.lookEveryMs));
     }
-
-    return lastVerification ?? (await this.dockerReadFacade.getManagedAppContainerVerification(appUrn));
   }
 
   /**

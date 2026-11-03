@@ -1,27 +1,24 @@
 <div align="center">
 
 <a href="https://ci.computer/hub">
-  <img src="packages/frontend/hub-brand/logos/mark-tight.svg" alt="Companion Hub logo" width="128" height="128">
+  <img src="https://raw.githubusercontent.com/companionintelligence/.github/main/profile/assets/icons/companion-hub.png" width="96" height="96" alt="Companion Hub icon">
 </a>
 
-# Companion Hub
+<h1 align="center">Companion Hub</h1>
 
-**Your own AI server, on the computer you already own.**
+<p align="center"><strong>Your own AI server, on the computer you already own.</strong></p>
+
+<p align="center"><a href="https://ci.computer/hub">Website</a> · <a href="#documentation">Documentation</a> · <a href="#install">Get started</a> · <a href="#license">License</a> · <a href="https://discord.com/invite/yQp9hwpzAa">Community</a> · <a href="https://docs.ci.computer/docs/reference/open-source-systems">Systems map</a></p>
+
 
 Install self-hosted apps, local models, and AI agents in one click, and run them side by side on a Mac, PC, or Linux box.
 Your apps, your models, and your data stay on your hardware.
 
 [![Latest release](https://img.shields.io/github/v/release/companionintelligence/CI-Hub?style=flat-square&color=0a6358&label=release)](https://github.com/companionintelligence/CI-Hub/releases/latest)
-[![Docs](https://img.shields.io/badge/docs-docs.ci.computer-0a6358?style=flat-square)](https://docs.ci.computer)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-0a6358?style=flat-square)](https://docs.ci.computer/docs/getting-started/system-requirements)
 [![License](https://img.shields.io/badge/license-PolyForm%20NC%201.0-0a6358?style=flat-square)](LICENSE.md)
 [![Discord](https://img.shields.io/badge/chat-Discord-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.com/invite/yQp9hwpzAa)
 
-**[Website](https://ci.computer/hub)** ·
-**[Documentation](https://docs.ci.computer)** ·
-**[Download](https://github.com/companionintelligence/CI-Hub/releases/latest)** ·
-**[App catalog](https://docs.ci.computer/docs/apps-available)** ·
-**[Your first hour](https://docs.ci.computer/docs/getting-started/first-hour)**
 
 <br>
 
@@ -255,8 +252,21 @@ Engineering notes for this repository live in [`docs/`](docs/). Start with the d
 
 ## Security and privacy
 
+- **Report a vulnerability.** Report it privately and don't open a public issue. See [`SECURITY.md`](SECURITY.md).
 - **Hub and Portal.** Open-source Hub is an untrusted client of Companion Portal. Marketplace installs and registry tag lists need a Portal-issued device key, so pair first (`cihub register` or the onboarding UI). An unpaired Hub gets `401` on those calls, and the catalog can look slow or empty instead of obviously unauthorized. See [`docs/security/hub-portal-trust.md`](docs/security/hub-portal-trust.md).
 - **Telemetry.** Distributed builds report crashes to Sentry by default. `CI_TELEMETRY=off` or `CI_LOCAL_ONLY=true` in the Hub `.env` stops it, as does the switch in **Settings → General**. What is collected, and what is not, is in [`docs/telemetry.md`](docs/telemetry.md).
+
+<!-- companion-hub-readme-deep-review -->
+
+## Supported desktop installers
+
+| Platform | Install route | Update route |
+|---|---|---|
+| macOS (Apple silicon and Intel) | Homebrew Cask or release DMG | `brew upgrade --cask companion-hub` or install the new DMG |
+| Windows x64 | Scoop bucket or release installer | `scoop update companion-hub` or install the new release |
+| Linux | Download the Linux release from the website | Install the newer release package |
+
+The package-manager repositories track Hub releases. See [Homebrew](https://github.com/companionintelligence/homebrew-tap) and [Scoop](https://github.com/companionintelligence/scoop-bucket) for their platform-specific behavior.
 
 ## Contributing
 

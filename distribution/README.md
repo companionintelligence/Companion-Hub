@@ -50,6 +50,17 @@ Use a **machine/bot account** or dedicated fine-grained PAT with **Contents: Rea
 
 The publish script verifies push access before cloning and uses the PAT directly in git remote URLs (the default `GITHUB_TOKEN` only has access to CI-Hub itself).
 
+#### What the publisher writes
+
+The publisher is additive. `publish-package-managers.sh` copies the files under `distribution/publish/<repo>/` into a clone of the target repo and commits what changed (`sync-published-files.sh`). It never deletes anything and never touches a file that is not in that directory. If the Hub's own cask or manifest is missing from `distribution/publish/`, it stops before touching either repo.
+
+`homebrew-tap` and `scoop-bucket` are shared. Other apps publish their own entries there (Companion Capture and Agent Sync today), and the repos can carry files the Hub does not own, such as attribution files and an extended README. A mirror that deletes what it does not know would remove them, and an earlier version of the publisher (`rsync -a --delete`) did remove the attribution files and reset both READMEs. Two consequences:
+
+- A target repo's `README.md` is written only when it has none yet, so an extended README in the tap or the bucket stays as it is.
+- To retire a file the Hub used to publish, delete it in the target repo by hand.
+
+`scripts/__tests__/publish-package-managers.test.ts` runs the real publisher against local bare repos and fails if another app's file, or an extended README, does not survive a publish.
+
 ### 2. SHA256 hashes (manual fallback)
 
 **Every manifest requires real SHA256 hashes before submission.** Placeholders are marked as:

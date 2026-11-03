@@ -32,10 +32,10 @@ when Layer 1 and product behavior disagree.
 
 | Score | Meaning |
 |-------|---------|
-| `pass` | Ready (healthcheck `healthy` **or** HTTP `< 500`) **and** a screenshot rendered **and** the backend is healthy |
-| `warn` | Ready, but no screenshot **or** the backend is **degraded** — frontend serves while a backend service is down/restarting (the "login broken" case). The failing service + a log excerpt are in `notes` |
+| `pass` | Ready (healthcheck `healthy` **or** HTTP `< 500`/TCP probe) and the backend is healthy; GUI apps also need a screenshot |
+| `warn` | A GUI app is ready but has no screenshot, or the backend is **degraded** — frontend serves while a backend service is down/restarting (the "login broken" case). The failing service + a log excerpt are in `notes` |
 | `fail` | Never became ready, or the main container exited / restart-looped |
-| `skip` | Not an HTTP app — `no_gui` MCP/CLI, VM image (`dockurr/*`), GPU image (`rocm`/`cuda`/`amd-strix`), private `ghcr.io/companionintelligence/*`, or a dead/auth-failed image. Skips count as completed, they are **not** failures |
+| `skip` | No supported probe in this lane: a no-GUI service without a declared main-service port, a UDP-only service, a silent TCP protocol without a supported probe, a VM image (`dockurr/*`), a GPU image (`rocm`/`cuda`/`amd-strix`), a private `ghcr.io/companionintelligence/*` image, or a dead/auth-failed image. No-GUI MCP apps use the stdio protocol lane. Skips count as completed, they are **not** failures |
 
 `warn` with a backend-degraded note is the most important signal — it is exactly the
 "frontend up, backend down" bug that a naive HTTP-200 check hides.

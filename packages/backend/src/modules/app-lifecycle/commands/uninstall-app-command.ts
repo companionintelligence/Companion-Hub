@@ -9,6 +9,7 @@ import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import type { AppUrn } from '@ci-hub/common/types';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { AppLifecycleCommand } from './command';
+import { imagesNoOtherAppNames } from './pull-app-images';
 
 export class UninstallAppCommand extends AppLifecycleCommand {
   constructor(
@@ -43,13 +44,16 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         logger.warn(`Failed to release ports for ${appUrn}: ${err}`);
       }
 
-      // Capture image IDs before compose down so we can remove pulled images by
-      // immutable ID even when tags/compose refs are no longer resolvable.
-      const snapshotImageIds = isPortExpose ? [] : await dockerService.snapshotAppImageIds(appUrn);
+      // The images this app's installs, updates and starts pulled for it, as recorded when each brought them in. Only
+      // these are removed, with Delete all data on or off, since an image is not the app's data. An image that was on
+      // the computer before the app stays. So does one a container still uses and one another installed app names.
+      const pulledImages = isPortExpose ? { imageIds: [], imageTags: [] } : await appFilesManager.readPulledImages(appUrn);
+      const appImageIds = await imagesNoOtherAppNames(this.moduleRef, appUrn, pulledImages.imageIds);
 
       try {
         if (!isPortExpose) {
-          const downCommand = this.deleteAllData ? 'down --remove-orphans -v --rmi all' : 'down --remove-orphans --rmi all';
+          // `local` removes only the images compose built for this app; the pulled ones are removed by ID below.
+          const downCommand = this.deleteAllData ? 'down --remove-orphans -v --rmi local' : 'down --remove-orphans --rmi local';
           await dockerService.composeApp(appUrn, downCommand);
           logger.info(`Successfully cleaned up all Docker resources for ${appUrn}`);
         }
@@ -71,8 +75,9 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         }
 
         // Explicit post-down cleanup is a safety net for partial teardown states.
-        await dockerService.removeAppImages(appUrn, snapshotImageIds);
+        await dockerService.removeAppImages(appUrn, appImageIds, pulledImages.imageTags);
         await dockerService.removeAppNetworks(appUrn);
+        await appFilesManager.deletePulledImages(appUrn);
       }
 
       // Sync Cloudflare state (app removal will be reflected)

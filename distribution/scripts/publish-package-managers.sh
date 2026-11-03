@@ -44,6 +44,20 @@ verify_publish_token() {
   done
 }
 
+# If the Hub's own cask or manifest is missing from distribution/publish/, stop before either repo is touched instead of
+# publishing half a release or nothing at all. Both files are tracked in git, so a checkout has them even when
+# update-package-manifests.sh did not run. The check fires only if a tracked file was deleted and the update step
+# did not recreate it.
+require_hub_files() {
+  local file
+  for file in homebrew-tap/Casks/companion-hub.rb scoop-bucket/companion-hub.json; do
+    if [[ ! -f "$DIST/$file" ]]; then
+      echo "distribution/publish/${file} is missing: run update-package-manifests.sh first. Nothing was published." >&2
+      exit 1
+    fi
+  done
+}
+
 publish_repo() {
   local repo_name="$1"
   local source_dir="$2"
@@ -62,7 +76,9 @@ publish_repo() {
     git -c credential.helper= clone --depth=1 "$origin" "$work"
   fi
 
-  rsync -a --delete --exclude '.git' "${source_dir}/" "${work}/"
+  # Additive copy of the Hub's own files: the tap and the bucket hold other apps' entries and files this
+  # repo does not own, so nothing is mirrored or deleted here. See sync-published-files.sh.
+  bash "$ROOT/distribution/scripts/sync-published-files.sh" "$source_dir" "$work"
   (
     cd "$work"
     git add -A
@@ -79,6 +95,7 @@ publish_repo() {
   echo "Published ${repo_name}"
 }
 
+require_hub_files
 verify_publish_token
 publish_repo "homebrew-tap" "$DIST/homebrew-tap"
 publish_repo "scoop-bucket" "$DIST/scoop-bucket"

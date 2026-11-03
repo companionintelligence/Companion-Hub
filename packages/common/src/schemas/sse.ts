@@ -55,6 +55,23 @@ const installQueueEventSchema = z.object({
 const updatePhaseSchema = z.enum(['preparing', 'pulling', 'backing_up', 'replacing', 'starting', 'verifying', 'finalizing', 'rolling_back']);
 export type UpdatePhase = z.infer<typeof updatePhaseSchema>;
 
+/** The host port an app was to publish and the one it ended up on, which is what a person is told. */
+export const hostPortMoveSchema = z.object({ from: z.number(), to: z.number() });
+export type HostPortMove = z.infer<typeof hostPortMoveSchema>;
+
+/**
+ * Why an app's containers did not come up, in pieces the client can word in the person's language.
+ * `service` is the first one that failed, `others` how many more did.
+ */
+export const appServiceFailureSchema = z.object({
+  kind: z.enum(['restarting', 'exited', 'none_running']),
+  service: z.string().optional(),
+  others: z.number().int().nonnegative().optional(),
+  exitCode: z.number().int().optional(),
+  logLine: z.string().optional(),
+});
+export type AppServiceFailure = z.infer<typeof appServiceFailureSchema>;
+
 const appScopedEventSchema = z.object({
   event: z.enum([
     'status_change',
@@ -93,6 +110,9 @@ const appScopedEventSchema = z.object({
     // An install call for the app began or ended its checks, which run before the app has a row.
     // Carries no status, but `operation`: what the Hub has under way for the app now.
     'operation_change',
+    // Sent to the next page to connect when no page was connected for the outcome that moved the app
+    // off a host port. Carries `movedHostPort` and no status, since that outcome may be long past.
+    'host_port_moved',
   ]),
   appUrn: appUrnSchema,
   appStatus: appStatusSchema.optional(),
@@ -102,6 +122,7 @@ const appScopedEventSchema = z.object({
   errorCode: z.string().optional(),
   errorDetail: z.string().optional(),
   settingsPath: z.string().optional(),
+  serviceFailure: appServiceFailureSchema.optional(),
   hostname: z.string().optional(),
   progress: z.number().min(0).max(99).optional(),
   // An install's image download so far, beside `progress`, once Docker has reported layer sizes.
@@ -116,6 +137,10 @@ const appScopedEventSchema = z.object({
   // Optional detail for the caveat (e.g. the host path of an uninstall remnant), so the
   // client can render an actionable message such as a manual cleanup command.
   warningDetail: z.string().optional(),
+  // On a start, restart or install outcome: the app could not have the host port it was to publish
+  // (`from`) so it is on `to` now. The client says so, in place of a plain success, because its local address changed.
+  // A start or restart can fail after the move. The app stays on `to` then too.
+  movedHostPort: hostPortMoveSchema.optional(),
 });
 
 /**

@@ -42,7 +42,16 @@ jobs:
       # this the bundles pinned a tag no workflow ever pushed and could not start (#920).
       # build-container publishes a versioned tag for production only.
       tag: ${{ inputs.tag }}
-    secrets: inherit
+    # Name the secrets the called workflow reads. This workflow also holds the signing secrets,
+    # and build-container.yml needs none of them.
+    secrets:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      PORTAL_REGISTRY_PASSWORD: ${{ secrets.PORTAL_REGISTRY_PASSWORD }}
+      PORTAL_REGISTRY_USERNAME: ${{ secrets.PORTAL_REGISTRY_USERNAME }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+      SENTRY_FRONTEND_DSN: ${{ secrets.SENTRY_FRONTEND_DSN }}
 
   build:
     needs: build-container
@@ -688,6 +697,7 @@ jobs:
     if: inputs.environment == 'production' && !inputs.prerelease
     needs: [release]
     uses: ./.github/workflows/publish-package-managers.yml
-    secrets: inherit
+    secrets:
+      CI_PACKAGE_MANAGERS_TOKEN: ${{ secrets.CI_PACKAGE_MANAGERS_TOKEN }}
     with:
       tag: ${{ inputs.tag }}

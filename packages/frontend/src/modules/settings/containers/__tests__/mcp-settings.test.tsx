@@ -233,6 +233,48 @@ describe('McpSettingsContainer', () => {
     expect(within(destructiveRow).queryByText('MCP_SETTINGS_TOOL_WRITE_BADGE')).toBeNull();
   });
 
+  it('shows only the tools an access filter names, with each level counted on its button', async () => {
+    const user = userEvent.setup();
+    renderContainer();
+    await waitFor(() => expect(screen.getByTestId('mcp-settings')).toBeTruthy());
+
+    expect(screen.getByTestId('mcp-tool-filter-all').textContent).toContain('3');
+    expect(screen.getByTestId('mcp-tool-filter-destructive').textContent).toContain('1');
+
+    await user.click(screen.getByTestId('mcp-tool-filter-destructive'));
+    expect(screen.getByTestId('mcp-tool-filter-destructive').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText('hub_uninstall_app')).toBeTruthy();
+    expect(screen.queryByText('hub_start_app')).toBeNull();
+    expect(screen.queryByText('hub_list_installed_apps')).toBeNull();
+
+    await user.click(screen.getByTestId('mcp-tool-filter-read'));
+    expect(screen.getByText('hub_list_installed_apps')).toBeTruthy();
+    expect(screen.queryByText('hub_uninstall_app')).toBeNull();
+  });
+
+  it('opens a long catalog with its groups closed, and opens every group a search matches', async () => {
+    const many = Array.from({ length: 13 }, (_, index) => ({
+      name: `hub_tool_${index}`,
+      description: `Tool ${index}`,
+      inputSchema: { type: 'object' },
+      destructive: false,
+      access: 'read',
+      category: index < 7 ? 'Alpha' : 'Beta',
+    }));
+    mockApiFetch.mockImplementation((url: string) =>
+      url === '/api/mcp-admin/tools' ? Promise.resolve({ ok: true, json: async () => ({ tools: many }) }) : mockGet(url),
+    );
+    renderContainer();
+    await waitFor(() => expect(screen.getByTestId('mcp-settings')).toBeTruthy());
+
+    const groups = () => [...screen.getByTestId('mcp-tool-groups').querySelectorAll('details')];
+    expect(groups().map((group) => group.open)).toEqual([false, false]);
+
+    fireEvent.change(screen.getByTestId('mcp-tool-search'), { target: { value: 'hub_tool_1' } });
+    expect(groups()).toHaveLength(2);
+    expect(groups().every((group) => group.open)).toBe(true);
+  });
+
   it('runs a tool and shows the result', async () => {
     const user = userEvent.setup();
     mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {

@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-10-26 (a stopped Public Web app stays in the Cloudflare sync)
+> **Last updated:** 2026-11-01 (uninstall removes only the images an app pulled; reset and uninstall reach the `_user` store; backup archives are owner-only)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -26,14 +26,14 @@ packages/backend/
 |--------|----------------|
 | `apps` / `app-lifecycle` | Install, start, stop, uninstall marketplace apps |
 | `docker` | Dockerode + compose orchestration |
-| `auth` | Hub sessions, 2FA, Portal SSO. Human login admits each Portal `(iss, sub)` in the paired org as their own operator — not `getFirstOperator()`. Session middleware prefers the newest of cookie vs `X-CI-Hub-Session`. Also the route guards that are not operator auth: `InternalNetworkGuard` (source address only; passes proxy traffic unless `HUB_TRUST_PROXY` is set), `ObservabilityReadGuard` (`qa:read` keys on marked GETs), `InferenceAccessGuard` (see [Inference access](#inference-access)), and `InternalOriginGuard` (the origin leg alone, no key — the app credentials handout). |
+| `auth` | Hub sessions, 2FA, Portal SSO. Human login admits each Portal `(iss, sub)` in the paired org as their own operator — not `getFirstOperator()`. Session middleware prefers the newest of cookie vs `X-CI-Hub-Session`. Forward auth (`GET /api/auth/traefik`) signs the username and the person's stable id, which is the issuer and the id with nothing derived from them; the AID header names (`X-CI-Hub-User-AID`, `X-CI-Hub-AID`, `X-CI-Hub-KEL-Digest`) are reserved and never set, and on a route that uses the `ci-hub` forward-auth middleware the current header list makes Traefik delete a visitor's copy (not exercised against a running Traefik). The in-tree KERI module in `packages/common/src/keri` is frozen and not interoperable (see its `FROZEN.md`); `scripts/__tests__/keri-import-guard.test.ts` keeps production code from importing it. Also the route guards that are not operator auth: `InternalNetworkGuard` (source address only; passes proxy traffic unless `HUB_TRUST_PROXY` is set), `ObservabilityReadGuard` (`qa:read` keys on marked GETs), `InferenceAccessGuard` (see [Inference access](#inference-access)), and `InternalOriginGuard` (the origin leg alone, no key — the app credentials handout). |
 | `health` | Liveness/readiness (`/api/health/live`) |
 | `sse` | Real-time status stream to frontend |
 | `mcp` | MCP server tools for agent apps |
 | `tailscale` / `cloudflare` | Optional sidecar integrations |
 | `inference` | Backend registry, model resolution, routing to a local engine. The OpenAI-compatible `/api/inference/v1/*` routes carry `InferenceAccessGuard`; `apps/:slug/credentials*` carries `InternalOriginGuard` (origin only, no key — see [App inference handout](#app-inference-handout)). |
 | `hub-pool` | Multi-Hub inference pooling: peer identity, pairing, discovery, ranking, and the proxy. The app-facing `v1/*` and `api/*` proxy routes (and the root-level `/api/version`, `/api/tags`) carry `InferenceAccessGuard`; `local/*` carries `PoolPeerGuard`. |
-| `registration` | Portal pairing, device ID, and registration-state drift. `check-in-response.ts` maps Portal's check-in answers to Hub responses, and `GET /registration/phase` reports the phase and last check-in without sending one — see [`portal-check-in.md`](../portal-check-in.md). The hourly check-in also carries this Hub's own status (phase, degraded reasons, tunnel health, Tailscale connectivity, version) for Portal's org fleet report — see `check-in-payload.ts`; every field is optional and absent means "no report this time", never "the value is gone". |
+| `registration` | Portal pairing, device ID, and registration-state drift. `check-in-response.ts` maps Portal's check-in answers to Hub responses, and `GET /registration/phase` reports the phase and last check-in without sending one — see [`portal-check-in.md`](../portal-check-in.md). The check-in also carries this Hub's own status (phase, degraded reasons, tunnel health, Tailscale connectivity, version) for Portal's org fleet report — see `check-in-payload.ts`; every field is optional and absent means "no report this time", never "the value is gone". |
 
 ## App volumes
 
@@ -41,6 +41,10 @@ packages/backend/
 docker-managed named volume (`volumeName`), never both. Compose scopes named volumes to the app's
 project, so `db` becomes `<app>_<store>_db`, and the existing lifecycle commands already reclaim
 them — `down --volumes` on uninstall-with-data and reset, preserved on stop/restart/update.
+
+Uninstall removes only the images the Hub pulled for the app. An install, an update, a start or a restart records the IDs of the images it brought onto the computer in `<dataDir>/state/pulled-images/<store>/<app>.json`, with the tags they arrived with. A start and a restart count for the same reason: `compose up` pulls whatever isn't here. That is where a custom app gets its images. The record sits in `state/` because a packaged Hub mounts only the folders under `/data`, so it can be written there and a Hub update keeps it. An image that was already there, under any name, is never recorded: when a reference names nothing or a pull is forced, the Hub also lists the image IDs here before the pull, so an ordinary start doesn't pay for that. Only a new image gets its tags recorded. Two apps can share an image and the second one to start doesn't record it.
+
+Four things keep a recorded image on the computer. Docker refuses one a container uses, running or stopped, since removal is never forced. Docker also refuses one with two tags. It doesn't refuse one with a single tag, so the Hub keeps an image with a tag it didn't arrive with: store apps pin `name:tag@digest`, which leaves no tag. `docker pull name:tag` by hand afterwards gives it one. And the Hub keeps an image another installed app names, because a stopped app has no containers to hold it. If it can't read the compose of another app, or that app has none, every image stays. An image named only in a person's own compose override isn't seen by this check. If the app that recorded a shared image goes first, the image stays after the other app goes too, because neither holds a record of it any more. Images go whether or not Delete all data is on, since they aren't the app's data. Compose removes only the images it built (`--rmi local`). An app installed before this record existed has none, so its pulled images stay on the computer after uninstall.
 
 A bind mount may also declare `requiresPosixPermissions: true`, meaning its contents need real
 ownership. Windows-backed host paths (drvfs/9p) accept `chown`/`chmod` and silently discard them,
@@ -306,6 +310,12 @@ install still running and sends it to every new `app` subscriber after the hello
 mid-install shows where the download is instead of waiting for the next tick. `pullImages` logs
 when each image's pull starts, its first event from Docker, and every 30 seconds where the layers
 are.
+
+A start, restart or install can move an app off a host port another program holds. With no page
+connected, `SSEService` keeps the move and sends it to each new `app` subscriber as
+`host_port_moved`, until one connection has stayed up for five seconds. A tab that reloads on the
+hello doesn't use it up. It is kept in memory, one entry per app, so a Hub restart loses it. The
+Hub's log keeps the move.
 
 What cancelling an install (`AppLifecycleService.cancelOperation`) does depends on how far it got:
 
@@ -577,6 +587,8 @@ waiting or loading when the reset runs is refused once its load ends
 (`ModelRegistryService.currentPinGeneration()`), so it does not pin the old Hub's model again.
 `clearOldHubRequests` removes `state/password-change-request` and `state/pairing-app-check.json`
 and drops the backoff of that apps check (`PairingAppRestoreService.forget()`).
+`AppFilesManager.deleteAllPulledImages()` removes `state/pulled-images`, which the uninstalls before
+it have mostly emptied: a record left behind would claim images for an app of the same name on the next Hub.
 `state/inference-footprint-sightings.json` and `state/tailscale-serve-ownership.json` stay: one
 describes this hardware and the other names the Tailscale Serve listeners this Hub published.
 
@@ -1016,10 +1028,10 @@ about the signed-in person.
 
 `tools/list` leaves these tools out for a key they would refuse. It reads the Hub's own records
 (`storedHubManageVerdictFor`): the claimer, the creator's revoked access and the role stored for the
-creator at sign-in or at the hourly membership check. Listing never asks the Portal; with no role stored,
+creator at sign-in or at the membership check after each accepted check-in. Listing never asks the Portal; with no role stored,
 the tools are listed and the call decides. The 2026-07-28 handler builds a server per request with only
 the tools the key may list, so there a left-out tool is unknown to `tools/call` too. A creator promoted
-since their role was stored waits there for their next sign-in or the hourly membership check. The key
+since their role was stored waits there for their next sign-in or the next membership check. The key
 list in Security settings marks the keys these tools refuse (`hubWideBlocked` on `GET /api/api-keys`),
 from the same records.
 

@@ -36,6 +36,7 @@ import { buildForwardAuthIdentityHeaders } from './utils/forward-auth-signing';
 import { normalizeForwardedHost, rawForwardedHost } from './utils/forward-auth-host';
 import { ForwardAuthIdentityResolver } from './forward-auth-identity.resolver';
 import { ForwardAuthSecretResolver } from './forward-auth-secret.resolver';
+import { MemoryApiKeyCheck } from './memory-api-key.check';
 import { BearerOrgMembershipCache } from './bearer-org-membership.cache';
 import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
@@ -139,11 +140,27 @@ interface EdgeSsoTicket {
  * the Hub cookie, and its login exchange and API routes must reach Nest for
  * app-level authentication. Browser HTML remains on cookie SSO.
  *
+ * `/powersync` is Memory's sync engine, which the gateway proxies there. Its
+ * requests carry a PowerSync JWT that Memory's API signed with the appliance's
+ * own secret and that the engine verifies; it is not a Portal token, so the
+ * Bearer check below would refuse it, and the phone's sync could never connect
+ * through the Hub. Without a valid token the engine answers 401 on every route
+ * but its liveness probes.
+ *
+ * `/static` is Memory's object store: photos, videos and downloads, each link
+ * signed by Memory's API for the person it was handed to and checked by the
+ * store itself (unsigned requests and bucket listings answer 403 AccessDenied,
+ * measured 2026-10-30). An `<img>` cannot carry the phone's API key, so through
+ * the edge every photo in Phone Memory failed with a redirect to the Hub login.
+ * A signed link opens its file for anyone holding it until it expires (five
+ * minutes, Memory's `staticfiles.auth.signatureTTL`), as it already does on a
+ * Memory reached without a Hub.
+ *
  * ONLY for the official Memory install — see `isMemoryProviderHost`. Every
  * other edge-authenticated app relies on the Hub to authenticate for it, and
  * these paths mean nothing to them.
  */
-const FORWARD_AUTH_APP_PUBLIC_PREFIXES = ['/api/authenticate', '/api/health', '/api/keys'] as const;
+const FORWARD_AUTH_APP_PUBLIC_PREFIXES = ['/api/authenticate', '/api/health', '/api/keys', '/powersync', '/static'] as const;
 
 function isForwardAuthAppPublicPath(uri: string): boolean {
   const path = (uri.split('?')[0] || '/').replace(/\/+$/, '') || '/';
@@ -162,17 +179,41 @@ function translatableErrorKey(error: unknown): string {
 }
 
 /**
- * Whether the request carries an `x-api-key` header at all. The VALUE is not
- * checked here — it is Memory's key, and Memory verifies it — which is exactly
- * why this exemption is scoped to the official Memory install by
- * `isMemoryProviderHost`. Applied to every edge-authenticated app, as it once
- * was, any non-empty header was an unauthenticated pass into apps that never
- * look at it (2026-09-24 audit).
+ * The request's `x-api-key`, or null. It is Memory's key: the edge passes it on only to the
+ * official Memory install (`isMemoryProviderHost`), and only once Memory has said it is one it
+ * accepts (`MemoryApiKeyCheck`). Applied to every edge-authenticated app, as it once was, any
+ * non-empty header was an unauthenticated pass into apps that never look at it (2026-09-24
+ * audit); until 2026-10-30 even Memory's pass took any non-empty value.
  */
-function requestHasApiKey(req: Request): boolean {
+function requestApiKey(req: Request): string | null {
   const raw = req.headers['x-api-key'];
-  const value = Array.isArray(raw) ? raw[0] : raw;
-  return typeof value === 'string' && value.trim().length > 0;
+  const value = (Array.isArray(raw) ? raw[0] : raw)?.trim();
+  return value ? value : null;
+}
+
+/**
+ * Whether the forwarded request is a CORS preflight: the original method was
+ * OPTIONS and it carries both `Origin` and `Access-Control-Request-Method`, as
+ * every browser preflight does and nothing else needs to.
+ *
+ * A preflight never carries cookies, keys or tokens — the browser leaves them
+ * off by design — so no request from Phone Memory's webview to Memory with an
+ * `x-api-key` or `Authorization` header can get past one here: answered with a
+ * redirect to the Hub login, the webview refuses the real request outright
+ * ("Redirect is not allowed for a preflight request"). A preflight returns no
+ * data; the app's CORS policy answers it, and the real request that follows
+ * goes through this check like any other. Narrow on purpose: an OPTIONS request
+ * missing either header is not a preflight and gets no pass.
+ */
+function isCorsPreflight(req: Request): boolean {
+  const method = req.headers['x-forwarded-method'];
+  const value = (Array.isArray(method) ? method[0] : method)?.trim().toUpperCase();
+  const present = (name: string) => {
+    const raw = req.headers[name];
+    const header = Array.isArray(raw) ? raw[0] : raw;
+    return typeof header === 'string' && header.trim().length > 0;
+  };
+  return value === 'OPTIONS' && present('origin') && present('access-control-request-method');
 }
 
 @Controller('auth')
@@ -191,6 +232,7 @@ export class AuthController {
     private readonly sessionUserCache: SessionUserCache,
     private readonly forwardAuthIdentities: ForwardAuthIdentityResolver,
     private readonly rateLimiter: AuthRateLimiter,
+    private readonly memoryApiKeys: MemoryApiKeyCheck,
   ) {}
 
   private readonly desktopWaitingChallenges = new DesktopWaitingChallenges();
@@ -1571,8 +1613,20 @@ export class AuthController {
     // the same request falls through to the Bearer / session checks below and is refused like
     // any other anonymous one. Resolved from the forwarded host, which Traefik sets from the
     // router that matched — not from anything the client sent.
-    if (!forwardAuthUser && (isForwardAuthAppPublicPath(cleanUri) || requestHasApiKey(req))) {
+    const apiKey = requestApiKey(req);
+    const selfAuthenticating = isForwardAuthAppPublicPath(cleanUri) || isCorsPreflight(req);
+    if (!forwardAuthUser && (selfAuthenticating || apiKey)) {
       if (await this.isMemoryProviderHost(forwardedHost)) {
+        if (selfAuthenticating || !apiKey) {
+          return res.status(200).send();
+        }
+        // Memory decides whether its key is real; the edge asks before letting the request in, so
+        // a made-up key stops here. `unknown` (Memory unreachable, or too old to have the check)
+        // passes as before: Memory still checks the key on the request itself.
+        if ((await this.memoryApiKeys.check(apiKey)) === 'invalid') {
+          this.logger.debug(`Traefik forward auth refused an API key Memory does not accept for ${forwardedHost} ${cleanUri}`);
+          return res.status(401).send();
+        }
         return res.status(200).send();
       }
       this.logger.debug(`Traefik forward auth: Memory-only exemption refused for ${forwardedHost || '(no host)'} ${cleanUri}`);

@@ -161,6 +161,41 @@ describe('mergeArchitectureOverrides', () => {
     expect(result).toEqual(expected);
   });
 
+  it('should recursively merge nested objects', () => {
+    const baseServicesWithUlimits: ServiceInput[] = [
+      {
+        name: 'app',
+        image: 'app:latest',
+        ulimits: { nofile: { soft: 1024, hard: 2048 } },
+      },
+    ];
+    const overrides = [
+      {
+        architecture: 'amd64' as Architecture,
+        services: [{ name: 'app', ulimits: { nofile: { soft: 4096 } } }],
+      },
+    ];
+
+    const result = mergeArchitectureOverrides(baseServicesWithUlimits, overrides, 'amd64');
+
+    expect(result[0]?.ulimits).toEqual({ nofile: { soft: 4096, hard: 2048 } });
+  });
+
+  it('should ignore prototype-polluting keys from an override', () => {
+    const services: ServiceInput[] = [{ name: 'app', image: 'app:latest', sysctls: { safe: 1 } }];
+    const overrides = JSON.parse(
+      '{"architecture":"amd64","services":[{"name":"app","sysctls":{"__proto__":{"polluted":true},"constructor":{"prototype":{"polluted":true}}}}]}',
+    );
+
+    const result = mergeArchitectureOverrides(services, overrides, 'amd64');
+    const sysctls = result[0]?.sysctls ?? {};
+
+    expect(Object.getPrototypeOf(sysctls)).toBe(Object.prototype);
+    expect(Object.hasOwn(sysctls, '__proto__')).toBe(false);
+    expect(Object.hasOwn(sysctls, 'constructor')).toBe(false);
+    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
+  });
+
   it('should handle multiple architecture overrides', () => {
     const overrides = [
       {

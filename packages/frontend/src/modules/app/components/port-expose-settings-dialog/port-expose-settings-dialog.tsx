@@ -17,7 +17,6 @@ import { CloudflareSubdomainField } from '@/modules/app/components/install-form/
 import { domainListNoteFor } from '@/modules/app/components/install-form/domain-list-note';
 import { preselectedPublicDomain, publicDomainToUse } from '@/modules/app/components/install-form/preselected-public-domain';
 import { useDnsAvailability } from '@/modules/app/components/install-form/use-dns-availability';
-import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { buildPublicWebIdentity, sanitizeAppSubdomain, selectOfferedDomains } from '@ci-hub/common/types';
 import type { AvailableDomain } from '@ci-hub/common/types';
 import type { AppDetails, AppInfo } from '@/types/app.types';
@@ -77,10 +76,8 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
   } = useForm<FormValues>({
     values: {
       port: String(app.port ?? info.port ?? ''),
-      exposureMode: resolveExposureMode((app.exposureMode as ExposureMode | undefined) ?? 'local', {
-        cloudflareAvailable,
-        tailscaleAvailable,
-      }),
+      // The mode it is in, even while that mode's transport is down, until somebody picks another.
+      exposureMode: (app.exposureMode as ExposureMode | undefined) || 'local',
       localSubdomain: app.localSubdomain ?? info.id,
       // A new name has none until Companion Portal's list gives it one (`publicDomainToUse`).
       publicDomain: keepsPublished ? (app.publicDomain ?? domain) : (app.publicDomain ?? undefined),
@@ -186,7 +183,7 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
       return;
     }
 
-    const exposureMode = resolveExposureMode(values.exposureMode, { cloudflareAvailable, tailscaleAvailable });
+    const { exposureMode } = values;
 
     if (exposureMode === 'cloudflare') {
       const subdomain = (values.localSubdomain || defaultAppSubdomain).trim();

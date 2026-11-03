@@ -53,11 +53,20 @@ export class ForwardAuthIdentityResolver {
     this.issuer = undefined;
   }
 
-  /** The stable id to sign beside `userId`'s username, or null when it cannot be read. */
+  /**
+   * The stable id to sign beside `userId`'s username, or null when it cannot be read.
+   *
+   * It is the issuer and the id, nothing derived from them. A hash of those two public labels is
+   * no key and names no one, yet a `did:keri:` string made of it reads as proof of a key, so the
+   * AID fields of {@link ForwardAuthStableId} stay unset until a persisted key event log supplies them.
+   */
   public async stableIdFor(userId: number): Promise<ForwardAuthStableId | null> {
     try {
       const [issuer, publicId] = await Promise.all([this.getIssuer(), this.getPublicId(userId)]);
-      return publicId ? { issuer, userId: publicId } : null;
+      if (!publicId) {
+        return null;
+      }
+      return { issuer, userId: publicId };
     } catch (error) {
       this.logger.warn(`Forward auth could not read the stable id of user ${userId}; signing the username alone: ${describe(error)}`);
       return null;

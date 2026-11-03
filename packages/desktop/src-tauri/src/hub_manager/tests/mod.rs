@@ -18,6 +18,7 @@ mod markers;
 mod misc;
 mod runtime_env;
 mod runtime_state;
+mod start_retry;
 mod status;
 mod windows_paths;
 mod wsl;

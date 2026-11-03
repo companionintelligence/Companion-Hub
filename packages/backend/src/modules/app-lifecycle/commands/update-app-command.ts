@@ -2,7 +2,6 @@ import { DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
 import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
-import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
@@ -19,7 +18,9 @@ import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import type { OperationPhase } from '../app-operation-registry';
 import { AppLifecycleCommand, type CommandExecutionContext } from './command';
-import { type UpdatePhase, parseInstalledComposeJson } from '@ci-hub/common/schemas';
+import { installedComposeImages, pullAppImagesRecorded, recordComposeUpPulls } from './pull-app-images';
+import { type AppSecurityGrants, type UpdatePhase, parseInstalledComposeJson } from '@ci-hub/common/schemas';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
 
 /**
  * Kept free at the end of an update's time (`CommandExecutionContext.deadline`) for undoing it:
@@ -104,7 +105,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     let composeToInstall: Awaited<ReturnType<MarketplaceService['getDockerComposeJson']>>;
     try {
       composeToInstall = await marketplaceService.getDockerComposeJson(appUrn);
-      parseInstalledComposeJson(composeToInstall.content);
+      parseInstalledComposeJson(composeToInstall.content, securityGrantsFor(appUrn));
     } catch (err) {
       logger.error(`Error parsing docker-compose.yml for app ${appUrn} from marketplace repository. Are you running the latest version of CI Hub?`);
       // Nothing has been touched: the running app is exactly as it was.
@@ -174,11 +175,19 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       // files already on disk. Nothing is stopped, removed or replaced until the images are here.
       logger.info(`Pulling images for ${appUrn} before stopping the current version`);
       report('pulling');
-      await dockerService.pullImages(this.imagesToPull(composeToInstall.content), {
-        forcePull: true,
-        signal: ctx?.signal,
-        timeoutMs: Math.min(workLeftMs(), DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES * 60_000),
-      });
+      const imagesToPull = this.imagesToPull(composeToInstall.content, securityGrantsFor(appUrn));
+      await pullAppImagesRecorded(
+        { docker: dockerService, files: appFilesManager, logger },
+        appUrn,
+        imagesToPull,
+        () =>
+          dockerService.pullImages(imagesToPull, {
+            forcePull: true,
+            signal: ctx?.signal,
+            timeoutMs: Math.min(workLeftMs(), DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES * 60_000),
+          }),
+        { forced: true },
+      );
       checkpoint('after downloading the new images');
 
       if (this.performBackup) {
@@ -340,12 +349,8 @@ export class UpdateAppCommand extends AppLifecycleCommand {
    * The images the new version needs, as `compose pull` would resolve them: with the per-architecture
    * overrides applied, so the pull asks for the image this machine will actually run.
    */
-  private imagesToPull(composeContent: unknown): string[] {
-    const configService = this.moduleRef.get(ConfigurationService, { strict: false });
-    const { services, overrides } = parseInstalledComposeJson(composeContent);
-    const merged = mergeArchitectureOverrides(services, overrides, configService?.get('architecture'));
-
-    return [...new Set(merged.map((service) => service.image?.trim()).filter((image): image is string => Boolean(image)))];
+  private imagesToPull(composeContent: unknown, grants?: AppSecurityGrants): string[] {
+    return installedComposeImages(composeContent, this.moduleRef.get(ConfigurationService, { strict: false })?.get('architecture'), grants);
   }
 
   /**
@@ -388,7 +393,8 @@ export class UpdateAppCommand extends AppLifecycleCommand {
         logger.warn(`No backup or volume snapshot available to roll back ${appUrn}; recreating the current containers instead`);
       }
 
-      await dockerService.composeApp(appUrn, 'pull');
+      // The files of the previous version are back by now. A tag of theirs that moved since brings in a new image here.
+      await recordComposeUpPulls(this.moduleRef, appUrn, () => dockerService.composeApp(appUrn, 'pull'), { forced: true });
       await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
       logger.info(`Auto-rollback recovery step completed for ${appUrn} (data and files ${restored ? 'restored' : 'NOT restored'})`);
 

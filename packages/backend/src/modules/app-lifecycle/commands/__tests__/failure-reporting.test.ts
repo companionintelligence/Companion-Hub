@@ -1,3 +1,4 @@
+import { TranslatableError } from '@/common/error/translatable-error';
 import { type AppFailureContext, ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { ModuleRef } from '@nestjs/core';
@@ -246,6 +247,16 @@ describe('reportAndTranslateAppError — error reporting side effect', () => {
     expect(reported[0]?.message).toContain('10.128.10.0/24');
   });
 
+  it('reports the cause behind a generic translated error, and keeps the key the user sees', async () => {
+    const { moduleRef, reported } = createHarness();
+    const err = new TranslatableError('COMMON_AN_ERROR_OCCURRED', undefined, 502, { cause: new Error('timeout of 20000ms exceeded') });
+
+    const result = await reportAndTranslateAppError(moduleRef, err, 'urn:store:jaeger', 'install');
+
+    expect(reported).toEqual([expect.objectContaining({ message: 'COMMON_AN_ERROR_OCCURRED', cause: 'timeout of 20000ms exceeded' })]);
+    expect(result).toEqual({ success: false, message: 'COMMON_AN_ERROR_OCCURRED' });
+  });
+
   it('reports the long detail rather than the short user-facing message when a detail exists', async () => {
     const { moduleRef, reported } = createHarness();
     const err = new AppLifecycleError('short message for the UI', { code: 'custom_code', detail: 'long detail for support' });
@@ -254,6 +265,32 @@ describe('reportAndTranslateAppError — error reporting side effect', () => {
 
     expect(reported[0]?.message).toBe('long detail for support');
     expect(reported[0]?.errorCode).toBe('custom_code');
+  });
+
+  it('keeps app service logs in the command result but strips them from worker telemetry', async () => {
+    const { moduleRef, reported } = createHarness();
+    const privateLog = 'DATABASE_URL=private-value';
+    const serviceFailure = { kind: 'restarting' as const, service: 'web', exitCode: 1, logLine: privateLog };
+    const err = new AppLifecycleError(`web keeps restarting: ${privateLog}`, {
+      code: 'app_service_failed',
+      detail: `web-1 (restarting, exit 1): ${privateLog}`,
+      serviceFailure,
+    });
+
+    const result = await reportAndTranslateAppError(moduleRef, err, 'urn:store:custom', 'start');
+
+    expect(reported).toEqual([
+      {
+        appUrn: 'urn:store:custom',
+        phase: 'start',
+        message: 'web keeps restarting (exit 1)',
+        errorCode: 'app_service_failed',
+        cause: undefined,
+      },
+    ]);
+    expect(JSON.stringify(reported)).not.toContain(privateLog);
+    expect(result.errorDetail).toContain(privateLog);
+    expect(result.serviceFailure).toEqual(serviceFailure);
   });
 
   it('reports the message when an AppLifecycleError carries no detail', async () => {

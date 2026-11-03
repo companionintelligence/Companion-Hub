@@ -173,7 +173,7 @@ exist:
 | **android** | `ubuntu-22.04` | `tauri android build --apk --debug` → installable universal **debug APK** | `companion-hub-android-debug-apk` |
 | **ios** | `macos-latest` | `tauri ios build --target aarch64-sim` → unsigned **iOS Simulator `.app`** | `companion-hub-ios-sim-app` |
 | **android-release** | `ubuntu-22.04` | signed **AAB** for Play — needs the 4 `ANDROID_KEY_*` secrets | `companion-hub-android-release-aab` |
-| **ios-release** | `macos-latest` | signed **IPA** for App Store Connect — needs the 4 `APPLE_*` secrets | `companion-hub-ios-release-ipa` |
+| **ios-release** | `macos-latest` | signed **IPA** for App Store Connect — needs the production signing cert/password/team and App Store profile | `companion-hub-ios-release-ipa` |
 
 **Triggers**
 - **Manually:** GitHub → **Actions → Mobile Build → Run workflow** (`workflow_dispatch`).
@@ -217,19 +217,22 @@ leak):
   (which `app/build.gradle.kts` picks up to wire `signingConfigs.release`), and
   runs `tauri android build --aab`. Without the secrets the job skips cleanly.
   Trigger it from **Actions → Mobile Build → Run workflow**.
-- **iOS IPA** — the `ios-release` job already does all of this; you only supply
-  secrets. It imports the cert into a throwaway keychain (`security import`, not
-  `apple-actions/import-codesign-certs`), installs the provisioning profile,
-  stamps a monotonic `CFBundleVersion`, and builds with
-  `--export-method app-store-connect`. Set `APPLE_CERTIFICATE_BASE64`,
-  `APPLE_CERTIFICATE_PASSWORD`, `APPLE_PROVISIONING_PROFILE_BASE64` and
-  `APPLE_DEVELOPMENT_TEAM`; add the three `APPSTORE_API_*` secrets to also push
-  to TestFlight. Without them the job skips cleanly. See
+- **iOS IPA** — `ios-release` reads signing secrets from the GitHub `production`
+  Environment. The distribution cert, password, and team ID are already there;
+  add `APPLE_PROVISIONING_PROFILE_BASE64` for `computer.ci.app.hub`. It imports
+  the cert into a throwaway keychain, installs the profile, stamps a unique
+  `CFBundleVersion` in Tauri config, `project.yml`, and `Info.plist`, then builds
+  with `--export-method app-store-connect`. Add
+  `APPSTORE_API_KEY_ID`, `APPSTORE_API_ISSUER_ID`, and
+  `APPSTORE_API_PRIVATE_KEY_BASE64` for automatic TestFlight upload. Without
+  the profile, the signed-build lane reports the missing secret and skips; with
+  signing but no API key, it produces an IPA artifact for Transporter. See
   [`STORE-READINESS.md`](./STORE-READINESS.md).
 
-  > ⚠️ **Unproven.** The lane has never completed a signed build — every
-  > `workflow_dispatch` run so far skipped it for missing secrets, so its first
-  > real run should be treated as a debugging session, not a release.
+  > The App Store Connect record already has build `0.1.1 (20261027)` in
+  > internal TestFlight and version 1.0 is awaiting App Review. CI signed-build
+  > and automatic-upload paths still need a run after the missing profile/API
+  > key secrets are configured.
 
 ## Building iOS on Xcode 27
 
@@ -367,6 +370,6 @@ plutil -replace CFBundleVersion -string 42 \
   src-tauri/gen/apple/ci-os-hub-mobile_iOS/Info.plist
 ```
 
-This matters for release automation: any step that stamps a version into
-`project.yml` alone is a no-op. See
+This matters for release automation: the stamp script must update both
+`project.yml` and the committed plist (as well as Tauri's bundle version). See
 [`STORE-READINESS.md`](./STORE-READINESS.md).
