@@ -40,6 +40,9 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   return null;
 }
 
+/** `v2026.11.2` for a numbered release; a tag such as `latest`, or one already starting with `v`, reads as it is. */
+const versionLabel = (version: string) => (/^\d/.test(version) ? `v${version}` : version);
+
 const INFORMATION_ROWS = ['provider', 'categories', 'updated', 'version', 'source', 'size'];
 
 function isGrantDenied(error: unknown): error is TranslatableError {
@@ -72,6 +75,7 @@ function AppDetailsSkeleton() {
                 <Skeleton className="h-9 w-20 rounded-md" />
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                <Skeleton className="h-4 w-16" />
                 <Skeleton className="h-8 w-36 max-w-full rounded-full sm:h-9 sm:w-44" />
                 <Skeleton className="h-8 w-32 max-w-full rounded-full sm:h-9 sm:w-48" />
                 <Skeleton className="h-8 w-44 max-w-full rounded-full sm:h-9 sm:w-60" />
@@ -137,6 +141,9 @@ export default () => {
   // whether this page sent it or another one did (the Hub names it in `operation`).
   const installUnderWay = installRequestPending || fetchedRecord?.operation?.command === 'install';
   const privateRecord = useMemo(() => withInstallRequest(fetchedRecord, appUrn, installUnderWay), [fetchedRecord, appUrn, installUnderWay]);
+  // Until the Hub answers, the listing cannot say whether the app is installed or at which version:
+  // it is the catalog's copy, and with no record the actions would offer Install on an installed app.
+  const recordLoading = getApp.isLoading && !privateRecord?.app;
   const runtimeHealthEnabled = Boolean(privateRecord?.app && privateRecord.app.status !== 'uninstalling');
 
   const imageSize = useQuery({
@@ -301,7 +308,14 @@ export default () => {
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                <div data-testid="app-header-stats" className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                  {recordLoading ? (
+                    <Skeleton data-testid="app-version-skeleton" className="h-4 w-16" />
+                  ) : info.version ? (
+                    <span data-testid="app-version" title={t('COMMON_VERSION')} className="max-w-48 truncate text-xs">
+                      {versionLabel(info.version)}
+                    </span>
+                  ) : null}
                   {headerStats.map((stat) => (
                     <div
                       key={stat.key}
@@ -327,18 +341,25 @@ export default () => {
                 />
               ) : null}
               <div className="min-w-0 md:flex-1">
-                <AppActions
-                  app={app}
-                  metadata={metadata}
-                  info={info}
-                  appDataHostPath={appDataHostPath}
-                  failure={privateRecord?.failure}
-                  localDomain={userSettings.localDomain}
-                  sslPort={userSettings.sslPort}
-                  runtimeHealth={runtimeHealth.data}
-                  urlAvailability={urlAvailability}
-                  layout="hero"
-                />
+                {recordLoading ? (
+                  // Where the install button sits, as in the page's skeleton above.
+                  <div className="flex min-[1280px]:justify-end">
+                    <Skeleton data-testid="app-actions-skeleton" className="h-12 w-full rounded-md sm:w-44" />
+                  </div>
+                ) : (
+                  <AppActions
+                    app={app}
+                    metadata={metadata}
+                    info={info}
+                    appDataHostPath={appDataHostPath}
+                    failure={privateRecord?.failure}
+                    localDomain={userSettings.localDomain}
+                    sslPort={userSettings.sslPort}
+                    runtimeHealth={runtimeHealth.data}
+                    urlAvailability={urlAvailability}
+                    layout="hero"
+                  />
+                )}
               </div>
             </div>
           </div>
