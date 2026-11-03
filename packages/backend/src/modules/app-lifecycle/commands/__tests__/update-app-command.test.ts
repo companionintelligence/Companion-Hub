@@ -190,7 +190,7 @@ describe('UpdateAppCommand', () => {
     vi.mocked(parseComposeJson).mockReturnValue({ services: [{ name: 'web', image: 'app:1' }], overrides: [] } as any);
     appFilesManager.getDockerComposeJson.mockResolvedValue({ path: '/tmp', content: {} });
     appFilesManager.readPulledImages.mockResolvedValue({ imageIds: ['sha256:v1'], imageTags: [] });
-    appFilesManager.writePulledImages.mockResolvedValue(true);
+    appFilesManager.addPulledImages.mockResolvedValue(true);
     dockerService.imageIdsLocally.mockResolvedValue(new Set(['sha256:v1']));
     dockerService.imageTagsLocally.mockResolvedValue(['app:1']);
     let imageHere = 'sha256:v1';
@@ -205,7 +205,7 @@ describe('UpdateAppCommand', () => {
 
     await command.execute(appUrn, {});
 
-    expect(appFilesManager.writePulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:v1', 'sha256:v2'], imageTags: ['app:1'] });
+    expect(appFilesManager.addPulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:v1', 'sha256:v2'], imageTags: ['app:1'] });
   });
 
   it('triggers auto-rollback from snapshot when no backup was performed and probe fails', async () => {
@@ -344,11 +344,11 @@ describe('UpdateAppCommand', () => {
       dockerService.imageIdsLocally.mockResolvedValue(new Set(['sha256:v1']));
       dockerService.imageTagsLocally.mockResolvedValue([]);
       appFilesManager.readPulledImages.mockResolvedValue({ imageIds: ['sha256:v1'], imageTags: [] });
-      appFilesManager.writePulledImages.mockResolvedValue(true);
+      appFilesManager.addPulledImages.mockResolvedValue(true);
 
       await command.execute(appUrn, {});
 
-      expect(appFilesManager.writePulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:v1', 'sha256:v2'], imageTags: [] });
+      expect(appFilesManager.addPulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:v1', 'sha256:v2'], imageTags: [] });
     });
 
     it('leaves a running app exactly as it was when the pull fails', async () => {

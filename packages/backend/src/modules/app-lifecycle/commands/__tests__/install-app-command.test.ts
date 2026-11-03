@@ -266,7 +266,7 @@ describe('InstallAppCommand — pull policy', () => {
       overrides: [],
     } as any);
     afm.readPulledImages.mockResolvedValue({ imageIds: [], imageTags: [] });
-    afm.writePulledImages.mockResolvedValue(true);
+    afm.addPulledImages.mockResolvedValue(true);
     dockerService.imageIdLocally = vi.fn(async (ref: string) => onComputer.get(ref) ?? null);
     dockerService.imageIdsLocally = vi.fn(async () => new Set(onComputer.values()));
     dockerService.imageTagsLocally = vi.fn(async () => []);
@@ -279,7 +279,7 @@ describe('InstallAppCommand — pull policy', () => {
     const result = await command.execute(appUrn, {});
 
     expect(result.success).toBe(true);
-    expect(afm.writePulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:arm64'], imageTags: [] });
+    expect(afm.addPulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:arm64'], imageTags: [] });
   });
 
   it('MUST pre-pull images when force_pull is true and still omit --pull from compose up', async () => {
@@ -313,7 +313,7 @@ describe('InstallAppCommand — pull policy', () => {
 
   it('records the image its pull brought onto the computer for the app, and not the one that was already there', async () => {
     const afm = (command as any).moduleRef.get(AppFilesManager);
-    afm.writePulledImages.mockResolvedValue(true);
+    afm.addPulledImages.mockResolvedValue(true);
     vi.mocked(parseComposeJson).mockReturnValue({
       services: [
         { name: 'app', image: 'ghcr.io/example/app:latest' },
@@ -333,8 +333,8 @@ describe('InstallAppCommand — pull policy', () => {
 
     expect(result.success).toBe(true);
     expect(dockerService.pullImages).toHaveBeenCalled();
-    expect(afm.writePulledImages).toHaveBeenCalledTimes(1);
-    expect(afm.writePulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:app'], imageTags: [] });
+    expect(afm.addPulledImages).toHaveBeenCalledTimes(1);
+    expect(afm.addPulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:app'], imageTags: [] });
   });
 
   it('SHOULD pass through other compose arguments unchanged', async () => {
