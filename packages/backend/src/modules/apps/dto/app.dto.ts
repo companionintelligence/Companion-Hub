@@ -2,7 +2,7 @@ import { APP_STATUS } from '@/core/database/drizzle/types';
 import { MetadataDto } from '@/modules/marketplace/dto/marketplace.dto';
 import { z } from 'zod';
 import { createZodDto } from '@/common/zod-dto';
-import { appInfoSchema, lifecycleOperationSchema } from '@ci-hub/common/schemas';
+import { appInfoSchema, appServiceFailureSchema, lifecycleOperationSchema } from '@ci-hub/common/schemas';
 
 const metadataSchema = (MetadataDto as unknown as { schema: z.ZodType }).schema;
 const appInfoSchemaRef = appInfoSchema;
@@ -130,6 +130,20 @@ const getAppSchema = z.object({
    * still in its checks has no row yet, so this is the only way another page can tell it is coming.
    */
   operation: z.object({ command: lifecycleOperationSchema }).nullable().optional(),
+  /**
+   * Why the app is down, as its last lifecycle command reported it: for a failed install and for a
+   * start or restart whose containers did not come up. `null` for anything else.
+   */
+  failure: z
+    .object({
+      message: z.string(),
+      errorCode: z.string().optional(),
+      errorDetail: z.string().optional(),
+      settingsPath: z.string().optional(),
+      serviceFailure: appServiceFailureSchema.optional(),
+    })
+    .nullable()
+    .optional(),
   info: appInfoSchemaRef,
   metadata: metadataSchema,
   appDataHostPath: z.string().nullable().optional(),

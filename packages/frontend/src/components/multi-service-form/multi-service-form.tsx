@@ -156,7 +156,7 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
           type="button"
           aria-pressed={isActive}
           className={clsx(
-            'inline-flex cursor-pointer items-center gap-2 whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium transition-all',
+            'inline-flex cursor-pointer items-center gap-2 whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium transition-[color,background-color,border-color,box-shadow,opacity,transform]',
             'ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
             isActive ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground',
           )}
@@ -236,7 +236,7 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
           <div className="flex flex-col md:flex-row">
             <div className="w-full shrink-0 border-b border-border p-0 md:w-1/6 md:border-r md:border-b-0">
               <div className="flex items-center justify-between p-3">
-                <div className="font-semibold">{t('MULTI_SERVICE_SERVICES')}</div>
+                <div className="font-medium">{t('MULTI_SERVICE_SERVICES')}</div>
                 <button
                   type="button"
                   className="rounded-sm text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

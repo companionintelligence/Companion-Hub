@@ -40,6 +40,9 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   return null;
 }
 
+/** `v2026.11.2` for a numbered release; a tag such as `latest`, or one already starting with `v`, reads as it is. */
+const versionLabel = (version: string) => (/^\d/.test(version) ? `v${version}` : version);
+
 const INFORMATION_ROWS = ['provider', 'categories', 'updated', 'version', 'source', 'size'];
 
 function isGrantDenied(error: unknown): error is TranslatableError {
@@ -72,6 +75,7 @@ function AppDetailsSkeleton() {
                 <Skeleton className="h-9 w-20 rounded-md" />
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                <Skeleton className="h-4 w-16" />
                 <Skeleton className="h-8 w-36 max-w-full rounded-full sm:h-9 sm:w-44" />
                 <Skeleton className="h-8 w-32 max-w-full rounded-full sm:h-9 sm:w-48" />
                 <Skeleton className="h-8 w-44 max-w-full rounded-full sm:h-9 sm:w-60" />
@@ -137,6 +141,9 @@ export default () => {
   // whether this page sent it or another one did (the Hub names it in `operation`).
   const installUnderWay = installRequestPending || fetchedRecord?.operation?.command === 'install';
   const privateRecord = useMemo(() => withInstallRequest(fetchedRecord, appUrn, installUnderWay), [fetchedRecord, appUrn, installUnderWay]);
+  // Until the Hub answers, the listing cannot say whether the app is installed or at which version:
+  // it is the catalog's copy, and with no record the actions would offer Install on an installed app.
+  const recordLoading = getApp.isLoading && !privateRecord?.app;
   const runtimeHealthEnabled = Boolean(privateRecord?.app && privateRecord.app.status !== 'uninstalling');
 
   const imageSize = useQuery({
@@ -197,7 +204,7 @@ export default () => {
     const refusedName = listing.error.intlParams?.app;
     return (
       <div className="mx-auto max-w-2xl px-4 py-16 text-center">
-        <h1 className="text-2xl font-semibold">{refusedName || t('APP_ACTION_GRANT_DENIED', { action: 'view' })}</h1>
+        <h1 className="text-2xl font-medium">{refusedName || t('APP_ACTION_GRANT_DENIED', { action: 'view' })}</h1>
         {refusedName ? <p className="mt-2 text-muted-foreground">{t('APP_ACTION_GRANT_DENIED', { action: 'view', app: refusedName })}</p> : null}
       </div>
     );
@@ -206,7 +213,7 @@ export default () => {
   if (listing.isError || !listingInfo) {
     return (
       <div className="mx-auto max-w-2xl px-4 py-16 text-center">
-        <h1 className="text-2xl font-semibold">{t('APP_ERROR_APP_NOT_FOUND', { id: appUrn })}</h1>
+        <h1 className="text-2xl font-medium">{t('APP_ERROR_APP_NOT_FOUND', { id: appUrn })}</h1>
         <p className="mt-2 text-muted-foreground">{t('APP_DETAILS_LOAD_FAILED')}</p>
       </div>
     );
@@ -224,7 +231,7 @@ export default () => {
       key: 'rating',
       value: (
         <span className="flex items-center gap-1.5">
-          <span className="text-sm font-semibold">0.0</span>
+          <span className="text-sm font-medium">0.0</span>
           <Star className="h-3.5 w-3.5 fill-yellow-500 text-yellow-500" />
         </span>
       ),
@@ -276,7 +283,7 @@ export default () => {
                   wrap this chip onto the next line, under the author. */}
               <span
                 data-testid="app-price-badge"
-                className="col-start-2 row-start-1 justify-self-end rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-semibold uppercase tracking-wide text-emerald-950 shadow-sm sm:hidden"
+                className="col-start-2 row-start-1 justify-self-end rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-medium   text-emerald-950 shadow-sm sm:hidden"
               >
                 {t('APP_PRICE_FREE')}
               </span>
@@ -286,13 +293,13 @@ export default () => {
                     someone else") keeps its column instead of wrapping under the title at 985px. */}
                 <div className="flex flex-wrap items-start justify-between gap-3 sm:flex-nowrap">
                   <div className="min-w-0 space-y-2">
-                    <h1 className="break-words text-2xl font-semibold tracking-tight sm:text-4xl">{info?.name}</h1>
+                    <h1 className="break-words text-2xl font-medium tracking-tight sm:text-4xl">{info?.name}</h1>
                     {info?.author ? <p className="text-base font-medium text-emerald-800 dark:text-emerald-400 sm:text-lg">{info.author}</p> : null}
                   </div>
                   <div className="flex shrink-0 flex-col items-end gap-2">
                     <span
                       data-testid="app-price-badge"
-                      className="hidden rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-semibold uppercase tracking-wide text-emerald-950 shadow-sm sm:inline-flex"
+                      className="hidden rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-medium   text-emerald-950 shadow-sm sm:inline-flex"
                     >
                       {t('APP_PRICE_FREE')}
                     </span>
@@ -301,7 +308,14 @@ export default () => {
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                <div data-testid="app-header-stats" className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                  {recordLoading ? (
+                    <Skeleton data-testid="app-version-skeleton" className="h-4 w-16" />
+                  ) : info.version ? (
+                    <span data-testid="app-version" title={t('COMMON_VERSION')} className="max-w-48 truncate text-xs">
+                      {versionLabel(info.version)}
+                    </span>
+                  ) : null}
                   {headerStats.map((stat) => (
                     <div
                       key={stat.key}
@@ -327,17 +341,25 @@ export default () => {
                 />
               ) : null}
               <div className="min-w-0 md:flex-1">
-                <AppActions
-                  app={app}
-                  metadata={metadata}
-                  info={info}
-                  appDataHostPath={appDataHostPath}
-                  localDomain={userSettings.localDomain}
-                  sslPort={userSettings.sslPort}
-                  runtimeHealth={runtimeHealth.data}
-                  urlAvailability={urlAvailability}
-                  layout="hero"
-                />
+                {recordLoading ? (
+                  // Where the install button sits, as in the page's skeleton above.
+                  <div className="flex min-[1280px]:justify-end">
+                    <Skeleton data-testid="app-actions-skeleton" className="h-12 w-full rounded-md sm:w-44" />
+                  </div>
+                ) : (
+                  <AppActions
+                    app={app}
+                    metadata={metadata}
+                    info={info}
+                    appDataHostPath={appDataHostPath}
+                    failure={privateRecord?.failure}
+                    localDomain={userSettings.localDomain}
+                    sslPort={userSettings.sslPort}
+                    runtimeHealth={runtimeHealth.data}
+                    urlAvailability={urlAvailability}
+                    layout="hero"
+                  />
+                )}
               </div>
             </div>
           </div>

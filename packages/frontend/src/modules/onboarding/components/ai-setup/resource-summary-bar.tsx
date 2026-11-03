@@ -60,7 +60,7 @@ export const ResourceSummaryBar = ({
         </div>
         <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">
           <div
-            className={`h-1.5 rounded-full transition-all duration-300 ${budget.overDisk ? 'bg-destructive' : 'bg-primary'}`}
+            className={`h-1.5 rounded-full transition-[color,background-color,border-color,box-shadow,opacity,transform] duration-300 ${budget.overDisk ? 'bg-destructive' : 'bg-primary'}`}
             style={{ width: `${diskPercent}%` }}
           />
         </div>
@@ -74,7 +74,10 @@ export const ResourceSummaryBar = ({
           </span>
         </div>
         <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">
-          <div className="h-1.5 rounded-full bg-secondary transition-all duration-300" style={{ width: `${memoryPercent}%` }} />
+          <div
+            className="h-1.5 rounded-full bg-secondary transition-[color,background-color,border-color,box-shadow,opacity,transform] duration-300"
+            style={{ width: `${memoryPercent}%` }}
+          />
         </div>
       </div>
 

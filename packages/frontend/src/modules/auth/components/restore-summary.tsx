@@ -50,7 +50,7 @@ export function RestoreSummary({ summary, onLeave }: RestoreSummaryProps) {
   return (
     <div className="w-full max-w-2xl space-y-4" data-testid="restore-summary">
       <div>
-        <h1 className="text-2xl font-semibold text-foreground">
+        <h1 className="text-2xl font-medium text-foreground">
           {restored.length > 0 ? t('RESTORE_APPS_DONE_TITLE') : t('RESTORE_APPS_DONE_TITLE_NONE')}
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">{t('RESTORE_APPS_DONE_DESCRIPTION')}</p>

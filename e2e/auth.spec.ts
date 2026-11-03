@@ -12,7 +12,7 @@ test('makes the first CI Account to sign in the admin', async ({ page }) => {
   await page.getByRole('button', { name: 'Login' }).click();
 
   // The first admin goes on to the onboarding wizard
-  await expect(page.getByRole('heading', { name: 'Set Up Companion Hub' })).toBeVisible({ timeout: 15000 });
+  await expect(page.getByRole('heading', { name: 'Set up Companion Hub' })).toBeVisible({ timeout: 15000 });
 });
 
 test('sends /register on a paired Hub to sign-in', async ({ page }) => {

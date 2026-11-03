@@ -47,7 +47,7 @@ export const PortalSignInSection: React.FC<IProps> = ({
           type="button"
           variant={withPasswordForm ? 'outline' : undefined}
           intent={withPasswordForm ? undefined : 'primary'}
-          className="h-10 w-full text-sm font-semibold"
+          className="h-10 w-full text-sm font-medium"
           disabled={withPasswordForm && !portalReachable}
           onClick={() => openPortalSignInOutsideApp(portalSsoHref, t('COMMON_AN_ERROR_OCCURRED'))}
         >
@@ -57,7 +57,7 @@ export const PortalSignInSection: React.FC<IProps> = ({
         <Button
           asChild={portalReachable || !withPasswordForm}
           variant="outline"
-          className="h-10 w-full text-sm font-semibold"
+          className="h-10 w-full text-sm font-medium"
           disabled={withPasswordForm && !portalReachable}
         >
           {portalReachable ? <a href={portalSsoHref}>{label}</a> : label}

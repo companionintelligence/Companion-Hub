@@ -52,7 +52,7 @@ const Alert = ({ className, dismissible, variant, ...props }: AlertProps) => (
 Alert.displayName = 'Alert';
 
 const AlertHeading = ({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
-  <h4 className={cn('alert-heading font-semibold leading-relaxed text-[color:var(--alert-heading)]', className)} {...props} />
+  <h4 className={cn('alert-heading font-medium leading-relaxed text-[color:var(--alert-heading)]', className)} {...props} />
 );
 AlertHeading.displayName = 'AlertHeading';
 

@@ -30,19 +30,19 @@ export const CustomAppDetailsPage = () => {
   if (getApp.isError || !getApp.data) {
     return (
       <div className="mx-auto max-w-2xl px-4 py-16 text-center">
-        <h1 className="text-2xl font-semibold">{t('APP_ERROR_APP_NOT_FOUND', { id: appUrn })}</h1>
+        <h1 className="text-2xl font-medium">{t('APP_ERROR_APP_NOT_FOUND', { id: appUrn })}</h1>
         <p className="mt-2 text-muted-foreground">{t('APP_DETAILS_LOAD_FAILED')}</p>
       </div>
     );
   }
 
-  const { info, app, metadata } = getApp.data;
+  const { info, app, metadata, failure } = getApp.data;
 
   if (isPortExposeApp(app?.config) || isPortExposeApp({ kind: (info as { kind?: 'port-expose' }).kind })) {
     if (!app) {
       return (
         <div className="mx-auto max-w-2xl px-4 py-16 text-center">
-          <h1 className="text-2xl font-semibold">{t('APP_ERROR_APP_NOT_FOUND', { id: appUrn })}</h1>
+          <h1 className="text-2xl font-medium">{t('APP_ERROR_APP_NOT_FOUND', { id: appUrn })}</h1>
           <p className="mt-2 text-muted-foreground">{t('APP_DETAILS_LOAD_FAILED')}</p>
         </div>
       );
@@ -50,7 +50,7 @@ export const CustomAppDetailsPage = () => {
     return <PortExposeDetailsView app={app} info={info} />;
   }
 
-  return <CustomAppDetailsPageContent info={info} app={app} metadata={metadata} appId={appId} />;
+  return <CustomAppDetailsPageContent info={info} app={app} metadata={metadata} failure={failure} appId={appId} />;
 };
 
 export default CustomAppDetailsPage;

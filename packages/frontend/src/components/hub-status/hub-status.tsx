@@ -171,7 +171,7 @@ interface DockerDesktopGuideProps extends DockerDesktopGuideContent {
 function SetupStepsColumn({ title, steps }: { title: string; steps: string[] }) {
   return (
     <div className="space-y-3">
-      <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+      <h3 className="text-sm font-medium text-foreground">{title}</h3>
       <ol className="space-y-2 text-sm text-muted-foreground">
         {steps.map((step, i) => (
           <li key={step} className="flex gap-2">
@@ -210,7 +210,7 @@ function DockerDesktopGuide({
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
               <div className="flex items-start gap-1 flex-wrap">
-                <HintText id="docker-required" hint={t(DOCKER_REQUIRED_HINT)} as="h2" className="text-xl font-semibold text-foreground">
+                <HintText id="docker-required" hint={t(DOCKER_REQUIRED_HINT)} as="h2" className="text-xl font-medium text-foreground">
                   {t('HUB_STATUS_DOCKER_REQUIRED')}
                 </HintText>
               </div>
@@ -331,7 +331,7 @@ function EngineAlternativePanel({ platform }: { platform: 'windows' | 'macos' })
     <SetupCard>
       <div className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold text-foreground">{t('HUB_STATUS_DOCKER_ALT_TITLE')}</h3>
+          <h3 className="text-sm font-medium text-foreground">{t('HUB_STATUS_DOCKER_ALT_TITLE')}</h3>
           <p className="text-xs text-muted-foreground">{description}</p>
         </div>
 
@@ -407,7 +407,7 @@ function LinuxDockerGuide() {
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
               <div className="flex items-start gap-1 flex-wrap">
-                <HintText id="docker-linux-required" hint={t(DOCKER_REQUIRED_HINT)} as="h2" className="text-xl font-semibold text-foreground">
+                <HintText id="docker-linux-required" hint={t(DOCKER_REQUIRED_HINT)} as="h2" className="text-xl font-medium text-foreground">
                   {t('HUB_STATUS_DOCKER_ENGINE_REQUIRED')}
                 </HintText>
               </div>
@@ -537,7 +537,7 @@ function WslEngineGuide() {
         <div className="space-y-4">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
-              <h2 className="text-xl font-semibold text-foreground">{t('HUB_STATUS_WSL_ENGINE_STOPPED')}</h2>
+              <h2 className="text-xl font-medium text-foreground">{t('HUB_STATUS_WSL_ENGINE_STOPPED')}</h2>
               <p className="text-sm text-muted-foreground">{t('HUB_STATUS_WSL_ENGINE_STOPPED_DESC')}</p>
             </div>
             <Container className="h-10 w-10 shrink-0 text-primary" aria-hidden />
@@ -873,7 +873,7 @@ const ALWAYS_COUNTED: ServiceState[] = ['ready', 'starting', 'pending', 'failed'
 /** Counted only when they happen. */
 const COUNTED_WHEN_PRESENT: ServiceState[] = ['stopped', 'not_started'];
 
-const ACTION_BUTTON_CLASS = 'h-10 min-w-[164px] px-5 font-semibold focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-card';
+const ACTION_BUTTON_CLASS = 'h-10 min-w-[164px] px-5 font-medium focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-card';
 const OUTLINE_BUTTON_CLASS = 'border-primary/30 bg-transparent text-foreground shadow-none';
 
 /** One mark per state, drawn rather than typed so every platform renders it the same. */
@@ -887,7 +887,7 @@ function StatusMark({ state }: { state: ServiceState }) {
       return (
         <svg aria-hidden="true" viewBox="0 0 10 10" fill="none" className="size-[10px] shrink-0 text-warning">
           <circle cx="5" cy="5" r="4.25" stroke="currentColor" strokeWidth="1.5" />
-          <circle cx="5" cy="5" r="1.5" fill="currentColor" className="animate-pulse motion-reduce:animate-none" />
+          <circle cx="5" cy="5" r="1.5" fill="currentColor" className="" />
         </svg>
       );
     case 'failed':
@@ -1154,7 +1154,7 @@ function StartupScreen({
     <SetupCard className="w-full max-w-2xl" contentClassName="tight-window:px-8 tight-window:py-6 compact-window:px-[24px] compact-window:py-[22px]">
       <div className="flex flex-col gap-5 tight-window:gap-4 compact-window:gap-3.5">
         <div className="flex flex-col items-center gap-1.5 text-center">
-          <h2 className="text-xl font-semibold leading-[1.3] text-foreground">{title}</h2>
+          <h2 className="text-xl font-medium leading-[1.3] text-foreground">{title}</h2>
           <p role="status" className="w-full text-sm leading-[1.55] text-muted-foreground">
             {line}
           </p>
@@ -1226,7 +1226,7 @@ function StartupScreen({
                 {counts.map(({ state, count }) => (
                   <li key={state} className={cn('mr-5 inline-flex items-center gap-[7px] tabular-nums', !count && 'opacity-55')}>
                     <StatusMark state={state} />
-                    <span className="font-semibold text-foreground">{count ?? '—'}</span>
+                    <span className="font-medium text-foreground">{count ?? '—'}</span>
                     <span>{t(SERVICE_STATE_LABEL[state])}</span>
                   </li>
                 ))}

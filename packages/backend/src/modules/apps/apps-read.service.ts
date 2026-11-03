@@ -1,15 +1,16 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { createAppUrn } from '@/common/helpers/app-helpers';
+import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 import { InstallPipelineTracker } from './install-pipeline.tracker';
 import { pLimit } from '@/common/helpers/file-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { CURRENT_SCHEMA_VERSION, parseInstalledComposeJson } from '@ci-hub/common/schemas';
+import { type AppServiceFailure, CURRENT_SCHEMA_VERSION, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
-import { hasUpdateAvailable } from '../marketplace/app-version';
+import { hasUpdateAvailable } from '@ci-hub/common/validation';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { PortAllocationRepository } from '../network/port-allocation.repository';
 import { LifecycleJobService } from '../app-lifecycle/lifecycle-job.service';
@@ -17,6 +18,20 @@ import { AppFilesManager } from './app-files-manager';
 import { AppsRepository } from './apps.repository';
 
 type AppList = Awaited<ReturnType<AppsRepository['getApps']>>;
+
+/** Jobs that leave an app as it was, so the last failure still describes it after one of them. */
+const OPERATIONS_LEAVING_AN_APP_AS_IT_WAS = ['backup', 'generate_env'];
+
+/** A failed command's job ends just before its row is settled, so a row written later than this has moved on. */
+const FAILURE_OUTLIVED_AFTER_MS = 60_000;
+
+interface AppFailureFromJob {
+  message: string;
+  errorCode?: string;
+  errorDetail?: string;
+  settingsPath?: string;
+  serviceFailure?: AppServiceFailure;
+}
 
 @Injectable()
 export class AppsReadService {
@@ -299,7 +314,41 @@ export class AppsReadService {
       this.logger.warn(`Could not resolve app data host path for ${appUrn}: ${err}`);
     }
 
-    return { app: app ?? null, info, metadata, allocatedPort, appDataHostPath };
+    return { app: app ?? null, info, metadata, allocatedPort, appDataHostPath, failure: await this.lastFailure(appUrn, app) };
+  }
+
+  /**
+   * Why an app is down, from its last lifecycle job. The event that carried the reason reached only
+   * the tabs open at the time and a reload lost it. A failed install keeps its reason, whatever it
+   * was. A stopped app keeps only the reason its containers did not come up: any other failed start
+   * is told once, by its toast. That reason also ends when the row changes well after the job: the
+   * status sync brought the app back and it stopped again, with no job to say so. A job that threw has
+   * a stack trace and no recorded failure. It is left out. Best effort, like the rest of the page's
+   * extras.
+   */
+  private async lastFailure(appUrn: AppUrn, app: { status: string; updatedAt: string } | null | undefined) {
+    if (!app || (app.status !== 'install_failed' && app.status !== 'stopped')) {
+      return null;
+    }
+    try {
+      const jobs = await this.moduleRef
+        ?.get(LifecycleJobService, { strict: false })
+        ?.listJobs({ appUrn, excludeOperations: OPERATIONS_LEAVING_AN_APP_AS_IT_WAS, limit: 1 });
+      const job = jobs?.[0];
+      const failure = (job?.metadata as { failure?: Omit<AppFailureFromJob, 'message'> } | null)?.failure;
+      if (job?.status !== 'failed' || !job.error || !failure) {
+        return null;
+      }
+      const rowMovedOn =
+        job.finishedAt !== null && parseDbTimestampMs(app.updatedAt) - parseDbTimestampMs(job.finishedAt) > FAILURE_OUTLIVED_AFTER_MS;
+      if (app.status === 'stopped' && (!failure.serviceFailure || rowMovedOn)) {
+        return null;
+      }
+      return { message: job.error, ...failure };
+    } catch (err) {
+      this.logger.debug(`Could not read the last failure of ${appUrn}: ${err}`);
+      return null;
+    }
   }
 
   public async getAppDataListing(appUrn: AppUrn) {

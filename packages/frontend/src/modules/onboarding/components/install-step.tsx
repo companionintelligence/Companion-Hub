@@ -678,7 +678,7 @@ export const InstallStep = ({
           <Download />
         </span>
         <div>
-          <h2 className="text-lg font-bold tracking-tight sm:text-xl">
+          <h2 className="text-lg font-medium tracking-tight sm:text-xl">
             {apps.length === 0
               ? t('ONBOARDING_NO_APPS_SELECTED_TITLE')
               : start
@@ -695,14 +695,17 @@ export const InstallStep = ({
 
       {start && apps.length > 0 && (
         <div className="mb-4 h-2 w-full overflow-hidden rounded-full bg-muted">
-          <div className="h-2 rounded-full bg-primary transition-all duration-500 ease-out" style={{ width: `${progress}%` }} />
+          <div
+            className="h-2 rounded-full bg-primary transition-[color,background-color,border-color,box-shadow,opacity,transform] duration-500 ease-out"
+            style={{ width: `${progress}%` }}
+          />
         </div>
       )}
 
       {/* AI Setup Phase */}
       {start && aiPhase.status !== 'skipped' && (
         <div className="mb-4 space-y-1" data-testid="ai-phase-section">
-          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">{t('ONBOARDING_AI_SETUP')}</div>
+          <div className="text-xs font-medium text-muted-foreground   mb-2">{t('ONBOARDING_AI_SETUP')}</div>
           {canAutoInstallRunners && (
             <div className="flex items-center gap-2 px-3 py-1.5 text-sm" data-testid="inference-runners-phase">
               {aiMark(
@@ -799,7 +802,7 @@ export const InstallStep = ({
             className="flex items-center gap-3 px-3 py-2 rounded-lg transition-colors"
             data-testid={`install-row-${state.app.appSlug}`}
           >
-            <span className="w-5 h-5 flex items-center justify-center text-sm font-semibold">{statusIcon(state.status)}</span>
+            <span className="w-5 h-5 flex items-center justify-center text-sm font-medium">{statusIcon(state.status)}</span>
             <OnboardingAppIcon app={state.app} size={36} />
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium">{state.app.name}</div>

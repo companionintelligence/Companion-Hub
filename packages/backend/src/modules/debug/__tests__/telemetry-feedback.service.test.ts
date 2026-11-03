@@ -46,9 +46,12 @@ describe('TelemetryFeedbackService', () => {
       expect.objectContaining({
         appUrn: 'ci-marketplace/photoprism',
         phase: 'crash',
+        message: 'Container photoprism_app_1 is crash looping (restarts: 5, exit code: 137)',
         errorCode: 'container_crash_loop',
+        containers: [{ name: 'photoprism_app_1', state: 'restarting' }],
       }),
     );
+    expect(JSON.stringify(errorReporting.reportAppFailure.mock.calls)).not.toContain('OOMKilled');
 
     expect(hostTelemetry.recordEvent).toHaveBeenCalledWith(
       'warn',
@@ -69,16 +72,17 @@ describe('TelemetryFeedbackService', () => {
   it('captures and reports an install failure', async () => {
     const report = await service.captureInstallFailure({
       appUrn: 'ci-marketplace/nextcloud',
-      error: new Error('Docker network subnet collision'),
+      error: new Error('DATABASE_URL=private-value'),
       errorCode: 'network_overlap',
       durationMs: 4500,
       phase: 'install',
+      containers: [{ name: 'nextcloud-1', state: 'Exited (1)', logs: 'DATABASE_URL=private-value' }],
     });
 
     expect(report.id).toBeDefined();
     expect(report.type).toBe('install_failure');
     expect(report.appUrn).toBe('ci-marketplace/nextcloud');
-    expect(report.message).toBe('Docker network subnet collision');
+    expect(report.message).toBe('DATABASE_URL=private-value');
     expect(report.errorCode).toBe('network_overlap');
     expect(report.durationMs).toBe(4500);
 
@@ -86,14 +90,17 @@ describe('TelemetryFeedbackService', () => {
       expect.objectContaining({
         appUrn: 'ci-marketplace/nextcloud',
         phase: 'install',
+        message: 'App install failure',
         errorCode: 'network_overlap',
+        containers: [{ name: 'nextcloud-1', state: 'Exited (1)' }],
       }),
     );
+    expect(JSON.stringify(errorReporting.reportAppFailure.mock.calls)).not.toContain('DATABASE_URL=private-value');
 
     expect(hostTelemetry.recordEvent).toHaveBeenCalledWith(
       'error',
       'app.install_failure',
-      expect.stringContaining('Docker network subnet collision'),
+      expect.stringContaining('DATABASE_URL=private-value'),
       expect.objectContaining({
         appUrn: 'ci-marketplace/nextcloud',
         errorCode: 'network_overlap',

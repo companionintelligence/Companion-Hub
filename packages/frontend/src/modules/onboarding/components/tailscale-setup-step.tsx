@@ -289,7 +289,7 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
   if (inline) {
     return (
       <div className="mt-3 rounded-md border border-border bg-foreground/[0.02] p-4" data-testid="tailscale-setup-inline">
-        <p className="mb-3 text-sm font-semibold">{t('ONBOARDING_TAILSCALE_TITLE')}</p>
+        <p className="mb-3 text-sm font-medium">{t('ONBOARDING_TAILSCALE_TITLE')}</p>
         {body}
       </div>
     );

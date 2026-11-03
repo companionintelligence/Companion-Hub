@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
 import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
-import { STORED_FORM_OPEN_PORT_DEFAULT, hostPortMoveSchema } from '@ci-hub/common/schemas';
+import { STORED_FORM_OPEN_PORT_DEFAULT, appServiceFailureSchema, hostPortMoveSchema } from '@ci-hub/common/schemas';
 import { zodAppUrn } from '@ci-hub/common/types';
 import { z } from 'zod';
 import isFQDN from 'validator/lib/isFQDN';
@@ -96,6 +96,8 @@ export const appEventResultSchema = z.object({
   errorCode: z.string().optional(),
   errorDetail: z.string().optional(),
   settingsPath: z.string().optional(),
+  // Which service kept the app from coming up, for the client to word; see `AppCameUpWatch`.
+  serviceFailure: appServiceFailureSchema.optional(),
   // Non-fatal caveat on an otherwise-successful command; does not flip `success`.
   // Semantics documented on appScopedEventSchema.warningCode (common/schemas/sse.ts).
   warningCode: z.string().optional(),

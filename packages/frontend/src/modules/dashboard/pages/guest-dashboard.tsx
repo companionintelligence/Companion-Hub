@@ -47,7 +47,7 @@ const Tile = ({ data, sslPort }: { data: GuestAppsDto['installed'][number]; sslP
         <div
           role="button"
           tabIndex={0}
-          className="relative group cursor-pointer rounded-lg transition-all duration-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+          className="relative group cursor-pointer rounded-lg transition-[color,background-color,border-color,box-shadow,opacity,transform] duration-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
         >
           <AppTile key={info.urn} info={info} status={app.status} updateAvailable={false} />
         </div>

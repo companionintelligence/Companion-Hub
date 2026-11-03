@@ -42,7 +42,7 @@ export const ResetPasswordForm: React.FC<IProps> = ({ onSubmit, loading }) => {
 
   return (
     <>
-      <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
+      <h2 className="text-xl font-medium text-center mb-4">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
       <form onSubmit={handleSubmit((values) => onSubmit(values))}>
         <PasswordInput
           {...register('password')}

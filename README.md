@@ -1,7 +1,7 @@
 <div align="center">
 
 <a href="https://ci.computer/hub">
-  <img src="packages/frontend/hub-brand/logos/mark-tight.svg" alt="Companion Hub logo" width="128" height="128">
+  <img src="https://raw.githubusercontent.com/companionintelligence/.github/main/profile/assets/icons/companion-hub.png" width="96" height="96" alt="Companion Hub icon">
 </a>
 
 <h1 align="center">Companion Hub</h1>

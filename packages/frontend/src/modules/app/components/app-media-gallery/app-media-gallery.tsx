@@ -100,7 +100,10 @@ export function AppMediaGallery({ appName, screenshots, demoVideoUrl, isLoading 
                   type="button"
                   onClick={() => setActiveShot(index)}
                   aria-label={`Show screenshot ${index + 1}`}
-                  className={cn('h-1.5 rounded-full transition-all', index === currentShot ? 'w-6 bg-white' : 'w-1.5 bg-white/30 hover:bg-white/50')}
+                  className={cn(
+                    'h-1.5 rounded-full transition-[color,background-color,border-color,box-shadow,opacity,transform]',
+                    index === currentShot ? 'w-6 bg-white' : 'w-1.5 bg-white/30 hover:bg-white/50',
+                  )}
                 />
               ))}
             </div>
@@ -166,7 +169,7 @@ export function AppMediaGallery({ appName, screenshots, demoVideoUrl, isLoading 
                       onClick={() => setActiveShot(index)}
                       aria-label={`Show screenshot ${index + 1}`}
                       className={cn(
-                        'h-1.5 rounded-full transition-all',
+                        'h-1.5 rounded-full transition-[color,background-color,border-color,box-shadow,opacity,transform]',
                         index === currentShot ? 'w-6 bg-primary' : 'w-1.5 bg-muted-foreground/30 hover:bg-muted-foreground/50',
                       )}
                     />

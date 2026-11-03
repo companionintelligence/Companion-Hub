@@ -95,7 +95,7 @@ export const AppTile: React.FC<{
         <AppLogo alt={`${info.name} logo`} urn={info.urn} size={60} className={available ? undefined : 'opacity-50 grayscale'} />
         <div className="flex flex-col justify-center">
           <div className="flex items-center gap-2">
-            <span className="font-bold">{info.name}</span>
+            <span className="font-medium">{info.name}</span>
             <AppStatus lite status={status} />
           </div>
           <div className="text-muted-foreground text-sm">{limitText(info.short_desc, 50)}</div>

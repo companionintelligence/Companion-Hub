@@ -38,9 +38,9 @@ export const ManualEndpointsCard = ({ decodeEndpoint, encodeEndpoint, onDecodeEn
   };
 
   return (
-    <section className="space-y-4 rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+    <section className="space-y-4 rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6">
       <div>
-        <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_MANUAL_ENDPOINTS_TITLE')}</h2>
+        <h2 className="text-base font-medium  ">{t('ONBOARDING_MANUAL_ENDPOINTS_TITLE')}</h2>
         <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">{t('ONBOARDING_MANUAL_ENDPOINTS_DESC')}</p>
       </div>
       <div className="space-y-4">

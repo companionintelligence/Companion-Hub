@@ -90,11 +90,11 @@ function formatRate(reading: DecodeReading): string {
 function Readout({ label, value, tone = 'plain', hint }: { label: string; value: ReactNode; tone?: Tone; hint?: string }) {
   return (
     <>
-      <dt className="uppercase leading-tight tracking-[0.5px] text-muted-foreground">
+      <dt className=" leading-tight  text-muted-foreground">
         {label}
         {hint ? <span className="block normal-case tracking-normal text-[10px] text-muted-foreground/70">{hint}</span> : null}
       </dt>
-      <dd className={cn('text-right text-[15px] font-bold leading-none tabular-nums', TONE_TEXT[tone])}>{value}</dd>
+      <dd className={cn('text-right text-[15px] font-medium leading-none tabular-nums', TONE_TEXT[tone])}>{value}</dd>
     </>
   );
 }
@@ -114,9 +114,9 @@ function NodeCard({ card, window: samples }: { card: PoolNodeCard; window: PoolS
     <section className="flex flex-col gap-3 rounded-lg border border-border bg-card p-4">
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
         <StatusDot tone={STATUS_TONE[card.status] ?? 'muted'} className="h-2.5 w-2.5" />
-        <h3 className="text-base font-bold tracking-tight">{card.label}</h3>
+        <h3 className="text-base font-medium tracking-tight">{card.label}</h3>
         {card.local ? <StatusBadge connected label={t('DASHBOARD_NODE_LOCAL')} /> : null}
-        <span className="text-[11px] uppercase tracking-[0.5px] text-muted-foreground">{statusLabel}</span>
+        <span className="text-[11px]   text-muted-foreground">{statusLabel}</span>
         {card.direction ? <span className="text-[11px] text-muted-foreground/80">{card.direction}</span> : null}
         <span className="ml-auto truncate font-mono text-[11px] text-muted-foreground" title={card.fqdn ?? undefined}>
           {card.fqdn ?? DASH}
@@ -128,7 +128,7 @@ function NodeCard({ card, window: samples }: { card: PoolNodeCard; window: PoolS
           {t('DASHBOARD_NODE_TIER', { tier: card.hardwareTier ?? DASH })}
         </span>
         {card.backends.length === 0 ? (
-          <span className="rounded-md border border-dashed border-border px-2 py-1 text-[11px] italic text-muted-foreground">
+          <span className="rounded-md border border-dashed border-border px-2 py-1 text-[11px]  text-muted-foreground">
             {t('DASHBOARD_NODE_NO_ENGINES')}
           </span>
         ) : (
@@ -141,7 +141,7 @@ function NodeCard({ card, window: samples }: { card: PoolNodeCard; window: PoolS
           in a wide empty box, the complaint that started this rebuild. */}
       <div className="grid gap-x-4 gap-y-2 sm:grid-cols-[minmax(0,1fr)_190px]">
         <div className="space-y-1.5">
-          <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.5px] text-muted-foreground">
+          <div className="flex items-center justify-between text-[10px]   text-muted-foreground">
             <span>{inFlightLabel}</span>
             <span className="tabular-nums">{t('DASHBOARD_NODE_CHART_PEAK', { max })}</span>
           </div>
@@ -213,7 +213,7 @@ function NodeCard({ card, window: samples }: { card: PoolNodeCard; window: PoolS
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/70 pt-2 text-[11px] text-muted-foreground">
         {card.containers === null ? (
-          <span className="italic">{t('DASHBOARD_NODE_CONTAINERS_UNREPORTED')}</span>
+          <span className="">{t('DASHBOARD_NODE_CONTAINERS_UNREPORTED')}</span>
         ) : (
           <>
             <span>
@@ -314,7 +314,7 @@ export function PoolNodes({
     >
       <PanelBody state={state} error={t('DASHBOARD_POOL_FAILED')} lines={6}>
         {cards.length === 0 ? (
-          <p className="py-5 text-center text-[13px] italic text-muted-foreground">{t('DASHBOARD_POOL_NODES_EMPTY')}</p>
+          <p className="py-5 text-center text-[13px]  text-muted-foreground">{t('DASHBOARD_POOL_NODES_EMPTY')}</p>
         ) : (
           <KpiTable
             head={
@@ -371,7 +371,7 @@ export function PoolNodes({
                     <Td title={statusLabel}>
                       <span className="inline-flex items-center gap-1.5">
                         <StatusDot tone={STATUS_TONE[card.status] ?? 'muted'} />
-                        <span className="hidden text-[11px] uppercase tracking-[0.5px] text-muted-foreground sm:inline">{statusLabel}</span>
+                        <span className="hidden text-[11px]   text-muted-foreground sm:inline">{statusLabel}</span>
                       </span>
                     </Td>
                     {/* No "this Hub" badge here: `card.label` for the local node already IS that
@@ -420,7 +420,7 @@ export function PoolNodes({
                     </Td>
                     <Td align="right" className="hidden @lg:table-cell">
                       {card.containers === null ? (
-                        <span className="italic text-muted-foreground">{t('DASHBOARD_NODE_CONTAINERS_SHORT_UNREPORTED')}</span>
+                        <span className=" text-muted-foreground">{t('DASHBOARD_NODE_CONTAINERS_SHORT_UNREPORTED')}</span>
                       ) : (
                         `${card.containers.running}/${card.containers.total}`
                       )}

@@ -98,7 +98,7 @@ const primaryExposureMode = (remoteAccess: RemoteAccessMode[]): ExposureMode =>
 const BackendSetupGroup = ({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) => (
   <div className="space-y-3" data-testid="selected-backend-setup">
     <div>
-      <h3 className="text-sm font-semibold">{title}</h3>
+      <h3 className="text-sm font-medium">{title}</h3>
       {description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}
     </div>
     {children}
@@ -831,7 +831,7 @@ export const AiSetupStep = ({
               <div className="space-y-3 border-t border-border pt-5" data-testid="embeddings-inference-setup">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
+                    <h3 className="text-sm font-medium">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
                     <span className="rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">
                       {t('ONBOARDING_BADGE_RECOMMENDED')}
                     </span>

@@ -49,16 +49,17 @@ export const RegisterForm: React.FC<IProps> = ({ onSubmit, loading, portalSignIn
   return (
     <>
       <div className="mb-4 text-center">
-        <h2 className="text-xl font-semibold">{t('AUTH_REGISTER_TITLE')}</h2>
+        <h2 className="text-xl font-medium">{t('AUTH_REGISTER_TITLE')}</h2>
         {portalSignIn ? <div className="mt-4">{portalSignIn}</div> : null}
         <p className="mt-2 text-sm text-muted-foreground">{t('AUTH_REGISTER_NOTE')}</p>
         {/* Tells a CI Account holder to sign up here with the same email, which Portal refuses for an
             existing account. With the CI Account button above, that button is the way in. */}
-        {portalSignIn ? null : <p className="mt-2 text-sm text-muted-foreground font-bold">{t('AUTH_REGISTER_NOTE_2')}</p>}
+        {portalSignIn ? null : <p className="mt-2 text-sm text-muted-foreground font-medium">{t('AUTH_REGISTER_NOTE_2')}</p>}
       </div>
       <form onSubmit={handleSubmit((values) => onSubmit(values))}>
         <Input
           {...register('email')}
+          autoComplete="email"
           label={t('AUTH_FORM_EMAIL')}
           error={errors.email?.message}
           disabled={loading}
@@ -68,6 +69,7 @@ export const RegisterForm: React.FC<IProps> = ({ onSubmit, loading, portalSignIn
         />
         <PasswordInput
           {...register('password')}
+          autoComplete="new-password"
           label={t('COMMON_PASSWORD')}
           helpText={t('AUTH_ERROR_INVALID_PASSWORD_COMPLEXITY')}
           error={errors.password?.message}
@@ -77,6 +79,7 @@ export const RegisterForm: React.FC<IProps> = ({ onSubmit, loading, portalSignIn
         />
         <PasswordInput
           {...register('passwordConfirm')}
+          autoComplete="new-password"
           label={t('AUTH_FORM_PASSWORD_CONFIRMATION')}
           error={errors.passwordConfirm?.message}
           disabled={loading}

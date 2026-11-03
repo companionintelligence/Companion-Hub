@@ -323,7 +323,7 @@ function RestoreAppsContent() {
         data-testid="restore-apps-page"
       >
         <div className="w-full max-w-2xl space-y-4">
-          <h1 className="text-2xl font-semibold text-foreground">{t('RESTORE_APPS_CHECKING_TITLE')}</h1>
+          <h1 className="text-2xl font-medium text-foreground">{t('RESTORE_APPS_CHECKING_TITLE')}</h1>
           <div className="flex items-center gap-3 rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground" role="status">
             <Loader2 className="h-5 w-5 animate-spin text-primary" aria-hidden />
             <span>{t('RESTORE_APPS_CHECKING')}</span>
@@ -359,7 +359,7 @@ function RestoreAppsContent() {
     >
       <div className="w-full max-w-2xl space-y-4">
         <div>
-          <h1 className="text-2xl font-semibold text-foreground">{t('RESTORE_APPS_TITLE')}</h1>
+          <h1 className="text-2xl font-medium text-foreground">{t('RESTORE_APPS_TITLE')}</h1>
           <p className="mt-2 text-sm text-muted-foreground">{t('RESTORE_APPS_DESCRIPTION')}</p>
         </div>
 

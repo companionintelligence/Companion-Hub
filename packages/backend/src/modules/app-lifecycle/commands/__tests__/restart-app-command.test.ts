@@ -69,6 +69,7 @@ describe('RestartAppCommand — pull policy', () => {
         composeArgs.push(args);
       }),
       removeAppNetworks: vi.fn().mockResolvedValue(undefined),
+      waitForManagedAppContainersReady: vi.fn().mockResolvedValue({ ok: true, message: 'All containers came up' }),
     };
 
     const logger = mockDeep<LoggerService>();
@@ -234,7 +235,36 @@ describe('RestartAppCommand — pull policy', () => {
 
     await command.execute(appUrn, { exposedLocal: true });
 
-    expect(order).toEqual(['down', 'traefik:0', 'up', 'traefik:5000']);
+    expect(order).toEqual(['down', 'traefik:0', 'up', 'traefik:0']);
+  });
+
+  it('does not report success while a service crash-loops and says which one and why', async () => {
+    const serviceFailure = { kind: 'restarting', service: 'summary-service', exitCode: 126 };
+    dockerService.waitForManagedAppContainersReady.mockResolvedValue({
+      ok: false,
+      message: 'summary-service keeps restarting (exit 126)',
+      errorDetail: 'app-summary-service-1 (restarting, exit 126): ',
+      serviceFailure,
+    });
+
+    const result = await command.execute(appUrn, { exposedLocal: true });
+
+    expect(result).toMatchObject({ success: false, message: 'summary-service keeps restarting (exit 126)', serviceFailure });
+    // Its other containers go on serving, so their routes still have to be there.
+    expect(traefikConfigService.regenerateTraefikConfig).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports success when the containers came up', async () => {
+    const result = await command.execute(appUrn, {});
+
+    expect(result).toMatchObject({ success: true, message: `App ${appUrn} restarted successfully` });
+    expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn);
+  });
+
+  it('rebuilds the Traefik routes of a Private VPN app, which leaves exposedLocal off', async () => {
+    await command.execute(appUrn, { exposureMode: 'tailscale', exposedLocal: false });
+
+    expect(traefikConfigService.regenerateTraefikConfig).toHaveBeenCalledTimes(2);
   });
 
   it('leaves the Traefik routes alone for an app that does not go out through Traefik', async () => {
@@ -296,6 +326,21 @@ describe('RestartAppCommand — pull policy', () => {
       expect(appEnv).toContain('APP_PORT=10000');
       expect(form.port).toBe(10000);
       expect(result).toMatchObject({ movedHostPort: { from: 8080, to: 10000 } });
+    });
+
+    it('reports the move and the failure when the app moved and a service then crash-looped', async () => {
+      refusals = [8080];
+      const serviceFailure = { kind: 'restarting', service: 'summary-service', exitCode: 126 };
+      dockerService.waitForManagedAppContainersReady.mockResolvedValue({
+        ok: false,
+        message: 'summary-service keeps restarting (exit 126)',
+        errorDetail: 'app-summary-service-1 (restarting, exit 126): ',
+        serviceFailure,
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: false, serviceFailure, movedHostPort: { from: 8080, to: 10000 } });
     });
 
     it('moves an app off a port set by hand when the table still names an older one', async () => {

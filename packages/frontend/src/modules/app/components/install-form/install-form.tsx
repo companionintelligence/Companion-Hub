@@ -1312,7 +1312,7 @@ export const InstallForm: React.FC<IProps> = ({
           already scroll their body, and a nested fixed-height one showed a second scrollbar. */}
       {hasConfigSection && (
         <div>
-          {visibleFields.length > 0 && <h3 className="text-base font-bold tracking-wide text-foreground mb-3">{t('COMMON_SETTINGS')}</h3>}
+          {visibleFields.length > 0 && <h3 className="text-base font-medium  text-foreground mb-3">{t('COMMON_SETTINGS')}</h3>}
           {shouldShowAdvancedSettingsToggle && (
             <Switch
               className="mb-3"

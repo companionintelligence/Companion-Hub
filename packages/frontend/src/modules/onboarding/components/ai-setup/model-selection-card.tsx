@@ -168,7 +168,7 @@ interface OtherModelsProps {
 function ScoreCell({ value }: { value?: number }) {
   const { t } = useTranslation();
   if (value == null) return <span className="text-muted-foreground/50">{t('COMMON_DASH')}</span>;
-  return <span className={cn('font-semibold tabular-nums', LEVEL_TEXT[scoreColor(value)])}>{Math.round(value)}</span>;
+  return <span className={cn('font-medium tabular-nums', LEVEL_TEXT[scoreColor(value)])}>{Math.round(value)}</span>;
 }
 
 function ResourceCell({ mb }: { mb?: number }) {
@@ -225,9 +225,7 @@ function ModelTableRow({
         </label>
       </td>
       <td className="py-2 pr-3 align-middle">
-        <span
-          className={cn('rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide', LEVEL_TAG[TIER_TAG_COLOR[tier] ?? 'gold'])}
-        >
+        <span className={cn('rounded border px-1.5 py-0.5 text-[10px] font-medium  ', LEVEL_TAG[TIER_TAG_COLOR[tier] ?? 'gold'])}>
           {TIER_TAG_LABEL[tier] ?? tier}
         </span>
       </td>
@@ -288,14 +286,14 @@ function ModelGroup({
         className="flex w-full items-center gap-2 px-3 py-2 text-left"
       >
         <ChevronRight className={cn('h-4 w-4 flex-shrink-0 transition-transform', open && 'rotate-90')} />
-        <span className="flex-1 text-sm font-semibold">{group.title}</span>
+        <span className="flex-1 text-sm font-medium">{group.title}</span>
         <span className="rounded-full bg-background/40 px-2 py-0.5 text-xs">{group.items.length}</span>
       </button>
       {open && (
         <div className="min-w-0 overflow-x-auto border-t border-border/60 bg-card">
           <table className="w-full border-collapse text-left">
             <thead>
-              <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
+              <tr className="text-[10px]   text-muted-foreground">
                 <th className="w-8" aria-label={t('ONBOARDING_SELECT')} />
                 <th className="py-1.5 pr-3 font-medium">{t('COMMON_MODEL')}</th>
                 <th className="py-1.5 pr-3 font-medium">{t('ONBOARDING_TIER')}</th>
@@ -432,7 +430,7 @@ export const OtherModelsSection = (props: OtherModelsProps) => {
           <CubeModelsIcon />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block text-sm font-semibold">{t('ONBOARDING_OTHER_MODELS')}</span>
+          <span className="block text-sm font-medium">{t('ONBOARDING_OTHER_MODELS')}</span>
         </span>
       </div>
       <OtherModels {...props} />

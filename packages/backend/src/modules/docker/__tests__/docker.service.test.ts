@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { ComposeCliUnavailableError, DockerService } from '../docker.service';
+import { APP_CAME_UP_TIMING } from '../managed-app-containers';
 import { DockerReadFacade } from '../docker-read.facade';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -508,50 +509,138 @@ describe('DockerService', () => {
     });
   });
 
-  describe('getManagedAppContainerVerification', () => {
-    it('returns ok when all labeled containers are running', async () => {
-      dockerode.listContainers.mockResolvedValue([{ State: 'running', Status: 'Up 1 second' }] as any);
+  describe('waitForManagedAppContainersReady', () => {
+    const fast = { ...APP_CAME_UP_TIMING, lookEveryMs: 1, upAfterMs: 5, upAfterCrashMs: 10, settleWithinMs: 30, runningWithinMs: 10 };
+    const startedLongAgo = '2020-01-01T00:00:00.000Z';
 
-      const result = await service.getManagedAppContainerVerification('ghost:ci-marketplace' as any);
+    function containers(list: Array<{ id: string; service: string; state: string; exit?: number; restarts?: number; startedAt?: string }>) {
+      dockerode.listContainers.mockResolvedValue(
+        list.map(({ id, service, state }) => ({
+          Id: id,
+          Names: [`/app-${service}-1`],
+          State: state,
+          Status: state,
+          Labels: { 'com.docker.compose.service': service },
+        })) as any,
+      );
+      dockerode.getContainer.mockImplementation((id: string) => {
+        const found = list.find((container) => container.id === id);
+        return {
+          inspect: vi.fn().mockResolvedValue({
+            Name: `/app-${found?.service}-1`,
+            RestartCount: found?.restarts ?? 0,
+            State: { Status: found?.state, ExitCode: found?.exit ?? 0, StartedAt: found?.startedAt ?? startedLongAgo },
+          }),
+        } as any;
+      });
+    }
+
+    it('looks for the Hub-labelled containers of the app, under both label spellings', async () => {
+      containers([{ id: 'a', service: 'web', state: 'running' }]);
+
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
 
       expect(dockerode.listContainers).toHaveBeenCalledWith({
         all: true,
-        filters: {
-          label: ['ci-hub.managed=true', 'ci-hub.appurn=ghost:ci-marketplace'],
-        },
+        filters: { label: ['ci-hub.managed=true', 'ci-hub.appurn=ghost:ci-marketplace'] },
       });
       expect(dockerode.listContainers).toHaveBeenCalledWith({
         all: true,
-        filters: {
-          label: ['ci-os-hub.managed=true', 'ci-os-hub.appurn=ghost:ci-marketplace'],
-        },
+        filters: { label: ['ci-os-hub.managed=true', 'ci-os-hub.appurn=ghost:ci-marketplace'] },
       });
       expect(result.ok).toBe(true);
-      expect(result.appStatus).toBe('running');
     });
 
-    it('returns missing when no labeled containers exist', async () => {
+    it('reports nothing running when no labelled containers exist', async () => {
       dockerode.listContainers.mockResolvedValue([] as any);
 
-      const result = await service.getManagedAppContainerVerification('ghost:ci-marketplace' as any);
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
 
       expect(result.ok).toBe(false);
-      expect(result.appStatus).toBe('missing');
-      expect(result.message).toContain('no Hub-managed containers');
+      expect(result.serviceFailure).toEqual({ kind: 'none_running' });
+      expect(result.errorDetail).toContain('no Hub-managed containers');
     });
 
-    it('returns stopped with container logs when containers exited', async () => {
-      dockerode.listContainers.mockResolvedValue([{ State: 'exited', Status: 'Exited (1) 2 seconds ago' }] as any);
-      vi.spyOn(dockerReadFacade, 'diagnoseAppContainers').mockResolvedValue({
-        unhealthy: [{ name: 'ghost', state: 'Exited (1)', logs: 'boot error' }],
-        healthy: [],
-      });
+    it('names the crash-looping service with its exit code and last log line', async () => {
+      containers([
+        { id: 'a', service: 'web', state: 'running' },
+        { id: 'b', service: 'summary-service', state: 'restarting', exit: 126, restarts: 9 },
+      ]);
+      const tail = vi.spyOn(dockerReadFacade, 'tailContainerLogs').mockResolvedValue('booting\nexec /app/run: permission denied\n');
 
-      const result = await service.getManagedAppContainerVerification('ghost:ci-marketplace' as any);
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
 
       expect(result.ok).toBe(false);
-      expect(result.appStatus).toBe('stopped');
-      expect(result.errorDetail).toContain('boot error');
+      expect(result.message).toBe('summary-service keeps restarting (exit 126): exec /app/run: permission denied');
+      expect(result.serviceFailure).toEqual({
+        kind: 'restarting',
+        service: 'summary-service',
+        exitCode: 126,
+        logLine: 'exec /app/run: permission denied',
+      });
+      expect(result.errorDetail).toContain('app-summary-service-1 (restarting, exit 126): booting');
+      expect(tail).toHaveBeenCalledWith('app-summary-service-1', 20);
+    });
+
+    it('goes on watching after a look Docker did not answer, so a blip does not pass a crash loop', async () => {
+      containers([{ id: 'b', service: 'migrate', state: 'exited', exit: 1 }]);
+      dockerode.listContainers.mockRejectedValueOnce(new Error('socket hang up'));
+      vi.spyOn(dockerReadFacade, 'tailContainerLogs').mockResolvedValue('');
+
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
+
+      expect(result).toMatchObject({ ok: false, message: 'migrate exited (exit 1)' });
+    });
+
+    it('gives up once Docker has not answered for the whole window', async () => {
+      dockerode.listContainers.mockRejectedValue(new Error('socket hang up'));
+
+      await expect(service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast)).rejects.toThrow('socket hang up');
+    });
+
+    it('does not hang on a Docker list that never answers', async () => {
+      vi.useFakeTimers();
+      try {
+        dockerode.listContainers.mockReturnValue(new Promise(() => undefined) as any);
+
+        const answer = expect(service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast)).rejects.toThrow('did not list');
+        await vi.advanceTimersByTimeAsync(5_100);
+        await answer;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('takes no reason from a log Docker could not read', async () => {
+      containers([{ id: 'b', service: 'db', state: 'dead', exit: 137 }]);
+      vi.spyOn(dockerReadFacade, 'tailContainerLogs').mockResolvedValue('(failed to capture logs)');
+
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
+
+      expect(result.message).toBe('db exited (exit 137)');
+      expect(result.serviceFailure?.logLine).toBeUndefined();
+    });
+
+    it('still names the service when its logs cannot be read', async () => {
+      containers([{ id: 'b', service: 'migrate', state: 'exited', exit: 1 }]);
+      vi.spyOn(dockerReadFacade, 'tailContainerLogs').mockRejectedValue(new Error('docker is gone'));
+
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
+
+      expect(result.message).toBe('migrate exited (exit 1)');
+    });
+
+    it('counts a container it could not inspect by what the list said', async () => {
+      dockerode.listContainers.mockResolvedValue([
+        { Id: 'a', Names: ['/app-web-1'], State: 'running', Status: 'Up 2 hours', Labels: { 'com.docker.compose.service': 'web' } },
+        { Id: 'b', Names: ['/app-job-1'], State: 'exited', Status: 'Exited (3) 5 seconds ago', Labels: { 'com.docker.compose.service': 'job' } },
+      ] as any);
+      dockerode.getContainer.mockReturnValue({ inspect: vi.fn().mockRejectedValue(new Error('404 no such container')) } as any);
+      vi.spyOn(dockerReadFacade, 'tailContainerLogs').mockResolvedValue('');
+
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
+
+      expect(result.message).toBe('job exited (exit 3)');
     });
   });
 

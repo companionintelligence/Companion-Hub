@@ -73,7 +73,7 @@ export function DockerAccessStatusPanel() {
   return (
     <div className="w-full rounded-lg border border-border/80 bg-muted/20 p-4 space-y-2">
       <div className="flex items-center gap-2 text-sm text-foreground">
-        <span className="h-2 w-2 shrink-0 rounded-full bg-primary animate-pulse" aria-hidden />
+        <span className="h-2 w-2 shrink-0 rounded-full bg-primary " aria-hidden />
         <span className="inline-flex items-center">
           <HintText id="docker-daemon-status" hint={t(DOCKER_DAEMON_HINT)}>
             {headline}

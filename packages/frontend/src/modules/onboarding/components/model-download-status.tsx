@@ -71,7 +71,7 @@ export function ModelDownloadStatus({ selectedModelIds, installedCatalogIds, pul
                 {!error && !complete && (
                   <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
                     <div
-                      className="h-1.5 rounded-full bg-primary transition-all duration-500 ease-out"
+                      className="h-1.5 rounded-full bg-primary transition-[color,background-color,border-color,box-shadow,opacity,transform] duration-500 ease-out"
                       style={{ width: `${Math.max(progress ?? 0, 2)}%` }}
                       data-testid={`model-download-progress-${modelId}`}
                     />

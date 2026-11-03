@@ -81,7 +81,7 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
         <div className="flex flex-col lg:flex-row items-start lg:items-center border-b pb-4 w-full">
           <AppLogo urn={info.urn} size={96} alt={info.name} />
           <div className="mt-3 lg:mt-0 lg:ml-3">
-            <h2 className="mb-1 text-2xl font-bold">{t('APP_UPDATE_FORM_TITLE', { name: info.name })}</h2>
+            <h2 className="mb-1 text-2xl font-medium">{t('APP_UPDATE_FORM_TITLE', { name: info.name })}</h2>
             <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
               <VersionChip>{info.version}</VersionChip>
               <ArrowRight size={16} />

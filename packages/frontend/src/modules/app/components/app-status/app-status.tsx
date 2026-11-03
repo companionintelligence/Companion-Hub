@@ -254,7 +254,7 @@ export const AppStatus: React.FC<{
         title={presentation.detail ?? formattedStatus}
       >
         <span className={dotClasses} />
-        <span className="text-sm font-semibold">{formattedStatus}</span>
+        <span className="text-sm font-medium">{formattedStatus}</span>
       </div>
     );
   }

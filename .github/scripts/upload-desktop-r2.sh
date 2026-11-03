@@ -141,7 +141,26 @@ NODE
 
 wrangler r2 object put --remote "${R2_BUCKET}/${VERSION}/manifest.json" --file /tmp/manifest.json
 
-echo "{\"version\":\"${VERSION}\",\"date\":\"${DATE}\"}" > /tmp/latest.json
-wrangler r2 object put --remote "${R2_BUCKET}/latest.json" --file /tmp/latest.json
+# On production, the root latest.json is what stable clients follow, so it moves to this version only
+# when the manifest has every key in REQUIRED_PLATFORMS. A partial run (for example a prerelease
+# dispatch with platforms=linux-windows) then leaves production on the previous version. The
+# per-version manifest above is uploaded either way, and the dev bucket always repoints as before.
+REQUIRED_PLATFORMS=(darwin-aarch64 darwin-x86_64 windows-x86_64 linux-x86_64)
+missing_platforms=""
+if [ "${R2_BUCKET}" = "dl-prod" ]; then
+  missing_platforms="$(node -e '
+    const fs = require("fs");
+    const required = process.argv.slice(1);
+    const { platforms = {} } = JSON.parse(fs.readFileSync("/tmp/manifest.json", "utf8"));
+    console.log(required.filter((p) => !platforms[p]).join(" "));
+  ' "${REQUIRED_PLATFORMS[@]}")"
+fi
 
-echo "Done. Feed: ${DOWNLOAD_BASE_URL}/latest.json"
+if [ -n "${missing_platforms}" ]; then
+  echo "::warning::Not repointing production latest.json to ${VERSION}; manifest is missing: ${missing_platforms}"
+  echo "Per-version manifest is at ${DOWNLOAD_BASE_URL}/${VERSION}/manifest.json; ${DOWNLOAD_BASE_URL}/latest.json is unchanged."
+else
+  echo "{\"version\":\"${VERSION}\",\"date\":\"${DATE}\"}" > /tmp/latest.json
+  wrangler r2 object put --remote "${R2_BUCKET}/latest.json" --file /tmp/latest.json
+  echo "Done. Feed: ${DOWNLOAD_BASE_URL}/latest.json"
+fi

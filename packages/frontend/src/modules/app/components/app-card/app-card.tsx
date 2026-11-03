@@ -1,5 +1,4 @@
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
-import { GlassContainer } from '@/components/ui/glass-container';
 import { getMarketplaceAppImageUrl } from '@/lib/marketplace-image-url';
 import { storeBrowseQueryString } from '@/lib/store-browse-params';
 import { useAppStoreState } from '@/stores/app-store';
@@ -53,7 +52,7 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, i
 
   if (isLoading) {
     return (
-      <GlassContainer className="h-full p-4 flex flex-col min-h-[220px]" intensity="low">
+      <div className="flex h-full min-h-[220px] flex-col rounded-lg border border-border bg-card p-4 shadow-sm">
         <div className="flex items-start justify-between mb-4">
           <Skeleton className="w-16 h-16 rounded-md" />
           <Skeleton className="w-12 h-6 rounded-full" />
@@ -61,26 +60,23 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, i
         <Skeleton className="h-6 w-3/4 mb-2" />
         <Skeleton className="h-4 w-full mb-1" />
         <Skeleton className="h-4 w-2/3" />
-      </GlassContainer>
+      </div>
     );
   }
 
   return (
     <Link to={detailPath} className="block h-full group">
-      <GlassContainer
-        className="h-full min-h-[180px] flex flex-col p-4 shadow-sm shadow-slate-300/70 transition-all active:scale-[0.98] hover:bg-white/10 hover:shadow-xl hover:shadow-slate-300/80 sm:min-h-[220px] dark:shadow-none dark:hover:shadow-lg dark:hover:shadow-black/20"
-        intensity="low"
-      >
+      <div className="flex h-full min-h-[180px] flex-col rounded-lg border border-border bg-card p-4 shadow-sm transition-colors hover:border-foreground/20 sm:min-h-[220px]">
         <div className="flex items-start justify-between mb-3 sm:mb-4">
           {showAvatarFallback ? (
-            <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-md bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center text-white text-xl sm:text-2xl font-bold shadow-lg">
+            <div className="flex h-12 w-12 items-center justify-center rounded-md border border-border bg-muted text-xl font-medium text-foreground sm:h-16 sm:w-16 sm:text-2xl">
               {app.name.charAt(0)}
             </div>
           ) : (
             <img
               src={imgSrc}
-              alt={app.name}
-              className="w-12 h-12 sm:w-16 sm:h-16 rounded-md shadow-lg object-cover"
+              alt=""
+              className="h-12 w-12 rounded-md border border-border object-cover sm:h-16 sm:w-16"
               width={64}
               height={64}
               loading="lazy"
@@ -89,14 +85,17 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, i
             />
           )}
 
-          <span className="px-2 py-1 rounded-full bg-success/20 text-success text-xs font-semibold">{t('APP_PRICE_FREE')}</span>
+          <span className="text-xs font-medium text-success">{t('APP_PRICE_FREE')}</span>
         </div>
 
         {/*
           `truncate` clipped real first-party names to "Companion Me…" / "Companion Plan…"
           in the four-up store grid. Clamp to two lines instead, matching the description.
         */}
-        <h3 title={app.name} className="font-bold text-base sm:text-lg mb-1 line-clamp-2 text-foreground group-hover:text-primary transition-colors">
+        <h3
+          title={app.name}
+          className="mb-1 line-clamp-2 text-base font-medium text-foreground transition-colors group-hover:text-primary sm:text-lg"
+        >
           {app.name}
         </h3>
         {/*
@@ -109,17 +108,17 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, i
 
         <div className="flex items-center justify-end mt-auto">
           {isInstalled ? (
-            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-success/20" title={t('APP_CARD_INSTALLED')}>
+            <span className="flex h-8 w-8 items-center justify-center" title={t('APP_CARD_INSTALLED')}>
               <Check className="h-4 w-4 text-success" aria-hidden />
               <span className="sr-only">{t('APP_CARD_INSTALLED')}</span>
             </span>
           ) : (
-            <span className="flex h-8 w-8 items-center justify-center rounded-full" aria-hidden>
+            <span className="flex h-8 w-8 items-center justify-center text-muted-foreground" aria-hidden>
               <Download className="h-4 w-4" />
             </span>
           )}
         </div>
-      </GlassContainer>
+      </div>
     </Link>
   );
 };

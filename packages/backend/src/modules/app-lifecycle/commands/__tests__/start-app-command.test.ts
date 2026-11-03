@@ -15,7 +15,7 @@ import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import type { AppUrn } from '@ci-hub/common/types';
-import { parseComposeJson } from '@ci-hub/common/schemas';
+import { PORT_EXPOSE_KIND, parseComposeJson } from '@ci-hub/common/schemas';
 import { isRocmKfdPassthroughAvailable } from '@/modules/inference/host-rocm-availability';
 import fs from 'node:fs';
 
@@ -53,6 +53,7 @@ describe('StartAppCommand — pull policy', () => {
   let appFilesManager: any;
   let dockerode: ReturnType<typeof mock<Dockerode>>;
   let portManager: ReturnType<typeof mock<PortManagerService>>;
+  let traefikConfigService: ReturnType<typeof mock<TraefikConfigService>>;
   const appUrn = 'urn:store:test-app' as AppUrn;
 
   beforeEach(() => {
@@ -66,6 +67,7 @@ describe('StartAppCommand — pull policy', () => {
         composeArgs.push(args);
       }),
       removeAppNetworks: vi.fn().mockResolvedValue(undefined),
+      waitForManagedAppContainersReady: vi.fn().mockResolvedValue({ ok: true, message: 'All containers came up' }),
     };
 
     const logger = mockDeep<LoggerService>();
@@ -92,7 +94,7 @@ describe('StartAppCommand — pull policy', () => {
     const appHelpers = mock<AppHelpers>();
     appHelpers.generateEnvFile.mockResolvedValue();
 
-    const traefikConfigService = mock<TraefikConfigService>();
+    traefikConfigService = mock<TraefikConfigService>();
     traefikConfigService.regenerateTraefikConfig.mockResolvedValue();
 
     const marketplaceService = mock<MarketplaceService>();
@@ -564,6 +566,77 @@ describe('StartAppCommand — pull policy', () => {
     });
   });
 
+  describe('after compose up', () => {
+    const crashLoop = {
+      ok: false,
+      message: 'summary-service keeps restarting (exit 126): permission denied',
+      errorDetail: 'app-summary-service-1 (restarting, exit 126): permission denied',
+      serviceFailure: { kind: 'restarting', service: 'summary-service', exitCode: 126, logLine: 'permission denied' },
+    };
+
+    it('does not report success while a service crash-loops and says which one and why', async () => {
+      dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({
+        success: false,
+        message: 'summary-service keeps restarting (exit 126): permission denied',
+        errorCode: 'app_service_failed',
+        errorDetail: crashLoop.errorDetail,
+        serviceFailure: crashLoop.serviceFailure,
+      });
+    });
+
+    it('leaves the other containers up when a service fails', async () => {
+      dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
+
+      await command.execute(appUrn, {});
+
+      expect(composeArgs.some((args) => args.startsWith('down') || args.startsWith('stop'))).toBe(false);
+    });
+
+    it('still routes an exposed app when a service fails, since its other containers go on serving', async () => {
+      dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
+
+      await command.execute(appUrn, { exposedLocal: true });
+
+      expect(traefikConfigService.regenerateTraefikConfig).toHaveBeenCalled();
+    });
+
+    it('reports success when the containers came up', async () => {
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: true, message: `App ${appUrn} started successfully` });
+      expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn);
+    });
+
+    it('checks an unchanged boot start too', async () => {
+      dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
+
+      const result = await command.execute(appUrn, { onlyRecreateChanged: true });
+
+      expect(result.success).toBe(false);
+    });
+
+    it('does not fail a start because Docker could not answer the check', async () => {
+      dockerService.waitForManagedAppContainersReady.mockRejectedValue(new Error('socket hang up'));
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+    });
+
+    it('never checks a port-expose workload, which has no containers', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'test-app', kind: PORT_EXPOSE_KIND } as any);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+      expect(dockerService.waitForManagedAppContainersReady).not.toHaveBeenCalled();
+    });
+  });
+
   describe('when another program holds the host port the app starts on', () => {
     /** Docker Engine's wording when a program on the host already listens on the port. */
     const portTaken = (port: number) =>
@@ -629,6 +702,21 @@ describe('StartAppCommand — pull policy', () => {
       const result = await command.execute(appUrn, {});
 
       expect(result).toMatchObject({ success: true, movedHostPort: { from: 8080, to: 10000 } });
+    });
+
+    it('reports the move and the failure when the app moved and a service then crash-looped', async () => {
+      refusals = [8080];
+      const serviceFailure = { kind: 'restarting', service: 'summary-service', exitCode: 126 };
+      dockerService.waitForManagedAppContainersReady.mockResolvedValue({
+        ok: false,
+        message: 'summary-service keeps restarting (exit 126)',
+        errorDetail: 'app-summary-service-1 (restarting, exit 126): ',
+        serviceFailure,
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: false, serviceFailure, movedHostPort: { from: 8080, to: 10000 } });
     });
 
     it('names the port the app started on when Docker refuses a second one too', async () => {

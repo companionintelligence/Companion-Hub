@@ -22,7 +22,7 @@ export function AlternativesCatalog({ alternatives, marketplaceSlug, title, subt
     <div className="min-w-0 space-y-6">
       {(title || subtitle) && (
         <div>
-          {title ? <h2 className="mb-1 text-xl font-semibold text-foreground sm:text-2xl">{title}</h2> : null}
+          {title ? <h2 className="mb-1 text-xl font-medium text-foreground sm:text-2xl">{title}</h2> : null}
           {subtitle ? <p className="text-muted-foreground">{subtitle}</p> : null}
         </div>
       )}
@@ -42,8 +42,8 @@ export function AlternativesCatalog({ alternatives, marketplaceSlug, title, subt
               <Table>
                 <TableHeader>
                   <TableRow className="bg-muted/20 hover:bg-muted/20">
-                    <TableHead className="w-1/2 px-2 font-semibold sm:px-4">{t('APP_STORE_PROPRIETARY')}</TableHead>
-                    <TableHead className="w-1/2 px-2 font-semibold sm:px-4">{t('APP_STORE_OPEN_SOURCE_ALTERNATIVES')}</TableHead>
+                    <TableHead className="w-1/2 px-2 font-medium sm:px-4">{t('APP_STORE_PROPRIETARY')}</TableHead>
+                    <TableHead className="w-1/2 px-2 font-medium sm:px-4">{t('APP_STORE_OPEN_SOURCE_ALTERNATIVES')}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>

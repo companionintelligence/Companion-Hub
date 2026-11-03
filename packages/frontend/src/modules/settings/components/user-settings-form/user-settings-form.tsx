@@ -453,7 +453,7 @@ export const UserSettingsForm = (props: IProps) => {
               <div>
                 <div className="flex items-center mb-2">
                   <Sliders className="mr-2" />
-                  <h2 className="text-2xl font-bold">{t('SETTINGS_GENERAL_ADVANCED_SETTINGS_TITLE')}</h2>
+                  <h2 className="text-2xl font-medium">{t('SETTINGS_GENERAL_ADVANCED_SETTINGS_TITLE')}</h2>
                 </div>
                 <p className="mb-4">{t('SETTINGS_GENERAL_ADVANCED_SETTINGS_SUBTITLE')}</p>
                 <div className="mb-3">
