@@ -12,7 +12,7 @@ Tauri v2 plugin for the Companion Intelligence desktop apps. On desktop it does 
 
 On iOS and Android every command returns `unsupported_platform`. The native sign-in sheet and the mobile secure store are not part of this crate.
 
-Built against Tauri 2.12.4 and tauri-build 2.7.3, with tauri-plugin 2.7.1, which needs Rust 1.90 or later. `Cargo.toml` pins the two Tauri crates exactly, so adding this crate does not move the Companion Hub's runtime. Bump them together with the Hub. This crate is not published. Consume it by path or by git, pinned to a commit.
+Built against Tauri 2.12.5 and tauri-build 2.7.4, the versions the Companion Hub and Companion Memory desktop apps lock, with tauri-plugin 2.7.1, which needs Rust 1.90 or later. `Cargo.toml` pins the two Tauri crates exactly, so adding this crate does not move the Companion Hub's runtime. Bump them together with the Hub. This crate is not published. Consume it by path or by git, pinned to a commit.
 
 ## Register the plugin
 
