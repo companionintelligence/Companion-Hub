@@ -24,6 +24,7 @@ import {
   desktopSignInWaitProof,
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
+  fetchPortalUserinfo,
   portalBindingCookie,
   portalBindingCookieName,
 } from '../portal-sso';
@@ -37,6 +38,7 @@ vi.mock('../portal-sso', async (importOriginal) => {
     ...actual,
     exchangePortalAuthorizationCode: vi.fn(),
     fetchPortalSessionEmail: vi.fn(),
+    fetchPortalUserinfo: vi.fn(),
     probePortalReachable: vi.fn().mockResolvedValue(true),
   };
 });
@@ -1953,6 +1955,115 @@ describe('AuthController', () => {
 
       await expect(authController.establishPortalMobileSession(req, res)).rejects.toBeInstanceOf(UnauthorizedException);
       expect(authService.admitHubPerson).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('establishPortalDesktopSession', () => {
+    const req = {
+      protocol: 'https',
+      get: vi.fn((header: string) => (header === 'host' ? 'hub.example.com' : undefined)),
+      headers: { authorization: 'Bearer portal-access-token', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'hub.example.com' },
+      cookies: {},
+    } as unknown as Request;
+
+    beforeEach(() => {
+      // Module-level mock, so its calls outlive a test unless cleared here.
+      vi.mocked(fetchPortalUserinfo).mockReset();
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') return 'https://hub.ci.computer/';
+        if (key === 'userSettings') return { experimental: { insecureCookie: true } };
+        return undefined as never;
+      });
+    });
+
+    it("turns the access token from the app's own Portal sign-in into a Hub session", async () => {
+      vi.mocked(fetchPortalUserinfo).mockResolvedValue({
+        ok: true,
+        email: 'demo-1@lifescope.io',
+        subject: 'portal-sub',
+        issuer: 'https://hub.ci.computer',
+        status: 200,
+      });
+      authService.admitHubPerson.mockResolvedValue({ id: 7 } as never);
+      sessionManager.createSession.mockResolvedValue('sid-desktop' as never);
+      const res = { cookie: vi.fn() } as unknown as Response;
+
+      await expect(authController.establishPortalDesktopSession(req, res)).resolves.toEqual({
+        sessionId: 'sid-desktop',
+        redirectPath: '/home',
+      });
+      expect(fetchPortalUserinfo).toHaveBeenCalledWith({ publicPortalBaseUrl: 'https://hub.ci.computer', accessToken: 'portal-access-token' });
+      expect(authService.admitHubPerson).toHaveBeenCalledWith({
+        issuer: 'https://hub.ci.computer',
+        subject: 'portal-sub',
+        email: 'demo-1@lifescope.io',
+        emailVerified: true,
+      });
+      expect(sessionManager.createSession).toHaveBeenCalledWith(7);
+      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sid-desktop', expect.objectContaining({ httpOnly: true }));
+    });
+
+    it('refuses a request with no Bearer token, without asking Portal', async () => {
+      const res = { cookie: vi.fn() } as unknown as Response;
+      const unsigned = { ...req, headers: {} } as unknown as Request;
+
+      await expect(authController.establishPortalDesktopSession(unsigned, res)).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(fetchPortalUserinfo).not.toHaveBeenCalled();
+      expect(authService.admitHubPerson).not.toHaveBeenCalled();
+    });
+
+    it('refuses when this Hub has no Portal configured, without asking Portal', async () => {
+      config.get.mockImplementation((key: string) => {
+        if (key === 'userSettings') return { experimental: { insecureCookie: true } };
+        return undefined as never;
+      });
+      const res = { cookie: vi.fn() } as unknown as Response;
+
+      await expect(authController.establishPortalDesktopSession(req, res)).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(fetchPortalUserinfo).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['the Portal refused the token', { ok: false as const, reason: 'userinfo_failed' as const, status: 401 }],
+      ['the Portal did not mark the address verified', { ok: false as const, reason: 'email_unverified' as const, status: 200 }],
+      ['the Portal gave no address', { ok: false as const, reason: 'missing_email' as const, status: 200 }],
+      ['the Portal did not answer', { ok: false as const, reason: 'network_error' as const, detail: 'ETIMEDOUT' }],
+    ])('refuses when %s', async (_label, userinfo) => {
+      vi.mocked(fetchPortalUserinfo).mockResolvedValue(userinfo);
+      const res = { cookie: vi.fn() } as unknown as Response;
+
+      await expect(authController.establishPortalDesktopSession(req, res)).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(authService.admitHubPerson).not.toHaveBeenCalled();
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+    });
+
+    it('refuses a Portal answer that names no subject', async () => {
+      vi.mocked(fetchPortalUserinfo).mockResolvedValue({
+        ok: true,
+        email: 'demo-1@lifescope.io',
+        subject: null,
+        issuer: null,
+        status: 200,
+      });
+      const res = { cookie: vi.fn() } as unknown as Response;
+
+      await expect(authController.establishPortalDesktopSession(req, res)).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(authService.admitHubPerson).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('portalDesktopConfig', () => {
+    it('returns the configured Portal origin without a trailing slash', () => {
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') return 'https://hub.ci.computer/';
+        return undefined as never;
+      });
+
+      expect(authController.portalDesktopConfig()).toEqual({ portalUrl: 'https://hub.ci.computer' });
+    });
+
+    it('returns a null portalUrl when no Portal is configured', () => {
+      expect(authController.portalDesktopConfig()).toEqual({ portalUrl: null });
     });
   });
 

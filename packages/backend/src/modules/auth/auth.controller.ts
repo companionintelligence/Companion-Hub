@@ -63,6 +63,7 @@ import {
   PasswordResetRequestBody,
   PasswordResetRequestDto,
   PasswordResetVerifyResponseDto,
+  PortalDesktopConfigDto,
   PortalDesktopExchangeDto,
   PortalDesktopHandoffStatusDto,
   PortalSessionHintDto,
@@ -90,6 +91,7 @@ import {
   shouldHandoffPortalLoginToDesktop,
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
+  fetchPortalUserinfo,
   DESKTOP_SIGN_IN_WAIT_NONCE_HEADER,
   DESKTOP_SIGN_IN_WAIT_PROOF_HEADER,
   isDesktopSignInWaitProof,
@@ -1152,6 +1154,55 @@ export class AuthController {
       portalEmailHash: hashEmailForLog(claims.email),
     });
     return PortalDesktopExchangeDto.parse({ sessionId, redirectPath: '/home' }, { reportOnly: true });
+  }
+
+  /**
+   * The desktop app ran its own sign-in: PKCE S256 with a 127.0.0.1 loopback redirect, against Portal as the
+   * public client `ci-hub` (no secret). It sends the access token that came back as a Bearer header, so no
+   * token goes into a URL. The Hub checks that token with Portal's userinfo endpoint, the same check the
+   * browser callback makes. The id_token audience check the mobile route does is not available from an
+   * access token, which is a known limit of this route.
+   */
+  @Post('/portal/desktop-session')
+  @ApiResponse({ type: PortalDesktopExchangeDto })
+  async establishPortalDesktopSession(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const bearer = extractBearerToken(typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined);
+    const portalBase = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
+    if (!bearer || !portalBase) {
+      throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
+    }
+
+    const userinfo = await fetchPortalUserinfo({ publicPortalBaseUrl: portalBase, accessToken: bearer });
+    if (!userinfo.ok) {
+      throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
+    }
+    if (!userinfo.subject) {
+      throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
+    }
+
+    const operator = await this.authService.admitHubPerson({
+      issuer: userinfo.issuer || portalBase,
+      subject: userinfo.subject,
+      email: userinfo.email,
+      emailVerified: true,
+    });
+    const sessionId = await this.sessionManager.createSession(operator.id);
+    await this.setSessionCookie(res, sessionId, req);
+    this.logger.info("Portal desktop session planted from the app's own sign-in", {
+      portalEmailHash: hashEmailForLog(userinfo.email),
+    });
+    return PortalDesktopExchangeDto.parse({ sessionId, redirectPath: '/home' }, { reportOnly: true });
+  }
+
+  /**
+   * The Portal origin is public, and the desktop app needs it to run its own sign-in against the same Portal
+   * the Hub checks tokens with. Unauthenticated, because nothing in it is secret.
+   */
+  @Get('/portal/desktop-config')
+  @ApiResponse({ type: PortalDesktopConfigDto })
+  portalDesktopConfig() {
+    const portalUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
+    return PortalDesktopConfigDto.parse({ portalUrl: portalUrl || null }, { reportOnly: true });
   }
 
   /**

@@ -96,6 +96,11 @@ const portalDesktopExchangeResponseSchema = z.object({
   redirectPath: z.string(),
 });
 
+/** The Portal origin the desktop app signs in against. Null when this Hub has no Portal configured. */
+const portalDesktopConfigResponseSchema = z.object({
+  portalUrl: z.string().nullable(),
+});
+
 /*
  * One bit for the browser tab the desktop handoff left behind: has the app
  * taken this login, is it still waiting, or did the token die unspent. Nothing
@@ -170,6 +175,7 @@ const browserHandoffMintResponseSchema = z.object({
 export class LoginBody extends createZodDto(credentialsSchema) {}
 export class VerifyTotpBody extends createZodDto(verifyTotpSchema) {}
 export class LoginDto extends createZodDto(loginResponseSchema) {}
+export class PortalDesktopConfigDto extends createZodDto(portalDesktopConfigResponseSchema) {}
 export class PortalDesktopExchangeDto extends createZodDto(portalDesktopExchangeResponseSchema) {}
 export class PortalDesktopHandoffStatusDto extends createZodDto(portalDesktopHandoffStatusResponseSchema) {}
 export class PortalSessionHintDto extends createZodDto(portalSessionHintResponseSchema) {}

@@ -413,6 +413,10 @@ export type PortalDesktopExchangeDto = {
     redirectPath: string;
 };
 
+export type PortalDesktopConfigDto = {
+    portalUrl: string;
+};
+
 export type PortalDesktopHandoffStatusDto = {
     [key: string]: unknown;
 };
@@ -3618,6 +3622,32 @@ export type EstablishPortalMobileSessionResponses = {
 };
 
 export type EstablishPortalMobileSessionResponse = EstablishPortalMobileSessionResponses[keyof EstablishPortalMobileSessionResponses];
+
+export type EstablishPortalDesktopSessionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/portal/desktop-session';
+};
+
+export type EstablishPortalDesktopSessionResponses = {
+    default: PortalDesktopExchangeDto;
+};
+
+export type EstablishPortalDesktopSessionResponse = EstablishPortalDesktopSessionResponses[keyof EstablishPortalDesktopSessionResponses];
+
+export type PortalDesktopConfigData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/portal/desktop-config';
+};
+
+export type PortalDesktopConfigResponses = {
+    default: PortalDesktopConfigDto;
+};
+
+export type PortalDesktopConfigResponse = PortalDesktopConfigResponses[keyof PortalDesktopConfigResponses];
 
 export type PortalDesktopHandoffStatusData = {
     body?: never;
