@@ -485,7 +485,7 @@ export const AppAccessPoints = ({ app, info }: Props) => {
 
                 <div className="mt-4 space-y-2">
                   <div className="min-w-0 rounded-lg border border-border/50 bg-background/60 px-2.5 py-2 sm:px-3">
-                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t('APP_DETAILS_LINK')}</div>
+                    <div className="text-[11px] font-medium   text-muted-foreground">{t('APP_DETAILS_LINK')}</div>
                     {entry.tailscaleRefused ? (
                       // The reason and the command that ends it are on the Network settings card.
                       <div className="min-w-0 text-sm leading-5 text-warning" data-testid="vpn-access-refused">

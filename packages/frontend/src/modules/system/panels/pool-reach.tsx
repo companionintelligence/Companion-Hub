@@ -167,7 +167,7 @@ function Badge({ x, y, label }: { x: number; y: number; label: string }) {
   return (
     <>
       <rect x={x - width / 2} y={y - 7} width={width} height={14} rx={7} className="fill-primary stroke-card" strokeWidth={1.5} />
-      <text x={x} y={y + 3.5} textAnchor="middle" className="fill-primary-foreground text-[10px] font-bold tabular-nums">
+      <text x={x} y={y + 3.5} textAnchor="middle" className="fill-primary-foreground text-[10px] font-medium tabular-nums">
         {label}
       </text>
     </>
@@ -285,7 +285,7 @@ export function PoolReach({
       <p className="text-[11px] leading-snug text-muted-foreground">{t('DASHBOARD_REACH_CAPTION')}</p>
       <PanelBody state={state} error={t('DASHBOARD_POOL_FAILED')} lines={6}>
         {layout.peers.length === 0 ? (
-          <p data-testid="pool-reach-empty" className="py-5 text-center text-[13px] italic text-muted-foreground">
+          <p data-testid="pool-reach-empty" className="py-5 text-center text-[13px]  text-muted-foreground">
             {t('DASHBOARD_REACH_EMPTY')}
           </p>
         ) : (
@@ -354,7 +354,7 @@ export function PoolReach({
                     >
                       <title>{describe(peer)}</title>
                       <Marker status={peer.status} concern={peer.concern} x={peer.x} y={peer.y} />
-                      <text x={labelX} y={peer.y - 2} textAnchor={anchor} className="fill-foreground text-[12px] font-semibold">
+                      <text x={labelX} y={peer.y - 2} textAnchor={anchor} className="fill-foreground text-[12px] font-medium">
                         {nameLine(peer)}
                       </text>
                       <text
@@ -387,7 +387,7 @@ export function PoolReach({
                       x={layout.overflow.x + (layout.overflow.side === 'right' ? REACH_LABEL_GAP : -REACH_LABEL_GAP)}
                       y={layout.overflow.y + 4}
                       textAnchor={layout.overflow.side === 'right' ? 'start' : 'end'}
-                      className="fill-muted-foreground text-[11px] font-semibold"
+                      className="fill-muted-foreground text-[11px] font-medium"
                     >
                       {t('DASHBOARD_REACH_MORE', { count: layout.overflow.peers.length })}
                     </text>
@@ -399,7 +399,7 @@ export function PoolReach({
                   <title>{[t('DASHBOARD_THIS_HUB'), hubName, hubDetail].filter(Boolean).join(' · ')}</title>
                   <circle cx={hub.x} cy={hub.y} r={REACH_HUB_R} className="fill-card stroke-primary" strokeWidth={2} />
                   <circle cx={hub.x} cy={hub.y} r={REACH_HUB_R} className="fill-primary/10" />
-                  <text x={hub.x} y={hub.y - 2} textAnchor="middle" className="fill-foreground text-[11px] font-bold">
+                  <text x={hub.x} y={hub.y - 2} textAnchor="middle" className="fill-foreground text-[11px] font-medium">
                     {fitText(hubName, REACH_HUB_R * 2 - 4, 11, 700)}
                   </text>
                   <text x={hub.x} y={hub.y + 12} textAnchor="middle" className="fill-muted-foreground text-[10px]">

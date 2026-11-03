@@ -103,7 +103,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
           <div>
             {isUserApp && (
               <div className="flex justify-between items-center mb-3">
-                <h2 className="text-lg font-semibold">{t('APP_DETAILS_NOTES')}</h2>
+                <h2 className="text-lg font-medium">{t('APP_DETAILS_NOTES')}</h2>
                 {!isEditing && canEditNotes && (
                   <Button variant="outline" size="sm" onClick={() => setIsEditing(!isEditing)}>
                     {t('COMMON_EDIT')}
@@ -139,7 +139,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
                 )}
               </div>
             )}
-            {!isUserApp && <h2 className="text-lg font-semibold mb-3">{t('APP_DETAILS_ABOUT')}</h2>}
+            {!isUserApp && <h2 className="text-lg font-medium mb-3">{t('APP_DETAILS_ABOUT')}</h2>}
             <div className="text-sm text-muted-foreground leading-relaxed">
               <Suspense>
                 <AppDescriptionEditor isEditing={isEditing} meta={meta} setMeta={setMeta} />
@@ -151,7 +151,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
         {/* Right column - Information */}
         <div className="space-y-4 sm:space-y-6">
           <div>
-            <h2 className="text-lg font-semibold mb-4">{t('COMMON_INFORMATION')}</h2>
+            <h2 className="text-lg font-medium mb-4">{t('COMMON_INFORMATION')}</h2>
             <div className="space-y-3 sm:space-y-4">
               <div className="flex justify-between items-start">
                 <span className="text-sm text-muted-foreground">{t('APP_DETAILS_PROVIDER')}</span>
@@ -265,7 +265,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
               ) : (
                 <Shield className="h-4 w-4 text-primary" />
               )}
-              <span className="text-sm font-semibold">{t('APP_DETAILS_APP_PRIVACY')}</span>
+              <span className="text-sm font-medium">{t('APP_DETAILS_APP_PRIVACY')}</span>
             </div>
             <p className="text-xs text-muted-foreground mb-3">
               {privacyState === 'undeclared' ? t('APP_DETAILS_APP_PRIVACY_UNDECLARED_DESC') : t('APP_DETAILS_APP_PRIVACY_DESC')}

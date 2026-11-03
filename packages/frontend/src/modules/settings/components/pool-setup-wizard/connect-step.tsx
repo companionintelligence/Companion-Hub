@@ -44,7 +44,7 @@ export function ConnectStep({ rows, sending, demoMode, onBack, onContinue, onRet
   return (
     <div className="flex flex-1 flex-col gap-4" data-testid="pool-setup-step-connect">
       <div className="space-y-0.5">
-        <h3 tabIndex={-1} data-step-heading className="text-base font-semibold outline-none">
+        <h3 tabIndex={-1} data-step-heading className="text-base font-medium outline-none">
           {t('HUB_POOL_SETUP_CONNECT_TITLE')}
         </h3>
         <p className="text-sm text-muted-foreground">{t('HUB_POOL_SETUP_CONNECT_INTRO')}</p>

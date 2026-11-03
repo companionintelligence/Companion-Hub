@@ -62,6 +62,7 @@ export default function ConnectAdvancedPage() {
         <CardContent className="flex flex-col gap-6">
           <form onSubmit={handleSavePortal} className="flex flex-col gap-3">
             <Input
+              id="portal-url"
               type="url"
               className={TOUCH}
               style={{ minHeight: 44 }}

@@ -247,7 +247,7 @@ export default function ConnectPage() {
           ) : (
             <button
               type="button"
-              className="py-2 text-xs text-muted-foreground underline"
+              className={`py-2 text-xs text-muted-foreground underline ${TOUCH}`}
               onClick={() => navigate('/connect/advanced')}
               data-testid="advanced-link"
             >

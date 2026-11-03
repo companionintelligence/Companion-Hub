@@ -22,38 +22,25 @@ export function isAppleSiliconGpu(hardware: HardwareProfile): boolean {
 // reading elsewhere in this file, e.g. resourceColor in ai-setup/levels.ts) or leave it on
 // green while reusing the level palette's *different* green — a real polarity conflict, not
 // a hex to swap. Needs a decision on canonical direction before this can migrate.
-const TIER_BADGES: Record<HardwareTier, { labelKey: string; color: string; emoji: string }> = {
-  high: { labelKey: 'ONBOARDING_TIER_HIGH', color: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200', emoji: '🚀' },
-  medium: { labelKey: 'ONBOARDING_TIER_MEDIUM', color: 'bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300', emoji: '⚡' },
-  low: { labelKey: 'ONBOARDING_TIER_LOW', color: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200', emoji: '💡' },
-  'cpu-only': {
-    labelKey: 'ONBOARDING_TIER_CPU_ONLY',
-    color: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200',
-    emoji: '🔧',
-  },
-  insufficient: { labelKey: 'ONBOARDING_TIER_INSUFFICIENT', color: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200', emoji: '☁️' },
+const TIER_BADGES: Record<HardwareTier, { labelKey: string; dot: string }> = {
+  high: { labelKey: 'ONBOARDING_TIER_HIGH', dot: 'bg-success' },
+  medium: { labelKey: 'ONBOARDING_TIER_MEDIUM', dot: 'bg-primary' },
+  low: { labelKey: 'ONBOARDING_TIER_LOW', dot: 'bg-warning' },
+  'cpu-only': { labelKey: 'ONBOARDING_TIER_CPU_ONLY', dot: 'bg-warning' },
+  insufficient: { labelKey: 'ONBOARDING_TIER_INSUFFICIENT', dot: 'bg-destructive' },
 };
 
 export function resolveTierBadge(tier: HardwareTier, hardware: HardwareProfile) {
   if (isAmdApu(hardware)) {
-    return {
-      label: i18next.t('ONBOARDING_TIER_APU'),
-      color: 'bg-violet-100 text-violet-900 dark:bg-violet-950 dark:text-violet-200',
-      emoji: '🎮',
-    };
+    return { label: i18next.t('ONBOARDING_TIER_APU'), dot: 'bg-primary' };
   }
   if (isAppleSiliconGpu(hardware)) {
-    return {
-      label: i18next.t('COMMON_APPLE_SILICON'),
-      color: 'border border-slate-300 bg-slate-200 text-slate-950 shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200',
-      emoji: '✨',
-    };
+    return { label: i18next.t('COMMON_APPLE_SILICON'), dot: 'bg-muted-foreground' };
   }
   const tierBadge = TIER_BADGES[tier];
   return {
     label: i18next.t(tierBadge.labelKey),
-    color: tierBadge.color,
-    emoji: tierBadge.emoji,
+    dot: tierBadge.dot,
   };
 }
 

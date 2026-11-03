@@ -15,8 +15,10 @@ export const ErrorPage = ({ error, onReset }: ErrorPageProps) => {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-md text-center">
-        <p className="text-xl font-semibold text-foreground mb-2">{t('ERROR_PAGE_TITLE')}</p>
-        <p className="text-sm text-muted-foreground mb-4">{userMessage}</p>
+        <h1 className="text-xl font-medium text-foreground mb-2">{t('ERROR_PAGE_TITLE')}</h1>
+        <p role="alert" className="text-sm text-muted-foreground mb-4">
+          {userMessage}
+        </p>
         <div className="mb-4">
           <Button intent="primary" onClick={onReset}>
             <RotateCw className="mr-2 h-4 w-4" />

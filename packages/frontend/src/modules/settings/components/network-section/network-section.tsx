@@ -92,7 +92,7 @@ export const SubSection = ({
   <section className="space-y-3 border-t border-border pt-5" data-testid={testId}>
     <div className="space-y-1">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
-        <h4 className="flex items-center text-sm font-semibold">
+        <h4 className="flex items-center text-sm font-medium">
           {title}
           {help && helpId ? <Hint id={helpId} hint={help} /> : null}
         </h4>

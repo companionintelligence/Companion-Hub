@@ -40,7 +40,7 @@ describe('Alert', () => {
     );
 
     expect(screen.getByTestId('icon')).toHaveClass('shrink-0', 'text-[color:var(--alert-accent)]', '[&>svg]:h-4', '[&>svg]:w-4');
-    expect(screen.getByRole('heading', { name: 'Heading' })).toHaveClass('font-semibold', 'text-[color:var(--alert-heading)]');
+    expect(screen.getByRole('heading', { name: 'Heading' })).toHaveClass('font-medium', 'text-[color:var(--alert-heading)]');
     expect(screen.getByText('Under the heading')).toHaveClass('[.alert-heading+&]:text-muted-foreground');
   });
 

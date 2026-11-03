@@ -77,7 +77,7 @@ export const LoginForm: React.FC<IProps> = ({
 
   return (
     <>
-      <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_LOGIN_TITLE', { type: loginType })}</h2>
+      <h2 className="text-xl font-medium text-center mb-4">{t('AUTH_LOGIN_TITLE', { type: loginType })}</h2>
 
       {portalSsoHref ? (
         <PortalSignInSection
@@ -98,6 +98,7 @@ export const LoginForm: React.FC<IProps> = ({
             <Input
               {...register('email')}
               name="email"
+              autoComplete="email"
               label={t('AUTH_FORM_EMAIL')}
               error={errors.email?.message}
               disabled={loading}
@@ -108,6 +109,7 @@ export const LoginForm: React.FC<IProps> = ({
             <PasswordInput
               {...register('password')}
               name="password"
+              autoComplete="current-password"
               label={t('COMMON_PASSWORD')}
               error={errors.password?.message}
               disabled={loading}

@@ -180,7 +180,7 @@ export default () => {
         <PoolSetupCard />
 
         {/* Apps section */}
-        <div className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-4 shadow-sm">
+        <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
           <QueuedInstallsIndicator queue={installQueue} isLoading={installQueueLoading} />
           <CustomDomainRestartBanner apps={diagnosticsApps} namesByUrn={appNamesByUrn} />
           {appsError ? (

@@ -9,7 +9,7 @@ import { refreshTelemetryConsent } from '@/lib/telemetry-consent';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import i18next from 'i18next';
-import { ExternalLink, Sparkles } from 'lucide-react';
+import { ExternalLink, SlidersHorizontal } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
@@ -81,7 +81,7 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname, manage
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 shrink-0 text-muted-foreground" />
+            <SlidersHorizontal className="h-5 w-5 shrink-0 text-muted-foreground" />
             <CardTitle className="text-xl">{t('SETTINGS_GENERAL_ADVANCED_MODE_TITLE')}</CardTitle>
           </div>
           <p className="text-sm text-muted-foreground">{t('SETTINGS_GENERAL_ADVANCED_MODE_SUBTITLE')}</p>

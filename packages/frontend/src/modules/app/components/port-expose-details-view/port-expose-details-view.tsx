@@ -108,7 +108,7 @@ export const PortExposeDetailsView = ({ app, info }: Props) => {
 
             <div className="min-w-0 flex-1 space-y-3 sm:space-y-4">
               <div className="space-y-2">
-                <h1 className="text-2xl font-semibold tracking-tight sm:text-4xl">{info.name}</h1>
+                <h1 className="text-2xl font-medium tracking-tight sm:text-4xl">{info.name}</h1>
                 <p className="text-sm text-muted-foreground sm:text-base">
                   {t('PORT_EXPOSE_DETAILS_SUBTITLE', { port: app.port ?? info.port ?? '—' })} · {exposureLabel}
                 </p>

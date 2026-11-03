@@ -89,7 +89,7 @@ export async function verifyDashboard(page: Page) {
 export async function verifyAppStorePage(page: Page) {
   await page.goto('/store');
   await expect(page.getByRole('heading', { name: 'App Store' })).toBeVisible({ timeout: 30000 });
-  await expect(page.getByPlaceholder('Search apps...').first()).toBeVisible({ timeout: 30000 });
+  await expect(page.getByPlaceholder('Search apps').first()).toBeVisible({ timeout: 30000 });
 }
 
 /** Verify the settings page shows app store sources. */

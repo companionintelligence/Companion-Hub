@@ -10,7 +10,7 @@ test.describe('Navigation', () => {
     // App Store
     await page.getByRole('link', { name: 'Store' }).click();
     await page.waitForURL(/\/store/);
-    await expect(page.getByPlaceholder('Search apps...').first()).toBeVisible({ timeout: 30000 });
+    await expect(page.getByPlaceholder('Search apps').first()).toBeVisible({ timeout: 30000 });
 
     // Settings — wait for page to stabilize after navigation (React re-renders)
     await page.getByRole('link', { name: 'Settings' }).click();
@@ -37,7 +37,7 @@ test.describe('Navigation', () => {
       await expect(page.getByRole('tab', { name: 'Settings' })).toBeVisible();
     }).toPass({ timeout: 30000 });
 
-    await page.getByAltText('Companion Hub logo').click();
+    await page.locator('[data-testid="app-header"] a[href="/home"]').first().click();
     await expect(page).toHaveURL(/\/home/);
     await expect(page.getByText('Disk space')).toBeVisible({ timeout: 30000 });
   });
