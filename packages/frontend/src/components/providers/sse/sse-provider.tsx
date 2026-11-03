@@ -133,8 +133,8 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
         navigate('/store', { replace: true });
       }
 
-      // A start that failed after the move leaves the app on the new port, so the error alone would hide it.
-      if (movedHostPort && (event === 'start_error' || event === 'restart_error')) {
+      // A command that failed after the move leaves the app on the new port, so the error alone would hide it.
+      if (movedHostPort && (event === 'start_error' || event === 'restart_error' || event === 'install_error')) {
         showPortMoved(appUrn, appName, movedHostPort);
       }
 

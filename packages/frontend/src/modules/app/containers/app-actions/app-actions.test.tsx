@@ -424,6 +424,22 @@ describe('AppActions', () => {
     });
   });
 
+  describe('the port the install dialog opens on', () => {
+    const installPort = (app: AppDetails | null) => {
+      render(<AppActions app={app} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+      return hoisted.installDialogProps?.retryPort;
+    };
+
+    // Another program held the listing's port, so the failed install moved the app off it.
+    it('is the one a failed install left the app on when it is retried', () => {
+      expect(installPort(makeApp({ status: 'install_failed', port: 10003 }))).toBe(10003);
+    });
+
+    it('is left to the listing for an app that is not installed', () => {
+      expect(installPort(null)).toBeUndefined();
+    });
+  });
+
   describe('the restart setting for a newly connected domain', () => {
     /*
      * The stored config snapshot leaves this setting out, so that flipping it never
