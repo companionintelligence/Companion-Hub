@@ -1086,6 +1086,11 @@ pub fn run() {
             Ok(())
         });
 
+    // Desktop sign-in runs the loopback flow in tauri-plugin-ci-auth, so the plugin is
+    // registered on desktop only.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_ci_auth::init());
+
     builder
         .run(tauri::generate_context!())
         .expect("error while running Companion Hub Desktop");
@@ -1273,10 +1278,15 @@ fn handle_deep_link_url(app: &tauri::AppHandle, url: &str) {
         return;
     }
 
-    if let Some(payload) = extract_portal_auth(url) {
-        focus_main_window(app);
-        queue_portal_auth(app, payload);
-        return;
+    // Desktop sign-in no longer takes a token from a deep link. It runs a PKCE sign-in over a
+    // loopback redirect (RFC 8252) in the app (tauri-plugin-ci-auth), so a `cihub://auth?token=`
+    // link must not carry a token into the desktop window. Mobile keeps this handling.
+    if cfg!(mobile) {
+        if let Some(payload) = extract_portal_auth(url) {
+            focus_main_window(app);
+            queue_portal_auth(app, payload);
+            return;
+        }
     }
 
     if let Some(payload) = extract_install_intent(url) {

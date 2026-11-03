@@ -41,6 +41,7 @@
     "opener:allow-reveal-item-in-dir",
     "notification:default",
     "store:default",
+    "ci-auth:default",
     "os:default",
     "allow-desktop-ipc"
   ]
