@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canServeOnCustomDomain,
   didPublicRoutingIdentityChange,
   publishesCloudflarePublicRoute,
   requiresHubLoginOnPublicRoute,
@@ -93,5 +94,19 @@ describe('app-public-routing.helpers', () => {
         ),
       ).toBe(true);
     });
+  });
+});
+
+describe('canServeOnCustomDomain', () => {
+  it('takes a public form with its host port closed', () => {
+    expect(canServeOnCustomDomain({ exposedLocal: true, openPort: false })).toBe(true);
+  });
+
+  it.each([
+    ['an open port', { exposedLocal: true, openPort: true }],
+    ['no openPort, which the queue serves open', { exposedLocal: true }],
+    ['a form that is not public', { exposedLocal: false, openPort: false }],
+  ])('refuses %s', (_name, form) => {
+    expect(canServeOnCustomDomain(form)).toBe(false);
   });
 });

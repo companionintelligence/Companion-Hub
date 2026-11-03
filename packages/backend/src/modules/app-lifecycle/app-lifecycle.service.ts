@@ -2017,7 +2017,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           // defaulted false, the bind pass read that as a refusal, and the move
           // the person had just agreed to was cleared on the next sync.
           ...customDomainColumns(parsedForm),
-          openPort: parsedForm.openPort ?? false,
+          openPort: servedOpenPort(parsedForm),
           exposedLocal: parsedForm.exposedLocal ?? !!appInfo.exposable,
           exposureMode: getEffectiveExposureMode(parsedForm),
           appStoreSlug: appStoreId,
@@ -2078,7 +2078,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
          * otherwise wipe every recorded choice on the Hub.
          */
         ...customDomainColumns(parsedForm),
-        openPort: parsedForm.openPort ?? false,
+        openPort: servedOpenPort(parsedForm),
         exposedLocal: parsedForm.exposedLocal ?? !!appInfo.exposable,
         exposureMode: getEffectiveExposureMode(parsedForm),
         isVisibleOnGuestDashboard,
@@ -2951,11 +2951,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       keepStoredExposure(parsedForm, parsedFormResult.data, app.config);
     }
 
-    // A custom app's config.json keeps its internal port, and the host port the Hub gave it lives on
-    // the row (see `allocateCustomAppHostPort`). A save that leaves the port out would fall back to
-    // config.json below and publish the internal port again, which for port 80 can never bind.
-    if (parsedForm.port === undefined && extractAppUrn(appUrn).appStoreId === '_user' && app.port) {
-      parsedForm.port = app.port;
+    // A save that leaves the port out keeps the one the app is on, as a reinstall does
+    // (`buildInstallRowPatch`). It would fall back to the listing's below, which is the port a move left
+    // because another program holds it. A custom app's config.json keeps its internal port, so its host
+    // port is on the row (`allocateCustomAppHostPort`). A form that never named a port still follows its listing.
+    const keptPort = extractAppUrn(appUrn).appStoreId === '_user' ? app.port : (app.config as { port?: unknown } | null)?.port;
+    if (parsedForm.port === undefined && typeof keptPort === 'number') {
+      parsedForm.port = keptPort;
     }
 
     // Manifest edge-auth default (CI-Engineering#74): when this update does not carry an
@@ -3151,7 +3153,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       exposedLocal: parsedForm.exposedLocal ?? false,
       // What compose runs the form as: a legacy form's `exposedLocal` is Public Web, not This Machine Only.
       exposureMode: getEffectiveExposureMode(parsedForm),
-      openPort: parsedForm.openPort,
+      openPort: servedOpenPort(parsedForm),
       port: parsedForm.port ?? appInfo.port,
       domain: parsedForm.domain ?? null,
       localSubdomain: parsedForm.localSubdomain ?? null,
@@ -3338,10 +3340,23 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           try {
             const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
 
-            // Part of the update the caller was already authorized for; not a new decision.
-            await this.updateAppConfig({ appUrn, form: app.config, actor: { kind: 'system', reason: 'update-reapply' } });
+            // The new version is in, so a refused re-apply is not a failed update. It left the app on
+            // Updating with its version unrecorded until the status sync gave up on it.
+            let settingsReapplied = true;
+            try {
+              // Part of the update the caller was already authorized for; not a new decision.
+              await this.updateAppConfig({ appUrn, form: app.config, actor: { kind: 'system', reason: 'update-reapply' } });
+            } catch (err) {
+              settingsReapplied = false;
+              this.logger.warn(`App ${appUrn} updated, but its settings were not re-applied: ${err instanceof Error ? err.message : String(err)}`);
+            }
             await this.appRepository.updateAppById(app.id, { version: appInfo?.cihub_app_version, status: restoredStatus });
-            this.sseService.emit('app', { event: 'update_success', appUrn, appStatus: restoredStatus });
+            this.sseService.emit('app', {
+              event: 'update_success',
+              appUrn,
+              appStatus: restoredStatus,
+              ...(settingsReapplied ? {} : { warningCode: 'APP_UPDATE_SETTINGS_NOT_REAPPLIED' }),
+            });
             this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
           } finally {
             if (followUp.claimed) {
