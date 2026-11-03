@@ -104,6 +104,71 @@ describe('AppFilesManager: the record of the images an app pulled', () => {
     await expect(manager.writePulledImages(appUrn, { imageIds: [idA], imageTags: [] })).resolves.toBe(false);
   });
 
+  describe('adding what another app hands over', () => {
+    it('keeps what the record holds and each entry once', async () => {
+      filesystem.readTextFile.mockResolvedValue(JSON.stringify({ imageIds: [idA], imageTags: ['app:1'] }));
+
+      await expect(manager.addPulledImages(appUrn, { imageIds: [idA, idB], imageTags: ['app:1', 'app:2'] })).resolves.toBe(true);
+
+      expect(filesystem.writeTextFile).toHaveBeenCalledWith(
+        recordPath,
+        JSON.stringify({ imageIds: [idA, idB], imageTags: ['app:1', 'app:2'] }, null, 2),
+      );
+    });
+
+    it('starts a record for an app that has none', async () => {
+      filesystem.readTextFile.mockResolvedValue(null);
+      filesystem.pathExists.mockResolvedValue(false);
+
+      await manager.addPulledImages(appUrn, { imageIds: [idB], imageTags: [] });
+
+      expect(filesystem.writeTextFile).toHaveBeenCalledWith(recordPath, JSON.stringify({ imageIds: [idB], imageTags: [] }, null, 2));
+    });
+
+    it('leaves a record it could not read as it is and reports that', async () => {
+      filesystem.readTextFile.mockResolvedValue(null);
+      filesystem.pathExists.mockResolvedValue(true);
+
+      await expect(manager.addPulledImages(appUrn, { imageIds: [idA], imageTags: [] })).resolves.toBe(false);
+
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it('reports a record that could not be written and lets the next one through', async () => {
+      filesystem.readTextFile.mockResolvedValue(null);
+      filesystem.pathExists.mockResolvedValue(false);
+      filesystem.writeTextFile.mockResolvedValueOnce(false);
+
+      await expect(manager.addPulledImages(appUrn, { imageIds: [idA], imageTags: [] })).resolves.toBe(false);
+      await expect(manager.addPulledImages(appUrn, { imageIds: [idA], imageTags: [] })).resolves.toBe(true);
+    });
+
+    it('lets the next one through when the read throws', async () => {
+      filesystem.readTextFile.mockRejectedValueOnce(new Error('the disk went away')).mockResolvedValue(null);
+      filesystem.pathExists.mockResolvedValue(false);
+
+      await expect(manager.addPulledImages(appUrn, { imageIds: [idA], imageTags: [] })).rejects.toThrow('the disk went away');
+      await expect(manager.addPulledImages(appUrn, { imageIds: [idA], imageTags: [] })).resolves.toBe(true);
+    });
+
+    it('adds one at a time, so two at once both land', async () => {
+      let held = JSON.stringify({ imageIds: [], imageTags: [] });
+      filesystem.readTextFile.mockImplementation(async () => held);
+      filesystem.writeTextFile.mockImplementation(async (_path: string, content: string) => {
+        await new Promise((resolve) => setImmediate(resolve));
+        held = content;
+        return true;
+      });
+
+      await Promise.all([
+        manager.addPulledImages(appUrn, { imageIds: [idA], imageTags: ['app:1'] }),
+        manager.addPulledImages(appUrn, { imageIds: [idB], imageTags: ['app:2'] }),
+      ]);
+
+      expect(JSON.parse(held)).toEqual({ imageIds: [idA, idB], imageTags: ['app:1', 'app:2'] });
+    });
+  });
+
   it('keeps the record in a folder the packaged compose file mounts, so it can be written and a Hub update keeps it', async () => {
     const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');
     const composeFile = realFs.readFileSync(path.resolve(__dirname, '../../../../../../docker-compose.prod.yml'), 'utf8');

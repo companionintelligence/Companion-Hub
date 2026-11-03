@@ -414,9 +414,9 @@ export class DockerService {
    * Removes the images an uninstalled app brought onto this computer, and the images its own compose build made.
    *
    * `appImageIds` are the IDs an install, an update, a start or a restart recorded when it brought the image in for
-   * this app (`AppFilesManager.readPulledImages`). Nothing else is removed: an image that was on the computer before
-   * the app stays. Removal is never forced, so Docker refuses an image that a container, running or stopped, still
-   * uses. Missing or held images do not fail the uninstall.
+   * this app, or for an app that handed it over on its way out (`AppFilesManager.readPulledImages`). Nothing else is
+   * removed: an image that was on the computer before any app stays. Removal is never forced, so Docker refuses an image
+   * that a container, running or stopped, still uses. Missing or held images do not fail the uninstall.
    *
    * ⚠ DOCKER DOES NOT REFUSE ONE TAG. Removing by ID takes an image with a single tag and its digest names. It asks
    * nothing about that tag. Store apps pin `name:tag@digest`, which leaves no tag at all, so `docker pull name:tag` by
@@ -424,7 +424,7 @@ export class DockerService {
    * `appImageTags` stays. So does one whose tags can't be read.
    *
    * @param appUrn App URN being uninstalled.
-   * @param appImageIds Image IDs the app's installs, updates, starts and restarts brought in for it.
+   * @param appImageIds Image IDs the app's installs, updates, starts and restarts brought in for it and handed-over ones.
    * @param appImageTags The tags those images had when they arrived.
    */
   public async removeAppImages(appUrn: AppUrn, appImageIds: string[] = [], appImageTags: string[] = []): Promise<void> {

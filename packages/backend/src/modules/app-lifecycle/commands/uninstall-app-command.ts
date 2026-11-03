@@ -9,7 +9,7 @@ import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import type { AppUrn } from '@ci-hub/common/types';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { AppLifecycleCommand } from './command';
-import { imagesNoOtherAppNames } from './pull-app-images';
+import { handOverKeptImages, sortImagesByOtherApps } from './pull-app-images';
 
 export class UninstallAppCommand extends AppLifecycleCommand {
   constructor(
@@ -44,12 +44,6 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         logger.warn(`Failed to release ports for ${appUrn}: ${err}`);
       }
 
-      // The images this app's installs, updates and starts pulled for it, as recorded when each brought them in. Only
-      // these are removed, with Delete all data on or off, since an image is not the app's data. An image that was on
-      // the computer before the app stays. So does one a container still uses and one another installed app names.
-      const pulledImages = isPortExpose ? { imageIds: [], imageTags: [] } : await appFilesManager.readPulledImages(appUrn);
-      const appImageIds = await imagesNoOtherAppNames(this.moduleRef, appUrn, pulledImages.imageIds);
-
       try {
         if (!isPortExpose) {
           // `local` removes only the images compose built for this app; the pulled ones are removed by ID below.
@@ -74,10 +68,18 @@ export class UninstallAppCommand extends AppLifecycleCommand {
           logger.warn(`Failed to rebuild the Traefik routes after removing ${appUrn}: ${err}`);
         }
 
+        // The images this app's installs, updates and starts pulled for it, as recorded when each brought them in, and
+        // any another app handed over. Only these are removed, with Delete all data on or off, since an image is not the
+        // app's data. An image that was on the computer before any app stays. So does one a container still uses and one
+        // another installed app names, which goes on that app's record. All of this runs after compose down, which can
+        // take minutes: another uninstall or an install in that time changes the answer and a stale one removes too much.
+        const pulledImages = await appFilesManager.readPulledImages(appUrn);
+        const { removable, keptFor } = await sortImagesByOtherApps(this.moduleRef, appUrn, pulledImages.imageIds);
+
         // Explicit post-down cleanup is a safety net for partial teardown states.
-        await dockerService.removeAppImages(appUrn, appImageIds, pulledImages.imageTags);
+        await dockerService.removeAppImages(appUrn, removable, pulledImages.imageTags);
         await dockerService.removeAppNetworks(appUrn);
-        await appFilesManager.deletePulledImages(appUrn);
+        await handOverKeptImages(this.moduleRef, appUrn, keptFor, pulledImages.imageTags);
       }
 
       // Sync Cloudflare state (app removal will be reflected)

@@ -23,6 +23,7 @@ describe('UninstallAppCommand', () => {
     removeAppNetworks: ReturnType<typeof vi.fn>;
     removeAppDataDirAsRoot: ReturnType<typeof vi.fn>;
     imageIdLocally: ReturnType<typeof vi.fn>;
+    imageTagsLocally: ReturnType<typeof vi.fn>;
   };
   let appsRepository: { getApps: ReturnType<typeof vi.fn> };
   let appFilesManager: MockProxy<AppFilesManager>;
@@ -53,6 +54,7 @@ describe('UninstallAppCommand', () => {
     appFilesManager.getAppDataHostDir.mockReturnValue('/srv/app-data/store/test-app');
     appFilesManager.readPulledImages.mockResolvedValue({ imageIds: ['sha256:a'], imageTags: [] });
     appFilesManager.deletePulledImages.mockResolvedValue(undefined);
+    appFilesManager.addPulledImages.mockResolvedValue(true);
 
     appsRepository = { getApps: vi.fn().mockResolvedValue([{ appName: 'test-app', appStoreSlug: 'store' }]) };
 
@@ -66,6 +68,7 @@ describe('UninstallAppCommand', () => {
       composeApp: vi.fn().mockResolvedValue({ success: true }),
       removeAppImages: vi.fn().mockResolvedValue(undefined),
       imageIdLocally: vi.fn().mockResolvedValue(null),
+      imageTagsLocally: vi.fn().mockResolvedValue([]),
       removeAppNetworks: vi.fn().mockResolvedValue(undefined),
       removeAppDataDirAsRoot: vi.fn().mockResolvedValue(true),
     };
@@ -94,8 +97,9 @@ describe('UninstallAppCommand', () => {
     const forgetImagesOrder = appFilesManager.deletePulledImages.mock.invocationCallOrder[0];
     const deleteFolderOrder = appFilesManager.deleteAppFolder.mock.invocationCallOrder[0];
 
-    expect(readOrder).toBeLessThan(downOrder);
-    expect(downOrder).toBeLessThan(removeImagesOrder);
+    // Read after compose down, which can take minutes: another uninstall can hand this app an image in that time.
+    expect(downOrder).toBeLessThan(readOrder);
+    expect(readOrder).toBeLessThan(removeImagesOrder);
     expect(removeImagesOrder).toBeLessThan(removeNetworksOrder);
     expect(removeNetworksOrder).toBeLessThan(forgetImagesOrder);
     expect(forgetImagesOrder).toBeLessThan(deleteFolderOrder);
@@ -141,6 +145,7 @@ describe('UninstallAppCommand', () => {
       await command.execute(appUrn);
 
       expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, ['sha256:b'], []);
+      expect(appFilesManager.addPulledImages).toHaveBeenCalledWith(otherUrn, { imageIds: ['sha256:a'], imageTags: [] });
       expect(appFilesManager.deletePulledImages).toHaveBeenCalledWith(appUrn);
     });
 

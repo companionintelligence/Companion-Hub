@@ -4,7 +4,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
 import { withTimeout } from '@/common/helpers/with-timeout';
 import { LoggerService } from '@/core/logger/logger.service';
-import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { AppFilesManager, type PulledImages } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { DockerService } from '@/modules/docker/docker.service';
 import { isPortExposeApp, type AppSecurityGrants, parseInstalledComposeJson } from '@ci-hub/common/schemas';
@@ -14,7 +14,7 @@ import { securityGrantsFor } from '@/modules/apps/security-grants';
 
 type PullRecordDeps = {
   docker: Pick<DockerService, 'imageIdLocally' | 'imageIdsLocally' | 'imageTagsLocally'>;
-  files: Pick<AppFilesManager, 'readPulledImages' | 'writePulledImages'>;
+  files: Pick<AppFilesManager, 'readPulledImages' | 'addPulledImages'>;
   logger: Pick<LoggerService, 'warn'>;
 };
 
@@ -28,7 +28,8 @@ const errorText = (error: unknown): string => (error instanceof Error ? error.me
 /**
  * Runs `pull` for an app's image references and records, for that app, the images the pull brought onto this
  * computer. Uninstall removes exactly what the record holds, so an image that was here before the app, and that
- * the app did not bring in, is never recorded and never removed.
+ * no app's pull brought in, is never recorded and never removed. The one other way onto a record is
+ * {@link handOverKeptImages}: an image another app brought in and left behind for this one.
  *
  * A reference belongs to the app when it named no image before the pull, so the pull brought the image in, or when
  * the image it named was one the app already recorded, so this pull replaces the app's own image (an update). One
@@ -42,7 +43,8 @@ const errorText = (error: unknown): string => (error instanceof Error ? error.me
  * Only a new image gets its tags recorded. One the app already holds may have a tag someone else gave it since, which
  * must stay someone else's: uninstall then keeps the image rather than remove it with that tag.
  *
- * The record is written even when `pull` fails part-way: an image that did arrive is the app's to remove.
+ * The record is written even when `pull` fails part-way: an image that did arrive is the app's to remove. It is added
+ * to rather than replaced: a pull can take minutes and another app's uninstall can hand this app an image in that time.
  */
 export async function pullAppImagesRecorded(
   deps: PullRecordDeps,
@@ -116,7 +118,7 @@ export async function pullAppImagesRecorded(
     }
 
     try {
-      if (brought.size > 0 && !(await files.writePulledImages(appUrn, { imageIds: [...recorded], imageTags: [...tags] }))) {
+      if (brought.size > 0 && !(await files.addPulledImages(appUrn, { imageIds: [...recorded], imageTags: [...tags] }))) {
         logger.warn(`Could not record the images pulled for ${appUrn}; uninstalling it will not remove them`);
       }
     } catch (error) {
@@ -166,16 +168,24 @@ export async function recordComposeUpPulls(
   await pullAppImagesRecorded({ docker, files, logger }, appUrn, imageRefs, up, options);
 }
 
+/** What an uninstall does with the images on an app's record. */
+export type RecordedImagesSorted = {
+  /** The images no other installed app names. They go with the app. */
+  removable: string[];
+  /** The images another installed app names, each with one such app. They stay and {@link handOverKeptImages} moves them to it. */
+  keptFor: Map<string, AppUrn>;
+};
+
 /**
- * `imageIds` without the images another installed app names. Docker refuses only an image a container uses. Stop
+ * Sorts `imageIds` by whether another installed app names them. Docker refuses only an image a container uses. Stop
  * removes an app's containers, so a stopped app holds nothing. Store apps share images widely (`postgres:16-alpine` is in
  * dozens of them). The stopped one's next start would need the registry or get whatever a moved tag names by then.
- * Reads every other app's compose, so it runs only for an uninstall with images to remove. If that can't be done, all
- * of them stay.
+ * Reads every other app's compose, so it runs only for an uninstall with images to remove. If that can't be done, every
+ * image stays, with no app to hand it to.
  */
-export async function imagesNoOtherAppNames(moduleRef: ModuleRef, appUrn: AppUrn, imageIds: string[]): Promise<string[]> {
+export async function sortImagesByOtherApps(moduleRef: ModuleRef, appUrn: AppUrn, imageIds: string[]): Promise<RecordedImagesSorted> {
   if (imageIds.length === 0) {
-    return [];
+    return { removable: [], keptFor: new Map() };
   }
 
   const logger = moduleRef.get(LoggerService, { strict: false });
@@ -184,9 +194,14 @@ export async function imagesNoOtherAppNames(moduleRef: ModuleRef, appUrn: AppUrn
     const docker = moduleRef.get(DockerService, { strict: false });
     const architecture = moduleRef.get(ConfigurationService, { strict: false })?.get('architecture');
 
+    // An app on its way out comes last. Its own uninstall may have read its record already, so an image handed to it can get stuck.
+    const apps = (await moduleRef.get(AppsRepository, { strict: false }).getApps()).sort(
+      (a, b) => Number(a.status === 'uninstalling') - Number(b.status === 'uninstalling'),
+    );
+
     // Apps share references, so each one is looked up once however many apps name it.
     const namedBy = new Map<string, AppUrn>();
-    for (const app of await moduleRef.get(AppsRepository, { strict: false }).getApps()) {
+    for (const app of apps) {
       const otherUrn = createAppUrn(app.appName, app.appStoreSlug);
       if (otherUrn === appUrn) {
         continue;
@@ -207,21 +222,68 @@ export async function imagesNoOtherAppNames(moduleRef: ModuleRef, appUrn: AppUrn
       }
     }
 
-    const named = new Set<string>();
+    const keptFor = new Map<string, AppUrn>();
     for (const [ref, otherUrn] of namedBy) {
       // Named in the log: this leaves images behind on every uninstall until someone changes that app.
       const imageId = await inTime(docker.imageIdLocally(ref)).catch((error: unknown) => {
         throw new Error(`${otherUrn} names ${ref}: ${errorText(error)}`);
       });
-      if (imageId && imageIds.includes(imageId)) {
+      if (imageId && imageIds.includes(imageId) && !keptFor.has(imageId)) {
         logger.info(`Keeping image ${imageId} after uninstalling ${appUrn}: ${otherUrn} uses it`);
-        named.add(imageId);
+        keptFor.set(imageId, otherUrn);
       }
     }
 
-    return imageIds.filter((imageId) => !named.has(imageId));
+    return { removable: imageIds.filter((imageId) => !keptFor.has(imageId)), keptFor };
   } catch (error) {
     logger.warn(`Could not check which images other apps use, so ${appUrn} leaves its images in place: ${errorText(error)}`);
-    return [];
+    return { removable: [], keptFor: new Map() };
+  }
+}
+
+/**
+ * Moves each image an uninstall keeps for another app onto that app's record, so it goes when the last app using it
+ * goes, then forgets the uninstalled app's record. Each record only ever holds images some app's pull brought in, so a
+ * handover can't make an image that was here before any app removable.
+ *
+ * Only the tags the image has now and the uninstalled app's record holds go with it. Without them the next uninstall
+ * takes each for someone else's and keeps the image. With any other tag it would remove a tag a person pulled by hand.
+ *
+ * The other record is written first, so a failure part-way loses nothing. An image that can't be handed over stays on
+ * the computer and on the uninstalled app's record, which then holds only those. Nothing here may fail the uninstall.
+ */
+export async function handOverKeptImages(moduleRef: ModuleRef, appUrn: AppUrn, keptFor: Map<string, AppUrn>, appTags: string[]): Promise<void> {
+  const logger = moduleRef.get(LoggerService, { strict: false });
+  try {
+    const files = moduleRef.get(AppFilesManager, { strict: false });
+    const docker = moduleRef.get(DockerService, { strict: false });
+    const left: PulledImages = { imageIds: [], imageTags: [] };
+
+    for (const [imageId, otherUrn] of keptFor) {
+      let imageTags: string[] = [];
+      let failure = 'its record could not be written';
+      try {
+        imageTags = (await inTime(docker.imageTagsLocally(imageId))).filter((tag) => appTags.includes(tag));
+        if (await files.addPulledImages(otherUrn, { imageIds: [imageId], imageTags })) {
+          logger.info(`Image ${imageId} now goes with ${otherUrn}`);
+          continue;
+        }
+      } catch (error) {
+        failure = errorText(error);
+      }
+      logger.warn(`Could not hand image ${imageId} over to ${otherUrn}, so it stays after that app goes: ${failure}`);
+      left.imageIds.push(imageId);
+      left.imageTags.push(...imageTags);
+    }
+
+    if (left.imageIds.length > 0) {
+      if (!(await files.writePulledImages(appUrn, left))) {
+        logger.warn(`Could not cut the record of the images pulled for ${appUrn} down to the ones it could not hand over`);
+      }
+    } else {
+      await files.deletePulledImages(appUrn);
+    }
+  } catch (error) {
+    logger.warn(`Could not finish with the record of the images pulled for ${appUrn}: ${errorText(error)}`);
   }
 }
