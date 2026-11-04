@@ -882,6 +882,11 @@ pub fn run() {
                         // the WSL engine, which an uninstall can remove and a reinstall over an
                         // engine that is already set up doesn't write again.
                         hub_manager::ensure_wsl_engine_logon_script(&data_for_decision);
+                        // A reboot brings the containers back by their restart policy, so the start
+                        // below doesn't run and nothing else writes nvidia.json for this boot. Rescan
+                        // would keep saying a driver installed before the reboot isn't answering.
+                        #[cfg(target_os = "linux")]
+                        hub_manager::refresh_nvidia_host_probe_cache(&data_for_decision);
                         if !hub_manager::docker_available_for_launch(&data_for_decision) {
                             return Ok::<_, String>(None);
                         }

@@ -5,7 +5,7 @@ import type { ModelRegistryService } from './model-registry.service';
 export function recommendedInferenceBackend(profile: HardwareProfile): InferenceBackendType {
   // NVIDIA with a usable runtime and a driver that answers: vLLM. Apple Silicon: oMLX. An NPU: Lemonade.
   // Everything else, including AMD without a cited vLLM ROCm path: Ollama.
-  // The runtime alone isn't enough: Docker lists it as soon as the toolkit is installed, and vLLM can't start without the driver.
+  // The runtime alone isn't enough: Docker lists it as soon as the toolkit is installed. vLLM can't start without the driver.
   const nvidiaDriverMissing = profile.gpu.hostNvidiaAvailable === false && !profile.gpu.driverVersion;
   return profile.npu.available
     ? 'lemonade'

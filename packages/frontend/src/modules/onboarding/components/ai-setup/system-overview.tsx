@@ -1,12 +1,14 @@
 import { Button } from '@/components/ui/Button';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
+import { probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
 import { cn } from '@/lib/utils';
+import { TranslatableError } from '@/types/error.types';
 import type { HardwareProfile, HardwareTier } from '@ci-hub/common/types';
 import { formatMemoryMb, resolveGpuSubLabel, resolveTierBadge, resolveVramDisplay } from '@/modules/onboarding/helpers/hardware-display';
 import { RocmSetupCard } from '@/modules/onboarding/components/ai-setup/rocm-setup-card';
 import { AlertTriangle, Cpu, HardDrive, MemoryStick, Monitor } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { type ReactNode, useRef } from 'react';
 import { AutoInstallRunnerButton } from './auto-install-runner-button';
 import { GpuIcon, VramIcon } from './icons';
 import i18next from 'i18next';
@@ -61,16 +63,19 @@ function OverviewItem({ icon, label, value, sub, testId }: { icon: ReactNode; la
 }
 
 /**
+ * Docker's restart takes the Hub down too, so the rescan waits until the Hub answers again. Three
+ * minutes, the time the desktop app gives the Hub to turn healthy when it starts the stack.
+ */
+const RUNTIME_RESCAN_ATTEMPTS = 36;
+const RUNTIME_RESCAN_DELAY_MS = 5_000;
+
+/**
  * System overview strip (OS / CPU / RAM / GPU / VRAM / Storage) plus host GPU guidance where relevant.
  *
  * Note: the hardware profile is the Hub's. OS shows the host OS/codename from the profile when
  * available (falling back to the connecting client), and storage total/free come from the profile's
  * resource estimate.
  */
-/** Docker's restart takes the Hub down too, so the rescan waits until the Hub answers again. */
-const RUNTIME_RESCAN_ATTEMPTS = 12;
-const RUNTIME_RESCAN_DELAY_MS = 5_000;
-
 export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, availableDiskMb, diskTotalMb }: SystemOverviewProps) => {
   const { t } = useTranslation();
   const badge = resolveTierBadge(tier, hardware);
@@ -91,26 +96,23 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
   // steps for both, so a Windows WSL2-engine user is never told to "open Docker Desktop".
   const isWslEngineHost = hardware.gpu.containerHostKind === 'wsl-engine';
   const showLinuxRuntimeSteps = isLinuxClient() || isWslEngineHost;
+  // On WSL2 the driver belongs to Windows. A Linux driver installed in the distro breaks GPU access.
+  const showUbuntuDriverCommand = isLinuxClient() && !isWslEngineHost;
+  // The install can take minutes. A rescan from the render that started it would restore the engine picked back then.
+  const latestOnRescan = useRef(onRescan);
+  latestOnRescan.current = onRescan;
 
   const installRuntime = async () => {
-    const invoke = getTauriInvoke();
-    if (!invoke) return;
-    try {
-      await invoke('install_nvidia_runtime_command');
-    } catch (error) {
-      throw new Error(String(error));
-    }
+    await getTauriInvoke()?.('install_nvidia_runtime_command');
     // A rescan that fails replaces this step with an error page, so wait for the Hub to answer first.
     for (let attempt = 0; attempt < RUNTIME_RESCAN_ATTEMPTS; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, RUNTIME_RESCAN_DELAY_MS));
-      const hubAnswers = await fetch('/api/health/live')
-        .then((response) => response.ok)
-        .catch(() => false);
-      if (hubAnswers) {
-        await onRescan();
+      if ((await probeHealthyHubApiPort()) !== null) {
+        await latestOnRescan.current();
         return;
       }
     }
+    throw new TranslatableError('ONBOARDING_NVIDIA_RUNTIME_HUB_NOT_BACK');
   };
 
   const rescanButton = (
@@ -191,13 +193,15 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
       {nvidiaDriverMissing && (
         <div className="mt-4 rounded-md border border-warning/30 bg-warning/10 p-3 text-xs text-warning" data-testid="nvidia-driver-warning">
           <p className="mb-2">{t('ONBOARDING_NVIDIA_DRIVER_MISSING_DESC')}</p>
-          {showLinuxRuntimeSteps && (
+          {showUbuntuDriverCommand && (
             <div className="mb-3 rounded bg-warning/10 p-2.5 font-mono text-[11px] leading-6 text-warning">
+              <p className="font-medium text-warning">{t('ONBOARDING_DISTRO_UBUNTU')}</p>
               <p>sudo ubuntu-drivers install</p>
             </div>
           )}
           <div className="flex flex-wrap items-center gap-2">
-            <span>{t('ONBOARDING_NVIDIA_DRIVER_THEN_RESCAN')}</span>
+            {/* Only the desktop app and `cihub up` write the probe that proves the driver. A Rescan alone only reads it. */}
+            <span>{t(isTauriDesktopApp() ? 'ONBOARDING_NVIDIA_DRIVER_THEN_RESCAN' : 'ONBOARDING_NVIDIA_DRIVER_THEN_CIHUB_UP_RESCAN')}</span>
             {rescanButton}
           </div>
         </div>
@@ -212,7 +216,14 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
             {desktopInstallsRuntime ? (
               <div>
                 <p className="mb-1.5 font-medium">1. {t('ONBOARDING_NVIDIA_RUNTIME_RUN_AUTOMATICALLY')}</p>
-                <AutoInstallRunnerButton onRun={installRuntime} />
+                <AutoInstallRunnerButton
+                  onRun={installRuntime}
+                  labels={{
+                    installing: t('ONBOARDING_NVIDIA_RUNTIME_INSTALLING'),
+                    complete: t('ONBOARDING_NVIDIA_RUNTIME_INSTALLED'),
+                    failed: t('ONBOARDING_NVIDIA_RUNTIME_INSTALL_ERROR'),
+                  }}
+                />
               </div>
             ) : (
               <div>

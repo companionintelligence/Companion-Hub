@@ -773,11 +773,14 @@ fn an_elevated_script_is_private_and_goes_away_with_its_path() {
 fn the_nvidia_runtime_script_stops_on_a_failed_step_and_registers_the_runtime() {
     let script = nvidia_runtime_linux_install_script();
 
-    assert!(script.starts_with("#!/bin/bash\nset -e\n"));
+    // Without pipefail a failed download piped into sed goes unnoticed.
+    assert!(script.starts_with("#!/bin/bash\nset -eo pipefail\n"));
     let configure = script
         .find("nvidia-ctk runtime configure --runtime=docker")
         .expect("configures");
     let restart = script.find("systemctl restart docker").expect("restarts");
+    assert!(script.contains("rc-service docker restart"));
+    assert!(script.contains("service docker restart"));
     assert!(
         script
             .find("apt-get install -y nvidia-container-toolkit")

@@ -1,12 +1,16 @@
 //! The NVIDIA container runtime on native Linux.
 
+#[allow(unused_imports)]
 use super::*;
 
 /// Installs nvidia-container-toolkit and registers its runtime with Docker. Runs as root via pkexec.
 /// The Docker restart also restarts the Hub's containers, which come back by their restart policy.
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn nvidia_runtime_linux_install_script() -> &'static str {
     r#"#!/bin/bash
-set -e
+set -eo pipefail
+# apt reads the keyring and the source list as its own user, whatever umask pkexec inherited.
+umask 022
 LIBNVIDIA=https://nvidia.github.io/libnvidia-container
 if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
@@ -32,7 +36,13 @@ else
     exit 1
 fi
 nvidia-ctk runtime configure --runtime=docker
-systemctl restart docker
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl restart docker
+elif command -v rc-service >/dev/null 2>&1; then
+    rc-service docker restart
+else
+    service docker restart
+fi
 "#
 }
 
@@ -87,10 +97,17 @@ pub(crate) fn run_nvidia_runtime_installer() -> Result<String, String> {
     }
 }
 
-/// True when the host's driver answers: the same query the host probe runs.
+/// True when the host's driver answers, by the rule the host probe writes `nvidia.json` with. The
+/// output decides: nvidia-smi exits non-zero when one card of several can't be read and still lists
+/// the rest.
 #[cfg(target_os = "linux")]
 fn nvidia_smi_answers() -> bool {
-    linux_nvidia_smi_query()
-        .map(|output| output.status.success() && !output.stdout.is_empty())
-        .unwrap_or(false)
+    linux_nvidia_smi_query().is_ok_and(|output| {
+        linux_nvidia_probe_from_output(
+            output.status.code(),
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        )
+        .is_ok()
+    })
 }
