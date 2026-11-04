@@ -1831,14 +1831,81 @@ describe('AppLifecycleService', () => {
     });
 
     describe('an app whose listing needs a public address', () => {
+      const hubHasTunnel = (token: string | null) =>
+        vi
+          .mocked((service as any).moduleRef.get)
+          .mockImplementation((wanted: unknown) => (wanted === CloudflareClientService ? { getTunnelToken: () => token } : undefined));
+
       beforeEach(() => {
         marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ ...baseAppInfo, force_expose: true } as any);
+        hubHasTunnel('tunnel-token');
       });
 
       it('installs on Public Web', async () => {
         await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false } });
 
         expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'cloudflare' }));
+      });
+
+      // Env generation names the public hostname only for `exposedLocal` with a closed host port, and
+      // the queue serves a form that says nothing about the port on an open one.
+      it.each([
+        ['names only the mode', { exposureMode: 'cloudflare' }],
+        ['is public through the legacy flag', { exposedLocal: true }],
+        ['asks for an open host port', { exposureMode: 'cloudflare', exposedLocal: true, openPort: true }],
+      ])('starts under its public name from a form that %s, with the login on', async (_form, form) => {
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form });
+
+        const row = expect.objectContaining({ exposureMode: 'cloudflare', exposedLocal: true, openPort: false, enableAuth: true });
+        expect(appsRepository.createApp).toHaveBeenCalledWith(row);
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(
+          expect.objectContaining({ command: 'install', form: expect.objectContaining({ exposedLocal: true, openPort: false, enableAuth: true }) }),
+        );
+      });
+
+      it('leaves the login off when the form closed the port and turned it off', async () => {
+        await service.installApp({
+          actor: TEST_ACTOR,
+          appUrn,
+          form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false, enableAuth: false },
+        });
+
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: false }));
+      });
+
+      it('refuses a first install where this Hub has no tunnel', async () => {
+        hubHasTunnel(null);
+
+        await expect(
+          service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false } }),
+        ).rejects.toThrow('APP_INSTALL_FORM_NEEDS_PUBLIC_WEB');
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
+      });
+
+      it('refuses a retry of a failed install where this Hub has no tunnel', async () => {
+        hubHasTunnel(null);
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'install_failed', config: {} } as any);
+
+        await expect(
+          service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false } }),
+        ).rejects.toThrow('APP_INSTALL_FORM_NEEDS_PUBLIC_WEB');
+      });
+
+      it('lets an installed app reinstall while the tunnel is gone, since it keeps the name it has', async () => {
+        hubHasTunnel(null);
+        appsRepository.getAppByUrn.mockResolvedValue({
+          id: 1,
+          status: 'stopped',
+          config: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, enableAuth: true },
+        } as any);
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false } });
+
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'start', appUrn }));
+      });
+
+      it('answers a refusal as a bad request, since nothing went wrong on the Hub', async () => {
+        await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} })).rejects.toMatchObject({ status: HttpStatus.BAD_REQUEST });
       });
 
       it.each([
@@ -1863,7 +1930,8 @@ describe('AppLifecycleService', () => {
         ).rejects.toThrow('APP_ERROR_APP_FORCE_EXPOSED');
       });
 
-      it('accepts a named domain where the Hub still allows one', async () => {
+      it('accepts a named domain where the Hub still allows one, with or without a tunnel', async () => {
+        hubHasTunnel(null);
         configService.getConfig.mockReturnValue({
           isProduction: false,
           architecture: 'amd64',
@@ -6541,6 +6609,15 @@ describe('AppLifecycleService', () => {
         await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, exposureMode: 'cloudflare' } });
 
         expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare' });
+      });
+
+      it('keeps the host port closed on an app that needs a public address, so its name does not change', async () => {
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, force_expose: true } as any);
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, exposureMode: 'cloudflare', openPort: true } });
+
+        expect(lastPatch()).toMatchObject({ exposedLocal: true, openPort: false, port: 9090 });
       });
 
       it('refuses to move an app that needs a public address off Public Web', async () => {

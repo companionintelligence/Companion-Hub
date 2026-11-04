@@ -66,7 +66,8 @@ import type { ActorCheckContext, LifecycleActor, SystemLifecycleReason } from '@
 import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
-import { getEffectiveExposureMode, publishesHostPort, servesForcedExposure } from '../apps/app-exposure.helpers';
+import { getEffectiveExposureMode, publishForcedExposure, publishesHostPort, servesForcedExposure } from '../apps/app-exposure.helpers';
+import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { canonicalJson } from '../queue/message-signing';
 import {
   canServeOnCustomDomain,
@@ -1869,6 +1870,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       this.logger.warn(`App ${appUrn} is not exposable, resetting proxy settings`);
     }
 
+    // Before the custom-domain and login checks below, which read what this writes.
+    if (appInfo.force_expose) {
+      publishForcedExposure(parsedForm);
+    }
+
     if (getEffectiveExposureMode(parsedForm) !== 'cloudflare') {
       parsedForm.publicDomain = undefined;
     }
@@ -1886,7 +1892,18 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     if (appInfo.force_expose && !servesForcedExposure(parsedForm)) {
-      throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn });
+      throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn }, HttpStatus.BAD_REQUEST);
+    }
+
+    // As the install dialog refuses it: nothing would serve the name the app first starts with, and it
+    // can't take another later. A reinstall keeps the name it has, and a named domain needs no tunnel.
+    if (
+      appInfo.force_expose &&
+      !reinstall &&
+      !parsedForm.exposed &&
+      !this.moduleRef.get(CloudflareClientService, { strict: false })?.getTunnelToken()
+    ) {
+      throw new TranslatableError('APP_INSTALL_FORM_NEEDS_PUBLIC_WEB', undefined, HttpStatus.BAD_REQUEST);
     }
 
     const conflictsOtherApp = <T extends { id?: number }>(candidates: T[]) =>
@@ -2958,6 +2975,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       parsedForm.port = app.port;
     }
 
+    // Before the comparison below: a form that opens the port would change the name the app keeps.
+    if (appInfo.force_expose) {
+      publishForcedExposure(parsedForm);
+    }
+
     // Manifest edge-auth default (CI-Engineering#74): when this update does not carry an
     // enableAuth decision, inherit the app's STORED choice first, and only fall to the manifest
     // default when the app never had one (an onboarding-era install). "Explicit operator choice
@@ -3075,7 +3097,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     if (appInfo.force_expose && !servesForcedExposure(parsedForm)) {
-      throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn });
+      throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn }, HttpStatus.BAD_REQUEST);
     }
 
     if (exposed && domain) {

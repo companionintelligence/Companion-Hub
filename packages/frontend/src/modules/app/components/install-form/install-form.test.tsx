@@ -375,11 +375,25 @@ describe('InstallForm', () => {
       expect(onValidityChange).not.toHaveBeenCalledWith(true);
     });
 
-    it('still lets an installed app save while the tunnel is down', async () => {
-      renderForm(
-        { isEdit: true, initialValues: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false } },
-        { cloudflareAvailable: false },
-      );
+    it('keeps Install off until the domain its name goes on is known', async () => {
+      MOCK_USE_QUERY_RESULT.isFetching = true;
+      renderForm();
+
+      await waitFor(() => expect(onValidityChange).toHaveBeenCalled());
+      expect(onValidityChange).not.toHaveBeenCalledWith(true);
+    });
+
+    it('keeps Install off when the domain list could not be read', async () => {
+      MOCK_AVAILABLE_DOMAINS.supported = false;
+      renderForm();
+
+      await waitFor(() => expect(onValidityChange).toHaveBeenCalled());
+      expect(onValidityChange).not.toHaveBeenCalledWith(true);
+    });
+
+    it('turns Install on once a domain the list offers is preselected', async () => {
+      MOCK_AVAILABLE_DOMAINS.domains = [{ id: '1', domain: 'ci9.pw', isDefault: true }];
+      renderForm();
 
       await waitFor(() => expect(onValidityChange).toHaveBeenLastCalledWith(true));
     });

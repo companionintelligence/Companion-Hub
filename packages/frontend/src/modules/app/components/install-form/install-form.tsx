@@ -403,7 +403,7 @@ export const InstallForm: React.FC<IProps> = ({
     [setValue, getValues, enableAuthFallback, hasAuthSwitch, authSwitchShown],
   );
 
-  // The mode a form asking for `requested` goes out on. An app that is not exposable offers no choice.
+  // The mode a form asking for `requested` goes out on. An app that is not exposable or needs a public address offers no choice.
   const offeredExposureMode = useCallback(
     (requested: FormValues['exposureMode'] | undefined) => {
       if (!info.exposable) return 'local';
@@ -615,8 +615,9 @@ export const InstallForm: React.FC<IProps> = ({
       return;
     }
 
-    // An installed app keeps its Public Web mode while the tunnel is down, as any other app does.
-    if (info.force_expose && (watchExposureMode !== 'cloudflare' || (!isEdit && !cloudflareAvailable))) {
+    // These apps keep the name they first start with. With no domain known yet the form would save none,
+    // and Companion Portal could move the app to another after that first start (`publicDomainToUse`).
+    if (info.force_expose && (watchExposureMode !== 'cloudflare' || !cloudflareAvailable || !publicDomain)) {
       onValidityChange(false);
       return;
     }
@@ -641,8 +642,8 @@ export const InstallForm: React.FC<IProps> = ({
     info.dynamic_config,
     info.force_expose,
     info.port,
-    isEdit,
     cloudflareAvailable,
+    publicDomain,
     watchExposureMode,
     watchPort,
     formFields,
