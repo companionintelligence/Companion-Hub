@@ -560,6 +560,7 @@
   "APP_UPDATE_FORM_NEXT": "Next",
   "APP_UPDATE_SETTINGS_FORM_TITLE": "Update {{name}} config",
   "APP_UPDATE_SUCCESS": "App {{id}} updated successfully",
+  "APP_UPDATE_SETTINGS_NOT_REAPPLIED": "{{id}} updated, but its saved settings couldn't be applied again. Open its settings and save them.",
   "APP_BACKUP_SUCCESS": "App {{id}} backed up successfully",
   "APP_BACKUP_ERROR": "Failed to backup {{id}}, see logs for more details",
   "APP_BACKUP_ERROR_TOAST": "Failed to backup {{id}}, <logsLink>see logs</logsLink> for more details",

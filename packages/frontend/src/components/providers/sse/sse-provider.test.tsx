@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { isStackUpdatePending, markStackUpdatePending, subscribeStackUpdate } from '@/lib/desktop-stack-session';
 import { SSEProvider } from './sse-provider';
 
+const { appNameCache } = vi.hoisted(() => ({ appNameCache: { dropped: false } }));
+
 const { mockUseSSE, mockHandleAppSseEvent, mockToastWarning, mockToastError, mockToastDismiss, mockToastSuccess } = vi.hoisted(() => ({
   mockUseSSE: vi.fn(),
   mockHandleAppSseEvent: vi.fn(),
@@ -21,8 +23,9 @@ vi.mock('@/lib/hooks/use-sse', () => ({
 
 vi.mock('@/modules/app/helpers/app-sse-cache', () => ({
   handleAppSseEvent: (...args: unknown[]) => mockHandleAppSseEvent(...args),
-  // The page's name for the app, as the cache would give it.
-  cachedAppName: (_queryClient: unknown, appUrn: string, fallback: string) => (appUrn === 'uptime-kuma:ci-marketplace' ? 'Uptime Kuma' : fallback),
+  // The page's name for the app, as the cache would give it, until an event has taken it out.
+  cachedAppName: (_queryClient: unknown, appUrn: string, fallback: string) =>
+    appUrn === 'uptime-kuma:ci-marketplace' && !appNameCache.dropped ? 'Uptime Kuma' : fallback,
 }));
 
 vi.mock('sonner', () => ({
@@ -37,6 +40,7 @@ vi.mock('sonner', () => ({
 describe('SSEProvider', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    appNameCache.dropped = false;
   });
 
   it('links install failure to the logs tab', async () => {
@@ -247,6 +251,46 @@ describe('SSEProvider', () => {
         getOnEvent()?.({ event: 'start_success', appUrn: 'uptime-kuma:ci-marketplace', movedHostPort });
       });
 
+      expect(mockToastWarning).toHaveBeenCalledWith(expect.stringMatching(/^Uptime Kuma is now on port 10001 /), expect.anything());
+    });
+
+    it('names an uninstalled app though the event takes its name out of the cache', () => {
+      mockHandleAppSseEvent.mockImplementationOnce(() => {
+        appNameCache.dropped = true;
+      });
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event: 'uninstall_success', appUrn: 'uptime-kuma:ci-marketplace' });
+      });
+
+      expect(mockToastSuccess).toHaveBeenCalledWith(expect.stringMatching(/Uptime Kuma/));
+    });
+
+    it('warns when an update is in but its settings stayed as they were', () => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event: 'update_success', appUrn: 'uptime-kuma:ci-marketplace', warningCode: 'APP_UPDATE_SETTINGS_NOT_REAPPLIED' });
+      });
+
+      expect(mockToastSuccess).not.toHaveBeenCalled();
+      expect(mockToastWarning).toHaveBeenCalledWith(expect.stringMatching(/^Uptime Kuma updated, but its saved settings/), expect.anything());
+    });
+
+    it('names the app the same way in a failed install and its port notice', () => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({
+          event: 'install_error',
+          appUrn: 'uptime-kuma:ci-marketplace',
+          serviceFailure: { kind: 'exited', service: 'uptime-kuma', exitCode: 137 },
+          movedHostPort,
+        });
+      });
+
+      expect(mockToastError).toHaveBeenCalledWith(expect.stringMatching(/^Uptime Kuma /), expect.anything());
       expect(mockToastWarning).toHaveBeenCalledWith(expect.stringMatching(/^Uptime Kuma is now on port 10001 /), expect.anything());
     });
 
