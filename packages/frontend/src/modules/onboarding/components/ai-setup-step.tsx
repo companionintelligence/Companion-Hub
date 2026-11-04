@@ -36,6 +36,7 @@ import { CloudProviderCard } from './ai-setup/cloud-provider-card';
 import { SystemOverview } from './ai-setup/system-overview';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
 import { backendDisplayName } from '@/lib/inference/backend-names';
+import { LiveSessionNotice } from './ai-setup/live-session-notice';
 import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
 import { VllmSetupCard } from './ai-setup/vllm-setup-card';
 import { OmlxSetupCard } from './ai-setup/omlx-setup-card';
@@ -753,6 +754,8 @@ export const AiSetupStep = ({
 
   return (
     <div className={embedded ? 'space-y-5' : 'space-y-5 max-h-[66vh] overflow-y-auto pr-2'} data-testid="ai-setup-step">
+      <LiveSessionNotice />
+
       <SystemOverview
         hardware={profile.hardware}
         tier={profile.tier}

@@ -741,3 +741,52 @@ fn an_elevated_script_is_private_and_goes_away_with_its_path() {
     drop(script);
     assert!(!path.exists());
 }
+
+fn fake_root(files: &[&str]) -> tempfile::TempDir {
+    let root = tempfile::tempdir().expect("temp root");
+    for file in files {
+        let path = root.path().join(file);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+        std::fs::write(path, "").expect("write");
+    }
+    root
+}
+
+#[test]
+fn a_companion_os_live_session_reports_what_its_image_blocks() {
+    let root = fake_root(&[
+        "cdrom/casper/vmlinuz",
+        "usr/lib/ci-os/version",
+        "etc/systemd/system/ollama.service.d/10-not-live.conf",
+        "etc/systemd/system/tailscaled.service.d/10-not-live.conf",
+    ]);
+
+    assert_eq!(
+        live_session_state_at(root.path()),
+        LiveSessionState { live: true, ollama_blocked: true, tailscale_blocked: true }
+    );
+}
+
+#[test]
+fn only_the_blocks_the_image_has_are_reported() {
+    let root = fake_root(&[
+        "cdrom/casper/vmlinuz",
+        "usr/lib/ci-os/version",
+        "etc/systemd/system/tailscaled.service.d/10-not-live.conf",
+    ]);
+
+    assert_eq!(
+        live_session_state_at(root.path()),
+        LiveSessionState { live: true, ollama_blocked: false, tailscale_blocked: true }
+    );
+}
+
+#[test]
+fn an_installed_system_or_a_stock_live_session_is_not_a_companion_live_session() {
+    let drop_in = "etc/systemd/system/ollama.service.d/10-not-live.conf";
+    let installed = fake_root(&["usr/lib/ci-os/version", drop_in]);
+    let stock_live = fake_root(&["cdrom/casper/vmlinuz"]);
+
+    assert_eq!(live_session_state_at(installed.path()), LiveSessionState::default());
+    assert_eq!(live_session_state_at(stock_live.path()), LiveSessionState::default());
+}

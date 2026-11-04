@@ -211,6 +211,12 @@ async fn install_ollama_command() -> Result<hub_manager::OllamaInstallResult, St
         .map_err(|e| format!("Ollama install task failed: {e}"))?
 }
 
+/// What a Companion OS live session can't run, so setup can say so instead of offering it.
+#[tauri::command]
+fn live_session_state_command() -> hub_manager::LiveSessionState {
+    hub_manager::live_session_state()
+}
+
 /// Install and start the host/container inference runners selected by onboarding.
 #[tauri::command]
 async fn install_and_start_inference_runners_command(
@@ -661,6 +667,7 @@ pub fn run() {
             is_user_stopped_command,
             install_docker_command,
             install_ollama_command,
+            live_session_state_command,
             install_and_start_inference_runners_command,
             install_rocm_command,
             verify_rocm_command,

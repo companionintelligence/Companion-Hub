@@ -9,6 +9,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Check, Copy, Globe, Monitor, Shield } from 'lucide-react';
+import { useLiveSession } from '@/lib/inference/live-session';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { toast } from 'sonner';
 import { type CopyOrSelectOutcome, copyOrSelect } from '@/lib/copy-to-clipboard';
@@ -100,6 +101,7 @@ const ServePermissionRefusal = ({ remedy, deniedSince }: { remedy: string; denie
 
 const TailscaleSidecarSection = () => {
   const { t } = useTranslation();
+  const liveSession = useLiveSession();
   const queryClient = useQueryClient();
   const demoMode = useDemoMode();
 
@@ -208,7 +210,7 @@ const TailscaleSidecarSection = () => {
             on screen for the reader to infer it from. */}
         {cliUnavailable && (
           <p className="rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 text-xs text-warning">
-            {t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')}
+            {liveSession?.tailscaleBlocked ? t('SETTINGS_NETWORK_TAILSCALE_LIVE_SESSION') : t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')}
           </p>
         )}
 

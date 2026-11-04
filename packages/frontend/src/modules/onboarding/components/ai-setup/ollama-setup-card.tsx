@@ -1,9 +1,10 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { openExternal } from '@/lib/helpers/open-external';
+import { useLiveSession } from '@/lib/inference/live-session';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import type { OllamaStatus } from '@/modules/onboarding/helpers/ai-setup-types';
-import { AlertCircle, CheckCircle2, Download, Loader2, RefreshCw } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Download, Info, Loader2, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -54,6 +55,7 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
   );
 
   const canAutoInstall = getTauriInvoke() !== null;
+  const liveSession = useLiveSession();
 
   const handleAutoInstall = useCallback(async () => {
     const invoke = getTauriInvoke();
@@ -118,6 +120,22 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
             >
               {!checking && <RefreshCw className="h-3.5 w-3.5" />}
             </Button>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (liveSession?.ollamaBlocked) {
+    return (
+      <Card className="border-warning/30 bg-warning/10">
+        <CardContent className="p-4">
+          <div className="flex items-start gap-3">
+            <Info className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
+            <div className="flex-1 text-warning" data-testid="ollama-live-session">
+              <div className="mb-1 text-sm font-medium">{t('ONBOARDING_OLLAMA_LIVE_SESSION_TITLE')}</div>
+              <div className="text-xs">{t('ONBOARDING_OLLAMA_LIVE_SESSION_DESC')}</div>
+            </div>
           </div>
         </CardContent>
       </Card>
