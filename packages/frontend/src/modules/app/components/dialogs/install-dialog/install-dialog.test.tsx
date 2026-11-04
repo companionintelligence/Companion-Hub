@@ -11,6 +11,8 @@ type CapturedOptions = {
   onSuccess?: () => void;
 };
 
+const { appContext } = vi.hoisted(() => ({ appContext: { cloudflareAvailable: true } }));
+
 const { capturedFormProps } = vi.hoisted(() => ({ capturedFormProps: { current: null as { initialValues?: Record<string, unknown> } | null } }));
 
 const { capturedOptions, invalidateAppQueries, addOptimisticInstalledApp, removeOptimisticInstalledApp, setOptimisticStatus, queryClient, calls } =
@@ -64,9 +66,17 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 vi.mock('@/components/ui/Dialog', () => ({
   Dialog: ({ open, children }: { open: boolean; children: ReactNode }) => (open ? children : null),
   DialogContent: ({ children }: { children: ReactNode }) => children,
-  DialogFooter: () => null,
+  DialogFooter: ({ children }: { children: ReactNode }) => children,
   DialogHeader: () => null,
   DialogTitle: () => null,
+}));
+
+vi.mock('@/context/app-context', () => ({
+  useAppContext: () => ({ cloudflareAvailable: appContext.cloudflareAvailable }),
+}));
+
+vi.mock('../../install-form-buttons/install-form-buttons', () => ({
+  InstallFormButtons: () => null,
 }));
 
 vi.mock('../../install-form/install-form', () => ({
@@ -102,6 +112,32 @@ describe('InstallDialog', () => {
     calls.length = 0;
     capturedOptions.current = null;
     capturedFormProps.current = null;
+    appContext.cloudflareAvailable = true;
+  });
+
+  describe('what it says while Install is off', () => {
+    const NEEDS_PUBLIC_WEB = { ...INFO, force_expose: true } as AppInfo;
+
+    it('asks for the required fields', () => {
+      const { getByText } = render(<InstallDialog info={INFO} isOpen onClose={vi.fn()} />);
+
+      expect(getByText('APP_INSTALL_FORM_COMPLETE_REQUIRED')).toBeTruthy();
+    });
+
+    it('asks for the required fields when this Hub has what the app needs', () => {
+      const { getByText } = render(<InstallDialog info={NEEDS_PUBLIC_WEB} isOpen onClose={vi.fn()} />);
+
+      expect(getByText('APP_INSTALL_FORM_COMPLETE_REQUIRED')).toBeTruthy();
+    });
+
+    it('says Public web is what is missing, since no field would turn Install on', () => {
+      appContext.cloudflareAvailable = false;
+
+      const { getByText, queryByText } = render(<InstallDialog info={NEEDS_PUBLIC_WEB} isOpen onClose={vi.fn()} />);
+
+      expect(getByText('APP_INSTALL_FORM_NEEDS_PUBLIC_WEB')).toBeTruthy();
+      expect(queryByText('APP_INSTALL_FORM_COMPLETE_REQUIRED')).toBeNull();
+    });
   });
 
   // The app left the listing's port because another program held it, so that address is not where it is.
