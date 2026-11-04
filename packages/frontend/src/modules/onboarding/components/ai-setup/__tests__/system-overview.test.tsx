@@ -1,6 +1,6 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import type { HardwareProfile } from '@ci-hub/common/types';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SystemOverview } from '../system-overview';
 
 const originalUserAgent = navigator.userAgent;
@@ -55,5 +55,107 @@ describe('SystemOverview — NVIDIA runtime-missing guidance', () => {
 
     expect(screen.getByText(/open Docker Desktop/i)).toBeInTheDocument();
     expect(screen.queryByText(/Docker Engine inside WSL2/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('SystemOverview: whether the NVIDIA driver answers', () => {
+  afterEach(() => {
+    setNavigatorPlatform(originalUserAgent, originalPlatform);
+    delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it('does not call the GPU ready when the runtime is listed but the driver does not answer', () => {
+    render(
+      <SystemOverview
+        hardware={makeHardware({ runtimeAvailable: true, hostNvidiaAvailable: false, driverVersion: '' })}
+        tier="high"
+        onRescan={async () => {}}
+      />,
+    );
+
+    expect(screen.getByTestId('nvidia-driver-warning')).toHaveTextContent("driver isn't answering");
+    expect(screen.queryByTestId('nvidia-runtime-ready')).not.toBeInTheDocument();
+  });
+
+  it('asks for the driver before the toolkit steps, which can not help without it', () => {
+    render(
+      <SystemOverview
+        hardware={makeHardware({ runtimeAvailable: false, hostNvidiaAvailable: false, driverVersion: '' })}
+        tier="high"
+        onRescan={async () => {}}
+      />,
+    );
+
+    expect(screen.getByTestId('nvidia-driver-warning')).toBeInTheDocument();
+    expect(screen.queryByTestId('nvidia-runtime-warning')).not.toBeInTheDocument();
+  });
+
+  it('keeps the ready message when the driver answers, or on a profile that does not say', () => {
+    const { rerender } = render(
+      <SystemOverview hardware={makeHardware({ runtimeAvailable: true, hostNvidiaAvailable: true })} tier="high" onRescan={async () => {}} />,
+    );
+    expect(screen.getByTestId('nvidia-runtime-ready')).toBeInTheDocument();
+
+    rerender(<SystemOverview hardware={makeHardware({ runtimeAvailable: true })} tier="high" onRescan={async () => {}} />);
+    expect(screen.getByTestId('nvidia-runtime-ready')).toBeInTheDocument();
+  });
+
+  it('offers a Rescan at the end of the steps', () => {
+    render(<SystemOverview hardware={makeHardware({ hostNvidiaAvailable: true })} tier="high" onRescan={async () => {}} />);
+
+    expect(screen.getByTestId('nvidia-runtime-warning')).toContainElement(screen.getByTestId('nvidia-rescan-btn'));
+  });
+
+  it('on desktop Linux offers the install instead of promising a retry on reopening', () => {
+    (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke: async () => null };
+    render(
+      <SystemOverview
+        hardware={makeHardware({ hostNvidiaAvailable: true, containerHostKind: 'native-linux' })}
+        tier="high"
+        onRescan={async () => {}}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Run this automatically' })).toBeInTheDocument();
+    expect(screen.getByTestId('nvidia-runtime-warning')).not.toHaveTextContent('Close and reopen');
+    expect(screen.getByTestId('nvidia-runtime-warning')).not.toHaveTextContent('Automatic setup runs during startup');
+  });
+
+  it('installs through the desktop app, waits for the Hub to come back, then rescans', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const invoke = vi.fn().mockResolvedValue('NVIDIA container runtime installed.');
+    (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke };
+    const health = vi.fn().mockRejectedValueOnce(new TypeError('the Hub is restarting with Docker')).mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', health);
+    const onRescan = vi.fn().mockResolvedValue(undefined);
+    render(<SystemOverview hardware={makeHardware({ hostNvidiaAvailable: true, containerHostKind: 'native-linux' })} tier="high" onRescan={onRescan} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run this automatically' }));
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(onRescan).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(7_000);
+
+    expect(invoke).toHaveBeenCalledWith('install_nvidia_runtime_command');
+    expect(health).toHaveBeenCalledTimes(2);
+    expect(onRescan).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('shows why the install failed', async () => {
+    (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {
+      invoke: vi.fn().mockRejectedValue('Authorization was cancelled or denied.'),
+    };
+    render(<SystemOverview hardware={makeHardware({ hostNvidiaAvailable: true, containerHostKind: 'native-linux' })} tier="high" onRescan={async () => {}} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run this automatically' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Authorization was cancelled or denied.');
+  });
+
+  it('keeps the retry step in a browser, where cihub up does the setup', () => {
+    render(<SystemOverview hardware={makeHardware({ hostNvidiaAvailable: true, containerHostKind: 'native-linux' })} tier="high" onRescan={async () => {}} />);
+
+    expect(screen.getByTestId('nvidia-runtime-warning')).toHaveTextContent('Close and reopen');
   });
 });

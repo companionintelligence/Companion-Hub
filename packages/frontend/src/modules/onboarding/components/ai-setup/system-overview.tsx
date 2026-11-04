@@ -1,10 +1,13 @@
 import { Button } from '@/components/ui/Button';
+import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
+import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
 import { cn } from '@/lib/utils';
 import type { HardwareProfile, HardwareTier } from '@ci-hub/common/types';
 import { formatMemoryMb, resolveGpuSubLabel, resolveTierBadge, resolveVramDisplay } from '@/modules/onboarding/helpers/hardware-display';
 import { RocmSetupCard } from '@/modules/onboarding/components/ai-setup/rocm-setup-card';
 import { AlertTriangle, Cpu, HardDrive, MemoryStick, Monitor } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { AutoInstallRunnerButton } from './auto-install-runner-button';
 import { GpuIcon, VramIcon } from './icons';
 import i18next from 'i18next';
 import { useTranslation } from 'react-i18next';
@@ -64,6 +67,10 @@ function OverviewItem({ icon, label, value, sub, testId }: { icon: ReactNode; la
  * available (falling back to the connecting client), and storage total/free come from the profile's
  * resource estimate.
  */
+/** Docker's restart takes the Hub down too, so the rescan waits until the Hub answers again. */
+const RUNTIME_RESCAN_ATTEMPTS = 12;
+const RUNTIME_RESCAN_DELAY_MS = 5_000;
+
 export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, availableDiskMb, diskTotalMb }: SystemOverviewProps) => {
   const { t } = useTranslation();
   const badge = resolveTierBadge(tier, hardware);
@@ -71,13 +78,46 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
   const os = getClientPlatform();
   const noGpu = !hardware.gpu.available;
   const showRocmSetup = hardware.gpu.available && hardware.gpu.vendor === 'amd';
-  const nvidiaRuntimeMissing = hardware.gpu.vendor === 'nvidia' && !hardware.gpu.runtimeAvailable;
-  const nvidiaRuntimeReady = hardware.gpu.vendor === 'nvidia' && hardware.gpu.runtimeAvailable;
+  // Docker lists the nvidia runtime as soon as the toolkit is installed, with or without a driver,
+  // so "ready" also needs the host's own proof that the driver answers.
+  const nvidiaDriverMissing = hardware.gpu.vendor === 'nvidia' && hardware.gpu.hostNvidiaAvailable === false && !hardware.gpu.driverVersion;
+  const nvidiaRuntimeMissing = hardware.gpu.vendor === 'nvidia' && !hardware.gpu.runtimeAvailable && !nvidiaDriverMissing;
+  const nvidiaRuntimeReady = hardware.gpu.vendor === 'nvidia' && hardware.gpu.runtimeAvailable && !nvidiaDriverMissing;
+  // Only `cihub up` and the Windows desktop app set the runtime up at startup. The Linux desktop
+  // app offers a button instead, so it doesn't promise a retry on reopening.
+  const desktopInstallsRuntime = isTauriDesktopApp() && hardware.gpu.containerHostKind === 'native-linux';
   // A native Docker Engine inside WSL2 needs the same in-distro toolkit as native
   // Linux — not Docker Desktop's automatic WSL2 GPU integration. Show the Linux-style
   // steps for both, so a Windows WSL2-engine user is never told to "open Docker Desktop".
   const isWslEngineHost = hardware.gpu.containerHostKind === 'wsl-engine';
   const showLinuxRuntimeSteps = isLinuxClient() || isWslEngineHost;
+
+  const installRuntime = async () => {
+    const invoke = getTauriInvoke();
+    if (!invoke) return;
+    try {
+      await invoke('install_nvidia_runtime_command');
+    } catch (error) {
+      throw new Error(String(error));
+    }
+    // A rescan that fails replaces this step with an error page, so wait for the Hub to answer first.
+    for (let attempt = 0; attempt < RUNTIME_RESCAN_ATTEMPTS; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, RUNTIME_RESCAN_DELAY_MS));
+      const hubAnswers = await fetch('/api/health/live')
+        .then((response) => response.ok)
+        .catch(() => false);
+      if (hubAnswers) {
+        await onRescan();
+        return;
+      }
+    }
+  };
+
+  const rescanButton = (
+    <Button variant="outline" size="sm" onClick={onRescan} loading={rescanning} data-testid="nvidia-rescan-btn">
+      {t('ONBOARDING_RESCAN')}
+    </Button>
+  );
 
   return (
     <section className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6">
@@ -148,16 +188,38 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
 
       {showRocmSetup && <RocmSetupCard hardware={hardware} onRescan={onRescan} rescanning={rescanning} />}
 
+      {nvidiaDriverMissing && (
+        <div className="mt-4 rounded-md border border-warning/30 bg-warning/10 p-3 text-xs text-warning" data-testid="nvidia-driver-warning">
+          <p className="mb-2">{t('ONBOARDING_NVIDIA_DRIVER_MISSING_DESC')}</p>
+          {showLinuxRuntimeSteps && (
+            <div className="mb-3 rounded bg-warning/10 p-2.5 font-mono text-[11px] leading-6 text-warning">
+              <p>sudo ubuntu-drivers install</p>
+            </div>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <span>{t('ONBOARDING_NVIDIA_DRIVER_THEN_RESCAN')}</span>
+            {rescanButton}
+          </div>
+        </div>
+      )}
+
       {nvidiaRuntimeMissing && (
         <div className="mt-4 rounded-md border border-warning/30 bg-warning/10 p-3 text-xs text-warning" data-testid="nvidia-runtime-warning">
           <p className="mb-2">{t('ONBOARDING_NVIDIA_RUNTIME_MISSING_DESC_1')}</p>
-          <p className="mb-2">{t('ONBOARDING_NVIDIA_RUNTIME_MISSING_DESC_2')}</p>
+          {!desktopInstallsRuntime && <p className="mb-2">{t('ONBOARDING_NVIDIA_RUNTIME_MISSING_DESC_2')}</p>}
           <p className="font-medium">{t('ONBOARDING_ACTION_ITEMS')}</p>
           <div className="mt-2 space-y-3 leading-relaxed">
-            <div>
-              <p className="font-medium">1. {t('ONBOARDING_RETRY_AUTOMATIC_SETUP')}</p>
-              <p>{t('ONBOARDING_RETRY_AUTOMATIC_SETUP_DESC')}</p>
-            </div>
+            {desktopInstallsRuntime ? (
+              <div>
+                <p className="mb-1.5 font-medium">1. {t('ONBOARDING_NVIDIA_RUNTIME_RUN_AUTOMATICALLY')}</p>
+                <AutoInstallRunnerButton onRun={installRuntime} />
+              </div>
+            ) : (
+              <div>
+                <p className="font-medium">1. {t('ONBOARDING_RETRY_AUTOMATIC_SETUP')}</p>
+                <p>{t('ONBOARDING_RETRY_AUTOMATIC_SETUP_DESC')}</p>
+              </div>
+            )}
             <div>
               {showLinuxRuntimeSteps ? (
                 <>
@@ -211,11 +273,12 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
                 </div>
               </div>
             )}
-            <div>
+            <div className="flex flex-wrap items-center gap-2">
               <p>
                 {showLinuxRuntimeSteps ? '4.' : '3.'} {t('ONBOARDING_RETURN_AND_CLICK')} <span className="font-medium">{t('ONBOARDING_RESCAN')}</span>
                 .
               </p>
+              {rescanButton}
             </div>
           </div>
         </div>

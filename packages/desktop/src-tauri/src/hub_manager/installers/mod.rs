@@ -4,11 +4,13 @@ use super::*;
 
 mod docker;
 mod engine_alt;
+mod nvidia;
 mod ollama;
 mod rocm;
 
 pub use docker::*;
 pub use engine_alt::*;
+pub use nvidia::*;
 pub use ollama::*;
 pub use rocm::*;
 

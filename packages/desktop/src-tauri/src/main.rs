@@ -211,6 +211,14 @@ async fn install_ollama_command() -> Result<hub_manager::OllamaInstallResult, St
         .map_err(|e| format!("Ollama install task failed: {e}"))?
 }
 
+/// Install the NVIDIA container runtime through pkexec (native Linux only).
+#[tauri::command]
+async fn install_nvidia_runtime_command() -> Result<String, String> {
+    tokio::task::spawn_blocking(hub_manager::install_nvidia_runtime)
+        .await
+        .map_err(|e| format!("NVIDIA runtime install task failed: {e}"))?
+}
+
 /// Install and start the host/container inference runners selected by onboarding.
 #[tauri::command]
 async fn install_and_start_inference_runners_command(
@@ -661,6 +669,7 @@ pub fn run() {
             is_user_stopped_command,
             install_docker_command,
             install_ollama_command,
+            install_nvidia_runtime_command,
             install_and_start_inference_runners_command,
             install_rocm_command,
             verify_rocm_command,
