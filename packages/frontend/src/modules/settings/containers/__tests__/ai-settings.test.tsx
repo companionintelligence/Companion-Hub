@@ -741,7 +741,7 @@ describe('AiSettingsContainer', () => {
     expect(pinInferenceModel).not.toHaveBeenCalled();
   });
 
-  // A running Ollama bound to loopback refuses the Docker bridge, and a firewall times it out, so
+  // A running Ollama bound to loopback refuses the Docker bridge and a firewall times it out, so
   // none of these can be reported as "isn't running". The failure itself stays in the message.
   it.each([
     'connect ECONNREFUSED 172.17.0.1:11434',
