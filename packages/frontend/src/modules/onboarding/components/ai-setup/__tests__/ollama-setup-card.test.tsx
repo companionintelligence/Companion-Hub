@@ -27,6 +27,25 @@ afterEach(() => {
 });
 
 describe('OllamaSetupCard auto-install', () => {
+  it('keeps a long install failure from pushing the buttons away, and keeps its lines', async () => {
+    const user = userEvent.setup();
+    const log = `Ollama installation failed: ${'line\n'.repeat(5000)}E: the cause`;
+    installTauriMock(
+      vi.fn(async (command: string) => {
+        if (command === 'install_ollama_command') throw log;
+        return null;
+      }),
+    );
+    render(<OllamaSetupCard status={ollamaMissing} checking={false} onRecheck={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: /Run this automatically/i }));
+
+    const shown = await screen.findByTestId('ollama-install-error');
+    expect(shown.className).toMatch(/max-h-\S+ overflow-y-auto/);
+    expect(shown.className).toContain('whitespace-pre-wrap');
+    expect(shown.textContent).toBe(log);
+  });
+
   it('hides the auto-install button outside the desktop app (no Tauri)', () => {
     render(<OllamaSetupCard status={ollamaMissing} checking={false} onRecheck={vi.fn()} />);
 

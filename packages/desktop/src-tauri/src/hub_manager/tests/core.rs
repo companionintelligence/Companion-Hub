@@ -138,11 +138,14 @@ fn defers_bind_mount_probe_until_docker_is_ready() {
 
 #[test]
 fn truncates_long_command_output() {
-    let output = "x".repeat(MAX_COMMAND_OUTPUT_CHARS + 25);
+    let output = format!(
+        "{}Error: the cause",
+        "x".repeat(MAX_COMMAND_OUTPUT_CHARS + 25)
+    );
     let truncated = truncate_command_output(&output);
 
-    assert!(truncated.contains("[truncated 25 chars]"));
-    assert!(truncated.starts_with(&"x".repeat(MAX_COMMAND_OUTPUT_CHARS)));
+    assert!(truncated.starts_with("[truncated 41 chars]"));
+    assert!(truncated.ends_with("Error: the cause"));
 }
 
 #[test]

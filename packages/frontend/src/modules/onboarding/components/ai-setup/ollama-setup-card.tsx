@@ -6,6 +6,7 @@ import type { OllamaStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import { AlertCircle, CheckCircle2, Download, Loader2, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { FailureLog } from './failure-log';
 
 const OLLAMA_DOWNLOAD_URL = 'https://ollama.com';
 const OLLAMA_DOCS_URL = 'https://docs.ollama.com';
@@ -168,7 +169,7 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
             {installPhase === 'error' && (
               <div className="mb-3 flex items-start gap-2 text-xs text-destructive">
                 <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                <span>{installError || t('ONBOARDING_OLLAMA_INSTALL_ERROR')}</span>
+                <FailureLog text={installError || t('ONBOARDING_OLLAMA_INSTALL_ERROR')} testId="ollama-install-error" />
               </div>
             )}
             {installPhase === 'installing' ? (

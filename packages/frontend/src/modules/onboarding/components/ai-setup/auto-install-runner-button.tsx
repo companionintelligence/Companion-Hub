@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { describePullStartError } from '@/lib/inference/tracked-models';
+import { FailureLog } from './failure-log';
 
 interface AutoInstallRunnerButtonProps {
   onRun: () => Promise<void>;
@@ -69,11 +70,7 @@ export const AutoInstallRunnerButton = ({ onRun }: AutoInstallRunnerButtonProps)
       {phase === 'error' && (
         <span className="flex items-start gap-1 text-xs text-destructive" role="alert">
           <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          {/* A failed installer's reason can be its whole log. `anywhere` because break-words can't shrink a flex item. */}
-          <span className="max-h-24 overflow-y-auto whitespace-pre-wrap [overflow-wrap:anywhere]">
-            {t('ONBOARDING_INFERENCE_RUN_ERROR')}
-            {errorDetail && `: ${errorDetail}`}
-          </span>
+          <FailureLog text={`${t('ONBOARDING_INFERENCE_RUN_ERROR')}${errorDetail && `: ${errorDetail}`}`} />
         </span>
       )}
     </div>
