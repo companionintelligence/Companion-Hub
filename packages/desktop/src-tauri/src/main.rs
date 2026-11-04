@@ -219,6 +219,15 @@ async fn install_nvidia_runtime_command() -> Result<String, String> {
         .map_err(|e| format!("NVIDIA runtime install task failed: {e}"))?
 }
 
+/// What a Companion OS live session can't run, so setup can say so instead of offering it.
+#[tauri::command]
+async fn live_session_state_command() -> Result<hub_manager::LiveSessionState, String> {
+    // Looks on the boot medium, which can be a slow USB stick, so it stays off the main thread.
+    tokio::task::spawn_blocking(hub_manager::live_session_state)
+        .await
+        .map_err(|e| format!("Live session check failed: {e}"))
+}
+
 /// Install and start the host/container inference runners selected by onboarding.
 #[tauri::command]
 async fn install_and_start_inference_runners_command(
@@ -670,6 +679,7 @@ pub fn run() {
             install_docker_command,
             install_ollama_command,
             install_nvidia_runtime_command,
+            live_session_state_command,
             install_and_start_inference_runners_command,
             install_rocm_command,
             verify_rocm_command,

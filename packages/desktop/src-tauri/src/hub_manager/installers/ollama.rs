@@ -336,6 +336,10 @@ fi
 /// and NVIDIA/AMD GPU setup; GPU driver installation can take several minutes.
 #[cfg(target_os = "linux")]
 pub fn install_ollama_linux() -> Result<OllamaInstallResult, String> {
+    if live_session_state().ollama_blocked {
+        return Err(LIVE_SESSION_OLLAMA_REFUSAL.to_string());
+    }
+
     let username = resolve_current_username()?;
     let pkexec_path = find_executable("pkexec").ok_or_else(|| {
         "pkexec is not installed or not on PATH. Install polkit/pkexec and try again.".to_string()

@@ -1,8 +1,10 @@
 import { render, screen, userEvent } from '@/tests/test-utils';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { toast } from 'sonner';
 import { openExternal } from '@/lib/helpers/open-external';
 import { TailscaleSetupStep } from '../tailscale-setup-step';
+
+type TauriWindow = Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
 
 const mockUseQuery = vi.fn();
 // The component makes exactly one useMutation() call (browserAuthMutation), so
@@ -83,6 +85,36 @@ describe('TailscaleSetupStep', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mutationConfigs.length = 0;
+  });
+
+  describe('when the Hub has no Tailscale', () => {
+    const renderMissing = () => {
+      mockUseQuery.mockReturnValue({ data: { installed: false, connected: false }, isLoading: false, isError: false });
+      render(<TailscaleSetupStep onComplete={vi.fn()} onSkip={vi.fn()} onBack={vi.fn()} />);
+    };
+
+    afterEach(() => {
+      delete (window as TauriWindow).__TAURI_INTERNALS__;
+    });
+
+    it('says to install it on a normal machine', () => {
+      renderMissing();
+
+      expect(screen.getByText('ONBOARDING_TAILSCALE_NOT_AVAILABLE')).toBeInTheDocument();
+      expect(screen.queryByTestId('tailscale-live-session')).not.toBeInTheDocument();
+    });
+
+    it('says a live session cannot run it, instead of sending someone to install it', async () => {
+      (window as TauriWindow).__TAURI_INTERNALS__ = {
+        invoke: vi.fn().mockResolvedValue({ live: true, ollamaBlocked: true, tailscaleBlocked: true }),
+      };
+
+      renderMissing();
+
+      expect(await screen.findByTestId('tailscale-live-session')).toHaveTextContent('SETTINGS_NETWORK_TAILSCALE_LIVE_SESSION');
+      expect(screen.queryByText('ONBOARDING_TAILSCALE_NOT_AVAILABLE')).not.toBeInTheDocument();
+      expect(screen.queryByText('ONBOARDING_TAILSCALE_INSTALL_THEN_CONNECT')).not.toBeInTheDocument();
+    });
   });
 
   it('shows only Skip when Tailscale is not connected', () => {
