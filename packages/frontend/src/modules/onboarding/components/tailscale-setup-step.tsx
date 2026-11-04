@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { openExternal } from '@/lib/helpers/open-external';
+import { useLiveSession } from '@/lib/inference/live-session';
 import { BrandLogo } from './ai-setup/icons';
 import { StepSection } from './ai-setup/primitives';
 import { useTailscaleReadinessSync } from '@/lib/hooks/use-tailscale-readiness-sync';
@@ -47,6 +48,7 @@ interface AuthStartResponse {
 
 export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = false, inline = false }: TailscaleSetupStepProps) => {
   const { t } = useTranslation();
+  const liveSession = useLiveSession();
   const queryClient = useQueryClient();
   const [hasAttemptedConnection, setHasAttemptedConnection] = useState(false);
 
@@ -207,6 +209,13 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
             </div>
           </div>
         )
+      ) : liveSession?.tailscaleBlocked ? (
+        <div className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4">
+          <Shield className="mt-0.5 h-5 w-5 flex-shrink-0 text-warning" />
+          <p className="text-sm text-warning" data-testid="tailscale-live-session">
+            {t('SETTINGS_NETWORK_TAILSCALE_LIVE_SESSION')}
+          </p>
+        </div>
       ) : (
         <div className="space-y-4">
           <div className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4">
