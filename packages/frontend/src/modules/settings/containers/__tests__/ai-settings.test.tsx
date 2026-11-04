@@ -741,10 +741,19 @@ describe('AiSettingsContainer', () => {
     expect(pinInferenceModel).not.toHaveBeenCalled();
   });
 
-  it('says the engine is not running when a download cannot reach it', async () => {
+  // A running Ollama bound to loopback refuses the Docker bridge, and a firewall times it out, so
+  // none of these can be reported as "isn't running". The failure itself stays in the message.
+  it.each([
+    'connect ECONNREFUSED 172.17.0.1:11434',
+    'connect EHOSTUNREACH 172.17.0.1:11434',
+    'connect ETIMEDOUT 172.17.0.1:11434',
+    'getaddrinfo EAI_AGAIN host.docker.internal',
+    'timeout of 5000ms exceeded',
+    'socket hang up',
+  ])('says the Hub cannot reach the engine when a download fails with %s', async (reason) => {
     fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama' });
     fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled([], [llm('q27', 'ollama')]));
-    ensurePullsStarted.mockResolvedValue({ q27: 'connect ECONNREFUSED 172.17.0.1:11434' });
+    ensurePullsStarted.mockResolvedValue({ q27: reason });
 
     const user = userEvent.setup();
     renderAiSettings();
@@ -756,7 +765,9 @@ describe('AiSettingsContainer', () => {
     await waitFor(() => expect(toast.warning).toHaveBeenCalled());
     expect(toast.warning).toHaveBeenCalledWith(
       'AI settings saved with 1 model issue(s).',
-      expect.objectContaining({ description: "Ollama isn't running, so q27 couldn't download. Start Ollama, then save again." }),
+      expect.objectContaining({
+        description: `The Hub can't reach Ollama, so q27 couldn't download (${reason}). Check that Ollama is running and accepts connections from the Hub, then save again.`,
+      }),
     );
   });
 

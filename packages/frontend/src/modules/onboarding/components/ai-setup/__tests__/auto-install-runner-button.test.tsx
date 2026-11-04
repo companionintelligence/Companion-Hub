@@ -1,6 +1,8 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
+import { TranslatableError } from '@/types/error.types';
 import { AutoInstallRunnerButton } from '../auto-install-runner-button';
 
 describe('AutoInstallRunnerButton', () => {
@@ -30,12 +32,50 @@ describe('AutoInstallRunnerButton', () => {
 
   it('still reports the failure when the runner gives no reason', async () => {
     const user = userEvent.setup();
-    const onRun = vi.fn().mockRejectedValue('no reason');
+    const onRun = vi.fn().mockRejectedValue(new Error(''));
 
     render(<AutoInstallRunnerButton onRun={onRun} />);
 
     await user.click(screen.getByRole('button', { name: 'Run this automatically' }));
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/^Could not start automatically$/));
+  });
+
+  it('shows a reason the desktop app rejected with, which arrives as a plain string', async () => {
+    const user = userEvent.setup();
+    const onRun = vi.fn().mockRejectedValue('Inference runner setup task failed: task was cancelled');
+
+    render(<AutoInstallRunnerButton onRun={onRun} />);
+
+    await user.click(screen.getByRole('button', { name: 'Run this automatically' }));
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Inference runner setup task failed: task was cancelled'));
+  });
+
+  it('translates a reason that is an i18n key instead of printing the key', async () => {
+    const user = userEvent.setup();
+    const onRun = vi.fn().mockRejectedValue(new TranslatableError('INTERNAL_SERVER_ERROR'));
+
+    render(<AutoInstallRunnerButton onRun={onRun} />);
+
+    await user.click(screen.getByRole('button', { name: 'Run this automatically' }));
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Internal server error'));
+    expect(screen.getByRole('alert')).not.toHaveTextContent('INTERNAL_SERVER_ERROR');
+  });
+
+  it('reports the outcome under StrictMode, whose extra effect cleanup is not an unmount', async () => {
+    const user = userEvent.setup();
+    const onRun = vi.fn().mockRejectedValue(new Error('Automatic Linux vLLM setup requires a working NVIDIA GPU.'));
+
+    render(
+      <StrictMode>
+        <AutoInstallRunnerButton onRun={onRun} />
+      </StrictMode>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Run this automatically' }));
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('requires a working NVIDIA GPU'));
   });
 });

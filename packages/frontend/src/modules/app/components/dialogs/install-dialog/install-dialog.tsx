@@ -2,6 +2,7 @@ import type { GetAppDto } from '@/api-client';
 import { getAppQueryKey, installAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
+import { useAppContext } from '@/context/app-context';
 import { invalidateAppQueries } from '@/modules/app/helpers/app-sse-cache';
 import { installRequestKey, withInstallRequest } from '@/modules/app/helpers/install-request';
 import { addOptimisticInstalledApp, removeOptimisticInstalledApp } from '@/modules/app/helpers/optimistic-installed-apps';
@@ -46,6 +47,7 @@ interface IProps {
 
 export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose, boundCustomDomain, retryExposureMode, retryPort }) => {
   const { t } = useTranslation();
+  const { cloudflareAvailable } = useAppContext();
   const queryClient = useQueryClient();
   const { setOptimisticStatus } = useAppStatus();
   const formId = useId();
@@ -156,7 +158,11 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose, boundCu
           />
         </div>
         <DialogFooter className="shrink-0 flex-col items-stretch gap-2 sm:flex-col">
-          {!isFormValid && <p className="text-sm text-muted-foreground text-left">{t('APP_INSTALL_FORM_COMPLETE_REQUIRED')}</p>}
+          {!isFormValid && (
+            <p className="text-sm text-muted-foreground text-left">
+              {t(info.force_expose && !cloudflareAvailable ? 'APP_INSTALL_FORM_NEEDS_PUBLIC_WEB' : 'APP_INSTALL_FORM_COMPLETE_REQUIRED')}
+            </p>
+          )}
           {/* From the click: on Public Web the form runs a last DNS check before the request goes out. */}
           <InstallFormButtons loading={isSubmitting || installMutation.isPending} formId={formId} disabled={!isFormValid} />
         </DialogFooter>

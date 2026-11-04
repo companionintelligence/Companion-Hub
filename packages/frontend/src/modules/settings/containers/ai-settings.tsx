@@ -17,6 +17,7 @@ import {
   unloadInferenceModel,
   unpinInferenceModel,
 } from '@/lib/inference/inference-api';
+import { backendDisplayName } from '@/lib/inference/backend-names';
 import { MASKED_KEY, isMaskedKey } from '@/lib/inference/masked-key';
 import { POLLING } from '@/lib/polling-budget';
 import { ensurePullsStarted, waitForModelPulls } from '@/lib/inference/tracked-models';
@@ -84,9 +85,10 @@ const compatibleSelection = (availableModelById: ModelIndex, backend: InferenceB
 const unpinnablePins = (availableModelById: ModelIndex, pinnedIds: Iterable<string>): string[] =>
   [...pinnedIds].filter((modelId) => isHubLoadableBackend(availableModelById.get(modelId)?.backend));
 
-// A pull that fails with one of these never reached the engine, so the fix is to start it, not to retry the download.
-const ENGINE_UNREACHABLE = /ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENOTFOUND|fetch failed/;
-const engineName = (backend: InferenceBackendType) => (backend === 'ollama' ? 'Ollama' : backend === 'lemonade' ? 'Lemonade' : backend);
+// The Hub lost its connection to the engine. That doesn't say the engine is down: a running Ollama bound to
+// loopback refuses the Docker bridge and a firewall drops it (see ollama-host-bridge.ts on the Hub).
+const ENGINE_UNREACHABLE =
+  /ECONNREFUSED|ECONNRESET|ECONNABORTED|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT|socket hang up|fetch failed|timeout of \d+ms exceeded/;
 
 /** The engine whose embedders Save ranks for `backend`: itself on Ollama and oMLX, else the shared embedding engine. */
 const embeddingBackendFor = (backend: InferenceBackendType): InferenceBackendType =>
@@ -704,7 +706,11 @@ export const AiSettingsContainer = () => {
       const modelOperationErrors: string[] = [];
       const pullFailureMessage = (modelId: string, reason: string) =>
         ENGINE_UNREACHABLE.test(reason)
-          ? t('AI_SETTINGS_ENGINE_NOT_RUNNING', { engine: engineName(availableModelById.get(modelId)?.backend ?? selectedBackend), model: modelId })
+          ? t('AI_SETTINGS_ENGINE_UNREACHABLE', {
+              engine: backendDisplayName(availableModelById.get(modelId)?.backend ?? selectedBackend),
+              model: modelId,
+              reason,
+            })
           : `Failed to pull ${modelId}: ${reason}`;
       const requestedPulls = pullableSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
 

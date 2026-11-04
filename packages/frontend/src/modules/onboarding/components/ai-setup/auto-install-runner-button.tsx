@@ -2,6 +2,7 @@ import { AlertCircle, CheckCircle2, Download, Loader2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
+import { describePullStartError } from '@/lib/inference/tracked-models';
 
 interface AutoInstallRunnerButtonProps {
   onRun: () => Promise<void>;
@@ -20,6 +21,9 @@ export const AutoInstallRunnerButton = ({ onRun }: AutoInstallRunnerButtonProps)
   const mounted = useRef(true);
 
   useEffect(() => {
+    // Set here as well as at declaration: StrictMode's dev double-invoke runs the cleanup once
+    // before the real mount, which would otherwise latch this false and leave the spinner up.
+    mounted.current = true;
     return () => {
       mounted.current = false;
     };
@@ -32,7 +36,8 @@ export const AutoInstallRunnerButton = ({ onRun }: AutoInstallRunnerButtonProps)
       if (mounted.current) setPhase('completed');
     } catch (error) {
       if (!mounted.current) return;
-      setErrorDetail(error instanceof Error ? error.message : '');
+      // Handles the plain string a desktop command rejects with and a status check's i18n key.
+      setErrorDetail(describePullStartError(error));
       setPhase('error');
     }
   };
@@ -64,9 +69,10 @@ export const AutoInstallRunnerButton = ({ onRun }: AutoInstallRunnerButtonProps)
       {phase === 'error' && (
         <span className="flex items-start gap-1 text-xs text-destructive" role="alert">
           <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>
+          {/* A failed installer's reason can be its whole log. `anywhere` because break-words can't shrink a flex item. */}
+          <span className="max-h-24 overflow-y-auto whitespace-pre-wrap [overflow-wrap:anywhere]">
             {t('ONBOARDING_INFERENCE_RUN_ERROR')}
-            {errorDetail && <span className="break-words">: {errorDetail}</span>}
+            {errorDetail && `: ${errorDetail}`}
           </span>
         </span>
       )}
