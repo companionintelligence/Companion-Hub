@@ -40,6 +40,7 @@ vi.mock('sonner', () => ({
 describe('SSEProvider', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    appNameCache.dropped = false;
   });
 
   it('links install failure to the logs tab', async () => {
@@ -262,7 +263,6 @@ describe('SSEProvider', () => {
       act(() => {
         getOnEvent()?.({ event: 'uninstall_success', appUrn: 'uptime-kuma:ci-marketplace' });
       });
-      appNameCache.dropped = false;
 
       expect(mockToastSuccess).toHaveBeenCalledWith(expect.stringMatching(/Uptime Kuma/));
     });

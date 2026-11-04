@@ -1889,6 +1889,19 @@ describe('AppLifecycleService', () => {
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'start', appUrn }));
     });
 
+    it('records open a reinstall form that moves the app off a closed port and names no openPort', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        openPort: false,
+        config: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false },
+      } as any);
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'tailscale', exposedLocal: false } } as any);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ openPort: true }));
+    });
+
     describe('a reinstall form that names no mode', () => {
       const lastPatch = () => appsRepository.updateAppById.mock.calls.find(([, patch]) => 'config' in patch)?.[1] as Record<string, any>;
       const publicWeb = {
@@ -7917,6 +7930,11 @@ describe('AppLifecycleService', () => {
 
         await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
         await flushMicrotasks();
+
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.stringContaining('its settings were not re-applied'),
+          expect.objectContaining({ intlParams: { port: '8080', id: 'other' } }),
+        );
 
         expect(appsRepository.updateAppById).toHaveBeenCalledWith(fakeApp.id, expect.objectContaining({ version: 2, status: 'stopped' }));
         expect(sseService.emit).toHaveBeenCalledWith(

@@ -7,7 +7,7 @@ import { isPortExposeApp, manifestDefaultsEdgeAuthOn, servedOpenPort } from '@ci
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
-import { HttpStatus, Inject, Injectable, OnApplicationBootstrap, OnModuleDestroy, Optional } from '@nestjs/common';
+import { HttpException, HttpStatus, Inject, Injectable, OnApplicationBootstrap, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import { normalizeStoredHostname, sanitizeAppSubdomain, servedExposureMode } from '@ci-hub/common/types';
@@ -411,6 +411,12 @@ function customDomainColumns(parsedForm: {
   return { customDomainIntent: intent, customDomainTakeover: intent !== null && parsedForm.customDomainTakeover === true };
 }
 
+/** The host port a stored form names, if it names one. */
+function storedFormPort(storedConfig: unknown): number | undefined {
+  const port = (storedConfig as { port?: unknown } | null | undefined)?.port;
+  return typeof port === 'number' ? port : undefined;
+}
+
 function buildInstallRowPatch(parsedForm: ParsedAppForm, storedConfig: unknown): Record<string, unknown> {
   /*
    * BOTH destructured out before the spread. `customDomain` always was — it must
@@ -438,8 +444,8 @@ function buildInstallRowPatch(parsedForm: ParsedAppForm, storedConfig: unknown):
    * manifest's while the row still named the port it had. A port is set by a move or by a save that names one.
    */
   const config = toStoredConfig(parsedForm);
-  const storedPort = (storedConfig as { port?: unknown } | null | undefined)?.port;
-  if (parsedForm.port === undefined && typeof storedPort === 'number') {
+  const storedPort = storedFormPort(storedConfig);
+  if (parsedForm.port === undefined && storedPort !== undefined) {
     config.port = storedPort;
   }
 
@@ -447,8 +453,10 @@ function buildInstallRowPatch(parsedForm: ParsedAppForm, storedConfig: unknown):
     config,
     ...rowFields,
     // What compose runs the form as, as a first install and a save record it. A form naming no mode has
-    // no `exposureMode` to spread, which left the row on whatever mode the app had before.
+    // no `exposureMode` to spread, which left the row on whatever mode the app had before. A form naming
+    // no `openPort` has none either, and the queue serves it on an open port.
     exposureMode: getEffectiveExposureMode(parsedForm),
+    openPort: servedOpenPort(parsedForm),
     ...customDomainColumns(parsedForm),
   };
 }
@@ -2955,7 +2963,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     // (`buildInstallRowPatch`). It would fall back to the listing's below, which is the port a move left
     // because another program holds it. A custom app's config.json keeps its internal port, so its host
     // port is on the row (`allocateCustomAppHostPort`). A form that never named a port still follows its listing.
-    const keptPort = extractAppUrn(appUrn).appStoreId === '_user' ? app.port : (app.config as { port?: unknown } | null)?.port;
+    const keptPort = extractAppUrn(appUrn).appStoreId === '_user' ? app.port : storedFormPort(app.config);
     if (parsedForm.port === undefined && typeof keptPort === 'number') {
       parsedForm.port = keptPort;
     }
@@ -3348,7 +3356,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
               await this.updateAppConfig({ appUrn, form: app.config, actor: { kind: 'system', reason: 'update-reapply' } });
             } catch (err) {
               settingsReapplied = false;
-              this.logger.warn(`App ${appUrn} updated, but its settings were not re-applied: ${err instanceof Error ? err.message : String(err)}`);
+              // A refusal's message is only its translation key. The port and the app holding it are in its response.
+              this.logger.warn(
+                `App ${appUrn} updated, but its settings were not re-applied:`,
+                err instanceof HttpException ? err.getResponse() : err,
+              );
             }
             await this.appRepository.updateAppById(app.id, { version: appInfo?.cihub_app_version, status: restoredStatus });
             this.sseService.emit('app', {
