@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 const OLLAMA_DOWNLOAD_URL = 'https://ollama.com';
+const OLLAMA_DOCS_URL = 'https://docs.ollama.com';
 /** After a successful install, poll status until the service comes up. */
 const POST_INSTALL_RECHECK_ATTEMPTS = 10;
 const POST_INSTALL_RECHECK_DELAY_MS = 2000;
@@ -190,6 +191,11 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
                   >
                     <Download className="h-3.5 w-3.5 mr-1.5" />
                     {t('ONBOARDING_OLLAMA_GET')}
+                  </Button>
+                )}
+                {bridgeUnreachable && (
+                  <Button size="sm" variant="ghost" onClick={() => openExternal(OLLAMA_DOCS_URL)} data-testid="ollama-docs-btn">
+                    {t('ONBOARDING_OLLAMA_DOCS')}
                   </Button>
                 )}
                 <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking} data-testid="ollama-recheck-btn">

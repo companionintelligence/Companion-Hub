@@ -16,15 +16,26 @@ describe('AutoInstallRunnerButton', () => {
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Started'));
   });
 
-  it('keeps the UI backend-neutral when the native runner fails', async () => {
+  it('shows why the native runner failed', async () => {
     const user = userEvent.setup();
-    const onRun = vi.fn().mockRejectedValue(new Error('private installer detail'));
+    const onRun = vi.fn().mockRejectedValue(new Error('Automatic Linux vLLM setup requires a working NVIDIA GPU.'));
 
     render(<AutoInstallRunnerButton onRun={onRun} />);
 
     await user.click(screen.getByRole('button', { name: 'Run this automatically' }));
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Could not start automatically'));
-    expect(screen.queryByText('private installer detail')).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('Automatic Linux vLLM setup requires a working NVIDIA GPU.');
+  });
+
+  it('still reports the failure when the runner gives no reason', async () => {
+    const user = userEvent.setup();
+    const onRun = vi.fn().mockRejectedValue('no reason');
+
+    render(<AutoInstallRunnerButton onRun={onRun} />);
+
+    await user.click(screen.getByRole('button', { name: 'Run this automatically' }));
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/^Could not start automatically$/));
   });
 });

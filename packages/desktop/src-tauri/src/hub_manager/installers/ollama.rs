@@ -336,28 +336,15 @@ fi
 /// and NVIDIA/AMD GPU setup; GPU driver installation can take several minutes.
 #[cfg(target_os = "linux")]
 pub fn install_ollama_linux() -> Result<OllamaInstallResult, String> {
-    use std::io::Write as IoWrite;
-    use tempfile::NamedTempFile;
-
     let username = resolve_current_username()?;
     let pkexec_path = find_executable("pkexec").ok_or_else(|| {
         "pkexec is not installed or not on PATH. Install polkit/pkexec and try again.".to_string()
     })?;
 
-    let mut wrapper_script = NamedTempFile::new()
-        .map_err(|e| format!("Failed to create temporary install script: {}", e))?;
-    wrapper_script
-        .write_all(ollama_linux_install_script().as_bytes())
-        .map_err(|e| format!("Failed to write install script: {}", e))?;
-
-    let permissions = std::fs::Permissions::from_mode(0o700);
-    wrapper_script
-        .as_file()
-        .set_permissions(permissions)
-        .map_err(|e| format!("Failed to set install script permissions: {}", e))?;
+    let wrapper_script = write_elevated_script(ollama_linux_install_script().as_bytes())?;
 
     let output = Command::new(&pkexec_path)
-        .arg(wrapper_script.path())
+        .arg(&*wrapper_script)
         .arg(&username)
         .output()
         .map_err(|e| format!("Failed to run pkexec installer: {}", e))?;

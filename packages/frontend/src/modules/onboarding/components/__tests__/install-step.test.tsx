@@ -250,6 +250,43 @@ describe('InstallStep', () => {
     });
   });
 
+  it('shows why a runner could not be set up, beside the count', async () => {
+    const invoke = vi.fn(async (command: string) =>
+      command === 'install_and_start_inference_runners_command'
+        ? [
+            { runner: 'ollama', state: 'failed', detail: 'Ollama installation failed: Error executing /tmp/.tmpX: Text file busy' },
+            { runner: 'vllm', state: 'skipped', detail: 'Automatic Linux vLLM setup requires a working NVIDIA GPU.' },
+            { runner: 'omlx', state: 'already_running', detail: 'not shown' },
+          ]
+        : null,
+    );
+    (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
+    getInstalledApps.mockResolvedValue(sdkOk({ installed: [] }));
+
+    render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          agentFrameworks: [],
+          remoteAccess: [],
+          selectedModels: [],
+          installedCatalogIds: [],
+          backend: 'vllm',
+          cloudProviders: [],
+          skipped: false,
+        }}
+      />,
+    );
+
+    const reasons = await screen.findAllByTestId('inference-runner-reason');
+    expect(reasons.map((node) => node.textContent)).toEqual([
+      'Ollama installation failed: Error executing /tmp/.tmpX: Text file busy',
+      'Automatic Linux vLLM setup requires a working NVIDIA GPU.',
+    ]);
+    expect(screen.getByTestId('inference-runners-phase')).toHaveTextContent('2 runner(s) unavailable on this machine');
+  });
+
   it('persists the preferred model alongside the backend during AI setup', async () => {
     fetchTrackedModels.mockResolvedValue([
       { catalogId: 'llama3-3-70b', state: 'pulled' },

@@ -252,9 +252,6 @@ echo "ROCm installation complete. A system restart is required."
 
 #[cfg(target_os = "linux")]
 fn install_rocm_linux() -> Result<RocmInstallResult, String> {
-    use std::io::Write as IoWrite;
-    use tempfile::NamedTempFile;
-
     let data_dir = get_hub_data_dir();
     let state_dir = data_dir.join("state");
     let username = resolve_current_username()?;
@@ -269,20 +266,10 @@ fn install_rocm_linux() -> Result<RocmInstallResult, String> {
         "Starting ROCm installation via pkexec",
     );
 
-    let mut wrapper_script = NamedTempFile::new()
-        .map_err(|e| format!("Failed to create temporary install script: {}", e))?;
-    wrapper_script
-        .write_all(rocm_linux_install_script().as_bytes())
-        .map_err(|e| format!("Failed to write install script: {}", e))?;
-
-    let permissions = std::fs::Permissions::from_mode(0o700);
-    wrapper_script
-        .as_file()
-        .set_permissions(permissions)
-        .map_err(|e| format!("Failed to set install script permissions: {}", e))?;
+    let wrapper_script = write_elevated_script(rocm_linux_install_script().as_bytes())?;
 
     let output = Command::new(&pkexec_path)
-        .arg(wrapper_script.path())
+        .arg(&*wrapper_script)
         .arg(&username)
         .arg(state_dir)
         .output()

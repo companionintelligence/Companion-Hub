@@ -10,13 +10,13 @@ interface AutoInstallRunnerButtonProps {
 type InstallPhase = 'idle' | 'installing' | 'completed' | 'error';
 
 /**
- * Native-only remediation action shared by host-run inference cards. The
- * result detail stays in desktop logs; onboarding only needs a compact,
- * backend-neutral success/error state.
+ * Native-only remediation action shared by host-run inference cards. A failure shows the reason
+ * the runner gave, so the person knows what to fix.
  */
 export const AutoInstallRunnerButton = ({ onRun }: AutoInstallRunnerButtonProps) => {
   const { t } = useTranslation();
   const [phase, setPhase] = useState<InstallPhase>('idle');
+  const [errorDetail, setErrorDetail] = useState('');
   const mounted = useRef(true);
 
   useEffect(() => {
@@ -30,8 +30,10 @@ export const AutoInstallRunnerButton = ({ onRun }: AutoInstallRunnerButtonProps)
     try {
       await onRun();
       if (mounted.current) setPhase('completed');
-    } catch {
-      if (mounted.current) setPhase('error');
+    } catch (error) {
+      if (!mounted.current) return;
+      setErrorDetail(error instanceof Error ? error.message : '');
+      setPhase('error');
     }
   };
 
@@ -60,9 +62,12 @@ export const AutoInstallRunnerButton = ({ onRun }: AutoInstallRunnerButtonProps)
         </span>
       )}
       {phase === 'error' && (
-        <span className="flex items-center gap-1 text-xs text-destructive" role="alert">
-          <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-          {t('ONBOARDING_INFERENCE_RUN_ERROR')}
+        <span className="flex items-start gap-1 text-xs text-destructive" role="alert">
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            {t('ONBOARDING_INFERENCE_RUN_ERROR')}
+            {errorDetail && <span className="break-words">: {errorDetail}</span>}
+          </span>
         </span>
       )}
     </div>

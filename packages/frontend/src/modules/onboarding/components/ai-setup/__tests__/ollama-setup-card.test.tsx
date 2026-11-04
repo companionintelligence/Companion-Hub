@@ -79,6 +79,20 @@ describe('OllamaSetupCard auto-install', () => {
     );
   });
 
+  it('links to the Ollama docs when Ollama is installed but not reachable', () => {
+    render(<OllamaSetupCard status={{ ...ollamaMissing, bridgeUnreachable: true }} checking={false} onRecheck={vi.fn()} />);
+
+    expect(screen.getByTestId('ollama-docs-btn')).toHaveTextContent('Ollama docs');
+    expect(screen.queryByRole('button', { name: /Get Ollama/i })).not.toBeInTheDocument();
+  });
+
+  it('offers the download instead of the docs when Ollama was not detected', () => {
+    render(<OllamaSetupCard status={ollamaMissing} checking={false} onRecheck={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: /Get Ollama/i })).toBeInTheDocument();
+    expect(screen.queryByTestId('ollama-docs-btn')).not.toBeInTheDocument();
+  });
+
   it('shows the auto-install button in the desktop app and invokes install_ollama_command', async () => {
     const invoke = vi.fn().mockResolvedValue({ state: 'completed', detail: null });
     installTauriMock(invoke);

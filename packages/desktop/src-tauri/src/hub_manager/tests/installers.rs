@@ -690,3 +690,54 @@ fn ollama_linux_installer_script_uses_official_installer_and_handles_deps() {
     assert!(script.contains(r#"Environment="OLLAMA_HOST=0.0.0.0:11434""#));
     assert!(script.contains("systemctl daemon-reload"));
 }
+
+/// The reason `write_elevated_script` closes its handle: this is the failure pkexec reported.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_refuses_to_execute_a_script_still_open_for_writing() {
+    use std::io::Write as IoWrite;
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut script = tempfile::NamedTempFile::new().expect("create");
+    script.write_all(b"#!/bin/sh\n").expect("write");
+    script
+        .as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o700))
+        .expect("chmod");
+
+    let error = std::process::Command::new(script.path())
+        .output()
+        .expect_err("a file open for writing does not execute");
+
+    const ETXTBSY: i32 = 26;
+    assert_eq!(error.raw_os_error(), Some(ETXTBSY));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_elevated_script_can_be_executed_while_its_path_is_held() {
+    let script = write_elevated_script(b"#!/bin/sh\nprintf 'ran:%s' \"$1\"\n").expect("write the script");
+
+    // The same exec pkexec does. With a writable handle still open this fails with "Text file busy".
+    let output = std::process::Command::new(&*script)
+        .arg("arg")
+        .output()
+        .expect("the script executes");
+
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "ran:arg");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_elevated_script_is_private_and_goes_away_with_its_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script = write_elevated_script(b"#!/bin/sh\n").expect("write the script");
+    let path = script.to_path_buf();
+    let mode = std::fs::metadata(&path).expect("metadata").permissions().mode();
+
+    assert_eq!(mode & 0o777, 0o700);
+    drop(script);
+    assert!(!path.exists());
+}

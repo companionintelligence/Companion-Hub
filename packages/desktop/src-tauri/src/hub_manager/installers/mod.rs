@@ -12,6 +12,27 @@ pub use engine_alt::*;
 pub use ollama::*;
 pub use rocm::*;
 
+/// Writes a script for pkexec to run as root and closes our handle on it.
+///
+/// Linux refuses to execute a file that any process holds open for writing, so running the path
+/// of a live `NamedTempFile` fails with "Text file busy" right after the user approves the prompt.
+/// The file is deleted when the returned `TempPath` is dropped, so keep it until pkexec returns.
+#[cfg(target_os = "linux")]
+pub(crate) fn write_elevated_script(contents: &[u8]) -> Result<tempfile::TempPath, String> {
+    use std::io::Write as IoWrite;
+
+    let mut script = tempfile::NamedTempFile::new()
+        .map_err(|e| format!("Failed to create temporary install script: {}", e))?;
+    script
+        .write_all(contents)
+        .map_err(|e| format!("Failed to write install script: {}", e))?;
+    script
+        .as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("Failed to set install script permissions: {}", e))?;
+    Ok(script.into_temp_path())
+}
+
 #[cfg(target_os = "linux")]
 fn resolve_current_username() -> Result<String, String> {
     let output = Command::new("id")

@@ -84,6 +84,10 @@ const compatibleSelection = (availableModelById: ModelIndex, backend: InferenceB
 const unpinnablePins = (availableModelById: ModelIndex, pinnedIds: Iterable<string>): string[] =>
   [...pinnedIds].filter((modelId) => isHubLoadableBackend(availableModelById.get(modelId)?.backend));
 
+// A pull that fails with one of these never reached the engine, so the fix is to start it, not to retry the download.
+const ENGINE_UNREACHABLE = /ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENOTFOUND|fetch failed/;
+const engineName = (backend: InferenceBackendType) => (backend === 'ollama' ? 'Ollama' : backend === 'lemonade' ? 'Lemonade' : backend);
+
 /** The engine whose embedders Save ranks for `backend`: itself on Ollama and oMLX, else the shared embedding engine. */
 const embeddingBackendFor = (backend: InferenceBackendType): InferenceBackendType =>
   backend === 'omlx' || backend === 'ollama' ? backend : EMBEDDING_INFERENCE_BACKEND;
@@ -698,19 +702,23 @@ export const AiSettingsContainer = () => {
       );
       const compatiblePinnedModelIds = unpinnablePins(availableModelById, pinnedModelIds);
       const modelOperationErrors: string[] = [];
+      const pullFailureMessage = (modelId: string, reason: string) =>
+        ENGINE_UNREACHABLE.test(reason)
+          ? t('AI_SETTINGS_ENGINE_NOT_RUNNING', { engine: engineName(availableModelById.get(modelId)?.backend ?? selectedBackend), model: modelId })
+          : `Failed to pull ${modelId}: ${reason}`;
       const requestedPulls = pullableSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
 
       if (requestedPulls.length > 0) {
         // Report a refusal now; waiting on it would only run out the ten-minute timeout.
         const refusedById = await ensurePullsStarted(requestedPulls, false);
         for (const [modelId, reason] of Object.entries(refusedById)) {
-          modelOperationErrors.push(`Failed to pull ${modelId}: ${reason}`);
+          modelOperationErrors.push(pullFailureMessage(modelId, reason));
         }
         const modelsToPull = requestedPulls.filter((modelId) => !refusedById[modelId]);
 
         const pullResult = await waitForModelPulls(modelsToPull, profile.installedCatalogIds ?? [], { timeoutMs: 600_000 });
         for (const [modelId, message] of Object.entries(pullResult.errorsById)) {
-          modelOperationErrors.push(`Failed to pull ${modelId}: ${message}`);
+          modelOperationErrors.push(pullFailureMessage(modelId, message));
         }
 
         for (const modelId of modelsToPull) {

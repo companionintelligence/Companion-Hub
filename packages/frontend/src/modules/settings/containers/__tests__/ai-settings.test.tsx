@@ -741,6 +741,25 @@ describe('AiSettingsContainer', () => {
     expect(pinInferenceModel).not.toHaveBeenCalled();
   });
 
+  it('says the engine is not running when a download cannot reach it', async () => {
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama' });
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled([], [llm('q27', 'ollama')]));
+    ensurePullsStarted.mockResolvedValue({ q27: 'connect ECONNREFUSED 172.17.0.1:11434' });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await user.click(await screen.findByTestId('recommended-model-checkbox-q27'));
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(toast.warning).toHaveBeenCalled());
+    expect(toast.warning).toHaveBeenCalledWith(
+      'AI settings saved with 1 model issue(s).',
+      expect.objectContaining({ description: "Ollama isn't running, so q27 couldn't download. Start Ollama, then save again." }),
+    );
+  });
+
   it('pre-selects models the backend reports installed even when the tracked registry is empty', async () => {
     // The tracked registry lives in memory in the Hub and is never rebuilt, so it is empty after a
     // restart and for any vLLM model (which the Hub never pulls). The backend still serves them.
