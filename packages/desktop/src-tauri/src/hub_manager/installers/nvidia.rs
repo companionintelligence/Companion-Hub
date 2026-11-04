@@ -72,11 +72,7 @@ pub(crate) fn run_nvidia_runtime_installer() -> Result<String, String> {
         &String::from_utf8_lossy(&output.stdout),
         &String::from_utf8_lossy(&output.stderr),
     );
-    let lower = combined.to_lowercase();
-    if lower.contains("dismissed")
-        || lower.contains("not authorized")
-        || lower.contains("authentication failed")
-    {
+    if pkexec_refused(output.status.code(), &combined) {
         Err("Authorization was cancelled or denied.".to_string())
     } else if combined.is_empty() {
         Err(format!(
