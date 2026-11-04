@@ -767,7 +767,11 @@ fn a_companion_os_live_session_reports_what_its_image_blocks() {
 
     assert_eq!(
         live_session_state_at(root.path()),
-        LiveSessionState { live: true, ollama_blocked: true, tailscale_blocked: true }
+        LiveSessionState {
+            live: true,
+            ollama_blocked: true,
+            tailscale_blocked: true
+        }
     );
 }
 
@@ -781,7 +785,11 @@ fn only_the_blocks_the_image_has_are_reported() {
 
     assert_eq!(
         live_session_state_at(root.path()),
-        LiveSessionState { live: true, ollama_blocked: false, tailscale_blocked: true }
+        LiveSessionState {
+            live: true,
+            ollama_blocked: false,
+            tailscale_blocked: true
+        }
     );
 }
 
@@ -791,6 +799,12 @@ fn an_installed_system_or_a_stock_live_session_is_not_a_companion_live_session()
     let installed = fake_root(&["usr/lib/ci-os/version", drop_in]);
     let stock_live = fake_root(&["cdrom/casper/vmlinuz"]);
 
-    assert_eq!(live_session_state_at(installed.path()), LiveSessionState::default());
-    assert_eq!(live_session_state_at(stock_live.path()), LiveSessionState::default());
+    assert_eq!(
+        live_session_state_at(installed.path()),
+        LiveSessionState::default()
+    );
+    assert_eq!(
+        live_session_state_at(stock_live.path()),
+        LiveSessionState::default()
+    );
 }

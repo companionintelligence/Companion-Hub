@@ -21,7 +21,8 @@ pub struct LiveSessionState {
 /// `root` is `/` outside tests. A stock Ubuntu live session has no Companion OS files, and an
 /// installed Companion OS has no `/cdrom/casper`, so neither counts.
 pub(crate) fn live_session_state_at(root: &Path) -> LiveSessionState {
-    let live = root.join("cdrom/casper/vmlinuz").exists() && root.join("usr/lib/ci-os/version").exists();
+    let live =
+        root.join("cdrom/casper/vmlinuz").exists() && root.join("usr/lib/ci-os/version").exists();
     let blocked = |unit: &str| {
         live && root
             .join("etc/systemd/system")
