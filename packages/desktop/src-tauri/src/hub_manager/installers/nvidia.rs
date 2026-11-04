@@ -73,7 +73,10 @@ pub(crate) fn run_nvidia_runtime_installer() -> Result<String, String> {
         &String::from_utf8_lossy(&output.stderr),
     );
     let lower = combined.to_lowercase();
-    if lower.contains("dismissed") || lower.contains("not authorized") || lower.contains("authentication failed") {
+    if lower.contains("dismissed")
+        || lower.contains("not authorized")
+        || lower.contains("authentication failed")
+    {
         Err("Authorization was cancelled or denied.".to_string())
     } else if combined.is_empty() {
         Err(format!(
@@ -81,7 +84,10 @@ pub(crate) fn run_nvidia_runtime_installer() -> Result<String, String> {
             output.status.code()
         ))
     } else {
-        Err(format!("NVIDIA container runtime installation failed: {}", combined))
+        Err(format!(
+            "NVIDIA container runtime installation failed: {}",
+            combined
+        ))
     }
 }
 
