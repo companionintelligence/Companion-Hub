@@ -716,7 +716,8 @@ fn linux_refuses_to_execute_a_script_still_open_for_writing() {
 #[cfg(target_os = "linux")]
 #[test]
 fn an_elevated_script_can_be_executed_while_its_path_is_held() {
-    let script = write_elevated_script(b"#!/bin/sh\nprintf 'ran:%s' \"$1\"\n").expect("write the script");
+    let script =
+        write_elevated_script(b"#!/bin/sh\nprintf 'ran:%s' \"$1\"\n").expect("write the script");
 
     // The same exec pkexec does. With a writable handle still open this fails with "Text file busy".
     let output = std::process::Command::new(&*script)
@@ -735,7 +736,10 @@ fn an_elevated_script_is_private_and_goes_away_with_its_path() {
 
     let script = write_elevated_script(b"#!/bin/sh\n").expect("write the script");
     let path = script.to_path_buf();
-    let mode = std::fs::metadata(&path).expect("metadata").permissions().mode();
+    let mode = std::fs::metadata(&path)
+        .expect("metadata")
+        .permissions()
+        .mode();
 
     assert_eq!(mode & 0o777, 0o700);
     drop(script);
