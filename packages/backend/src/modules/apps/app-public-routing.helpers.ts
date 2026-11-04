@@ -1,4 +1,4 @@
-import { requiresHubLoginOnPublicRoute } from '@ci-hub/common/schemas';
+import { requiresHubLoginOnPublicRoute, servedOpenPort } from '@ci-hub/common/schemas';
 import { publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm } from '@ci-hub/common/types';
 import type { AppFormHostPortFields } from './app-exposure.helpers';
 
@@ -38,15 +38,16 @@ export { requiresHubLoginOnPublicRoute };
  * about what gets sent to Companion Portal. `generateEnvFile` only sets `isExposed` (and
  * therefore only writes `APP_PUBLIC_URL` / `APP_PUBLIC_HOSTNAME`, and only
  * applies a custom-domain override) for `exposedLocal && !openPort`. An app on
- * an open host port still gets its tunnel router (`prepareAppComposeDir`), but
- * its env names the LAN address, so it never learns a custom hostname.
+ * an open host port, which a form with no `openPort` is, still gets its tunnel
+ * router (`prepareAppComposeDir`), but its env names the LAN address, so it never
+ * learns a custom hostname.
  *
  * Binding a custom domain to an app outside this set would store the hostname,
  * raise a "restart required" badge, and then change nothing on the restart,
  * while the UI advertised an address the container had never been told about.
  */
 export function canServeOnCustomDomain(snapshot: AppFormHostPortFields): boolean {
-  return Boolean(snapshot.exposedLocal) && !snapshot.openPort;
+  return Boolean(snapshot.exposedLocal) && !servedOpenPort(snapshot);
 }
 
 // Defined in @ci-hub/common so the frontend builds the same hostname the tunnel sync publishes.

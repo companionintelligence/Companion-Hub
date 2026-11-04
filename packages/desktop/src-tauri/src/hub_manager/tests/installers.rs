@@ -709,8 +709,31 @@ fn linux_refuses_to_execute_a_script_still_open_for_writing() {
         .output()
         .expect_err("a file open for writing does not execute");
 
-    const ETXTBSY: i32 = 26;
-    assert_eq!(error.raw_os_error(), Some(ETXTBSY));
+    assert_eq!(error.raw_os_error(), Some(libc::ETXTBSY));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn only_pkexec_exit_codes_count_as_a_refused_prompt() {
+    assert!(pkexec_refused(
+        Some(126),
+        "Error executing command as another user: Request dismissed"
+    ));
+    assert!(pkexec_refused(
+        Some(127),
+        "Error executing command as another user: Not authorized"
+    ));
+
+    // The installer ran and failed. Its log happens to hold the same words.
+    assert!(!pkexec_refused(
+        Some(1),
+        "curl: 401 Authorization Required from the mirror"
+    ));
+    // pkexec could not run the script, which isn't a refusal.
+    assert!(!pkexec_refused(
+        Some(127),
+        "Error executing /tmp/.tmp72mH3z: Text file busy"
+    ));
 }
 
 #[cfg(target_os = "linux")]

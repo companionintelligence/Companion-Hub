@@ -299,13 +299,8 @@ fn install_rocm_linux() -> Result<RocmInstallResult, String> {
         })
     } else {
         write_rocm_install_state(&data_dir, "failed", "ROCm installation failed");
-        let combined_lower = combined.to_lowercase();
 
-        if combined_lower.contains("dismissed")
-            || combined_lower.contains("not authorized")
-            || combined_lower.contains("authorization required")
-            || combined_lower.contains("authentication failed")
-        {
+        if pkexec_refused(output.status.code(), &combined) {
             Err("Authorization was cancelled or denied.".to_string())
         } else if combined.is_empty() {
             Err(format!(

@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OllamaSetupCard } from '../ollama-setup-card';
 
@@ -77,6 +78,21 @@ describe('OllamaSetupCard auto-install', () => {
     expect(screen.getByTestId('ollama-remediation-command')).toHaveTextContent(
       'sudo ufw allow from 172.18.0.0/16 to 172.17.0.1 port 11434 proto tcp',
     );
+  });
+
+  it('reports a failed install under StrictMode, whose extra effect cleanup is not an unmount', async () => {
+    const user = userEvent.setup();
+    installTauriMock(vi.fn().mockRejectedValue('Ollama installation failed: exit code 1'));
+
+    render(
+      <StrictMode>
+        <OllamaSetupCard status={ollamaMissing} checking={false} onRecheck={vi.fn()} />
+      </StrictMode>,
+    );
+
+    await user.click(screen.getByRole('button', { name: /Run this automatically/i }));
+
+    await waitFor(() => expect(screen.getByText('Ollama installation failed: exit code 1')).toBeInTheDocument());
   });
 
   it('links to the Ollama docs when Ollama is installed but not reachable', () => {
