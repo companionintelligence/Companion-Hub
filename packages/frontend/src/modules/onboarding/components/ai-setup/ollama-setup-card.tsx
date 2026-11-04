@@ -6,8 +6,10 @@ import type { OllamaStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import { AlertCircle, CheckCircle2, Download, Loader2, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { FailureLog } from './failure-log';
 
 const OLLAMA_DOWNLOAD_URL = 'https://ollama.com';
+const OLLAMA_DOCS_URL = 'https://docs.ollama.com';
 /** After a successful install, poll status until the service comes up. */
 const POST_INSTALL_RECHECK_ATTEMPTS = 10;
 const POST_INSTALL_RECHECK_DELAY_MS = 2000;
@@ -45,12 +47,14 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
   const statusRef = useRef(status);
   statusRef.current = status;
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // StrictMode's dev double-invoke runs the cleanup once before the real mount, which would
+    // otherwise latch this true and leave the install spinner up for good.
+    unmounted.current = false;
+    return () => {
       unmounted.current = true;
-    },
-    [],
-  );
+    };
+  }, []);
 
   const canAutoInstall = getTauriInvoke() !== null;
 
@@ -165,7 +169,7 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
             {installPhase === 'error' && (
               <div className="mb-3 flex items-start gap-2 text-xs text-destructive">
                 <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                <span>{installError || t('ONBOARDING_OLLAMA_INSTALL_ERROR')}</span>
+                <FailureLog text={installError || t('ONBOARDING_OLLAMA_INSTALL_ERROR')} testId="ollama-install-error" />
               </div>
             )}
             {installPhase === 'installing' ? (
@@ -190,6 +194,11 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
                   >
                     <Download className="h-3.5 w-3.5 mr-1.5" />
                     {t('ONBOARDING_OLLAMA_GET')}
+                  </Button>
+                )}
+                {bridgeUnreachable && (
+                  <Button size="sm" variant="ghost" onClick={() => openExternal(OLLAMA_DOCS_URL)} data-testid="ollama-docs-btn">
+                    {t('ONBOARDING_OLLAMA_DOCS')}
                   </Button>
                 )}
                 <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking} data-testid="ollama-recheck-btn">

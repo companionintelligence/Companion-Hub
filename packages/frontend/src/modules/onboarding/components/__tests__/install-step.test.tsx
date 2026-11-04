@@ -64,6 +64,15 @@ const makeApp = (slug: string, name: string, urn?: string): OnboardingApp => ({
 
 describe('InstallStep', () => {
   const onComplete = vi.fn();
+  const runnerSetupConfig = {
+    agentFrameworks: [],
+    remoteAccess: [],
+    selectedModels: [],
+    installedCatalogIds: [],
+    backend: 'vllm' as const,
+    cloudProviders: [],
+    skipped: false,
+  };
 
   beforeEach(() => {
     sessionStorage.clear();
@@ -248,6 +257,109 @@ describe('InstallStep', () => {
         backends: ['omlx'],
       });
     });
+  });
+
+  it('shows why a runner could not be set up, beside the count', async () => {
+    const invoke = vi.fn(async (command: string) =>
+      command === 'install_and_start_inference_runners_command'
+        ? [
+            { runner: 'ollama', state: 'failed', detail: 'Ollama installation failed: Error executing /tmp/.tmpX: Text file busy' },
+            { runner: 'vllm', state: 'skipped', detail: 'Automatic Linux vLLM setup requires a working NVIDIA GPU.' },
+            { runner: 'omlx', state: 'already_running', detail: 'not shown' },
+          ]
+        : null,
+    );
+    (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
+    getInstalledApps.mockResolvedValue(sdkOk({ installed: [] }));
+
+    render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          agentFrameworks: [],
+          remoteAccess: [],
+          selectedModels: [],
+          installedCatalogIds: [],
+          backend: 'vllm',
+          cloudProviders: [],
+          skipped: false,
+        }}
+      />,
+    );
+
+    const reasons = await screen.findAllByTestId('inference-runner-reason');
+    expect(reasons.map((node) => node.textContent)).toEqual([
+      'Ollama installation failed: Error executing /tmp/.tmpX: Text file busy',
+      'Automatic Linux vLLM setup requires a working NVIDIA GPU.',
+    ]);
+    expect(screen.getByTestId('inference-runners-phase')).toHaveTextContent('2 runner(s) unavailable on this machine');
+  });
+
+  it('shows the count once when a runner gives no reason', async () => {
+    const invoke = vi.fn(async (command: string) =>
+      command === 'install_and_start_inference_runners_command'
+        ? [
+            { runner: 'ollama', state: 'failed', detail: 'Ollama installation failed: exit code 1' },
+            { runner: 'vllm', state: 'failed' },
+          ]
+        : null,
+    );
+    (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
+    getInstalledApps.mockResolvedValue(sdkOk({ installed: [] }));
+
+    render(<InstallStep apps={[]} onComplete={onComplete} aiSetupConfig={runnerSetupConfig} />);
+
+    expect(await screen.findAllByTestId('inference-runner-reason')).toHaveLength(1);
+    expect(screen.getByTestId('inference-runners-phase')).toHaveTextContent('2 runner(s) unavailable on this machine');
+    expect(screen.queryByTestId('ai-phase-warning')).not.toBeInTheDocument();
+  });
+
+  it('keeps a long runner reason from pushing the rest of the step away', async () => {
+    const invoke = vi.fn(async (command: string) =>
+      command === 'install_and_start_inference_runners_command'
+        ? [{ runner: 'ollama', state: 'failed', detail: `Ollama installation failed: stdout: ${'line\n'.repeat(5000)}` }]
+        : null,
+    );
+    (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
+    getInstalledApps.mockResolvedValue(sdkOk({ installed: [] }));
+
+    render(<InstallStep apps={[]} onComplete={onComplete} aiSetupConfig={runnerSetupConfig} />);
+
+    expect((await screen.findByTestId('inference-runner-reason')).className).toMatch(/max-h-\S+ overflow-y-auto/);
+    expect(screen.getByTestId('inference-runner-reason').className).toContain('whitespace-pre-wrap');
+  });
+
+  it('opens a long runner reason at its end, where the cause is', async () => {
+    const scrollHeight = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(4000);
+    try {
+      const invoke = vi.fn(async (command: string) =>
+        command === 'install_and_start_inference_runners_command'
+          ? [{ runner: 'ollama', state: 'failed', detail: `Ollama installation failed: ${'line\n'.repeat(5000)}E: the cause` }]
+          : null,
+      );
+      (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
+      getInstalledApps.mockResolvedValue(sdkOk({ installed: [] }));
+
+      render(<InstallStep apps={[]} onComplete={onComplete} aiSetupConfig={runnerSetupConfig} />);
+
+      expect((await screen.findByTestId('inference-runner-reason')).scrollTop).toBe(4000);
+    } finally {
+      scrollHeight.mockRestore();
+    }
+  });
+
+  it('says why when the desktop app rejects the runner request outright', async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'install_and_start_inference_runners_command') throw 'Inference runner setup task failed: task was cancelled';
+      return null;
+    });
+    (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
+    getInstalledApps.mockResolvedValue(sdkOk({ installed: [] }));
+
+    render(<InstallStep apps={[]} onComplete={onComplete} aiSetupConfig={runnerSetupConfig} />);
+
+    expect(await screen.findByTestId('ai-phase-warning')).toHaveTextContent('Inference runner setup task failed: task was cancelled');
   });
 
   it('persists the preferred model alongside the backend during AI setup', async () => {

@@ -7,7 +7,7 @@ import {
 } from '@/lib/inference/auto-inference-runners';
 import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
 import { sdkResult } from '@/lib/sdk-unwrap';
-import { fetchTrackedModels, parsePullProgress, preferenceModelId } from '@/lib/inference/tracked-models';
+import { describePullStartError, fetchTrackedModels, parsePullProgress, preferenceModelId } from '@/lib/inference/tracked-models';
 import { claimOnboardingInstallUrn, onboardingInstallUrnClaimed, releaseOnboardingInstallUrn } from '../helpers/install-session';
 import type { TrackedModel } from '@ci-hub/common/types';
 import { Button } from '@/components/ui/Button';
@@ -16,6 +16,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { getInstalledAppsQueryKey, appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { addOptimisticInstalledApp, removeOptimisticInstalledApp } from '@/modules/app/helpers/optimistic-installed-apps';
 import { Download, Loader2 } from 'lucide-react';
+import { FailureLog } from './ai-setup/failure-log';
 import { OnboardingAppIcon } from './onboarding-app-icon';
 import { WizardCard } from './wizard-ui';
 import type { OnboardingApp, AppInstallStatus, InstallSummary, AiSetupConfig } from '../helpers/types';
@@ -197,17 +198,10 @@ export const InstallStep = ({
               automaticRunnerUrls = new Map(
                 runnerResults.filter((result) => result.endpointUrl).map((result) => [result.runner, result.endpointUrl as string]),
               );
-              const unavailableCount = runnerResults.filter((result) => result.state === 'failed' || result.state === 'skipped').length;
-              if (unavailableCount > 0) {
-                setAiPhase((prev) => ({
-                  ...prev,
-                  error: t('ONBOARDING_INFERENCE_RUNNERS_UNAVAILABLE', { count: unavailableCount }),
-                }));
-              }
-            } catch {
+            } catch (error) {
               setAiPhase((prev) => ({
                 ...prev,
-                error: t('ONBOARDING_INFERENCE_RUNNERS_FAILED'),
+                error: `${t('ONBOARDING_INFERENCE_RUNNERS_FAILED')} ${describePullStartError(error)}`,
               }));
             }
           }
@@ -633,7 +627,8 @@ export const InstallStep = ({
           : 'failed'
         : 'waiting';
   const aiInProgress = hasAiWork && aiPhase.status !== 'done';
-  const unavailableRunnerCount = aiPhase.runnerResults.filter((result) => result.state === 'failed' || result.state === 'skipped').length;
+  const unavailableRunners = aiPhase.runnerResults.filter((result) => result.state === 'failed' || result.state === 'skipped');
+  const unavailableRunnerCount = unavailableRunners.length;
 
   const summaryParts: string[] = [];
   if (runningCount > 0) summaryParts.push(t('ONBOARDING_COMPLETE_RUNNING_COUNT', { count: runningCount }));
@@ -723,6 +718,17 @@ export const InstallStep = ({
               )}
             </div>
           )}
+          {canAutoInstallRunners &&
+            unavailableRunners
+              .filter((result) => result.detail)
+              .map((result) => (
+                <FailureLog
+                  key={result.runner}
+                  text={result.detail as string}
+                  className="px-3 pb-1 pl-9 text-xs text-warning"
+                  testId="inference-runner-reason"
+                />
+              ))}
           {aiSetupConfig?.cloudProviders && aiSetupConfig.cloudProviders.length > 0 && (
             <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
               {aiMark(aiPhase.cloudConfigured ? 'done' : aiPhase.status === 'configuring-cloud' ? 'working' : 'waiting')}

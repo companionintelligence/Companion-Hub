@@ -428,7 +428,7 @@ export const AiSetupStep = ({
     const results = await installAndStartInferenceRunners([runner]);
     const result = results.find((candidate) => candidate.runner === runner);
     if (!result || result.state === 'failed' || result.state === 'skipped') {
-      throw new Error('The local runner could not be installed on this machine.');
+      throw new Error(result?.detail || 'The local runner could not be installed on this machine.');
     }
 
     const endpoint = result.endpointUrl;
