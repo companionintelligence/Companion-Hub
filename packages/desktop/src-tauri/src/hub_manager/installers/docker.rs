@@ -563,13 +563,8 @@ fi
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let combined = format_command_output(&stdout, &stderr);
-        let combined_lower = combined.to_lowercase();
 
-        if combined_lower.contains("dismissed")
-            || combined_lower.contains("not authorized")
-            || combined_lower.contains("authorization required")
-            || combined_lower.contains("authentication failed")
-        {
+        if pkexec_refused(output.status.code(), &combined) {
             Err("Authorization was cancelled or denied.".to_string())
         } else if combined.is_empty() {
             Err(format!(

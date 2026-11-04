@@ -33,6 +33,27 @@ pub(crate) fn write_elevated_script(contents: &[u8]) -> Result<tempfile::TempPat
     Ok(script.into_temp_path())
 }
 
+/// Whether pkexec itself turned the request down rather than the installer failing.
+///
+/// pkexec exits 126 when the prompt is dismissed and 127 when authorization fails. Any other code
+/// is the installer's own, and its log can hold these words for unrelated reasons, such as a
+/// mirror answering "401 Authorization Required".
+#[cfg(target_os = "linux")]
+pub(crate) fn pkexec_refused(exit_code: Option<i32>, combined_output: &str) -> bool {
+    if !matches!(exit_code, Some(126 | 127)) {
+        return false;
+    }
+    let output = combined_output.to_lowercase();
+    [
+        "dismissed",
+        "not authorized",
+        "authorization required",
+        "authentication failed",
+    ]
+    .iter()
+    .any(|refusal| output.contains(refusal))
+}
+
 #[cfg(target_os = "linux")]
 fn resolve_current_username() -> Result<String, String> {
     let output = Command::new("id")

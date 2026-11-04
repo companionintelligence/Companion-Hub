@@ -7,7 +7,7 @@ import {
 } from '@/lib/inference/auto-inference-runners';
 import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
 import { sdkResult } from '@/lib/sdk-unwrap';
-import { fetchTrackedModels, parsePullProgress, preferenceModelId } from '@/lib/inference/tracked-models';
+import { describePullStartError, fetchTrackedModels, parsePullProgress, preferenceModelId } from '@/lib/inference/tracked-models';
 import { claimOnboardingInstallUrn, onboardingInstallUrnClaimed, releaseOnboardingInstallUrn } from '../helpers/install-session';
 import type { TrackedModel } from '@ci-hub/common/types';
 import { Button } from '@/components/ui/Button';
@@ -197,19 +197,10 @@ export const InstallStep = ({
               automaticRunnerUrls = new Map(
                 runnerResults.filter((result) => result.endpointUrl).map((result) => [result.runner, result.endpointUrl as string]),
               );
-              const unavailable = runnerResults.filter((result) => result.state === 'failed' || result.state === 'skipped');
-              const unavailableCount = unavailable.length;
-              // The row above already shows the count and each reason, so this line is only for a runner that gave none.
-              if (unavailable.some((result) => !result.detail)) {
-                setAiPhase((prev) => ({
-                  ...prev,
-                  error: t('ONBOARDING_INFERENCE_RUNNERS_UNAVAILABLE', { count: unavailableCount }),
-                }));
-              }
-            } catch {
+            } catch (error) {
               setAiPhase((prev) => ({
                 ...prev,
-                error: t('ONBOARDING_INFERENCE_RUNNERS_FAILED'),
+                error: `${t('ONBOARDING_INFERENCE_RUNNERS_FAILED')} ${describePullStartError(error)}`,
               }));
             }
           }
@@ -730,7 +721,12 @@ export const InstallStep = ({
             unavailableRunners
               .filter((result) => result.detail)
               .map((result) => (
-                <div key={result.runner} className="px-3 pb-1 pl-9 text-xs break-words text-warning" data-testid="inference-runner-reason">
+                // A failed installer's reason can be its whole log, so it scrolls here rather than pushing Continue away.
+                <div
+                  key={result.runner}
+                  className="max-h-24 overflow-y-auto px-3 pb-1 pl-9 text-xs whitespace-pre-wrap text-warning [overflow-wrap:anywhere]"
+                  data-testid="inference-runner-reason"
+                >
                   {result.detail}
                 </div>
               ))}

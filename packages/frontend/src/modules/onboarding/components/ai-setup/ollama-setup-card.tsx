@@ -46,12 +46,14 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
   const statusRef = useRef(status);
   statusRef.current = status;
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // StrictMode's dev double-invoke runs the cleanup once before the real mount, which would
+    // otherwise latch this true and leave the install spinner up for good.
+    unmounted.current = false;
+    return () => {
       unmounted.current = true;
-    },
-    [],
-  );
+    };
+  }, []);
 
   const canAutoInstall = getTauriInvoke() !== null;
 
