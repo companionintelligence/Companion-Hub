@@ -765,12 +765,10 @@ fn truncate_command_output(output: &str) -> String {
         return trimmed.to_string();
     }
 
-    let truncated: String = trimmed.chars().take(MAX_COMMAND_OUTPUT_CHARS).collect();
-    format!(
-        "{}… [truncated {} chars]",
-        truncated,
-        char_count - MAX_COMMAND_OUTPUT_CHARS
-    )
+    // A failure's cause is at the end of its log, and these messages get shown to people.
+    let dropped = char_count - MAX_COMMAND_OUTPUT_CHARS;
+    let kept: String = trimmed.chars().skip(dropped).collect();
+    format!("[truncated {} chars] …{}", dropped, kept)
 }
 
 pub(crate) fn format_command_output(stdout: &str, stderr: &str) -> String {

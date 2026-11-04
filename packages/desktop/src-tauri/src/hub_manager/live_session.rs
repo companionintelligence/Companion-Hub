@@ -2,11 +2,13 @@
 //!
 //! The image bakes Ollama and Tailscale in and blocks both services in a live session with a
 //! `10-not-live.conf` drop-in, so installing them again can't help: `systemctl enable --now` exits 0
-//! and nothing starts. Everything else the session keeps is in RAM and gone after a restart.
+//! and nothing starts. What the session keeps is in RAM and gone after a restart, unless the boot
+//! uses casper persistence, as a Companion Stick does.
 
 use serde::Serialize;
 use std::path::Path;
 
+#[cfg(target_os = "linux")]
 pub(crate) const LIVE_SESSION_OLLAMA_REFUSAL: &str =
     "Ollama can't run in a live session. Install Companion OS to run AI models on this machine.";
 
@@ -19,10 +21,14 @@ pub struct LiveSessionState {
 }
 
 /// `root` is `/` outside tests. A stock Ubuntu live session has no Companion OS files, and an
-/// installed Companion OS has no `/cdrom/casper`, so neither counts.
+/// installed Companion OS has neither sign of a live boot, so neither counts.
+///
+/// The signs are the two conditions in the image's drop-ins: either one keeps the services off.
 pub(crate) fn live_session_state_at(root: &Path) -> LiveSessionState {
-    let live =
-        root.join("cdrom/casper/vmlinuz").exists() && root.join("usr/lib/ci-os/version").exists();
+    let booted_live = root.join("cdrom/casper/vmlinuz").exists()
+        || std::fs::read_to_string(root.join("proc/cmdline"))
+            .is_ok_and(|cmdline| cmdline.split_whitespace().any(|arg| arg == "boot=casper"));
+    let live = booted_live && root.join("usr/lib/ci-os/version").exists();
     let blocked = |unit: &str| {
         live && root
             .join("etc/systemd/system")

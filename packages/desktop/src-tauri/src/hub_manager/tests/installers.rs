@@ -734,6 +734,11 @@ fn only_pkexec_exit_codes_count_as_a_refused_prompt() {
         Some(127),
         "Error executing /tmp/.tmp72mH3z: Text file busy"
     ));
+    // The script ran and bash exited 127 on a missing command, after the same words in its log.
+    assert!(!pkexec_refused(
+        Some(127),
+        "curl: 401 Authorization Required from the mirror\nsetup.sh: line 9: zstd: command not found"
+    ));
 }
 
 #[cfg(target_os = "linux")]
@@ -743,9 +748,19 @@ fn an_elevated_script_can_be_executed_while_its_path_is_held() {
         write_elevated_script(b"#!/bin/sh\nprintf 'ran:%s' \"$1\"\n").expect("write the script");
 
     // The same exec pkexec does. With a writable handle still open this fails with "Text file busy".
-    let output = std::process::Command::new(&*script)
-        .arg("arg")
-        .output()
+    // Another test forking while the file was being written holds a copy of the handle until its
+    // child execs, so that can last an instant here. Only our own open handle fails every attempt.
+    let output = (0..50)
+        .find_map(
+            |_| match std::process::Command::new(&*script).arg("arg").output() {
+                Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    None
+                }
+                outcome => Some(outcome),
+            },
+        )
+        .expect("the script stops being busy")
         .expect("the script executes");
 
     assert!(output.status.success());
@@ -795,6 +810,41 @@ fn a_companion_os_live_session_reports_what_its_image_blocks() {
             ollama_blocked: true,
             tailscale_blocked: true
         }
+    );
+}
+
+#[test]
+fn a_boot_the_kernel_command_line_calls_live_counts_without_the_medium_at_cdrom() {
+    let root = fake_root(&[
+        "usr/lib/ci-os/version",
+        "etc/systemd/system/ollama.service.d/10-not-live.conf",
+    ]);
+    std::fs::create_dir_all(root.path().join("proc")).expect("mkdir");
+    std::fs::write(
+        root.path().join("proc/cmdline"),
+        "BOOT_IMAGE=/casper/vmlinuz boot=casper quiet splash\n",
+    )
+    .expect("write");
+
+    assert_eq!(
+        live_session_state_at(root.path()),
+        LiveSessionState {
+            live: true,
+            ollama_blocked: true,
+            tailscale_blocked: false
+        }
+    );
+}
+
+#[test]
+fn a_similar_kernel_argument_is_not_a_live_boot() {
+    let root = fake_root(&["usr/lib/ci-os/version"]);
+    std::fs::create_dir_all(root.path().join("proc")).expect("mkdir");
+    std::fs::write(root.path().join("proc/cmdline"), "reboot=casper quiet\n").expect("write");
+
+    assert_eq!(
+        live_session_state_at(root.path()),
+        LiveSessionState::default()
     );
 }
 

@@ -127,6 +127,21 @@ describe('NetworkSettingsContainer', () => {
     expect(screen.getByText('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')).toBeTruthy();
   });
 
+  it('says a live session cannot run Tailscale, in place of the compose advice', async () => {
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+    tauriWindow.__TAURI_INTERNALS__ = {
+      invoke: vi.fn().mockResolvedValue({ live: true, ollamaBlocked: true, tailscaleBlocked: true }),
+    };
+    try {
+      renderContainer();
+
+      expect(await screen.findByText('SETTINGS_NETWORK_TAILSCALE_LIVE_SESSION')).toBeTruthy();
+      expect(screen.queryByText('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')).toBeNull();
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+    }
+  });
+
   it('shows an error and a retry when the VPN status cannot be loaded, not Inactive', async () => {
     fixtures.tailscaleFails = true;
     renderContainer();

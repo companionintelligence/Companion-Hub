@@ -7,6 +7,7 @@ import type { OllamaStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import { AlertCircle, CheckCircle2, Download, Info, Loader2, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { FailureLog } from './failure-log';
 
 const OLLAMA_DOWNLOAD_URL = 'https://ollama.com';
 const OLLAMA_DOCS_URL = 'https://docs.ollama.com';
@@ -136,7 +137,12 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
             <Info className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
             <div className="flex-1 text-warning" data-testid="ollama-live-session">
               <div className="mb-1 text-sm font-medium">{t('ONBOARDING_OLLAMA_LIVE_SESSION_TITLE')}</div>
-              <div className="text-xs">{t('ONBOARDING_OLLAMA_LIVE_SESSION_DESC')}</div>
+              <div className="mb-3 text-xs">{t('ONBOARDING_OLLAMA_LIVE_SESSION_DESC')}</div>
+              {/* The drop-in only stops the service: someone can still run `ollama serve` themselves. */}
+              <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking} data-testid="ollama-recheck-btn">
+                <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+                {t('ONBOARDING_OLLAMA_RECHECK')}
+              </Button>
             </div>
           </div>
         </CardContent>
@@ -186,7 +192,7 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
             {installPhase === 'error' && (
               <div className="mb-3 flex items-start gap-2 text-xs text-destructive">
                 <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                <span>{installError || t('ONBOARDING_OLLAMA_INSTALL_ERROR')}</span>
+                <FailureLog text={installError || t('ONBOARDING_OLLAMA_INSTALL_ERROR')} testId="ollama-install-error" />
               </div>
             )}
             {installPhase === 'installing' ? (

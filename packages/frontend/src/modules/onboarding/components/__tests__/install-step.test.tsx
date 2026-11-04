@@ -330,6 +330,25 @@ describe('InstallStep', () => {
     expect(screen.getByTestId('inference-runner-reason').className).toContain('whitespace-pre-wrap');
   });
 
+  it('opens a long runner reason at its end, where the cause is', async () => {
+    const scrollHeight = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(4000);
+    try {
+      const invoke = vi.fn(async (command: string) =>
+        command === 'install_and_start_inference_runners_command'
+          ? [{ runner: 'ollama', state: 'failed', detail: `Ollama installation failed: ${'line\n'.repeat(5000)}E: the cause` }]
+          : null,
+      );
+      (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
+      getInstalledApps.mockResolvedValue(sdkOk({ installed: [] }));
+
+      render(<InstallStep apps={[]} onComplete={onComplete} aiSetupConfig={runnerSetupConfig} />);
+
+      expect((await screen.findByTestId('inference-runner-reason')).scrollTop).toBe(4000);
+    } finally {
+      scrollHeight.mockRestore();
+    }
+  });
+
   it('says why when the desktop app rejects the runner request outright', async () => {
     const invoke = vi.fn(async (command: string) => {
       if (command === 'install_and_start_inference_runners_command') throw 'Inference runner setup task failed: task was cancelled';

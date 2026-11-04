@@ -86,9 +86,10 @@ const unpinnablePins = (availableModelById: ModelIndex, pinnedIds: Iterable<stri
   [...pinnedIds].filter((modelId) => isHubLoadableBackend(availableModelById.get(modelId)?.backend));
 
 // The Hub lost its connection to the engine. That doesn't say the engine is down: a running Ollama bound to
-// loopback refuses the Docker bridge and a firewall drops it (see ollama-host-bridge.ts on the Hub).
+// loopback refuses the Docker bridge and a firewall drops it. Keep this in step with the patterns in
+// ollama-host-bridge.ts on the Hub; `aborted` is Node's word for a stream cut off mid-download.
 const ENGINE_UNREACHABLE =
-  /ECONNREFUSED|ECONNRESET|ECONNABORTED|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT|socket hang up|fetch failed|timeout of \d+ms exceeded/;
+  /ECONNREFUSED|ECONNRESET|ECONNABORTED|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT|ConnectTimeoutError|network unreachable|socket hang up|fetch failed|\baborted\b|timeout of \d+ms exceeded/;
 
 /** The engine whose embedders Save ranks for `backend`: itself on Ollama and oMLX, else the shared embedding engine. */
 const embeddingBackendFor = (backend: InferenceBackendType): InferenceBackendType =>

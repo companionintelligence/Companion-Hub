@@ -213,8 +213,11 @@ async fn install_ollama_command() -> Result<hub_manager::OllamaInstallResult, St
 
 /// What a Companion OS live session can't run, so setup can say so instead of offering it.
 #[tauri::command]
-fn live_session_state_command() -> hub_manager::LiveSessionState {
-    hub_manager::live_session_state()
+async fn live_session_state_command() -> Result<hub_manager::LiveSessionState, String> {
+    // Looks on the boot medium, which can be a slow USB stick, so it stays off the main thread.
+    tokio::task::spawn_blocking(hub_manager::live_session_state)
+        .await
+        .map_err(|e| format!("Live session check failed: {e}"))
 }
 
 /// Install and start the host/container inference runners selected by onboarding.

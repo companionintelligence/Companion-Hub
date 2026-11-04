@@ -750,6 +750,8 @@ describe('AiSettingsContainer', () => {
     'getaddrinfo EAI_AGAIN host.docker.internal',
     'timeout of 5000ms exceeded',
     'socket hang up',
+    'aborted',
+    'ConnectTimeoutError: Connect Timeout Error',
   ])('says the Hub cannot reach the engine when a download fails with %s', async (reason) => {
     fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama' });
     fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled([], [llm('q27', 'ollama')]));

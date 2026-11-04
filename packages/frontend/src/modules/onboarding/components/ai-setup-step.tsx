@@ -36,6 +36,7 @@ import { CloudProviderCard } from './ai-setup/cloud-provider-card';
 import { SystemOverview } from './ai-setup/system-overview';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
 import { backendDisplayName } from '@/lib/inference/backend-names';
+import { useLiveSession } from '@/lib/inference/live-session';
 import { LiveSessionNotice } from './ai-setup/live-session-notice';
 import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
 import { VllmSetupCard } from './ai-setup/vllm-setup-card';
@@ -119,6 +120,7 @@ export const AiSetupStep = ({
   onCompanionAppsChange,
 }: AiSetupStepProps) => {
   const { t } = useTranslation();
+  const liveSession = useLiveSession();
   const [loading, setLoading] = useState(true);
   const [rescanning, setRescanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -748,8 +750,10 @@ export const AiSetupStep = ({
   const memoryStep = isInsufficient ? 3 : 5;
   const appsStep = isInsufficient ? 4 : 6;
   const cloudStep = isInsufficient ? 5 : 7;
-  // Host-run backends leave embeddings on Ollama, so the co-install warning covers all of them.
-  const ollamaEmbeddingsWarning = isHostServedBackend(selectedBackend) && ollamaStatus !== null && !ollamaStatus.ready && !checkingOllama;
+  // Host-run backends leave embeddings on Ollama, so the co-install warning covers all of them. In a
+  // live session it would say "not reachable yet" beside the Ollama card saying it can't run at all.
+  const ollamaEmbeddingsWarning =
+    isHostServedBackend(selectedBackend) && ollamaStatus !== null && !ollamaStatus.ready && !checkingOllama && !liveSession?.ollamaBlocked;
   const showTailscaleSetup = remoteAccess.includes('tailscale');
 
   return (
