@@ -6,6 +6,20 @@ import { TranslatableError } from '@/types/error.types';
 import { AutoInstallRunnerButton } from '../auto-install-runner-button';
 
 describe('AutoInstallRunnerButton', () => {
+  it('opens a long reason on its last lines, where a failed command says why', async () => {
+    const user = userEvent.setup();
+    const scrollHeight = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(900);
+    const onRun = vi.fn().mockRejectedValue(new Error('Hit:1 mirror\nE: Unable to locate package'));
+
+    render(<AutoInstallRunnerButton onRun={onRun} />);
+
+    await user.click(screen.getByRole('button', { name: 'Run this automatically' }));
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Unable to locate package'));
+    expect(screen.getByRole('alert').querySelector('.overflow-y-auto')?.scrollTop).toBe(900);
+    scrollHeight.mockRestore();
+  });
+
   it('uses the requested automatic action label and reports completion', async () => {
     const user = userEvent.setup();
     const onRun = vi.fn().mockResolvedValue(undefined);

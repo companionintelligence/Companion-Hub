@@ -16,6 +16,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { getInstalledAppsQueryKey, appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { addOptimisticInstalledApp, removeOptimisticInstalledApp } from '@/modules/app/helpers/optimistic-installed-apps';
 import { Download, Loader2 } from 'lucide-react';
+import { FailureLog } from './ai-setup/failure-log';
 import { OnboardingAppIcon } from './onboarding-app-icon';
 import { WizardCard } from './wizard-ui';
 import type { OnboardingApp, AppInstallStatus, InstallSummary, AiSetupConfig } from '../helpers/types';
@@ -721,14 +722,12 @@ export const InstallStep = ({
             unavailableRunners
               .filter((result) => result.detail)
               .map((result) => (
-                // A failed installer's reason can be its whole log, so it scrolls here rather than pushing Continue away.
-                <div
+                <FailureLog
                   key={result.runner}
-                  className="max-h-24 overflow-y-auto px-3 pb-1 pl-9 text-xs whitespace-pre-wrap text-warning [overflow-wrap:anywhere]"
-                  data-testid="inference-runner-reason"
-                >
-                  {result.detail}
-                </div>
+                  text={result.detail as string}
+                  className="px-3 pb-1 pl-9 text-xs text-warning"
+                  testId="inference-runner-reason"
+                />
               ))}
           {aiSetupConfig?.cloudProviders && aiSetupConfig.cloudProviders.length > 0 && (
             <div className="flex items-center gap-2 px-3 py-1.5 text-sm">

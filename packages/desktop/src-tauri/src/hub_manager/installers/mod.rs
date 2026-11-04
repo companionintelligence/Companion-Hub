@@ -39,13 +39,17 @@ pub(crate) fn write_elevated_script(contents: &[u8]) -> Result<tempfile::TempPat
 ///
 /// pkexec exits 126 when the prompt is dismissed and 127 when authorization fails. Any other code
 /// is the installer's own, and its log can hold these words for unrelated reasons, such as a
-/// mirror answering "401 Authorization Required".
+/// mirror answering "401 Authorization Required". A script can exit 126 or 127 itself (bash does
+/// for a command it can't run), so the output must also hold the line pkexec prints when it refuses.
 #[cfg(target_os = "linux")]
 pub(crate) fn pkexec_refused(exit_code: Option<i32>, combined_output: &str) -> bool {
     if !matches!(exit_code, Some(126 | 127)) {
         return false;
     }
     let output = combined_output.to_lowercase();
+    if !output.contains("error executing command as another user") {
+        return false;
+    }
     [
         "dismissed",
         "not authorized",
