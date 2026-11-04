@@ -6,6 +6,19 @@ import { TranslatableError } from '@/types/error.types';
 import { AutoInstallRunnerButton } from '../auto-install-runner-button';
 
 describe('AutoInstallRunnerButton', () => {
+  it('says what the caller is installing instead of the runner wording', async () => {
+    const user = userEvent.setup();
+    const labels = { installing: 'Installing the runtime', complete: 'Installed', failed: 'Setup failed' };
+    const { rerender } = render(<AutoInstallRunnerButton onRun={vi.fn().mockResolvedValue(undefined)} labels={labels} />);
+
+    await user.click(screen.getByRole('button', { name: 'Run this automatically' }));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Installed'));
+
+    rerender(<AutoInstallRunnerButton onRun={vi.fn().mockRejectedValue('denied')} labels={labels} />);
+    await user.click(screen.getByRole('button', { name: 'Run this automatically' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Setup failed: denied'));
+  });
+
   it('opens a long reason on its last lines, where a failed command says why', async () => {
     const user = userEvent.setup();
     const scrollHeight = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(900);

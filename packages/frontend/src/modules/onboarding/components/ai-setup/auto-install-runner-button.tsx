@@ -7,6 +7,8 @@ import { FailureLog } from './failure-log';
 
 interface AutoInstallRunnerButtonProps {
   onRun: () => Promise<void>;
+  /** What the outcome says, for an action that isn't starting a local runner. */
+  labels?: { installing: string; complete: string; failed: string };
 }
 
 type InstallPhase = 'idle' | 'installing' | 'completed' | 'error';
@@ -15,7 +17,7 @@ type InstallPhase = 'idle' | 'installing' | 'completed' | 'error';
  * Native-only remediation action shared by host-run inference cards. A failure shows the reason
  * the runner gave, so the person knows what to fix.
  */
-export const AutoInstallRunnerButton = ({ onRun }: AutoInstallRunnerButtonProps) => {
+export const AutoInstallRunnerButton = ({ onRun, labels }: AutoInstallRunnerButtonProps) => {
   const { t } = useTranslation();
   const [phase, setPhase] = useState<InstallPhase>('idle');
   const [errorDetail, setErrorDetail] = useState('');
@@ -48,7 +50,7 @@ export const AutoInstallRunnerButton = ({ onRun }: AutoInstallRunnerButtonProps)
       {phase === 'installing' ? (
         <div className="flex items-center gap-2 text-xs text-warning" role="status">
           <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
-          {t('ONBOARDING_INFERENCE_RUN_INSTALLING')}
+          {labels?.installing ?? t('ONBOARDING_INFERENCE_RUN_INSTALLING')}
         </div>
       ) : (
         <Button
@@ -64,13 +66,13 @@ export const AutoInstallRunnerButton = ({ onRun }: AutoInstallRunnerButtonProps)
       {phase === 'completed' && (
         <span className="flex items-center gap-1 text-xs text-success" role="status">
           <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-          {t('ONBOARDING_INFERENCE_RUN_COMPLETE')}
+          {labels?.complete ?? t('ONBOARDING_INFERENCE_RUN_COMPLETE')}
         </span>
       )}
       {phase === 'error' && (
         <span className="flex items-start gap-1 text-xs text-destructive" role="alert">
           <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <FailureLog text={`${t('ONBOARDING_INFERENCE_RUN_ERROR')}${errorDetail && `: ${errorDetail}`}`} />
+          <FailureLog text={`${labels?.failed ?? t('ONBOARDING_INFERENCE_RUN_ERROR')}${errorDetail && `: ${errorDetail}`}`} />
         </span>
       )}
     </div>
