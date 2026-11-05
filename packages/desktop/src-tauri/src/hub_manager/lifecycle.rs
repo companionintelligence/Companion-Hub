@@ -1,6 +1,15 @@
 //! Hub start/stop lifecycle: image pulls, staged startup and shutdown.
 
+use super::quiet_watch::{run_until_quiet, WatchedRun};
 use super::*;
+
+/// How long `docker compose pull` may print nothing before it counts as hung. It prints every layer's
+/// progress, so a slow connection keeps it talking and only a download that has stopped goes quiet:
+/// a 1 GB image over a 2 MB/s link printed 3,464 lines and was never silent for more than 4 seconds.
+const PULL_QUIET_LIMIT: Duration = Duration::from_secs(3 * 60);
+/// A new pull opens new connections, which gets past a stalled one, so it gets a second try before
+/// the start gives up. It doesn't help when Docker itself is stuck: that takes a Docker restart.
+const PULL_ATTEMPTS: u32 = 2;
 
 fn start_database_first(
     compose_path: &Path,
@@ -342,12 +351,29 @@ fn start_hub_inner(
             "hub.start",
             "Stack configuration changed — pulling images and recreating containers.",
         );
-        if let Err(error) = pull_stack_images(compose_path, env_path, data_dir) {
-            let _ = append_desktop_log_for(
-                data_dir,
-                "hub.start",
-                &format!("Stack image pull failed (non-fatal, continuing): {}", error),
-            );
+        match pull_stack_images(compose_path, env_path, data_dir) {
+            Ok(()) => {}
+            Err(StackPullError::Failed(error)) => {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    &format!("Stack image pull failed (non-fatal, continuing): {}", error),
+                );
+            }
+            // Compose would only pull what is missing again, and hang on it the same way.
+            Err(StackPullError::Hung) => {
+                let missing = missing_startup_images();
+                if !missing.is_empty() {
+                    let message = hung_pull_message(&missing);
+                    let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+                    return Err(with_view_logs_hint(message));
+                }
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    "Stack image pull hung, but every image is here: continuing with them.",
+                );
+            }
         }
     }
 
@@ -671,55 +697,95 @@ pub fn compute_config_hash(compose_path: &Path, env_path: &Path) -> String {
     crate::digest_hex::lower_hex(&hasher.finalize())
 }
 
+/// Why a pull didn't finish.
+#[derive(Debug, PartialEq, Eq)]
+pub enum StackPullError {
+    /// Docker answered with an error. Startup carries on: the images may already be here.
+    Failed(String),
+    /// Docker stopped making progress on every attempt, and nothing would have ended the wait.
+    Hung,
+}
+
+/// What the start screen says when a pull hangs and an image the Hub needs is missing.
+pub(crate) fn hung_pull_message(missing: &[String]) -> String {
+    format!(
+        "Companion Hub's download has stopped. Docker made no progress for {} minutes and {} still missing: {}. Check your internet connection, restart Docker and try again.",
+        PULL_QUIET_LIMIT.as_secs() / 60,
+        if missing.len() == 1 { "this image is" } else { "these images are" },
+        missing.join(", "),
+    )
+}
+
 /// Pull all stack images before compose up when configuration changed.
 pub fn pull_stack_images(
     compose_path: &Path,
     env_path: &Path,
     data_dir: &Path,
-) -> Result<(), String> {
+) -> Result<(), StackPullError> {
     let _ = append_desktop_log_for(
         data_dir,
         "hub.start",
         "Pulling stack images before startup…",
     );
-    let output = docker_command()
-        .env("ENV_FILE", compose_env_file_var(env_path))
-        .args([
-            "compose",
-            "--env-file",
-            &env_path.to_string_lossy(),
-            "--project-name",
-            "ci-hub",
-            "-f",
-            &compose_path.to_string_lossy(),
-            "pull",
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run docker compose pull: {}", e))?;
+    for attempt in 1..=PULL_ATTEMPTS {
+        let mut command = docker_command();
+        command
+            .env("ENV_FILE", compose_env_file_var(env_path))
+            .args([
+                "compose",
+                "--env-file",
+                &env_path.to_string_lossy(),
+                "--project-name",
+                "ci-hub",
+                "-f",
+                &compose_path.to_string_lossy(),
+                "pull",
+            ]);
+        let run = run_until_quiet(command, PULL_QUIET_LIMIT).map_err(|e| {
+            StackPullError::Failed(format!("Failed to run docker compose pull: {}", e))
+        })?;
 
-    let combined = format_command_output(
-        &String::from_utf8_lossy(&output.stdout),
-        &String::from_utf8_lossy(&output.stderr),
-    );
-
-    if output.status.success() {
-        let message = if combined.is_empty() {
-            "docker compose pull succeeded.".to_string()
-        } else {
-            format!("docker compose pull succeeded. {}", combined)
-        };
-        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
-        Ok(())
-    } else {
-        Err(if combined.is_empty() {
-            format!(
-                "docker compose pull failed with exit code {:?}",
-                output.status.code()
-            )
-        } else {
-            format!("docker compose pull failed. {}", combined)
-        })
+        match run {
+            WatchedRun::Finished {
+                status,
+                stdout,
+                stderr,
+            } => {
+                let combined = format_command_output(&stdout, &stderr);
+                if status.success() {
+                    let message = if combined.is_empty() {
+                        "docker compose pull succeeded.".to_string()
+                    } else {
+                        format!("docker compose pull succeeded. {}", combined)
+                    };
+                    let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+                    return Ok(());
+                }
+                return Err(StackPullError::Failed(if combined.is_empty() {
+                    format!(
+                        "docker compose pull failed with exit code {:?}",
+                        status.code()
+                    )
+                } else {
+                    format!("docker compose pull failed. {}", combined)
+                }));
+            }
+            WatchedRun::WentQuiet { stdout, stderr } => {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    &format!(
+                        "docker compose pull made no progress for {} seconds, so it was stopped (attempt {} of {}). {}",
+                        PULL_QUIET_LIMIT.as_secs(),
+                        attempt,
+                        PULL_ATTEMPTS,
+                        format_command_output(&stdout, &stderr),
+                    ),
+                );
+            }
+        }
     }
+    Err(StackPullError::Hung)
 }
 
 /// Stop Hub containers without marking user-stopped (for updates).
