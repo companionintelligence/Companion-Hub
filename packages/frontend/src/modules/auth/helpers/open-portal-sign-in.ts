@@ -1,4 +1,7 @@
+import { signInDesktopWithPortal } from '@/lib/desktop-portal-sign-in';
 import { AuthSessionCancelledError, openAuthSession } from '@/lib/helpers/open-auth-browser';
+import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
+import { SignInCancelledError } from '@/vendor/ci-common/native/index';
 import { toast } from 'sonner';
 
 /**
@@ -7,8 +10,27 @@ import { toast } from 'sonner';
  * Do not discard the rejection. openAuthSession THROWS on an opener ACL or plugin failure. A bare
  * `void` turned that into a dead button with no toast, no console line and no UI change, which is
  * what made the desktop sign-in button look broken.
+ *
+ * The desktop does not open the Hub's start URL. It runs its own PKCE sign-in (desktop-portal-sign-in),
+ * so its token never travels through a deep link. `portalSsoHref` stays for browsers and phones.
  */
 export function openPortalSignInOutsideApp(portalSsoHref: string, errorMessage: string) {
+  if (isTauriDesktopApp()) {
+    signInDesktopWithPortal()
+      .then(({ redirectPath }) => {
+        // A hard navigation, as the Hub's own sign-in does, so the new session is read on load.
+        window.location.assign(redirectPath);
+      })
+      .catch((error: unknown) => {
+        if (error instanceof SignInCancelledError) {
+          return;
+        }
+        console.error('login: the desktop Portal sign-in failed', error);
+        toast.error(errorMessage);
+      });
+    return;
+  }
+
   openAuthSession(portalSsoHref).catch((error: unknown) => {
     if (error instanceof AuthSessionCancelledError) {
       return;

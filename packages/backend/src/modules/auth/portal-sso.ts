@@ -756,6 +756,60 @@ export async function fetchPortalSessionEmail(input: { publicPortalBaseUrl: stri
   }
 }
 
+/** What Portal's userinfo endpoint says about an access token, once the Hub has checked it. */
+export type PortalUserinfoResult =
+  | { ok: true; email: string; subject: string | null; issuer: string | null; status: number }
+  | { ok: false; reason: 'userinfo_failed' | 'network_error' | 'missing_email' | 'email_unverified'; status?: number; detail?: string };
+
+/**
+ * The shared Portal userinfo check for the browser callback (`exchangePortalAuthorizationCode`) and the
+ * desktop session route (`establishPortalDesktopSession`). Both take the operator's address from here, and
+ * only when Portal marks it verified, so the two routes cannot disagree about who the operator is.
+ */
+export async function fetchPortalUserinfo(input: { publicPortalBaseUrl: string; accessToken: string }): Promise<PortalUserinfoResult> {
+  const internalOverride = readPortalInternalUrlOverride();
+  const portalBaseUrl = resolveOutboundPortalBaseUrl(input.publicPortalBaseUrl, internalOverride);
+  const axiosConfig = buildPortalAxiosConfig(input.publicPortalBaseUrl, internalOverride);
+
+  const userinfoUrl = new URL('/api/auth/oauth2/userinfo', portalBaseUrl).toString();
+  let userinfoRes: { status: number; data: unknown };
+
+  try {
+    userinfoRes = await axios.get(userinfoUrl, {
+      ...withPortalAxiosHeaders(axiosConfig, { authorization: `Bearer ${input.accessToken}` }),
+      validateStatus: () => true,
+      timeout: 15_000,
+    });
+  } catch (error) {
+    return { ok: false, reason: 'network_error', detail: describeNetworkError(error) };
+  }
+
+  if (userinfoRes.status < 200 || userinfoRes.status >= 300) {
+    return { ok: false, reason: 'userinfo_failed', status: userinfoRes.status };
+  }
+
+  const claims = userinfoRes.data as { sub?: string; iss?: string; email?: string; email_verified?: boolean } | undefined;
+  const email = claims?.email;
+  if (!email) {
+    return { ok: false, reason: 'missing_email', status: userinfoRes.status };
+  }
+
+  // The Hub decides who its operator is by comparing this address, so an unverified one would let
+  // anybody claim a Hub by typing its operator's address into a signup form. The Portal issues the
+  // claim whenever the `email` scope is requested, so every sign-in that calls this must request it.
+  if (claims?.email_verified !== true) {
+    return { ok: false, reason: 'email_unverified', status: userinfoRes.status };
+  }
+
+  return {
+    ok: true,
+    email,
+    subject: (typeof claims?.sub === 'string' && claims.sub.trim()) || null,
+    issuer: (typeof claims?.iss === 'string' && claims.iss.trim()) || null,
+    status: userinfoRes.status,
+  };
+}
+
 export async function exchangePortalAuthorizationCode(input: {
   publicPortalBaseUrl: string;
   callbackUrl: string;
@@ -796,45 +850,17 @@ export async function exchangePortalAuthorizationCode(input: {
     return { ok: false, reason: 'missing_access_token', status: tokenRes.status };
   }
 
-  const userinfoUrl = new URL('/api/auth/oauth2/userinfo', portalBaseUrl).toString();
-  let userinfoRes: { status: number; data: unknown };
-
-  try {
-    userinfoRes = await axios.get(userinfoUrl, {
-      ...withPortalAxiosHeaders(axiosConfig, { authorization: `Bearer ${accessToken}` }),
-      validateStatus: () => true,
-      timeout: 15_000,
-    });
-  } catch (error) {
-    return { ok: false, reason: 'network_error', detail: describeNetworkError(error) };
-  }
-
-  if (userinfoRes.status < 200 || userinfoRes.status >= 300) {
-    return { ok: false, reason: 'userinfo_failed', status: userinfoRes.status };
-  }
-
-  const claims = userinfoRes.data as { sub?: string; iss?: string; email?: string; email_verified?: boolean } | undefined;
-  const email = claims?.email;
-  if (!email) {
-    return { ok: false, reason: 'missing_email', status: userinfoRes.status };
-  }
-
-  // The Hub decides who its operator is by comparing this address, so an unverified one would let
-  // anybody claim a Hub by typing its operator's address into a signup form. The Portal issues the
-  // claim whenever the `email` scope is requested, and this flow always requests it.
-  if (claims?.email_verified !== true) {
-    return { ok: false, reason: 'email_unverified', status: userinfoRes.status };
+  const userinfo = await fetchPortalUserinfo({ publicPortalBaseUrl: input.publicPortalBaseUrl, accessToken });
+  if (!userinfo.ok) {
+    return userinfo;
   }
 
   const idTokenClaims = decodeJwtPayload(tokenPayload?.id_token);
-  const subject =
-    (typeof claims?.sub === 'string' && claims.sub.trim()) || (typeof idTokenClaims?.sub === 'string' && idTokenClaims.sub.trim()) || null;
+  const subject = userinfo.subject || (typeof idTokenClaims?.sub === 'string' && idTokenClaims.sub.trim()) || null;
   const issuer =
-    (typeof claims?.iss === 'string' && claims.iss.trim()) ||
-    (typeof idTokenClaims?.iss === 'string' && idTokenClaims.iss.trim()) ||
-    input.publicPortalBaseUrl.replace(/\/+$/, '');
+    userinfo.issuer || (typeof idTokenClaims?.iss === 'string' && idTokenClaims.iss.trim()) || input.publicPortalBaseUrl.replace(/\/+$/, '');
 
-  return { ok: true, accessToken, email, emailVerified: true, subject, issuer };
+  return { ok: true, accessToken, email: userinfo.email, emailVerified: true, subject, issuer };
 }
 
 function decodeJwtPayload(token?: string): { sub?: string; iss?: string } | null {

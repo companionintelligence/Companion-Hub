@@ -12,6 +12,8 @@ const SESSION_EXPIRY_EXEMPT_PATHS = [
   '/api/auth/logout',
   '/api/auth/session/refresh',
   '/api/auth/portal/desktop-exchange',
+  // The desktop's own sign-in: a 401 means the Portal token was refused, not that the Hub session died.
+  '/api/auth/portal/desktop-session',
   // A best-effort bridge on the way to an external open (`openExternalWithHubSession`),
   // documented as fail-open. Signing out here tears the page down mid-click — and
   // because `openExternal` first awaits a DNS pre-warm, that navigation also aborts the

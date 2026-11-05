@@ -1,0 +1,14 @@
+# vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/permissions/default.toml
+# Copyright (c) Lifescope Inc. All rights reserved.
+# Private & Confidential — Property of Lifescope Inc. Do not distribute.
+
+[default]
+description = "Sign-in over a loopback redirect and OS keychain storage for ci-auth."
+permissions = [
+  "allow-begin-loopback",
+  "allow-await-loopback",
+  "allow-cancel-loopback",
+  "allow-secure-get",
+  "allow-secure-set",
+  "allow-secure-remove",
+]

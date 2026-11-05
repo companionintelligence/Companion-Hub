@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-await-loopback"
+description = "Enables the await_loopback command without any pre-configured scope."
+commands.allow = ["await_loopback"]
+
+[[permission]]
+identifier = "deny-await-loopback"
+description = "Denies the await_loopback command without any pre-configured scope."
+commands.deny = ["await_loopback"]

@@ -19,7 +19,14 @@ import { DEFAULT_PORTAL_URL } from './portal-client';
 export const OIDC_CLIENT_ID = 'ci-hub';
 export const OIDC_REDIRECT_URI = 'cihub://auth/callback';
 const OIDC_SCOPE = 'openid email profile';
-/** Survives an iOS kill between Safari login and "Open with Companion Hub". */
+/**
+ * sessionStorage only, never localStorage. The verifier is a secret until the code is spent, and
+ * localStorage outlives the session. A reload keeps these; an iOS kill clears them.
+ *
+ * TODO(mobile secure store): once the CI-Common mobile secure store is merged, hold the verifier and
+ * state there. A cold start from the Safari "Open with Companion Hub" callback can then finish the
+ * sign-in again, which it could while these lived in localStorage.
+ */
 const OIDC_PENDING_KEY = 'cihub.oidc.pending';
 const OIDC_CALLBACK_KEY = 'cihub.oidc.callback';
 const OIDC_PENDING_MAX_AGE_MS = 10 * 60 * 1000;
@@ -87,17 +94,15 @@ interface PendingOidc {
 
 function persistPendingOidc(pending: PendingOidc): void {
   try {
-    const raw = JSON.stringify(pending);
-    sessionStorage.setItem(OIDC_PENDING_KEY, raw);
-    localStorage.setItem(OIDC_PENDING_KEY, raw);
+    sessionStorage.setItem(OIDC_PENDING_KEY, JSON.stringify(pending));
   } catch {
-    // Private mode / quota — warm-resume via the live listener may still work.
+    // Private mode / quota — the live listener may still finish the sign-in.
   }
 }
 
 function readPendingOidc(): PendingOidc | null {
   try {
-    const raw = sessionStorage.getItem(OIDC_PENDING_KEY) ?? localStorage.getItem(OIDC_PENDING_KEY);
+    const raw = sessionStorage.getItem(OIDC_PENDING_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PendingOidc;
     if (!parsed.verifier || !parsed.state || !parsed.portal || !parsed.startedAt) return null;
@@ -114,9 +119,7 @@ function readPendingOidc(): PendingOidc | null {
 async function clearPendingOidc(): Promise<void> {
   try {
     sessionStorage.removeItem(OIDC_PENDING_KEY);
-    localStorage.removeItem(OIDC_PENDING_KEY);
     sessionStorage.removeItem(OIDC_CALLBACK_KEY);
-    localStorage.removeItem(OIDC_CALLBACK_KEY);
   } catch {
     /* ignore */
   }
@@ -131,7 +134,6 @@ async function clearPendingOidc(): Promise<void> {
 function persistOidcCallbackUrl(url: string): void {
   try {
     sessionStorage.setItem(OIDC_CALLBACK_KEY, url);
-    localStorage.setItem(OIDC_CALLBACK_KEY, url);
   } catch {
     /* ignore */
   }
@@ -139,7 +141,7 @@ function persistOidcCallbackUrl(url: string): void {
 
 function readPersistedOidcCallbackUrl(): string | null {
   try {
-    return sessionStorage.getItem(OIDC_CALLBACK_KEY) ?? localStorage.getItem(OIDC_CALLBACK_KEY);
+    return sessionStorage.getItem(OIDC_CALLBACK_KEY);
   } catch {
     return null;
   }
@@ -340,8 +342,8 @@ export async function loginWithPortalOidc(portalUrl = DEFAULT_PORTAL_URL, option
   authorizeUrl.searchParams.set('code_challenge_method', 'S256');
   authorizeUrl.searchParams.set('state', state);
 
-  // Persist PKCE *before* the sheet / browser opens — iOS often kills the
-  // webview while the user is on the Portal, then cold-starts us from the callback.
+  // Persist PKCE before the sheet opens, so a reload during the sign-in keeps it. An iOS kill clears
+  // sessionStorage (see OIDC_PENDING_KEY).
   // Drop a leftover `cihub://` from the last attempt *before* we listen, or
   // takePendingOidcCallbackUrl() poisons this waiter with the old state.
   await clearPendingOidc();

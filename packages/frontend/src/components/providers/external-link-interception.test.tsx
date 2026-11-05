@@ -16,21 +16,19 @@ import { hubAuthFlowPolicy } from '@/lib/hub-auth-flow';
  * http://127.0.0.1:<port>, the same origin the start url is built against — began
  * navigating its OWN webview to /portal/start. The whole flow then happens inside
  * the app window: the Portal login page renders with no address bar, no password
- * manager and no working passkey, and the backend's handoff interstitial
- * (`location.replace('cihub://auth?token=...')`) unmounts the React app —
- * taking DesktopPortalAuthListener, the only code that exchanges the one-time
- * token, with it. The token expires in 60s in a Rust mutex.
+ * manager and no working passkey, and the React app that finishes the sign-in
+ * is unmounted with it.
  *
- * So desktop does not use an anchor at all:
+ * So desktop does not use an anchor at all. It runs its own PKCE sign-in
+ * (desktop-portal-sign-in.ts), which opens the authorize URL in the system browser
+ * and receives the code on a 127.0.0.1 loopback redirect:
  *
- *     onClick -> openAuthSession -> system browser -> Portal login
- *       -> cihub://auth?token=... -> Tauri deep link -> token exchange
+ *     onClick -> signInDesktopWithPortal -> system browser -> Portal login
+ *       -> loopback redirect -> token exchange -> Hub session (no token in a URL)
  *
  * The React app stays mounted the whole time, which is what makes the last step
- * possible. announceDesktopPresence is documented as a "Desktop-only heartbeat so
- * a Chrome loopback callback can hand off into Tauri" — the callback is EXPECTED
- * to land in Chrome. These tests exist to catch a change that puts sign-in back
- * inside the webview.
+ * possible. These tests exist to catch a change that puts sign-in back inside the
+ * webview, or that brings a token back into a deep link.
  */
 describe('desktop portal SSO contract', () => {
   const HUB = 'http://127.0.0.1:5002';
@@ -70,15 +68,16 @@ describe('desktop portal SSO contract', () => {
     expect(channel === 'dev' || channel === null).toBe(true);
   });
 
-  it('opens sign-in in the system browser and keeps the deep-link return path', () => {
+  it('opens sign-in in the system browser and takes no token from a deep link', () => {
     const policy = hubAuthFlowPolicy('desktop-hub-sso');
-    // Desktop calls openAuthSession itself rather than leaning on the
+    // Desktop opens the system browser itself rather than leaning on the
     // interceptor. There is no second tab to worry about: the button branch of
     // login-form renders no anchor for the handler to see.
     expect(policy.openHubSsoInSystemBrowser).toBe(true);
-    expect(policy.usesDeepLinkHandoff).toBe(true);
-    expect(policy.listenDeepLinkAuth).toBe(true);
-    expect(policy.announceDesktopPresence).toBe(true);
+    // The return path is the app's own loopback redirect, not cihub://auth?token=.
+    expect(policy.usesDeepLinkHandoff).toBe(false);
+    expect(policy.listenDeepLinkAuth).toBe(false);
+    expect(policy.announceDesktopPresence).toBe(false);
   });
 
   it('leaves a plain browser on the Hub navigating in place', () => {

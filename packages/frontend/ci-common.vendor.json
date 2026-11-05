@@ -1,5 +1,5 @@
 {
-  "note": "Copies of the CI Common files the Hub needs so a public clone can build. Search vendored-from. Refresh with: node scripts/vendor-ci-common.mjs --from <ci-common-checkout> --ref <tag>",
+  "note": "Copies of the CI Common files the Hub needs so a public clone can build. Search vendored-from. Refresh with: node scripts/vendor-ci-common.mjs --from <ci-common-checkout> --ref <tag>. An entry with its own \"ref\" (a tag or an unmerged branch pinned by commit) is read from that ref instead; refresh one package with --package <name>.",
   "files": [
     {
       "package": "@companionintelligence/tokens",
@@ -110,6 +110,305 @@
       "dest": "packages/frontend/brand/icons/png/icon-512.png",
       "sha256": "c8ea5614c84a612f59070acee9625a2f9b42a314b6809a78695c6b716bb83020",
       "mark": "vendored-from: @companionintelligence/assets@1.6.0 assets/icons/png/icon-512.png"
+    },
+    {
+      "package": "@companionintelligence/auth",
+      "version": "0.0.0",
+      "ref": "d8868452a83a51fccfe4456bdff8c8291e2487be",
+      "packageJson": "packages/auth/package.json",
+      "source": "packages/auth/src/authorize.ts",
+      "dest": "packages/frontend/src/vendor/ci-common/auth/authorize.ts",
+      "stamp": "js",
+      "sha256": "8c50807b25cd65e6bc8c3551114dc7890506a77b8c84cd3e7bbcfbeb80356a04",
+      "mark": "vendored-from: @companionintelligence/auth@0.0.0 packages/auth/src/authorize.ts"
+    },
+    {
+      "package": "@companionintelligence/auth",
+      "version": "0.0.0",
+      "ref": "d8868452a83a51fccfe4456bdff8c8291e2487be",
+      "packageJson": "packages/auth/package.json",
+      "source": "packages/auth/src/callback.ts",
+      "dest": "packages/frontend/src/vendor/ci-common/auth/callback.ts",
+      "stamp": "js",
+      "sha256": "c74044492dbc586f0cc150746408275f6ab1550ffc42d767b16b1e2422bc8c92",
+      "mark": "vendored-from: @companionintelligence/auth@0.0.0 packages/auth/src/callback.ts"
+    },
+    {
+      "package": "@companionintelligence/auth",
+      "version": "0.0.0",
+      "ref": "d8868452a83a51fccfe4456bdff8c8291e2487be",
+      "packageJson": "packages/auth/package.json",
+      "source": "packages/auth/src/config.ts",
+      "dest": "packages/frontend/src/vendor/ci-common/auth/config.ts",
+      "stamp": "js",
+      "sha256": "9ce404d8fa329ea7a768ab7ef463b78aa8b1f3f3455ea75ab4d7b42e9be8e0fa",
+      "mark": "vendored-from: @companionintelligence/auth@0.0.0 packages/auth/src/config.ts"
+    },
+    {
+      "package": "@companionintelligence/auth",
+      "version": "0.0.0",
+      "ref": "d8868452a83a51fccfe4456bdff8c8291e2487be",
+      "packageJson": "packages/auth/package.json",
+      "source": "packages/auth/src/internal.ts",
+      "dest": "packages/frontend/src/vendor/ci-common/auth/internal.ts",
+      "stamp": "js",
+      "sha256": "080086ce5f1cdfa73ce9331bf3351ea397589290455a120efb7cf5166a54c08b",
+      "mark": "vendored-from: @companionintelligence/auth@0.0.0 packages/auth/src/internal.ts"
+    },
+    {
+      "package": "@companionintelligence/auth",
+      "version": "0.0.0",
+      "ref": "d8868452a83a51fccfe4456bdff8c8291e2487be",
+      "packageJson": "packages/auth/package.json",
+      "source": "packages/auth/src/pkce.ts",
+      "dest": "packages/frontend/src/vendor/ci-common/auth/pkce.ts",
+      "stamp": "js",
+      "sha256": "bb4b91383f3a53266e65320ab76a2722ae94c05bb2e99e6f80d6a33734cf4aab",
+      "mark": "vendored-from: @companionintelligence/auth@0.0.0 packages/auth/src/pkce.ts"
+    },
+    {
+      "package": "@companionintelligence/auth",
+      "version": "0.0.0",
+      "ref": "d8868452a83a51fccfe4456bdff8c8291e2487be",
+      "packageJson": "packages/auth/package.json",
+      "source": "packages/auth/src/token.ts",
+      "dest": "packages/frontend/src/vendor/ci-common/auth/token.ts",
+      "stamp": "js",
+      "sha256": "731f4101c5e642549277a53d264326125daefd7d6a6a7ef194ac449dce66dae2",
+      "mark": "vendored-from: @companionintelligence/auth@0.0.0 packages/auth/src/token.ts"
+    },
+    {
+      "package": "@companionintelligence/native",
+      "version": "0.1.0",
+      "ref": "d8868452a83a51fccfe4456bdff8c8291e2487be",
+      "packageJson": "packages/native/package.json",
+      "source": "packages/native/src/driver.ts",
+      "dest": "packages/frontend/src/vendor/ci-common/native/driver.ts",
+      "stamp": "js",
+      "sha256": "b176e8b48da2202e74ba81852eb69fdd68ba4f606b443d1c6bc994dc5115519b",
+      "mark": "vendored-from: @companionintelligence/native@0.1.0 packages/native/src/driver.ts"
+    },
+    {
+      "package": "@companionintelligence/native",
+      "version": "0.1.0",
+      "ref": "d8868452a83a51fccfe4456bdff8c8291e2487be",
+      "packageJson": "packages/native/package.json",
+      "source": "packages/native/src/errors.ts",
+      "dest": "packages/frontend/src/vendor/ci-common/native/errors.ts",
+      "stamp": "js",
+      "sha256": "831c10576b91af1711f936cd91e3e5fcf0cd5a22f96243a7975054aa70dcef46",
+      "mark": "vendored-from: @companionintelligence/native@0.1.0 packages/native/src/errors.ts"
+    },
+    {
+      "package": "@companionintelligence/native",
+      "version": "0.1.0",
+      "ref": "d8868452a83a51fccfe4456bdff8c8291e2487be",
+      "packageJson": "packages/native/package.json",
+      "source": "packages/native/src/index.ts",
+      "dest": "packages/frontend/src/vendor/ci-common/native/index.ts",
+      "stamp": "js",
+      "sha256": "00ad4ef5fc96f802656a93874e6155b687a2dac79e36b4a6ec288c2665e4a3cd",
+      "mark": "vendored-from: @companionintelligence/native@0.1.0 packages/native/src/index.ts"
+    },
+    {
+      "package": "@companionintelligence/native",
+      "version": "0.1.0",
+      "ref": "d8868452a83a51fccfe4456bdff8c8291e2487be",
+      "packageJson": "packages/native/package.json",
+      "source": "packages/native/src/shell.ts",
+      "dest": "packages/frontend/src/vendor/ci-common/native/shell.ts",
+      "stamp": "js",
+      "sha256": "d583a774eda4724bcc78b32e7f3663062dc9f5506a950a23e02c4cda6ad740dc",
+      "mark": "vendored-from: @companionintelligence/native@0.1.0 packages/native/src/shell.ts"
+    },
+    {
+      "package": "@companionintelligence/native",
+      "version": "0.1.0",
+      "ref": "d8868452a83a51fccfe4456bdff8c8291e2487be",
+      "packageJson": "packages/native/package.json",
+      "source": "packages/native/src/sign-in.ts",
+      "dest": "packages/frontend/src/vendor/ci-common/native/sign-in.ts",
+      "stamp": "js",
+      "sha256": "5767d62e9757b8ac548ad02dde30b8012ba3e83ac9fa6d87c26c24627525f3d2",
+      "mark": "vendored-from: @companionintelligence/native@0.1.0 packages/native/src/sign-in.ts"
+    },
+    {
+      "package": "@companionintelligence/native",
+      "version": "0.1.0",
+      "ref": "d8868452a83a51fccfe4456bdff8c8291e2487be",
+      "packageJson": "packages/native/package.json",
+      "source": "packages/native/src/store.ts",
+      "dest": "packages/frontend/src/vendor/ci-common/native/store.ts",
+      "stamp": "js",
+      "sha256": "08ab8755069fb7b6c98f7d536c32500920d9dcda0058cd1709f0db0353512240",
+      "mark": "vendored-from: @companionintelligence/native@0.1.0 packages/native/src/store.ts"
+    },
+    {
+      "package": "tauri-plugin-ci-auth",
+      "version": "0.1.0",
+      "ref": "4c6a98771c18870e69c147b0658cbf231e7da73c",
+      "packageJson": "packages/tauri-plugin-ci-auth/Cargo.toml",
+      "source": "packages/tauri-plugin-ci-auth/Cargo.toml",
+      "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/Cargo.toml",
+      "stamp": "toml",
+      "sha256": "ec6c51429d75bdce057c87ec0c7c81fe89842b40546871f6474fdb232c1e57eb",
+      "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/Cargo.toml"
+    },
+    {
+      "package": "tauri-plugin-ci-auth",
+      "version": "0.1.0",
+      "ref": "4c6a98771c18870e69c147b0658cbf231e7da73c",
+      "packageJson": "packages/tauri-plugin-ci-auth/Cargo.toml",
+      "source": "packages/tauri-plugin-ci-auth/build.rs",
+      "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/build.rs",
+      "stamp": "js",
+      "sha256": "4958d7536ea8882b236cd14ac3b56a3bfdcc13fe5d12b50fc6c02e19b1036d19",
+      "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/build.rs"
+    },
+    {
+      "package": "tauri-plugin-ci-auth",
+      "version": "0.1.0",
+      "ref": "4c6a98771c18870e69c147b0658cbf231e7da73c",
+      "packageJson": "packages/tauri-plugin-ci-auth/Cargo.toml",
+      "source": "packages/tauri-plugin-ci-auth/src/lib.rs",
+      "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/src/lib.rs",
+      "stamp": "js",
+      "sha256": "16824f9a289d9f5a44bdae893c30c0665bed4980d8b2662b16878ddcb5e83c97",
+      "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/src/lib.rs"
+    },
+    {
+      "package": "tauri-plugin-ci-auth",
+      "version": "0.1.0",
+      "ref": "4c6a98771c18870e69c147b0658cbf231e7da73c",
+      "packageJson": "packages/tauri-plugin-ci-auth/Cargo.toml",
+      "source": "packages/tauri-plugin-ci-auth/src/error.rs",
+      "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/src/error.rs",
+      "stamp": "js",
+      "sha256": "d55f27433472f775b4eb54de3a3668a9312fa582b9c9fc599206f98df35ee455",
+      "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/src/error.rs"
+    },
+    {
+      "package": "tauri-plugin-ci-auth",
+      "version": "0.1.0",
+      "ref": "4c6a98771c18870e69c147b0658cbf231e7da73c",
+      "packageJson": "packages/tauri-plugin-ci-auth/Cargo.toml",
+      "source": "packages/tauri-plugin-ci-auth/src/loopback.rs",
+      "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/src/loopback.rs",
+      "stamp": "js",
+      "sha256": "0b9dbbf24b80234d6e43b83b74135ba42886ab271136f553ec599c64aae3615b",
+      "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/src/loopback.rs"
+    },
+    {
+      "package": "tauri-plugin-ci-auth",
+      "version": "0.1.0",
+      "ref": "4c6a98771c18870e69c147b0658cbf231e7da73c",
+      "packageJson": "packages/tauri-plugin-ci-auth/Cargo.toml",
+      "source": "packages/tauri-plugin-ci-auth/src/secure.rs",
+      "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/src/secure.rs",
+      "stamp": "js",
+      "sha256": "29e4b28255cf4066ce6a3a2ecce57033697747c2ce367921a08ea0cc765b43ec",
+      "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/src/secure.rs"
+    },
+    {
+      "package": "tauri-plugin-ci-auth",
+      "version": "0.1.0",
+      "ref": "4c6a98771c18870e69c147b0658cbf231e7da73c",
+      "packageJson": "packages/tauri-plugin-ci-auth/Cargo.toml",
+      "source": "packages/tauri-plugin-ci-auth/permissions/default.toml",
+      "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/permissions/default.toml",
+      "stamp": "toml",
+      "sha256": "bffe2e2df0014201d2e3c5ad65c01f0309779cf99320a442dae490838d67aa27",
+      "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/permissions/default.toml"
+    },
+    {
+      "package": "tauri-plugin-ci-auth",
+      "version": "0.1.0",
+      "ref": "4c6a98771c18870e69c147b0658cbf231e7da73c",
+      "packageJson": "packages/tauri-plugin-ci-auth/Cargo.toml",
+      "source": "packages/tauri-plugin-ci-auth/permissions/autogenerated/commands/await_loopback.toml",
+      "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/permissions/autogenerated/commands/await_loopback.toml",
+      "sha256": "194bc9b6037167e466c932356ef0d791992b850ced79cab7eb62e9901f09ed55",
+      "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/permissions/autogenerated/commands/await_loopback.toml"
+    },
+    {
+      "package": "tauri-plugin-ci-auth",
+      "version": "0.1.0",
+      "ref": "4c6a98771c18870e69c147b0658cbf231e7da73c",
+      "packageJson": "packages/tauri-plugin-ci-auth/Cargo.toml",
+      "source": "packages/tauri-plugin-ci-auth/permissions/autogenerated/commands/begin_loopback.toml",
+      "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/permissions/autogenerated/commands/begin_loopback.toml",
+      "sha256": "2b0de7dbd2f048a94d4cc151dd729049d98068d17f88ad4389557b286a7471aa",
+      "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/permissions/autogenerated/commands/begin_loopback.toml"
+    },
+    {
+      "package": "tauri-plugin-ci-auth",
+      "version": "0.1.0",
+      "ref": "4c6a98771c18870e69c147b0658cbf231e7da73c",
+      "packageJson": "packages/tauri-plugin-ci-auth/Cargo.toml",
+      "source": "packages/tauri-plugin-ci-auth/permissions/autogenerated/commands/cancel_loopback.toml",
+      "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/permissions/autogenerated/commands/cancel_loopback.toml",
+      "sha256": "4edac8909702559d378edab5b91a52773cda3762980524c229b20798d3ce90e8",
+      "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/permissions/autogenerated/commands/cancel_loopback.toml"
+    },
+    {
+      "package": "tauri-plugin-ci-auth",
+      "version": "0.1.0",
+      "ref": "4c6a98771c18870e69c147b0658cbf231e7da73c",
+      "packageJson": "packages/tauri-plugin-ci-auth/Cargo.toml",
+      "source": "packages/tauri-plugin-ci-auth/permissions/autogenerated/commands/secure_get.toml",
+      "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/permissions/autogenerated/commands/secure_get.toml",
+      "sha256": "cc03b5e1e3146fc9c890ae8fe5949ee8a9626db8e929996835c5f5f62b8ba58f",
+      "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/permissions/autogenerated/commands/secure_get.toml"
+    },
+    {
+      "package": "tauri-plugin-ci-auth",
+      "version": "0.1.0",
+      "ref": "4c6a98771c18870e69c147b0658cbf231e7da73c",
+      "packageJson": "packages/tauri-plugin-ci-auth/Cargo.toml",
+      "source": "packages/tauri-plugin-ci-auth/permissions/autogenerated/commands/secure_remove.toml",
+      "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/permissions/autogenerated/commands/secure_remove.toml",
+      "sha256": "eed2ad9ff075e9f687ccf0295eb5532c49734b38487ac4e8a563d21faec0d4f9",
+      "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/permissions/autogenerated/commands/secure_remove.toml"
+    },
+    {
+      "package": "tauri-plugin-ci-auth",
+      "version": "0.1.0",
+      "ref": "4c6a98771c18870e69c147b0658cbf231e7da73c",
+      "packageJson": "packages/tauri-plugin-ci-auth/Cargo.toml",
+      "source": "packages/tauri-plugin-ci-auth/permissions/autogenerated/commands/secure_set.toml",
+      "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/permissions/autogenerated/commands/secure_set.toml",
+      "sha256": "90a3b7b7036f8eb9942bdbd0853301c1dd7db3977e0b3a99efd5960b54e0fd0a",
+      "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/permissions/autogenerated/commands/secure_set.toml"
+    },
+    {
+      "package": "tauri-plugin-ci-auth",
+      "version": "0.1.0",
+      "ref": "4c6a98771c18870e69c147b0658cbf231e7da73c",
+      "packageJson": "packages/tauri-plugin-ci-auth/Cargo.toml",
+      "source": "packages/tauri-plugin-ci-auth/permissions/autogenerated/reference.md",
+      "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/permissions/autogenerated/reference.md",
+      "sha256": "7596fd982ca8e5fa764dd2b23b1b80e6608adb6470bd16a2452117a69e7ee8a7",
+      "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/permissions/autogenerated/reference.md"
+    },
+    {
+      "package": "tauri-plugin-ci-auth",
+      "version": "0.1.0",
+      "ref": "4c6a98771c18870e69c147b0658cbf231e7da73c",
+      "packageJson": "packages/tauri-plugin-ci-auth/Cargo.toml",
+      "source": "packages/tauri-plugin-ci-auth/permissions/schemas/schema.json",
+      "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/permissions/schemas/schema.json",
+      "sha256": "c81a660751bb988e576eab2d9c4f0e5132b254c662cc9cd6fb2d7068b40954e3",
+      "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/permissions/schemas/schema.json"
+    },
+    {
+      "package": "tauri-plugin-ci-auth",
+      "version": "0.1.0",
+      "ref": "4c6a98771c18870e69c147b0658cbf231e7da73c",
+      "packageJson": "packages/tauri-plugin-ci-auth/Cargo.toml",
+      "source": "packages/tauri-plugin-ci-auth/README.md",
+      "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/README.md",
+      "sha256": "50ecf1b8e4b1c50d6173aa677cda998388d6735c7e9550b5d26681cb2f2b1de5",
+      "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/README.md"
     }
   ]
 }
