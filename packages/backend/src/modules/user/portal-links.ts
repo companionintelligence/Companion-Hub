@@ -37,12 +37,18 @@ export function portalOrigin(value: string | null | undefined): string | null {
  * With no link from the current Portal, every link is asked, as before: access the current Portal
  * can't confirm still ends, and the person's next sign-in through it adds a link and lets them back
  * in. A link from another Portal is kept rather than deleted, so a Hub moved back still knows it.
+ *
+ * A link whose issuer is a DID method (`did:key`) is not from any Portal and is never returned: it
+ * binds a key, and its subject is a DID that no Portal has heard of. Every caller sends the subject
+ * it gets here to Portal as a person id, so a DID that came back through the "every link" fallbacks
+ * would be answered "not a member" and revoke the person it was linked to.
  */
 export function linksForCurrentPortal<T extends { issuer?: string | null }>(
-  links: readonly T[],
+  allLinks: readonly T[],
   portalUrl: string | null | undefined,
   issuerOverride: string | null | undefined = process.env.PORTAL_OIDC_ISSUER,
 ): T[] {
+  const links = allLinks.filter((link) => !isDidIssuer(link.issuer));
   const current = new Set([portalOrigin(portalUrl), portalOrigin(issuerOverride)].filter((origin) => origin !== null));
   if (current.size === 0) {
     return [...links];
@@ -53,4 +59,9 @@ export function linksForCurrentPortal<T extends { issuer?: string | null }>(
     return origin !== null && current.has(origin);
   });
   return fromCurrentPortal.length > 0 ? fromCurrentPortal : [...links];
+}
+
+/** An issuer that is a DID method (`did:key`), as the DID sign-in stores one, rather than a Portal URL. */
+function isDidIssuer(issuer: string | null | undefined): boolean {
+  return typeof issuer === 'string' && issuer.trim().toLowerCase().startsWith('did:');
 }

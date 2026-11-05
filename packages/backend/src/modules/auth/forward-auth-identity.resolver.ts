@@ -105,6 +105,15 @@ export class ForwardAuthIdentityResolver {
     }
   }
 
+  /**
+   * This Hub's own stable issuer, `urn:ci-hub:<directory id>`: the name forward auth signs people
+   * under. Read-only and additive; it is what a DID sign-in names as its audience, so a token minted
+   * for another Hub or for Portal never verifies here.
+   */
+  public hubIssuer(): Promise<string> {
+    return this.getIssuer();
+  }
+
   private getIssuer(): Promise<string> {
     if (!this.issuer) {
       const reading: Promise<string> = this.readIssuer().catch((error: unknown) => {

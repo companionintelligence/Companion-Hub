@@ -166,10 +166,48 @@ const browserHandoffMintResponseSchema = z.object({
   url: z.string().nullable(),
 });
 
+/*
+ * Sign in with a DID (flag-gated, see DidAuthService). Bounded so an unauthenticated caller cannot
+ * park a large blob in the challenge path: a challenge id is a UUID and a self-issued ID token is a
+ * few hundred bytes.
+ */
+const didChallengeResponseSchema = z.object({
+  challengeId: z.string(),
+  /** What the token's `nonce` claim must equal. */
+  nonce: z.string(),
+  /** What the token's `aud` claim must equal: this Hub's own issuer, never an origin. */
+  audience: z.string(),
+  /** Unix milliseconds. The challenge is spent by the first proof presented, and by nothing after it. */
+  expiresAt: z.number(),
+});
+
+const didProofSchema = z.object({
+  challengeId: z.string().min(1).max(64),
+  idToken: z.string().min(1).max(4096),
+});
+
+const didUnlinkSchema = z.object({
+  did: z.string().min(1).max(200),
+});
+
+const didLinkResponseSchema = z.object({
+  success: z.boolean(),
+  did: z.string(),
+});
+
+const didLinksResponseSchema = z.object({
+  links: z.array(z.object({ did: z.string(), linkedAt: z.string() })),
+});
+
 // Login
 export class LoginBody extends createZodDto(credentialsSchema) {}
 export class VerifyTotpBody extends createZodDto(verifyTotpSchema) {}
 export class LoginDto extends createZodDto(loginResponseSchema) {}
+export class DidChallengeDto extends createZodDto(didChallengeResponseSchema) {}
+export class DidProofBody extends createZodDto(didProofSchema) {}
+export class DidUnlinkBody extends createZodDto(didUnlinkSchema) {}
+export class DidLinkDto extends createZodDto(didLinkResponseSchema) {}
+export class DidLinksDto extends createZodDto(didLinksResponseSchema) {}
 export class PortalDesktopExchangeDto extends createZodDto(portalDesktopExchangeResponseSchema) {}
 export class PortalDesktopHandoffStatusDto extends createZodDto(portalDesktopHandoffStatusResponseSchema) {}
 export class PortalSessionHintDto extends createZodDto(portalSessionHintResponseSchema) {}

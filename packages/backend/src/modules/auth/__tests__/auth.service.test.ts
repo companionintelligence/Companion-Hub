@@ -120,6 +120,16 @@ describe('AuthService', () => {
       expect(store.get(totpSessionId)?.ttl).toBe(300);
     });
 
+    it('hands a DID sign-in the same five-minute second step, and verifyTotp finishes it', async () => {
+      const totpSessionId = authService.beginTotpStep(7);
+
+      expect(store.get(totpSessionId)).toEqual({ value: '7', ttl: 300 });
+      vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(true);
+
+      await expect(authService.verifyTotp({ totpSessionId, totpCode: '123456' })).resolves.toEqual({ sessionId: 'session-id' });
+      expect(sessionManager.createSession).toHaveBeenCalledWith(7);
+    });
+
     it('accepts a right code and clears the session and its attempt counter', async () => {
       store.set(SESSION, { value: '7', ttl: 300 });
       store.set(`totp-attempts:${SESSION}`, { value: '3', ttl: 300 });

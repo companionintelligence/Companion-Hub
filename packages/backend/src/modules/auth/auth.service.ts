@@ -823,6 +823,16 @@ export class AuthService {
   };
 
   /**
+   * The second step of a sign-in whose first factor was not a password (a DID key): the same
+   * short-lived id `login` hands a TOTP-enabled person, finished by {@link AuthService.verifyTotp}.
+   */
+  public beginTotpStep(userId: number): string {
+    const totpSessionId = crypto.randomUUID();
+    this.cache.set(totpSessionId, userId.toString(), TOTP_SESSION_EXPIRATION_SECONDS);
+    return totpSessionId;
+  }
+
+  /**
    * Verify TOTP code and return a JWT token
    *
    * @param {object} params - An object containing the TOTP session ID and the TOTP code

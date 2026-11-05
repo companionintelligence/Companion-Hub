@@ -1542,6 +1542,139 @@
         ]
       }
     },
+    "/api/auth/did/challenge": {
+      "post": {
+        "operationId": "didChallenge",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DidChallengeDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/did/verify": {
+      "post": {
+        "operationId": "didVerify",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DidProofBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/did/links": {
+      "get": {
+        "operationId": "didLinks",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DidLinksDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/did/link": {
+      "post": {
+        "operationId": "didLink",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DidProofBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DidLinkDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      },
+      "delete": {
+        "operationId": "didUnlink",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DidUnlinkBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DidLinkDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/api/auth/register": {
       "post": {
         "operationId": "register",
@@ -8606,6 +8739,26 @@
           "totpSessionId"
         ],
         "additionalProperties": false
+      },
+      "DidChallengeDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "DidProofBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "DidLinksDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "DidLinkDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "DidUnlinkBody": {
+        "type": "object",
+        "properties": {}
       },
       "RegisterBody": {
         "type": "object",

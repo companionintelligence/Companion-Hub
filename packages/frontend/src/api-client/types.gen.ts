@@ -362,6 +362,26 @@ export type VerifyTotpBody = {
     totpSessionId: string;
 };
 
+export type DidChallengeDto = {
+    [key: string]: unknown;
+};
+
+export type DidProofBody = {
+    [key: string]: unknown;
+};
+
+export type DidLinksDto = {
+    [key: string]: unknown;
+};
+
+export type DidLinkDto = {
+    [key: string]: unknown;
+};
+
+export type DidUnlinkBody = {
+    [key: string]: unknown;
+};
+
 export type RegisterBody = {
     username: string;
     password: string;
@@ -3446,6 +3466,71 @@ export type VerifyTotpResponses = {
 };
 
 export type VerifyTotpResponse = VerifyTotpResponses[keyof VerifyTotpResponses];
+
+export type DidChallengeData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/did/challenge';
+};
+
+export type DidChallengeResponses = {
+    default: DidChallengeDto;
+};
+
+export type DidChallengeResponse = DidChallengeResponses[keyof DidChallengeResponses];
+
+export type DidVerifyData = {
+    body: DidProofBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/did/verify';
+};
+
+export type DidVerifyResponses = {
+    default: LoginDto;
+};
+
+export type DidVerifyResponse = DidVerifyResponses[keyof DidVerifyResponses];
+
+export type DidLinksData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/did/links';
+};
+
+export type DidLinksResponses = {
+    default: DidLinksDto;
+};
+
+export type DidLinksResponse = DidLinksResponses[keyof DidLinksResponses];
+
+export type DidUnlinkData = {
+    body: DidUnlinkBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/did/link';
+};
+
+export type DidUnlinkResponses = {
+    default: DidLinkDto;
+};
+
+export type DidUnlinkResponse = DidUnlinkResponses[keyof DidUnlinkResponses];
+
+export type DidLinkData = {
+    body: DidProofBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/did/link';
+};
+
+export type DidLinkResponses = {
+    default: DidLinkDto;
+};
+
+export type DidLinkResponse = DidLinkResponses[keyof DidLinkResponses];
 
 export type RegisterData = {
     body: RegisterBody;

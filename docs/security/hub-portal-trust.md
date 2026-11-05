@@ -133,6 +133,25 @@ The Hub is a client of Portal and of the box, never a source of identity binding
 
 Treat that as a property of the code, not as a security boundary. The Hub controls Docker on the appliance, so a Hub compromise reaches root, and the box has to defend its own record.
 
+## Sign in with a DID
+
+An optional second way into the Hub, **off unless `CI_HUB_DID_AUTH=true`** (every route answers 404 otherwise). The routes, the token and the rules are in [the backend system doc](../system/backend.md#sign-in-with-a-did); this section is what it asks the Hub to trust. It is the Hub half of ADR-0016 (Local.Pub alongside KERI), and it needs the Hub security reviewer before it merges.
+
+| Question | Answer |
+|---|---|
+| What does the Hub trust? | That whoever signed the challenge holds the private key of the `did:key` it names, and that a signed-in Hub person linked that DID earlier. The verifying key is derived from the DID alone. |
+| What does it not trust? | Local.Pub, Portal, any DID registry or resolver, any header in the token. The Hub makes **no network call** to verify a proof. A DID method whose key can rotate is refused, not resolved. |
+| Is the Hub a source of identity bindings here? | No. It is a login method, like a Portal link: a `federated_identity` row (issuer `did:key`) that a signed-in person made for themselves. It is not the box's record of which person owns the computer, which the Hub still neither reads nor writes (above). The Hub never creates a person, or a binding, from a DID alone. |
+| Which factor is it? | Possession of a key. It replaces the password, **not the second factor**: a person with TOTP on still gives the code (`/did/verify` answers `totpSessionId`). Portal SSO skips the Hub's TOTP because Portal is the authority there (`/auth/portal/callback` creates the session directly); a DID has no remote authority, so this path does not skip it. |
+| Who can link or unlink? | An interactive Hub session only. A request a browser says another site sent is refused (`Sec-Fetch-Site`), and so are the Portal push key, the host-local key and the CLI token, which all speak as the first operator. |
+| What does a stolen session buy? | The ability to link the thief's own DID and keep a way in after the session ends; "sign out everywhere" ends sessions, not links. Changing the password asks for the current password; linking a DID does not. **Open item for the reviewer:** require the password (or TOTP) to link. |
+| Can a proof be relayed? | Yes, as with any challenge-response sign-in: a person asked to sign this Hub's challenge on a page the attacker controls hands the attacker a proof, if the attacker can present it before the challenge expires (120 s, once). The audience names this Hub, so a wallet that shows it lets the person see where they are signing in. A SIOPv2 request object (the planned transport) would carry the same fields as a signed request. |
+| What did not change? | Forward auth. `X-CI-Hub-User-AID`, `X-CI-Hub-AID` and `X-CI-Hub-KEL-Digest` are still never set, no `did:keri:` string is built, and the frozen KERI module is still not imported. |
+
+A DID link sits in the same table as Portal links, and Portal-facing code sends a link's subject to Portal as a person id. `linksForCurrentPortal` therefore drops every link whose issuer is a `did:` method; without that, a person whose only link was a DID could be asked about at Portal, answered "not a member", and revoked.
+
+**Not verified:** no real Local.Pub account (invite-only), no wallet that makes this token for a Hub audience, no run of the Hub end to end, and no Traefik in the loop.
+
 ## Review checklist for publication
 
 - [x] Registry-token: Portal rejects a missing or invalid `x-device-key` (`MintRegistryToken` + `deviceAuthMiddleware`; covered by Portal tests).
@@ -144,4 +163,5 @@ Treat that as a property of the code, not as a security boundary. The Hub contro
 - [x] Hub entitlement cache is documented as UX, not a till ([#1212](https://github.com/companionintelligence/CI-Hub/pull/1212)).
 - [x] Hub WhoIs / org grants cache is documented as UX, not a till ([#1214](https://github.com/companionintelligence/CI-Hub/issues/1214)). Device WhoIs uses federated `subject`; Portal-push skips Hub grants.
 - [x] Forward-auth documentation states Hub-signed headers apply only to apps on that appliance (this page + architecture).
+- [ ] Sign in with a DID (off by default): the Hub security reviewer has read [the rules](../system/backend.md#sign-in-with-a-did) and decided the open items above (a step-up to link, relay resistance) before it is switched on anywhere.
 - [x] Portal remains closed-source. Memory is PolyForm Noncommercial in CI-Server; the Hub license does not relicense Portal ([License FAQ](../License-FAQ.md)).

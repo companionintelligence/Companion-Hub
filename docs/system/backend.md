@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-11-01 (uninstall removes only the images an app pulled; reset and uninstall reach the `_user` store; backup archives are owner-only)
+> **Last updated:** 2026-11-05 (sign in with a DID, off unless `CI_HUB_DID_AUTH=true`; earlier: uninstall removes only the images an app pulled; reset and uninstall reach the `_user` store; backup archives are owner-only)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -26,7 +26,7 @@ packages/backend/
 |--------|----------------|
 | `apps` / `app-lifecycle` | Install, start, stop, uninstall marketplace apps |
 | `docker` | Dockerode + compose orchestration |
-| `auth` | Hub sessions, 2FA, Portal SSO. Human login admits each Portal `(iss, sub)` in the paired org as their own operator — not `getFirstOperator()`. Session middleware prefers the newest of cookie vs `X-CI-Hub-Session`. Forward auth (`GET /api/auth/traefik`) signs the username and the person's stable id, which is the issuer and the id with nothing derived from them; the AID header names (`X-CI-Hub-User-AID`, `X-CI-Hub-AID`, `X-CI-Hub-KEL-Digest`) are reserved and never set, and on a route that uses the `ci-hub` forward-auth middleware the current header list makes Traefik delete a visitor's copy (not exercised against a running Traefik). The in-tree KERI module in `packages/common/src/keri` is frozen and not interoperable (see its `FROZEN.md`); `scripts/__tests__/keri-import-guard.test.ts` keeps production code from importing it. Also the route guards that are not operator auth: `InternalNetworkGuard` (source address only; passes proxy traffic unless `HUB_TRUST_PROXY` is set), `ObservabilityReadGuard` (`qa:read` keys on marked GETs), `InferenceAccessGuard` (see [Inference access](#inference-access)), and `InternalOriginGuard` (the origin leg alone, no key — the app credentials handout). |
+| `auth` | Hub sessions, 2FA, Portal SSO. Human login admits each Portal `(iss, sub)` in the paired org as their own operator — not `getFirstOperator()`. Session middleware prefers the newest of cookie vs `X-CI-Hub-Session`. Forward auth (`GET /api/auth/traefik`) signs the username and the person's stable id, which is the issuer and the id with nothing derived from them; the AID header names (`X-CI-Hub-User-AID`, `X-CI-Hub-AID`, `X-CI-Hub-KEL-Digest`) are reserved and never set, and on a route that uses the `ci-hub` forward-auth middleware the current header list makes Traefik delete a visitor's copy (not exercised against a running Traefik). The in-tree KERI module in `packages/common/src/keri` is frozen and not interoperable (see its `FROZEN.md`); `scripts/__tests__/keri-import-guard.test.ts` keeps production code from importing it. Also the route guards that are not operator auth: `InternalNetworkGuard` (source address only; passes proxy traffic unless `HUB_TRUST_PROXY` is set), `ObservabilityReadGuard` (`qa:read` keys on marked GETs), `InferenceAccessGuard` (see [Inference access](#inference-access)), and `InternalOriginGuard` (the origin leg alone, no key — the app credentials handout). Optional sign-in with a DID (`did-auth.service.ts`), absent unless `CI_HUB_DID_AUTH=true`: see [Sign in with a DID](#sign-in-with-a-did). |
 | `health` | Liveness/readiness (`/api/health/live`) |
 | `sse` | Real-time status stream to frontend |
 | `mcp` | MCP server tools for agent apps |
@@ -893,6 +893,41 @@ reach the app's own containers, never another app, the host, or the internet.
 never `degraded`. `readiness` is `null` when the app declares no endpoint or is not running. The
 app detail page shows a pill beside the Memory badge and, when checks fail, lists them by name
 with the app's `detail` (`app-readiness.tsx`).
+
+## Sign in with a DID
+
+The Hub half of ADR-0016 (Local.Pub alongside KERI). A person whose identity key is a canonical Ed25519 `did:key` (Local.Pub publishes such keys for its owners) signs a challenge this Hub issued, and signs in as the person who **linked** that DID first. It is not KERI: it imports nothing from `packages/common/src/keri`, sets no AID header, and changes nothing in forward auth.
+
+**Off by default.** With `CI_HUB_DID_AUTH` unset, or anything but the string `true` (read per call), all five routes answer 404 to everyone, signed in or not: `DidAuthFlagGuard` runs before `AuthGuard`. A controller built without `DidAuthService` has no such routes either.
+
+| Route | Who | What |
+|---|---|---|
+| `POST /api/auth/did/challenge` | anyone; 20 a minute per client | A single-use `{challengeId, nonce, audience, expiresAt}`, kept in the cache for 120 s. `audience` is this Hub's `urn:ci-hub:<directory id>`, the issuer forward auth already signs under. |
+| `POST /api/auth/did/verify` `{challengeId, idToken}` | anyone; 10 failures a minute per client | A linked, active person gets a session and the session cookie, or `{totpSessionId}` if they have TOTP on (finish with `/api/auth/verify-totp`). A DID nobody linked: 403 `DID_NOT_LINKED`. Every other refusal, and a revoked or deleted person: the one 401 `DID_SIGN_IN_REFUSED`, with nothing about which check failed. |
+| `GET /api/auth/did/links` | an interactive session | The caller's own DID links. |
+| `POST /api/auth/did/link` `{challengeId, idToken}` | an interactive session | Links the proven DID to the session's own person (taken from the session, never the body). 409 `DID_ALREADY_LINKED` if someone else holds it. |
+| `DELETE /api/auth/did/link` `{did}` | an interactive session | Removes the caller's own link. 404 `DID_NOT_LINKED` otherwise, whoever else holds the DID. |
+
+**The proof** is a SIOPv2-shaped self-issued ID token, a compact JWS signed with EdDSA:
+
+```
+header   {"alg":"EdDSA","typ":"JWT","kid":"<did>" | "<did>#<fragment>"}          (kid optional)
+payload  {"iss":"<did>","sub":"<did>","aud":"<audience>","nonce":"<nonce>","iat":n,"exp":n}
+```
+
+`audience` and `nonce` are the challenge's; `iat` and `exp` are Unix seconds, `exp - iat` is at most 300, and a signer's clock may be 30 s off. Nothing produces this token for a Hub audience yet; it is the contract a wallet or a Local.Pub client would implement (SIOPv2's request-object transport is the planned adapter, additive to this).
+
+**Rules, each with a test** (`did-auth.service.test.ts`, `did-auth.controller.test.ts`, `did-key.test.ts`):
+
+- **Link first.** The Hub creates no person and no binding from a DID alone, and derives none from a label, a name or an email. A binding is a `federated_identity` row with issuer `did:key` and the full `did:key:z6Mk…` as subject, made by a signed-in person.
+- **The key is the DID.** The verifying key is derived from `iss` and from nothing else; `jwk`, `jku`, `x5u` and `kid` select nothing (a `kid` must be the DID or start `<did>#`). `alg` must be `EdDSA`. `iss` must equal `sub`, and be a canonical Ed25519 `did:key` (no DID URL, no other key type). DIDs whose key can rotate (`did:web`, `did:webvh`, `did:scid:vh`, KERI AIDs) are refused: reading one means resolving a log.
+- **Single use.** A challenge is read and deleted in one synchronous step, and spent by whatever proof is presented first, valid or not.
+- **One audience.** `aud` must be exactly this Hub's issuer, as a string. A proof made for another Hub, for Portal, or for several parties does not verify.
+- **Interactive sessions only for links.** Link, unlink and list need `hubPrincipal === 'session'`. The Portal push key, the host-local key and the CLI token all speak as the first operator and are refused. A change is also refused when the browser says another site sent it (`Sec-Fetch-Site: same-site | cross-site`), the same test `registration.controller.ts` applies.
+- **The second factor stays.** A person with TOTP on gets `{totpSessionId}` from `/did/verify`, like a password sign-in; the DID replaces the password, not the code. Portal SSO (`/auth/portal/callback`) does not ask for the Hub's TOTP, because Portal is the authority there; a DID has no remote authority, so this does.
+- **Portal links stay Portal links.** `federated_identity` is shared, and its readers send a link's subject to Portal as a person id. `linksForCurrentPortal` now drops every `did:`-issuer link before choosing, because its "every link" fallbacks would otherwise return a DID, Portal would answer "not a member", and the sweep would revoke the person who linked it.
+
+**Not verified:** this has not been run against a real Local.Pub account (invite-only), no wallet produces the token for a Hub audience yet, and the Hub was not run end to end (no Docker or GUI session where it was written). The unit tests drive the controller and the service directly.
 
 ## Family Hub auth and Memory connect
 
