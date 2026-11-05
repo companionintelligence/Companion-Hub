@@ -33,6 +33,7 @@ mod lifecycle;
 mod live_session;
 mod logging;
 mod markers;
+mod quiet_watch;
 mod runtime_env;
 mod runtime_state;
 mod start_retry;

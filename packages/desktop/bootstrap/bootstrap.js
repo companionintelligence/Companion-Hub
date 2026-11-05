@@ -17,6 +17,8 @@
 (function bootstrap() {
   const HUB_POLL_MS = 1000;
   const PROGRESS_POLL_MS = 2000;
+  /** With no answer to the progress poll for this long, Docker has stopped answering. */
+  const PROGRESS_STALE_MS = 60 * 1000;
   /** Starting this long without the Hub answering is "hasn't finished starting". */
   const STUCK_AFTER_MS = 3 * 60 * 1000;
   /** After this long, a View logs link joins the starting screen — as in StartupScreen. */
@@ -323,7 +325,9 @@
     }
 
     // A long first download is not "stuck": give the services their three minutes after it.
-    if (downloading(progress)) page.deadline = Math.max(page.deadline, now + STUCK_AFTER_MS);
+    // Only while Docker answers, though. An old answer can't say the download is still moving.
+    const answerIsRecent = now - page.progressAt < PROGRESS_STALE_MS;
+    if (downloading(progress) && answerIsRecent) page.deadline = Math.max(page.deadline, now + STUCK_AFTER_MS);
     return now >= page.deadline ? 'stuck' : 'starting';
   }
 
