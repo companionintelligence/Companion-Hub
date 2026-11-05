@@ -1,13 +1,16 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { openExternal } from '@/lib/helpers/open-external';
+import { useLiveSession } from '@/lib/inference/live-session';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import type { OllamaStatus } from '@/modules/onboarding/helpers/ai-setup-types';
-import { AlertCircle, CheckCircle2, Download, Loader2, RefreshCw } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Download, Info, Loader2, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { FailureLog } from './failure-log';
 
 const OLLAMA_DOWNLOAD_URL = 'https://ollama.com';
+const OLLAMA_DOCS_URL = 'https://docs.ollama.com';
 /** After a successful install, poll status until the service comes up. */
 const POST_INSTALL_RECHECK_ATTEMPTS = 10;
 const POST_INSTALL_RECHECK_DELAY_MS = 2000;
@@ -45,14 +48,17 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
   const statusRef = useRef(status);
   statusRef.current = status;
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // StrictMode's dev double-invoke runs the cleanup once before the real mount, which would
+    // otherwise latch this true and leave the install spinner up for good.
+    unmounted.current = false;
+    return () => {
       unmounted.current = true;
-    },
-    [],
-  );
+    };
+  }, []);
 
   const canAutoInstall = getTauriInvoke() !== null;
+  const liveSession = useLiveSession();
 
   const handleAutoInstall = useCallback(async () => {
     const invoke = getTauriInvoke();
@@ -123,6 +129,27 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
     );
   }
 
+  if (liveSession?.ollamaBlocked) {
+    return (
+      <Card className="border-warning/30 bg-warning/10">
+        <CardContent className="p-4">
+          <div className="flex items-start gap-3">
+            <Info className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
+            <div className="flex-1 text-warning" data-testid="ollama-live-session">
+              <div className="mb-1 text-sm font-medium">{t('ONBOARDING_OLLAMA_LIVE_SESSION_TITLE')}</div>
+              <div className="mb-3 text-xs">{t('ONBOARDING_OLLAMA_LIVE_SESSION_DESC')}</div>
+              {/* The drop-in only stops the service: someone can still run `ollama serve` themselves. */}
+              <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking} data-testid="ollama-recheck-btn">
+                <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+                {t('ONBOARDING_OLLAMA_RECHECK')}
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   const bridgeUnreachable = isBridgeUnreachable(status);
   const firewallBlocked = isFirewallBlocked(status);
   const title = bridgeUnreachable ? t('ONBOARDING_OLLAMA_NOT_REACHABLE') : t('ONBOARDING_OLLAMA_NOT_DETECTED');
@@ -165,7 +192,7 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
             {installPhase === 'error' && (
               <div className="mb-3 flex items-start gap-2 text-xs text-destructive">
                 <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                <span>{installError || t('ONBOARDING_OLLAMA_INSTALL_ERROR')}</span>
+                <FailureLog text={installError || t('ONBOARDING_OLLAMA_INSTALL_ERROR')} testId="ollama-install-error" />
               </div>
             )}
             {installPhase === 'installing' ? (
@@ -190,6 +217,11 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
                   >
                     <Download className="h-3.5 w-3.5 mr-1.5" />
                     {t('ONBOARDING_OLLAMA_GET')}
+                  </Button>
+                )}
+                {bridgeUnreachable && (
+                  <Button size="sm" variant="ghost" onClick={() => openExternal(OLLAMA_DOCS_URL)} data-testid="ollama-docs-btn">
+                    {t('ONBOARDING_OLLAMA_DOCS')}
                   </Button>
                 )}
                 <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking} data-testid="ollama-recheck-btn">

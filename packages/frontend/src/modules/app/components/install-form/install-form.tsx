@@ -217,7 +217,8 @@ export const InstallForm: React.FC<IProps> = ({
   // Only an edit has one. An installed app stays in the mode it runs in until somebody picks another,
   // even while that mode's transport is down. `resolveExposureMode` would move a Private VPN app to
   // Public Web. It would also give a form that names no mode whatever a new install gets.
-  const savedExposureMode = isEdit ? servedExposureMode({ config: initialValues }) : undefined;
+  // An app that is not exposable has no mode to keep: whatever its stored form names, a save sends it local.
+  const savedExposureMode = isEdit && info.exposable ? servedExposureMode({ config: initialValues }) : undefined;
   const keepsPublished = keepsPublishedDomain(isEdit, savedExposureMode);
 
   const availableDomainsQuery = useQuery(getDomainsOptions());
@@ -402,6 +403,16 @@ export const InstallForm: React.FC<IProps> = ({
     [setValue, getValues, enableAuthFallback, hasAuthSwitch, authSwitchShown],
   );
 
+  // The mode a form asking for `requested` goes out on. An app that is not exposable or needs a public address offers no choice.
+  const offeredExposureMode = useCallback(
+    (requested: FormValues['exposureMode'] | undefined) => {
+      if (!info.exposable) return 'local';
+      if (info.force_expose) return 'cloudflare';
+      return resolveExposureMode(requested, { cloudflareAvailable, tailscaleAvailable });
+    },
+    [info.exposable, info.force_expose, cloudflareAvailable, tailscaleAvailable],
+  );
+
   /**
    * Leaves out the access settings this Hub does not offer. An exposure mode it lacks would be
    * submitted as the next mode `resolveExposureMode` finds, so a Private VPN config brought to a Hub
@@ -413,10 +424,7 @@ export const InstallForm: React.FC<IProps> = ({
     (values: Record<string, unknown>): { values: Record<string, unknown>; dropped: string[] } => {
       const { exposureMode, publicDomain } = values;
       const dropped: string[] = [];
-      if (
-        exposureMode !== undefined &&
-        resolveExposureMode(exposureMode as FormValues['exposureMode'], { cloudflareAvailable, tailscaleAvailable }) !== exposureMode
-      ) {
+      if (exposureMode !== undefined && offeredExposureMode(exposureMode as FormValues['exposureMode']) !== exposureMode) {
         dropped.push('exposureMode');
       }
       if (
@@ -428,7 +436,7 @@ export const InstallForm: React.FC<IProps> = ({
       }
       return { values: Object.fromEntries(Object.entries(values).filter(([key]) => !dropped.includes(key))), dropped };
     },
-    [cloudflareAvailable, tailscaleAvailable, availableDomains],
+    [offeredExposureMode, availableDomains],
   );
 
   const handleExportConfig = useCallback(async () => {
@@ -607,6 +615,13 @@ export const InstallForm: React.FC<IProps> = ({
       return;
     }
 
+    // These apps keep the name they first start with. With no domain known yet the form would save none,
+    // and Companion Portal could move the app to another after that first start (`publicDomainToUse`).
+    if (info.force_expose && (watchExposureMode !== 'cloudflare' || !cloudflareAvailable || !publicDomain)) {
+      onValidityChange(false);
+      return;
+    }
+
     const withDefaults = mergeFormFieldDefaults(watchedFormValues as Record<string, unknown>, formFields);
     const formValues = {
       ...withDefaults,
@@ -621,7 +636,20 @@ export const InstallForm: React.FC<IProps> = ({
     }
 
     onValidityChange(isInstallFormValid(formValues, formFields, { requirePortWhenExposedLocal: isProduction }));
-  }, [onValidityChange, info.exposable, info.dynamic_config, info.port, watchExposureMode, watchPort, formFields, watchedFormValues, isProduction]);
+  }, [
+    onValidityChange,
+    info.exposable,
+    info.dynamic_config,
+    info.force_expose,
+    info.port,
+    cloudflareAvailable,
+    publicDomain,
+    watchExposureMode,
+    watchPort,
+    formFields,
+    watchedFormValues,
+    isProduction,
+  ]);
 
   // Only fields the operator changed, and only while they differ from what the form opened with.
   // Not `isDirty`: the form has no defaultValues (the seeding effect fills it with setValue), so
@@ -669,6 +697,11 @@ export const InstallForm: React.FC<IProps> = ({
         setValue(key, value as string);
       }
     }
+    // A stored form can still name a route on an app that is not exposable. What watches the mode, such
+    // as the suggested base URL, has to read what a save will send.
+    if (shouldSeed && !info.exposable && getValues('exposureMode') && getValues('exposureMode') !== 'local') {
+      setValue('exposureMode', 'local');
+    }
     // Seed catalog form_field defaults into RHF so empty installs submit working env values
     // (uncontrolled defaultValue alone is easy to miss on validate/submit).
     if (shouldSeed) {
@@ -682,18 +715,12 @@ export const InstallForm: React.FC<IProps> = ({
       }
     }
     if (info.force_expose) {
-      setValue('exposed', true);
       setValue('openPort', false);
     }
     // Set default exposure mode and port for exposable apps
     if (info.exposable && info.dynamic_config) {
       // A new install auto-selects the first available mode: cloudflare > tailscale > local
-      const defaultMode =
-        savedExposureMode ??
-        resolveExposureMode(initialValues?.exposureMode as FormValues['exposureMode'] | undefined, {
-          cloudflareAvailable,
-          tailscaleAvailable,
-        });
+      const defaultMode = savedExposureMode ?? offeredExposureMode(initialValues?.exposureMode as FormValues['exposureMode'] | undefined);
       if (shouldSeed) {
         setValue('exposureMode', defaultMode);
         setValue('exposedLocal', true); // backward compat
@@ -744,9 +771,8 @@ export const InstallForm: React.FC<IProps> = ({
     initialValues?.publicDomain,
     keepsPublished,
     resetField,
-    cloudflareAvailable,
+    offeredExposureMode,
     domain,
-    tailscaleAvailable,
     enableAuthFallback,
     isEdit,
     savedExposureMode,
@@ -893,12 +919,19 @@ export const InstallForm: React.FC<IProps> = ({
             <div className="grid grid-cols-3 gap-2">
               {(
                 [
-                  { key: 'local', label: t('APP_INSTALL_FORM_EXPOSURE_LOCAL'), available: true, tooltip: '' },
+                  {
+                    key: 'local',
+                    label: t('APP_INSTALL_FORM_EXPOSURE_LOCAL'),
+                    available: !info.force_expose,
+                    tooltip: t('APP_INSTALL_FORM_EXPOSURE_PUBLIC_WEB_ONLY'),
+                  },
                   {
                     key: 'tailscale',
                     label: t('COMMON_PRIVATE_VPN'),
-                    available: tailscaleAvailable,
-                    tooltip: t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE_UNAVAILABLE'),
+                    available: tailscaleAvailable && !info.force_expose,
+                    tooltip: info.force_expose
+                      ? t('APP_INSTALL_FORM_EXPOSURE_PUBLIC_WEB_ONLY')
+                      : t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE_UNAVAILABLE'),
                   },
                   {
                     key: 'cloudflare',
@@ -934,7 +967,8 @@ export const InstallForm: React.FC<IProps> = ({
             </div>
           )}
         />
-        {!tailscaleAvailable && info.exposable && info.dynamic_config && (
+        {info.force_expose && <p className="mt-2 text-xs text-muted-foreground">{t('APP_INSTALL_FORM_EXPOSURE_PUBLIC_WEB_ONLY')}</p>}
+        {!tailscaleAvailable && info.exposable && info.dynamic_config && !info.force_expose && (
           <p className="mt-2 text-xs text-muted-foreground">
             <Link to="/settings?tab=network" className="text-primary underline-offset-2 hover:underline">
               {t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE_SETUP_LINK')}
@@ -1112,9 +1146,7 @@ export const InstallForm: React.FC<IProps> = ({
   };
 
   const validate = async (values: FormValues) => {
-    const exposureMode = savedExposureMode
-      ? (values.exposureMode ?? savedExposureMode)
-      : resolveExposureMode(values.exposureMode, { cloudflareAvailable, tailscaleAvailable });
+    const exposureMode = savedExposureMode ? (values.exposureMode ?? savedExposureMode) : offeredExposureMode(values.exposureMode);
     const withFieldDefaults: FormValues = { ...values };
     for (const field of formFields) {
       if (isHiddenFieldType(field.type)) continue;

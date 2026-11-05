@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OllamaSetupCard } from '../ollama-setup-card';
 
@@ -26,6 +27,25 @@ afterEach(() => {
 });
 
 describe('OllamaSetupCard auto-install', () => {
+  it('keeps a long install failure from pushing the buttons away, and keeps its lines', async () => {
+    const user = userEvent.setup();
+    const log = `Ollama installation failed: ${'line\n'.repeat(5000)}E: the cause`;
+    installTauriMock(
+      vi.fn(async (command: string) => {
+        if (command === 'install_ollama_command') throw log;
+        return null;
+      }),
+    );
+    render(<OllamaSetupCard status={ollamaMissing} checking={false} onRecheck={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: /Run this automatically/i }));
+
+    const shown = await screen.findByTestId('ollama-install-error');
+    expect(shown.className).toMatch(/max-h-\S+ overflow-y-auto/);
+    expect(shown.className).toContain('whitespace-pre-wrap');
+    expect(shown.textContent).toBe(log);
+  });
+
   it('hides the auto-install button outside the desktop app (no Tauri)', () => {
     render(<OllamaSetupCard status={ollamaMissing} checking={false} onRecheck={vi.fn()} />);
 
@@ -77,6 +97,75 @@ describe('OllamaSetupCard auto-install', () => {
     expect(screen.getByTestId('ollama-remediation-command')).toHaveTextContent(
       'sudo ufw allow from 172.18.0.0/16 to 172.17.0.1 port 11434 proto tcp',
     );
+  });
+
+  it('reports a failed install under StrictMode, whose extra effect cleanup is not an unmount', async () => {
+    const user = userEvent.setup();
+    installTauriMock(vi.fn().mockRejectedValue('Ollama installation failed: exit code 1'));
+
+    render(
+      <StrictMode>
+        <OllamaSetupCard status={ollamaMissing} checking={false} onRecheck={vi.fn()} />
+      </StrictMode>,
+    );
+
+    await user.click(screen.getByRole('button', { name: /Run this automatically/i }));
+
+    await waitFor(() => expect(screen.getByText('Ollama installation failed: exit code 1')).toBeInTheDocument());
+  });
+
+  it('links to the Ollama docs when Ollama is installed but not reachable', () => {
+    render(<OllamaSetupCard status={{ ...ollamaMissing, bridgeUnreachable: true }} checking={false} onRecheck={vi.fn()} />);
+
+    expect(screen.getByTestId('ollama-docs-btn')).toHaveTextContent('Ollama docs');
+    expect(screen.queryByRole('button', { name: /Get Ollama/i })).not.toBeInTheDocument();
+  });
+
+  it('offers the download instead of the docs when Ollama was not detected', () => {
+    render(<OllamaSetupCard status={ollamaMissing} checking={false} onRecheck={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: /Get Ollama/i })).toBeInTheDocument();
+    expect(screen.queryByTestId('ollama-docs-btn')).not.toBeInTheDocument();
+  });
+
+  it('says Ollama cannot run in a live session and offers no install', async () => {
+    installTauriMock(
+      vi.fn(async (command: string) =>
+        command === 'live_session_state_command' ? { live: true, ollamaBlocked: true, tailscaleBlocked: true } : null,
+      ),
+    );
+    render(<OllamaSetupCard status={{ ...ollamaMissing, bridgeUnreachable: true }} checking={false} onRecheck={vi.fn()} />);
+
+    expect(await screen.findByTestId('ollama-live-session')).toHaveTextContent("Ollama can't run in a live session");
+    expect(screen.queryByRole('button', { name: /Run this automatically/i })).not.toBeInTheDocument();
+  });
+
+  it('can still re-check in a live session, for an Ollama someone started by hand', async () => {
+    const user = userEvent.setup();
+    const onRecheck = vi.fn();
+    installTauriMock(
+      vi.fn(async (command: string) =>
+        command === 'live_session_state_command' ? { live: true, ollamaBlocked: true, tailscaleBlocked: true } : null,
+      ),
+    );
+    render(<OllamaSetupCard status={ollamaMissing} checking={false} onRecheck={onRecheck} />);
+
+    await screen.findByTestId('ollama-live-session');
+    await user.click(screen.getByTestId('ollama-recheck-btn'));
+
+    expect(onRecheck).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the install in a normal desktop session', async () => {
+    const invoke = vi.fn(async (command: string) =>
+      command === 'live_session_state_command' ? { live: false, ollamaBlocked: false, tailscaleBlocked: false } : null,
+    );
+    installTauriMock(invoke);
+    render(<OllamaSetupCard status={ollamaMissing} checking={false} onRecheck={vi.fn()} />);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('live_session_state_command'));
+    expect(screen.getByRole('button', { name: /Run this automatically/i })).toBeInTheDocument();
+    expect(screen.queryByTestId('ollama-live-session')).not.toBeInTheDocument();
   });
 
   it('shows the auto-install button in the desktop app and invokes install_ollama_command', async () => {

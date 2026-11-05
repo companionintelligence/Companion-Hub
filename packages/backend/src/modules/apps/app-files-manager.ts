@@ -7,13 +7,14 @@ import { execAsync } from '@/common/helpers/exec-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { AsyncMutex } from '@/utils/mutex/async-mutex';
 import { Injectable } from '@nestjs/common';
 import { parseInstalledAppInfo, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 
 const IMAGE_ID_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
-/** What an app's pulls brought onto this computer, as its record holds it. */
+/** What an app's pulls, or those of an app that handed them over, brought onto this computer, as its record holds it. */
 export type PulledImages = {
   imageIds: string[];
   /** The tags those images had when they arrived. Any other tag came from something else: see `DockerService.removeAppImages`. */
@@ -86,6 +87,8 @@ export function buildPermissionsCommand(appDataDir: string, excluded: readonly s
 
 @Injectable()
 export class AppFilesManager {
+  private readonly pulledImagesMutex = new AsyncMutex();
+
   constructor(
     private readonly configuration: ConfigurationService,
     private readonly filesystem: FilesystemService,
@@ -262,7 +265,10 @@ export class AppFilesManager {
    * takes a name just as well. A name removes whichever image has that name by then.
    */
   public async readPulledImages(appUrn: AppUrn): Promise<PulledImages> {
-    const text = await this.filesystem.readTextFile(this.getPulledImagesPath(appUrn));
+    return this.parsePulledImages(appUrn, await this.filesystem.readTextFile(this.getPulledImagesPath(appUrn)));
+  }
+
+  private parsePulledImages(appUrn: AppUrn, text: string | null): PulledImages {
     if (!text) {
       return { imageIds: [], imageTags: [] };
     }
@@ -285,6 +291,29 @@ export class AppFilesManager {
   public async writePulledImages(appUrn: AppUrn, { imageIds, imageTags }: PulledImages): Promise<boolean> {
     const content = JSON.stringify({ imageIds: [...new Set(imageIds)], imageTags: [...new Set(imageTags)] }, null, 2);
     return this.filesystem.writeTextFile(this.getPulledImagesPath(appUrn), content);
+  }
+
+  /**
+   * Adds to the app's record what its own pull brought in or what another app's uninstall hands over. One at a time for
+   * each record, since these run side by side and a second one reading it before the first writes would lose the first's.
+   * Returns false when it could not be written. A record that exists and can't be read counts as that too: `readTextFile`
+   * answers null for any failure. Writing then would lose what the record holds.
+   */
+  public async addPulledImages(appUrn: AppUrn, added: PulledImages): Promise<boolean> {
+    const release = await this.pulledImagesMutex.acquire(appUrn);
+    try {
+      const recordPath = this.getPulledImagesPath(appUrn);
+      const text = await this.filesystem.readTextFile(recordPath);
+      if (text === null && (await this.filesystem.pathExists(recordPath))) {
+        this.logger.warn(`Could not read the record of the images pulled for ${appUrn}, so it is left as it is`);
+        return false;
+      }
+
+      const { imageIds, imageTags } = this.parsePulledImages(appUrn, text);
+      return await this.writePulledImages(appUrn, { imageIds: [...imageIds, ...added.imageIds], imageTags: [...imageTags, ...added.imageTags] });
+    } finally {
+      release();
+    }
   }
 
   /**

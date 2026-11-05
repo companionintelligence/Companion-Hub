@@ -319,6 +319,102 @@ describe('InstallForm', () => {
     ]);
   });
 
+  describe('an app whose listing needs a public address', () => {
+    const info = {
+      urn: 'matrix-conduit:store',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+      force_expose: true,
+      port: 6167,
+    } as unknown as AppInfo;
+    const onValidityChange = vi.fn();
+
+    const renderForm = (props: Partial<ComponentProps<typeof InstallForm>> = {}, context: { cloudflareAvailable?: boolean } = {}) => {
+      vi.mocked(useAppContext).mockReturnValue({
+        ...createContext(false),
+        tailscaleAvailable: true,
+        ...context,
+      } as unknown as ReturnType<typeof useAppContext>);
+
+      return render(
+        <MemoryRouter>
+          <InstallForm info={info} onSubmit={vi.fn()} formId="test-form" formFields={[]} onValidityChange={onValidityChange} {...props} />
+        </MemoryRouter>,
+      );
+    };
+
+    it('offers only Public web and says why', async () => {
+      renderForm();
+
+      expect(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_LOCAL' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'COMMON_PRIVATE_VPN' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' })).toBeEnabled();
+      expect(screen.getByText('APP_INSTALL_FORM_EXPOSURE_PUBLIC_WEB_ONLY')).toBeInTheDocument();
+      await waitFor(() => expect(onValidityChange).toHaveBeenLastCalledWith(true));
+    });
+
+    it('submits Public web with nothing that needs a typed domain', async () => {
+      const onSubmit = vi.fn();
+      renderForm({ onSubmit });
+
+      await waitFor(() => expect(onValidityChange).toHaveBeenLastCalledWith(true));
+      fireEvent.submit(document.getElementById('test-form') as HTMLFormElement);
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+      const [submitted] = onSubmit.mock.calls[0] as [Record<string, unknown>];
+      expect(submitted).toMatchObject({ exposureMode: 'cloudflare', exposedLocal: true });
+      expect(submitted.exposed).toBeUndefined();
+    });
+
+    it('keeps Install off where this Hub has no Public web', async () => {
+      renderForm({}, { cloudflareAvailable: false });
+
+      expect(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' })).toBeDisabled();
+      await waitFor(() => expect(onValidityChange).toHaveBeenCalled());
+      expect(onValidityChange).not.toHaveBeenCalledWith(true);
+    });
+
+    it('keeps Install off until the domain its name goes on is known', async () => {
+      MOCK_USE_QUERY_RESULT.isFetching = true;
+      renderForm();
+
+      await waitFor(() => expect(onValidityChange).toHaveBeenCalled());
+      expect(onValidityChange).not.toHaveBeenCalledWith(true);
+    });
+
+    it('keeps Install off when the domain list could not be read', async () => {
+      MOCK_AVAILABLE_DOMAINS.supported = false;
+      renderForm();
+
+      await waitFor(() => expect(onValidityChange).toHaveBeenCalled());
+      expect(onValidityChange).not.toHaveBeenCalledWith(true);
+    });
+
+    it('turns Install on once a domain the list offers is preselected', async () => {
+      MOCK_AVAILABLE_DOMAINS.domains = [{ id: '1', domain: 'ci9.pw', isDefault: true }];
+      renderForm();
+
+      await waitFor(() => expect(onValidityChange).toHaveBeenLastCalledWith(true));
+    });
+
+    it('still requires what the listing marks required', async () => {
+      const required = { label: 'Open registration', type: 'text', required: true, env_variable: 'REGISTRATION_OPEN' } as FormField;
+      renderForm({ formFields: [required] });
+
+      await waitFor(() => expect(onValidityChange).toHaveBeenCalled());
+      expect(onValidityChange).not.toHaveBeenCalledWith(true);
+    });
+
+    it('keeps the other modes for an app with no such need', () => {
+      renderForm({ info: { ...info, force_expose: false } });
+
+      expect(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_LOCAL' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'COMMON_PRIVATE_VPN' })).toBeEnabled();
+      expect(screen.queryByText('APP_INSTALL_FORM_EXPOSURE_PUBLIC_WEB_ONLY')).not.toBeInTheDocument();
+    });
+  });
+
   it('shows advanced settings toggle in simple mode when optional fields exist', () => {
     vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
 
@@ -3308,6 +3404,163 @@ describe('InstallForm - importing a config it just exported', () => {
     } finally {
       MOCK_AVAILABLE_DOMAINS.domains = [];
     }
+  });
+});
+
+/**
+ * An app whose listing says it is not exposable offers no exposure choice, so nothing the form holds
+ * (a default, a stored form, an imported file) may send it anywhere but This Machine Only.
+ */
+describe('InstallForm - an app that is not exposable', () => {
+  const secret = { type: 'text', label: 'Access Password', env_variable: 'APP_PASSWORD', required: true } as unknown as FormField;
+  const murmur = {
+    id: 'murmur',
+    urn: 'murmur:ci-marketplace',
+    form_fields: [secret],
+    exposable: false,
+    dynamic_config: true,
+    port: 3101,
+  } as unknown as AppInfo;
+  const cyberchef = { ...(murmur as object), id: 'cyberchef', urn: 'cyberchef:ci-marketplace', exposable: true } as unknown as AppInfo;
+
+  const renderForm = (info: AppInfo, onSubmit: (values: Record<string, unknown>) => void, props: Partial<ComponentProps<typeof InstallForm>> = {}) =>
+    render(
+      <MemoryRouter>
+        <InstallForm info={info} onSubmit={onSubmit} formId="test-form" formFields={[secret]} {...props} />
+      </MemoryRouter>,
+    );
+
+  const submit = async (container: HTMLElement) => {
+    await act(async () => {
+      fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+    });
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    fetchDnsAvailability.mockImplementation(async () => new Response(JSON.stringify({ available: true }), { status: 200 }));
+    vi.mocked(useAppContext).mockReturnValue({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'example.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: false },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: true,
+    } as unknown as ReturnType<typeof useAppContext>);
+  });
+
+  afterEach(() => {
+    fetchDnsAvailability.mockReset();
+  });
+
+  it('installs on This Machine Only on a Hub that offers Public Web', async () => {
+    const onSubmit = vi.fn();
+    const { container } = renderForm(murmur, onSubmit);
+    fireEvent.change(await screen.findByLabelText(/Access Password/), { target: { value: 'a-long-password-here' } });
+
+    await submit(container);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ exposureMode: 'local', exposedLocal: false });
+  });
+
+  it('saves on This Machine Only when its stored form names Public Web', async () => {
+    const onSubmit = vi.fn();
+    const { container } = renderForm(murmur, onSubmit, {
+      isEdit: true,
+      initialValues: { exposureMode: 'cloudflare', exposedLocal: false, openPort: false, APP_PASSWORD: 'a-long-password-here' },
+    });
+    await screen.findByLabelText(/Access Password/);
+
+    await submit(container);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ exposureMode: 'local', exposedLocal: false });
+  });
+
+  it.each(['cloudflare', 'tailscale'])('leaves out %s from an imported config and says so', async (exposureMode) => {
+    const file = JSON.stringify({
+      schemaVersion: 1,
+      appId: 'murmur',
+      exportedAt: '2026-10-01T10:00:00.000Z',
+      values: { APP_PASSWORD: 'a-long-password-here', exposureMode },
+    });
+    const onSubmit = vi.fn();
+    const { container } = renderForm(murmur, onSubmit);
+    await screen.findByLabelText(/Access Password/);
+
+    await act(async () => {
+      fireEvent.change(container.querySelector('input[type="file"]') as HTMLInputElement, { target: { files: [{ text: async () => file }] } });
+    });
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_UNRECOGNIZED'));
+
+    await submit(container);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ APP_PASSWORD: 'a-long-password-here', exposureMode: 'local', exposedLocal: false });
+  });
+
+  it('imports a config it exported on This Machine Only with nothing ignored', async () => {
+    const file = JSON.stringify({
+      schemaVersion: 1,
+      appId: 'murmur',
+      exportedAt: '2026-10-01T10:00:00.000Z',
+      values: { APP_PASSWORD: 'a-long-password-here', exposureMode: 'local', exposedLocal: false, openPort: true },
+    });
+    const { container } = renderForm(murmur, vi.fn());
+    await screen.findByLabelText(/Access Password/);
+
+    await act(async () => {
+      fireEvent.change(container.querySelector('input[type="file"]') as HTMLInputElement, { target: { files: [{ text: async () => file }] } });
+    });
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('suggests a local base URL when its stored form names Public Web', async () => {
+    const baseUrl = { type: 'app_base_url', label: 'Base URL', env_variable: 'APP_BASE_URL', required: false } as unknown as FormField;
+    const onSubmit = vi.fn();
+    const { container } = renderForm(murmur, onSubmit, {
+      isEdit: true,
+      formFields: [secret, baseUrl],
+      initialValues: { exposureMode: 'cloudflare', publicDomain: 'example.com', APP_PASSWORD: 'a-long-password-here' },
+    });
+    await screen.findByLabelText(/Access Password/);
+
+    await submit(container);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ exposureMode: 'local', APP_BASE_URL: 'http://localhost:3101' });
+  });
+
+  it('still lets an exposable app be imported on the Private VPN', async () => {
+    const file = JSON.stringify({
+      schemaVersion: 1,
+      appId: 'cyberchef',
+      exportedAt: '2026-10-01T10:00:00.000Z',
+      values: { APP_PASSWORD: 'a-long-password-here', exposureMode: 'tailscale' },
+    });
+    const onSubmit = vi.fn();
+    const { container } = renderForm(cyberchef, onSubmit);
+    await screen.findByLabelText(/Access Password/);
+
+    await act(async () => {
+      fireEvent.change(container.querySelector('input[type="file"]') as HTMLInputElement, { target: { files: [{ text: async () => file }] } });
+    });
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+
+    await submit(container);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ exposureMode: 'tailscale' });
   });
 });
 

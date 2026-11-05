@@ -7,10 +7,10 @@ import { isPortExposeApp, manifestDefaultsEdgeAuthOn, servedOpenPort } from '@ci
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
-import { HttpStatus, Inject, Injectable, OnApplicationBootstrap, OnModuleDestroy, Optional } from '@nestjs/common';
+import { HttpException, HttpStatus, Inject, Injectable, OnApplicationBootstrap, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
-import { normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { normalizeStoredHostname, sanitizeAppSubdomain, servedExposureMode } from '@ci-hub/common/types';
 import { type CustomDomainForm, type CustomDomainState, requestsCustomDomainChange } from './custom-domain-authority';
 import { customDomainAuditLine } from './custom-domain-audit';
 import validator from 'validator';
@@ -66,7 +66,8 @@ import type { ActorCheckContext, LifecycleActor, SystemLifecycleReason } from '@
 import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
-import { getEffectiveExposureMode, publishesHostPort } from '../apps/app-exposure.helpers';
+import { getEffectiveExposureMode, publishForcedExposure, publishesHostPort, servesForcedExposure } from '../apps/app-exposure.helpers';
+import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { canonicalJson } from '../queue/message-signing';
 import {
   canServeOnCustomDomain,
@@ -241,6 +242,39 @@ function dropUnservableCustomDomain(parsedForm: ParsedAppForm, exposable: boolea
 }
 
 /**
+ * The only form an app whose listing says `exposable: false` runs with: This Machine Only.
+ *
+ * Compose, Traefik and the Portal sync all read the mode before anything else, so clearing the other
+ * fields alone leaves a form naming `cloudflare` on a public route, with the login turned off here too.
+ * The host port is open because a local form always publishes it (`normalizeSubmittedForm`).
+ *
+ * Returns whether the form asked for anything else, so the caller can say it was reset.
+ */
+function keepOnThisMachineOnly(parsedForm: ParsedAppForm): boolean {
+  const moved = Boolean(parsedForm.exposed || parsedForm.exposedLocal || parsedForm.enableAuth) || getEffectiveExposureMode(parsedForm) !== 'local';
+  parsedForm.exposed = false;
+  parsedForm.exposedLocal = false;
+  parsedForm.exposureMode = 'local';
+  parsedForm.openPort = true;
+  parsedForm.enableAuth = false;
+  parsedForm.domain = undefined;
+  parsedForm.publicDomain = undefined;
+  return moved;
+}
+
+/**
+ * Whether an installed app's stored form still names a route its listing says it cannot have.
+ *
+ * Saving or reinstalling such an app is the Hub's move rather than the operator's. It starts publishing
+ * a host port the app never published and the dialog has no port field to answer a refusal with, so
+ * these moves skip the host port check. A start moves the app if the port does turn out to be held
+ * (`moveMainPortOffConflict`). Refusing would leave the app on the route with its login off.
+ */
+function storedOnForbiddenRoute(appInfo: { exposable?: boolean }, app: Parameters<typeof servedExposureMode>[0]): boolean {
+  return !appInfo.exposable && servedExposureMode(app) !== 'local';
+}
+
+/**
  * The submitted form as the Hub will act on it.
  *
  * Local exposure always publishes the host port, and the routing subdomain is
@@ -378,6 +412,12 @@ function customDomainColumns(parsedForm: {
   return { customDomainIntent: intent, customDomainTakeover: intent !== null && parsedForm.customDomainTakeover === true };
 }
 
+/** The host port a stored form names, if it names one. */
+function storedFormPort(storedConfig: unknown): number | undefined {
+  const port = (storedConfig as { port?: unknown } | null | undefined)?.port;
+  return typeof port === 'number' ? port : undefined;
+}
+
 function buildInstallRowPatch(parsedForm: ParsedAppForm, storedConfig: unknown): Record<string, unknown> {
   /*
    * BOTH destructured out before the spread. `customDomain` always was — it must
@@ -405,8 +445,8 @@ function buildInstallRowPatch(parsedForm: ParsedAppForm, storedConfig: unknown):
    * manifest's while the row still named the port it had. A port is set by a move or by a save that names one.
    */
   const config = toStoredConfig(parsedForm);
-  const storedPort = (storedConfig as { port?: unknown } | null | undefined)?.port;
-  if (parsedForm.port === undefined && typeof storedPort === 'number') {
+  const storedPort = storedFormPort(storedConfig);
+  if (parsedForm.port === undefined && storedPort !== undefined) {
     config.port = storedPort;
   }
 
@@ -414,8 +454,10 @@ function buildInstallRowPatch(parsedForm: ParsedAppForm, storedConfig: unknown):
     config,
     ...rowFields,
     // What compose runs the form as, as a first install and a save record it. A form naming no mode has
-    // no `exposureMode` to spread, which left the row on whatever mode the app had before.
+    // no `exposureMode` to spread, which left the row on whatever mode the app had before. A form naming
+    // no `openPort` has none either, and the queue serves it on an open port.
     exposureMode: getEffectiveExposureMode(parsedForm),
+    openPort: servedOpenPort(parsedForm),
     ...customDomainColumns(parsedForm),
   };
 }
@@ -1129,6 +1171,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       ...failureForEveryone(result),
       errorCode: result.errorCode,
       settingsPath: result.settingsPath,
+      movedHostPort: result.movedHostPort,
     });
     if (emitQueueUpdate) {
       void this.emitInstallQueueUpdate();
@@ -1770,7 +1813,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_INSTALL_FORM_ERROR_INVALID', { fields: labels }, HttpStatus.BAD_REQUEST);
     }
 
-    const { exposed, exposedLocal, openPort, domain, isVisibleOnGuestDashboard, enableAuth, port } = parsedForm;
+    // What the REQUEST asked for, used by the checks below. Everything written to the row reads
+    // `parsedForm`: the production guard and the non-exposable reset both change it after this point.
+    const { exposed, exposedLocal, domain, isVisibleOnGuestDashboard, port } = parsedForm;
 
     if (demoMode && apps.length >= 6) {
       throw new TranslatableError('SYSTEM_ERROR_DEMO_MODE_LIMIT');
@@ -1829,15 +1874,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       keepStoredExposure(parsedForm, parsedFormResult.data, existingApp.config);
     }
 
-    if (!appInfo.exposable) {
-      if (exposed || exposedLocal || enableAuth) {
-        this.logger.warn(`App ${appUrn} is not exposable, resetting proxy settings`);
-      }
-      parsedForm.exposed = false;
-      parsedForm.exposedLocal = false;
-      parsedForm.enableAuth = false;
-      parsedForm.domain = undefined;
-      parsedForm.publicDomain = undefined;
+    if (!appInfo.exposable && keepOnThisMachineOnly(parsedForm)) {
+      this.logger.warn(`App ${appUrn} is not exposable, resetting proxy settings`);
+    }
+
+    // Before the custom-domain and login checks below, which read what this writes.
+    if (appInfo.force_expose) {
+      publishForcedExposure(parsedForm);
     }
 
     if (getEffectiveExposureMode(parsedForm) !== 'cloudflare') {
@@ -1856,18 +1899,29 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       parsedForm.enableAuth = manifestDefaultsEdgeAuthOn(appInfo) || undefined;
     }
 
-    if (appInfo.force_expose && !exposed) {
-      throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn });
+    if (appInfo.force_expose && !servesForcedExposure(parsedForm)) {
+      throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn }, HttpStatus.BAD_REQUEST);
+    }
+
+    // As the install dialog refuses it: nothing would serve the name the app first starts with, and it
+    // can't take another later. A reinstall keeps the name it has, and a named domain needs no tunnel.
+    if (
+      appInfo.force_expose &&
+      !reinstall &&
+      !parsedForm.exposed &&
+      !this.moduleRef.get(CloudflareClientService, { strict: false })?.getTunnelToken()
+    ) {
+      throw new TranslatableError('APP_INSTALL_FORM_NEEDS_PUBLIC_WEB', undefined, HttpStatus.BAD_REQUEST);
     }
 
     const conflictsOtherApp = <T extends { id?: number }>(candidates: T[]) =>
       existingApp ? candidates.filter((candidate) => candidate.id !== existingApp.id) : candidates;
 
-    if (exposed && domain) {
-      const appsWithSameDomain = conflictsOtherApp(await this.appRepository.getAppsByDomain(domain));
+    if (parsedForm.exposed && parsedForm.domain) {
+      const appsWithSameDomain = conflictsOtherApp(await this.appRepository.getAppsByDomain(parsedForm.domain));
 
       if (appsWithSameDomain.length > 0) {
-        throw new TranslatableError('APP_ERROR_DOMAIN_ALREADY_IN_USE', { domain, id: appsWithSameDomain[0]?.appName });
+        throw new TranslatableError('APP_ERROR_DOMAIN_ALREADY_IN_USE', { domain: parsedForm.domain, id: appsWithSameDomain[0]?.appName });
       }
     }
 
@@ -1883,7 +1937,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
     }
 
-    if (publishesHostPort(parsedForm) && port) {
+    const leavesRoute = !!existingApp && storedOnForbiddenRoute(appInfo, existingApp);
+
+    if (publishesHostPort(parsedForm) && port && !leavesRoute) {
       const appsWithSamePort = conflictsOtherApp(await this.appRepository.getAppsByPort(port));
 
       if (appsWithSamePort.length > 0) {
@@ -1938,8 +1994,17 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     if (existingApp && !retrying) {
       await this.recordMainPort(appUrn, parsedForm.port);
-      await this.appRepository.updateAppById(existingApp.id, buildInstallRowPatch(parsedForm, current?.config));
+      await this.appRepository.updateAppById(existingApp.id, {
+        ...buildInstallRowPatch(parsedForm, current?.config),
+        // The reset leaves these `undefined`, which keeps a column as it was.
+        ...(appInfo.exposable ? {} : { domain: null, publicDomain: null }),
+      });
       await this.claimCustomDomainIntent(existingApp.id, parsedForm.customDomain);
+      if (leavesRoute) {
+        // The start below syncs only a row that says `exposedLocal`, which this one no longer does. The
+        // row is local already, so this sync leaves the app out. That is what releases its route.
+        this.fireAndForgetLifecycle('release-route-after-reinstall', appUrn, () => this.syncExposure());
+      }
       // Part of the install the caller was authorized for, not a new decision. Under this install's claim.
       return this.dispatchStart({ appUrn });
     }
@@ -1963,8 +2028,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           // - Traefik routing uses params.internalPort from the service definition, not this database field.
           port: parsedForm.port ?? appInfo.port,
           version: appInfo.cihub_app_version,
-          exposed: exposed ?? false,
-          domain: domain ?? null,
+          exposed: parsedForm.exposed ?? false,
+          domain: parsedForm.domain ?? null,
           localSubdomain: parsedForm.localSubdomain ?? null,
           publicDomain: parsedForm.publicDomain ?? null,
           // The custom domain the installer picked, recorded as an intent. It is
@@ -1977,8 +2042,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           // defaulted false, the bind pass read that as a refusal, and the move
           // the person had just agreed to was cleared on the next sync.
           ...customDomainColumns(parsedForm),
-          openPort: openPort ?? false,
-          exposedLocal: exposedLocal ?? !!appInfo.exposable,
+          openPort: servedOpenPort(parsedForm),
+          exposedLocal: parsedForm.exposedLocal ?? !!appInfo.exposable,
           exposureMode: getEffectiveExposureMode(parsedForm),
           appStoreSlug: appStoreId,
           isVisibleOnGuestDashboard,
@@ -2025,8 +2090,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         config: toStoredConfig(parsedForm),
         port: parsedForm.port ?? installRecord.port ?? appInfo.port,
         version: appInfo.cihub_app_version,
-        exposed: exposed ?? false,
-        domain: domain ?? null,
+        exposed: parsedForm.exposed ?? false,
+        domain: parsedForm.domain ?? null,
         localSubdomain: parsedForm.localSubdomain ?? null,
         publicDomain: parsedForm.publicDomain ?? null,
         /*
@@ -2038,8 +2103,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
          * otherwise wipe every recorded choice on the Hub.
          */
         ...customDomainColumns(parsedForm),
-        openPort: openPort ?? false,
-        exposedLocal: exposedLocal ?? !!appInfo.exposable,
+        openPort: servedOpenPort(parsedForm),
+        exposedLocal: parsedForm.exposedLocal ?? !!appInfo.exposable,
         exposureMode: getEffectiveExposureMode(parsedForm),
         isVisibleOnGuestDashboard,
         enableAuth: parsedForm.enableAuth ?? false,
@@ -2911,11 +2976,18 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       keepStoredExposure(parsedForm, parsedFormResult.data, app.config);
     }
 
-    // A custom app's config.json keeps its internal port, and the host port the Hub gave it lives on
-    // the row (see `allocateCustomAppHostPort`). A save that leaves the port out would fall back to
-    // config.json below and publish the internal port again, which for port 80 can never bind.
-    if (parsedForm.port === undefined && extractAppUrn(appUrn).appStoreId === '_user' && app.port) {
-      parsedForm.port = app.port;
+    // A save that leaves the port out keeps the one the app is on, as a reinstall does
+    // (`buildInstallRowPatch`). It would fall back to the listing's below, which is the port a move left
+    // because another program holds it. A custom app's config.json keeps its internal port, so its host
+    // port is on the row (`allocateCustomAppHostPort`). A form that never named a port still follows its listing.
+    const keptPort = extractAppUrn(appUrn).appStoreId === '_user' ? app.port : storedFormPort(app.config);
+    if (parsedForm.port === undefined && typeof keptPort === 'number') {
+      parsedForm.port = keptPort;
+    }
+
+    // Before the comparison below: a form that opens the port would change the name the app keeps.
+    if (appInfo.force_expose) {
+      publishForcedExposure(parsedForm);
     }
 
     // Manifest edge-auth default (CI-Engineering#74): when this update does not carry an
@@ -2987,9 +3059,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
          */
         (!!parsedForm.customDomain && parsedForm.customDomainTakeover === true) !== (app.customDomainTakeover === true));
 
+    // A save that repeats such an app's stored form still has to move it off the route it names.
+    const leavesRoute = storedOnForbiddenRoute(appInfo, app);
+
     const settingsChanged =
       this.hasConfigChanged(normalizeConfigForCompare((app.config ?? {}) as Record<string, unknown>), toStoredConfig(parsedForm)) ||
-      customDomainChanged;
+      customDomainChanged ||
+      leavesRoute;
     /*
      * ⚠ SAVED ON ITS OWN, AND BEFORE THE EARLY RETURN BELOW.
      *
@@ -3021,22 +3097,17 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // the stale copies would make this warning describe the REQUEST rather than what is actually
       // being reset — announcing a reset that already happened, and staying silent on an
       // enableAuth the defaulting just resolved.
-      if (parsedForm.exposed || parsedForm.exposedLocal || parsedForm.enableAuth) {
+      if (keepOnThisMachineOnly(parsedForm)) {
         this.logger.warn(`App ${appUrn} is not exposable, resetting proxy settings`);
       }
-      parsedForm.exposed = false;
-      parsedForm.exposedLocal = false;
-      parsedForm.enableAuth = false;
-      parsedForm.domain = undefined;
-      parsedForm.publicDomain = undefined;
     }
 
     if (getEffectiveExposureMode(parsedForm) !== 'cloudflare') {
       parsedForm.publicDomain = undefined;
     }
 
-    if (appInfo.force_expose && !exposed) {
-      throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn });
+    if (appInfo.force_expose && !servesForcedExposure(parsedForm)) {
+      throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn }, HttpStatus.BAD_REQUEST);
     }
 
     if (exposed && domain) {
@@ -3059,7 +3130,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
     }
 
-    if (publishesHostPort(parsedForm) && port) {
+    if (publishesHostPort(parsedForm) && port && !leavesRoute) {
       const appsWithSamePort = await this.appRepository.getAppsByPort(port, app.id);
 
       if (appsWithSamePort.length > 0) {
@@ -3112,7 +3183,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       exposedLocal: parsedForm.exposedLocal ?? false,
       // What compose runs the form as: a legacy form's `exposedLocal` is Public Web, not This Machine Only.
       exposureMode: getEffectiveExposureMode(parsedForm),
-      openPort: parsedForm.openPort,
+      openPort: servedOpenPort(parsedForm),
       port: parsedForm.port ?? appInfo.port,
       domain: parsedForm.domain ?? null,
       localSubdomain: parsedForm.localSubdomain ?? null,
@@ -3299,10 +3370,27 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           try {
             const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
 
-            // Part of the update the caller was already authorized for; not a new decision.
-            await this.updateAppConfig({ appUrn, form: app.config, actor: { kind: 'system', reason: 'update-reapply' } });
+            // The new version is in, so a refused re-apply is not a failed update. It left the app on
+            // Updating with its version unrecorded until the status sync gave up on it.
+            let settingsReapplied = true;
+            try {
+              // Part of the update the caller was already authorized for; not a new decision.
+              await this.updateAppConfig({ appUrn, form: app.config, actor: { kind: 'system', reason: 'update-reapply' } });
+            } catch (err) {
+              settingsReapplied = false;
+              // A refusal's message is only its translation key. The port and the app holding it are in its response.
+              this.logger.warn(
+                `App ${appUrn} updated, but its settings were not re-applied:`,
+                err instanceof HttpException ? err.getResponse() : err,
+              );
+            }
             await this.appRepository.updateAppById(app.id, { version: appInfo?.cihub_app_version, status: restoredStatus });
-            this.sseService.emit('app', { event: 'update_success', appUrn, appStatus: restoredStatus });
+            this.sseService.emit('app', {
+              event: 'update_success',
+              appUrn,
+              appStatus: restoredStatus,
+              ...(settingsReapplied ? {} : { warningCode: 'APP_UPDATE_SETTINGS_NOT_REAPPLIED' }),
+            });
             this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
           } finally {
             if (followUp.claimed) {

@@ -17,6 +17,7 @@ import {
   unloadInferenceModel,
   unpinInferenceModel,
 } from '@/lib/inference/inference-api';
+import { backendDisplayName } from '@/lib/inference/backend-names';
 import { MASKED_KEY, isMaskedKey } from '@/lib/inference/masked-key';
 import { POLLING } from '@/lib/polling-budget';
 import { ensurePullsStarted, waitForModelPulls } from '@/lib/inference/tracked-models';
@@ -83,6 +84,12 @@ const compatibleSelection = (availableModelById: ModelIndex, backend: InferenceB
 // promise to remove pins that Save leaves untouched.
 const unpinnablePins = (availableModelById: ModelIndex, pinnedIds: Iterable<string>): string[] =>
   [...pinnedIds].filter((modelId) => isHubLoadableBackend(availableModelById.get(modelId)?.backend));
+
+// The Hub lost its connection to the engine. That doesn't say the engine is down: a running Ollama bound to
+// loopback refuses the Docker bridge and a firewall drops it. Keep this in step with the patterns in
+// ollama-host-bridge.ts on the Hub; `aborted` is Node's word for a stream cut off mid-download.
+const ENGINE_UNREACHABLE =
+  /ECONNREFUSED|ECONNRESET|ECONNABORTED|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT|ConnectTimeoutError|network unreachable|socket hang up|fetch failed|\baborted\b|timeout of \d+ms exceeded/;
 
 /** The engine whose embedders Save ranks for `backend`: itself on Ollama and oMLX, else the shared embedding engine. */
 const embeddingBackendFor = (backend: InferenceBackendType): InferenceBackendType =>
@@ -698,19 +705,27 @@ export const AiSettingsContainer = () => {
       );
       const compatiblePinnedModelIds = unpinnablePins(availableModelById, pinnedModelIds);
       const modelOperationErrors: string[] = [];
+      const pullFailureMessage = (modelId: string, reason: string) =>
+        ENGINE_UNREACHABLE.test(reason)
+          ? t('AI_SETTINGS_ENGINE_UNREACHABLE', {
+              engine: backendDisplayName(availableModelById.get(modelId)?.backend ?? selectedBackend),
+              model: modelId,
+              reason,
+            })
+          : `Failed to pull ${modelId}: ${reason}`;
       const requestedPulls = pullableSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
 
       if (requestedPulls.length > 0) {
         // Report a refusal now; waiting on it would only run out the ten-minute timeout.
         const refusedById = await ensurePullsStarted(requestedPulls, false);
         for (const [modelId, reason] of Object.entries(refusedById)) {
-          modelOperationErrors.push(`Failed to pull ${modelId}: ${reason}`);
+          modelOperationErrors.push(pullFailureMessage(modelId, reason));
         }
         const modelsToPull = requestedPulls.filter((modelId) => !refusedById[modelId]);
 
         const pullResult = await waitForModelPulls(modelsToPull, profile.installedCatalogIds ?? [], { timeoutMs: 600_000 });
         for (const [modelId, message] of Object.entries(pullResult.errorsById)) {
-          modelOperationErrors.push(`Failed to pull ${modelId}: ${message}`);
+          modelOperationErrors.push(pullFailureMessage(modelId, message));
         }
 
         for (const modelId of modelsToPull) {

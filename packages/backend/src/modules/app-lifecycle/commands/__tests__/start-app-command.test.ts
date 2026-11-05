@@ -519,7 +519,7 @@ describe('StartAppCommand — pull policy', () => {
       dockerService.imageIdsLocally = vi.fn(async () => new Set(onComputer.values()));
       dockerService.imageTagsLocally = vi.fn(async () => []);
       appFilesManager.readPulledImages.mockResolvedValue({ imageIds: [], imageTags: [] });
-      appFilesManager.writePulledImages.mockResolvedValue(true);
+      appFilesManager.addPulledImages.mockResolvedValue(true);
     });
 
     it('lists the images here for a forced pull, which can move a tag, and not for a start that pulls nothing', async () => {
@@ -542,7 +542,7 @@ describe('StartAppCommand — pull policy', () => {
       const result = await command.execute(appUrn, {});
 
       expect(result.success).toBe(true);
-      expect(appFilesManager.writePulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:whoami'], imageTags: [] });
+      expect(appFilesManager.addPulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:whoami'], imageTags: [] });
     });
 
     it('does not record an image that was on the computer before the start', async () => {
@@ -551,11 +551,11 @@ describe('StartAppCommand — pull policy', () => {
       const result = await command.execute(appUrn, {});
 
       expect(result.success).toBe(true);
-      expect(appFilesManager.writePulledImages).not.toHaveBeenCalled();
+      expect(appFilesManager.addPulledImages).not.toHaveBeenCalled();
     });
 
     it('does not fail the start when the record cannot be written', async () => {
-      appFilesManager.writePulledImages.mockResolvedValue(false);
+      appFilesManager.addPulledImages.mockResolvedValue(false);
       dockerService.composeApp.mockImplementation(async () => {
         onComputer.set(whoami, 'sha256:whoami');
       });

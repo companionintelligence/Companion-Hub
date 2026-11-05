@@ -92,8 +92,11 @@ describe('SSEService app stream', () => {
       expect(JSON.parse(second.data as string)).toEqual(notice(moved.movedHostPort));
     });
 
-    it('leaves out the outcome that moved the app, which may be long past', async () => {
-      service.emit('app', { event: 'start_error', appUrn, appStatus: 'stopped', error: 'mount failed', movedHostPort: moved.movedHostPort });
+    it.each([
+      ['start_error', 'stopped'],
+      ['install_error', 'install_failed'],
+    ] as const)('leaves out the %s that moved the app, which may be long past', async (event, appStatus) => {
+      service.emit('app', { event, appUrn, appStatus, error: 'mount failed', movedHostPort: moved.movedHostPort });
 
       const [, second] = await collect(2);
       expect(JSON.parse(second.data as string)).toEqual(notice(moved.movedHostPort));
@@ -176,6 +179,24 @@ describe('SSEService app stream', () => {
       service.emit('app', { event: 'install_queue', active: null, queued: [] });
       const [, second] = await pending;
       expect(JSON.parse(second.data as string)).toEqual({ event: 'install_queue', active: null, queued: [] });
+    });
+
+    it('forgets the move of an app whose cancelled install took its row', async () => {
+      service.emit('app', { event: 'install_error', appUrn, appStatus: 'install_failed', error: 'exit 137', movedHostPort: moved.movedHostPort });
+      service.emit('app', { event: 'install_cancelled', appUrn, appStatus: 'missing' });
+
+      const pending = collect(2);
+      service.emit('app', { event: 'install_queue', active: null, queued: [] });
+      const [, second] = await pending;
+      expect(JSON.parse(second.data as string)).toEqual({ event: 'install_queue', active: null, queued: [] });
+    });
+
+    it('keeps the move when a cancelled retry leaves the failed app there', async () => {
+      service.emit('app', { event: 'install_error', appUrn, appStatus: 'install_failed', error: 'exit 137', movedHostPort: moved.movedHostPort });
+      service.emit('app', { event: 'install_cancelled', appUrn, appStatus: 'install_failed' });
+
+      const [, second] = await collect(2);
+      expect(JSON.parse(second.data as string)).toEqual(notice(moved.movedHostPort));
     });
 
     it('leaves a success that moved nothing unreplayed', async () => {

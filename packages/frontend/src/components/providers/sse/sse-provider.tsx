@@ -61,15 +61,15 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
 
   // A move is the news of this outcome, so it takes the place of the success toast: stacked under or
   // over a "started successfully", it is easy to miss that the app's address has changed.
-  const showPortMoved = (appUrn: string, appName: string, moved: NonNullable<AppSsePayload['movedHostPort']>) => {
-    toast.warning(t('APP_NOTICE_HOST_PORT_MOVED', { id: cachedAppName(queryClient, appUrn, appName), port: moved.to, previousPort: moved.from }), {
+  const showPortMoved = (appName: string, moved: NonNullable<AppSsePayload['movedHostPort']>) => {
+    toast.warning(t('APP_NOTICE_HOST_PORT_MOVED', { id: appName, port: moved.to, previousPort: moved.from }), {
       duration: 20000,
     });
   };
 
-  const showSuccessOrPortMoved = (successKey: string, appUrn: string, appName: string, moved: AppSsePayload['movedHostPort']) => {
+  const showSuccessOrPortMoved = (successKey: string, appName: string, moved: AppSsePayload['movedHostPort']) => {
     if (moved) {
-      showPortMoved(appUrn, appName, moved);
+      showPortMoved(appName, moved);
     } else {
       toast.success(t(successKey, { id: appName }));
     }
@@ -110,6 +110,9 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
         console.error(error);
       }
 
+      // Read before the cache takes the event: an uninstall takes the name with it.
+      const cachedName = appUrn ? cachedAppName(queryClient, appUrn, '') : '';
+
       try {
         handleAppSseEvent(queryClient, payload);
       } catch (e) {
@@ -125,7 +128,10 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
         return;
       }
 
-      const { appName, appStoreId } = extractAppUrn(appUrn as AppUrn);
+      const { appName: appId, appStoreId } = extractAppUrn(appUrn as AppUrn);
+      // As its page names it ("Uptime Kuma"), not by its id ("uptime-kuma"), in every toast: a failed
+      // install's error and its port notice arrive together.
+      const appName = cachedName || appId;
 
       // A cancelled retry of a failed install leaves the app there, failed, so its page stays.
       const appGone = event === 'uninstall_success' || (event === 'install_cancelled' && payload.appStatus !== 'install_failed');
@@ -133,19 +139,19 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
         navigate('/store', { replace: true });
       }
 
-      // A start that failed after the move leaves the app on the new port, so the error alone would hide it.
-      if (movedHostPort && (event === 'start_error' || event === 'restart_error')) {
-        showPortMoved(appUrn, appName, movedHostPort);
+      // A command that failed after the move leaves the app on the new port, so the error alone would hide it.
+      if (movedHostPort && (event === 'start_error' || event === 'restart_error' || event === 'install_error')) {
+        showPortMoved(appName, movedHostPort);
       }
 
       switch (event) {
         case 'host_port_moved':
           if (movedHostPort) {
-            showPortMoved(appUrn, appName, movedHostPort);
+            showPortMoved(appName, movedHostPort);
           }
           break;
         case 'install_success':
-          showSuccessOrPortMoved('APP_INSTALL_SUCCESS', appUrn, appName, movedHostPort);
+          showSuccessOrPortMoved('APP_INSTALL_SUCCESS', appName, movedHostPort);
           break;
         case 'install_error':
           if (errorCode === 'rocm_kfd_missing') {
@@ -180,7 +186,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           toast.success(t('APP_INSTALL_CANCELLED', { id: appName }));
           break;
         case 'start_success':
-          showSuccessOrPortMoved('APP_START_SUCCESS', appUrn, appName, movedHostPort);
+          showSuccessOrPortMoved('APP_START_SUCCESS', appName, movedHostPort);
           break;
         case 'start_error':
           if (errorCode === 'network_overlap') {
@@ -231,15 +237,18 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
         case 'uninstall_error':
           showLogsErrorToast('APP_ERROR_APP_FAILED_TO_UNINSTALL_TOAST', appName);
           break;
-        // The update toasts name the app as its page does ("Uptime Kuma"), not by its id ("uptime-kuma").
         case 'update_success':
-          toast.success(t('APP_UPDATE_SUCCESS', { id: cachedAppName(queryClient, appUrn, appName) }));
+          if (warningCode === 'APP_UPDATE_SETTINGS_NOT_REAPPLIED') {
+            toast.warning(t('APP_UPDATE_SETTINGS_NOT_REAPPLIED', { id: appName }), { duration: 10000 });
+            break;
+          }
+          toast.success(t('APP_UPDATE_SUCCESS', { id: appName }));
           break;
         case 'update_error':
-          showLogsErrorToast('APP_ERROR_APP_FAILED_TO_UPDATE_TOAST', cachedAppName(queryClient, appUrn, appName));
+          showLogsErrorToast('APP_ERROR_APP_FAILED_TO_UPDATE_TOAST', appName);
           break;
         case 'update_cancelled':
-          toast.success(t('APP_UPDATE_CANCELLED', { id: cachedAppName(queryClient, appUrn, appName) }));
+          toast.success(t('APP_UPDATE_CANCELLED', { id: appName }));
           break;
         case 'reset_success':
           toast.success(t('APP_RESET_SUCCESS', { id: appName }));
@@ -248,7 +257,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           showLogsErrorToast('APP_ERROR_APP_FAILED_TO_RESET_TOAST', appName);
           break;
         case 'restart_success':
-          showSuccessOrPortMoved('APP_RESTART_SUCCESS', appUrn, appName, movedHostPort);
+          showSuccessOrPortMoved('APP_RESTART_SUCCESS', appName, movedHostPort);
           break;
         case 'restart_error':
           if (serviceFailure) {

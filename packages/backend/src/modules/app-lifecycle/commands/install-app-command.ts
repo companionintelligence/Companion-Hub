@@ -127,6 +127,8 @@ export class InstallAppCommand extends AppLifecycleCommand {
       return this.handleAppError(err, appUrn, 'update_error');
     }
 
+    const refusedHostPorts = new Set<number>();
+
     try {
       ctx?.setPhase('preparing');
       await this.assertMarketplaceEntitlement(appUrn, 'install');
@@ -403,7 +405,6 @@ export class InstallAppCommand extends AppLifecycleCommand {
       throwIfAborted(ctx?.signal);
 
       await emitProgress(99);
-      const refusedHostPorts = new Set<number>();
       await this.composeUpRecordingPulls(appUrn, form, 'up --detach --force-recreate --remove-orphans', 3, ctx?.signal, {
         recoverHostPortConflict: (error) => this.moveMainPortOffConflict(appUrn, form, error, refusedHostPorts),
       });
@@ -499,7 +500,8 @@ export class InstallAppCommand extends AppLifecycleCommand {
         const message = await this.compensateInstallCancel(appUrn);
         return { success: false, cancelled: true, message };
       }
-      return this.handleAppError(err, appUrn, 'install');
+      // The row, config and app.env stay on a port the run moved to, whatever failed after the move.
+      return { ...(await this.handleAppError(err, appUrn, 'install')), movedHostPort: hostPortMoveOf(form, refusedHostPorts) };
     }
   }
 

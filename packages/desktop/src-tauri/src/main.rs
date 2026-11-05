@@ -211,6 +211,23 @@ async fn install_ollama_command() -> Result<hub_manager::OllamaInstallResult, St
         .map_err(|e| format!("Ollama install task failed: {e}"))?
 }
 
+/// Install the NVIDIA container runtime through pkexec (native Linux only).
+#[tauri::command]
+async fn install_nvidia_runtime_command() -> Result<String, String> {
+    tokio::task::spawn_blocking(hub_manager::install_nvidia_runtime)
+        .await
+        .map_err(|e| format!("NVIDIA runtime install task failed: {e}"))?
+}
+
+/// What a Companion OS live session can't run, so setup can say so instead of offering it.
+#[tauri::command]
+async fn live_session_state_command() -> Result<hub_manager::LiveSessionState, String> {
+    // Looks on the boot medium, which can be a slow USB stick, so it stays off the main thread.
+    tokio::task::spawn_blocking(hub_manager::live_session_state)
+        .await
+        .map_err(|e| format!("Live session check failed: {e}"))
+}
+
 /// Install and start the host/container inference runners selected by onboarding.
 #[tauri::command]
 async fn install_and_start_inference_runners_command(
@@ -661,6 +678,8 @@ pub fn run() {
             is_user_stopped_command,
             install_docker_command,
             install_ollama_command,
+            install_nvidia_runtime_command,
+            live_session_state_command,
             install_and_start_inference_runners_command,
             install_rocm_command,
             verify_rocm_command,
@@ -873,6 +892,11 @@ pub fn run() {
                         // the WSL engine, which an uninstall can remove and a reinstall over an
                         // engine that is already set up doesn't write again.
                         hub_manager::ensure_wsl_engine_logon_script(&data_for_decision);
+                        // A reboot brings the containers back by their restart policy, so the start
+                        // below doesn't run and nothing else writes nvidia.json for this boot. Rescan
+                        // would keep saying a driver installed before the reboot isn't answering.
+                        #[cfg(target_os = "linux")]
+                        hub_manager::refresh_nvidia_host_probe_cache(&data_for_decision);
                         if !hub_manager::docker_available_for_launch(&data_for_decision) {
                             return Ok::<_, String>(None);
                         }

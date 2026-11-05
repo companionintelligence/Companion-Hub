@@ -435,19 +435,12 @@ fn launch_docker_desktop_macos() -> Result<(), String> {
 /// systemd or OpenRC as available. Uses pkexec (polkit) for the GUI privilege prompt.
 #[cfg(target_os = "linux")]
 pub fn install_docker_linux() -> Result<String, String> {
-    use std::io::Write as IoWrite;
-    use tempfile::NamedTempFile;
-
     let username = resolve_current_username()?;
     let pkexec_path = find_executable("pkexec").ok_or_else(|| {
         "pkexec is not installed or not on PATH. Install polkit/pkexec and try again.".to_string()
     })?;
 
-    let mut wrapper_script = NamedTempFile::new()
-        .map_err(|e| format!("Failed to create temporary install script: {}", e))?;
-    wrapper_script
-        .write_all(
-            br#"#!/bin/bash
+    let wrapper_script = write_elevated_script(br#"#!/bin/bash
 # Docker auto-installer for Companion Hub. Runs as root via pkexec.
 # Arg 1: username to add to the docker group.
 set -e
@@ -556,18 +549,10 @@ fi
 if getent group docker >/dev/null 2>&1; then
     usermod -aG docker "$USERNAME"
 fi
-"#,
-        )
-        .map_err(|e| format!("Failed to write install script: {}", e))?;
-
-    let permissions = std::fs::Permissions::from_mode(0o700);
-    wrapper_script
-        .as_file()
-        .set_permissions(permissions)
-        .map_err(|e| format!("Failed to set install script permissions: {}", e))?;
+"#)?;
 
     let output = Command::new(&pkexec_path)
-        .arg(wrapper_script.path())
+        .arg(&*wrapper_script)
         .arg(&username)
         .output()
         .map_err(|e| format!("Failed to run pkexec installer: {}", e))?;
@@ -578,13 +563,8 @@ fi
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let combined = format_command_output(&stdout, &stderr);
-        let combined_lower = combined.to_lowercase();
 
-        if combined_lower.contains("dismissed")
-            || combined_lower.contains("not authorized")
-            || combined_lower.contains("authorization required")
-            || combined_lower.contains("authentication failed")
-        {
+        if pkexec_refused(output.status.code(), &combined) {
             Err("Authorization was cancelled or denied.".to_string())
         } else if combined.is_empty() {
             Err(format!(

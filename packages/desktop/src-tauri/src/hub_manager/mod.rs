@@ -30,8 +30,10 @@ mod docker_vm;
 mod host_probe;
 mod installers;
 mod lifecycle;
+mod live_session;
 mod logging;
 mod markers;
+mod quiet_watch;
 mod runtime_env;
 mod runtime_state;
 mod start_retry;
@@ -54,6 +56,7 @@ pub(crate) use docker_vm::*;
 pub(crate) use host_probe::*;
 pub use installers::*;
 pub use lifecycle::*;
+pub use live_session::*;
 pub use logging::*;
 pub use markers::*;
 pub use runtime_env::*;
@@ -763,12 +766,10 @@ fn truncate_command_output(output: &str) -> String {
         return trimmed.to_string();
     }
 
-    let truncated: String = trimmed.chars().take(MAX_COMMAND_OUTPUT_CHARS).collect();
-    format!(
-        "{}… [truncated {} chars]",
-        truncated,
-        char_count - MAX_COMMAND_OUTPUT_CHARS
-    )
+    // A failure's cause is at the end of its log, and these messages get shown to people.
+    let dropped = char_count - MAX_COMMAND_OUTPUT_CHARS;
+    let kept: String = trimmed.chars().skip(dropped).collect();
+    format!("[truncated {} chars] …{}", dropped, kept)
 }
 
 pub(crate) fn format_command_output(stdout: &str, stderr: &str) -> String {

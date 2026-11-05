@@ -370,7 +370,7 @@ fn nvidia_probe_payload(
 /// path, and PATH is the fallback. A nvidia-smi on PATH can be a wrapper script that sources a file
 /// which may be gone, and the wrapper then stops before the query runs.
 #[cfg(target_os = "linux")]
-fn linux_nvidia_smi_query() -> std::io::Result<std::process::Output> {
+pub(crate) fn linux_nvidia_smi_query() -> std::io::Result<std::process::Output> {
     const QUERY: [&str; 2] = [
         "--query-gpu=name,memory.total,driver_version",
         "--format=csv,noheader,nounits",

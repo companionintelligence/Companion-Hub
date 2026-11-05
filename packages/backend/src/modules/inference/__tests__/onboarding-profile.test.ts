@@ -172,6 +172,21 @@ describe('InferenceController — onboarding-profile', () => {
     expect(result.installedCatalogIds).toEqual(['phi-4-mini']);
   });
 
+  it('does not recommend vLLM when Docker lists the runtime but the NVIDIA driver does not answer', async () => {
+    hardwareInspector.getProfile.mockResolvedValue({
+      ...fakeProfile,
+      gpu: { ...fakeProfile.gpu, vendor: 'nvidia', runtimeAvailable: true, hostNvidiaAvailable: false, driverVersion: '' },
+    });
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
+    modelRegistry.getModelsForTier.mockReturnValue([]);
+    memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
+    router.getStatus.mockResolvedValue(fakeStatus);
+
+    const result = await controller.getOnboardingProfile({ backend: 'ollama' });
+
+    expect(result.backends.recommended).toBe('ollama');
+  });
+
   // Settings > AI seeds its ticked models from this list. A model removed with `ollama rm` stayed
   // ticked while the registry remembered pulling it, and a Save then downloaded it again.
   it('leaves out a model the registry still lists as pulled once Ollama no longer has it', async () => {

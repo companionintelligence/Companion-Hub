@@ -690,3 +690,215 @@ fn ollama_linux_installer_script_uses_official_installer_and_handles_deps() {
     assert!(script.contains(r#"Environment="OLLAMA_HOST=0.0.0.0:11434""#));
     assert!(script.contains("systemctl daemon-reload"));
 }
+
+/// The reason `write_elevated_script` closes its handle: this is the failure pkexec reported.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_refuses_to_execute_a_script_still_open_for_writing() {
+    use std::io::Write as IoWrite;
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut script = tempfile::NamedTempFile::new().expect("create");
+    script.write_all(b"#!/bin/sh\n").expect("write");
+    script
+        .as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o700))
+        .expect("chmod");
+
+    let error = std::process::Command::new(script.path())
+        .output()
+        .expect_err("a file open for writing does not execute");
+
+    assert_eq!(error.raw_os_error(), Some(libc::ETXTBSY));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn only_pkexec_exit_codes_count_as_a_refused_prompt() {
+    assert!(pkexec_refused(
+        Some(126),
+        "Error executing command as another user: Request dismissed"
+    ));
+    assert!(pkexec_refused(
+        Some(127),
+        "Error executing command as another user: Not authorized"
+    ));
+
+    // The installer ran and failed. Its log happens to hold the same words.
+    assert!(!pkexec_refused(
+        Some(1),
+        "curl: 401 Authorization Required from the mirror"
+    ));
+    // pkexec could not run the script, which isn't a refusal.
+    assert!(!pkexec_refused(
+        Some(127),
+        "Error executing /tmp/.tmp72mH3z: Text file busy"
+    ));
+    // The script ran and bash exited 127 on a missing command, after the same words in its log.
+    assert!(!pkexec_refused(
+        Some(127),
+        "curl: 401 Authorization Required from the mirror\nsetup.sh: line 9: zstd: command not found"
+    ));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_elevated_script_can_be_executed_while_its_path_is_held() {
+    let script =
+        write_elevated_script(b"#!/bin/sh\nprintf 'ran:%s' \"$1\"\n").expect("write the script");
+
+    // The same exec pkexec does. With a writable handle still open this fails with "Text file busy".
+    // Another test forking while the file was being written holds a copy of the handle until its
+    // child execs, so that can last an instant here. Only our own open handle fails every attempt.
+    let output = (0..50)
+        .find_map(
+            |_| match std::process::Command::new(&*script).arg("arg").output() {
+                Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    None
+                }
+                outcome => Some(outcome),
+            },
+        )
+        .expect("the script stops being busy")
+        .expect("the script executes");
+
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "ran:arg");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_elevated_script_is_private_and_goes_away_with_its_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script = write_elevated_script(b"#!/bin/sh\n").expect("write the script");
+    let path = script.to_path_buf();
+    let mode = std::fs::metadata(&path)
+        .expect("metadata")
+        .permissions()
+        .mode();
+
+    assert_eq!(mode & 0o777, 0o700);
+    drop(script);
+    assert!(!path.exists());
+}
+
+#[test]
+fn the_nvidia_runtime_script_stops_on_a_failed_step_and_registers_the_runtime() {
+    let script = nvidia_runtime_linux_install_script();
+
+    // Without pipefail a failed download piped into sed goes unnoticed.
+    assert!(script.starts_with("#!/bin/bash\nset -eo pipefail\n"));
+    let configure = script
+        .find("nvidia-ctk runtime configure --runtime=docker")
+        .expect("configures");
+    let restart = script.find("systemctl restart docker").expect("restarts");
+    assert!(script.contains("rc-service docker restart"));
+    assert!(script.contains("service docker restart"));
+    assert!(
+        script
+            .find("apt-get install -y nvidia-container-toolkit")
+            .expect("installs")
+            < configure
+    );
+    assert!(configure < restart);
+}
+
+fn fake_root(files: &[&str]) -> tempfile::TempDir {
+    let root = tempfile::tempdir().expect("temp root");
+    for file in files {
+        let path = root.path().join(file);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+        std::fs::write(path, "").expect("write");
+    }
+    root
+}
+
+#[test]
+fn a_companion_os_live_session_reports_what_its_image_blocks() {
+    let root = fake_root(&[
+        "cdrom/casper/vmlinuz",
+        "usr/lib/ci-os/version",
+        "etc/systemd/system/ollama.service.d/10-not-live.conf",
+        "etc/systemd/system/tailscaled.service.d/10-not-live.conf",
+    ]);
+
+    assert_eq!(
+        live_session_state_at(root.path()),
+        LiveSessionState {
+            live: true,
+            ollama_blocked: true,
+            tailscale_blocked: true
+        }
+    );
+}
+
+#[test]
+fn a_boot_the_kernel_command_line_calls_live_counts_without_the_medium_at_cdrom() {
+    let root = fake_root(&[
+        "usr/lib/ci-os/version",
+        "etc/systemd/system/ollama.service.d/10-not-live.conf",
+    ]);
+    std::fs::create_dir_all(root.path().join("proc")).expect("mkdir");
+    std::fs::write(
+        root.path().join("proc/cmdline"),
+        "BOOT_IMAGE=/casper/vmlinuz boot=casper quiet splash\n",
+    )
+    .expect("write");
+
+    assert_eq!(
+        live_session_state_at(root.path()),
+        LiveSessionState {
+            live: true,
+            ollama_blocked: true,
+            tailscale_blocked: false
+        }
+    );
+}
+
+#[test]
+fn a_similar_kernel_argument_is_not_a_live_boot() {
+    let root = fake_root(&["usr/lib/ci-os/version"]);
+    std::fs::create_dir_all(root.path().join("proc")).expect("mkdir");
+    std::fs::write(root.path().join("proc/cmdline"), "reboot=casper quiet\n").expect("write");
+
+    assert_eq!(
+        live_session_state_at(root.path()),
+        LiveSessionState::default()
+    );
+}
+
+#[test]
+fn only_the_blocks_the_image_has_are_reported() {
+    let root = fake_root(&[
+        "cdrom/casper/vmlinuz",
+        "usr/lib/ci-os/version",
+        "etc/systemd/system/tailscaled.service.d/10-not-live.conf",
+    ]);
+
+    assert_eq!(
+        live_session_state_at(root.path()),
+        LiveSessionState {
+            live: true,
+            ollama_blocked: false,
+            tailscale_blocked: true
+        }
+    );
+}
+
+#[test]
+fn an_installed_system_or_a_stock_live_session_is_not_a_companion_live_session() {
+    let drop_in = "etc/systemd/system/ollama.service.d/10-not-live.conf";
+    let installed = fake_root(&["usr/lib/ci-os/version", drop_in]);
+    let stock_live = fake_root(&["cdrom/casper/vmlinuz"]);
+
+    assert_eq!(
+        live_session_state_at(installed.path()),
+        LiveSessionState::default()
+    );
+    assert_eq!(
+        live_session_state_at(stock_live.path()),
+        LiveSessionState::default()
+    );
+}

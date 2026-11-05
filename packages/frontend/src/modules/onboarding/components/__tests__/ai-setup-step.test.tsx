@@ -1008,6 +1008,64 @@ describe('AiSetupStep', () => {
     expect(screen.getByTestId('ai-continue-btn')).toBeDisabled();
   });
 
+  it('warns that embeddings wait on Ollama when it is not reachable', async () => {
+    api.profile = vllmProfile();
+    api.ollama = ollamaMissing;
+    api.vllm = vllmReady;
+
+    renderStep();
+
+    await waitFor(() => expect(screen.getByTestId('ollama-embeddings-warning')).toBeInTheDocument());
+  });
+
+  it('does not say Ollama is not reachable yet in a live session, where it can never start', async () => {
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+    api.profile = vllmProfile();
+    api.ollama = ollamaMissing;
+    api.vllm = vllmReady;
+    tauriWindow.__TAURI_INTERNALS__ = {
+      invoke: vi.fn(async (command: string) =>
+        command === 'live_session_state_command' ? { live: true, ollamaBlocked: true, tailscaleBlocked: true } : null,
+      ),
+    };
+    try {
+      renderStep();
+
+      await waitFor(() => expect(screen.getByTestId('ollama-live-session')).toBeInTheDocument());
+      expect(screen.queryByTestId('ollama-embeddings-warning')).not.toBeInTheDocument();
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+    }
+  });
+
+  it('shows the reason the desktop app gave when the vLLM button cannot set it up', async () => {
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+    tauriWindow.__TAURI_INTERNALS__ = {
+      invoke: vi.fn().mockResolvedValue([{ runner: 'vllm', state: 'skipped', detail: 'Automatic Linux vLLM setup requires a working NVIDIA GPU.' }]),
+    };
+    try {
+      api.profile = {
+        ...highTierProfile,
+        backends: { ...highTierProfile.backends, recommended: 'vllm' },
+      };
+      api.vllm = vllmMissing;
+      const user = userEvent.setup();
+      renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+      await user.click(screen.getByTestId('backend-option-vllm'));
+
+      await user.click(await screen.findByTestId('auto-install-runner-btn'));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('auto-install-runner')).toHaveTextContent(
+          'Could not start automatically: Automatic Linux vLLM setup requires a working NVIDIA GPU.',
+        ),
+      );
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+    }
+  });
+
   it('refreshes the model list on vLLM re-check so a newly served model reads as installed', async () => {
     api.profile = vllmProfile();
     api.vllm = vllmReady;

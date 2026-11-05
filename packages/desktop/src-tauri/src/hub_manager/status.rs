@@ -1,21 +1,46 @@
 //! Service state derivation, startup progress and hub status.
 
+use super::quiet_watch::{run_until_quiet, WatchedRun};
 use super::*;
 use chrono::{DateTime, Datelike, Utc};
 use std::collections::HashMap;
 
-fn list_local_images() -> std::collections::HashSet<String> {
-    let output = docker_command()
-        .args(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default();
+const IMAGE_LIST_ARGS: [&str; 4] = ["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"];
+/// How long Docker gets to list its images once a pull has hung. It normally answers at once.
+const HUNG_IMAGE_LIST_LIMIT: Duration = Duration::from_secs(30);
 
+fn parse_image_list(output: &str) -> std::collections::HashSet<String> {
     output
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.ends_with(":<none>"))
         .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn list_local_images() -> std::collections::HashSet<String> {
+    let output = docker_command()
+        .args(IMAGE_LIST_ARGS)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    parse_image_list(&output)
+}
+
+/// The images a start still has to download, of those the Hub can't start without. Asked after a
+/// hung pull, when Docker may have stopped answering altogether. Every image then counts as missing.
+pub(crate) fn missing_startup_images() -> Vec<String> {
+    let mut command = docker_command();
+    command.args(IMAGE_LIST_ARGS);
+    let listing = match run_until_quiet(command, HUNG_IMAGE_LIST_LIMIT) {
+        Ok(WatchedRun::Finished { stdout, .. }) => stdout,
+        Ok(WatchedRun::WentQuiet { .. }) | Err(_) => String::new(),
+    };
+    let local_images = parse_image_list(&listing);
+    required_startup_images()
+        .into_iter()
+        .filter(|image| !local_images.contains(image.as_str()))
         .collect()
 }
 

@@ -23,7 +23,7 @@ describe('pullAppImagesRecorded', () => {
     imageIdsLocally: ReturnType<typeof vi.fn>;
     imageTagsLocally: ReturnType<typeof vi.fn>;
   };
-  let files: { readPulledImages: ReturnType<typeof vi.fn>; writePulledImages: ReturnType<typeof vi.fn> };
+  let files: { readPulledImages: ReturnType<typeof vi.fn>; addPulledImages: ReturnType<typeof vi.fn> };
   let logger: { warn: ReturnType<typeof vi.fn> };
 
   const deps = () => ({ docker, files, logger }) as never;
@@ -41,7 +41,7 @@ describe('pullAppImagesRecorded', () => {
     };
     files = {
       readPulledImages: vi.fn(async () => ({ imageIds: [...recorded], imageTags: [...recordedTags] })),
-      writePulledImages: vi.fn(async (_urn: AppUrn, { imageIds, imageTags }: { imageIds: string[]; imageTags: string[] }) => {
+      addPulledImages: vi.fn(async (_urn: AppUrn, { imageIds, imageTags }: { imageIds: string[]; imageTags: string[] }) => {
         recorded = [...imageIds];
         recordedTags = [...imageTags];
         return true;
@@ -58,7 +58,7 @@ describe('pullAppImagesRecorded', () => {
     await pullAppImagesRecorded(deps(), appUrn, ['python:3.13-alpine'], pull, { forced: false });
 
     expect(pull).toHaveBeenCalledTimes(1);
-    expect(files.writePulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:py'], imageTags: [] });
+    expect(files.addPulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:py'], imageTags: [] });
     expect(recorded).toEqual(['sha256:py']);
   });
 
@@ -70,7 +70,7 @@ describe('pullAppImagesRecorded', () => {
 
     await pullAppImagesRecorded(deps(), appUrn, ['postgres:16'], pull, { forced: false });
 
-    expect(files.writePulledImages).not.toHaveBeenCalled();
+    expect(files.addPulledImages).not.toHaveBeenCalled();
     expect(recorded).toEqual([]);
   });
 
@@ -83,7 +83,7 @@ describe('pullAppImagesRecorded', () => {
 
     await pullAppImagesRecorded(deps(), appUrn, ['app-image:1'], pull, { forced: true });
 
-    expect(files.writePulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:v1', 'sha256:v2'], imageTags: [] });
+    expect(files.addPulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:v1', 'sha256:v2'], imageTags: [] });
   });
 
   it('keeps the images that did arrive when the pull fails part-way, and rethrows the pull error', async () => {
@@ -110,7 +110,7 @@ describe('pullAppImagesRecorded', () => {
   });
 
   it('does not stop a pull when the record cannot be written, and says so', async () => {
-    files.writePulledImages.mockResolvedValue(false);
+    files.addPulledImages.mockResolvedValue(false);
     const pull = vi.fn(async () => {
       onComputer.set('python:3.13-alpine', 'sha256:py');
     });
@@ -126,7 +126,7 @@ describe('pullAppImagesRecorded', () => {
     await pullAppImagesRecorded(deps(), appUrn, ['postgres:16'], pull, { forced: false });
 
     expect(pull).toHaveBeenCalledTimes(1);
-    expect(files.writePulledImages).not.toHaveBeenCalled();
+    expect(files.addPulledImages).not.toHaveBeenCalled();
   });
 
   it('never records an image that was here under another name, which the reference did not find', async () => {
@@ -138,7 +138,7 @@ describe('pullAppImagesRecorded', () => {
     await pullAppImagesRecorded(deps(), appUrn, ['app:1'], pull, { forced: false });
 
     expect(pull).toHaveBeenCalledTimes(1);
-    expect(files.writePulledImages).not.toHaveBeenCalled();
+    expect(files.addPulledImages).not.toHaveBeenCalled();
   });
 
   it('records the tags an image arrived with, so uninstall can tell them from one added later', async () => {
@@ -149,7 +149,7 @@ describe('pullAppImagesRecorded', () => {
 
     await pullAppImagesRecorded(deps(), appUrn, ['app:1'], pull, { forced: false });
 
-    expect(files.writePulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:app'], imageTags: ['app:1'] });
+    expect(files.addPulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:app'], imageTags: ['app:1'] });
   });
 
   it('keeps the tags already recorded and adds the new image with its own', async () => {
@@ -163,7 +163,7 @@ describe('pullAppImagesRecorded', () => {
 
     await pullAppImagesRecorded(deps(), appUrn, ['app:2'], pull, { forced: false });
 
-    expect(files.writePulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:v1', 'sha256:v2'], imageTags: ['app:1', 'app:2'] });
+    expect(files.addPulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:v1', 'sha256:v2'], imageTags: ['app:1', 'app:2'] });
   });
 
   // Its tags by now can include one someone else added. Recorded as the app's, that tag would go with the image.
@@ -178,7 +178,7 @@ describe('pullAppImagesRecorded', () => {
     await pullAppImagesRecorded(deps(), appUrn, ['app:1'], pull, { forced: false });
 
     expect(docker.imageTagsLocally).not.toHaveBeenCalled();
-    expect(files.writePulledImages).not.toHaveBeenCalled();
+    expect(files.addPulledImages).not.toHaveBeenCalled();
   });
 
   it('still records the image and says so when its tags cannot be read', async () => {
@@ -203,7 +203,7 @@ describe('pullAppImagesRecorded', () => {
     await pullAppImagesRecorded(deps(), appUrn, ['app:1'], pull, { forced: false });
 
     expect(pull).toHaveBeenCalledTimes(1);
-    expect(files.writePulledImages).not.toHaveBeenCalled();
+    expect(files.addPulledImages).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Could not list the images here'));
   });
 
@@ -218,7 +218,7 @@ describe('pullAppImagesRecorded', () => {
     await pullAppImagesRecorded(deps(), appUrn, ['app:1'], pull, { forced: true });
 
     expect(pull).toHaveBeenCalledTimes(1);
-    expect(files.writePulledImages).not.toHaveBeenCalled();
+    expect(files.addPulledImages).not.toHaveBeenCalled();
   });
 
   it('does not list the images or read tags when nothing is missing and the pull is not forced, which is every ordinary start', async () => {
@@ -236,7 +236,7 @@ describe('pullAppImagesRecorded', () => {
 
     expect(docker.imageIdsLocally).not.toHaveBeenCalled();
     expect(docker.imageTagsLocally).not.toHaveBeenCalled();
-    expect(files.writePulledImages).not.toHaveBeenCalled();
+    expect(files.addPulledImages).not.toHaveBeenCalled();
     expect(docker.imageIdLocally).toHaveBeenCalledTimes(3);
   });
 
@@ -267,7 +267,7 @@ describe('pullAppImagesRecorded', () => {
 
     await pullAppImagesRecorded(deps(), appUrn, ['app:latest'], pull, { forced: true });
 
-    expect(files.writePulledImages).not.toHaveBeenCalled();
+    expect(files.addPulledImages).not.toHaveBeenCalled();
     expect(recorded).toEqual(['sha256:v1']);
     expect(recordedTags).toEqual(['app:latest']);
   });
@@ -281,7 +281,7 @@ describe('pullAppImagesRecorded', () => {
     await pullAppImagesRecorded(deps(), appUrn, ['app:${VERSION}'], pull, { forced: false });
 
     expect(pull).toHaveBeenCalledTimes(1);
-    expect(files.writePulledImages).not.toHaveBeenCalled();
+    expect(files.addPulledImages).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Could not look up app:${VERSION}'));
   });
 
@@ -385,7 +385,7 @@ describe('pullAppImagesRecorded', () => {
 
       await recordComposeUpPulls(moduleRef(), customApp, async () => undefined, { forced: false });
 
-      expect(files.writePulledImages).not.toHaveBeenCalled();
+      expect(files.addPulledImages).not.toHaveBeenCalled();
       expect(recorded).toEqual([]);
     });
 
@@ -395,7 +395,7 @@ describe('pullAppImagesRecorded', () => {
       await recordComposeUpPulls(moduleRef(), customApp, async () => undefined, { forced: false });
       await recordComposeUpPulls(moduleRef(), customApp, async () => undefined, { forced: false });
 
-      expect(files.writePulledImages).not.toHaveBeenCalled();
+      expect(files.addPulledImages).not.toHaveBeenCalled();
     });
 
     it('writes nothing again when a later start finds the image it recorded', async () => {
@@ -407,11 +407,11 @@ describe('pullAppImagesRecorded', () => {
         },
         { forced: false },
       );
-      files.writePulledImages.mockClear();
+      files.addPulledImages.mockClear();
 
       await recordComposeUpPulls(moduleRef(), customApp, async () => undefined, { forced: false });
 
-      expect(files.writePulledImages).not.toHaveBeenCalled();
+      expect(files.addPulledImages).not.toHaveBeenCalled();
       expect(recorded).toEqual(['sha256:whoami']);
     });
 
@@ -475,7 +475,7 @@ describe('pullAppImagesRecorded', () => {
       await recordComposeUpPulls(moduleRef(), customApp, up, { forced: false });
 
       expect(up).toHaveBeenCalledTimes(1);
-      expect(files.writePulledImages).not.toHaveBeenCalled();
+      expect(files.addPulledImages).not.toHaveBeenCalled();
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Could not read which images port-test:_user uses'));
     });
 

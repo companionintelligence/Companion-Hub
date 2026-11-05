@@ -266,7 +266,7 @@ describe('InstallAppCommand — pull policy', () => {
       overrides: [],
     } as any);
     afm.readPulledImages.mockResolvedValue({ imageIds: [], imageTags: [] });
-    afm.writePulledImages.mockResolvedValue(true);
+    afm.addPulledImages.mockResolvedValue(true);
     dockerService.imageIdLocally = vi.fn(async (ref: string) => onComputer.get(ref) ?? null);
     dockerService.imageIdsLocally = vi.fn(async () => new Set(onComputer.values()));
     dockerService.imageTagsLocally = vi.fn(async () => []);
@@ -279,7 +279,7 @@ describe('InstallAppCommand — pull policy', () => {
     const result = await command.execute(appUrn, {});
 
     expect(result.success).toBe(true);
-    expect(afm.writePulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:arm64'], imageTags: [] });
+    expect(afm.addPulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:arm64'], imageTags: [] });
   });
 
   it('MUST pre-pull images when force_pull is true and still omit --pull from compose up', async () => {
@@ -313,7 +313,7 @@ describe('InstallAppCommand — pull policy', () => {
 
   it('records the image its pull brought onto the computer for the app, and not the one that was already there', async () => {
     const afm = (command as any).moduleRef.get(AppFilesManager);
-    afm.writePulledImages.mockResolvedValue(true);
+    afm.addPulledImages.mockResolvedValue(true);
     vi.mocked(parseComposeJson).mockReturnValue({
       services: [
         { name: 'app', image: 'ghcr.io/example/app:latest' },
@@ -333,8 +333,8 @@ describe('InstallAppCommand — pull policy', () => {
 
     expect(result.success).toBe(true);
     expect(dockerService.pullImages).toHaveBeenCalled();
-    expect(afm.writePulledImages).toHaveBeenCalledTimes(1);
-    expect(afm.writePulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:app'], imageTags: [] });
+    expect(afm.addPulledImages).toHaveBeenCalledTimes(1);
+    expect(afm.addPulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:app'], imageTags: [] });
   });
 
   it('SHOULD pass through other compose arguments unchanged', async () => {
@@ -775,6 +775,75 @@ describe('InstallAppCommand — pull policy', () => {
         'app',
         expect.objectContaining({ event: 'install_success', movedHostPort: { from: 8080, to: 10000 } }),
       );
+    });
+
+    describe('and a service then fails to come up', () => {
+      const crashLoop = {
+        ok: false,
+        message: 'ghost keeps restarting (exit 1): bootstrap failed',
+        serviceFailure: { kind: 'restarting', service: 'ghost', exitCode: 1 },
+      };
+
+      beforeEach(() => {
+        dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop as any);
+      });
+
+      it('reports the move beside the failure, since the app stays on the new port', async () => {
+        refusals = [8080];
+        portManager.moveMainPort.mockResolvedValue(mainAllocation(10000));
+
+        const result = await command.execute(appUrn, {});
+
+        expect(result).toMatchObject({
+          success: false,
+          errorCode: 'app_service_failed',
+          serviceFailure: crashLoop.serviceFailure,
+          movedHostPort: { from: 8080, to: 10000 },
+        });
+      });
+
+      it('reports the first port refused and the last one taken after two moves', async () => {
+        refusals = [8080, 10000];
+        portManager.moveMainPort.mockResolvedValueOnce(mainAllocation(10000)).mockResolvedValueOnce(mainAllocation(10001));
+
+        const result = await command.execute(appUrn, {});
+
+        expect(result).toMatchObject({ success: false, movedHostPort: { from: 8080, to: 10001 } });
+      });
+
+      it('reports no move when the app stayed on its port', async () => {
+        const result = await command.execute(appUrn, {});
+
+        expect(result.success).toBe(false);
+        expect(result.movedHostPort).toBeUndefined();
+      });
+    });
+
+    it('reports no move when no free port could be found', async () => {
+      refusals = [8080];
+      portManager.moveMainPort.mockResolvedValue(null);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(result.movedHostPort).toBeUndefined();
+    });
+
+    // The row and app.env still name the old port, so a notice of the new one would send the person nowhere.
+    it('reports no move when the new port could not be written down', async () => {
+      refusals = [8080];
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10000));
+      appFilesManager.writeAppEnv.mockImplementation(async (_urn, content) => {
+        if (content.includes('APP_PORT=10000')) {
+          throw new Error('ENOSPC: no space left on device');
+        }
+        appEnv = content;
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(result.movedHostPort).toBeUndefined();
     });
 
     it('never offers a port Docker already refused during the same install', async () => {
