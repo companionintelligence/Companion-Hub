@@ -12,10 +12,21 @@ import { rawForwardedHost } from './utils/forward-auth-host';
  * feature on answers 404 to everyone, signed in or not. Read per call, like the service's own switch.
  *
  * The answer is the one Nest gives for a path no route claims, byte for byte (the same message and
- * the same `path`, which the not-found handler reports relative to the global prefix), so a Hub with
- * the feature off cannot be told from a build that never had it. A test boots the same app without
- * these routes and compares the two, for HEAD, for absolute-form targets and for the other shapes
- * of request a scanner can send to the port.
+ * the same `path`, which the not-found handler reports relative to the global prefix). A test boots
+ * the same app without these routes and compares the two, for every method, for HEAD, for
+ * absolute-form targets (including a backslash in one, and an empty host) and for the other shapes of
+ * request a scanner can send to the port. Two things can still tell a Hub with the feature built in
+ * and the flag off from a build without it, and are known residuals:
+ *
+ * - In an image that carries the frontend bundle, `ServeStaticModule`'s SPA fallback decides what to
+ *   exclude from `req.originalUrl`, so it does not exclude an absolute-form `GET` or `HEAD` for
+ *   `/api/…`. A build without these routes answers that with `index.html` (200); this guard has
+ *   already answered 404. Origin-form requests, POST and DELETE are identical. The twin test cannot
+ *   see this: the test module has no `ServeStaticModule`.
+ * - Outside `NODE_ENV=production`, `/api/docs-json` lists the five routes whatever the flag says.
+ *
+ * Making the surface absent for real means registering the handlers only when the flag is set at
+ * startup, which the environment of a running process cannot change. That is not done here.
  */
 @Injectable()
 export class DidAuthFlagGuard implements CanActivate {
@@ -119,14 +130,18 @@ export function originNamesAnotherHost(request: Request): boolean {
  * does not start with `/`, and only when `://` comes before any `?`.
  */
 export function absentRoute(request: Request): NotFoundException {
-  const url = request.originalUrl;
+  // `request.url`, not `originalUrl`: by the time a guard runs, Express has restored it from the normalised
+  // match of the middleware mount, and that is the string an absent route's not-found handler starts from.
+  // They differ when the raw target holds a backslash in an absolute-form target, which Node's URL parse
+  // reads as a slash. The message keeps the raw target, as Nest's own does.
+  const url = request.url;
   const protohost = protohostOf(url);
   const at = url.slice(protohost.length).search(/\/auth\/did\//i);
   if (at !== -1) {
     request.url = protohost + url.slice(protohost.length + at);
   }
 
-  return new NotFoundException(`Cannot ${request.method} ${url}`);
+  return new NotFoundException(`Cannot ${request.method} ${request.originalUrl}`);
 }
 
 /** The `scheme://host[:port]` an absolute-form request target starts with, or `''`. The router's `getProtohost`. */

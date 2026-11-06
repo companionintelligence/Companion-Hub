@@ -1,6 +1,7 @@
 /**
- * Sign in with a DID through the whole HTTP stack: a real Nest app on a real port with the bootstrap of
- * `main.ts` (global prefix `/api`, CORS, cookie parser, body parsers, `payloadTooLargeHandler`), the real
+ * Sign in with a DID through the whole HTTP stack: a real Nest app on a real port with the parts of the
+ * bootstrap of `main.ts` that decide these answers (global prefix `/api`, CORS, cookie parser, the
+ * default body parsers, `payloadTooLargeHandler`, `trust proxy`), the real
  * `AuthMiddleware`, `ZodValidationPipe` and `MainExceptionFilter`, the real `AuthController` with its real
  * guards, and the real `DidAuthService`, `AuthService`, `SessionManager`, `SessionUserCache` and
  * `AuthRateLimiter`. Only what sits behind them is faked: the databases (users, federated identities),
@@ -13,6 +14,13 @@
  *
  * Not supertest: it is not installed, and the repo's own real-HTTP blocks (`auth.controller.test.ts`) use
  * `createNestApplication()` and a listening port, which is all this needs.
+ *
+ * What it does NOT boot, so what it cannot see: `ServeStaticModule`, whose SPA fallback an image with the
+ * frontend bundle adds (it answers an absolute-form `GET` or `HEAD` for `/api/…` with `index.html` on a build
+ * without the DID routes, where the flag-off Hub answers 404: a known residual, see `did-auth.guard.ts`);
+ * the large-body parsers for the inference and MCP paths; the root bounce route; and the Swagger document
+ * that `main.ts` serves outside production. The twin comparison below is therefore a comparison of the
+ * routing and error answers of the two apps, not of the production image.
  */
 import 'reflect-metadata';
 import { generateKeyPairSync, type KeyObject, sign } from 'node:crypto';
@@ -262,7 +270,7 @@ class HubWithoutDidModule implements NestModule {
   }
 }
 
-/** The bootstrap of `main.ts`, step for step. */
+/** The parts of the bootstrap of `main.ts` that decide these answers (see the header for what is left out). */
 async function boot(module: new () => unknown): Promise<{ app: INestApplication; port: number; moduleRef: TestingModule }> {
   const moduleRef = await Test.createTestingModule({ imports: [module] }).compile();
   const app = moduleRef.createNestApplication({ bodyParser: false });
@@ -489,6 +497,11 @@ describe('Sign in with a DID — flag off', () => {
   ]);
   requests.push(['an absolute-form target in upper case', 'GET', `HTTP://${HUB_HOST.toUpperCase()}/API/AUTH/DID/LINKS`, {}]);
   requests.push(['an origin-form target whose query holds a URL', 'GET', '/api/auth/did/links?next=http://evil.example/auth/did/links', {}]);
+  // Express reads a backslash in an absolute-form target as a slash when the middleware mount matches, so the path its not-found handler
+  // reports has the slash. The flag-off answer has to be built from the same string, and `http:///` is an empty host.
+  requests.push(['POST of the link route as an absolute-form target that ends in a backslash', 'POST', 'http://h/api/auth/did/link\\', { body: {} }]);
+  requests.push(['GET of the listing as an absolute-form target with backslashes for slashes', 'GET', 'http://h/api\\auth\\did\\links', {}]);
+  requests.push(['GET of the listing as an absolute-form target with no host', 'GET', 'http:///api/auth/did/links', {}]);
   requests.push(['HEAD of the listing', 'HEAD', '/api/auth/did/links', {}]);
   requests.push(['HEAD of the listing as an absolute-form target', 'HEAD', `http://${HUB_HOST}/api/auth/did/links`, {}]);
   requests.push(['HEAD of a POST route', 'HEAD', '/api/auth/did/challenge', {}]);
@@ -935,6 +948,24 @@ describe('Sign in with a DID — flag on', () => {
         expect(portal.whoisApps).not.toHaveBeenCalled();
       });
 
+      it('counts a "not a member" refusal against the failure budget like any other: ten, then a 429', async () => {
+        // The slot of a `failures` scope is handed back only when the person is let in, so a 403 from the membership check keeps it.
+        const key = await daveWithBothLinks();
+        portal.whoisApps.mockResolvedValue({ status: 403, code: 'GRANT_DENIED', body: undefined } as never);
+        const putBack = () => userRepository.updateUser(4, { accessStatus: 'active' } as never);
+
+        for (let i = 0; i < 10; i += 1) {
+          // Each refusal revokes the person; they are put back so the next proof meets the same answer.
+          await putBack();
+          expect((await api.verify((await proofFor(key)).body)).status).toBe(403);
+        }
+        await putBack();
+        const over = await api.verify((await proofFor(key)).body);
+
+        expect(over.status).toBe(429);
+        expect(over.json.message).toBe('AUTH_ERROR_RATE_LIMITED');
+      });
+
       it('lets the person in when the registration cannot be read: an unreadable registration is "unknown", as on the password path', async () => {
         const key = await daveWithBothLinks();
         deviceRegistration.getFirstDeviceRegistration.mockRejectedValue(new Error('ci-hub-db went away'));
@@ -1312,27 +1343,27 @@ describe('Sign in with a DID — flag on', () => {
       }
     };
 
-    it('frees the sign-in budget after a minute and not before: ten failures, a 429 at +59 s, a 401 again at +61 s', async () => {
+    it('frees the sign-in budget after exactly a minute: ten failures, a 429 until 60 s have passed, a 401 again at 60 s', async () => {
       for (let i = 0; i < 10; i += 1) {
         expect((await api.verify(BAD)).status).toBe(401);
       }
       expect((await api.verify(BAD)).status).toBe(429);
 
-      now += 59_000;
+      now += 59_999;
       expect((await api.verify(BAD)).status).toBe(429);
-      now += 2_000;
+      now += 1;
       expect((await api.verify(BAD)).status).toBe(401);
     });
 
-    it('frees the challenge budget after a minute and not before: twenty, a 429 at +59 s, a 201 again at +61 s', async () => {
+    it('frees the challenge budget after exactly a minute: twenty, a 429 until 60 s have passed, a 201 again at 60 s', async () => {
       for (let i = 0; i < 20; i += 1) {
         expect((await api.challenge()).status).toBe(201);
       }
       expect((await api.challenge()).status).toBe(429);
 
-      now += 59_000;
+      now += 59_999;
       expect((await api.challenge()).status).toBe(429);
-      now += 2_000;
+      now += 1;
       expect((await api.challenge()).status).toBe(201);
     });
 

@@ -204,9 +204,10 @@ describe('did:key codec', () => {
   describe('refuses a string of bytes that is not a point on the curve', () => {
     const SMALL_ORDER_HEX = new Set(WEAK_ENCODINGS.map((weak) => weak.keyHex));
 
-    it('has 131 independent vectors, 61 of them points', () => {
-      expect(curveVectors.vectors).toHaveLength(131);
-      expect(curveVectors.vectors.filter((vector) => vector.onCurve)).toHaveLength(61);
+    it('has 130 distinct independent vectors, 60 of them points', () => {
+      expect(curveVectors.vectors).toHaveLength(130);
+      expect(new Set(curveVectors.vectors.map((vector) => vector.hex)).size).toBe(130);
+      expect(curveVectors.vectors.filter((vector) => vector.onCurve)).toHaveLength(60);
     });
 
     it.each(curveVectors.vectors.map((vector, index) => ({ ...vector, index })))(

@@ -29,21 +29,23 @@ import { createPublicKey, type KeyObject } from 'node:crypto';
  * refused by {@link isWeakEd25519Key}, with no curve library: read `y` little-endian with the sign
  * bit cleared, refuse `y >= p`, and refuse the five `y` values of the eight torsion points.
  *
- * ═══ AND SO ARE STRINGS THAT ARE NOT A POINT ═══
+ * ═══ STRINGS THAT ARE NOT A POINT ARE REFUSED TOO, AS DEFENCE IN DEPTH ═══
  *
- * About half of all 32-byte strings are not points on the curve. A key that is not can never verify a
- * signature, so accepting one would be harmless to security, and it still matters to the person
- * typing: a `did:key` with one wrong character is almost never another valid key, it is a string that
- * decodes to nothing. Linked, it would look bound and never sign anyone in. {@link isEd25519CurvePoint}
- * refuses it at the door (RFC 8032 section 5.1.3: `x^2 = (y^2 - 1) / (d y^2 + 1)` must be a square).
- * It is neither a weak-key check (a small-order point is on the curve) nor a subgroup check.
+ * About half of all 32-byte strings are not points on the curve. Nothing verifies under such a key,
+ * and no Hub route links a DID that was typed in (a link is made from a token whose `iss` must verify
+ * under that key), so refusing them changes no outcome here. It is NOT a typo guard: one wrong
+ * character in a `did:key` is another valid `did:key` about 46% of the time. {@link isEd25519CurvePoint}
+ * is a port of Companion Memory's, where an owner does type a peer's DID. It decides by RFC 8032
+ * section 5.1.3 (`x^2 = (y^2 - 1) / (d y^2 + 1)` must be a square). It is neither a weak-key check (a
+ * small-order point is on the curve) nor a subgroup check.
  *
  * Also refused, by being out of scope: the DIDs whose key can ROTATE (`did:web`, `did:webvh`,
  * `did:scid:vh`, KERI `E…` AIDs). Reading one means resolving a log, and a verifier that skipped
  * that would accept a key its owner had retired.
  *
- * The same rules, and the same independently produced vectors, as Companion Memory's
- * `domains/peers/didKeyId.ts`; the two repositories each carry their own copy.
+ * The same rules, and the same independently produced did:key vectors, as Companion Memory's
+ * `domains/peers/didKeyId.ts`; the two repositories each carry their own copy. The curve vectors are
+ * kept here in full; Memory's curve spec carries a subset of them.
  */
 
 const DID_KEY_PREFIX = 'did:key:';
@@ -119,8 +121,8 @@ export function isWeakEd25519Key(key: unknown): boolean {
  * criterion decides. Any other input is not a point.
  *
  * Checked against the RFC's own decoding (the `(p+3)/8` square-root method, a different algorithm) on
- * 131 encodings written by a Python implementation: the edge cases around every small-order `y`, the
- * non-canonical `y`s and random strings; `ed25519-oncurve-vectors.json` is that list.
+ * 130 distinct encodings written by a Python implementation: the edge cases around every small-order
+ * `y`, the non-canonical `y`s and random strings; `ed25519-oncurve-vectors.json` is that list.
  */
 export function isEd25519CurvePoint(key: unknown): boolean {
   if (!(key instanceof Uint8Array) || key.length !== ED25519_KEY_BYTES) {

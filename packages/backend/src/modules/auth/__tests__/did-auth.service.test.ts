@@ -203,11 +203,15 @@ describe('DidAuthService', () => {
       expect(store.size).toBe(0);
     });
 
-    it('refuses an id that is not a UUID, so an id cannot address another key', async () => {
+    it('refuses an id that is not exactly a UUID, so an id cannot address another key', async () => {
+      const uuid = '11111111-2222-4333-8444-555555555555';
       store.set('did-auth:challenge:x', { value: '{}', ttl: 1 });
+      store.set(`did-auth:challenge:${uuid}:x`, { value: '{}', ttl: 1 });
 
-      for (const id of ['x', '', 'did-auth:challenge:x', '../x', undefined, null, 42, {}]) {
-        expect(service.consumeChallenge(id)).toBeNull();
+      // The last four are a real UUID with something before it, after it, or after a newline: only an anchored pattern refuses them.
+      const ids = ['x', '', 'did-auth:challenge:x', '../x', undefined, null, 42, {}, `x${uuid}`, `${uuid}:x`, `${uuid}\n`, `\n${uuid}`];
+      for (const id of ids) {
+        expect(service.consumeChallenge(id), String(id)).toBeNull();
       }
       expect(cache.get).not.toHaveBeenCalled();
     });
@@ -215,6 +219,13 @@ describe('DidAuthService', () => {
     it('refuses a challenge past its 120 seconds even when the cache has not evicted it yet', async () => {
       const { challengeId } = await service.issueChallenge();
       service.now = () => NOW + 120_000 + 1;
+
+      expect(service.consumeChallenge(challengeId)).toBeNull();
+    });
+
+    it('refuses a challenge at the very millisecond it expires', async () => {
+      const { challengeId, expiresAt } = await service.issueChallenge();
+      service.now = () => expiresAt;
 
       expect(service.consumeChallenge(challengeId)).toBeNull();
     });
@@ -504,6 +515,7 @@ describe('DidAuthService', () => {
         ['a bare fragment', () => '#key-1'],
         ['a URL', () => 'https://attacker.example/key'],
         ['a non-string', () => 42],
+        ['null, which is not the same as no kid', () => null],
       ])('%s', async (_name, kid) => {
         await refused(makeToken(identity, challenge, { header: { kid: kid() } }), 'bad-kid');
       });
@@ -575,6 +587,13 @@ describe('DidAuthService', () => {
       });
 
       it('lets a signer’s clock run 30 seconds ahead and not 31', async () => {
+        await accepts({ iat: NOW_S + 30, exp: NOW_S + 100 });
+        await refusesClaims({ iat: NOW_S + 31, exp: NOW_S + 100 });
+      });
+
+      it('reads its own clock in whole seconds, rounded down: at x.6 s an iat 31 s ahead is still too far ahead', async () => {
+        service.now = () => NOW + 600;
+
         await accepts({ iat: NOW_S + 30, exp: NOW_S + 100 });
         await refusesClaims({ iat: NOW_S + 31, exp: NOW_S + 100 });
       });

@@ -131,6 +131,31 @@ describe('absentRoute', () => {
     expect(r.url).toBe(expected);
   });
 
+  it('builds the path from the url Express restored, and the message from the raw target: a backslash in an absolute-form target is a slash to the router', () => {
+    const r = request({ method: 'GET', originalUrl: 'http://h/api\\auth\\did\\links', url: 'http://h/api/auth/did/links' });
+
+    const error = absentRoute(r);
+
+    expect(r.url).toBe('http://h/auth/did/links');
+    expect(error.message).toBe('Cannot GET http://h/api\\auth\\did\\links');
+  });
+
+  it('takes a backslash at the end of an absolute-form target the same way', () => {
+    const r = request({ method: 'POST', originalUrl: 'http://h/api/auth/did/link\\', url: 'http://h/api/auth/did/link/' });
+
+    absentRoute(r);
+
+    expect(r.url).toBe('http://h/auth/did/link/');
+  });
+
+  it('keeps the scheme of a target with an empty host: the host ends where the path starts', () => {
+    const r = request({ originalUrl: 'http:///api/auth/did/links', url: 'http:///api/auth/did/links' });
+
+    absentRoute(r);
+
+    expect(r.url).toBe('http:///auth/did/links');
+  });
+
   it('looks for a scheme only before the query, as the router does, even in a target that is not origin-form', () => {
     // Such a target never reaches a DID route (it does not start with "/"), but the router's rule is what the 404 mirrors.
     const r = request({ originalUrl: 'x?next=http://evil.example/auth/did/links', url: 'x?next=http://evil.example/auth/did/links' });
@@ -160,6 +185,11 @@ describe('absentRoute', () => {
     const bareHost = request({ originalUrl: 'http://hub.example.test', url: 'http://hub.example.test' });
     absentRoute(bareHost);
     expect(bareHost.url).toBe('http://hub.example.test');
+
+    // The search starts after the scheme and host: the `//auth` of this target is not the start of `/auth/did/`.
+    const hostNamedAuth = request({ originalUrl: 'http://auth/did/links', url: 'http://auth/did/links' });
+    absentRoute(hostNamedAuth);
+    expect(hostNamedAuth.url).toBe('http://auth/did/links');
   });
 });
 
