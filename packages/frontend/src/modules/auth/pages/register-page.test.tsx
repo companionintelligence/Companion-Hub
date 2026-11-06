@@ -72,6 +72,14 @@ vi.mock('@/lib/hub-runtime-mode', () => ({
   isTauriDesktopApp: () => mockIsTauriDesktopApp(),
 }));
 
+const { mockSignInDesktopWithPortal } = vi.hoisted(() => ({
+  mockSignInDesktopWithPortal: vi.fn(async (): Promise<{ redirectPath: string }> => ({ redirectPath: '/home' })),
+}));
+
+vi.mock('@/lib/desktop-portal-sign-in', () => ({
+  signInDesktopWithPortal: () => mockSignInDesktopWithPortal(),
+}));
+
 vi.mock('@/lib/mobile-connection', () => ({
   isMobileClient: () => mockIsMobile(),
   usesCloudConnect: () => mockIsMobile(),
@@ -266,14 +274,15 @@ describe('RegisterPage', () => {
   // A paired Hub opens on /login now (#2061). This page still offers the CI Account sign-in for the
   // rare Hub that renders it, because whoever paired a Hub already has a CI Account (#2059).
   describe('CI Account sign-in', () => {
-    it('opens CI Account sign-in in the system browser from the desktop app', async () => {
+    it('signs in to CI Account from the desktop app with its own PKCE sign-in', async () => {
       mockIsTauriDesktopApp.mockReturnValue(true);
 
       render(<RegisterPage />);
 
       await userEvent.click(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' }));
 
-      expect(mockOpenAuthSession).toHaveBeenCalledWith('http://localhost:5002/api/auth/portal/start?desktop=1&desktop_channel=dev');
+      expect(mockSignInDesktopWithPortal).toHaveBeenCalledOnce();
+      expect(mockOpenAuthSession).not.toHaveBeenCalled();
       expect(screen.getByText('AUTH_LOGIN_COMPANION_ACCOUNT_HINT')).toBeInTheDocument();
     });
 
@@ -305,7 +314,8 @@ describe('RegisterPage', () => {
       await userEvent.click(await screen.findByTestId('login-switch-account'));
 
       expect(mockForgetPortalAccountEmail).toHaveBeenCalledOnce();
-      expect(mockOpenAuthSession).toHaveBeenCalledWith('http://localhost:5002/api/auth/portal/start?desktop=1&desktop_channel=dev');
+      expect(mockSignInDesktopWithPortal).toHaveBeenCalledOnce();
+      expect(mockOpenAuthSession).not.toHaveBeenCalled();
       expect(screen.queryByTestId('login-switch-account')).not.toBeInTheDocument();
     });
 

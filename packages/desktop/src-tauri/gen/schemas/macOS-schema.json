@@ -351,6 +351,84 @@
           "markdownDescription": "All Companion Hub desktop IPC commands. Required once the webview leaves\ntauri://localhost for the Hub UI (hub.ci.localhost / *.ci.lan / etc.): Tauri 2\nrejects app commands from a remote origin unless they are explicitly allowed\nhere. Without this grant, Open data folder / Start Hub / installers fail with\n\"Command … not allowed by ACL\" on every OS.\n"
         },
         {
+          "description": "Sign-in over a loopback redirect and OS keychain storage for ci-auth.\n#### This default permission set includes:\n\n- `allow-begin-loopback`\n- `allow-await-loopback`\n- `allow-cancel-loopback`\n- `allow-secure-get`\n- `allow-secure-set`\n- `allow-secure-remove`",
+          "type": "string",
+          "const": "ci-auth:default",
+          "markdownDescription": "Sign-in over a loopback redirect and OS keychain storage for ci-auth.\n#### This default permission set includes:\n\n- `allow-begin-loopback`\n- `allow-await-loopback`\n- `allow-cancel-loopback`\n- `allow-secure-get`\n- `allow-secure-set`\n- `allow-secure-remove`"
+        },
+        {
+          "description": "Enables the await_loopback command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:allow-await-loopback",
+          "markdownDescription": "Enables the await_loopback command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the begin_loopback command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:allow-begin-loopback",
+          "markdownDescription": "Enables the begin_loopback command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the cancel_loopback command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:allow-cancel-loopback",
+          "markdownDescription": "Enables the cancel_loopback command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the secure_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:allow-secure-get",
+          "markdownDescription": "Enables the secure_get command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the secure_remove command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:allow-secure-remove",
+          "markdownDescription": "Enables the secure_remove command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the secure_set command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:allow-secure-set",
+          "markdownDescription": "Enables the secure_set command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the await_loopback command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:deny-await-loopback",
+          "markdownDescription": "Denies the await_loopback command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the begin_loopback command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:deny-begin-loopback",
+          "markdownDescription": "Denies the begin_loopback command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel_loopback command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:deny-cancel-loopback",
+          "markdownDescription": "Denies the cancel_loopback command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the secure_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:deny-secure-get",
+          "markdownDescription": "Denies the secure_get command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the secure_remove command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:deny-secure-remove",
+          "markdownDescription": "Denies the secure_remove command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the secure_set command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:deny-secure-set",
+          "markdownDescription": "Denies the secure_set command without any pre-configured scope."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

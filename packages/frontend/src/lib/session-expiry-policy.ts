@@ -12,6 +12,8 @@ const SESSION_EXPIRY_EXEMPT_PATHS = [
   '/api/auth/logout',
   '/api/auth/session/refresh',
   '/api/auth/portal/desktop-exchange',
+  // The desktop's own sign-in: a 401 means the Portal token was refused, not that the Hub session died.
+  '/api/auth/portal/desktop-session',
   // Sign in with a DID (flag-gated). It is anonymous, and a proof that does not verify is answered 401
   // exactly as a wrong password is at `/api/auth/login`: the answer, not a session that died. Only this
   // route needs it. The link and unlink routes answer a refused proof 400 because they are used while

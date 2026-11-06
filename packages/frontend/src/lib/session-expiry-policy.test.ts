@@ -6,6 +6,8 @@ describe('isSessionExpiryExempt', () => {
     '/api/auth/login',
     '/api/auth/logout',
     '/api/auth/session/refresh',
+    // The desktop's own Portal sign-in (#2247): a 401 means the Portal token was refused.
+    '/api/auth/portal/desktop-session',
     // Sign in with a DID: a proof that does not verify is answered 401, as a wrong password is.
     '/api/auth/did/verify',
     // Fail-open bridge: a 401 here must not sign the client out mid-click (#944).

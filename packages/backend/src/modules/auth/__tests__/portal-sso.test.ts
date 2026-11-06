@@ -8,6 +8,7 @@ import {
   buildPortalSsoErrorRedirectUrl,
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
+  fetchPortalUserinfo,
   buildPortalDesktopHandoffHtml,
   desktopSignInWaitProof,
   isDesktopSignInWaitProof,
@@ -525,6 +526,68 @@ describe('portal-sso helpers', () => {
       ok: false,
       reason: 'token_exchange_failed',
       status: 400,
+    });
+  });
+
+  describe('fetchPortalUserinfo', () => {
+    const input = { publicPortalBaseUrl: 'https://hub.ci.computer', accessToken: 'access-token' };
+
+    it('returns the email, subject and issuer Portal gives for a verified address', async () => {
+      vi.mocked(axios.get).mockResolvedValue({
+        status: 200,
+        data: { sub: 'portal-sub', iss: 'https://hub.ci.computer', email: 'operator@example.com', email_verified: true },
+      });
+
+      await expect(fetchPortalUserinfo(input)).resolves.toEqual({
+        ok: true,
+        email: 'operator@example.com',
+        subject: 'portal-sub',
+        issuer: 'https://hub.ci.computer',
+        status: 200,
+      });
+      expect(axios.get).toHaveBeenCalledWith(
+        'https://hub.ci.computer/api/auth/oauth2/userinfo',
+        expect.objectContaining({ headers: expect.objectContaining({ authorization: 'Bearer access-token' }), timeout: 15_000 }),
+      );
+    });
+
+    it('leaves subject and issuer null when Portal names neither', async () => {
+      vi.mocked(axios.get).mockResolvedValue({ status: 200, data: { email: 'operator@example.com', email_verified: true } });
+
+      await expect(fetchPortalUserinfo(input)).resolves.toEqual({
+        ok: true,
+        email: 'operator@example.com',
+        subject: null,
+        issuer: null,
+        status: 200,
+      });
+    });
+
+    it.each([
+      ['unverified', false],
+      ['absent', undefined],
+    ])('refuses a userinfo whose email_verified is %s', async (_label, emailVerified) => {
+      vi.mocked(axios.get).mockResolvedValue({ status: 200, data: { email: 'operator@example.com', email_verified: emailVerified } });
+
+      await expect(fetchPortalUserinfo(input)).resolves.toEqual({ ok: false, reason: 'email_unverified', status: 200 });
+    });
+
+    it('refuses a userinfo with no email address', async () => {
+      vi.mocked(axios.get).mockResolvedValue({ status: 200, data: { sub: 'portal-sub', email_verified: true } });
+
+      await expect(fetchPortalUserinfo(input)).resolves.toEqual({ ok: false, reason: 'missing_email', status: 200 });
+    });
+
+    it('reports a userinfo that Portal refused with its status', async () => {
+      vi.mocked(axios.get).mockResolvedValue({ status: 401, data: { error: 'invalid_token' } });
+
+      await expect(fetchPortalUserinfo(input)).resolves.toEqual({ ok: false, reason: 'userinfo_failed', status: 401 });
+    });
+
+    it('says why the request got no answer when no address of the Portal accepted it', async () => {
+      vi.mocked(axios.get).mockRejectedValue(axiosEveryAddressFailed());
+
+      await expect(fetchPortalUserinfo(input)).resolves.toEqual({ ok: false, reason: 'network_error', detail: EVERY_ADDRESS_FAILED });
     });
   });
 

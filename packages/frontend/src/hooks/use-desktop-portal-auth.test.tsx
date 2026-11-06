@@ -142,6 +142,19 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/** The Hub a phone has picked. With a Hub chosen, a phone is on mobile-hub-sso, the flow that owns the deep-link handoff. */
+const REMOTE_HUB = 'https://hub-core3-bc.companionintelligence.com';
+
+/** Switch the mocks to a phone that has picked its Hub. The desktop is the default in beforeEach. */
+function asPhoneOnRemoteHub(): void {
+  runtime.isTauriDesktopApp.mockReturnValue(false);
+  runtime.isMobileClient.mockReturnValue(true);
+  runtime.getHubBaseUrlSync.mockReturnValue(REMOTE_HUB);
+}
+
+const waitingAnnouncements = () => invoke.mock.calls.filter((call) => call[0] === 'announce_desktop_sign_in_wait_command').length;
+const sessionHintCalls = () => api.apiFetch.mock.calls.filter((call) => String(call[0]).includes('session-hint'));
+
 describe('useDesktopPortalAuth — wiring', () => {
   it('is inert outside the Tauri shell (plain web build never exchanges)', async () => {
     runtime.getTauriInvoke.mockReturnValue(null);
@@ -151,132 +164,64 @@ describe('useDesktopPortalAuth — wiring', () => {
     expect(api.apiFetch).not.toHaveBeenCalled();
   });
 
-  it('heartbeats session-hint with desktop=1, so a signed-in window clears the handoff flag', async () => {
-    renderHook(() => useDesktopPortalAuth());
+  // A desktop window signs in on its own (desktop-portal-sign-in.ts). It takes no Hub deep link, heartbeats
+  // no session-hint and tells the Hub nothing about waiting for a sign-in. These tests hold it to that.
 
-    await waitFor(() => {
-      expect(api.apiFetch).toHaveBeenCalledWith('/api/auth/portal/session-hint?desktop=1');
-    });
+  it('does not subscribe to deep-link-auth on the desktop, so no link is taken from the parked slot', async () => {
+    renderHook(() => useDesktopPortalAuth());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(ev.listen).not.toHaveBeenCalled();
+    expect(dl.takePendingDesktopPortalAuth).not.toHaveBeenCalled();
+    expect(api.apiFetch).not.toHaveBeenCalled();
   });
 
-  const waitingAnnouncements = () => invoke.mock.calls.filter((call) => call[0] === 'announce_desktop_sign_in_wait_command').length;
-
-  it('has the desktop shell tell the Hub it is waiting for a sign-in while the window is signed out, every 60 s', async () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    renderHook(() => useDesktopPortalAuth());
-
-    expect(waitingAnnouncements()).toBe(1);
-    vi.advanceTimersByTime(60_000);
-    expect(waitingAnnouncements()).toBe(2);
-    // The page never sends the proof itself; only the shell can.
-    expect(api.apiFetch.mock.calls.some((call) => String(call[0]).includes('desktop-waiting'))).toBe(false);
-  });
-
-  it('does not say it is waiting for a sign-in while signed in', async () => {
-    ctx.isLoggedIn = true;
-    renderHook(() => useDesktopPortalAuth());
-
-    await waitFor(() => expect(api.apiFetch).toHaveBeenCalledWith('/api/auth/portal/session-hint?desktop=1'));
-    expect(waitingAnnouncements()).toBe(0);
-  });
-
-  it('waits for the user context before saying it is waiting, so a signed-in window never does', () => {
-    ctx.isLoading = true;
+  it('does not heartbeat session-hint on the desktop, so no account is remembered from it', async () => {
+    api.apiFetch.mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ email: 'person@example.com', portalBaseUrl: 'https://portal.example.com', source: 'hub_user', portalReachable: true }),
+    }));
     const { rerender } = renderHook(() => useDesktopPortalAuth());
-    expect(waitingAnnouncements()).toBe(0);
-
-    ctx.isLoading = false;
+    await new Promise((resolve) => setTimeout(resolve, 20));
     ctx.isLoggedIn = true;
     rerender();
-    expect(waitingAnnouncements()).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(sessionHintCalls()).toHaveLength(0);
+    expect(hint.rememberPortalAccountEmail).not.toHaveBeenCalled();
   });
 
-  it('stops saying it is waiting once the window signs in', () => {
+  it('never tells the Hub it is waiting for a sign-in, while loading, signed out or signed in, not even on the 60 s timer', () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    ctx.isLoading = true;
     const { rerender } = renderHook(() => useDesktopPortalAuth());
-    expect(waitingAnnouncements()).toBe(1);
+    vi.advanceTimersByTime(120_000);
+
+    ctx.isLoading = false;
+    rerender();
+    vi.advanceTimersByTime(120_000);
 
     ctx.isLoggedIn = true;
     rerender();
     vi.advanceTimersByTime(120_000);
-    expect(waitingAnnouncements()).toBe(1);
+
+    expect(waitingAnnouncements()).toBe(0);
+    // The page never sends the proof itself either; nothing on the desktop calls the waiting endpoint.
+    expect(api.apiFetch.mock.calls.some((call) => String(call[0]).includes('desktop-waiting'))).toBe(false);
   });
 
-  it('does not say it is waiting while the window shows a Hub on another machine', async () => {
+  it('never tells the Hub it is waiting when the window shows a Hub on another machine', () => {
     Object.defineProperty(window, 'location', {
       configurable: true,
       value: { ...window.location, origin: 'http://hub.ci.lan', hostname: 'hub.ci.lan', port: '', assign: locationAssign },
     });
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     renderHook(() => useDesktopPortalAuth());
 
-    await waitFor(() => expect(ev.listen).toHaveBeenCalledWith('deep-link-auth'));
+    vi.advanceTimersByTime(120_000);
+
     expect(waitingAnnouncements()).toBe(0);
-  });
-
-  it('carries on when the desktop app is too old to have the command', async () => {
-    invoke.mockRejectedValue(new Error('Command announce_desktop_sign_in_wait_command not found'));
-    renderHook(() => useDesktopPortalAuth());
-
-    await waitFor(() => expect(ev.listen).toHaveBeenCalledWith('deep-link-auth'));
-    expect(waitingAnnouncements()).toBe(1);
-    expect(toastMock.error).not.toHaveBeenCalled();
-  });
-
-  it('remembers the account this window is signed in as, so the sign-in screen can name it after sign-out', async () => {
-    api.apiFetch.mockImplementation(async (path: string) => ({
-      ok: true,
-      status: 200,
-      json: async () =>
-        String(path).includes('session-hint')
-          ? { email: 'person@example.com', portalBaseUrl: 'https://portal.example.com', source: 'hub_user', portalReachable: true }
-          : { sessionId: 'sess-1', redirectPath: '/dashboard' },
-    }));
-
-    renderHook(() => useDesktopPortalAuth());
-
-    await waitFor(() => expect(hint.rememberPortalAccountEmail).toHaveBeenCalledWith('person@example.com'));
-  });
-
-  it('does not remember an email the Hub sent about its first operator rather than this window', async () => {
-    api.apiFetch.mockImplementation(async (path: string) => ({
-      ok: true,
-      status: 200,
-      json: async () =>
-        String(path).includes('session-hint')
-          ? { email: 'operator@example.com', portalBaseUrl: 'https://portal.example.com', source: 'hub_operator', portalReachable: true }
-          : { sessionId: 'sess-1', redirectPath: '/dashboard' },
-    }));
-
-    renderHook(() => useDesktopPortalAuth());
-
-    await waitFor(() => expect(api.apiFetch).toHaveBeenCalledWith('/api/auth/portal/session-hint?desktop=1'));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(hint.rememberPortalAccountEmail).not.toHaveBeenCalled();
-  });
-
-  it('drops an answer that lands after this window signed out, so the next person is not offered the last one', async () => {
-    let answer: (value: unknown) => void = () => undefined;
-    api.apiFetch.mockImplementation((path: string) =>
-      String(path).includes('session-hint')
-        ? new Promise((resolve) => {
-            answer = resolve;
-          })
-        : Promise.resolve({ ok: true, status: 200, json: async () => ({ sessionId: 'sess-1', redirectPath: '/dashboard' }) }),
-    );
-
-    renderHook(() => useDesktopPortalAuth());
-    await waitFor(() => expect(api.apiFetch).toHaveBeenCalledWith('/api/auth/portal/session-hint?desktop=1'));
-
-    // Sign out clears the window's session record while the heartbeat still waits on the Hub.
-    api.getHubSessionIssuedAt.mockReturnValue(null);
-    answer({
-      ok: true,
-      status: 200,
-      json: async () => ({ email: 'person@example.com', portalBaseUrl: 'https://portal.example.com', source: 'hub_user', portalReachable: true }),
-    });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    expect(hint.rememberPortalAccountEmail).not.toHaveBeenCalled();
   });
 
   it('does not heartbeat desktop presence on iOS/Android (remote Hub owns the callback)', async () => {
@@ -289,11 +234,6 @@ describe('useDesktopPortalAuth — wiring', () => {
     await waitFor(() => expect(ev.listen).toHaveBeenCalled());
     expect(api.apiFetch).not.toHaveBeenCalledWith('/api/auth/portal/session-hint?desktop=1');
     expect(waitingAnnouncements()).toBe(0);
-  });
-
-  it('subscribes to deep-link-auth', async () => {
-    renderHook(() => useDesktopPortalAuth());
-    await waitFor(() => expect(ev.listen).toHaveBeenCalledWith('deep-link-auth'));
   });
 
   it('starts listening when a phone picks its Hub without a reload, and stops when it forgets it', async () => {
@@ -327,18 +267,21 @@ describe('useDesktopPortalAuth — wiring', () => {
   });
 });
 
-describe('useDesktopPortalAuth — successful handoff', () => {
-  it('exchanges on the same Hub that issued the token (local:desktop)', async () => {
+describe('useDesktopPortalAuth — successful handoff (phone)', () => {
+  beforeEach(() => {
+    asPhoneOnRemoteHub();
+  });
+
+  it('signs the phone in from a parked link: exchanges it on the remote Hub, stores the session and opens the redirect', async () => {
     dl.takePendingDesktopPortalAuth.mockResolvedValue({ token: 'tok-cold' });
 
     renderHook(() => useDesktopPortalAuth());
 
-    await waitFor(() => {
-      expect(api.apiFetch.mock.calls.some((call) => String(call[0]).includes('desktop-exchange'))).toBe(true);
-    });
+    await waitFor(() => expect(api.setTauriSessionId).toHaveBeenCalledWith('sess-1'));
+    expect(api.apiFetch).toHaveBeenCalledWith('/api/auth/portal/desktop-exchange?token=tok-cold', expect.any(Object));
     expect(toastMock.error).not.toHaveBeenCalled();
-    expect(api.setTauriSessionId).toHaveBeenCalledWith('sess-1');
     expect(ctx.setUserContext).toHaveBeenCalledWith({ isLoggedIn: true });
+    await waitFor(() => expect(locationAssign).toHaveBeenCalledWith('/dashboard'));
   });
 
   it('exchanges on the remote Hub for iOS/Android /login, not local Vite', async () => {
@@ -352,9 +295,27 @@ describe('useDesktopPortalAuth — successful handoff', () => {
     await waitFor(() => expect(api.setTauriSessionId).toHaveBeenCalledWith('sess-1'));
     expect(api.apiFetch).toHaveBeenCalledWith('/api/auth/portal/desktop-exchange?token=tok-mobile', expect.any(Object));
   });
+
+  it('remembers the account the phone is signed in as, from the session hint that follows the exchange', async () => {
+    dl.takePendingDesktopPortalAuth.mockResolvedValue({ token: 'tok-account' });
+    hint.resolvePortalSessionHint.mockResolvedValue({
+      email: 'person@example.com',
+      portalBaseUrl: 'https://portal.example.com',
+      source: 'hub_user',
+      portalReachable: true,
+    });
+
+    renderHook(() => useDesktopPortalAuth());
+
+    await waitFor(() => expect(hint.rememberPortalAccountEmail).toHaveBeenCalledWith('person@example.com'));
+  });
 });
 
-describe('useDesktopPortalAuth — failure handling', () => {
+describe('useDesktopPortalAuth — failure handling (phone)', () => {
+  beforeEach(() => {
+    asPhoneOnRemoteHub();
+  });
+
   it('does not sign the user in when the exchange rejects', async () => {
     dl.takePendingDesktopPortalAuth.mockResolvedValue({ token: 'tok-throw' });
     api.apiFetch.mockRejectedValue(new Error('boom'));
@@ -367,7 +328,11 @@ describe('useDesktopPortalAuth — failure handling', () => {
   });
 });
 
-describe('useDesktopPortalAuth — the same link arriving more than once', () => {
+describe('useDesktopPortalAuth — the same link arriving more than once (phone)', () => {
+  beforeEach(() => {
+    asPhoneOnRemoteHub();
+  });
+
   const exchangeCalls = () => api.apiFetch.mock.calls.filter((call) => String(call[0]).includes('desktop-exchange'));
   const refuseExchange = () =>
     api.apiFetch.mockImplementation(async (path: string) =>
@@ -484,6 +449,7 @@ describe('useDesktopPortalAuth — the same link arriving more than once', () =>
 
     expect(ev.listen).toHaveBeenCalledTimes(1);
     expect(ev.unlisten).not.toHaveBeenCalled();
-    expect(api.apiFetch.mock.calls.filter((call) => call[0] === '/api/auth/portal/session-hint?desktop=1')).toHaveLength(1);
+    // A phone has no presence heartbeat, so a context change sends no session-hint either.
+    expect(sessionHintCalls()).toHaveLength(0);
   });
 });

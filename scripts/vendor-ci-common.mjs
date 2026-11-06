@@ -3,13 +3,17 @@
 //
 //   node scripts/vendor-ci-common.mjs --check
 //   node scripts/vendor-ci-common.mjs --from ../ci-common --ref <tag>
+//   node scripts/vendor-ci-common.mjs --from ../ci-common --package <name>
 //
 // --check confirms every dest is still the copy the manifest records.
 // --from reads that checkout at --ref (default HEAD), stamps text files with
-// `vendored-from:`, and rewrites the manifest versions and hashes.
+// `vendored-from:`, and rewrites the manifest versions and hashes. An entry that names
+// its own `ref` (a tag or a commit, such as an unmerged branch) is read from that ref
+// instead. --package limits the sync to the entries of one package, so the others stay
+// exactly as they are.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -17,7 +21,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const manifestPath = resolve(repoRoot, 'packages/frontend/ci-common.vendor.json');
 
 function parseArgs(argv) {
-  const out = { check: false, from: null, ref: 'HEAD' };
+  const out = { check: false, from: null, ref: 'HEAD', package: null };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--check') out.check = true;
@@ -27,13 +31,16 @@ function parseArgs(argv) {
     } else if (arg === '--ref') {
       out.ref = argv[i + 1];
       i += 1;
+    } else if (arg === '--package') {
+      out.package = argv[i + 1];
+      i += 1;
     } else {
       console.error(`vendor-ci-common: unknown argument ${arg}`);
       process.exit(2);
     }
   }
   if ((out.check && out.from) || (!out.check && !out.from)) {
-    console.error('vendor-ci-common: pass --check, or --from <ci-common-checkout> [--ref <tag>]');
+    console.error('vendor-ci-common: pass --check, or --from <ci-common-checkout> [--ref <tag>] [--package <name>]');
     process.exit(2);
   }
   return out;
@@ -49,6 +56,16 @@ function sha256(bytes) {
 
 function gitShow(from, ref, source) {
   return execFileSync('git', ['-C', from, 'show', `${ref}:${source}`], { maxBuffer: 20 * 1024 * 1024 });
+}
+
+/** The version a package declares: `version` in package.json, or the `[package]` version in Cargo.toml. */
+function declaredVersion(packageJsonPath, raw) {
+  if (packageJsonPath.endsWith('.toml')) {
+    const match = /^version\s*=\s*"([^"]+)"/m.exec(raw);
+    if (!match) throw new Error(`no version in ${packageJsonPath}`);
+    return match[1];
+  }
+  return JSON.parse(raw).version;
 }
 
 function stamp(entry, raw) {
@@ -67,6 +84,10 @@ function stamp(entry, raw) {
     }
     text = text.replace(/^\/\/ vendored-from:.*\n+/, '');
     return Buffer.from(`${shebang}// ${mark}\n${text}`);
+  }
+  if (entry.stamp === 'toml') {
+    const body = raw.toString('utf8').replace(/^# vendored-from:.*\n+/, '');
+    return Buffer.from(`# ${mark}\n${body}`);
   }
   return raw;
 }
@@ -90,23 +111,32 @@ function check(manifest) {
   console.log(`✔ ${manifest.files.length} vendored CI Common file(s) match packages/frontend/ci-common.vendor.json`);
 }
 
-function sync(manifest, from, ref) {
+function sync(manifest, from, ref, onlyPackage) {
+  const selected = manifest.files.filter((entry) => onlyPackage === null || entry.package === onlyPackage);
+  if (selected.length === 0) {
+    console.error(`vendor-ci-common: no manifest entry for ${onlyPackage}`);
+    process.exit(2);
+  }
   const versions = new Map();
-  for (const entry of manifest.files) {
-    if (!versions.has(entry.packageJson)) {
-      versions.set(entry.packageJson, JSON.parse(gitShow(from, ref, entry.packageJson).toString('utf8')).version);
+  for (const entry of selected) {
+    const entryRef = entry.ref ?? ref;
+    const versionKey = `${entryRef}:${entry.packageJson}`;
+    if (!versions.has(versionKey)) {
+      versions.set(versionKey, declaredVersion(entry.packageJson, gitShow(from, entryRef, entry.packageJson).toString('utf8')));
     }
-    entry.version = versions.get(entry.packageJson);
-    const stamped = stamp(entry, gitShow(from, ref, entry.source));
-    writeFileSync(resolve(repoRoot, entry.dest), stamped);
+    entry.version = versions.get(versionKey);
+    const stamped = stamp(entry, gitShow(from, entryRef, entry.source));
+    const destPath = resolve(repoRoot, entry.dest);
+    mkdirSync(dirname(destPath), { recursive: true });
+    writeFileSync(destPath, stamped);
     entry.sha256 = sha256(stamped);
     entry.mark = markOf(entry);
   }
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-  console.log(`vendored ${manifest.files.length} file(s) from ${from} @ ${ref}`);
+  console.log(`vendored ${selected.length} file(s) from ${from} @ ${ref}`);
 }
 
 const args = parseArgs(process.argv.slice(2));
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-if (args.from) sync(manifest, resolve(args.from), args.ref);
+if (args.from) sync(manifest, resolve(args.from), args.ref, args.package);
 else check(manifest);

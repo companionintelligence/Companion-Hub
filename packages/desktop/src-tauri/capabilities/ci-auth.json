@@ -1,0 +1,20 @@
+{
+  "identifier": "ci-auth",
+  "description": "Keychain and loopback sign-in commands (tauri-plugin-ci-auth) for the origins the Hub UI runs on. Cloud origins are left out on purpose: the WebView never navigates to the Portal, and Portal sign-in runs in the system browser, so only the Hub's own origins need the keychain.",
+  "windows": ["main"],
+  "remote": {
+    "urls": [
+      "*://localhost:*",
+      "*://127.0.0.1:*",
+      "*://*.localhost",
+      "*://*.localhost:*",
+      "*://*.ci.localhost",
+      "*://*.ci.localhost:*",
+      "*://ci.lan",
+      "*://ci.lan:*",
+      "*://*.ci.lan",
+      "*://*.ci.lan:*"
+    ]
+  },
+  "permissions": ["ci-auth:default"]
+}

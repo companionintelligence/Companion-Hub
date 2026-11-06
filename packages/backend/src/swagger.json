@@ -2018,6 +2018,48 @@
         ]
       }
     },
+    "/api/auth/portal/desktop-session": {
+      "post": {
+        "operationId": "establishPortalDesktopSession",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalDesktopExchangeDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/portal/desktop-config": {
+      "get": {
+        "operationId": "portalDesktopConfig",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalDesktopConfigDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/api/auth/portal/desktop-handoff-status": {
       "get": {
         "operationId": "portalDesktopHandoffStatus",
@@ -9008,6 +9050,19 @@
         "required": [
           "sessionId",
           "redirectPath"
+        ],
+        "additionalProperties": false
+      },
+      "PortalDesktopConfigDto": {
+        "type": "object",
+        "properties": {
+          "portalUrl": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "portalUrl"
         ],
         "additionalProperties": false
       },

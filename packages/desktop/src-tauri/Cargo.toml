@@ -41,6 +41,7 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-deep-link = "2"
 tempfile = "3"
 tauri-plugin-opener = "2"
+tauri-plugin-ci-auth = { path = "vendor/tauri-plugin-ci-auth" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
