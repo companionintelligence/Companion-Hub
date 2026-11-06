@@ -171,10 +171,59 @@ const browserHandoffMintResponseSchema = z.object({
   url: z.string().nullable(),
 });
 
+/*
+ * Sign in with a DID (flag-gated, see DidAuthService). Bounded so an unauthenticated caller cannot
+ * park a large blob in the challenge path: a challenge id is a UUID and a self-issued ID token is a
+ * few hundred bytes.
+ */
+/** What a challenge is for. A proof made for one purpose is refused for the other. */
+const didPurposeSchema = z.enum(['sign-in', 'link']);
+
+/** The body of `POST /did/challenge` is optional, and `purpose` defaults to `sign-in`. */
+const didChallengeBodySchema = z.object({
+  purpose: didPurposeSchema.optional(),
+});
+
+const didChallengeResponseSchema = z.object({
+  challengeId: z.string(),
+  /** What the token's `nonce` claim must equal. */
+  nonce: z.string(),
+  /** What the token's `aud` claim must equal: this Hub's own issuer, never an origin. */
+  audience: z.string(),
+  /** What this challenge may be spent on, so a wallet can show it. */
+  purpose: didPurposeSchema,
+  /** Unix milliseconds. The challenge is spent by the first proof presented, and by nothing after it. */
+  expiresAt: z.number(),
+});
+
+const didProofSchema = z.object({
+  challengeId: z.string().min(1).max(64),
+  idToken: z.string().min(1).max(4096),
+});
+
+const didUnlinkSchema = z.object({
+  did: z.string().min(1).max(200),
+});
+
+const didLinkResponseSchema = z.object({
+  success: z.boolean(),
+  did: z.string(),
+});
+
+const didLinksResponseSchema = z.object({
+  links: z.array(z.object({ did: z.string(), linkedAt: z.string() })),
+});
+
 // Login
 export class LoginBody extends createZodDto(credentialsSchema) {}
 export class VerifyTotpBody extends createZodDto(verifyTotpSchema) {}
 export class LoginDto extends createZodDto(loginResponseSchema) {}
+export class DidChallengeBody extends createZodDto(didChallengeBodySchema) {}
+export class DidChallengeDto extends createZodDto(didChallengeResponseSchema) {}
+export class DidProofBody extends createZodDto(didProofSchema) {}
+export class DidUnlinkBody extends createZodDto(didUnlinkSchema) {}
+export class DidLinkDto extends createZodDto(didLinkResponseSchema) {}
+export class DidLinksDto extends createZodDto(didLinksResponseSchema) {}
 export class PortalDesktopConfigDto extends createZodDto(portalDesktopConfigResponseSchema) {}
 export class PortalDesktopExchangeDto extends createZodDto(portalDesktopExchangeResponseSchema) {}
 export class PortalDesktopHandoffStatusDto extends createZodDto(portalDesktopHandoffStatusResponseSchema) {}

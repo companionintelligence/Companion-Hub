@@ -120,6 +120,33 @@ describe('AuthService', () => {
       expect(store.get(totpSessionId)?.ttl).toBe(300);
     });
 
+    it('hands a DID sign-in the same five-minute second step, and verifyTotp finishes it', async () => {
+      const totpSessionId = authService.beginTotpStep(7);
+
+      expect(store.get(totpSessionId)).toEqual({ value: '7', ttl: 300 });
+      vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(true);
+
+      await expect(authService.verifyTotp({ totpSessionId, totpCode: '123456' })).resolves.toEqual({ sessionId: 'session-id' });
+      expect(sessionManager.createSession).toHaveBeenCalledWith(7);
+    });
+
+    it('hands every DID sign-in a step id of its own: never one shared by two people, nor by one person twice', () => {
+      const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+      const first = authService.beginTotpStep(7);
+      const second = authService.beginTotpStep(8);
+      const again = authService.beginTotpStep(7);
+
+      expect(new Set([first, second, again]).size).toBe(3);
+      for (const id of [first, second, again]) {
+        expect(id).toMatch(UUID_V4);
+      }
+      // Each is filed under its own id with its own person: a constant would leave one entry for everybody.
+      expect(store.get(first)).toEqual({ value: '7', ttl: 300 });
+      expect(store.get(second)).toEqual({ value: '8', ttl: 300 });
+      expect(store.get(again)).toEqual({ value: '7', ttl: 300 });
+    });
+
     it('accepts a right code and clears the session and its attempt counter', async () => {
       store.set(SESSION, { value: '7', ttl: 300 });
       store.set(`totp-attempts:${SESSION}`, { value: '3', ttl: 300 });
@@ -1315,7 +1342,201 @@ describe('AuthService', () => {
       expect(sessionManager.destroyAllSessionsByUserId).toHaveBeenCalledWith(9);
       expect(sessionManager.rotateSession).not.toHaveBeenCalled();
     });
+
+    // refreshSession and a DID sign-in share `assertStillOrgMember`. Its own tests call it directly, so these show what the REFRESH does
+    // with it: asks about the session's own person, lets a refusal through, and asks before it rotates.
+    describe('asks Portal whether the person is still a member', () => {
+      const ownLink = { issuer: 'https://hub.example.com/api/auth', subject: 'portal-sub-of-1' };
+      const someoneElsesLink = { issuer: 'https://hub.example.com/api/auth', subject: 'portal-sub-of-2' };
+      const notMember = {
+        status: 403,
+        body: { error: 'Not a member of an organization this device is registered to', code: 'GRANT_DENIED' } as never,
+        code: 'GRANT_DENIED',
+      };
+      const member = { status: 200, body: { organizations: [{ organizationId: 'org-1', user: { role: 'member' }, apps: [] }] } };
+
+      beforeEach(() => {
+        configurationService.get.mockImplementation(((key: string) => (key === 'ciCloudUrl' ? 'https://hub.example.com' : undefined)) as never);
+        deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+        sessionManager.resolveSessionUserId.mockReturnValue(1);
+        userRepository.getUserById.mockResolvedValue({ id: 1, accessStatus: 'active' } as never);
+        // Per person, not a canned value: a canned one answers for whoever is asked about.
+        federatedIdentityRepository.findByUserId.mockImplementation((async (userId: number) =>
+          userId === 1 ? [ownLink] : userId === 2 ? [someoneElsesLink] : []) as never);
+        sessionManager.rotateSession.mockResolvedValue('next-session' as never);
+      });
+
+      it('refuses with the membership answer, revokes the session’s own person, and rotates nothing', async () => {
+        portal.whoisApps.mockResolvedValue(notMember);
+
+        await expect(authService.refreshSession('sess')).rejects.toMatchObject({ message: 'AUTH_ERROR_NOT_ORG_MEMBER', status: 403 });
+
+        expect(federatedIdentityRepository.findByUserId).toHaveBeenCalledExactlyOnceWith(1);
+        expect(portal.whoisApps).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ subject: 'portal-sub-of-1' }));
+        expect(userRepository.updateUser).toHaveBeenCalledWith(1, expect.objectContaining({ accessStatus: 'revoked' }));
+        expect(sessionManager.destroyAllSessionsByUserId).toHaveBeenCalledWith(1);
+        expect(sessionManager.rotateSession).not.toHaveBeenCalled();
+      });
+
+      it('asks before it rotates: a member’s session is rotated only after Portal has answered', async () => {
+        portal.whoisApps.mockResolvedValue(member);
+
+        await expect(authService.refreshSession('sess')).resolves.toBe('next-session');
+
+        expect(portal.whoisApps).toHaveBeenCalledTimes(1);
+        expect(portal.whoisApps.mock.invocationCallOrder[0]).toBeLessThan(sessionManager.rotateSession.mock.invocationCallOrder[0] as number);
+      });
+    });
   });
+
+  /**
+   * The live "is this person still in the organization" check that `refreshSession` makes and that a
+   * DID sign-in makes too (it does not go through `admitHubPerson`, so nothing else would ask).
+   */
+  describe('assertStillOrgMember', () => {
+    const portalLink = { issuer: 'https://hub.example.com/api/auth', subject: 'portal-sub' };
+    const didLink = { issuer: 'did:key', subject: 'did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw' };
+    const notMember = {
+      status: 403,
+      body: { error: 'Not a member of an organization this device is registered to', code: 'GRANT_DENIED' } as never,
+      code: 'GRANT_DENIED',
+    };
+    const member = { status: 200, body: { organizations: [{ organizationId: 'org-1', user: { role: 'admin' }, apps: [] }] } };
+
+    beforeEach(() => {
+      configurationService.get.mockImplementation(((key: string) => (key === 'ciCloudUrl' ? 'https://hub.example.com' : undefined)) as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+    });
+
+    it('revokes a person Portal says is no longer a member, ends their sessions, and answers 403', async () => {
+      federatedIdentityRepository.findByUserId.mockResolvedValue([portalLink] as never);
+      portal.whoisApps.mockResolvedValue(notMember);
+
+      await expect(authService.assertStillOrgMember(7)).rejects.toMatchObject({ message: 'AUTH_ERROR_NOT_ORG_MEMBER', status: 403 });
+
+      expect(portal.whoisApps).toHaveBeenCalledWith(expect.objectContaining({ subject: 'portal-sub' }));
+      expect(userRepository.updateUser).toHaveBeenCalledWith(7, expect.objectContaining({ accessStatus: 'revoked' }));
+      expect(sessionManager.destroyAllSessionsByUserId).toHaveBeenCalledWith(7);
+    });
+
+    it('marks a member active, with their role', async () => {
+      federatedIdentityRepository.findByUserId.mockResolvedValue([portalLink] as never);
+      portal.whoisApps.mockResolvedValue(member);
+
+      await expect(authService.assertStillOrgMember(7)).resolves.toBeUndefined();
+
+      expect(userRepository.updateUser).toHaveBeenCalledWith(7, expect.objectContaining({ accessStatus: 'active', orgRole: 'admin' }));
+    });
+
+    it.each([
+      ['cannot be reached', () => portal.whoisApps.mockRejectedValue(new Error('connect ECONNREFUSED'))],
+      ['answers 502', () => portal.whoisApps.mockResolvedValue({ status: 502, body: null } as never)],
+      ['answers a 403 that is not its own (no GRANT_DENIED code)', () => portal.whoisApps.mockResolvedValue({ status: 403, body: null } as never)],
+    ])('lets the person in when Portal %s: an offline Hub still signs in, and nobody is revoked on a guess', async (_name, arrange) => {
+      federatedIdentityRepository.findByUserId.mockResolvedValue([portalLink] as never);
+      arrange();
+
+      await expect(authService.assertStillOrgMember(7)).resolves.toBeUndefined();
+
+      expect(userRepository.updateUser).not.toHaveBeenCalledWith(7, expect.objectContaining({ accessStatus: 'revoked' }));
+      expect(sessionManager.destroyAllSessionsByUserId).not.toHaveBeenCalled();
+    });
+
+    it('asks Portal about nobody who has no Portal link at all: a local password person', async () => {
+      federatedIdentityRepository.findByUserId.mockResolvedValue([] as never);
+
+      await expect(authService.assertStillOrgMember(7)).resolves.toBeUndefined();
+
+      expect(deviceRegistration.getFirstDeviceRegistration).not.toHaveBeenCalled();
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+    });
+
+    it('never sends a DID to Portal as a person id: a DID-only person is not asked about, and not revoked', async () => {
+      federatedIdentityRepository.findByUserId.mockResolvedValue([didLink] as never);
+      portal.whoisApps.mockResolvedValue(notMember);
+
+      await expect(authService.assertStillOrgMember(7)).resolves.toBeUndefined();
+
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+      expect(userRepository.updateUser).not.toHaveBeenCalled();
+    });
+
+    it('asks about the Portal link and not the DID of a person who has both', async () => {
+      federatedIdentityRepository.findByUserId.mockResolvedValue([didLink, portalLink] as never);
+      portal.whoisApps.mockResolvedValue(member);
+
+      await authService.assertStillOrgMember(7);
+
+      expect(portal.whoisApps).toHaveBeenCalledTimes(1);
+      expect(portal.whoisApps).toHaveBeenCalledWith(expect.objectContaining({ subject: 'portal-sub' }));
+    });
+
+    it('asks about a link from another Portal when it is the only one, and revokes on a definitive "not a member", as the sweep and the refresh do', async () => {
+      const oldPortalLink = { issuer: 'https://old.example.com/api/auth', subject: 'sub-at-old-portal' };
+      federatedIdentityRepository.findByUserId.mockResolvedValue([didLink, oldPortalLink] as never);
+      portal.whoisApps.mockResolvedValue(notMember);
+
+      await expect(authService.assertStillOrgMember(7)).rejects.toMatchObject({ message: 'AUTH_ERROR_NOT_ORG_MEMBER', status: 403 });
+
+      expect(portal.whoisApps).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ subject: 'sub-at-old-portal' }));
+      expect(userRepository.updateUser).toHaveBeenCalledWith(7, expect.objectContaining({ accessStatus: 'revoked' }));
+      expect(sessionManager.destroyAllSessionsByUserId).toHaveBeenCalledWith(7);
+    });
+
+    it('prefers the link from the paired Portal to one from another Portal', async () => {
+      const oldPortalLink = { issuer: 'https://old.example.com/api/auth', subject: 'sub-at-old-portal' };
+      federatedIdentityRepository.findByUserId.mockResolvedValue([oldPortalLink, portalLink] as never);
+      portal.whoisApps.mockResolvedValue(member);
+
+      await authService.assertStillOrgMember(7);
+
+      expect(portal.whoisApps).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ subject: 'portal-sub' }));
+    });
+
+    describe('the registration', () => {
+      it('is read once, by the call that decides, so it cannot change between a check and the answer', async () => {
+        federatedIdentityRepository.findByUserId.mockResolvedValue([portalLink] as never);
+        portal.whoisApps.mockResolvedValue(member);
+
+        await authService.assertStillOrgMember(7);
+
+        expect(deviceRegistration.getFirstDeviceRegistration).toHaveBeenCalledTimes(1);
+      });
+
+      it('lets the person in when it cannot be read: an unreadable registration is "unknown", as on the password path', async () => {
+        federatedIdentityRepository.findByUserId.mockResolvedValue([portalLink] as never);
+        deviceRegistration.getFirstDeviceRegistration.mockRejectedValue(new Error('ci-hub-db went away'));
+
+        await expect(authService.assertStillOrgMember(7)).resolves.toBeUndefined();
+
+        expect(portal.whoisApps).not.toHaveBeenCalled();
+        expect(userRepository.updateUser).not.toHaveBeenCalled();
+        expect(sessionManager.destroyAllSessionsByUserId).not.toHaveBeenCalled();
+      });
+
+      it('asks Portal about nobody, and revokes nobody, on a Hub that is not paired to an organization', async () => {
+        deviceRegistration.getFirstDeviceRegistration.mockResolvedValue(null as never);
+        federatedIdentityRepository.findByUserId.mockResolvedValue([portalLink] as never);
+
+        await expect(authService.assertStillOrgMember(7)).resolves.toBeUndefined();
+
+        expect(portal.whoisApps).not.toHaveBeenCalled();
+        expect(userRepository.updateUser).not.toHaveBeenCalled();
+        expect(sessionManager.destroyAllSessionsByUserId).not.toHaveBeenCalled();
+      });
+
+      it('never revokes on an "unpaired" answer, whatever it says about membership: a reset that raced the sign-in is a local fact', async () => {
+        federatedIdentityRepository.findByUserId.mockResolvedValue([portalLink] as never);
+        vi.spyOn(authService, 'resolvePairedOrgMembershipDetail').mockResolvedValue({ membership: 'not-member', role: null, unpaired: true });
+
+        await expect(authService.assertStillOrgMember(7)).resolves.toBeUndefined();
+
+        expect(userRepository.updateUser).not.toHaveBeenCalled();
+        expect(sessionManager.destroyAllSessionsByUserId).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   describe('register', () => {
     const issuer = 'https://hub.example.com';
 

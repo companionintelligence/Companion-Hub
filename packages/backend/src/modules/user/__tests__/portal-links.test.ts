@@ -49,4 +49,43 @@ describe('linksForCurrentPortal', () => {
     const current = { issuer: 'localhost:8787', subject: 'current-sub' };
     expect(linksForCurrentPortal([other, current], 'localhost:8787', null)).toEqual([current]);
   });
+
+  /*
+   * A DID sign-in binds a key in the same table, under the issuer `did:key`. Every caller sends the
+   * subject it gets here to Portal as a person id, and "every link" is what comes back when none is from
+   * the current Portal, so a DID that survived would be answered "not a member" and revoke its person.
+   */
+  describe('a DID link (issuer did:key)', () => {
+    const did = { issuer: 'did:key', subject: 'did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw' };
+
+    it('is never one of the links to ask Portal about', () => {
+      expect(linksForCurrentPortal([did, staging], 'https://staging.example.com')).toEqual([staging]);
+      expect(linksForCurrentPortal([did, staging], undefined)).toEqual([staging]);
+    });
+
+    it('is not returned by the every-link fallbacks either', () => {
+      expect(linksForCurrentPortal([did, prod], 'https://staging.example.com')).toEqual([prod]);
+      expect(linksForCurrentPortal([did], 'https://staging.example.com')).toEqual([]);
+      expect(linksForCurrentPortal([did], undefined)).toEqual([]);
+      expect(linksForCurrentPortal([did], 'https://staging.example.com', 'https://auth.staging.example.com')).toEqual([]);
+    });
+
+    it('is recognised whatever the case or padding of the method', () => {
+      expect(linksForCurrentPortal([{ issuer: ' DID:KEY ', subject: 'x' }, prod], undefined)).toEqual([prod]);
+    });
+
+    it('is the rule for every DID method, not only did:key: a did:web or a did:keri issuer is dropped as well', () => {
+      const web = { issuer: 'did:web:example.com', subject: 'did:web:example.com' };
+      const keri = { issuer: 'did:keri:Dabc', subject: 'Dabc' };
+
+      expect(linksForCurrentPortal([web, keri, prod], undefined)).toEqual([prod]);
+      expect(linksForCurrentPortal([web, keri, prod], 'https://staging.example.com')).toEqual([prod]);
+      expect(linksForCurrentPortal([web, keri], undefined)).toEqual([]);
+    });
+
+    it('leaves a Portal link whose issuer merely contains "did" alone', () => {
+      const lookalike = { issuer: 'https://did.example.com', subject: 'portal-sub' };
+      expect(linksForCurrentPortal([lookalike], undefined)).toEqual([lookalike]);
+    });
+  });
 });

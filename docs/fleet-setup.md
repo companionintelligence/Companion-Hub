@@ -130,8 +130,8 @@ there is no fleet-wide operator account, and adding a node means onboarding it s
 
 A Hub operator is linked to a Portal user through `federated_identity`, keyed on the verified
 `(issuer, subject)` OIDC pair. That link is what lets Portal evaluate org grants for the person in
-front of a Hub session. An operator with no federated row is treated as a compiled member rather than
-an owner. See CI-Engineering `architecture/identity/unified-identity-plan.md`.
+front of a Hub session. An operator with no Portal link (no `federated_identity` row, or only a `did:`
+one made by sign in with a DID) is treated as a compiled member rather than an owner. See CI-Engineering `architecture/identity/unified-identity-plan.md`.
 
 **A device key is not a user, and an API key is neither.** `cihub api-key create` mints an MCP-scoped
 key for tools; it is refused by the pool routes and by Portal. Two narrower scopes exist, each alone

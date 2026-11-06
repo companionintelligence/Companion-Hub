@@ -24,6 +24,10 @@ const SCOPES = {
   passwordResetRequest: { mode: 'attempts', limit: 5, windowMs: 60_000 },
   // The desktop shell asks once a minute. Every loopback caller may share one address here.
   desktopWaitingChallenge: { mode: 'attempts', limit: 10, windowMs: 60_000 },
+  // Sign in with a DID (flag-gated). A challenge is cheap to ask for and expires in two minutes; a proof that
+  // does not verify is what a guess looks like, so only failures count there.
+  didAuthChallenge: { mode: 'attempts', limit: 20, windowMs: 60_000 },
+  didAuth: { mode: 'failures', limit: 10, windowMs: 60_000 },
 } as const;
 
 export type AuthRateScope = keyof typeof SCOPES;

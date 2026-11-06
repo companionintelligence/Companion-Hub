@@ -17,7 +17,7 @@ function stableIdentity(publicId = PUBLIC_ID, directoryId = DIRECTORY_ID) {
 }
 
 /** A drizzle client answering only the two statements the resolver issues for the directory. */
-function fakeDb({ failInsert = 0, directory = () => DIRECTORY_ID } = {}) {
+function fakeDb({ failInsert = 0, directory = (): string => DIRECTORY_ID } = {}) {
   let failuresLeft = failInsert;
   const insert = vi.fn(() => ({
     values: () => ({
@@ -46,6 +46,63 @@ describe('ForwardAuthIdentityResolver', () => {
     federated = mock<FederatedIdentityRepository>();
     logger = mock<LoggerService>();
     users.getPublicId.mockResolvedValue(PUBLIC_ID);
+  });
+
+  describe('hubIssuer', () => {
+    it("is this Hub's own issuer, urn:ci-hub:<directory id>: the audience a DID proof must name", async () => {
+      await expect(make(fakeDb()).hubIssuer()).resolves.toBe(`urn:ci-hub:${DIRECTORY_ID}`);
+    });
+
+    it('is the issuer forward auth signs people under, so one name stands for this Hub everywhere', async () => {
+      const resolver = make(fakeDb());
+
+      await expect(resolver.hubIssuer()).resolves.toBe((await resolver.stableIdFor(7))?.issuer);
+    });
+
+    it('may WRITE: it inserts the user_directory row, before reading it, as the first forward-auth call does', async () => {
+      const db = fakeDb();
+
+      await make(db).hubIssuer();
+
+      expect(db.insert).toHaveBeenCalledTimes(1);
+      expect(db.select).toHaveBeenCalledTimes(1);
+      expect(db.insert.mock.invocationCallOrder[0]).toBeLessThan(db.select.mock.invocationCallOrder[0] as number);
+    });
+
+    it('reads the directory once however often it is asked: the challenge route is anonymous', async () => {
+      const db = fakeDb();
+      const resolver = make(db);
+
+      await Promise.all([resolver.hubIssuer(), resolver.hubIssuer(), resolver.hubIssuer()]);
+      await resolver.hubIssuer();
+
+      expect(db.insert).toHaveBeenCalledTimes(1);
+      expect(db.select).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects when the directory cannot be read, remembers nothing of it, and answers on the next call', async () => {
+      const resolver = make(fakeDb({ failInsert: 1 }));
+
+      await expect(resolver.hubIssuer()).rejects.toThrow('ci-hub-db went away');
+      await expect(resolver.hubIssuer()).resolves.toBe(`urn:ci-hub:${DIRECTORY_ID}`);
+    });
+
+    it('rejects when there is still no row after the insert', async () => {
+      const db = { ...fakeDb(), select: vi.fn(() => ({ from: () => ({ where: async () => [] }) })) };
+
+      await expect(make(db).hubIssuer()).rejects.toThrow('user_directory has no row');
+    });
+
+    it('names the new directory after forget, as a factory reset replaces it', async () => {
+      let directoryId: string = DIRECTORY_ID;
+      const resolver = make(fakeDb({ directory: () => directoryId }));
+      await expect(resolver.hubIssuer()).resolves.toBe(`urn:ci-hub:${DIRECTORY_ID}`);
+
+      directoryId = NEW_DIRECTORY_ID;
+      resolver.forget();
+
+      await expect(resolver.hubIssuer()).resolves.toBe(`urn:ci-hub:${NEW_DIRECTORY_ID}`);
+    });
   });
 
   it('names a user by their public id under this Hub directory', async () => {

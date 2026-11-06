@@ -11,6 +11,7 @@ import { AuthController } from './auth.controller';
 import { OobiController } from './oobi.controller';
 import { AuthRateLimiter } from './auth-rate-limiter';
 import { AuthService } from './auth.service';
+import { DidAuthService } from './did-auth.service';
 import { ForwardAuthIdentityResolver } from './forward-auth-identity.resolver';
 import { ForwardAuthSecretResolver } from './forward-auth-secret.resolver';
 import { BearerOrgMembershipCache } from './bearer-org-membership.cache';
@@ -36,6 +37,7 @@ import { SessionManager } from './session.manager';
     BearerOrgMembershipCache,
     MemoryProviderResolver,
     MemoryApiKeyCheck,
+    DidAuthService,
   ],
   exports: [AuthService, SessionManager, BearerOrgMembershipCache],
 })

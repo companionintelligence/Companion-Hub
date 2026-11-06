@@ -823,6 +823,16 @@ export class AuthService {
   };
 
   /**
+   * The second step of a sign-in whose first factor was not a password (a DID key): the same
+   * short-lived id `login` hands a TOTP-enabled person, finished by {@link AuthService.verifyTotp}.
+   */
+  public beginTotpStep(userId: number): string {
+    const totpSessionId = crypto.randomUUID();
+    this.cache.set(totpSessionId, userId.toString(), TOTP_SESSION_EXPIRATION_SECONDS);
+    return totpSessionId;
+  }
+
+  /**
    * Verify TOTP code and return a JWT token
    *
    * @param {object} params - An object containing the TOTP session ID and the TOTP code
@@ -1011,21 +1021,7 @@ export class AuthService {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
     }
 
-    const links = linksForCurrentPortal(await this.federatedIdentityRepository.findByUserId(userId), this.config.get('ciCloudUrl'));
-    const subject = links[0]?.subject;
-    if (subject) {
-      const registration = await this.deviceRegistration.getFirstDeviceRegistration();
-      if (registration?.id) {
-        const detail = await this.resolvePairedOrgMembershipDetail(subject);
-        if (detail.membership === 'not-member') {
-          await this.revokeOperator(userId, subject);
-          throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
-        }
-        if (detail.membership === 'member') {
-          await this.markOperatorActive(userId, detail.role);
-        }
-      }
-    }
+    await this.assertStillOrgMember(userId);
 
     const nextSessionId = await this.sessionManager.rotateSession(sessionId);
     if (!nextSessionId) {
@@ -1034,6 +1030,39 @@ export class AuthService {
 
     return nextSessionId;
   };
+
+  /**
+   * Ask Portal whether a Portal-linked person is still in this Hub's organization, for a sign-in or a
+   * session refresh that did not go through {@link AuthService.admitHubPerson}. A definitive "not a
+   * member" revokes the person and answers 403; a member is marked active.
+   *
+   * Nothing is asked, and the person passes, when they have no Portal link at all (a local password
+   * person, a DID-only person), when the Hub is not paired to an organization, when the registration
+   * cannot be read, or when Portal cannot be reached ("unknown"). So an offline Hub still signs people
+   * in, as `admitHubPerson` does for an existing link. A person whose only Portal links are from
+   * another Portal is asked about that link, as the sweep and the refresh always have (#2178), and is
+   * revoked when Portal says they are not a member.
+   *
+   * It does not read the registration itself: {@link resolvePairedOrgMembershipDetail} does, and
+   * answers "unknown" when the read fails and `unpaired` when there is none. A Hub unpaired by a reset
+   * is a local fact and never revokes anyone, exactly as in `applyOnlineMembership`.
+   */
+  public async assertStillOrgMember(userId: number): Promise<void> {
+    const links = linksForCurrentPortal(await this.federatedIdentityRepository.findByUserId(userId), this.config.get('ciCloudUrl'));
+    const subject = links[0]?.subject;
+    if (!subject) {
+      return;
+    }
+
+    const detail = await this.resolvePairedOrgMembershipDetail(subject);
+    if (detail.membership === 'not-member' && !detail.unpaired) {
+      await this.revokeOperator(userId, subject);
+      throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
+    }
+    if (detail.membership === 'member') {
+      await this.markOperatorActive(userId, detail.role);
+    }
+  }
 
   /**
    * Change the username of the currently logged in user.
