@@ -1021,21 +1021,7 @@ export class AuthService {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
     }
 
-    const links = linksForCurrentPortal(await this.federatedIdentityRepository.findByUserId(userId), this.config.get('ciCloudUrl'));
-    const subject = links[0]?.subject;
-    if (subject) {
-      const registration = await this.deviceRegistration.getFirstDeviceRegistration();
-      if (registration?.id) {
-        const detail = await this.resolvePairedOrgMembershipDetail(subject);
-        if (detail.membership === 'not-member') {
-          await this.revokeOperator(userId, subject);
-          throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
-        }
-        if (detail.membership === 'member') {
-          await this.markOperatorActive(userId, detail.role);
-        }
-      }
-    }
+    await this.assertStillOrgMember(userId);
 
     const nextSessionId = await this.sessionManager.rotateSession(sessionId);
     if (!nextSessionId) {
@@ -1044,6 +1030,38 @@ export class AuthService {
 
     return nextSessionId;
   };
+
+  /**
+   * Ask Portal whether a Portal-linked person is still in this Hub's organization, for a sign-in or a
+   * session refresh that did not go through {@link AuthService.admitHubPerson}. A definitive "not a
+   * member" revokes the person and answers 403; a member is marked active.
+   *
+   * Nothing is asked, and the person passes, when: they have no link from the paired Portal (a local
+   * password person, a DID-only person), the Hub has no device registration (it is not paired), or
+   * Portal cannot be reached ("unknown"). So an offline Hub still signs people in, as the password
+   * path's cached fallback and `admitHubPerson` do for an existing link.
+   */
+  public async assertStillOrgMember(userId: number): Promise<void> {
+    const links = linksForCurrentPortal(await this.federatedIdentityRepository.findByUserId(userId), this.config.get('ciCloudUrl'));
+    const subject = links[0]?.subject;
+    if (!subject) {
+      return;
+    }
+
+    const registration = await this.deviceRegistration.getFirstDeviceRegistration();
+    if (!registration?.id) {
+      return;
+    }
+
+    const detail = await this.resolvePairedOrgMembershipDetail(subject);
+    if (detail.membership === 'not-member') {
+      await this.revokeOperator(userId, subject);
+      throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
+    }
+    if (detail.membership === 'member') {
+      await this.markOperatorActive(userId, detail.role);
+    }
+  }
 
   /**
    * Change the username of the currently logged in user.

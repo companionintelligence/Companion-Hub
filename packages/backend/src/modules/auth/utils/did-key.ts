@@ -18,6 +18,20 @@ import { createPublicKey, type KeyObject } from 'node:crypto';
  * key has one spelling: a binding is matched on the exact string, so two spellings of one key would
  * be two people.
  *
+ * ═══ WEAK KEYS ARE REFUSED TOO ═══
+ *
+ * A key that is a small-order point (the identity, or a point of order 2, 4 or 8) makes a signature
+ * verify with NO private key: `8A` is the identity, so a signature over any message passes the check
+ * (the cofactored equation, and OpenSSL's check too, accept it). A DID for such a key would be a
+ * "possession" factor that nobody has to possess. The same points have second spellings, because
+ * the encoding is a 255-bit `y` and a sign bit, and any `y` of at least `p = 2^255 - 19` is the
+ * same point as `y - p`: two accepted DIDs for one key, which the rule above forbids. Both are
+ * refused by {@link isWeakEd25519Key}, with no curve library: read `y` little-endian with the sign
+ * bit cleared, refuse `y >= p`, and refuse the five `y` values of the eight torsion points.
+ *
+ * Not checked: that the point lies on the curve. A string of that kind decodes here, and no
+ * signature verifies under it, so there is nothing to forge.
+ *
  * Also refused, by being out of scope: the DIDs whose key can ROTATE (`did:web`, `did:webvh`,
  * `did:scid:vh`, KERI `E…` AIDs). Reading one means resolving a log, and a verifier that skipped
  * that would accept a key its owner had retired.
@@ -44,9 +58,40 @@ const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvw
  */
 const DID_KEY_PATTERN = /^did:key:z[1-9A-HJ-NP-Za-km-z]{47}$/;
 
-/** Whether `value` is a canonical Ed25519 `did:key`. */
+/** The field prime of Curve25519 and Ed25519, `p = 2^255 - 19`. */
+const FIELD_PRIME = (1n << 255n) - 19n;
+
+/** Bit 255 of an Ed25519 public key is the sign of `x`; the 255 bits below it are `y`. */
+const Y_MASK = (1n << 255n) - 1n;
+
+/**
+ * `y` of the two order-8 points, as libsodium's small-order blocklist writes it (little-endian), and
+ * of its negation `p - y`. Recomputed and checked against the group order in the test, and against
+ * libsodium's decimal comments (2707385501144840649318225287225658788936804267575313519463743609750303402022
+ * and 55188659117513257062467267217118295137698188065244968500265048394206261417927).
+ */
+const ORDER_8_Y = littleEndian(Buffer.from('26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05', 'hex'));
+
+/**
+ * `y` of the eight points whose order divides 8: 0 (order 4), 1 (the identity), p-1 (order 2) and
+ * the four order-8 points, which share two values of `y` between their two signs of `x`.
+ */
+const SMALL_ORDER_Y: ReadonlySet<bigint> = new Set([0n, 1n, FIELD_PRIME - 1n, ORDER_8_Y, FIELD_PRIME - ORDER_8_Y]);
+
+/** Whether `value` is an Ed25519 `did:key` that is well formed and not weak. See the header. */
 export function isDidKey(value: unknown): value is string {
   return didKeyPublicBytes(value) != null;
+}
+
+/**
+ * Whether a 32-byte Ed25519 public key is one nobody should accept as an identity: a point of order
+ * 1, 2, 4 or 8 (in either sign), or a non-canonical spelling (`y >= p`) of any point. Every key
+ * generated honestly passes; the 14 small-order encodings and every `y >= p` encoding fail.
+ */
+export function isWeakEd25519Key(key: Uint8Array): boolean {
+  const y = littleEndian(key) & Y_MASK;
+
+  return y >= FIELD_PRIME || SMALL_ORDER_Y.has(y);
 }
 
 /**
@@ -71,7 +116,13 @@ export function didKeyPublicBytes(value: unknown): Uint8Array | null {
   }
 
   const key = raw.subarray(ED25519_PUB_MULTICODEC.length);
+  if (isWeakEd25519Key(key)) {
+    return null;
+  }
 
+  // A backstop, not a layer a test can reach: every string that passes the shape check above
+  // re-encodes to itself, because a 47-digit base58 number has one spelling. It stays so that a
+  // future loosening of the pattern cannot admit a second spelling of one key.
   return didKeyFromPublicKey(key) === value ? key : null;
 }
 
@@ -91,18 +142,15 @@ export function didKeyPublicKey(value: unknown): KeyObject | null {
 
 /**
  * The `did:key` for a raw 32-byte Ed25519 public key. Null for any other length, so a caller that
- * hands over a certificate or a 33-byte compressed point gets a refusal and not a wrong identifier.
+ * hands over a certificate or a 33-byte compressed point gets a refusal and not a wrong identifier,
+ * and null for a weak key, so this never mints a DID that {@link isDidKey} refuses.
  */
 export function didKeyFromPublicKey(key: Uint8Array): string | null {
-  if (key.length !== ED25519_KEY_BYTES) {
+  if (key.length !== ED25519_KEY_BYTES || isWeakEd25519Key(key)) {
     return null;
   }
 
-  const bytes = new Uint8Array(ED25519_PUB_MULTICODEC.length + key.length);
-  bytes.set(ED25519_PUB_MULTICODEC, 0);
-  bytes.set(key, ED25519_PUB_MULTICODEC.length);
-
-  return `${DID_KEY_PREFIX}${MULTIBASE_BASE58BTC}${base58btcEncode(bytes)}`;
+  return encodeDidKey(key);
 }
 
 /** Bitcoin-alphabet base58, big-endian, a leading zero byte for each leading `1`. */
@@ -155,4 +203,23 @@ export function base58btcDecode(text: string): Uint8Array | null {
   out.set(body, zeros);
 
   return out;
+}
+
+/** The spelling of a key, with no check on the key. Only {@link didKeyFromPublicKey} calls it. */
+function encodeDidKey(key: Uint8Array): string {
+  const bytes = new Uint8Array(ED25519_PUB_MULTICODEC.length + key.length);
+  bytes.set(ED25519_PUB_MULTICODEC, 0);
+  bytes.set(key, ED25519_PUB_MULTICODEC.length);
+
+  return `${DID_KEY_PREFIX}${MULTIBASE_BASE58BTC}${base58btcEncode(bytes)}`;
+}
+
+/** A little-endian byte string as an unsigned integer. */
+function littleEndian(bytes: Uint8Array): bigint {
+  let value = 0n;
+  for (const byte of Array.from(bytes).reverse()) {
+    value = (value << 8n) | BigInt(byte);
+  }
+
+  return value;
 }

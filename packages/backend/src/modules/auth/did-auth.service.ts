@@ -1,8 +1,9 @@
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { TranslatableError } from '@/common/error/translatable-error';
 import { CacheService } from '@/core/cache/cache.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
-import { ConflictException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { decodeJwt, decodeProtectedHeader, jwtVerify } from 'jose';
 import { ForwardAuthIdentityResolver } from './forward-auth-identity.resolver';
 import { didKeyPublicKey, isDidKey } from './utils/did-key';
@@ -12,15 +13,25 @@ import { didKeyPublicKey, isDidKey } from './utils/did-key';
  *
  * ═══ WHAT IT IS ═══
  *
- * A person whose identity key is a canonical Ed25519 `did:key` (Local.Pub publishes exactly such
- * keys for its owners) proves control of it by signing a challenge this Hub issued. The proof is a
+ * A person whose identity key is an Ed25519 `did:key` proves control of it by signing a challenge
+ * this Hub issued. Any well-formed Ed25519 `did:key` that is not a weak key is accepted, and nothing
+ * here says who can produce one: a Local.Pub account's DID authentication key (a `z6Mk…` Multikey in
+ * its DID log) can be written as a `did:key`, but it can rotate, which orphans the link, and whether
+ * any Local.Pub client or wallet will sign a Hub challenge is unknown and untested. The proof is a
  * SIOPv2-shaped self-issued ID token, a compact JWS signed with EdDSA:
  *
  *   header   {"alg":"EdDSA","typ":"JWT","kid":"<did>" or "<did>#<fragment>"}     (kid optional)
  *   payload  {"iss":"<did>","sub":"<did>","aud":"<audience>","nonce":"<nonce>","iat":n,"exp":n}
  *
- * `audience` and `nonce` come from {@link DidAuthService.issueChallenge}; `iat`/`exp` are Unix
- * seconds and `exp - iat` may not exceed {@link DID_AUTH_MAX_TOKEN_LIFETIME_SECONDS}.
+ * `audience`, `nonce` and `purpose` come from {@link DidAuthService.issueChallenge}; `iat`/`exp` are
+ * whole Unix seconds, `exp` is after `iat`, and `exp - iat` may not exceed
+ * {@link DID_AUTH_MAX_TOKEN_LIFETIME_SECONDS}.
+ *
+ * ═══ A CHALLENGE HAS ONE PURPOSE ═══
+ *
+ * Asked for as `sign-in` or `link` and spent on that one thing. A relayed sign-in proof cannot be
+ * redeemed as a link (which would bind the signer's DID to the relayer's own person), and a link
+ * proof cannot sign anyone in.
  *
  * ═══ WHAT IT DELIBERATELY IS NOT ═══
  *
@@ -53,6 +64,11 @@ export const DID_AUTH_MAX_TOKEN_LIFETIME_SECONDS = 300;
 /** How far a signer's clock may be from this Hub's, in seconds. */
 export const DID_AUTH_CLOCK_TOLERANCE_SECONDS = 30;
 
+/** What a challenge is for. A proof made for one purpose is refused for the other. */
+export type DidAuthPurpose = 'sign-in' | 'link';
+
+const PURPOSES: readonly DidAuthPurpose[] = ['sign-in', 'link'];
+
 const CHALLENGE_PREFIX = 'did-auth:challenge:';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const MAX_TOKEN_CHARS = 4096;
@@ -61,12 +77,14 @@ export interface DidAuthChallenge {
   challengeId: string;
   nonce: string;
   audience: string;
+  purpose: DidAuthPurpose;
   /** Unix milliseconds. */
   expiresAt: number;
 }
 
 export type DidAuthRefusalReason =
   | 'unknown-challenge'
+  | 'wrong-purpose'
   | 'malformed'
   | 'bad-alg'
   | 'bad-did'
@@ -104,17 +122,22 @@ export class DidAuthService {
   }
 
   /**
-   * A single-use challenge. The audience is this Hub's own issuer (`urn:ci-hub:<directory id>`), the
-   * name forward auth already signs people under, so a proof made for another Hub, or for Portal,
-   * names a different audience and does not verify here.
+   * A single-use challenge for one purpose. The audience is this Hub's own issuer
+   * (`urn:ci-hub:<directory id>`), the name forward auth already signs people under, so a proof made
+   * for another Hub, or for Portal, names a different audience and does not verify here.
+   *
+   * ⚠ The first call on a Hub can WRITE: `hubIssuer` inserts the `user_directory` row if a restore
+   * or a factory reset left none, as the first forward-auth call would. The caller is anonymous, so
+   * an anonymous request can be the one that creates it. The audience also reaches every anonymous
+   * caller: it is the Hub's per-install directory id, the same value forward auth signs for apps.
    */
-  async issueChallenge(): Promise<DidAuthChallenge> {
+  async issueChallenge(purpose: DidAuthPurpose = 'sign-in'): Promise<DidAuthChallenge> {
     let audience: string;
     try {
       audience = await this.forwardAuth.hubIssuer();
     } catch (error) {
       this.logger.warn(`DID sign-in could not read this Hub's issuer: ${error instanceof Error ? error.message : String(error)}`);
-      throw new ServiceUnavailableException('DID sign-in is temporarily unavailable');
+      throw new TranslatableError('AUTH_ERROR_DID_UNAVAILABLE', undefined, HttpStatus.SERVICE_UNAVAILABLE);
     }
 
     const challengeId = randomUUID();
@@ -122,9 +145,9 @@ export class DidAuthService {
     const nonce = randomBytes(24).toString('base64url');
     const expiresAt = this.now() + DID_AUTH_CHALLENGE_TTL_SECONDS * 1000;
 
-    this.cache.set(`${CHALLENGE_PREFIX}${challengeId}`, JSON.stringify({ nonce, audience, expiresAt }), DID_AUTH_CHALLENGE_TTL_SECONDS);
+    this.cache.set(`${CHALLENGE_PREFIX}${challengeId}`, JSON.stringify({ nonce, audience, purpose, expiresAt }), DID_AUTH_CHALLENGE_TTL_SECONDS);
 
-    return { challengeId, nonce, audience, expiresAt };
+    return { challengeId, nonce, audience, purpose, expiresAt };
   }
 
   /**
@@ -132,7 +155,7 @@ export class DidAuthService {
    * answered once, even by a proof that then fails, so a captured proof cannot be tried again and a
    * guess at a signature costs a fresh challenge each time.
    */
-  consumeChallenge(challengeId: unknown): { nonce: string; audience: string } | null {
+  consumeChallenge(challengeId: unknown): { nonce: string; audience: string; purpose: DidAuthPurpose } | null {
     // A UUID has no `:`, so an id cannot address another key under the prefix.
     if (typeof challengeId !== 'string' || !UUID_PATTERN.test(challengeId)) {
       return null;
@@ -146,27 +169,38 @@ export class DidAuthService {
     this.cache.del(key);
 
     try {
-      const parsed = JSON.parse(raw) as { nonce?: unknown; audience?: unknown; expiresAt?: unknown };
-      if (typeof parsed.nonce !== 'string' || typeof parsed.audience !== 'string' || typeof parsed.expiresAt !== 'number') {
+      const parsed = JSON.parse(raw) as { nonce?: unknown; audience?: unknown; purpose?: unknown; expiresAt?: unknown };
+      if (
+        typeof parsed.nonce !== 'string' ||
+        typeof parsed.audience !== 'string' ||
+        typeof parsed.expiresAt !== 'number' ||
+        !PURPOSES.includes(parsed.purpose as DidAuthPurpose)
+      ) {
         return null;
       }
       // The cache expires it too; this is the check that does not depend on the cache's clock.
-      return parsed.expiresAt > this.now() ? { nonce: parsed.nonce, audience: parsed.audience } : null;
+      return parsed.expiresAt > this.now() ? { nonce: parsed.nonce, audience: parsed.audience, purpose: parsed.purpose as DidAuthPurpose } : null;
     } catch {
       return null;
     }
   }
 
   /**
-   * Check a proof against the challenge it answers and return the DID that signed it.
+   * Check a proof against the challenge it answers, for the purpose it was asked for, and return the
+   * DID that signed it.
    *
    * Every refusal is a {@link DidAuthRefusal}. The challenge is spent first, so no refusal leaves it
    * available to try again.
    */
-  async verify(challengeId: unknown, idToken: unknown): Promise<{ did: string }> {
+  async verify(challengeId: unknown, idToken: unknown, purpose: DidAuthPurpose): Promise<{ did: string }> {
     const challenge = this.consumeChallenge(challengeId);
     if (!challenge) {
       throw new DidAuthRefusal('unknown-challenge');
+    }
+
+    // A challenge asked for to sign in is not good for a link, and the reverse. It is spent either way.
+    if (challenge.purpose !== purpose) {
+      throw new DidAuthRefusal('wrong-purpose');
     }
 
     if (typeof idToken !== 'string' || idToken.length === 0 || idToken.length > MAX_TOKEN_CHARS) {
@@ -226,11 +260,12 @@ export class DidAuthService {
     if (aud !== challenge.audience) {
       throw new DidAuthRefusal('bad-claims');
     }
-    if (typeof iat !== 'number' || typeof exp !== 'number' || !Number.isFinite(iat) || !Number.isFinite(exp)) {
+    // Whole seconds, as documented: a fractional time is not a time any signer of this contract writes.
+    if (typeof iat !== 'number' || typeof exp !== 'number' || !Number.isInteger(iat) || !Number.isInteger(exp)) {
       throw new DidAuthRefusal('bad-claims');
     }
-    // Issued in the future (beyond skew), or valid for longer than a proof ever needs to be.
-    if (iat > nowSeconds + DID_AUTH_CLOCK_TOLERANCE_SECONDS || exp - iat > DID_AUTH_MAX_TOKEN_LIFETIME_SECONDS) {
+    // Issued in the future (beyond skew), expiring before or when it was issued, or valid for longer than a proof ever needs to be.
+    if (iat > nowSeconds + DID_AUTH_CLOCK_TOLERANCE_SECONDS || exp <= iat || exp - iat > DID_AUTH_MAX_TOKEN_LIFETIME_SECONDS) {
       throw new DidAuthRefusal('bad-claims');
     }
     if (typeof nonce !== 'string' || !constantTimeEqual(nonce, challenge.nonce)) {
@@ -257,7 +292,7 @@ export class DidAuthService {
       if (existing.userId === userId) {
         return 'already-linked';
       }
-      throw new ConflictException({ code: 'DID_ALREADY_LINKED', message: 'That DID is already linked to a Hub person' });
+      throw new TranslatableError('AUTH_ERROR_DID_ALREADY_LINKED', undefined, HttpStatus.CONFLICT);
     }
 
     try {
@@ -269,7 +304,7 @@ export class DidAuthService {
         return 'already-linked';
       }
       if (raced) {
-        throw new ConflictException({ code: 'DID_ALREADY_LINKED', message: 'That DID is already linked to a Hub person' });
+        throw new TranslatableError('AUTH_ERROR_DID_ALREADY_LINKED', undefined, HttpStatus.CONFLICT);
       }
       throw error;
     }
@@ -283,7 +318,7 @@ export class DidAuthService {
   async unlink(userId: number, did: string): Promise<void> {
     const removed = await this.identities.deleteByUserIssuerSubject(userId, DID_KEY_ISSUER, did);
     if (!removed) {
-      throw new NotFoundException({ code: 'DID_NOT_LINKED', message: 'That DID is not linked to your account' });
+      throw new TranslatableError('AUTH_ERROR_DID_LINK_NOT_FOUND', undefined, HttpStatus.NOT_FOUND);
     }
 
     this.logger.info(`DID sign-in: unlinked ${shortDid(did)} from user ${userId}`);

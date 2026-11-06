@@ -1546,6 +1546,16 @@
       "post": {
         "operationId": "didChallenge",
         "parameters": [],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DidChallengeBody"
+              }
+            }
+          }
+        },
         "responses": {
           "default": {
             "description": "",
@@ -8740,25 +8750,128 @@
         ],
         "additionalProperties": false
       },
+      "DidChallengeBody": {
+        "type": "object",
+        "properties": {
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "sign-in",
+              "link"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "DidChallengeDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "challengeId": {
+            "type": "string"
+          },
+          "nonce": {
+            "type": "string"
+          },
+          "audience": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "sign-in",
+              "link"
+            ]
+          },
+          "expiresAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "challengeId",
+          "nonce",
+          "audience",
+          "purpose",
+          "expiresAt"
+        ],
+        "additionalProperties": false
       },
       "DidProofBody": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "challengeId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "idToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "challengeId",
+          "idToken"
+        ],
+        "additionalProperties": false
       },
       "DidLinksDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "did": {
+                  "type": "string"
+                },
+                "linkedAt": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "did",
+                "linkedAt"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "links"
+        ],
+        "additionalProperties": false
       },
       "DidLinkDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "did": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "did"
+        ],
+        "additionalProperties": false
       },
       "DidUnlinkBody": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "did": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "did"
+        ],
+        "additionalProperties": false
       },
       "RegisterBody": {
         "type": "object",

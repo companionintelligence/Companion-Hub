@@ -362,24 +362,37 @@ export type VerifyTotpBody = {
     totpSessionId: string;
 };
 
+export type DidChallengeBody = {
+    purpose?: 'sign-in' | 'link';
+};
+
 export type DidChallengeDto = {
-    [key: string]: unknown;
+    challengeId: string;
+    nonce: string;
+    audience: string;
+    purpose: 'sign-in' | 'link';
+    expiresAt: number;
 };
 
 export type DidProofBody = {
-    [key: string]: unknown;
+    challengeId: string;
+    idToken: string;
 };
 
 export type DidLinksDto = {
-    [key: string]: unknown;
+    links: Array<{
+        did: string;
+        linkedAt: string;
+    }>;
 };
 
 export type DidLinkDto = {
-    [key: string]: unknown;
+    success: boolean;
+    did: string;
 };
 
 export type DidUnlinkBody = {
-    [key: string]: unknown;
+    did: string;
 };
 
 export type RegisterBody = {
@@ -3468,7 +3481,7 @@ export type VerifyTotpResponses = {
 export type VerifyTotpResponse = VerifyTotpResponses[keyof VerifyTotpResponses];
 
 export type DidChallengeData = {
-    body?: never;
+    body?: DidChallengeBody;
     path?: never;
     query?: never;
     url: '/api/auth/did/challenge';

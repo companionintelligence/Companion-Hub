@@ -107,8 +107,13 @@ export class ForwardAuthIdentityResolver {
 
   /**
    * This Hub's own stable issuer, `urn:ci-hub:<directory id>`: the name forward auth signs people
-   * under. Read-only and additive; it is what a DID sign-in names as its audience, so a token minted
-   * for another Hub or for Portal never verifies here.
+   * under. Additive: it is what a DID sign-in names as its audience, so a token minted for another
+   * Hub or for Portal never verifies here.
+   *
+   * It is not read-only. The first call inserts the `user_directory` row when a restore or a factory
+   * reset left none, exactly as the first forward-auth call does; DID sign-in's challenge route is
+   * anonymous, so an anonymous request can be the one that creates it. And the value is the Hub's
+   * per-install directory id, which that route then hands to every anonymous caller.
    */
   public hubIssuer(): Promise<string> {
     return this.getIssuer();

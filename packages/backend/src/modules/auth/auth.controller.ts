@@ -8,6 +8,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { CacheService } from '@/core/cache/cache.service';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { hubSessionOperatorUserId } from '@/core/portal/hub-session-operator';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { UserDto } from '@/modules/user/dto/user.dto';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -20,7 +21,6 @@ import {
   Get,
   HttpCode,
   HttpStatus,
-  NotFoundException,
   Optional,
   Patch,
   Post,
@@ -35,8 +35,9 @@ import type { Request, Response } from 'express';
 import { AuthGuard } from './auth.guard';
 import { AuthRateLimiter, authClientKey, type AuthRateScope } from './auth-rate-limiter';
 import { AuthService, type PairedOrgMembership } from './auth.service';
-import { DidAuthFlagGuard } from './did-auth.guard';
-import { DidAuthRefusal, DidAuthService } from './did-auth.service';
+import { absentRoute, DidAuthFlagGuard, DidAuthJsonGuard, DidAuthSameOriginGuard } from './did-auth.guard';
+import { DidAuthRefusal, type DidAuthPurpose, DidAuthService } from './did-auth.service';
+import { HubSessionGuard } from './hub-session.guard';
 import { buildForwardAuthIdentityHeaders } from './utils/forward-auth-signing';
 import { normalizeForwardedHost, rawForwardedHost } from './utils/forward-auth-host';
 import { ForwardAuthIdentityResolver } from './forward-auth-identity.resolver';
@@ -54,6 +55,7 @@ import {
   ChangePasswordBody,
   ChangeUsernameBody,
   CheckResetPasswordRequestDto,
+  DidChallengeBody,
   DidChallengeDto,
   DidLinkDto,
   DidLinksDto,
@@ -85,7 +87,7 @@ import {
   VerifyTotpBody,
 } from './dto/auth.dto';
 import { HUB_FAVICON_LINK_TAG, HUB_FAVICON_PNG } from './hub-favicon';
-import { ApiExcludeEndpoint, ApiResponse } from '@nestjs/swagger';
+import { ApiBody, ApiExcludeEndpoint, ApiResponse } from '@nestjs/swagger';
 import {
   buildPortalDesktopDeepLink,
   buildPortalDesktopHandoffHtml,
@@ -102,7 +104,6 @@ import {
   fetchPortalSessionEmail,
   DESKTOP_SIGN_IN_WAIT_NONCE_HEADER,
   DESKTOP_SIGN_IN_WAIT_PROOF_HEADER,
-  isCrossSiteBrowserRequest,
   isDesktopSignInWaitProof,
   isDirectLoopbackRequest,
   probePortalReachable,
@@ -500,40 +501,55 @@ export class AuthController {
   }
 
   // ── Sign in with a DID ─────────────────────────────────────────────────────────────────────────
-  // Flag-gated (CI_HUB_DID_AUTH=true) and absent otherwise: DidAuthFlagGuard answers 404 before any other guard.
-  // See DidAuthService for what a proof is and what the Hub refuses to derive from one. A DID signs in only
-  // as the person who LINKED it, from a signed-in session, first; nothing here creates a person or a binding.
+  // Flag-gated (CI_HUB_DID_AUTH=true) and absent otherwise: DidAuthFlagGuard answers Nest's own 404
+  // before any other guard. See DidAuthService for what a proof is and what the Hub refuses to derive
+  // from one. A DID signs in only as the person who LINKED it, from a signed-in session, first;
+  // nothing here creates a person or a binding.
+  //
+  // Link and unlink read the session cookie and change something, so they are for a person's own
+  // page: HubSessionGuard (an interactive session, not a key), DidAuthSameOriginGuard (not a page on
+  // another origin) and DidAuthJsonGuard (not a form post). Verify is anonymous and takes JSON only.
 
-  /** The service, or a 404 as if these routes did not exist. Belt and braces behind {@link DidAuthFlagGuard}. */
-  private requireDidAuth(): DidAuthService {
+  /** The service, or the 404 of a route that does not exist. Belt and braces behind {@link DidAuthFlagGuard}. */
+  private requireDidAuth(req: Request): DidAuthService {
     if (!this.didAuth?.enabled) {
-      throw new NotFoundException();
+      throw absentRoute(req);
     }
 
     return this.didAuth;
   }
 
   /**
-   * The signed-in person for the routes that list or change their DID links: an interactive Hub
-   * session, not a machine credential (the Portal push key, the host-local key and the CLI token all
-   * speak as the first operator), and, for a change, not a request a browser says another site sent.
+   * The person a link route acts for: the signed-in session's own, never a field of the body. The
+   * guards already refuse everything else; this keeps a handler that is called without them from
+   * acting for a key that speaks as the first operator.
    */
-  private didLinkUserId(req: Request, options: { mutating: boolean }): number {
-    if (req.hubPrincipal !== 'session' || !req.user || (options.mutating && isCrossSiteBrowserRequest(req))) {
-      throw new ForbiddenException({ code: 'DID_LINK_REQUIRES_SESSION', message: 'Link and unlink a DID from a signed-in Hub session' });
+  private didPersonId(req: Request): number {
+    const userId = hubSessionOperatorUserId(req);
+    if (userId === undefined) {
+      throw new TranslatableError('AUTH_ERROR_SIGNED_IN_PERSON_REQUIRED', undefined, HttpStatus.FORBIDDEN);
     }
 
-    return req.user.id;
+    return userId;
   }
 
-  /** Check a proof and return its DID. Every refusal is the same 401: which check failed goes to the debug log, not to the caller. */
-  private async verifyDidProof(didAuth: DidAuthService, body: DidProofBody): Promise<string> {
+  /**
+   * Check a proof for one purpose and return its DID. Every refusal is the same answer, and which
+   * check failed goes to the debug log, not to the caller.
+   *
+   * The status differs by route on purpose. Sign-in is anonymous, and there a refused proof is the
+   * 401 the caller asked for. A link is made by a person who IS signed in, and the SPA reads any 401
+   * as "your session ended" and signs them out, so a refused proof there is a 400.
+   */
+  private async verifyDidProof(didAuth: DidAuthService, body: DidProofBody, purpose: DidAuthPurpose): Promise<string> {
     try {
-      return (await didAuth.verify(body.challengeId, body.idToken)).did;
+      return (await didAuth.verify(body.challengeId, body.idToken, purpose)).did;
     } catch (error) {
       if (error instanceof DidAuthRefusal) {
-        this.logger.debug('DID sign-in refused', { reason: error.reason });
-        throw new UnauthorizedException({ code: 'DID_SIGN_IN_REFUSED', message: 'DID sign-in refused' });
+        this.logger.debug('DID proof refused', { purpose, reason: error.reason });
+        throw purpose === 'sign-in'
+          ? new TranslatableError('AUTH_ERROR_DID_SIGN_IN_REFUSED', undefined, HttpStatus.UNAUTHORIZED)
+          : new TranslatableError('AUTH_ERROR_DID_PROOF_REFUSED', undefined, HttpStatus.BAD_REQUEST);
       }
       throw error;
     }
@@ -541,41 +557,55 @@ export class AuthController {
 
   @Post('/did/challenge')
   @UseGuards(DidAuthFlagGuard)
+  @ApiBody({ type: DidChallengeBody, required: false })
   @ApiResponse({ type: DidChallengeDto })
-  async didChallenge(@Req() req: Request) {
-    const didAuth = this.requireDidAuth();
-    const challenge = await this.rateLimited('didAuthChallenge', req, () => didAuth.issueChallenge());
+  async didChallenge(@Body() body: unknown, @Req() req: Request) {
+    const didAuth = this.requireDidAuth(req);
+    // The body is optional and `purpose` defaults to `sign-in`. It is read here rather than by the
+    // global pipe, which refuses a request with no body at all.
+    const parsed = DidChallengeBody.schema.safeParse(body ?? {});
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.issues);
+    }
+
+    const challenge = await this.rateLimited('didAuthChallenge', req, () => didAuth.issueChallenge(parsed.data.purpose ?? 'sign-in'));
 
     return DidChallengeDto.parse(challenge, { reportOnly: true });
   }
 
   @Post('/did/verify')
-  @UseGuards(DidAuthFlagGuard)
+  @UseGuards(DidAuthFlagGuard, DidAuthJsonGuard)
   @ApiResponse({ type: LoginDto })
   async didVerify(@Body() body: DidProofBody, @Res({ passthrough: true }) res: Response, @Req() req: Request) {
-    const didAuth = this.requireDidAuth();
+    const didAuth = this.requireDidAuth(req);
 
     // A failures-scope slot is taken when the request is admitted and handed back only when the person is let in.
     const person = await this.rateLimited('didAuth', req, async () => {
-      const did = await this.verifyDidProof(didAuth, body);
+      const did = await this.verifyDidProof(didAuth, body, 'sign-in');
       const userId = await didAuth.findUserId(did);
       if (userId == null) {
         // Reached only by someone who proved control of the key, so saying so tells them nothing they did not already hold.
-        throw new ForbiddenException({ code: 'DID_NOT_LINKED', message: 'This DID is not linked to a person on this Hub' });
+        throw new TranslatableError('AUTH_ERROR_DID_NOT_LINKED', undefined, HttpStatus.FORBIDDEN);
       }
 
       const user = await this.userRepository.getUserDtoById(userId);
       if (!user || user.accessStatus === 'revoked') {
         // The same answer as a proof that did not verify: a revoked person's DID is not a probe.
-        this.logger.debug('DID sign-in refused', { reason: 'user-unavailable' });
-        throw new UnauthorizedException({ code: 'DID_SIGN_IN_REFUSED', message: 'DID sign-in refused' });
+        this.logger.debug('DID proof refused', { purpose: 'sign-in', reason: 'user-unavailable' });
+        throw new TranslatableError('AUTH_ERROR_DID_SIGN_IN_REFUSED', undefined, HttpStatus.UNAUTHORIZED);
       }
+
+      // The live membership check every other first factor makes for a Portal-linked person: Portal
+      // removed them from the organization, the row still says active, and nothing else has noticed yet.
+      // A definitive "not a member" revokes and answers 403; Portal being unreachable lets them in, as
+      // it does for an existing Portal link.
+      await this.authService.assertStillOrgMember(user.id);
 
       return user;
     });
 
     // A person who turned TOTP on keeps it: the DID replaces the password, not the second factor.
-    // (Portal SSO, `/portal/callback`, does not ask for it; Portal is the authority there. A DID has no remote one.)
+    // (Portal SSO, `/portal/callback`, creates its session without asking for it; this path does not copy that.)
     if (person.totpEnabled) {
       return LoginDto.parse({ success: true, totpSessionId: this.authService.beginTotpStep(person.id) }, { reportOnly: true });
     }
@@ -588,34 +618,33 @@ export class AuthController {
   }
 
   @Get('/did/links')
-  @UseGuards(DidAuthFlagGuard, AuthGuard)
+  @UseGuards(DidAuthFlagGuard, AuthGuard, HubSessionGuard)
   @ApiResponse({ type: DidLinksDto })
   async didLinks(@Req() req: Request) {
-    const didAuth = this.requireDidAuth();
-    const userId = this.didLinkUserId(req, { mutating: false });
+    const didAuth = this.requireDidAuth(req);
+    const userId = this.didPersonId(req);
 
     return DidLinksDto.parse({ links: await didAuth.list(userId) }, { reportOnly: true });
   }
 
   @Post('/did/link')
-  @UseGuards(DidAuthFlagGuard, AuthGuard)
+  @UseGuards(DidAuthFlagGuard, AuthGuard, HubSessionGuard, DidAuthSameOriginGuard, DidAuthJsonGuard)
   @ApiResponse({ type: DidLinkDto })
   async didLink(@Body() body: DidProofBody, @Req() req: Request) {
-    const didAuth = this.requireDidAuth();
-    // The person is the signed-in session's, never a field of the body.
-    const userId = this.didLinkUserId(req, { mutating: true });
-    const did = await this.rateLimited('didAuth', req, () => this.verifyDidProof(didAuth, body));
+    const didAuth = this.requireDidAuth(req);
+    const userId = this.didPersonId(req);
+    const did = await this.rateLimited('didAuth', req, () => this.verifyDidProof(didAuth, body, 'link'));
     await didAuth.link(userId, did);
 
     return DidLinkDto.parse({ success: true, did }, { reportOnly: true });
   }
 
   @Delete('/did/link')
-  @UseGuards(DidAuthFlagGuard, AuthGuard)
+  @UseGuards(DidAuthFlagGuard, AuthGuard, HubSessionGuard, DidAuthSameOriginGuard, DidAuthJsonGuard)
   @ApiResponse({ type: DidLinkDto })
   async didUnlink(@Body() body: DidUnlinkBody, @Req() req: Request) {
-    const didAuth = this.requireDidAuth();
-    const userId = this.didLinkUserId(req, { mutating: true });
+    const didAuth = this.requireDidAuth(req);
+    const userId = this.didPersonId(req);
     await didAuth.unlink(userId, body.did);
 
     return DidLinkDto.parse({ success: true, did: body.did }, { reportOnly: true });

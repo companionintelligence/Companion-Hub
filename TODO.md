@@ -11,13 +11,15 @@
 
 - [ ] **drive-llamacpp-lmstudio** — run a real `llama-server` and a real LM Studio against the conformance harness; replace the `unmeasured` SPEC_DECODE rows and the "not measured" conformance skips with findings, and move either engine out of `chatOnly()` if it proves `/v1/completions` or `/v1/embeddings`
 - [ ] **did-sign-in-step-up** — make linking a DID ask for the current password (or a TOTP code) the way changing the password does; a person who only signs in through Portal has no local password, so decide what they are asked for (`docs/security/hub-portal-trust.md#sign-in-with-a-did`)
-- [ ] **did-sign-in-first-signer** — run the DID sign-in against a real signer: a Local.Pub account or a wallet that makes the self-issued ID token for this Hub's audience, then add the SIOPv2 request-object transport; until then nothing has ever produced a token for it outside the tests
+- [ ] **did-sign-in-first-signer** — run the DID sign-in against a real signer. Whether any Local.Pub client or wallet will sign a Hub challenge is unknown and untested; a Local.Pub account's DID authentication key can be written as a `did:key` but can rotate, and a rotation orphans the link. Then add the SIOPv2 request-object transport. Until then nothing has produced a token for this Hub outside the tests
+- [ ] **did-sign-in-link-surface** — give a person a way to see and remove their DID links (a screen, `cihub`, or both), and decide whether a password change, the operator password reset or a Portal removal should list or drop them; today nothing but the generated client calls the routes, and every recovery path leaves the links (`docs/system/backend.md#sign-in-with-a-did`)
 
 ---
 
 ## Done (recent)
 
 - [x] **hub-did-key-sign-in** — sign in with a DID, off unless `CI_HUB_DID_AUTH=true`: five routes, link-first, no person or binding from a DID alone, TOTP kept, no AID header; needs the Hub security reviewer before merge (2026-11-05, `docs/agent/sessions/2026-11-05-hub-did-key-sign-in.md`)
+- [x] **hub-did-key-sign-in-review** — fix what an independent review of the DID sign-in found: weak Ed25519 keys, a cross-site link, challenge purposes, the Portal membership check, error codes a client can read, the flag-off 404, empty generated schemas, and tests through the real HTTP stack (2026-11-05, same worksheet)
 
 - [x] **hub-workflow-hygiene** — add a workflow guard that `pnpm test` runs, name the secrets each called release workflow receives, give six workflows a read-only token, and add `SECURITY.md` (2026-10-30, `docs/agent/sessions/2026-10-30-hub-workflow-hygiene.md`)
 - [x] **hub-keri-freeze** — freeze the in-tree KERI module as not interoperable, stop emitting label-derived `did:keri:` strings in forward auth, and delete a visitor's AID headers at the Traefik edge (2026-10-30, `docs/agent/sessions/2026-10-30-hub-keri-freeze.md`)

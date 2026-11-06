@@ -171,12 +171,22 @@ const browserHandoffMintResponseSchema = z.object({
  * park a large blob in the challenge path: a challenge id is a UUID and a self-issued ID token is a
  * few hundred bytes.
  */
+/** What a challenge is for. A proof made for one purpose is refused for the other. */
+const didPurposeSchema = z.enum(['sign-in', 'link']);
+
+/** The body of `POST /did/challenge` is optional, and `purpose` defaults to `sign-in`. */
+const didChallengeBodySchema = z.object({
+  purpose: didPurposeSchema.optional(),
+});
+
 const didChallengeResponseSchema = z.object({
   challengeId: z.string(),
   /** What the token's `nonce` claim must equal. */
   nonce: z.string(),
   /** What the token's `aud` claim must equal: this Hub's own issuer, never an origin. */
   audience: z.string(),
+  /** What this challenge may be spent on, so a wallet can show it. */
+  purpose: didPurposeSchema,
   /** Unix milliseconds. The challenge is spent by the first proof presented, and by nothing after it. */
   expiresAt: z.number(),
 });
@@ -203,6 +213,7 @@ const didLinksResponseSchema = z.object({
 export class LoginBody extends createZodDto(credentialsSchema) {}
 export class VerifyTotpBody extends createZodDto(verifyTotpSchema) {}
 export class LoginDto extends createZodDto(loginResponseSchema) {}
+export class DidChallengeBody extends createZodDto(didChallengeBodySchema) {}
 export class DidChallengeDto extends createZodDto(didChallengeResponseSchema) {}
 export class DidProofBody extends createZodDto(didProofSchema) {}
 export class DidUnlinkBody extends createZodDto(didUnlinkSchema) {}

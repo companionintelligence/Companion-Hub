@@ -1,6 +1,7 @@
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm/sql';
 import { describe, expect, it, vi } from 'vitest';
+import { federatedIdentity } from '@/core/database/drizzle/schema';
 import { FederatedIdentityRepository } from '../federated-identity.repository';
 
 const DID = 'did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw';
@@ -21,8 +22,10 @@ describe('FederatedIdentityRepository.deleteByUserIssuerSubject', () => {
 
     await expect(new FederatedIdentityRepository(db as never).deleteByUserIssuerSubject(7, 'did:key', DID)).resolves.toBe(true);
 
+    // The right table: a where() takes any SQL, so a delete aimed at another table would match the same predicate.
+    expect(db.delete).toHaveBeenCalledExactlyOnceWith(federatedIdentity);
     // The WHERE names all three: a binding that belongs to anyone else matches none of them.
-    const query = new PgDialect().sqlToQuery(where.mock.calls[0][0] as SQL);
+    const query = new PgDialect().sqlToQuery(where.mock.calls[0]?.[0] as SQL);
     expect(query.sql).toMatch(/"user_id" = \$1 and .*"issuer" = \$2 and .*"subject" = \$3/);
     expect(query.params).toEqual([7, 'did:key', DID]);
   });
@@ -38,6 +41,6 @@ describe('FederatedIdentityRepository.deleteByUserIssuerSubject', () => {
 
     await new FederatedIdentityRepository(db as never).deleteByUserIssuerSubject('7' as unknown as number, 'did:key', DID);
 
-    expect(new PgDialect().sqlToQuery(where.mock.calls[0][0] as SQL).params[0]).toBe(7);
+    expect(new PgDialect().sqlToQuery(where.mock.calls[0]?.[0] as SQL).params[0]).toBe(7);
   });
 });

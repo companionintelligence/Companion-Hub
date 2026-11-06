@@ -309,7 +309,14 @@ export const verifyTotp = <ThrowOnError extends boolean = false>(options: Option
     }
 });
 
-export const didChallenge = <ThrowOnError extends boolean = false>(options?: Options<DidChallengeData, ThrowOnError>): RequestResult<DidChallengeResponses, unknown, ThrowOnError> => (options?.client ?? client).post<DidChallengeResponses, unknown, ThrowOnError>({ url: '/api/auth/did/challenge', ...options });
+export const didChallenge = <ThrowOnError extends boolean = false>(options?: Options<DidChallengeData, ThrowOnError>): RequestResult<DidChallengeResponses, unknown, ThrowOnError> => (options?.client ?? client).post<DidChallengeResponses, unknown, ThrowOnError>({
+    url: '/api/auth/did/challenge',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options?.headers
+    }
+});
 
 export const didVerify = <ThrowOnError extends boolean = false>(options: Options<DidVerifyData, ThrowOnError>): RequestResult<DidVerifyResponses, unknown, ThrowOnError> => (options.client ?? client).post<DidVerifyResponses, unknown, ThrowOnError>({
     url: '/api/auth/did/verify',
