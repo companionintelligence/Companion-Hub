@@ -7,8 +7,10 @@ import {
   didKeyPublicBytes,
   didKeyPublicKey,
   isDidKey,
+  isEd25519CurvePoint,
   isWeakEd25519Key,
 } from '../utils/did-key';
+import curveVectors from './fixtures/ed25519-oncurve-vectors.json';
 
 /**
  * Every constant below was produced by an INDEPENDENT encoder (a ten-line Python base58btc and the
@@ -123,18 +125,41 @@ describe('did:key codec', () => {
       expect(didKeyFromPublicKey(bytes(keyHex))).toBeNull();
     });
 
-    it('is exactly the y values y >= p and the five torsion values: the boundaries on both sides', () => {
-      // p - 2 and p - 18 are ordinary y values just below the prime (and just below p - 1, the order-2 point).
-      expect(isWeakEd25519Key(bytes(`eb${'ff'.repeat(30)}7f`))).toBe(false);
-      expect(isWeakEd25519Key(bytes(`db${'ff'.repeat(30)}7f`))).toBe(false);
-      // 2 is an ordinary y just above the identity.
-      expect(isWeakEd25519Key(bytes('02'.padEnd(64, '0')))).toBe(false);
-      // y8 +- 1 are not torsion values.
-      expect(isWeakEd25519Key(bytes('25e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05'))).toBe(false);
-      expect(isWeakEd25519Key(bytes('27e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05'))).toBe(false);
-      // p - 1 is refused (order 2) and p - 1 with the low byte changed is not.
+    it('is exactly the y values y >= p and the five torsion values: the boundaries, with neighbours that are real points', () => {
+      // Each row is a 32-byte string and what is independently known of it (`fixtures/ed25519-oncurve-vectors.json`, RFC 8032 section
+      // 5.1.3 on Python integers): a neighbour of a weak value is "ordinary" only if it could really be somebody's key, so the
+      // accepted neighbours below are points, and the ones that are not points are refused for that reason and no other.
+      const named = (note: string) => {
+        const found = curveVectors.vectors.find((vector) => vector.note === note);
+        if (!found) throw new Error(`no vector noted ${note}`);
+        return found;
+      };
+
+      // On the curve and not weak: genuine DIDs, one step from a weak value on either side.
+      for (const note of ['y=p-18 sign 0', 'y=y8-1 sign 0', 'y=p-y8+1 sign 0']) {
+        const { hex } = named(note);
+        expect(named(note).onCurve, note).toBe(true);
+        expect(isWeakEd25519Key(bytes(hex)), note).toBe(false);
+        expect(isDidKey(spell(hex)), note).toBe(true);
+      }
+      // Not weak, and not a point either: refused by the curve check alone.
+      for (const note of ['y=2 sign 0', 'y=p-2 sign 0', 'y=y8+1 sign 0', 'y=p-y8-1 sign 0']) {
+        const { hex } = named(note);
+        expect(named(note).onCurve, note).toBe(false);
+        expect(isWeakEd25519Key(bytes(hex)), note).toBe(false);
+        expect(isEd25519CurvePoint(bytes(hex)), note).toBe(false);
+        expect(isDidKey(spell(hex)), note).toBe(false);
+      }
+      // Points, and weak: the torsion values themselves.
+      for (const note of ['y=y8 sign 0', 'y=y8 sign 1', 'y=p-y8 sign 0', 'y=p-y8 sign 1', 'y=0 (order 4) sign 0', 'y=0 (order 4) sign 1']) {
+        const { hex } = named(note);
+        expect(named(note).onCurve, note).toBe(true);
+        expect(isWeakEd25519Key(bytes(hex)), note).toBe(true);
+        expect(isDidKey(spell(hex)), note).toBe(false);
+      }
+      // p - 1 (order 2) and the identity: weak, whatever the sign bit does to whether they are points.
       expect(isWeakEd25519Key(bytes(`ec${'ff'.repeat(30)}7f`))).toBe(true);
-      expect(isWeakEd25519Key(bytes(`ea${'ff'.repeat(30)}7f`))).toBe(false);
+      expect(isWeakEd25519Key(bytes(`01${'00'.repeat(31)}`))).toBe(true);
     });
 
     it('is the 8-torsion subgroup of the curve, recomputed here with BigInt, not taken from the constants', () => {
@@ -172,6 +197,91 @@ describe('did:key codec', () => {
       // The curve's cofactor is 8, so those eight points are the whole torsion subgroup: no other y qualifies.
       for (const y of ys) {
         expect(isWeakEd25519Key(Uint8Array.from(Buffer.from(y.toString(16).padStart(64, '0'), 'hex').reverse()))).toBe(true);
+      }
+    });
+  });
+
+  describe('refuses a string of bytes that is not a point on the curve', () => {
+    const SMALL_ORDER_HEX = new Set(WEAK_ENCODINGS.map((weak) => weak.keyHex));
+
+    it('has 131 independent vectors, 61 of them points', () => {
+      expect(curveVectors.vectors).toHaveLength(131);
+      expect(curveVectors.vectors.filter((vector) => vector.onCurve)).toHaveLength(61);
+    });
+
+    it.each(curveVectors.vectors.map((vector, index) => ({ ...vector, index })))(
+      'decodes like RFC 8032 section 5.1.3: #$index $note ($onCurve)',
+      ({ hex, onCurve }) => {
+        expect(isEd25519CurvePoint(bytes(hex))).toBe(onCurve);
+      },
+    );
+
+    it.each(curveVectors.vectors.map((vector, index) => ({ ...vector, index })))(
+      'is a did:key only if it is a point and not a small-order one: #$index $note',
+      ({ hex, onCurve }) => {
+        const accepted = onCurve && !SMALL_ORDER_HEX.has(hex);
+
+        expect(isDidKey(spell(hex))).toBe(accepted);
+        expect(didKeyPublicBytes(spell(hex)) !== null).toBe(accepted);
+        expect(didKeyPublicKey(spell(hex)) !== null).toBe(accepted);
+        // And this code never mints a DID that it would refuse.
+        expect(didKeyFromPublicKey(bytes(hex)) !== null).toBe(accepted);
+      },
+    );
+
+    it('accepts every key a real generator makes: all are points', () => {
+      for (let i = 0; i < 200; i += 1) {
+        const { publicKey } = generateKeyPairSync('ed25519');
+
+        expect(isEd25519CurvePoint(Buffer.from((publicKey.export({ format: 'jwk' }) as { x: string }).x, 'base64url'))).toBe(true);
+      }
+    });
+
+    it('refuses a negative zero: x = 0 with the sign bit set', () => {
+      // y = 1 (the identity) and y = p - 1 (order 2) both have x = 0, so the sign bit must be clear.
+      expect(isEd25519CurvePoint(bytes(`01${'00'.repeat(30)}80`))).toBe(false);
+      expect(isEd25519CurvePoint(bytes(`ec${'ff'.repeat(30)}ff`))).toBe(false);
+      expect(isEd25519CurvePoint(bytes(`01${'00'.repeat(31)}`))).toBe(true);
+    });
+  });
+
+  describe('is total: anything that is not exactly 32 bytes in a Uint8Array is not a key', () => {
+    const genuine = bytes('d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a');
+    const NOT_A_KEY: Array<[string, unknown]> = [
+      ['null', null],
+      ['undefined', undefined],
+      ['a number', 32],
+      ['a string of 32 characters', 'x'.repeat(32)],
+      ['the hex of a genuine key', Buffer.from(genuine).toString('hex')],
+      ['a plain array of the 32 bytes of a genuine key', Array.from(genuine)],
+      ['a plain array of 32 numbers above 255', Array.from({ length: 32 }, () => 300)],
+      ['a Uint16Array of 32', new Uint16Array(32).fill(5)],
+      ['an Int8Array of 32', new Int8Array(32).fill(5)],
+      ['a Uint8ClampedArray of 32', new Uint8ClampedArray(32).fill(5)],
+      ['a Float64Array of 32', new Float64Array(32).fill(1.5)],
+      ['an object that only has a length of 32', { length: 32 }],
+      ['an object with no prototype', Object.create(null)],
+      ['a Symbol', Symbol('key')],
+      ['nothing: 0 bytes', new Uint8Array(0)],
+      ['31 bytes: a genuine key short of one', genuine.subarray(0, 31)],
+      ['33 bytes: a key and one more', Uint8Array.from([...genuine, 0])],
+      ['34 bytes: 0xed01 and a genuine key', Uint8Array.from([0xed, 0x01, ...genuine])],
+      ['34 bytes: 0xed01 and the identity encoding', Uint8Array.from([0xed, 0x01, 1, ...new Array(31).fill(0)])],
+      ['44 bytes: the SPKI of a genuine key', Uint8Array.from([...Buffer.from('302a300506032b6570032100', 'hex'), ...genuine])],
+      ['64 bytes: a genuine key and the identity', Uint8Array.from([...genuine, 1, ...new Array(31).fill(0)])],
+    ];
+
+    it.each(NOT_A_KEY)('%s: weak, not a point, and no DID, without throwing', (_name, value) => {
+      expect(isWeakEd25519Key(value)).toBe(true);
+      expect(isEd25519CurvePoint(value)).toBe(false);
+      expect(didKeyFromPublicKey(value)).toBeNull();
+    });
+
+    it('still takes a genuine key, as a Uint8Array and as a Buffer', () => {
+      for (const key of [genuine, Buffer.from(genuine)]) {
+        expect(isWeakEd25519Key(key)).toBe(false);
+        expect(isEd25519CurvePoint(key)).toBe(true);
+        expect(didKeyFromPublicKey(key)).toBe('did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw');
       }
     });
   });

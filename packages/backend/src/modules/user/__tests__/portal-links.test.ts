@@ -74,6 +74,15 @@ describe('linksForCurrentPortal', () => {
       expect(linksForCurrentPortal([{ issuer: ' DID:KEY ', subject: 'x' }, prod], undefined)).toEqual([prod]);
     });
 
+    it('is the rule for every DID method, not only did:key: a did:web or a did:keri issuer is dropped as well', () => {
+      const web = { issuer: 'did:web:example.com', subject: 'did:web:example.com' };
+      const keri = { issuer: 'did:keri:Dabc', subject: 'Dabc' };
+
+      expect(linksForCurrentPortal([web, keri, prod], undefined)).toEqual([prod]);
+      expect(linksForCurrentPortal([web, keri, prod], 'https://staging.example.com')).toEqual([prod]);
+      expect(linksForCurrentPortal([web, keri], undefined)).toEqual([]);
+    });
+
     it('leaves a Portal link whose issuer merely contains "did" alone', () => {
       const lookalike = { issuer: 'https://did.example.com', subject: 'portal-sub' };
       expect(linksForCurrentPortal([lookalike], undefined)).toEqual([lookalike]);

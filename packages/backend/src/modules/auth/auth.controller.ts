@@ -8,6 +8,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { CacheService } from '@/core/cache/cache.service';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 import { hubSessionOperatorUserId } from '@/core/portal/hub-session-operator';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { UserDto } from '@/modules/user/dto/user.dto';
@@ -507,8 +508,10 @@ export class AuthController {
   // nothing here creates a person or a binding.
   //
   // Link and unlink read the session cookie and change something, so they are for a person's own
-  // page: HubSessionGuard (an interactive session, not a key), DidAuthSameOriginGuard (not a page on
-  // another origin) and DidAuthJsonGuard (not a form post). Verify is anonymous and takes JSON only.
+  // page: HubSessionGuard (an interactive session, not a key), DemoModeGuard (a link is a way back
+  // in that outlives the shared demo user's password, which demo mode already stops anyone changing),
+  // DidAuthSameOriginGuard (not a page on another origin) and DidAuthJsonGuard (not a form post).
+  // Verify is anonymous and takes JSON only.
 
   /** The service, or the 404 of a route that does not exist. Belt and braces behind {@link DidAuthFlagGuard}. */
   private requireDidAuth(req: Request): DidAuthService {
@@ -628,7 +631,7 @@ export class AuthController {
   }
 
   @Post('/did/link')
-  @UseGuards(DidAuthFlagGuard, AuthGuard, HubSessionGuard, DidAuthSameOriginGuard, DidAuthJsonGuard)
+  @UseGuards(DidAuthFlagGuard, AuthGuard, HubSessionGuard, DemoModeGuard, DidAuthSameOriginGuard, DidAuthJsonGuard)
   @ApiResponse({ type: DidLinkDto })
   async didLink(@Body() body: DidProofBody, @Req() req: Request) {
     const didAuth = this.requireDidAuth(req);
@@ -640,7 +643,7 @@ export class AuthController {
   }
 
   @Delete('/did/link')
-  @UseGuards(DidAuthFlagGuard, AuthGuard, HubSessionGuard, DidAuthSameOriginGuard, DidAuthJsonGuard)
+  @UseGuards(DidAuthFlagGuard, AuthGuard, HubSessionGuard, DemoModeGuard, DidAuthSameOriginGuard, DidAuthJsonGuard)
   @ApiResponse({ type: DidLinkDto })
   async didUnlink(@Body() body: DidUnlinkBody, @Req() req: Request) {
     const didAuth = this.requireDidAuth(req);

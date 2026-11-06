@@ -19,6 +19,8 @@ const AUDIENCE = 'urn:ci-hub:11111111-2222-4333-8444-555555555555';
 const NOW = Date.parse('2026-11-05T12:00:00.000Z');
 const NOW_S = NOW / 1000;
 
+type Challenge = Awaited<ReturnType<DidAuthService['issueChallenge']>>;
+
 const b64u = (value: string | Buffer) => Buffer.from(value).toString('base64url');
 
 /** A person's identity key, the did:key it spells, and a signer for it. */
@@ -137,7 +139,15 @@ describe('DidAuthService', () => {
       expect(service.enabled).toBe(true);
     });
 
-    it('is read per call, so it follows the environment', () => {
+    it('is the variable the documentation tells an operator to set, CI_HUB_DID_AUTH', () => {
+      process.env.CI_HUB_DID_AUTH = 'true';
+
+      expect(service.enabled).toBe(true);
+      delete process.env.CI_HUB_DID_AUTH;
+      expect(service.enabled).toBe(false);
+    });
+
+    it('is read per call from the process environment: a change made inside the process is seen at once, which a running Hub never makes', () => {
       process.env[DID_AUTH_FLAG] = 'true';
       expect(service.enabled).toBe(true);
       delete process.env[DID_AUTH_FLAG];
@@ -240,7 +250,7 @@ describe('DidAuthService', () => {
 
   describe('verify', () => {
     let identity: ReturnType<typeof makeIdentity>;
-    let challenge: Awaited<ReturnType<DidAuthService['issueChallenge']>>;
+    let challenge: Challenge;
 
     beforeEach(async () => {
       identity = makeIdentity();
@@ -294,6 +304,47 @@ describe('DidAuthService', () => {
       ['an over-long token', 'a'.repeat(5000)],
     ])('spends the challenge on %s as well: the real proof that follows finds nothing', async (_name, bad) => {
       await expect(service.verify(challenge.challengeId, bad, 'sign-in')).rejects.toBeInstanceOf(DidAuthRefusal);
+
+      await refused(makeToken(identity, challenge), 'unknown-challenge');
+    });
+
+    // "Spent by whatever proof is presented first, valid or not", for every refusal that is reached after the challenge is read: a
+    // proof that is refused for ANY reason, signature, nonce, issuer, key id, audience or time, leaves the genuine one nothing to redeem.
+    it.each([
+      [
+        'a signature by another key',
+        (id: ReturnType<typeof makeIdentity>, ch: Challenge) => makeToken(id, ch, { signWith: makeIdentity().privateKey }),
+      ],
+      ['a wrong nonce', (id: ReturnType<typeof makeIdentity>, ch: Challenge) => makeToken(id, ch, { payload: { nonce: 'x'.repeat(32) } })],
+      [
+        'an issuer that is not a did:key',
+        (id: ReturnType<typeof makeIdentity>, ch: Challenge) =>
+          makeToken(id, ch, { payload: { iss: 'did:web:example.com', sub: 'did:web:example.com' } }),
+      ],
+      [
+        'a kid that names another key',
+        (id: ReturnType<typeof makeIdentity>, ch: Challenge) => makeToken(id, ch, { header: { kid: makeIdentity().did } }),
+      ],
+      [
+        'another audience',
+        (id: ReturnType<typeof makeIdentity>, ch: Challenge) =>
+          makeToken(id, ch, { payload: { aud: 'urn:ci-hub:99999999-2222-4333-8444-555555555555' } }),
+      ],
+      [
+        'several audiences, one of them this Hub',
+        (id: ReturnType<typeof makeIdentity>, ch: Challenge) =>
+          makeToken(id, ch, { payload: { aud: [ch.audience, 'urn:ci-hub:99999999-2222-4333-8444-555555555555'] } }),
+      ],
+      [
+        'an expired token',
+        (id: ReturnType<typeof makeIdentity>, ch: Challenge) => makeToken(id, ch, { payload: { iat: NOW_S - 400, exp: NOW_S - 60 } }),
+      ],
+      [
+        'an exp more than 300 s after the iat',
+        (id: ReturnType<typeof makeIdentity>, ch: Challenge) => makeToken(id, ch, { payload: { iat: NOW_S, exp: NOW_S + 301 } }),
+      ],
+    ])('spends the challenge on %s as well: the genuine proof that follows finds nothing', async (_name, build) => {
+      await expect(service.verify(challenge.challengeId, build(identity, challenge), 'sign-in')).rejects.toBeInstanceOf(DidAuthRefusal);
 
       await refused(makeToken(identity, challenge), 'unknown-challenge');
     });

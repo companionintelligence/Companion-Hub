@@ -1,0 +1,660 @@
+{
+  "comment": "RFC 8032 5.1.3 decoding (p+3)/8 root method, Python reference; onCurve true iff the 32 bytes decode to a point",
+  "vectors": [
+    {
+      "hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "onCurve": true,
+      "note": "y=0 (order 4) sign 0"
+    },
+    {
+      "hex": "0000000000000000000000000000000000000000000000000000000000000080",
+      "onCurve": true,
+      "note": "y=0 (order 4) sign 1"
+    },
+    {
+      "hex": "0100000000000000000000000000000000000000000000000000000000000000",
+      "onCurve": true,
+      "note": "y=1 sign 0 (identity) sign 0"
+    },
+    {
+      "hex": "0100000000000000000000000000000000000000000000000000000000000080",
+      "onCurve": false,
+      "note": "y=1 sign 0 (identity) sign 1"
+    },
+    {
+      "hex": "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": true,
+      "note": "y=p-1 sign 0 (order 2) sign 0"
+    },
+    {
+      "hex": "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "onCurve": false,
+      "note": "y=p-1 sign 0 (order 2) sign 1"
+    },
+    {
+      "hex": "0200000000000000000000000000000000000000000000000000000000000000",
+      "onCurve": false,
+      "note": "y=2 sign 0"
+    },
+    {
+      "hex": "0200000000000000000000000000000000000000000000000000000000000080",
+      "onCurve": false,
+      "note": "y=2 sign 1"
+    },
+    {
+      "hex": "0300000000000000000000000000000000000000000000000000000000000000",
+      "onCurve": true,
+      "note": "y=3 sign 0"
+    },
+    {
+      "hex": "0300000000000000000000000000000000000000000000000000000000000080",
+      "onCurve": true,
+      "note": "y=3 sign 1"
+    },
+    {
+      "hex": "ebffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p-2 sign 0"
+    },
+    {
+      "hex": "ebffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "onCurve": false,
+      "note": "y=p-2 sign 1"
+    },
+    {
+      "hex": "dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": true,
+      "note": "y=p-18 sign 0"
+    },
+    {
+      "hex": "dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "onCurve": true,
+      "note": "y=p-18 sign 1"
+    },
+    {
+      "hex": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "onCurve": true,
+      "note": "y=y8 sign 0"
+    },
+    {
+      "hex": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "onCurve": true,
+      "note": "y=y8 sign 1"
+    },
+    {
+      "hex": "25e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "onCurve": true,
+      "note": "y=y8-1 sign 0"
+    },
+    {
+      "hex": "25e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "onCurve": true,
+      "note": "y=y8-1 sign 1"
+    },
+    {
+      "hex": "27e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "onCurve": false,
+      "note": "y=y8+1 sign 0"
+    },
+    {
+      "hex": "27e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "onCurve": false,
+      "note": "y=y8+1 sign 1"
+    },
+    {
+      "hex": "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "onCurve": true,
+      "note": "y=p-y8 sign 0"
+    },
+    {
+      "hex": "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+      "onCurve": true,
+      "note": "y=p-y8 sign 1"
+    },
+    {
+      "hex": "c6176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "onCurve": false,
+      "note": "y=p-y8-1 sign 0"
+    },
+    {
+      "hex": "c6176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+      "onCurve": false,
+      "note": "y=p-y8-1 sign 1"
+    },
+    {
+      "hex": "c8176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "onCurve": true,
+      "note": "y=p-y8+1 sign 0"
+    },
+    {
+      "hex": "c8176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+      "onCurve": true,
+      "note": "y=p-y8+1 sign 1"
+    },
+    {
+      "hex": "0900000000000000000000000000000000000000000000000000000000000000",
+      "onCurve": true,
+      "note": "y=9 (base point x=...) sign 0"
+    },
+    {
+      "hex": "0900000000000000000000000000000000000000000000000000000000000080",
+      "onCurve": true,
+      "note": "y=9 (base point x=...) sign 1"
+    },
+    {
+      "hex": "5866666666666666666666666666666666666666666666666666666666666666",
+      "onCurve": true,
+      "note": "y=4/5 (base point) sign 0"
+    },
+    {
+      "hex": "58666666666666666666666666666666666666666666666666666666666666e6",
+      "onCurve": true,
+      "note": "y=4/5 (base point) sign 1"
+    },
+    {
+      "hex": "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+0 (non-canonical)"
+    },
+    {
+      "hex": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+1 (non-canonical)"
+    },
+    {
+      "hex": "efffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+2 (non-canonical)"
+    },
+    {
+      "hex": "f0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+3 (non-canonical)"
+    },
+    {
+      "hex": "f1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+4 (non-canonical)"
+    },
+    {
+      "hex": "f2ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+5 (non-canonical)"
+    },
+    {
+      "hex": "f3ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+6 (non-canonical)"
+    },
+    {
+      "hex": "f4ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+7 (non-canonical)"
+    },
+    {
+      "hex": "f5ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+8 (non-canonical)"
+    },
+    {
+      "hex": "f6ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+9 (non-canonical)"
+    },
+    {
+      "hex": "f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+10 (non-canonical)"
+    },
+    {
+      "hex": "f8ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+11 (non-canonical)"
+    },
+    {
+      "hex": "f9ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+12 (non-canonical)"
+    },
+    {
+      "hex": "faffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+13 (non-canonical)"
+    },
+    {
+      "hex": "fbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+14 (non-canonical)"
+    },
+    {
+      "hex": "fcffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+15 (non-canonical)"
+    },
+    {
+      "hex": "fdffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+16 (non-canonical)"
+    },
+    {
+      "hex": "feffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+17 (non-canonical)"
+    },
+    {
+      "hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "onCurve": false,
+      "note": "y=p+18 (non-canonical)"
+    },
+    {
+      "hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "onCurve": false,
+      "note": "all 0xff"
+    },
+    {
+      "hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "onCurve": true,
+      "note": "all zero"
+    },
+    {
+      "hex": "20ccaec926fdd79a19699da22b6cde4c2bf1a9bfbfc2749aca502f2b064e44e5",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "f356de0c7cd2117a90e0f42f7a29d58f601c7f448bdffb6e0bc9eeb384bcbec2",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "e69178a80d79726f9f58d59820fc3a1bd93e07b59c82cdfdfbd00eb8b9c43380",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "12d9664bc0640a277288b14084cfacf3ed45539eaedad1416644a4b915a2d5ff",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "9f99b43312166e0be83d241194417752206eff4b0bd4e61324a257fc020b6404",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "d55e7e6fb8985eeb1dbec4aa3ef17f67981202a320939943e4cb28d9aad076f5",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "cf4f8bb5466b4358af746965f5a83552bb5f160d08d580246d84c8e69089dd49",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "9fa172c584f48b74d65504b53a869f5dfab2874cc54db9d3230a449dfcd33fab",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "5596e133a3d9a300db1e986c322e550f610b80763ed02e50515c46547e43e8ed",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "4c6fd070179f40224ef9959eb94bbd8e73226798129d68efa3b6822b5d26c19d",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "d642cc7170b276d0416c65204f99b9c2de4348304e2ba38c3639c035faf725dd",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "ed95958639d5cecd83dc66c91d2abde5bf441e365391247759f61aaa82062e2c",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "0e9e0917e14b15ce79fc067c0a705198b99926b927c5df9e20ebc1986bac4ed9",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "5a68e1c433a6706e36ee0b4f27cadbadfd97801faf62648c2e93273b3780bfd3",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "747223e19db6b5e41741c55c51e187c0053cfc35dd3ea885b28c17b22343ca7e",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "3c77068d39d68c60debab251dfaa32b68f317d39e10bef55c88e08c0653a5304",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "ab8980cf1f31d567fd376578427c81962568742580138727fa9c18fe9ac15f1b",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "74afe7221436b979d583ed3d9fd6863034fd0a745670cee6a63bf30635224d3c",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "2a0a60af68fa27366725a57b20cf26f21aeac0d7060fdf8ebdaf79a4dd2f9efd",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "39ba162414cdbeba4b381f7cc1f96079b1af6c22a195068da0b5eaa9a25ecd8b",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "a6dfed730e34b87d12ca9daaeb1a5bda957278020ac774662fe2f720643f9d1c",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "0e70ab604fe2a88c99d81327be427a7de3a8e810f3e2dd75ca7751fe38157a05",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "4ca32146c93f97ddb727f47c9a31cbc8dda13e28f06f3851e36a72e0a2da87ba",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "7b45f9582af0aafcae2cc4f4a5823b655ee1d2f49e011d0d0c73567ac036945f",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "dad27458da0e54af0b5c518501377e1e1a7a9051e48f47a97224862d77e11472",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "dbb361893a2091102ed002296f4fe03874a7bf074c2091e25195528e87280287",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "3b5d84dff555b76663f6e6464f1e0933f6fb10b996885266425ceefb81dbff89",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "239b6c32467e749e2a2b40c56d8f7b67fa3d07118f56b0518d722e22f260eee9",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "26302e90f72f3d341afa6895ff50b977e944aac5fdbe93e7c16caf24092ac0c3",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "8dc7cd7e51ace4414400aec3c937871eca0503ef7adce4352a068f707994f5c3",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "e267cdc3314152fc8e64a23520341108288ab6eaabd32003ecee5cc88760257c",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "68f77b7c7b403028651442db2b44d40d77f2b94136ac74dbeac41c344d107901",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "d489db9acca957407cc53d7b95af3fbba7b540cab0eedb64e0dfb75f44ca3c58",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "ae4d53041b4a7071673c0f67f3fe83ff9214eef90723a21869c159af8e2eb0c7",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "3de392b7226cb3d2ad0b6c390c0fd0596e8a5a0b7caae9f2c05d871755f1fa45",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "1d60dc92a3be833d3d097f2dc4ad36f204c42aef33c8bd5e5132efb6a594f0dd",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "a1f2523eb5527f473993ac13f4b9c8c5f83ae28abd34fe5cf7b0ba1f3893aebb",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "d4dd48c72410c377e389cd6e3f3f0c7f66a8e659437b9ac3415f0567ca94decd",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "c0f6a68a3dba5384be24bd146b9311ed393e2f92aa13e1f0290da4c8b41e567a",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "a1623e120ada455b3ab48c9ade0f2371871065791c59431d2041296c97cabe09",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "2ba16759f307be60dbf6b6af494a6e30e0665ba608753d61329373f6afe52d5a",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "bf41bf21bfe83996e81bfa615fd70ffef7ccd638f9abbfc5c5e2e4db48817bbe",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "29070460bd127a878f87b914f967d9258593a8467962c5a02bc0c8346a8d3190",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "86088823cf385eb971a0b2c9b34e5d797540d58233bba125fe1460d0f73a8f18",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "bdfb1de19a9c4d4b5a315cccb2ef494ba0b5159f64e2262fa1f6ddf431d8afdc",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "56c72e7d3e8f7e736199556f3dfd15f27480d567089dd9b2622dbfac64020929",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "b23d618b806e4c16c734a8ebb27644146709132ab473dbcc38fe58575aae4e0d",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "71b20dadef2b440bd9ea73c2306eb011dafd1f532631c89d21aef607f01e8427",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "841cdd69080688f8c77fdaa32b1007eb8ac3771685ebdc3dfc35e417a1ebf442",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "bcfe178ee57c9dff51beed0512959ddf9d5c4dfcbd11392e34e8fa706b4e4fb0",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "4ed5c768326acd47cd5fe16e1771a11577bbb73e437b772f2822d9cf552139f5",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "221026158ee74e09d7fb643e4949fbcf4134e9bfebdd1f3aff5cfb95c2ce64f5",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "1d4bb123ee671f4f0f7f80ce0b8b23e19c234739d9623b3a0c403ebb7d3b4bcb",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "8de90008b497a669547fa1138283b351aff786b63d1276d1d4d2573beca39890",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "5e535b58bd63149d9e695b91fecc73d71916be24cd0f4875d908b14a5c50fe65",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "3568b5e8d3f4364f4bea4b40fb4415c7b19b85ff69ce2e917464185ef04e0465",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "d03bd27866d5e377f6c88e91edaf9247138df4344c5a2cd64d1bcb0264ec44d4",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "0491f649be18373b067535f570d4909607c389f0fd17a96848f9999ffd2e141d",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "37587447891b908725df5f2f103f5db571f454bc49038fa25c8f0d182d053b11",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "a42673f90f32ee20dc67928e9adae3e830888c91fda4a8347b47c251540bb6ad",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "13523969faa21afde4856348d90d68cb765265a09882b4afb7b89b1e1856385a",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "41543d07472b69ea3a0202ea4747a134c76e1813cfb497e340c011c7a61b9d55",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "996c72b26b72225a757cd9c026fbdc28ca765f4d00da8357944b69c83ae66f54",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "26abb43659be78c6ac74ec6a9f9bca1f5155f8d1b23a70bf228bf8637e9d0f7a",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "b567e6bd054cc71e71a18fe4fc6010726bf4e95e91078ae19f074b8880be0393",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "21490c56b2a97f59a3a95a0bf22af607f1d5f6b7e098eb9147676cb0f3718617",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "08a6dc7aefa2ee2195bf1c65dc84279256504c810d1cbce476f2f608b73d5d54",
+      "onCurve": true,
+      "note": "random on curve"
+    },
+    {
+      "hex": "0ada4146a44f26d34b915651201c8093d5231a1597736b38056639a2b72316a1",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "f4618e35f22867bab3e1882394f977429f2290ff844c34bf4f611b610108dfe7",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "a6446b62ce6b090190412bb49794b7edc4bbf508a1cc2870bcd717f8a10bab35",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "7be1b0383ecca7856605c333c0a3fd07f5e2a6334dd88fb4c99acaa4a65fe6e1",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "5638b66b4df21cdb67e256f78da5d1df2c7468548316c2457a7eb86f16b8a6c8",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "ef8f32002933efeb971c9c866bba588b25082d83a7f8d544c30c85e7d1a1f7d8",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "0c37e4a4e0b5deecdaaaa802f65d57c3179e5e1ee807f13c89a974603d54398f",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "95d86a2d23bb3463e8428995c3b9e50eef04b2c26e435421575592e0d4a06c5c",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "0f1858d6694ee93f6b01eee07645dec507fc7e6a75d0b1aca0eecfcb5ee22e64",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "75c2c4b9b6d5ff4748d18aed735ec00763963502a689dd5cb5305ab7be589761",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "b485f352758b745e84c3229dff93f9052cbe1b164a8bece79fccf4e4ced9ff8e",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "21edce24b050e42a75314b290afb97c07bbd615879b553064778a61491d8e50b",
+      "onCurve": false,
+      "note": "random off curve"
+    },
+    {
+      "hex": "038b4231275af8d1f0514fa522c7f4216eb77b0b27e65dcb582ce252cf5fefab",
+      "onCurve": false,
+      "note": "random off curve"
+    }
+  ]
+}

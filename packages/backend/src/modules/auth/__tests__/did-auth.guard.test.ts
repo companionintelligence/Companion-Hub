@@ -68,7 +68,15 @@ describe('DidAuthFlagGuard', () => {
     },
   );
 
-  it('reads the environment on every call, so it follows a change without a restart', () => {
+  it('is the variable the documentation tells an operator to set, CI_HUB_DID_AUTH, typed here as an operator types it', () => {
+    process.env.CI_HUB_DID_AUTH = 'true';
+
+    expect(guard.canActivate(context(request()))).toBe(true);
+    delete process.env.CI_HUB_DID_AUTH;
+    expect(() => guard.canActivate(context(request()))).toThrow(NotFoundException);
+  });
+
+  it('reads the environment on every call: a change made inside the process is seen, which a running Hub never makes', () => {
     const ctx = context(request());
     process.env[DID_AUTH_FLAG] = 'true';
     expect(guard.canActivate(ctx)).toBe(true);
@@ -107,6 +115,39 @@ describe('absentRoute', () => {
     expect(r.url).toBe('/Auth/DID/challenge?a=b');
   });
 
+  it.each([
+    ['http://hub.example.test/api/auth/did/links', 'http://hub.example.test/auth/did/links'],
+    ['https://hub.example.test:8443/api/auth/did/links?x=1', 'https://hub.example.test:8443/auth/did/links?x=1'],
+    ['HTTP://HUB.EXAMPLE.TEST/API/Auth/DID/links', 'HTTP://HUB.EXAMPLE.TEST/Auth/DID/links'],
+    [
+      'http://user@hub.example.test/api/auth/did/links?next=http://evil.example/',
+      'http://user@hub.example.test/auth/did/links?next=http://evil.example/',
+    ],
+  ])('keeps the scheme and host of the absolute-form target %s, as Express does when it strips a mount', (originalUrl, expected) => {
+    const r = request({ originalUrl, url: originalUrl });
+
+    absentRoute(r);
+
+    expect(r.url).toBe(expected);
+  });
+
+  it('looks for a scheme only before the query, as the router does, even in a target that is not origin-form', () => {
+    // Such a target never reaches a DID route (it does not start with "/"), but the router's rule is what the 404 mirrors.
+    const r = request({ originalUrl: 'x?next=http://evil.example/auth/did/links', url: 'x?next=http://evil.example/auth/did/links' });
+
+    absentRoute(r);
+
+    expect(r.url).toBe('/auth/did/links');
+  });
+
+  it('does not take a URL in the query of an ordinary target for a scheme and host', () => {
+    const r = request({ originalUrl: '/api/auth/did/links?next=http://evil.example/auth/did/links' });
+
+    absentRoute(r);
+
+    expect(r.url).toBe('/auth/did/links?next=http://evil.example/auth/did/links');
+  });
+
   it('leaves the url alone when the route is not under a prefix, or is not a DID route at all', () => {
     const bare = request({ originalUrl: '/auth/did/links', url: '/auth/did/links' });
     absentRoute(bare);
@@ -115,6 +156,10 @@ describe('absentRoute', () => {
     const other = request({ originalUrl: '/api/other', url: '/api/other' });
     absentRoute(other);
     expect(other.url).toBe('/api/other');
+
+    const bareHost = request({ originalUrl: 'http://hub.example.test', url: 'http://hub.example.test' });
+    absentRoute(bareHost);
+    expect(bareHost.url).toBe('http://hub.example.test');
   });
 });
 

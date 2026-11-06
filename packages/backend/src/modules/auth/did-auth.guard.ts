@@ -14,7 +14,8 @@ import { rawForwardedHost } from './utils/forward-auth-host';
  * The answer is the one Nest gives for a path no route claims, byte for byte (the same message and
  * the same `path`, which the not-found handler reports relative to the global prefix), so a Hub with
  * the feature off cannot be told from a build that never had it. A test boots the same app without
- * these routes and compares the two.
+ * these routes and compares the two, for HEAD, for absolute-form targets and for the other shapes
+ * of request a scanner can send to the port.
  */
 @Injectable()
 export class DidAuthFlagGuard implements CanActivate {
@@ -111,12 +112,34 @@ export function originNamesAnotherHost(request: Request): boolean {
  * raises it in. That handler is mounted under the global prefix, so the exception filter's `path`
  * (`request.url`) is relative to it while the message carries the whole URL; a guard runs with the
  * whole URL in both. The DID routes sit at `<prefix>/auth/did/…`, which is where the prefix ends.
+ *
+ * Express keeps the scheme and host of an absolute-form target (`GET http://host/api/… HTTP/1.1`, what
+ * a client sends through a forward proxy) when it strips a mount, so the path is `http://host/auth/did/…`
+ * there, and this keeps them too. It reads them the way Express's router does: only when the target
+ * does not start with `/`, and only when `://` comes before any `?`.
  */
 export function absentRoute(request: Request): NotFoundException {
-  const at = request.originalUrl.toLowerCase().indexOf('/auth/did/');
-  if (at > 0) {
-    request.url = request.originalUrl.slice(at);
+  const url = request.originalUrl;
+  const protohost = protohostOf(url);
+  const at = url.slice(protohost.length).search(/\/auth\/did\//i);
+  if (at !== -1) {
+    request.url = protohost + url.slice(protohost.length + at);
   }
 
-  return new NotFoundException(`Cannot ${request.method} ${request.originalUrl}`);
+  return new NotFoundException(`Cannot ${request.method} ${url}`);
+}
+
+/** The `scheme://host[:port]` an absolute-form request target starts with, or `''`. The router's `getProtohost`. */
+function protohostOf(url: string): string {
+  if (url.length === 0 || url[0] === '/') {
+    return '';
+  }
+
+  const query = url.indexOf('?');
+  const schemeEnd = url.slice(0, query === -1 ? url.length : query).indexOf('://');
+  if (schemeEnd === -1) {
+    return '';
+  }
+
+  return url.slice(0, Math.max(url.indexOf('/', schemeEnd + 3), 0));
 }

@@ -23,15 +23,22 @@ import { didKeyPublicKey, isDidKey } from './utils/did-key';
  *   header   {"alg":"EdDSA","typ":"JWT","kid":"<did>" or "<did>#<fragment>"}     (kid optional)
  *   payload  {"iss":"<did>","sub":"<did>","aud":"<audience>","nonce":"<nonce>","iat":n,"exp":n}
  *
- * `audience`, `nonce` and `purpose` come from {@link DidAuthService.issueChallenge}; `iat`/`exp` are
- * whole Unix seconds, `exp` is after `iat`, and `exp - iat` may not exceed
+ * `audience` and `nonce` come from {@link DidAuthService.issueChallenge}; `iat`/`exp` are whole Unix
+ * seconds, `exp` is after `iat`, and `exp - iat` may not exceed
  * {@link DID_AUTH_MAX_TOKEN_LIFETIME_SECONDS}.
  *
- * ═══ A CHALLENGE HAS ONE PURPOSE ═══
+ * ═══ A CHALLENGE HAS ONE PURPOSE, AND IT IS NOT SIGNED ═══
  *
- * Asked for as `sign-in` or `link` and spent on that one thing. A relayed sign-in proof cannot be
- * redeemed as a link (which would bind the signer's DID to the relayer's own person), and a link
- * proof cannot sign anyone in.
+ * Asked for as `sign-in` or `link` and spent on that one thing, so a sign-in proof is refused by
+ * `/did/link` and a link proof by `/did/verify`. That stops a Hub page mixing the two up. It does NOT
+ * stop a relayer. The purpose is chosen by whoever calls the public challenge route, which is the
+ * relayer, and it is kept on the Hub, not among the signed claims (iss, sub, aud, nonce, iat, exp), so
+ * the signer's wallet neither sees nor signs it. A relayer who asks for a `link` challenge, shows it
+ * to the DID's owner as a login and redeems the signature on `/did/link` from their own session
+ * binds the signer's DID to the relayer's person: the signer's own link then fails with a 409, they
+ * cannot remove a row that is not theirs, and their DID signs in as the relayer's person. Closing
+ * that needs a signed purpose or request object, and a way for a key's holder to release a link
+ * someone else made; neither exists yet (TODO.md, `did-sign-in-signed-purpose`).
  *
  * ═══ WHAT IT DELIBERATELY IS NOT ═══
  *

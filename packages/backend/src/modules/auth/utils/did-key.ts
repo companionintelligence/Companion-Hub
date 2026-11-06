@@ -29,8 +29,14 @@ import { createPublicKey, type KeyObject } from 'node:crypto';
  * refused by {@link isWeakEd25519Key}, with no curve library: read `y` little-endian with the sign
  * bit cleared, refuse `y >= p`, and refuse the five `y` values of the eight torsion points.
  *
- * Not checked: that the point lies on the curve. A string of that kind decodes here, and no
- * signature verifies under it, so there is nothing to forge.
+ * ═══ AND SO ARE STRINGS THAT ARE NOT A POINT ═══
+ *
+ * About half of all 32-byte strings are not points on the curve. A key that is not can never verify a
+ * signature, so accepting one would be harmless to security, and it still matters to the person
+ * typing: a `did:key` with one wrong character is almost never another valid key, it is a string that
+ * decodes to nothing. Linked, it would look bound and never sign anyone in. {@link isEd25519CurvePoint}
+ * refuses it at the door (RFC 8032 section 5.1.3: `x^2 = (y^2 - 1) / (d y^2 + 1)` must be a square).
+ * It is neither a weak-key check (a small-order point is on the curve) nor a subgroup check.
  *
  * Also refused, by being out of scope: the DIDs whose key can ROTATE (`did:web`, `did:webvh`,
  * `did:scid:vh`, KERI `E…` AIDs). Reading one means resolving a log, and a verifier that skipped
@@ -78,6 +84,9 @@ const ORDER_8_Y = littleEndian(Buffer.from('26e8958fc2b227b045c3f489f2ef98f0d5df
  */
 const SMALL_ORDER_Y: ReadonlySet<bigint> = new Set([0n, 1n, FIELD_PRIME - 1n, ORDER_8_Y, FIELD_PRIME - ORDER_8_Y]);
 
+/** d = -121665 / 121666 (mod p), the Edwards curve constant of Ed25519. */
+const CURVE_D = ((FIELD_PRIME - 121665n) * modPow(121666n, FIELD_PRIME - 2n)) % FIELD_PRIME;
+
 /** Whether `value` is an Ed25519 `did:key` that is well formed and not weak. See the header. */
 export function isDidKey(value: unknown): value is string {
   return didKeyPublicBytes(value) != null;
@@ -87,11 +96,57 @@ export function isDidKey(value: unknown): value is string {
  * Whether a 32-byte Ed25519 public key is one nobody should accept as an identity: a point of order
  * 1, 2, 4 or 8 (in either sign), or a non-canonical spelling (`y >= p`) of any point. Every key
  * generated honestly passes; the 14 small-order encodings and every `y >= p` encoding fail.
+ *
+ * Total, like Companion Memory's: anything that is not exactly 32 bytes in a `Uint8Array` is not a
+ * key, so it is "weak" and never accepted (a `null`, a plain array, a `Uint16Array`, the 34 bytes of
+ * `0xed01 || key`, the 44 bytes of an SPKI, a string).
  */
-export function isWeakEd25519Key(key: Uint8Array): boolean {
+export function isWeakEd25519Key(key: unknown): boolean {
+  if (!(key instanceof Uint8Array) || key.length !== ED25519_KEY_BYTES) {
+    return true;
+  }
+
   const y = littleEndian(key) & Y_MASK;
 
   return y >= FIELD_PRIME || SMALL_ORDER_Y.has(y);
+}
+
+/**
+ * Whether `key` is 32 bytes that decode to a point on the Ed25519 curve (RFC 8032 section 5.1.3, read
+ * the way the RFC reads it: little-endian, bit 255 the sign of `x`, the other 255 bits `y`). A `y` of
+ * at least `p` is refused, as the RFC refuses it, and so is "negative zero" (`x = 0` with the sign bit
+ * set). A point exists for `y` iff `x^2 = (y^2 - 1) / (d y^2 + 1)` is a square, which Euler's
+ * criterion decides. Any other input is not a point.
+ *
+ * Checked against the RFC's own decoding (the `(p+3)/8` square-root method, a different algorithm) on
+ * 131 encodings written by a Python implementation: the edge cases around every small-order `y`, the
+ * non-canonical `y`s and random strings; `ed25519-oncurve-vectors.json` is that list.
+ */
+export function isEd25519CurvePoint(key: unknown): boolean {
+  if (!(key instanceof Uint8Array) || key.length !== ED25519_KEY_BYTES) {
+    return false;
+  }
+
+  const value = littleEndian(key);
+  const negative = value >> 255n === 1n;
+  const y = value & Y_MASK;
+  if (y >= FIELD_PRIME) {
+    return false;
+  }
+
+  const ySquared = (y * y) % FIELD_PRIME;
+  const numerator = (ySquared + FIELD_PRIME - 1n) % FIELD_PRIME;
+  const denominator = (CURVE_D * ySquared + 1n) % FIELD_PRIME;
+  if (denominator === 0n) {
+    return false;
+  }
+
+  const xSquared = (numerator * modPow(denominator, FIELD_PRIME - 2n)) % FIELD_PRIME;
+  if (xSquared === 0n) {
+    return !negative;
+  }
+
+  return modPow(xSquared, (FIELD_PRIME - 1n) / 2n) === 1n;
 }
 
 /**
@@ -116,7 +171,7 @@ export function didKeyPublicBytes(value: unknown): Uint8Array | null {
   }
 
   const key = raw.subarray(ED25519_PUB_MULTICODEC.length);
-  if (isWeakEd25519Key(key)) {
+  if (isWeakEd25519Key(key) || !isEd25519CurvePoint(key)) {
     return null;
   }
 
@@ -141,12 +196,13 @@ export function didKeyPublicKey(value: unknown): KeyObject | null {
 }
 
 /**
- * The `did:key` for a raw 32-byte Ed25519 public key. Null for any other length, so a caller that
- * hands over a certificate or a 33-byte compressed point gets a refusal and not a wrong identifier,
- * and null for a weak key, so this never mints a DID that {@link isDidKey} refuses.
+ * The `did:key` for a raw 32-byte Ed25519 public key. Null for anything that is not exactly 32 bytes
+ * in a `Uint8Array`, so a caller that hands over a certificate, a 33-byte compressed point, a plain
+ * array or `null` gets a refusal and not a wrong identifier or an exception, and null for a weak key
+ * or a string of bytes that is not a point, so this never mints a DID that {@link isDidKey} refuses.
  */
-export function didKeyFromPublicKey(key: Uint8Array): string | null {
-  if (key.length !== ED25519_KEY_BYTES || isWeakEd25519Key(key)) {
+export function didKeyFromPublicKey(key: unknown): string | null {
+  if (!(key instanceof Uint8Array) || key.length !== ED25519_KEY_BYTES || isWeakEd25519Key(key) || !isEd25519CurvePoint(key)) {
     return null;
   }
 
@@ -222,4 +278,19 @@ function littleEndian(bytes: Uint8Array): bigint {
   }
 
   return value;
+}
+
+/** `base ** exponent mod p`, by square and multiply. */
+function modPow(base: bigint, exponent: bigint): bigint {
+  let result = 1n;
+  let square = base % FIELD_PRIME;
+  for (let rest = exponent; rest > 0n; rest >>= 1n) {
+    if ((rest & 1n) === 1n) {
+      result = (result * square) % FIELD_PRIME;
+    }
+
+    square = (square * square) % FIELD_PRIME;
+  }
+
+  return result;
 }

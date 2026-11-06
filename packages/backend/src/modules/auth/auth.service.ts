@@ -1036,10 +1036,16 @@ export class AuthService {
    * session refresh that did not go through {@link AuthService.admitHubPerson}. A definitive "not a
    * member" revokes the person and answers 403; a member is marked active.
    *
-   * Nothing is asked, and the person passes, when: they have no link from the paired Portal (a local
-   * password person, a DID-only person), the Hub has no device registration (it is not paired), or
-   * Portal cannot be reached ("unknown"). So an offline Hub still signs people in, as the password
-   * path's cached fallback and `admitHubPerson` do for an existing link.
+   * Nothing is asked, and the person passes, when they have no Portal link at all (a local password
+   * person, a DID-only person), when the Hub is not paired to an organization, when the registration
+   * cannot be read, or when Portal cannot be reached ("unknown"). So an offline Hub still signs people
+   * in, as `admitHubPerson` does for an existing link. A person whose only Portal links are from
+   * another Portal is asked about that link, as the sweep and the refresh always have (#2178), and is
+   * revoked when Portal says they are not a member.
+   *
+   * It does not read the registration itself: {@link resolvePairedOrgMembershipDetail} does, and
+   * answers "unknown" when the read fails and `unpaired` when there is none. A Hub unpaired by a reset
+   * is a local fact and never revokes anyone, exactly as in `applyOnlineMembership`.
    */
   public async assertStillOrgMember(userId: number): Promise<void> {
     const links = linksForCurrentPortal(await this.federatedIdentityRepository.findByUserId(userId), this.config.get('ciCloudUrl'));
@@ -1048,13 +1054,8 @@ export class AuthService {
       return;
     }
 
-    const registration = await this.deviceRegistration.getFirstDeviceRegistration();
-    if (!registration?.id) {
-      return;
-    }
-
     const detail = await this.resolvePairedOrgMembershipDetail(subject);
-    if (detail.membership === 'not-member') {
+    if (detail.membership === 'not-member' && !detail.unpaired) {
       await this.revokeOperator(userId, subject);
       throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
     }

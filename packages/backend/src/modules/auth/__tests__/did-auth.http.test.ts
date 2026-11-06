@@ -376,22 +376,41 @@ interface Challenge {
 }
 
 /** What a wallet does with a challenge: a self-issued ID token over its nonce and audience, signed by the DID's key. */
-function tokenFor(who: Identity, challenge: Challenge, signer: Identity = who) {
+function tokenFor(who: Identity, challenge: Challenge, signer: Identity = who, length?: number) {
   const now = Math.floor(Date.now() / 1000);
-  const signingInput = `${b64u(JSON.stringify({ alg: 'EdDSA', typ: 'JWT' }))}.${b64u(
-    JSON.stringify({ iss: who.did, sub: who.did, aud: challenge.audience, nonce: challenge.nonce, iat: now, exp: now + 120 }),
-  )}`;
+  const claims = { iss: who.did, sub: who.did, aud: challenge.audience, nonce: challenge.nonce, iat: now, exp: now + 120 };
+  const header = b64u(JSON.stringify({ alg: 'EdDSA', typ: 'JWT' }));
+  const signingInput = `${header}.${length === undefined ? b64u(JSON.stringify(claims)) : paddedPayload(claims, length - header.length - 2 - ED25519_SIGNATURE_CHARS)}`;
 
   return `${signingInput}.${sign(null, Buffer.from(signingInput), signer.privateKey).toString('base64url')}`;
 }
 
+/** The base64url length of an Ed25519 signature. */
+const ED25519_SIGNATURE_CHARS = 86;
+
+/** A payload of EXACTLY `chars` base64url characters, made by padding an extra claim (4k+1 is not a length base64url has). */
+function paddedPayload(claims: Record<string, unknown>, chars: number): string {
+  const extra = ({ 0: 0, 2: 1, 3: 2 } as Record<number, number | undefined>)[chars % 4];
+  if (extra === undefined) {
+    throw new Error(`no payload is ${chars} base64url characters long`);
+  }
+  const bytes = Math.floor(chars / 4) * 3 + extra;
+  const pad = bytes - JSON.stringify({ ...claims, pad: '' }).length;
+  const payload = b64u(JSON.stringify({ ...claims, pad: 'p'.repeat(pad) }));
+  if (pad < 0 || payload.length !== chars) {
+    throw new Error(`cannot make a payload of ${chars} characters`);
+  }
+
+  return payload;
+}
+
 /** A challenge for `purpose` from the real route, and the body a client then posts back for `who`. */
-async function proofFor(who: Identity, purpose: 'sign-in' | 'link' = 'sign-in', signer: Identity = who) {
+async function proofFor(who: Identity, purpose: 'sign-in' | 'link' = 'sign-in', signer: Identity = who, length?: number) {
   const reply = await api.challenge({ purpose });
   expect(reply.status).toBe(201);
   const challenge = reply.json as Challenge;
 
-  return { challenge, body: { challengeId: challenge.challengeId, idToken: tokenFor(who, challenge, signer) } };
+  return { challenge, body: { challengeId: challenge.challengeId, idToken: tokenFor(who, challenge, signer, length) } };
 }
 
 const sessionFor = (userId: number) => sessionManager.createSession(userId);
@@ -451,6 +470,30 @@ describe('Sign in with a DID — flag off', () => {
     requests.push([`${method} ${path} with a form body`, method, path, { raw: 'challengeId=x&idToken=y', headers: FORM }]);
     requests.push([`${method} ${path} with a foreign Origin`, method, path, { body, headers: { origin: 'https://evil.example' } }]);
   }
+  // An absolute-form target (what a client sends through a forward proxy) keeps its scheme and host in the path Express hands
+  // Nest's not-found handler; HEAD takes the route of the same path with GET.
+  for (const [method, path] of [
+    ['GET', '/api/auth/did/links'],
+    ['POST', '/api/auth/did/challenge'],
+    ['POST', '/api/auth/did/verify'],
+    ['POST', '/api/auth/did/link'],
+    ['DELETE', '/api/auth/did/link'],
+  ] as const) {
+    requests.push([`${method} ${path} as an absolute-form target`, method, `http://${HUB_HOST}${path}`, { body: method === 'GET' ? undefined : {} }]);
+  }
+  requests.push([
+    'an absolute-form target over https with a port and a query that holds a URL',
+    'GET',
+    `https://${HUB_HOST}:8443/api/auth/did/links?x=1&next=http://evil.example/`,
+    {},
+  ]);
+  requests.push(['an absolute-form target in upper case', 'GET', `HTTP://${HUB_HOST.toUpperCase()}/API/AUTH/DID/LINKS`, {}]);
+  requests.push(['an origin-form target whose query holds a URL', 'GET', '/api/auth/did/links?next=http://evil.example/auth/did/links', {}]);
+  requests.push(['HEAD of the listing', 'HEAD', '/api/auth/did/links', {}]);
+  requests.push(['HEAD of the listing as an absolute-form target', 'HEAD', `http://${HUB_HOST}/api/auth/did/links`, {}]);
+  requests.push(['HEAD of a POST route', 'HEAD', '/api/auth/did/challenge', {}]);
+  requests.push(['PUT of the link route', 'PUT', '/api/auth/did/link', { body: {} }]);
+  requests.push(['PATCH of the listing', 'PATCH', '/api/auth/did/links', { body: {} }]);
   requests.push(['a query string', 'GET', '/api/auth/did/links?x=1&y=%20z', {}]);
   requests.push(['a trailing slash', 'GET', '/api/auth/did/links/', {}]);
   requests.push(['another case', 'GET', '/API/Auth/DID/Links', {}]);
@@ -521,7 +564,9 @@ describe('Sign in with a DID — flag off', () => {
     expect(userRepository.createFirstOperator).not.toHaveBeenCalled();
   });
 
-  it('follows the environment without a restart: on when it says "true", off again when it does not', async () => {
+  it('reads the process environment on every request: on when it says "true", off again when it does not', async () => {
+    // Only code in this process can change it. A running Hub's environment is fixed when it starts, so for an operator this is
+    // a restart (or a recreated container), not a switch.
     expect((await api.challenge()).status).toBe(404);
 
     process.env[DID_AUTH_FLAG] = 'true';
@@ -685,24 +730,6 @@ describe('Sign in with a DID — flag on', () => {
       expect(federated.rows).toEqual([]);
     });
 
-    it.each([
-      ['no idToken', { challengeId: 'x' }],
-      ['no challengeId', { idToken: 'a.b.c' }],
-      ['an empty idToken', { challengeId: 'x', idToken: '' }],
-      ['an idToken over 4096 characters', { challengeId: 'x', idToken: 'a'.repeat(4097) }],
-      ['a challengeId over 64 characters', { challengeId: 'x'.repeat(65), idToken: 'a.b.c' }],
-      ['a number for the idToken', { challengeId: 'x', idToken: 5 }],
-    ])('answers 400 to %s, from the validation pipe, before a challenge is read', async (_name, body) => {
-      const sessionId = await sessionFor(1);
-      const key = newIdentity();
-      const real = await proofFor(key, 'link');
-
-      const reply = await api.link(body, { headers: asSession(sessionId) });
-
-      expect(reply.status).toBe(400);
-      expect((await api.link(real.body, { headers: asSession(sessionId) })).status).toBe(201);
-    });
-
     it('stops reading proofs from a client that keeps presenting bad ones: ten, then a 429', async () => {
       const sessionId = await sessionFor(1);
       const headers = asSession(sessionId);
@@ -820,12 +847,6 @@ describe('Sign in with a DID — flag on', () => {
       expect((await api.verify(body)).status).toBe(201);
     });
 
-    it('answers a body with no idToken with a 400 from the validation pipe', async () => {
-      const reply = await api.verify({ challengeId: 'x' });
-
-      expect(reply.status).toBe(400);
-    });
-
     it('stops answering a client that keeps presenting bad proofs: ten 401s, then a 429', async () => {
       for (let i = 0; i < 10; i++) {
         expect((await api.verify({ challengeId: '11111111-2222-4333-8444-555555555555', idToken: 'a.b.c' })).status).toBe(401);
@@ -914,6 +935,41 @@ describe('Sign in with a DID — flag on', () => {
         expect(portal.whoisApps).not.toHaveBeenCalled();
       });
 
+      it('lets the person in when the registration cannot be read: an unreadable registration is "unknown", as on the password path', async () => {
+        const key = await daveWithBothLinks();
+        deviceRegistration.getFirstDeviceRegistration.mockRejectedValue(new Error('ci-hub-db went away'));
+
+        const reply = await api.verify((await proofFor(key)).body);
+
+        expect(reply.status).toBe(201);
+        expect(portal.whoisApps).not.toHaveBeenCalled();
+        expect(users[4]?.accessStatus).toBe('active');
+      });
+
+      it('asks about a link from another Portal when that is the only Portal link, and revokes on a definitive "not a member"', async () => {
+        // A person who moved the Hub to another Portal: the paired Portal has never heard of the old subject. The sweep and the refresh
+        // have always asked about it (#2178), and so does this path, so the DID is no way round a removal.
+        federated.rows.push({
+          id: 91,
+          userId: 4,
+          issuer: 'https://old.example.com/api/auth',
+          subject: 'sub-at-old-portal',
+          email: 'dave@example.com',
+          emailVerified: true,
+          createdAt: '2026-01-01 00:00:00',
+        });
+        const key = newIdentity();
+        await linkDid(4, key);
+        portal.whoisApps.mockResolvedValue({ status: 403, code: 'GRANT_DENIED', body: undefined } as never);
+
+        const reply = await api.verify((await proofFor(key)).body);
+
+        expect(reply.status).toBe(403);
+        expect(reply.json.message).toBe('AUTH_ERROR_NOT_ORG_MEMBER');
+        expect(portal.whoisApps).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ subject: 'sub-at-old-portal' }));
+        expect(users[4]?.accessStatus).toBe('revoked');
+      });
+
       it('does not ask Portal on a Hub that is not paired to an organization', async () => {
         const key = await daveWithBothLinks();
         deviceRegistration.getFirstDeviceRegistration.mockResolvedValue(null as never);
@@ -970,6 +1026,50 @@ describe('Sign in with a DID — flag on', () => {
       expect(reply.status).toBe(415);
       expect(reply.json.message).toBe('AUTH_ERROR_DID_JSON_REQUIRED');
       expect(federated.rows).toHaveLength(1);
+    });
+  });
+
+  describe('in demo mode', () => {
+    // The shared DemoModeGuard answers with the key `SERVER_ERROR_NOT_ALLOWED_IN_DEMO` and the status the shared helper
+    // gives it (500: `TranslatableError`'s default), as on every other route that uses it. The key is what is pinned here.
+    afterEach(() => {
+      delete configValues.demoMode;
+    });
+
+    it('refuses to link a DID to the shared demo user, writes nothing, and leaves the proof unread', async () => {
+      const key = newIdentity();
+      const headers = asSession(await sessionFor(1));
+      const { body } = await proofFor(key, 'link');
+      configValues.demoMode = true;
+
+      const reply = await api.link(body, { headers });
+
+      expect(reply.json.message).toBe('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
+      expect(reply.status).toBeGreaterThanOrEqual(400);
+      expect(federated.rows).toEqual([]);
+      // The guard answered before the challenge was read, so the same proof links once demo mode is off.
+      delete configValues.demoMode;
+      expect((await api.link(body, { headers })).status).toBe(201);
+    });
+
+    it('refuses to remove a link, so demo mode freezes the links as it freezes the password and the username', async () => {
+      const key = newIdentity();
+      const sessionId = await linkDid(1, key);
+      configValues.demoMode = true;
+
+      const reply = await api.unlink({ did: key.did }, { headers: asSession(sessionId) });
+
+      expect(reply.json.message).toBe('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
+      expect(federated.rows).toHaveLength(1);
+    });
+
+    it('still lists links and still asks for a challenge: only the two routes that change a link are refused', async () => {
+      const key = newIdentity();
+      const sessionId = await linkDid(1, key);
+      configValues.demoMode = true;
+
+      expect((await api.links({ headers: asSession(sessionId) })).json).toEqual({ links: [{ did: key.did, linkedAt: expect.any(String) }] });
+      expect((await api.challenge()).status).toBe(201);
     });
   });
 
@@ -1085,6 +1185,186 @@ describe('Sign in with a DID — flag on', () => {
 
       expect(reply.status).toBe(200);
       expect(reply.headers['access-control-allow-origin']).toBeUndefined();
+    });
+  });
+
+  describe('the global validation pipe answers a malformed body before any challenge is read', () => {
+    // Every body names the GENUINE challenge where it can. With the pipe bypassed the service would read that challenge and refuse
+    // with a key of its own; with the pipe running the challenge is untouched. So a 400 whose message is not one of the service's
+    // keys, followed by the genuine proof still working, can only be the pipe's. A refused proof on /did/link is itself a 400, so
+    // the status alone shows nothing there.
+    const SERVICE_KEYS = ['AUTH_ERROR_DID_PROOF_REFUSED', 'AUTH_ERROR_DID_SIGN_IN_REFUSED'];
+    const BAD_BODIES: Array<[string, (challenge: Challenge) => Record<string, unknown>]> = [
+      ['an empty idToken', (c) => ({ challengeId: c.challengeId, idToken: '' })],
+      ['an idToken of 4097 characters', (c) => ({ challengeId: c.challengeId, idToken: 'a'.repeat(4097) })],
+      ['a number for the idToken', (c) => ({ challengeId: c.challengeId, idToken: 5 })],
+      ['no idToken', (c) => ({ challengeId: c.challengeId })],
+      ['a challengeId of 65 characters', (c) => ({ challengeId: `${c.challengeId}${'x'.repeat(29)}`, idToken: 'a.b.c' })],
+      ['an empty challengeId', () => ({ challengeId: '', idToken: 'a.b.c' })],
+      ['no challengeId', () => ({ idToken: 'a.b.c' })],
+    ];
+
+    describe.each([
+      ['POST /did/link', 'link' as const],
+      ['POST /did/verify', 'sign-in' as const],
+    ])('%s', (_route, purpose) => {
+      const send = (body: unknown, sessionId: string) => (purpose === 'link' ? api.link(body, { headers: asSession(sessionId) }) : api.verify(body));
+
+      it.each(BAD_BODIES)('answers %s with the pipe: a 400 that is not the service’s key, and the genuine proof still works', async (_name, make) => {
+        const key = newIdentity();
+        const sessionId = await sessionFor(1);
+        if (purpose === 'sign-in') {
+          await linkDid(1, key);
+        }
+        const real = await proofFor(key, purpose);
+
+        const reply = await send(make(real.challenge), sessionId);
+
+        expect(reply.status).toBe(400);
+        expect(SERVICE_KEYS).not.toContain(reply.json.message);
+        expect((await send(real.body, sessionId)).status).toBe(201);
+      });
+
+      it('lets a challengeId of exactly 64 characters through to the service, which finds no such challenge', async () => {
+        const reply = await send({ challengeId: 'x'.repeat(64), idToken: 'a.b.c' }, await sessionFor(1));
+
+        expect(SERVICE_KEYS).toContain(reply.json.message);
+      });
+
+      it('lets a token of exactly 4096 characters through to the service, which reads it', async () => {
+        const key = newIdentity();
+        const sessionId = await sessionFor(1);
+        if (purpose === 'sign-in') {
+          await linkDid(1, key);
+        }
+        const { body } = await proofFor(key, purpose, key, 4096);
+        expect(body.idToken).toHaveLength(4096);
+
+        const reply = await send(body, sessionId);
+
+        expect(reply.status).toBe(201);
+      });
+    });
+
+    it('answers an empty did on unlink with the pipe (400), and one of 200 characters with the service (404)', async () => {
+      const headers = asSession(await sessionFor(1));
+
+      const empty = await api.unlink({ did: '' }, { headers });
+      const longest = await api.unlink({ did: 'x'.repeat(200) }, { headers });
+
+      expect(empty.status).toBe(400);
+      expect(empty.json.message).not.toBe('AUTH_ERROR_DID_LINK_NOT_FOUND');
+      expect(longest.status).toBe(404);
+      expect(longest.json.message).toBe('AUTH_ERROR_DID_LINK_NOT_FOUND');
+    });
+  });
+
+  describe('the session cookie a sign-in sets', () => {
+    const signIn = async (headers: Record<string, string> = {}) => {
+      const key = newIdentity();
+      await linkDid(1, key);
+
+      return api.verify((await proofFor(key)).body, { headers });
+    };
+
+    it('is the cookie every sign-in sets behind an https proxy: Secure, for the whole site, for seven days, on the Hub’s domain', async () => {
+      const reply = await signIn({ 'x-forwarded-proto': 'https', 'x-forwarded-host': HUB_HOST });
+
+      expect(reply.status).toBe(201);
+      expect(reply.setCookie).toHaveLength(1);
+      expect(reply.setCookie[0]).toMatch(new RegExp(`^${SESSION_COOKIE_NAME}=${reply.json.sessionId};`));
+      expect(reply.setCookie[0]).toMatch(/; Max-Age=604800;/);
+      expect(reply.setCookie[0]).toMatch(/; Path=\/;/);
+      expect(reply.setCookie[0]).toMatch(/; Domain=\.hub\.example\.test;/);
+      expect(reply.setCookie[0]).toMatch(/; HttpOnly/);
+      expect(reply.setCookie[0]).toMatch(/; Secure/);
+      expect(reply.setCookie[0]).toMatch(/; SameSite=Lax/);
+    });
+
+    it('is not Secure, and has no Domain, when the request did not come over https through the proxy', async () => {
+      const reply = await signIn();
+
+      expect(reply.setCookie[0]).not.toMatch(/; Secure/);
+      expect(reply.setCookie[0]).not.toMatch(/; Domain=/);
+      expect(reply.setCookie[0]).toMatch(/; Max-Age=604800;/);
+    });
+  });
+
+  describe('rate limits', () => {
+    let limiter: AuthRateLimiter;
+    let now: number;
+
+    beforeEach(() => {
+      // The limiter's own clock, not the DID service's: a window is the limiter's to keep.
+      limiter = hub.moduleRef.get(AuthRateLimiter);
+      now = 1_800_000_000_000;
+      limiter.now = () => now;
+    });
+    afterEach(() => {
+      limiter.now = Date.now;
+    });
+
+    const BAD = { challengeId: '11111111-2222-4333-8444-555555555555', idToken: 'a.b.c' };
+    /** Use up a scope the way ten failures do, without going through the route that owns it. */
+    const exhaust = (scope: 'login' | 'totp') => {
+      for (let i = 0; i < 10; i += 1) {
+        limiter.admit(scope, clientIp);
+      }
+    };
+
+    it('frees the sign-in budget after a minute and not before: ten failures, a 429 at +59 s, a 401 again at +61 s', async () => {
+      for (let i = 0; i < 10; i += 1) {
+        expect((await api.verify(BAD)).status).toBe(401);
+      }
+      expect((await api.verify(BAD)).status).toBe(429);
+
+      now += 59_000;
+      expect((await api.verify(BAD)).status).toBe(429);
+      now += 2_000;
+      expect((await api.verify(BAD)).status).toBe(401);
+    });
+
+    it('frees the challenge budget after a minute and not before: twenty, a 429 at +59 s, a 201 again at +61 s', async () => {
+      for (let i = 0; i < 20; i += 1) {
+        expect((await api.challenge()).status).toBe(201);
+      }
+      expect((await api.challenge()).status).toBe(429);
+
+      now += 59_000;
+      expect((await api.challenge()).status).toBe(429);
+      now += 2_000;
+      expect((await api.challenge()).status).toBe(201);
+    });
+
+    it('draws link and verify from one budget of ten failures: five of each, and the eleventh of either is a 429', async () => {
+      const headers = asSession(await sessionFor(1));
+      for (let i = 0; i < 5; i += 1) {
+        expect((await api.verify(BAD)).status).toBe(401);
+        expect((await api.link(BAD, { headers })).status).toBe(400);
+      }
+
+      expect((await api.verify(BAD)).status).toBe(429);
+      expect((await api.link(BAD, { headers })).status).toBe(429);
+    });
+
+    it('keeps the DID budgets apart from the password and TOTP ones: using those up leaves every DID route answering', async () => {
+      const headers = asSession(await sessionFor(1));
+      exhaust('login');
+      exhaust('totp');
+
+      expect((await api.verify(BAD)).status).toBe(401);
+      expect((await api.link(BAD, { headers })).status).toBe(400);
+      expect((await api.challenge()).status).toBe(201);
+    });
+
+    it('and keeps the password and TOTP budgets out of the DID ones: ten failed proofs leave both with all of theirs', async () => {
+      for (let i = 0; i < 10; i += 1) {
+        expect((await api.verify(BAD)).status).toBe(401);
+      }
+      expect((await api.verify(BAD)).status).toBe(429);
+
+      expect(() => exhaust('login')).not.toThrow();
+      expect(() => exhaust('totp')).not.toThrow();
     });
   });
 

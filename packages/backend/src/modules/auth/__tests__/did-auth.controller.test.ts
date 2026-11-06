@@ -11,6 +11,7 @@ import type { Request, Response } from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { SESSION_COOKIE_NAME } from '@/common/constants';
+import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { CacheService } from '@/core/cache/cache.service';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
@@ -233,9 +234,9 @@ describe('AuthController — sign in with a DID', () => {
       expect(guardsOf('didChallenge')).toEqual([DidAuthFlagGuard]);
       expect(guardsOf('didVerify')).toEqual([DidAuthFlagGuard, DidAuthJsonGuard]);
       expect(guardsOf('didLinks')).toEqual([DidAuthFlagGuard, AuthGuard, HubSessionGuard]);
-      // A change made with the person's cookie: a person's own session, not another site, not a form post.
-      expect(guardsOf('didLink')).toEqual([DidAuthFlagGuard, AuthGuard, HubSessionGuard, DidAuthSameOriginGuard, DidAuthJsonGuard]);
-      expect(guardsOf('didUnlink')).toEqual([DidAuthFlagGuard, AuthGuard, HubSessionGuard, DidAuthSameOriginGuard, DidAuthJsonGuard]);
+      // A change made with the person's cookie: a person's own session, not the shared demo user, not another site, not a form post.
+      expect(guardsOf('didLink')).toEqual([DidAuthFlagGuard, AuthGuard, HubSessionGuard, DemoModeGuard, DidAuthSameOriginGuard, DidAuthJsonGuard]);
+      expect(guardsOf('didUnlink')).toEqual([DidAuthFlagGuard, AuthGuard, HubSessionGuard, DemoModeGuard, DidAuthSameOriginGuard, DidAuthJsonGuard]);
     });
   });
 
