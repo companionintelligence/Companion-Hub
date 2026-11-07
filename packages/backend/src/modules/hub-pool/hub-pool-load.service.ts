@@ -9,7 +9,7 @@ export const LOCAL_CANDIDATE_KEY = 'local';
 export interface LocalGeneration {
   backend: InferenceBackendType;
   model: string;
-  /** Its `options.num_ctx`; `null` when it named none — every `/v1` request — so it runs at the engine's default. */
+  /** Its `options.num_ctx`; `null` when it named none, or on a `/v1` request other than a chat completion the pool sends to Ollama natively, so it runs at the engine's default. */
   numCtx: number | null;
 }
 

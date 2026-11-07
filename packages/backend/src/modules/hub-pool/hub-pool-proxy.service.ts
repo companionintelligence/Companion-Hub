@@ -87,6 +87,7 @@ import {
   type UnconfirmedRequestError,
 } from './hub-pool-request-error';
 import { CONNECT_TIMEOUT_MS, MIN_PREFILL_TOKENS_PER_SEC, estimatePromptTokens, forwardBudgetMs } from './hub-pool-budget';
+import { nativeChatPlan, nativeChatWindow, openAiChatResponse } from './ollama-native-chat';
 import {
   MAX_JUDGED_BODY_BYTES,
   OutputJudge,
@@ -333,8 +334,9 @@ export function isStreamingRequest(body: unknown, path?: string): boolean {
  * what an engine actually loads the model at. The OpenAI-compatible `/v1` surface has no such field
  * and Ollama ignores one if sent (see `describeFromPeer`'s note on the Hermes probe), so a `/v1`
  * request runs at the serving engine's own default window — which is what the node's cap records.
- * For those, the caller falls back to the prompt estimate; see `applyContextCaps`. Anything but a
- * positive integer is no request, not a tiny one.
+ * The exception is a `/v1` chat completion that names one, which the pool sends to Ollama's native
+ * route (see `requestedWindow`). For the rest, the caller falls back to the prompt estimate; see
+ * `applyContextCaps`. Anything but a positive integer is no request, not a tiny one.
  */
 export function requestedNumCtx(body: unknown): number | null {
   if (!isRecord(body) || !isRecord(body.options)) {
@@ -1288,8 +1290,13 @@ const WINDOW_RELOADING_BACKENDS: ReadonlySet<InferenceBackendType> = new Set<Inf
 /** Sentinel a residency read's placement budget resolves to, distinct from any answer the engine gives — see `prefixCanStillBeWarm`. */
 const RESIDENCY_BUDGET_ELAPSED = Symbol('residency budget elapsed');
 
-/** The window a request runs at when it names one: `options.num_ctx` on Ollama's native routes, never on `/v1`, where Ollama drops `options` and its default applies. */
+/**
+ * The window a request runs at when it names one: `options.num_ctx` on Ollama's native routes, and on
+ * a `/v1` chat completion the pool sends to Ollama's native route for it (`nativeChatWindow`, #2310).
+ * Any other `/v1` request runs at the engine's default, because Ollama's `/v1` drops `options`.
+ */
 function requestedWindow(path: string, body: unknown): number | null {
+  if (path === '/v1/chat/completions') return nativeChatWindow(body);
   return path.startsWith('/api/') ? requestedNumCtx(body) : null;
 }
 
@@ -4337,15 +4344,24 @@ export class PoolProxyService {
     clientClosed?: AbortSignal,
   ): Promise<globalThis.Response> {
     const backendImpl = this.backends.get(backend);
-    const url = `${backendImpl.getBaseUrl()}${path}`;
     const apiKey = backendImpl.getApiKey?.();
+    const headers = { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) };
+    // Ollama's `/v1` drops `options.num_ctx`, so a chat completion that names a window goes to its native
+    // `/api/chat`, which honours it, and the answer comes back in the OpenAI shape (#2310). See `ollama-native-chat.ts`.
+    const native = backend === 'ollama' && method === 'POST' && path === '/v1/chat/completions' ? nativeChatPlan(body) : null;
+    if (native) {
+      const upstream = await this.fetchWithConnectTimeout(
+        `${backendImpl.getBaseUrl()}/api/chat`,
+        { method, headers, body: JSON.stringify(native.request) },
+        native.stream,
+        payload?.length ?? 0,
+        clientClosed,
+      );
+      return openAiChatResponse(upstream, native);
+    }
     return this.fetchWithConnectTimeout(
-      url,
-      {
-        method,
-        headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
-        body: payload,
-      },
+      `${backendImpl.getBaseUrl()}${path}`,
+      { method, headers, body: payload },
       isStreamingRequest(body, path),
       payload?.length ?? 0,
       clientClosed,
