@@ -86,7 +86,7 @@ import {
   type PoolRequestErrorVerdict,
   type UnconfirmedRequestError,
 } from './hub-pool-request-error';
-import { CONNECT_TIMEOUT_MS, MIN_PREFILL_TOKENS_PER_SEC, estimatePromptTokens, forwardBudgetMs } from './hub-pool-budget';
+import { CONNECT_TIMEOUT_MS, MIN_PREFILL_TOKENS_PER_SEC, estimatePromptTokens, forwardBudgetMs, lastLocalBudgetMs } from './hub-pool-budget';
 import {
   MAX_JUDGED_BODY_BYTES,
   OutputJudge,
@@ -2935,8 +2935,13 @@ export class PoolProxyService {
             );
           }
         }
-        // This node's own engine with nothing after it: a deadline here would only throw its work away (#2310).
-        const lastLocal = candidate.peerId === null && index + 1 >= walk.length;
+        const untried = walk.slice(index + 1);
+        // This node's own engine with nothing after it gets a longer budget: a cut here would only throw its work away (#2310).
+        const lastLocal = candidate.peerId === null && untried.length === 0;
+        if (lastLocal && row.budgetMs !== null) {
+          // The row's budget is the deadline its forward runs under, and the dashboard warns as a wait nears it.
+          this.routingLog.update(row, { budgetMs: lastLocalBudgetMs(row.budgetMs) });
+        }
         const upstream = await this.forward(candidate, path, method, body, model, payload(), row.id, clientClosed, lastLocal);
         const headersAt = Date.now();
         // Read before the serving record and the failover decision, because both turn on it: a 500
@@ -2945,7 +2950,6 @@ export class PoolProxyService {
         // Before the failover branch, so both outcomes teach the local engine the same thing: a
         // live request is the only place the pool ever learns whether a model actually serves.
         this.noteLocalServing(candidate, model, upstream.status, verdict);
-        const untried = walk.slice(index + 1);
         // A peer's engine refusing the key the peer holds for it: another node may well serve the
         // request, so it is tried, but the pairing is fine and the peer keeps its inventory. On the
         // last candidate the engine's own answer goes back, as a local engine's 401 always has,
@@ -4337,7 +4341,7 @@ export class PoolProxyService {
     body: unknown,
     payload: string | undefined = forwardedPayload(method, body),
     clientClosed?: AbortSignal,
-    withoutDeadline = false,
+    lastLocal = false,
   ): Promise<globalThis.Response> {
     const backendImpl = this.backends.get(backend);
     const url = `${backendImpl.getBaseUrl()}${path}`;
@@ -4352,7 +4356,7 @@ export class PoolProxyService {
       isStreamingRequest(body, path),
       payload?.length ?? 0,
       clientClosed,
-      withoutDeadline,
+      lastLocal,
     );
   }
 
@@ -4422,12 +4426,8 @@ export class PoolProxyService {
    * given to `fetch` also governs the response body: after headers the deadline timer is cleared, but
    * a client that leaves mid-stream still aborts the upstream connection. See CLIENT_CLOSED_MESSAGE.
    *
-   * `withoutDeadline` is for this node's own engine when no candidate is left after it. The budget
-   * exists so a slow node reads as failed and the work moves to another one; with nowhere to move it,
-   * cutting the request only discards the prompt the engine has already read. On a CPU-only Companion
-   * OS machine with no peers, OpenClaw's ~41,000-token turn was cut at "No response headers within
-   * 831000ms; no candidate left" three times in 41 minutes, each retry starting the prompt again from
-   * token 0 (#2310). The caller's own timeout and `clientClosed` still end the request.
+   * `lastLocal` is set for this node's own engine when no candidate is left after it, which gets
+   * {@link lastLocalBudgetMs} instead (see LAST_LOCAL_BUDGET_FACTOR, #2310).
    */
   private async fetchWithConnectTimeout(
     url: string,
@@ -4435,21 +4435,20 @@ export class PoolProxyService {
     streaming = false,
     bodyBytes = 0,
     clientClosed?: AbortSignal,
-    withoutDeadline = false,
+    lastLocal = false,
   ): Promise<globalThis.Response> {
     const controller = new AbortController();
     // A streamed request's first byte waits on the prompt being read, so its budget grows with the
     // prompt (see MIN_PREFILL_TOKENS_PER_SEC); a non-streamed one waits on the whole completion.
-    const budget = forwardBudgetMs(streaming, bodyBytes);
-    const timer = withoutDeadline
-      ? undefined
-      : setTimeout(
-          () =>
-            controller.abort(
-              new PoolForwardDeadlineError(streaming ? `No response headers within ${budget}ms` : `No completion within ${budget}ms`, budget),
-            ),
-          budget,
-        );
+    const usual = forwardBudgetMs(streaming, bodyBytes);
+    const budget = lastLocal ? lastLocalBudgetMs(usual) : usual;
+    const timer = setTimeout(
+      () =>
+        controller.abort(
+          new PoolForwardDeadlineError(streaming ? `No response headers within ${budget}ms` : `No completion within ${budget}ms`, budget),
+        ),
+      budget,
+    );
     try {
       const dispatcher = poolFetchDispatcher();
       // `dispatcher` is a Node fetch extension, not part of the DOM RequestInit type.

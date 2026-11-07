@@ -19,7 +19,7 @@ import { PassThrough } from 'node:stream';
 import axios from 'axios';
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import type { HardwareProfile, TrackedModel, CuratedModel, CloudProviderConfig } from '@ci-hub/common/types';
-import { firstByteBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
+import { firstByteBudgetMs, lastLocalBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
 import { InferenceRouteError } from '../inference-error-reply';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '@/modules/hub-pool/hub-pool-load.service';
 
@@ -1344,26 +1344,30 @@ describe('InferenceRouterService', () => {
       return { signal: () => signal };
     }
 
-    it('gives a streamed 19 KB prompt the pool floor of 300 s to first byte, where it used to get 120 s', async () => {
+    // This node's engine is the only candidate on the peerless routes, so it gets the pool's
+    // last-candidate budget, not the one a node with a peer behind it gets (#2310).
+    it('gives a streamed 19 KB prompt the pool floor of 300 s, as the only candidate, to first byte', async () => {
+      const budget = lastLocalBudgetMs(300_000);
+      expect(budget).toBeGreaterThan(300_000);
       const engine = engineThatNeverAnswers();
       const outcome = service.routeChatCompletion(streamedTurn(19_000)).catch((e: unknown) => e);
       await vi.advanceTimersByTimeAsync(0);
       expect(axios.post).toHaveBeenCalledWith(expect.any(String), expect.anything(), expect.objectContaining({ responseType: 'stream', timeout: 0 }));
 
-      await vi.advanceTimersByTimeAsync(121_000);
+      await vi.advanceTimersByTimeAsync(301_000);
       expect(engine.signal()?.aborted).toBe(false);
-      await vi.advanceTimersByTimeAsync(300_000 - 121_000 - 1);
+      await vi.advanceTimersByTimeAsync(budget - 301_000 - 1);
       expect(engine.signal()?.aborted).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
       expect(engine.signal()?.aborted).toBe(true);
 
       const err = await outcome;
-      expect((err as Error).message).toMatch(/no response headers within 300000ms/);
+      expect((err as Error).message).toMatch(new RegExp(`no response headers within ${budget}ms`));
     });
 
-    it("scales a big prompt's budget exactly as the pool does", async () => {
+    it("scales a big prompt's budget exactly as the pool does for its last candidate", async () => {
       const body = streamedTurn(160_000);
-      const budget = firstByteBudgetMs(Buffer.byteLength(JSON.stringify(body)));
+      const budget = lastLocalBudgetMs(firstByteBudgetMs(Buffer.byteLength(JSON.stringify(body))));
       expect(budget).toBeGreaterThanOrEqual(800_000);
       const engine = engineThatNeverAnswers();
       const outcome = service.routeChatCompletion(body).catch((e: unknown) => e);
@@ -1401,10 +1405,14 @@ describe('InferenceRouterService', () => {
       expect(vi.getTimerCount()).toBe(0);
     });
 
-    it('gives a non-streamed request the pool completion budget, at least 300 s for the whole generation', async () => {
+    it('gives a non-streamed request the pool completion budget for its last candidate, at least 300 s for the whole generation', async () => {
       vi.mocked(axios.post).mockResolvedValueOnce({ data: { object: 'chat.completion' }, headers: {} });
       await service.routeChatCompletion({ ...streamedTurn(19_000), stream: false });
-      expect(axios.post).toHaveBeenCalledWith(expect.any(String), expect.anything(), expect.objectContaining({ timeout: 300_000 }));
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.anything(),
+        expect.objectContaining({ timeout: lastLocalBudgetMs(300_000) }),
+      );
     });
   });
 

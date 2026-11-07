@@ -35,7 +35,7 @@ import { InferenceBackendRegistry } from './backends/backend-registry';
 import type { InferenceBackend } from './backends/backend.interface';
 import { isCatalogModelInstalled, isServedModelForCatalog, resolveInstalledCatalogIds, trackedPullCounts } from './model-availability.util';
 import { InferenceRouteError, modelNotFound } from './inference-error-reply';
-import { firstByteBudgetMs, forwardBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
+import { firstByteBudgetMs, forwardBudgetMs, lastLocalBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
 import { HubPoolLoadService, type LocalMediaWork } from '@/modules/hub-pool/hub-pool-load.service';
 import { BUDGET_SETTINGS_HINT, postStreamUnderHeaderDeadline } from './upstream-stream';
 
@@ -1732,7 +1732,8 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     // The pool's own budgets (`hub-pool-budget.ts`), not a copy of their formula: a request must wait
     // as long on this node whether or not the Hub has peers. A local 120 s floor cut a streamed 19 KB
     // prompt on a CPU-bound node (27–37 tok/s prefill), or any cold load past two minutes, where the
-    // pool would have waited 300 s for the very same engine.
+    // pool would have waited 300 s for the very same engine. This node's engine is the only candidate
+    // here, so it gets the pool's last-candidate budget (`lastLocalBudgetMs`, #2310).
     const bodyBytes = Buffer.byteLength(JSON.stringify(requestBody));
 
     if (stream) {
@@ -1743,7 +1744,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
         requestBody,
         headers,
         {
-          budgetMs: firstByteBudgetMs(bodyBytes),
+          budgetMs: lastLocalBudgetMs(firstByteBudgetMs(bodyBytes)),
           upstream: backendType,
           hint: ` — it may still be loading the model or reading a long prompt ${BUDGET_SETTINGS_HINT}`,
         },
@@ -1757,7 +1758,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     // `clientClosed` here too: an engine that is still generating a whole answer for a client that
     // left holds its sequence slot for nobody until the budget runs out.
     const response = await axios.post(url, requestBody, {
-      timeout: forwardBudgetMs(false, bodyBytes),
+      timeout: lastLocalBudgetMs(forwardBudgetMs(false, bodyBytes)),
       headers,
       signal: clientClosed,
     });

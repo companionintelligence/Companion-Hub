@@ -68,7 +68,7 @@ import {
   type SlowerPlacement,
   type UnmeasuredPlacement,
 } from '../hub-pool-proxy.service';
-import { firstByteBudgetMs, forwardBudgetMs } from '../hub-pool-budget';
+import { LAST_LOCAL_BUDGET_FACTOR, firstByteBudgetMs, forwardBudgetMs, lastLocalBudgetMs } from '../hub-pool-budget';
 import type { PoolOutputQuarantine } from '../hub-pool-output-check';
 import { LOCAL_LISTING_DEADLINE_MS } from '../pool-model-listing';
 import {
@@ -1519,6 +1519,8 @@ describe('PoolProxyService', () => {
      */
     it('records stream, the forwarded body size, and the budget the forward timer used', async () => {
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      // A busier peer behind this node, so the local engine is not the last candidate and runs under its budget (#2310).
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', MODEL, { inFlightRequests: 3 })]);
       vi.mocked(global.fetch).mockResolvedValueOnce(new Response('data: [DONE]\n\n', { status: 200 }));
       const prompt = 'x'.repeat(184_000);
 
@@ -8252,7 +8254,7 @@ describe('PoolProxyService', () => {
       vi.useRealTimers();
     });
 
-    it("keeps waiting on this node's own engine when it is the only candidate (#2310)", async () => {
+    it("gives this node's own engine the longer budget when it is the only candidate (#2310)", async () => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
       peerService.listConnectedPeers.mockResolvedValue([]);
@@ -8262,12 +8264,67 @@ describe('PoolProxyService', () => {
 
       const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: TURN, model: MODEL, res });
       await vi.waitFor(() => expect(signals).toHaveLength(1));
-      // Twice the budget this turn used to get (831 s at the 50 tok/s floor): still waiting.
-      await vi.advanceTimersByTimeAsync(2 * 831_000);
+      const usual = firstByteBudgetMs(String(vi.mocked(global.fetch).mock.calls[0]?.[1]?.body).length);
+      expect(usual).toBeGreaterThan(800_000);
+      expect(LAST_LOCAL_BUDGET_FACTOR).toBeGreaterThan(1);
+      // Past the budget this turn used to get (about 820 s at the 50 tok/s floor): still waiting.
+      await vi.advanceTimersByTimeAsync(usual + 1_000);
       expect(signals[0]?.aborted).toBe(false);
       expect(global.fetch).toHaveBeenCalledTimes(1);
+      // The row carries the deadline the forward runs under, which the dashboard warns against.
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'pending', budgetMs: lastLocalBudgetMs(usual) });
 
-      // The caller hanging up still ends it.
+      // An engine that never answers is still cut, at the longer budget, and nothing is retried.
+      await vi.advanceTimersByTimeAsync(lastLocalBudgetMs(usual) - usual - 1_000);
+      await vi.waitFor(() => expect(signals[0]?.aborted).toBe(true));
+      await inFlight;
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(res.status).toHaveBeenCalledWith(502);
+    });
+
+    it('ends the longer wait when the caller hangs up', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      const signals: AbortSignal[] = [];
+      fetchThatWaitsForever(signals);
+      const res = createMockResponse();
+
+      const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: TURN, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      await vi.advanceTimersByTimeAsync(2 * 831_000);
+      expect(signals[0]?.aborted).toBe(false);
+
+      res.destroy();
+      await inFlight;
+      expect(signals[0]?.aborted).toBe(true);
+    });
+
+    it("gives this node's own engine the longer budget when it is reached last, after a peer failed", async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      const peers = [peerServing('peer-a', MODEL)];
+      peerService.listConnectedPeers.mockResolvedValue(peers);
+      peerService.getPeerById.mockImplementation(async (id) => peers.find((peer) => peer.id === id));
+      peerService.peerAuthHeaders.mockResolvedValue({ Authorization: 'Bearer raw-token' });
+      setPoolPreferences({ poolPins: [{ scope: 'default', targetKind: 'peer', peerId: 'peer-a', mode: 'prefer' }] });
+      const signals: AbortSignal[] = [];
+      vi.mocked(global.fetch).mockImplementation((url, init) => {
+        if (String(url).includes('peer-a')) return Promise.resolve(new Response('busy', { status: 503 }));
+        const signal = init?.signal as AbortSignal;
+        signals.push(signal);
+        return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason)));
+      });
+      const res = createMockResponse();
+
+      const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: TURN, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      expect(String(vi.mocked(global.fetch).mock.calls[0]?.[0])).toContain('peer-a');
+      await vi.advanceTimersByTimeAsync(2 * 831_000);
+      expect(signals[0]?.aborted).toBe(false);
+      const usual = firstByteBudgetMs(String(vi.mocked(global.fetch).mock.calls[1]?.[1]?.body).length);
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'pending', attempt: 2, budgetMs: lastLocalBudgetMs(usual) });
+
       res.destroy();
       await inFlight;
       expect(signals[0]?.aborted).toBe(true);
@@ -8287,6 +8344,7 @@ describe('PoolProxyService', () => {
       const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: TURN, model: MODEL, res });
       await vi.waitFor(() => expect(signals).toHaveLength(1));
       expect(String(vi.mocked(global.fetch).mock.calls[0]?.[0])).not.toContain('peer-a');
+      expect(routingLog.list()[0]?.budgetMs).toBe(firstByteBudgetMs(String(vi.mocked(global.fetch).mock.calls[0]?.[1]?.body).length));
       await vi.advanceTimersByTimeAsync(831_000 + 1_000);
       await vi.waitFor(() => expect(signals).toHaveLength(2));
       expect(signals[0]?.aborted).toBe(true);
