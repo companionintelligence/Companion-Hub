@@ -87,7 +87,7 @@ import {
   type UnconfirmedRequestError,
 } from './hub-pool-request-error';
 import { CONNECT_TIMEOUT_MS, MIN_PREFILL_TOKENS_PER_SEC, estimatePromptTokens, forwardBudgetMs } from './hub-pool-budget';
-import { nativeChatPlan, nativeChatWindow, openAiChatResponse, optionsNumCtx } from './ollama-native-chat';
+import { type NativeChatPlan, nativeChatPlan, nativeChatPlanAt, nativeChatWindow, openAiChatResponse, optionsNumCtx } from './ollama-native-chat';
 import {
   MAX_JUDGED_BODY_BYTES,
   OutputJudge,
@@ -4344,7 +4344,11 @@ export class PoolProxyService {
     const headers = { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) };
     // Ollama's `/v1` drops `options.num_ctx`, so a chat completion that names a window goes to its native
     // `/api/chat`, which honours it. The answer comes back in the OpenAI shape (#2310). See `ollama-native-chat.ts`.
-    const native = backend === 'ollama' && method === 'POST' && path === '/v1/chat/completions' ? nativeChatPlan(body) : null;
+    // One that names none runs at the window its model is already loaded at, when that is safe, so it doesn't reload it.
+    const native =
+      backend === 'ollama' && method === 'POST' && path === '/v1/chat/completions'
+        ? (nativeChatPlan(body) ?? (await this.loadedWindowPlan(backend, body, payload?.length ?? 0)))
+        : null;
     if (native) {
       const upstream = await this.fetchWithConnectTimeout(
         `${backendImpl.getBaseUrl()}/api/chat`,
@@ -4362,6 +4366,53 @@ export class PoolProxyService {
       payload?.length ?? 0,
       clientClosed,
     );
+  }
+
+  /**
+   * A `/v1` chat completion that names no window, sent at the window its model is already loaded at
+   * on this node's `backend`, or `null` to send it to `/v1` as before.
+   *
+   * Hermes names `num_ctx` on its main turns but not on side calls such as title generation. Once
+   * the main turn runs at its window (see {@link nativeChatPlan}), a side call on `/v1` ran at the
+   * engine's default, so Ollama reloaded the model for it and again for the next main turn: two
+   * reloads per turn, each minutes on a CPU. Running the side call at the loaded window reloads
+   * nothing. It only does so when that can't cost the request anything. The model must be resident at
+   * a window Ollama reports, the prompt estimate at most half of it and the window not below the
+   * default this node states for the engine. Anything else, a model that isn't loaded included,
+   * goes to `/v1` exactly as before. Residency is read within {@link PLACEMENT_PROBE_BUDGET_MS}.
+   */
+  private async loadedWindowPlan(backend: InferenceBackendType, body: unknown, bodyBytes: number): Promise<NativeChatPlan | null> {
+    if (!isRecord(body) || typeof body.model !== 'string' || optionsNumCtx(body) !== null) {
+      return null;
+    }
+    const engine = this.backends.tryGet(backend);
+    const listResident = engine?.listResident?.bind(engine);
+    if (typeof listResident !== 'function') {
+      return null;
+    }
+    const model = body.model;
+    let budgetTimer: NodeJS.Timeout | undefined;
+    const budget = new Promise<null>((resolve) => {
+      budgetTimer = setTimeout(() => resolve(null), PLACEMENT_PROBE_BUDGET_MS);
+    });
+    try {
+      // Read so that a residency that throws, or isn't a promise, is no answer rather than a failed forward.
+      const read = Promise.resolve()
+        .then(() => listResident())
+        .catch(() => null);
+      const residency = await Promise.race([read, budget]);
+      const loaded = residency?.models?.find((resident) => sameModelId(resident.id, model))?.contextLength;
+      if (typeof loaded !== 'number' || !Number.isInteger(loaded) || loaded <= 0) {
+        return null;
+      }
+      const engineDefault = this.localEngineWindow(backend);
+      if (estimatePromptTokens(bodyBytes) * 2 > loaded || (engineDefault !== null && loaded < engineDefault)) {
+        return null;
+      }
+      return nativeChatPlanAt(body, loaded);
+    } finally {
+      clearTimeout(budgetTimer);
+    }
   }
 
   private async forward(

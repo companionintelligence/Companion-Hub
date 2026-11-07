@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { nativeChatPlan, nativeChatWindow, openAiChatResponse } from '../ollama-native-chat';
+import { nativeChatPlan, nativeChatPlanAt, nativeChatWindow, openAiChatResponse } from '../ollama-native-chat';
 
 const PNG = 'iVBORw0KGgo=';
 
@@ -177,6 +177,16 @@ describe('nativeChatPlan', () => {
     const body = turn();
     expect(nativeChatPlan(body)).toBe(nativeChatPlan(body));
     expect(nativeChatWindow(body)).toBe(65_536);
+  });
+});
+
+describe('nativeChatPlanAt', () => {
+  it('maps a request that names no window at the window given, and refuses one that names its own', () => {
+    const untitled = { model: 'm', messages: [{ role: 'user', content: 'Title this' }], max_tokens: 10 };
+    expect(nativeChatPlanAt(untitled, 65_536)?.request).toMatchObject({ options: { num_ctx: 65_536, num_predict: 10 }, stream: false });
+    expect(nativeChatPlanAt(turn(), 65_536)).toBeNull();
+    expect(nativeChatPlanAt(untitled, 0)).toBeNull();
+    expect(nativeChatPlanAt({ ...untitled, messages: [{ role: 'user', content: null }] }, 65_536)).toBeNull();
   });
 });
 

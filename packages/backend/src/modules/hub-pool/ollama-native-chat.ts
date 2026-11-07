@@ -202,8 +202,18 @@ export function nativeChatPlan(body: unknown): NativeChatPlan | null {
   return plan;
 }
 
-function planFor(body: Record<string, unknown>): NativeChatPlan | null {
-  const numCtx = optionsNumCtx(body);
+/**
+ * The `/api/chat` request for a `/v1` chat completion that names no window, run at `numCtx`: the
+ * window its model is already loaded at, so the request doesn't reload it at the engine's default
+ * (see `PoolProxyService.loadedWindowPlan`). `null` when the body names a window of its own, or
+ * carries something this module would not map exactly as Ollama does.
+ */
+export function nativeChatPlanAt(body: unknown, numCtx: number): NativeChatPlan | null {
+  if (!isRecord(body) || optionsNumCtx(body) !== null || !Number.isInteger(numCtx) || numCtx <= 0) return null;
+  return planFor(body, numCtx);
+}
+
+function planFor(body: Record<string, unknown>, numCtx: number | null = optionsNumCtx(body)): NativeChatPlan | null {
   if (numCtx === null) return null;
   if (typeof body.model !== 'string' || !Array.isArray(body.messages) || body.messages.length === 0) return null;
   if (body._debug_render_only !== undefined) return null;
