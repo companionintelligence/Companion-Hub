@@ -687,10 +687,10 @@ pub fn invalidate_config_hash(data_dir: &Path) {
 /// Compute a SHA256 hash of the compose and env file contents, leaving out the env file's `DOMAIN`.
 ///
 /// `DOMAIN` is the zone the Hub learns from its Portal at pairing. The Hub writes it into this env
-/// file itself (`ConfigurationService.setDomain`) and applies it without a restart, and its boot
-/// reads the zone from its own settings, not from the container's environment (CI-Hub#1894). Nothing
-/// in the compose file uses it. Hashing it made the first window open after pairing stop and
-/// recreate the whole running Hub, tunnel included, for a value the Hub already had (#2314).
+/// file itself (`ConfigurationService.setDomain`) and applies it without a restart. Its boot reads
+/// the zone from its own settings, so the pre-pairing `DOMAIN` that the Hub container keeps in its
+/// environment (it gets the file through `env_file`) never wins (CI-Hub#1894). Hashing it made the
+/// first window open after pairing recreate the whole running Hub, tunnel included (#2314).
 pub fn compute_config_hash(compose_path: &Path, env_path: &Path) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -698,20 +698,19 @@ pub fn compute_config_hash(compose_path: &Path, env_path: &Path) -> String {
         hasher.update(&content);
     }
     if let Ok(content) = std::fs::read(env_path) {
-        hasher.update(env_content_without_zone(&content));
+        for line in env_lines_without_zone(&content) {
+            hasher.update(line);
+        }
     }
     crate::digest_hex::lower_hex(&hasher.finalize())
 }
 
-/// The env file's bytes without its `DOMAIN=` lines, for [`compute_config_hash`]. Every other line,
+/// The env file's lines, each with its line break, except its `DOMAIN=` lines. Every other line,
 /// `PUBLIC_DOMAIN=` and the like included, is kept byte for byte.
-fn env_content_without_zone(content: &[u8]) -> Vec<u8> {
+fn env_lines_without_zone(content: &[u8]) -> impl Iterator<Item = &[u8]> {
     content
         .split_inclusive(|byte| *byte == b'\n')
         .filter(|line| !line.trim_ascii_start().starts_with(b"DOMAIN="))
-        .flatten()
-        .copied()
-        .collect()
 }
 
 /// Why a pull didn't finish.
