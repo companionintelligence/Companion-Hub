@@ -2592,6 +2592,7 @@
   "MEMORY_CONNECT_NOT_INSTALLED": "Install CI Memory to let this app remember your context across sessions.",
   "MEMORY_CONNECT_STARTING_DESC": "CI Memory is still starting…",
   "MEMORY_CONNECT_OFFLINE_DESC": "CI Memory is not running.",
+  "MEMORY_CONNECT_CONNECTED_OFFLINE_DESC": "This app is still connected, but CI Memory is not running, so the app can't use its memory. Start CI Memory to bring it back.",
   "MEMORY_CONNECT_UNAVAILABLE_TOAST": "CI Memory isn't ready to connect yet. Please try again once it's running.",
   "MEMORY_CONNECT_ERROR_TOAST": "Couldn't connect to CI Memory. Please try again.",
   "MEMORY_CONNECT_DENIED_TOAST": "Connecting an app to CI Memory restarts it. You don't have permission to restart this app.",
