@@ -2935,7 +2935,9 @@ export class PoolProxyService {
             );
           }
         }
-        const upstream = await this.forward(candidate, path, method, body, model, payload(), row.id, clientClosed);
+        // This node's own engine with nothing after it: a deadline here would only throw its work away (#2310).
+        const lastLocal = candidate.peerId === null && index + 1 >= walk.length;
+        const upstream = await this.forward(candidate, path, method, body, model, payload(), row.id, clientClosed, lastLocal);
         const headersAt = Date.now();
         // Read before the serving record and the failover decision, because both turn on it: a 500
         // that proves the request is bad is neither the model failing nor a reason to try the next node.
@@ -4335,6 +4337,7 @@ export class PoolProxyService {
     body: unknown,
     payload: string | undefined = forwardedPayload(method, body),
     clientClosed?: AbortSignal,
+    withoutDeadline = false,
   ): Promise<globalThis.Response> {
     const backendImpl = this.backends.get(backend);
     const url = `${backendImpl.getBaseUrl()}${path}`;
@@ -4349,6 +4352,7 @@ export class PoolProxyService {
       isStreamingRequest(body, path),
       payload?.length ?? 0,
       clientClosed,
+      withoutDeadline,
     );
   }
 
@@ -4361,11 +4365,12 @@ export class PoolProxyService {
     payload: string | undefined = forwardedPayload(method, body),
     requestId?: string,
     clientClosed?: AbortSignal,
+    lastLocal = false,
   ): Promise<globalThis.Response> {
     if (candidate.peerId === null) {
       // The Hub's residency arbitration has already run for a generation, in the routed walk, which
       // is the only caller that sends one here: see `arbitrateLocalLoad`.
-      return this.callBackend(candidate.backend, path, method, body, payload, clientClosed);
+      return this.callBackend(candidate.backend, path, method, body, payload, clientClosed, lastLocal);
     }
 
     const peer = await this.peerService.getPeerById(candidate.peerId);
@@ -4416,6 +4421,13 @@ export class PoolProxyService {
    * `clientClosed` is combined with the deadline rather than checked around it, because the signal
    * given to `fetch` also governs the response body: after headers the deadline timer is cleared, but
    * a client that leaves mid-stream still aborts the upstream connection. See CLIENT_CLOSED_MESSAGE.
+   *
+   * `withoutDeadline` is for this node's own engine when no candidate is left after it. The budget
+   * exists so a slow node reads as failed and the work moves to another one; with nowhere to move it,
+   * cutting the request only discards the prompt the engine has already read. On a CPU-only Companion
+   * OS machine with no peers, OpenClaw's ~41,000-token turn was cut at "No response headers within
+   * 831000ms; no candidate left" three times in 41 minutes, each retry starting the prompt again from
+   * token 0 (#2310). The caller's own timeout and `clientClosed` still end the request.
    */
   private async fetchWithConnectTimeout(
     url: string,
@@ -4423,18 +4435,21 @@ export class PoolProxyService {
     streaming = false,
     bodyBytes = 0,
     clientClosed?: AbortSignal,
+    withoutDeadline = false,
   ): Promise<globalThis.Response> {
     const controller = new AbortController();
     // A streamed request's first byte waits on the prompt being read, so its budget grows with the
     // prompt (see MIN_PREFILL_TOKENS_PER_SEC); a non-streamed one waits on the whole completion.
     const budget = forwardBudgetMs(streaming, bodyBytes);
-    const timer = setTimeout(
-      () =>
-        controller.abort(
-          new PoolForwardDeadlineError(streaming ? `No response headers within ${budget}ms` : `No completion within ${budget}ms`, budget),
-        ),
-      budget,
-    );
+    const timer = withoutDeadline
+      ? undefined
+      : setTimeout(
+          () =>
+            controller.abort(
+              new PoolForwardDeadlineError(streaming ? `No response headers within ${budget}ms` : `No completion within ${budget}ms`, budget),
+            ),
+          budget,
+        );
     try {
       const dispatcher = poolFetchDispatcher();
       // `dispatcher` is a Node fetch extension, not part of the DOM RequestInit type.
