@@ -993,11 +993,14 @@ export class ExposureSyncService implements OnModuleDestroy {
       const orgInfo = await this.registrationService.getDeviceRegistrationInfo();
 
       if (!orgInfo) {
+        // No organization, no plan: a refusal from the one this Hub left no longer stands.
+        this.currentStandingRefusals = new Map();
         this.logger.debug('[Cloudflare] Skipping sync: Organization not registered');
         return;
       }
 
       if (!orgInfo.tunnelId) {
+        this.currentStandingRefusals = new Map();
         this.logger.warn(
           `[Cloudflare] Skipping sync: Organization ${orgInfo.id} exists but has no tunnelId. Please complete device registration to provision tunnel.`,
         );
@@ -1114,7 +1117,9 @@ export class ExposureSyncService implements OnModuleDestroy {
       // The partial-failure branch maps app names to database rows, exposed entries,
       // and failure reasons. Index once to avoid a full scan for every failure on
       // Hubs that run many apps.
-      const dbAppByName = indexByFirst(apps, (candidate: AppFromDb) => candidate.appName);
+      // The synced rows come first: a failed name is one this payload sent, and another store's app of
+      // the same name (a failed install, say) must not take its refusal.
+      const dbAppByName = indexByFirst([...syncedDbApps, ...apps], (candidate: AppFromDb) => candidate.appName);
 
       const toToastTarget = (dbApp: AppFromDb): PublicDnsToastTarget => ({
         appUrn: createAppUrn(dbApp.appName, dbApp.appStoreSlug),
@@ -1248,7 +1253,7 @@ export class ExposureSyncService implements OnModuleDestroy {
       if (result.ok) {
         // Only a sync the Portal answered says which apps it stopped refusing.
         this.forgetSettledRefusals(standingRefusals);
-        this.currentStandingRefusals = new Map(standingRefusals);
+        this.currentStandingRefusals = standingRefusals;
 
         const skipAutoRestartAppUrns = new Set(options?.skipAutoRestartAppUrns ?? []);
 

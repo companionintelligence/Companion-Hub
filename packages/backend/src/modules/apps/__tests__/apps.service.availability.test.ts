@@ -524,6 +524,20 @@ describe('AppsService.checkAppAvailability', () => {
     expect(result).toMatchObject({ errorCode: 'DNS_NOT_FOUND', stage: 'propagating' });
   });
 
+  // The name resolves and the tunnel answered, so the refusal doesn't explain it. Its code keeps the
+  // re-sync on Resolve and its CLOUDFLARE reason keeps the runtime monitor from calling the app hung.
+  it('cloudflare mode → a verdict the tunnel answered keeps its code despite a remembered refusal', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    vi.mocked(resolveAtZoneNameservers).mockResolvedValue({ kind: 'addresses', addresses: ['104.21.48.168'] });
+    mockedAxiosGet.mockResolvedValue({ status: 502, data: 'Bad Gateway' });
+    ctx.exposureSync.publicDnsRefusalFor.mockReturnValue('subdomain_quota_exceeded');
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(ctx.exposureSync.publicDnsRefusalFor).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ available: false, errorCode: 'CF_UPSTREAM_ERROR', reason: 'CLOUDFLARE', resolvable: true });
+  });
+
   it('cloudflare mode → an address that answers wins over a refusal the last sync remembered', async () => {
     ctx.mockApp.exposureMode = 'cloudflare';
     vi.mocked(resolveAtZoneNameservers).mockResolvedValue({ kind: 'addresses', addresses: ['104.21.48.168'] });

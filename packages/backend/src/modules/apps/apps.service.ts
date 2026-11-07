@@ -16,7 +16,7 @@ import { MarketplaceService } from '../marketplace/marketplace.service';
 import { RegistrationService } from '../registration/registration.service';
 import { AppsRepository } from './apps.repository';
 import { AppsReadService } from './apps-read.service';
-import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
+import { CloudflareClientService, type PublicDnsFailureReason } from '../cloudflare/cloudflare-client.service';
 // Type-only: a value import here closes a require cycle
 // (tunnel-health -> docker -> apps -> tunnel-health) that leaves the DI token
 // undefined at decoration time and stops the whole backend booting. The class is
@@ -356,7 +356,11 @@ export class AppsService {
     // LAN user is not relocated to the public origin.
     const localUrl = this.resolveDirectLocalUrl(app, info);
     const probed = await this.probeAppAvailability(app, info);
-    const result = probed.available || app.exposureMode !== 'cloudflare' ? probed : await this.explainRefusedPublicAddress(appUrn, probed);
+    // Only a missing record is explained by a refusal. A verdict read from an answer (a Cloudflare
+    // error, the Hub's 5xx) means the name resolves, and its code and reason drive the repair and the
+    // runtime monitor.
+    const result =
+      probed.errorCode === 'DNS_NOT_FOUND' && app.exposureMode === 'cloudflare' ? await this.explainRefusedPublicAddress(appUrn, probed) : probed;
 
     return localUrl ? { ...result, localUrl } : result;
   }
@@ -368,7 +372,7 @@ export class AppsService {
    * last sync instead and say what the person can do. Any other verdict is returned unchanged.
    */
   private async explainRefusedPublicAddress(appUrn: AppUrn, probed: AppAvailabilityResult): Promise<AppAvailabilityResult> {
-    let refusal: string | null = null;
+    let refusal: PublicDnsFailureReason | null = null;
     try {
       // Imported here like AppLifecycleService below: a static import closes a require cycle.
       const { ExposureSyncService } = await import('../app-lifecycle/exposure-sync.service');
