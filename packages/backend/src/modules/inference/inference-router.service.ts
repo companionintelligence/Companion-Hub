@@ -1746,7 +1746,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
         {
           budgetMs: lastLocalBudgetMs(firstByteBudgetMs(bodyBytes)),
           upstream: backendType,
-          hint: ` — it may still be loading the model or reading a long prompt ${BUDGET_SETTINGS_HINT}`,
+          hint: ` — it may still be loading the model or reading a long prompt ${BUDGET_SETTINGS_HINT}, times HUB_POOL_LAST_LOCAL_BUDGET_FACTOR on this node's own engine`,
         },
         clientClosed,
       );

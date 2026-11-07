@@ -86,7 +86,17 @@ import {
   type PoolRequestErrorVerdict,
   type UnconfirmedRequestError,
 } from './hub-pool-request-error';
-import { CONNECT_TIMEOUT_MS, MIN_PREFILL_TOKENS_PER_SEC, estimatePromptTokens, forwardBudgetMs, lastLocalBudgetMs } from './hub-pool-budget';
+import {
+  CONNECT_TIMEOUT_MS,
+  LAST_LOCAL_BUDGET_FACTOR,
+  MIN_PREFILL_TOKENS_PER_SEC,
+  estimatePromptTokens,
+  forwardBudgetMs,
+  lastLocalBudgetMs,
+} from './hub-pool-budget';
+
+/** Added to a forward's deadline message when it ran under the last local candidate's longer budget, so the 502 names the setting that decided it. */
+const LAST_LOCAL_DEADLINE_NOTE = ' (last candidate, on this node)';
 import {
   MAX_JUDGED_BODY_BYTES,
   OutputJudge,
@@ -412,6 +422,13 @@ export function describeAppliedDeadline(message: string, undiciHeaderTimeout: bo
   const applied = /No (response headers|completion) within (\d+)ms/.exec(message);
   if (applied) {
     const ms = Number(applied[2]);
+    if (message.includes(LAST_LOCAL_DEADLINE_NOTE)) {
+      const waitedFor = applied[1] === 'completion' ? 'a whole non-streamed completion' : 'response headers';
+      return (
+        `the last waited ${ms}ms for ${waitedFor} from this node's own engine, the last candidate left, which gets its usual ` +
+        `budget times HUB_POOL_LAST_LOCAL_BUDGET_FACTOR (${LAST_LOCAL_BUDGET_FACTOR})`
+      );
+    }
     if (applied[1] === 'completion') {
       return (
         `the last waited ${ms}ms for a whole non-streamed completion — HUB_POOL_COMPLETION_TIMEOUT_MS, ` +
@@ -4442,10 +4459,14 @@ export class PoolProxyService {
     // prompt (see MIN_PREFILL_TOKENS_PER_SEC); a non-streamed one waits on the whole completion.
     const usual = forwardBudgetMs(streaming, bodyBytes);
     const budget = lastLocal ? lastLocalBudgetMs(usual) : usual;
+    const note = lastLocal ? LAST_LOCAL_DEADLINE_NOTE : '';
     const timer = setTimeout(
       () =>
         controller.abort(
-          new PoolForwardDeadlineError(streaming ? `No response headers within ${budget}ms` : `No completion within ${budget}ms`, budget),
+          new PoolForwardDeadlineError(
+            streaming ? `No response headers within ${budget}ms${note}` : `No completion within ${budget}ms${note}`,
+            budget,
+          ),
         ),
       budget,
     );
