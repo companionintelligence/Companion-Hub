@@ -138,8 +138,8 @@ export function collectTraefikLabelIssues(
  *
  * The Hub container's labels define the router, service and middleware `ci-hub` and the router
  * `ci-os-hub` on the Docker provider (docker-compose.prod.yml and the desktop app's copy). Its files
- * define `ci-hub`, `ci-hub-edge-headers`, `ci-hub-app-starting`, `hub-public` and `hub-service` on
- * the file provider (assets/traefik/dynamic/dynamic.yml and `TraefikConfigService`), which also holds
+ * define `ci-hub`, `ci-hub-edge-headers`, `ci-hub-app-starting`, `ci-hub-sw-reset`, `hub-public` and
+ * `hub-service` on the file provider (assets/traefik/dynamic/dynamic.yml and `TraefikConfigService`), which also holds
  * a copy of every app's routers, services and middlewares. An app may not define one: a name that is
  * one of these, or starts with one followed by a dash, is the Hub's unless an app's longer id covers
  * it, and the Hub's when that id is just as long.
@@ -149,6 +149,7 @@ export const HUB_TRAEFIK_NAMES: readonly string[] = [
   'ci-os-hub',
   'ci-hub-edge-headers',
   'ci-hub-app-starting',
+  'ci-hub-sw-reset',
   'hub-public',
   'hub-service',
 ];

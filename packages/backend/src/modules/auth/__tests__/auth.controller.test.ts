@@ -1140,6 +1140,26 @@ describe('AuthController', () => {
       });
     });
 
+    // Traefik's ci-hub-sw-reset middleware turns this 401, and only a 401, into the self-removing worker (#2324).
+    it('refuses a signed-out service worker script fetch with a 401 rather than the sign-in redirect', async () => {
+      forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('jellyfin:ci-marketplace' as never);
+      const req = {
+        user: undefined,
+        headers: {
+          'service-worker': 'script',
+          'x-forwarded-uri': '/sw.js',
+          'x-forwarded-proto': 'https',
+          'x-forwarded-host': 'jellyfin-myorg.companionintelligence.com',
+        },
+      } as unknown as Request;
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), redirect: vi.fn() } as unknown as Response;
+
+      await authController.traefik(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.redirect).not.toHaveBeenCalled();
+    });
+
     it('routes an unauthenticated LAN visitor into edge-sso on the derived root-domain origin', async () => {
       // The host map vouches for this host, so the edge-SSO hop will accept it as a target.
       forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('jellyfin:ci-marketplace' as never);

@@ -22,21 +22,29 @@ const INSECURE_ROUTER_SUFFIX = '-insecure';
 const TAILSCALE_ROUTER_SUFFIX = '-tailscale';
 /** The app's middleware that sets the forwarded public host: `<app id>-public-host`. */
 const PUBLIC_HOST_MIDDLEWARE_SUFFIX = '-public-host';
+/** The app's routers for a browser's fetch of its `/sw.js` (#2324): `<app id>-sw-reset` and `<app id>-sw-reset-insecure`. */
+const SW_RESET_ROUTER_SUFFIX = '-sw-reset';
 
 /**
  * What the builder adds to an app's id for its other routers and its public-host middleware. An app
  * whose id is another app's id plus one of these would get a router or middleware of the same name
  * as that app's.
  */
-export const HUB_ROUTE_NAME_SUFFIXES: readonly string[] = [INSECURE_ROUTER_SUFFIX, TAILSCALE_ROUTER_SUFFIX, PUBLIC_HOST_MIDDLEWARE_SUFFIX];
+export const HUB_ROUTE_NAME_SUFFIXES: readonly string[] = [
+  INSECURE_ROUTER_SUFFIX,
+  TAILSCALE_ROUTER_SUFFIX,
+  PUBLIC_HOST_MIDDLEWARE_SUFFIX,
+  SW_RESET_ROUTER_SUFFIX,
+  `${SW_RESET_ROUTER_SUFFIX}${INSECURE_ROUTER_SUFFIX}`,
+];
 
 /** The file-provider middleware that strips visitor-set forwarded headers from tunnel requests. */
 export const EDGE_HEADERS_MIDDLEWARE = 'ci-hub-edge-headers@file';
+/** The Hub's forward auth under the file provider. Its `@docker` twin vanishes when the Hub's labels flap. */
+const FORWARD_AUTH_MIDDLEWARE = 'ci-hub@file';
 /** See `ci-hub-sw-reset` in assets/traefik/dynamic/dynamic.yml. */
 export const SW_RESET_MIDDLEWARE = 'ci-hub-sw-reset@file';
-/** The routers that take a signed-out browser's fetch of an app's `/sw.js` (#2324). */
-const SW_RESET_ROUTER_SUFFIX = '-sw-reset';
-/** What a browser sends when it fetches a service worker script, and nothing else does. */
+/** What a browser sends when it fetches a service worker script. Nothing else sends this header. */
 const SW_RESET_RULE_SUFFIX = ' && Path(`/sw.js`) && Header(`Service-Worker`, `script`)';
 
 /**
@@ -254,7 +262,7 @@ export class TraefikLabelsBuilder {
       // gated. An app trusting the edge alone was open to the internet (CI-Engineering#74).
       //
       // Prefer the file provider middleware — `@docker` vanishes when Hub labels flap.
-      middlewares.push('ci-hub@file');
+      middlewares.push(FORWARD_AUTH_MIDDLEWARE);
     }
 
     if (this.params.cloudflarePublicHostname) {
@@ -289,14 +297,14 @@ export class TraefikLabelsBuilder {
     }
 
     if (this.params.enableAuth) {
-      // A browser that holds a worker from before the sign-in fetches `/sw.js` to update it, gets
-      // the sign-in redirect and refuses it, so the old worker keeps serving the cached app (#2324).
-      // These routers take only that fetch, on both entry points like the routers above, and wrap
-      // the same chain in the reset middleware. Their rule is longer than the host rule, so Traefik
-      // ranks them first for that one request and for nothing else. The service is the app's own,
-      // so a signed-in browser still gets the app's `/sw.js`.
+      // A browser that holds a worker from before the sign-in fetches `/sw.js` to update it. The
+      // sign-in refuses that fetch and the browser keeps the old worker, which goes on serving the
+      // cached app (#2324). These routers take only that fetch on both entry points like the routers
+      // above. They put the reset middleware in front of the same forward auth. Their rule is longer
+      // than the host rule, so Traefik ranks them first for that one request and for nothing else.
+      // The service is the app's own: a signed-in browser still gets the app's `/sw.js`.
       const swResetRouter = `${this.params.appId}-${this.params.storeId}${SW_RESET_ROUTER_SUFFIX}`;
-      const swResetChain = middlewares.flatMap((name) => (name === 'ci-hub@file' ? [SW_RESET_MIDDLEWARE, name] : [name])).join(',');
+      const swResetChain = middlewares.flatMap((name) => (name === FORWARD_AUTH_MIDDLEWARE ? [SW_RESET_MIDDLEWARE, name] : [name])).join(',');
       const swResetRule = `${hostRule}${SW_RESET_RULE_SUFFIX}`;
       Object.assign(this.labels, {
         [`traefik.http.routers.${swResetRouter}${INSECURE_ROUTER_SUFFIX}.rule`]: swResetRule,
