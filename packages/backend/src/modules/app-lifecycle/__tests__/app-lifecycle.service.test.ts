@@ -3920,6 +3920,22 @@ describe('AppLifecycleService', () => {
       expect(logger.error).toHaveBeenCalledTimes(4);
     });
 
+    // The app page asks this instead of calling the missing record "DNS propagating" (#2312).
+    it('remembers which apps the last answered sync refused, until a sync stops refusing them', async () => {
+      expect(exposureSyncService.publicDnsRefusalFor(N8N)).toBeNull();
+
+      await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
+      expect(exposureSyncService.publicDnsRefusalFor(N8N)).toBe('subdomain_quota_exceeded');
+      expect(exposureSyncService.publicDnsRefusalFor(EXCALIDRAW)).toBeNull();
+
+      // A pass the Portal didn't answer says nothing about which apps it refuses.
+      await syncUnanswered(6);
+      expect(exposureSyncService.publicDnsRefusalFor(N8N)).toBe('subdomain_quota_exceeded');
+
+      await syncAfter(6);
+      expect(exposureSyncService.publicDnsRefusalFor(N8N)).toBeNull();
+    });
+
     it('shows it again when the reason changes', async () => {
       await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
       await syncAfter(6, { n8n: 'duplicate_subdomain' });

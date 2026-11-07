@@ -77,6 +77,9 @@ const PROBE_MESSAGE_KEYS: Record<string, string> = {
   NO_DEVICE_REGISTRATION: 'APP_ACTION_ERROR_NO_DEVICE_REGISTRATION',
   // Without this the user saw the backend's raw English detail string.
   TAILSCALE_NOT_READY: 'APP_ACTION_ERROR_TAILSCALE_NOT_READY',
+  // The Portal refused the app a public address because the plan is full: not propagation, and no
+  // retry fixes it, so the copy says what the person can change (#2312).
+  PUBLIC_ADDRESS_QUOTA_EXCEEDED: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED',
   UNKNOWN: 'APP_ACTION_APPLICATION_ERROR',
 };
 

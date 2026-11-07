@@ -355,9 +355,39 @@ export class AppsService {
     // (CI-Engineering#75). It also widens the post-connect landing allowlist so a
     // LAN user is not relocated to the public origin.
     const localUrl = this.resolveDirectLocalUrl(app, info);
-    const result = await this.probeAppAvailability(app, info);
+    const probed = await this.probeAppAvailability(app, info);
+    const result = probed.available || app.exposureMode !== 'cloudflare' ? probed : await this.explainRefusedPublicAddress(appUrn, probed);
 
     return localUrl ? { ...result, localUrl } : result;
+  }
+
+  /**
+   * A public address the Portal refused because the organization's plan has none left is not on its
+   * way, however long the page waits. The probe can only see the missing DNS record, which reads as
+   * "DNS propagating", so the app page said that for as long as the plan stayed full (#2312). Ask the
+   * last sync instead and say what the person can do. Any other verdict is returned unchanged.
+   */
+  private async explainRefusedPublicAddress(appUrn: AppUrn, probed: AppAvailabilityResult): Promise<AppAvailabilityResult> {
+    let refusal: string | null = null;
+    try {
+      // Imported here like AppLifecycleService below: a static import closes a require cycle.
+      const { ExposureSyncService } = await import('../app-lifecycle/exposure-sync.service');
+      refusal = this.moduleRef.get(ExposureSyncService, { strict: false })?.publicDnsRefusalFor(appUrn) ?? null;
+    } catch {
+      return probed;
+    }
+    if (refusal !== 'subdomain_quota_exceeded') {
+      return probed;
+    }
+    return {
+      available: false,
+      appUrl: probed.appUrl,
+      stage: 'error',
+      reason: 'PLAN_LIMIT',
+      errorCode: 'PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+      detail: "The organization's plan has no public app addresses left, so Companion Portal refused this app one.",
+      resolvable: false,
+    };
   }
 
   /**

@@ -288,6 +288,12 @@ export class ExposureSyncService implements OnModuleDestroy {
    * refusal is then news again.
    */
   private readonly toastedStandingRefusals = new Map<AppUrn, PublicDnsFailureReason>();
+  /**
+   * The standing refusal the last answered sync gave each app, toasted or not. The app page reads it
+   * through {@link publicDnsRefusalFor} so it can say why an app has no public address instead of
+   * calling the missing record "DNS propagating" for as long as the refusal stands (#2312).
+   */
+  private currentStandingRefusals: ReadonlyMap<AppUrn, PublicDnsFailureReason> = new Map();
 
   private readonly lastTailscaleServeToastAt = new Map<string, number>();
   private static readonly TAILSCALE_SERVE_FAILURE_COOLDOWN_MS = 5 * 60_000;
@@ -853,6 +859,11 @@ export class ExposureSyncService implements OnModuleDestroy {
     return this.cloudflareSyncDepth > 0;
   }
 
+  /** Why the last answered sync refused `appUrn` a public address, for a refusal that stands until someone acts. */
+  public publicDnsRefusalFor(appUrn: AppUrn): PublicDnsFailureReason | null {
+    return this.currentStandingRefusals.get(appUrn) ?? null;
+  }
+
   onModuleDestroy() {
     this.clearCloudflareRetry();
   }
@@ -1237,6 +1248,7 @@ export class ExposureSyncService implements OnModuleDestroy {
       if (result.ok) {
         // Only a sync the Portal answered says which apps it stopped refusing.
         this.forgetSettledRefusals(standingRefusals);
+        this.currentStandingRefusals = new Map(standingRefusals);
 
         const skipAutoRestartAppUrns = new Set(options?.skipAutoRestartAppUrns ?? []);
 
