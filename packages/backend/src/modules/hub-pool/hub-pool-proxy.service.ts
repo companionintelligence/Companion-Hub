@@ -87,7 +87,7 @@ import {
   type UnconfirmedRequestError,
 } from './hub-pool-request-error';
 import { CONNECT_TIMEOUT_MS, MIN_PREFILL_TOKENS_PER_SEC, estimatePromptTokens, forwardBudgetMs } from './hub-pool-budget';
-import { nativeChatPlan, nativeChatWindow, openAiChatResponse } from './ollama-native-chat';
+import { nativeChatPlan, nativeChatWindow, openAiChatResponse, optionsNumCtx } from './ollama-native-chat';
 import {
   MAX_JUDGED_BODY_BYTES,
   OutputJudge,
@@ -339,11 +339,7 @@ export function isStreamingRequest(body: unknown, path?: string): boolean {
  * `applyContextCaps`. Anything but a positive integer is no request, not a tiny one.
  */
 export function requestedNumCtx(body: unknown): number | null {
-  if (!isRecord(body) || !isRecord(body.options)) {
-    return null;
-  }
-  const raw = body.options.num_ctx;
-  return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : null;
+  return optionsNumCtx(body);
 }
 
 /**
@@ -1291,8 +1287,8 @@ const WINDOW_RELOADING_BACKENDS: ReadonlySet<InferenceBackendType> = new Set<Inf
 const RESIDENCY_BUDGET_ELAPSED = Symbol('residency budget elapsed');
 
 /**
- * The window a request runs at when it names one: `options.num_ctx` on Ollama's native routes, and on
- * a `/v1` chat completion the pool sends to Ollama's native route for it (`nativeChatWindow`, #2310).
+ * The window a request runs at when it names one: `options.num_ctx` on Ollama's native routes. A `/v1`
+ * chat completion that names one runs at it too, because the pool sends it to the native route (`nativeChatWindow`, #2310).
  * Any other `/v1` request runs at the engine's default, because Ollama's `/v1` drops `options`.
  */
 function requestedWindow(path: string, body: unknown): number | null {
@@ -4347,7 +4343,7 @@ export class PoolProxyService {
     const apiKey = backendImpl.getApiKey?.();
     const headers = { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) };
     // Ollama's `/v1` drops `options.num_ctx`, so a chat completion that names a window goes to its native
-    // `/api/chat`, which honours it, and the answer comes back in the OpenAI shape (#2310). See `ollama-native-chat.ts`.
+    // `/api/chat`, which honours it. The answer comes back in the OpenAI shape (#2310). See `ollama-native-chat.ts`.
     const native = backend === 'ollama' && method === 'POST' && path === '/v1/chat/completions' ? nativeChatPlan(body) : null;
     if (native) {
       const upstream = await this.fetchWithConnectTimeout(
@@ -4357,7 +4353,7 @@ export class PoolProxyService {
         payload?.length ?? 0,
         clientClosed,
       );
-      return openAiChatResponse(upstream, native);
+      return await openAiChatResponse(upstream, native);
     }
     return this.fetchWithConnectTimeout(
       `${backendImpl.getBaseUrl()}${path}`,

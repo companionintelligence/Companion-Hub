@@ -168,6 +168,15 @@ describe('nativeChatPlan', () => {
     expect(nativeChatPlan(turn({ messages: [] }))).toBeNull();
     expect(nativeChatPlan(turn({ _debug_render_only: true }))).toBeNull();
     expect(nativeChatPlan(turn({ temperature: 'hot' }))).toBeNull();
+    // `/v1` reads max_tokens and seed as integers and refuses a fraction.
+    expect(nativeChatPlan(turn({ max_tokens: 100.5 }))).toBeNull();
+    expect(nativeChatPlan(turn({ seed: 1.5 }))).toBeNull();
+  });
+
+  it('works a body out once, however many times its window is asked for', () => {
+    const body = turn();
+    expect(nativeChatPlan(body)).toBe(nativeChatPlan(body));
+    expect(nativeChatWindow(body)).toBe(65_536);
   });
 });
 
@@ -190,7 +199,7 @@ describe('openAiChatResponse', () => {
       },
     ]);
 
-    const response = openAiChatResponse(upstream, plan as NonNullable<typeof plan>);
+    const response = await openAiChatResponse(upstream, plan as NonNullable<typeof plan>);
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('text/event-stream');
     const out = events(await response.text()) as Array<Record<string, any>>;
@@ -231,7 +240,7 @@ describe('openAiChatResponse', () => {
       { model: 'm', created_at: at, message: { role: 'assistant', content: '' }, done: true, done_reason: 'stop' },
     ]);
 
-    const out = events(await openAiChatResponse(upstream, plan as NonNullable<typeof plan>).text()) as Array<Record<string, any>>;
+    const out = events(await (await openAiChatResponse(upstream, plan as NonNullable<typeof plan>)).text()) as Array<Record<string, any>>;
 
     expect(out[0]?.choices[0].delta).toEqual({ role: 'assistant', reasoning: 'need the time' });
     expect(out[1]?.choices[0].delta).toEqual({
@@ -261,7 +270,7 @@ describe('openAiChatResponse', () => {
       5,
     );
 
-    const response = openAiChatResponse(upstream, plan as NonNullable<typeof plan>);
+    const response = await openAiChatResponse(upstream, plan as NonNullable<typeof plan>);
     expect(response.headers.get('content-type')).toBe('application/json');
     const body = (await response.json()) as Record<string, any>;
 
@@ -282,7 +291,7 @@ describe('openAiChatResponse', () => {
 
   it("turns Ollama's error body into OpenAI's, with the same status", async () => {
     const plan = nativeChatPlan(turn({ stream: true }));
-    const missing = openAiChatResponse(
+    const missing = await openAiChatResponse(
       ndjson([{ error: 'model "nope" not found, try pulling it first' }], 64, 404),
       plan as NonNullable<typeof plan>,
     );
@@ -292,11 +301,21 @@ describe('openAiChatResponse', () => {
       error: { message: 'model "nope" not found, try pulling it first', type: 'not_found_error', param: null, code: null },
     });
 
-    const refused = openAiChatResponse(ndjson([{ error: '"gemma3:1b" does not support thinking' }], 64, 400), plan as NonNullable<typeof plan>);
+    const refused = await openAiChatResponse(ndjson([{ error: '"gemma3:1b" does not support thinking' }], 64, 400), plan as NonNullable<typeof plan>);
     expect(await refused.json()).toMatchObject({ error: { message: '"gemma3:1b" does not support thinking', type: 'invalid_request_error' } });
 
-    const plain = openAiChatResponse(new Response('upstream broke', { status: 500 }), plan as NonNullable<typeof plan>);
+    const plain = await openAiChatResponse(new Response('upstream broke', { status: 500 }), plan as NonNullable<typeof plan>);
     expect(await plain.json()).toMatchObject({ error: { message: 'upstream broke', type: 'api_error' } });
+
+    const empty = await openAiChatResponse(new Response('', { status: 502, statusText: 'Bad Gateway' }), plan as NonNullable<typeof plan>);
+    expect(await empty.json()).toMatchObject({ error: { message: 'Bad Gateway', type: 'api_error' } });
+  });
+
+  it('answers a whole answer that is not JSON with a 502, not an error body under a 200', async () => {
+    const plan = nativeChatPlan(turn());
+    const response = await openAiChatResponse(new Response('<html>proxy</html>', { status: 200 }), plan as NonNullable<typeof plan>);
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ error: { message: 'Ollama sent a chat answer that is not JSON', type: 'api_error' } });
   });
 
   it('ends a stream that fails partway with an error event instead of an empty chunk', async () => {
@@ -306,7 +325,7 @@ describe('openAiChatResponse', () => {
       { error: 'runner process has terminated' },
     ]);
 
-    const out = events(await openAiChatResponse(upstream, plan as NonNullable<typeof plan>).text()) as Array<Record<string, any>>;
+    const out = events(await (await openAiChatResponse(upstream, plan as NonNullable<typeof plan>)).text()) as Array<Record<string, any>>;
 
     expect(out[0]?.choices[0].delta.content).toBe('par');
     expect(out[1]).toEqual({ error: { message: 'runner process has terminated', type: 'api_error', param: null, code: null } });
@@ -328,7 +347,7 @@ describe('openAiChatResponse', () => {
       }),
       { status: 200 },
     );
-    const reader = (openAiChatResponse(upstream, plan as NonNullable<typeof plan>).body as ReadableStream<Uint8Array>).getReader();
+    const reader = ((await openAiChatResponse(upstream, plan as NonNullable<typeof plan>)).body as ReadableStream<Uint8Array>).getReader();
 
     push({ model: 'm', created_at: at, message: { role: 'assistant', content: 'one' }, done: false });
     const first = await reader.read();

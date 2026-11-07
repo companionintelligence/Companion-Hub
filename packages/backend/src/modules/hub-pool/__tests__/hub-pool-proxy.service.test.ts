@@ -8273,8 +8273,6 @@ describe('PoolProxyService', () => {
     });
   });
 
-  // The socket-level half of these lives in hub-pool-proxy-client-abort.test.ts; these cover the
-  // routing decisions around a hang-up, which a real socket cannot make deterministic.
   // Ollama's /v1 drops options.num_ctx, so Companion Memory and Hermes ran at the host default while
   // OpenClaw asked for the handout's, and each switch reloaded the model (#2310).
   describe('a /v1 chat completion that names a window, on Ollama', () => {
@@ -8375,6 +8373,8 @@ describe('PoolProxyService', () => {
     });
   });
 
+  // The socket-level half of these lives in hub-pool-proxy-client-abort.test.ts; these cover the
+  // routing decisions around a hang-up, which a real socket cannot make deterministic.
   describe('a client that hangs up', () => {
     const MODEL = 'llama3.2:3b';
 

@@ -1,10 +1,10 @@
 /**
- * OpenAI chat completions sent to Ollama's native `/api/chat`, and the answer turned back into the
+ * OpenAI chat completions sent to Ollama's native `/api/chat` with the answer turned back into the
  * OpenAI shape, so a `/v1` caller gets the context window it asks for (CI-Hub#2310).
  *
  * Ollama's `/v1/chat/completions` handler copies a fixed list of OpenAI fields into the request's
  * options (stop, max_tokens, temperature, seed, the two penalties, top_p) and drops everything else,
- * `options.num_ctx` included. It is unchanged through Ollama 0.40.15, and ollama/ollama#16825, which
+ * `options.num_ctx` included. It is unchanged through Ollama 0.40.15. ollama/ollama#16825, which
  * would forward it, is still open. Its native `/api/chat` honours `options.num_ctx`. Companion Memory
  * sends `options.num_ctx` on `/v1` and Hermes sends it through `extra_body`, so both ran at the
  * host's default window while OpenClaw, on the native route, asked for the handout's. On a
@@ -16,6 +16,9 @@
  * this module can't map exactly (an image URL Ollama refuses, tool arguments that aren't a JSON
  * object, an unknown content part) is not translated: it goes to `/v1` as before and gets Ollama's
  * own answer there.
+ *
+ * Older Ollama releases (0.22, for one) set temperature and top_p to 1.0 on `/v1` when a request
+ * leaves them out. 0.40.15 doesn't, and neither does this module: the model's own defaults apply.
  */
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -31,9 +34,9 @@ export interface NativeChatPlan {
   includeUsage: boolean;
 }
 
-/** The window the request names in `options.num_ctx`, or `null`. Anything but a positive integer is none. */
-function namedWindow(body: Record<string, unknown>): number | null {
-  if (!isRecord(body.options)) return null;
+/** The window a body names in `options.num_ctx`, or `null`. Anything but a positive integer is none. */
+export function optionsNumCtx(body: unknown): number | null {
+  if (!isRecord(body) || !isRecord(body.options)) return null;
   const raw = body.options.num_ctx;
   return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : null;
 }
@@ -143,7 +146,7 @@ function nativeMessages(message: unknown, all: readonly unknown[]): Record<strin
         return null;
       }
     }
-    // A tool message is one result: its text parts merge into one message, and parts with images
+    // A tool message is one result: its text parts merge into one message while parts with images
     // stay apart so each image keeps its place, every one still naming the call it answers.
     if (role.toLowerCase() === 'tool') {
       if (parts.some((part) => part.images !== undefined)) {
@@ -178,14 +181,29 @@ function thinkFor(effort: unknown): boolean | string | undefined | null {
   return ['low', 'medium', 'high', 'max'].includes(level) ? level : null;
 }
 
+/** Plans already worked out, by body: one request's routing asks for its window several times. */
+const plans = new WeakMap<object, NativeChatPlan | null>();
+
 /**
  * The `/api/chat` request for an OpenAI chat completion body that names `options.num_ctx`, or `null`
  * to leave the request on `/v1`: it names no window, or carries something this module would not map
  * exactly as Ollama does (Ollama's `/v1` then answers it, error included).
+ *
+ * Worked out once per body. Placement, the window bookkeeping and the forward all ask. An agent
+ * turn carries every tool call's arguments and every image it has sent so far.
  */
 export function nativeChatPlan(body: unknown): NativeChatPlan | null {
   if (!isRecord(body)) return null;
-  const numCtx = namedWindow(body);
+  let plan = plans.get(body);
+  if (plan === undefined) {
+    plan = planFor(body);
+    plans.set(body, plan);
+  }
+  return plan;
+}
+
+function planFor(body: Record<string, unknown>): NativeChatPlan | null {
+  const numCtx = optionsNumCtx(body);
   if (numCtx === null) return null;
   if (typeof body.model !== 'string' || !Array.isArray(body.messages) || body.messages.length === 0) return null;
   if (body._debug_render_only !== undefined) return null;
@@ -213,6 +231,8 @@ export function nativeChatPlan(body: unknown): NativeChatPlan | null {
     const value = body[field];
     if (value === undefined || value === null) continue;
     if (typeof value !== 'number') return null;
+    // `/v1` reads these two into Go ints and refuses a fraction; `/api/chat` would truncate it.
+    if ((field === 'max_tokens' || field === 'seed') && !Number.isInteger(value)) return null;
     options[option] = value;
   }
 
@@ -247,8 +267,7 @@ export function nativeChatPlan(body: unknown): NativeChatPlan | null {
 
 /** The window a `/v1` chat completion runs at once {@link nativeChatPlan} sends it to Ollama natively, or `null` when it stays on `/v1`. */
 export function nativeChatWindow(body: unknown): number | null {
-  const plan = nativeChatPlan(body);
-  return plan ? (plan.request.options as { num_ctx: number }).num_ctx : null;
+  return nativeChatPlan(body) ? optionsNumCtx(body) : null;
 }
 
 // ─── The answer ───────────────────────────────────────────────────────────────────────
@@ -464,11 +483,26 @@ function completionOf(response: NativeChatResponse): Record<string, unknown> {
 
 /**
  * Ollama's `/api/chat` answer to a {@link nativeChatPlan} request, as the OpenAI answer `/v1` would
- * have sent: server-sent events for a stream, one JSON object otherwise, and OpenAI's error body for
- * any status but 200. The status passes through. The body is translated as it arrives, so a stream
- * reaches the caller chunk by chunk, and cancelling it cancels the read from Ollama.
+ * have sent: server-sent events for a stream, one JSON object otherwise or OpenAI's error body for
+ * any status but 200. The status passes through. A stream is translated as it arrives, so it reaches
+ * the caller chunk by chunk. Cancelling it cancels the read from Ollama. A whole answer is read
+ * first, because Ollama sends it in one piece, so one that isn't JSON can become a 502 instead of an
+ * error body under a 200.
  */
-export function openAiChatResponse(upstream: globalThis.Response, plan: NativeChatPlan): globalThis.Response {
+export async function openAiChatResponse(upstream: globalThis.Response, plan: NativeChatPlan): Promise<globalThis.Response> {
+  if (upstream.status === 200 && !plan.stream) {
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(await upstream.text());
+    } catch {
+      parsed = null;
+    }
+    const headers = { 'Content-Type': 'application/json' };
+    if (!isRecord(parsed)) {
+      return new Response(`${JSON.stringify(openAiError(502, 'Ollama sent a chat answer that is not JSON'))}\n`, { status: 502, headers });
+    }
+    return new Response(`${JSON.stringify(completionOf(parsed as NativeChatResponse))}\n`, { status: 200, headers });
+  }
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const source = upstream.body?.getReader();
@@ -488,24 +522,14 @@ export function openAiChatResponse(upstream: globalThis.Response, plan: NativeCh
         const next = await source.read();
         if (next.done) {
           buffered += decoder.decode();
-          if (!ok) {
-            controller.enqueue(encoder.encode(`${JSON.stringify(openAiError(upstream.status, errorMessageOf(buffered)))}\n`));
-          } else if (streamed) {
+          if (ok) {
             const rest = buffered.trim();
             if (rest !== '' && !translator.finished) {
               for (const event of translator.line(rest)) controller.enqueue(encoder.encode(event));
             }
           } else {
-            let parsed: unknown;
-            try {
-              parsed = JSON.parse(buffered);
-            } catch {
-              parsed = null;
-            }
-            const out = isRecord(parsed)
-              ? completionOf(parsed as NativeChatResponse)
-              : openAiError(502, 'Ollama sent a chat answer that is not JSON');
-            controller.enqueue(encoder.encode(`${JSON.stringify(out)}\n`));
+            const message = errorMessageOf(buffered) || upstream.statusText;
+            controller.enqueue(encoder.encode(`${JSON.stringify(openAiError(upstream.status, message))}\n`));
           }
           controller.close();
           return;

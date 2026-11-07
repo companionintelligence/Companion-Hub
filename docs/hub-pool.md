@@ -304,8 +304,8 @@ key when it has none, which is also what every older build sends. The entry node
 
 *Placing a request*, a candidate takes it only if its cap is unset or at least the window the
 request asks for. That window is `options.num_ctx` on the native Ollama dialect (`/api/chat`,
-`/api/generate` — what both agents on the fleet send) and on a `/v1/chat/completions` request that
-carries it (see [below](#v1-chat-at-the-window-it-names)), and otherwise the prompt estimate, the same
+`/api/generate`, which both agents on the fleet send) and on a `/v1/chat/completions` request that
+carries it (see [below](#v1-chat-at-the-window-it-names)). Otherwise it is the prompt estimate, the same
 `bytes / 4` the [ceiling](#prompt-ceilings) judges: a request that carries no `num_ctx`, like any other
 OpenAI-compatible `/v1` call, runs at the serving engine's own default window, which is exactly what
 the cap records, and a prompt over that window is truncated there. A candidate capped below the
@@ -377,14 +377,14 @@ the KV cache is `OLLAMA_NUM_PARALLEL` times that window. A 30B at 4 × 64k is th
 Ollama's `/v1/chat/completions` handler copies a fixed list of OpenAI fields into the request
 (stop, max_tokens, temperature, seed, the two penalties, top_p) and drops the rest, `options.num_ctx`
 included. Its native `/api/chat` honours `options.num_ctx`. Companion Memory sends `options.num_ctx`
-on `/v1`, and Hermes sends it through `extra_body`, so both ran at the host's default window while
+on `/v1` and Hermes sends it through `extra_body`, so both ran at the host's default window while
 OpenClaw, on the native route, ran at the handout's. Every switch between the two reloaded the model
 and dropped its prompt cache. On a CPU-only machine that cost minutes per turn (CI-Hub#2310).
 
 So when a `/v1/chat/completions` request that names `options.num_ctx` goes to an Ollama engine, this
 node's own or, on a peer running this build, the peer's, the Hub sends it to `/api/chat` with that
 window and turns the answer back into OpenAI's shape: server-sent events with a role chunk, a finish
-chunk, the usage chunk when `stream_options.include_usage` asks for it, and `data: [DONE]`; one
+chunk, the usage chunk (when `stream_options.include_usage` asks for it) and `data: [DONE]`; one
 `chat.completion` object for a non-streamed request; OpenAI's error body for any other status. The
 mapping follows Ollama's own (`openai/openai.go` and `middleware/openai.go` at v0.40.15), so the app
 sees what `/v1` would have sent, at the window it asked for. Only `num_ctx` is taken from `options`,
@@ -724,8 +724,8 @@ generating for work the request cannot join waits, or runs slower, in ways the r
   that runner's request finishes.
 - **The same model at another window.** `num_ctx` is a load parameter, so Ollama waits for the
   running requests to finish and then reloads the model at the new window. A request with no
-  `num_ctx`, and any `/v1` request other than a chat completion that names one (Ollama drops
-  `options` there), runs at the engine's default, `OLLAMA_CONTEXT_LENGTH`.
+  `num_ctx` runs at the engine's default, `OLLAMA_CONTEXT_LENGTH`, as does any `/v1` request other
+  than a chat completion that names one (Ollama drops `options` there).
 
 Measured on beta-max, 2026-09-26 at about 23:50Z. A Hermes turn asked for `qwen3.6:35b` at `num_ctx`
 65536 while Ollama held that model at its 32768 default for two Hermes `/v1` requests, and was
