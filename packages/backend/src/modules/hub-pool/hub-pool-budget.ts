@@ -89,3 +89,18 @@ export function firstByteBudgetMs(bodyBytes: number): number {
 export function forwardBudgetMs(streaming: boolean, bodyBytes: number): number {
   return streaming ? firstByteBudgetMs(bodyBytes) : Math.max(COMPLETION_TIMEOUT_MS, firstByteBudgetMs(bodyBytes));
 }
+
+/**
+ * How many times its usual budget this node's own engine gets when it is the last candidate a
+ * request has (#2310). The budget exists so a slow node reads as failed and the work moves to
+ * another one. With nowhere left to move it, the cut only discards the prompt the engine has read,
+ * and the app's retry reads it again from token 0: on a CPU-only machine with no peers an OpenClaw
+ * turn of about 41,000 tokens was cut at 831 s three times in 41 minutes. A ceiling stays, so an
+ * engine that has wedged still ends in an error that names the deadline and frees the model.
+ */
+export const LAST_LOCAL_BUDGET_FACTOR = Math.max(1, Number(process.env.HUB_POOL_LAST_LOCAL_BUDGET_FACTOR) || 4);
+
+/** The budget for this node's own engine when nothing is left to try after it: {@link forwardBudgetMs} times {@link LAST_LOCAL_BUDGET_FACTOR}. */
+export function lastLocalBudgetMs(budgetMs: number): number {
+  return budgetMs * LAST_LOCAL_BUDGET_FACTOR;
+}
