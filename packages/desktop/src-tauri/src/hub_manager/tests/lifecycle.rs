@@ -203,3 +203,39 @@ mod quiet_watch {
         }
     }
 }
+
+// The zone the Hub learns at pairing is written into the env file by the Hub itself, which applies it
+// without a restart. A changed DOMAIN alone must not read as a changed stack, or the first window
+// open after pairing recreates the whole running Hub (#2314). Any other change still must.
+#[test]
+fn config_hash_ignores_the_learned_zone_and_nothing_else() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let compose = tempdir.path().join("docker-compose.prod.yml");
+    std::fs::write(&compose, b"services: {}\n").expect("write compose");
+    let hash_of = |env_content: &str| {
+        let env = tempdir.path().join(".env");
+        std::fs::write(&env, env_content).expect("write env");
+        crate::hub_manager::compute_config_hash(&compose, &env)
+    };
+
+    let before_pairing = hash_of("ROOT_FOLDER_HOST=/data\nDOMAIN=companionintelligence.com\nCI_HUB_IMAGE=ghcr.io/x/ci-hub:0.3.10\n");
+    let after_pairing =
+        hash_of("ROOT_FOLDER_HOST=/data\nDOMAIN=ci0.pw\nCI_HUB_IMAGE=ghcr.io/x/ci-hub:0.3.10\n");
+    assert_eq!(
+        before_pairing, after_pairing,
+        "a new zone alone must not recreate the stack"
+    );
+
+    let new_image =
+        hash_of("ROOT_FOLDER_HOST=/data\nDOMAIN=ci0.pw\nCI_HUB_IMAGE=ghcr.io/x/ci-hub:0.3.11\n");
+    assert_ne!(
+        after_pairing, new_image,
+        "a pinned image change must still recreate the stack"
+    );
+
+    let other_domain_key = hash_of("ROOT_FOLDER_HOST=/data\nDOMAIN=ci0.pw\nPUBLIC_DOMAIN=a.example.test\nCI_HUB_IMAGE=ghcr.io/x/ci-hub:0.3.10\n");
+    assert_ne!(
+        after_pairing, other_domain_key,
+        "only DOMAIN itself is left out"
+    );
+}

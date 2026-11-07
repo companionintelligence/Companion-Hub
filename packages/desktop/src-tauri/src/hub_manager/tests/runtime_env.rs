@@ -589,6 +589,31 @@ fn runtime_env_keeps_the_domain_the_hub_learned_from_its_portal() {
 }
 
 #[test]
+fn learning_the_zone_at_pairing_does_not_change_the_stack_hash() {
+    // The launch after pairing renders the zone the Hub learned (`DOMAIN=ci0.pw`) where the start
+    // before pairing rendered the build default. That alone used to change the configuration hash,
+    // so opening the window stopped and recreated the running Hub (#2314).
+    let (tempdir, data_dir) = portal_test_data_dir();
+    let compose = tempdir.path().join("docker-compose.prod.yml");
+    std::fs::write(&compose, b"services: {}\n").expect("write compose");
+    let env_path = tempdir.path().join(".env");
+
+    std::fs::write(&env_path, render_with_domain(&data_dir, None)).expect("write env");
+    let before_pairing = crate::hub_manager::compute_config_hash(&compose, &env_path);
+    std::fs::write(
+        &env_path,
+        render_with_domain(&data_dir, Some("zone.example.test")),
+    )
+    .expect("write env");
+    let after_pairing = crate::hub_manager::compute_config_hash(&compose, &env_path);
+
+    assert!(std::fs::read_to_string(&env_path)
+        .unwrap()
+        .contains("DOMAIN=zone.example.test"));
+    assert_eq!(before_pairing, after_pairing);
+}
+
+#[test]
 fn runtime_env_strips_quotes_from_a_learned_domain() {
     // `parse_env_file` only trims, so a hand-edited or third-party-written entry can arrive
     // quoted. Carrying the quotes forward would bake them into every hostname the Hub composes.
