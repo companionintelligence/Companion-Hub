@@ -499,6 +499,21 @@ describe('AuthController', () => {
       });
     });
 
+    // Traefik's ci-hub-sw-reset middleware fetches this when the sign-in refused a worker script (#2324).
+    it('serves the self-removing service worker as uncached JavaScript', () => {
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader: vi.fn() } as unknown as Response;
+
+      authController.serviceWorkerReset(res);
+
+      expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'application/javascript; charset=utf-8');
+      expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
+      expect(res.status).toHaveBeenCalledWith(200);
+      const script = vi.mocked(res.send).mock.calls[0]?.[0] as string;
+      expect(script).toContain('self.skipWaiting()');
+      expect(script).toContain('self.registration.unregister()');
+      expect(script).not.toMatch(/fetch\(|importScripts|caches\./);
+    });
+
     const memoryPassthroughCases: Array<{ uri?: string; extra?: Record<string, string> }> = [
       { uri: '/api/authenticate/oidc/native/exchange' },
       { uri: '/api/authenticate?client=native' },
@@ -1123,6 +1138,26 @@ describe('AuthController', () => {
         }
         expect(res.status).toHaveBeenCalledWith(200);
       });
+    });
+
+    // Traefik's ci-hub-sw-reset middleware turns this 401, and only a 401, into the self-removing worker (#2324).
+    it('refuses a signed-out service worker script fetch with a 401 rather than the sign-in redirect', async () => {
+      forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('jellyfin:ci-marketplace' as never);
+      const req = {
+        user: undefined,
+        headers: {
+          'service-worker': 'script',
+          'x-forwarded-uri': '/sw.js',
+          'x-forwarded-proto': 'https',
+          'x-forwarded-host': 'jellyfin-myorg.companionintelligence.com',
+        },
+      } as unknown as Request;
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), redirect: vi.fn() } as unknown as Response;
+
+      await authController.traefik(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.redirect).not.toHaveBeenCalled();
     });
 
     it('routes an unauthenticated LAN visitor into edge-sso on the derived root-domain origin', async () => {

@@ -287,6 +287,27 @@ function isCorsPreflight(req: Request): boolean {
   return value === 'OPTIONS' && present('origin') && present('access-control-request-method');
 }
 
+/**
+ * A service worker that removes itself. Traefik's `ci-hub-sw-reset` middleware (assets/traefik/
+ * dynamic/dynamic.yml) hands it to a browser that isn't signed in when the browser fetches an app's
+ * `/sw.js` to update its worker. The sign-in turns that fetch away and the update fails, so a browser
+ * holding a worker from before the sign-in kept answering every page load from its cache and never
+ * reached the sign-in (#2324). This one takes over, unregisters and reloads the app's open pages, so the
+ * next page load reaches the sign-in. Once signed in, the app registers its own worker again. It holds
+ * nothing of any app.
+ */
+export const SERVICE_WORKER_RESET_SCRIPT = `self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    (async () => {
+      await self.registration.unregister();
+      const clients = await self.clients.matchAll({ type: 'window' });
+      await Promise.all(clients.map((client) => client.navigate(client.url).catch(() => undefined)));
+    })(),
+  );
+});
+`;
+
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -1866,6 +1887,15 @@ export class AuthController {
     return appUrn != null && isMemoryProviderApp({ urn: appUrn });
   }
 
+  /** See {@link SERVICE_WORKER_RESET_SCRIPT}. Public: Traefik asks for it after the sign-in refused a request. */
+  @ApiExcludeEndpoint()
+  @Get('/service-worker-reset.js')
+  serviceWorkerReset(@Res() res: Response) {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).send(SERVICE_WORKER_RESET_SCRIPT);
+  }
+
   @Get('/traefik')
   async traefik(@Req() req: Request, @Res() res: Response) {
     const forwardedHost = normalizeForwardedHost(req.headers['x-forwarded-host']);
@@ -2000,6 +2030,13 @@ export class AuthController {
 
     // Never log the raw URI because its ticket is a session-planting credential.
     this.logger.debug('Unauthenticated Traefik forward auth request', { uri: cleanUri, proto, host: forwardedHost });
+
+    // A browser fetching a service worker script refuses a redirect anyway. A 401 is the one refusal
+    // Traefik's `ci-hub-sw-reset` middleware catches (#2324), so an app's own redirect for its
+    // `/sw.js` reaches the browser untouched.
+    if (req.headers['service-worker'] === 'script') {
+      return res.status(401).send();
+    }
 
     // Public Hub and app hosts are cookie-scope siblings, so a single-use ticket plants the app-host cookie (CI-Engineering#77).
     // Consume failures fall through to login and a fresh ticket instead of dead-ending.

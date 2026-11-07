@@ -1554,7 +1554,12 @@ describe('DockerComposeBuilder — an app’s Traefik labels stay inside the app
       Object.keys(labels)
         .filter((key) => key.toLowerCase().endsWith('.middlewares'))
         .sort(),
-    ).toEqual(['traefik.http.routers.my-app-_user-insecure.middlewares', 'traefik.http.routers.my-app-_user.middlewares']);
+    ).toEqual([
+      'traefik.http.routers.my-app-_user-insecure.middlewares',
+      'traefik.http.routers.my-app-_user-sw-reset-insecure.middlewares',
+      'traefik.http.routers.my-app-_user-sw-reset.middlewares',
+      'traefik.http.routers.my-app-_user.middlewares',
+    ]);
     expect(labels['traefik.http.routers.my-app-_user.middlewares']).toBe('ci-hub-edge-headers@file,ci-hub@file,ci-hub-app-starting@file');
   });
 });

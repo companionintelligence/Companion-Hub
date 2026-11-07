@@ -50,9 +50,9 @@ export const HUB_FORWARD_AUTH_MIDDLEWARES: ReadonlySet<string> = new Set(['ci-hu
 
 /**
  * The Hub's middlewares any app may put in a chain: forward auth under both providers, the edge
- * header strip and the starting page (assets/traefik/dynamic/dynamic.yml).
+ * header strip, the starting page and the service worker reset (assets/traefik/dynamic/dynamic.yml).
  */
-const HUB_MIDDLEWARES = new Set([...HUB_FORWARD_AUTH_MIDDLEWARES, 'ci-hub-edge-headers@file', 'ci-hub-app-starting@file']);
+const HUB_MIDDLEWARES = new Set([...HUB_FORWARD_AUTH_MIDDLEWARES, 'ci-hub-edge-headers@file', 'ci-hub-app-starting@file', 'ci-hub-sw-reset@file']);
 
 /** `traefik.http.<routers|services|middlewares>.<name>.<option>`. Traefik reads labels without regard to case. */
 const HTTP_OBJECT_LABEL = /^traefik\.http\.(routers|services|middlewares)\.([^.]+)\.(.+)$/i;
@@ -138,8 +138,8 @@ export function collectTraefikLabelIssues(
  *
  * The Hub container's labels define the router, service and middleware `ci-hub` and the router
  * `ci-os-hub` on the Docker provider (docker-compose.prod.yml and the desktop app's copy). Its files
- * define `ci-hub`, `ci-hub-edge-headers`, `ci-hub-app-starting`, `hub-public` and `hub-service` on
- * the file provider (assets/traefik/dynamic/dynamic.yml and `TraefikConfigService`), which also holds
+ * define `ci-hub`, `ci-hub-edge-headers`, `ci-hub-app-starting`, `ci-hub-sw-reset`, `hub-public` and
+ * `hub-service` on the file provider (assets/traefik/dynamic/dynamic.yml and `TraefikConfigService`), which also holds
  * a copy of every app's routers, services and middlewares. An app may not define one: a name that is
  * one of these, or starts with one followed by a dash, is the Hub's unless an app's longer id covers
  * it, and the Hub's when that id is just as long.
@@ -149,6 +149,7 @@ export const HUB_TRAEFIK_NAMES: readonly string[] = [
   'ci-os-hub',
   'ci-hub-edge-headers',
   'ci-hub-app-starting',
+  'ci-hub-sw-reset',
   'hub-public',
   'hub-service',
 ];

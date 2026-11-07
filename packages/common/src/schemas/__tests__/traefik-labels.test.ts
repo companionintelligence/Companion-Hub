@@ -462,6 +462,14 @@ describe('collectTraefikLabelIssues', () => {
       ]);
     });
 
+    // TraefikConfigService copies an app's middlewares into the file provider, where the Hub's
+    // `ci-hub-sw-reset` sits in front of the forward auth on every app's `/sw.js` routers.
+    it('keeps the service worker reset middleware the Hub’s', () => {
+      expect(owned({ 'traefik.http.middlewares.{{CI_HUB_APP_ID}}-reset.errors.status': '200-599' }, 'ci-hub-sw', [])).toEqual([
+        ['traefik.http.middlewares.{{CI_HUB_APP_ID}}-reset.errors.status', 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', 'the Hub'],
+      ]);
+    });
+
     it('leaves an app whose id is longer than the Hub’s name its own names', () => {
       expect(
         owned(
