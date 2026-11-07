@@ -123,7 +123,10 @@ export const OPERATION_REQUEST_BODIES: Record<string, { schemaName: string; sche
     }),
   },
   pairDevice: { schemaName: 'PairDeviceBody', schema: z.object({ pairing_code: z.string() }) },
-  performUpdate: { schemaName: 'PerformUpdateBody', schema: z.object({ targetVersion: z.string().optional() }) },
+  performUpdate: {
+    schemaName: 'PerformUpdateBody',
+    schema: z.object({ targetVersion: z.string().optional(), includeDesktopApp: z.boolean().optional() }),
+  },
 };
 
 /** Adds path parameters missing from Nest Zod DTO reflection. */

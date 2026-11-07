@@ -59,6 +59,27 @@ describe('SystemUpdateController', () => {
       expect(updateService.performUpdate).toHaveBeenCalledWith('1.1.0');
     });
 
+    it('updates the Hub image only when the caller leaves the desktop app out (#2316)', async () => {
+      updateService.performUpdate.mockResolvedValue({ success: true, stack: 'updating', host: 'skipped' } as any);
+
+      await controller.performUpdate({ targetVersion: '1.1.0', includeDesktopApp: false });
+      expect(updateService.performUpdate).toHaveBeenCalledWith('1.1.0', { includeDesktopApp: false });
+    });
+
+    it('keeps the desktop app in the update when the caller says so or says nothing', async () => {
+      updateService.performUpdate.mockResolvedValue({ success: true } as any);
+
+      await controller.performUpdate({ targetVersion: '1.1.0', includeDesktopApp: true });
+      expect(updateService.performUpdate).toHaveBeenLastCalledWith('1.1.0');
+    });
+
+    it.each(['false', 0, null])('refuses includeDesktopApp %j without starting an update', async (includeDesktopApp) => {
+      await expect(controller.performUpdate({ targetVersion: '1.1.0', includeDesktopApp: includeDesktopApp as never })).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(updateService.performUpdate).not.toHaveBeenCalled();
+    });
+
     it.each(['1.1.0\nCI_HUB_CLOUD_URL_OVERRIDE=https://attacker.example', 'latest', '', 42])(
       'refuses target version %j without starting an update',
       async (targetVersion) => {

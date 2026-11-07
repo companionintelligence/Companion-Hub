@@ -17987,6 +17987,9 @@
         "properties": {
           "targetVersion": {
             "type": "string"
+          },
+          "includeDesktopApp": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false

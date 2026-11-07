@@ -408,7 +408,7 @@ export interface UpdateActionResult {
   messageParams?: Record<string, string>;
   defaultMessage?: string;
   stack?: 'updating' | 'skipped' | 'failed';
-  host?: 'started' | 'unavailable' | 'failed';
+  host?: 'started' | 'unavailable' | 'failed' | 'skipped';
 }
 
 export async function fetchHostListenerStatus(): Promise<boolean | null> {
@@ -627,12 +627,22 @@ export async function installDesktopUpdate(info: UpdateInfo, callbacks: DesktopU
   }
 }
 
-/** Hub-driven update: stack pull, and host listener when the desktop app is running. */
+/**
+ * Hub-driven update: stack pull, and host listener when the desktop app is running.
+ *
+ * Only the Hub machine's own window lets the desktop app take the update. The desktop app installs
+ * itself first, and on Linux that waits for a password typed on the Hub machine. Someone in a browser
+ * on another computer never sees that prompt, and the Hub sat on the old version until somebody at the
+ * machine typed it (#2316). A browser updates the Hub image only, like the daily auto-update, and is
+ * told the desktop app is updated on the machine.
+ */
 export async function performStackUpdate(targetVersion?: string): Promise<UpdateActionResult> {
   try {
     const { performUpdate } = await import('@/api-client/sdk.gen');
     const { sdkErrorMessage, sdkResult } = await import('@/lib/sdk-unwrap');
-    const result = await sdkResult(performUpdate({ body: { targetVersion } } as Parameters<typeof performUpdate>[0]));
+    const hubWindow = isTauri() && !isTauriMobileSync();
+    const body = hubWindow ? { targetVersion } : { targetVersion, includeDesktopApp: false };
+    const result = await sdkResult(performUpdate({ body } as Parameters<typeof performUpdate>[0]));
     if (result.ok) {
       const data = (result.data ?? {}) as { stack?: UpdateActionResult['stack']; host?: UpdateActionResult['host'] };
       const host = data.host;
@@ -640,6 +650,9 @@ export async function performStackUpdate(targetVersion?: string): Promise<Update
       let messageKey = 'SETTINGS_ACTIONS_UPDATE_RESTARTING';
       if (host === 'started') {
         messageKey = 'SETTINGS_ACTIONS_UPDATE_HOST_STARTED';
+      } else if (!hubWindow && host === 'skipped' && stack === 'updating') {
+        // The browser left the desktop app out on purpose: say where it gets updated.
+        messageKey = 'SETTINGS_ACTIONS_UPDATE_STACK_HOST_UNAVAILABLE';
       } else if (host === 'unavailable' || host === 'failed') {
         // The Hub could not hand the update to the desktop app, which is no sign that the app isn't
         // running: desktop apps up to 0.2.77 keep their listener token where the Hub can't read it.

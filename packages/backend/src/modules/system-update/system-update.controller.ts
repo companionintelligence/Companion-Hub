@@ -21,14 +21,27 @@ export class SystemUpdateController {
     return this.systemUpdateService.checkForUpdates();
   }
 
+  /**
+   * `includeDesktopApp: false` updates the Hub image only, as the daily auto-update does. A browser
+   * that isn't the Hub machine's own window sends it: handing the update to the desktop app there
+   * installs the app first, which waits for a password typed on the Hub machine's screen, where the
+   * person in the browser can't see it (#2316).
+   */
   @Post()
   @UseGuards(AuthGuard, HubManagerGuard)
-  async performUpdate(@Body() body?: { targetVersion?: string }) {
+  async performUpdate(@Body() body?: { targetVersion?: string; includeDesktopApp?: boolean }) {
     const targetVersion: unknown = body?.targetVersion;
+    const includeDesktopApp: unknown = body?.includeDesktopApp;
     // The service checks again for its other callers (MCP, auto-update). Refusing here keeps a
     // bad request from reaching any update work.
     if (targetVersion !== undefined && (typeof targetVersion !== 'string' || !isHubVersionTag(targetVersion.trim()))) {
       throw new BadRequestException(HUB_VERSION_TAG_MESSAGE);
+    }
+    if (includeDesktopApp !== undefined && typeof includeDesktopApp !== 'boolean') {
+      throw new BadRequestException('includeDesktopApp must be true or false');
+    }
+    if (includeDesktopApp === false) {
+      return this.systemUpdateService.performUpdate(targetVersion, { includeDesktopApp: false });
     }
     return this.systemUpdateService.performUpdate(targetVersion);
   }
