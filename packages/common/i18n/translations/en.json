@@ -32,6 +32,7 @@
   "APP_ACTION_ERROR_CF_ORIGIN_DOWN": "Origin server is down",
   "APP_ACTION_ERROR_CF_UNKNOWN": "Cloudflare error",
   "APP_ACTION_ERROR_DNS_NOT_FOUND": "DNS propagating...",
+  "APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED": "No public address: your organization's plan has none left. Upgrade the plan in the Portal or remove another app's public address. Or, in Settings, switch this app to This machine only or Private VPN.",
   "APP_ACTION_ERROR_CONNECTION_REFUSED": "App not responding",
   "APP_ACTION_ERROR_PROXY_UPSTREAM_ERROR": "Waiting for app to start...",
   "APP_ACTION_ERROR_APP_HTTP_ERROR": "App returned an error",
