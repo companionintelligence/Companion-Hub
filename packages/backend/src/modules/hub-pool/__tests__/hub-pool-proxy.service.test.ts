@@ -7852,34 +7852,48 @@ describe('PoolProxyService', () => {
       expect(await withCatalog.resolveModelAlias(AUTO_MODEL)).toBe('gemma4:e2b');
     });
 
-    // The Companion OS run behind #2311: Load on gemma3:1b in Settings → AI made it the Settings →
+    // The Companion OS run behind #2311: Load on gemma3:1b in Settings > AI made it the Settings >
     // Inference model, and OpenClaw's turns (tools and `think` on each) failed in 5 ms with
     // `"gemma3:1b" does not support thinking`, while the Hub kept handing OpenClaw qwen3.5:4b.
     it('sends an agent turn to a capable model when the preferred one can neither call tools nor think (#2311)', async () => {
       const withCatalog = serviceWithCatalog();
       const logSpy = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
-      localHas('qwen3.5:4b', 'gemma3:1b', 'nomic-embed-text:latest');
-      preferModel('gemma3-1b');
-      const fetchMock = vi.mocked(global.fetch);
-      fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
-      const res = createMockResponse();
-      const turn = {
-        model: AUTO_MODEL,
-        messages: [{ role: 'user', content: 'hi' }],
-        tools: [{ type: 'function', function: { name: 'web_search' } }],
-        think: true,
-      };
+      const debugSpy = vi.spyOn(Logger.prototype, 'debug').mockImplementation(() => undefined);
+      try {
+        localHas('qwen3.5:4b', 'gemma3:1b', 'nomic-embed-text:latest');
+        preferModel('gemma3-1b');
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+        const res = createMockResponse();
+        const turn = {
+          model: AUTO_MODEL,
+          messages: [{ role: 'user', content: 'hi' }],
+          tools: [{ type: 'function', function: { name: 'web_search' } }],
+          think: true,
+        };
 
-      await withCatalog.proxyRequest({ path: '/api/chat', method: 'POST', body: turn, model: AUTO_MODEL, res });
+        await withCatalog.proxyRequest({ path: '/api/chat', method: 'POST', body: turn, model: AUTO_MODEL, res });
 
-      expect(res.status).toHaveBeenCalledWith(200);
-      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-      expect(JSON.parse(String(init.body)).model).toBe('qwen3.5:4b');
-      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('passed over the Settings → Inference model "gemma3:1b" (no tool calling'));
-      logSpy.mockRestore();
+        expect(res.status).toHaveBeenCalledWith(200);
+        const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect(JSON.parse(String(init.body)).model).toBe('qwen3.5:4b');
+        const passOverLines = (spy: typeof logSpy) => spy.mock.calls.filter(([line]) => String(line).includes('passed over the Settings')).length;
+        expect(logSpy).toHaveBeenCalledWith(
+          expect.stringContaining('passed over the Settings > Inference model "gemma3:1b" (no tool calling or thinking, which this request uses)'),
+        );
 
-      // A plain chat still goes to the model the operator chose.
-      expect(await withCatalog.resolveModelAlias(AUTO_MODEL, { model: AUTO_MODEL, messages: [] })).toBe('gemma3:1b');
+        // The next turns pass it over the same way, at debug: an agent sends one every few seconds.
+        expect(await withCatalog.resolveModelAlias(AUTO_MODEL, turn)).toBe('qwen3.5:4b');
+        expect(await withCatalog.resolveModelAlias(AUTO_MODEL, turn)).toBe('qwen3.5:4b');
+        expect(passOverLines(logSpy)).toBe(1);
+        expect(passOverLines(debugSpy)).toBe(2);
+
+        // A plain chat still goes to the model the operator chose.
+        expect(await withCatalog.resolveModelAlias(AUTO_MODEL, { model: AUTO_MODEL, messages: [] })).toBe('gemma3:1b');
+      } finally {
+        logSpy.mockRestore();
+        debugSpy.mockRestore();
+      }
     });
 
     it('ranks instead when the preferred model is nowhere in the pool', async () => {

@@ -223,13 +223,13 @@ describe('chooseAutoModel', () => {
     expect(chooseAutoModel([offer('embedder'), offer('nomic-embed-text:latest')], { catalog })).toBeUndefined();
   });
 
-  // Load on gemma3:1b in Settings → AI made it the Settings → Inference model, and every OpenClaw turn
+  // Load on gemma3:1b in Settings > AI made it the Settings > Inference model, and every OpenClaw turn
   // (tools and think on every request) went to it and failed in 5 ms (#2311).
   it('passes over the preferred model for a request that needs what the catalog says it lacks', () => {
     expect(chooseAutoModel([offer('capable:27b'), offer('tiny:1b')], { preferred: { engineId: 'tiny:1b' }, catalog, needs: ['tools'] })).toEqual({
       model: 'capable:27b',
       reason: 'ranked',
-      passedOver: { model: 'tiny:1b', lacks: 'tools' },
+      passedOver: { model: 'tiny:1b', lacks: ['tools'] },
     });
   });
 
@@ -246,8 +246,35 @@ describe('chooseAutoModel', () => {
     ).toBe('mystery:3b');
   });
 
-  it('falls back to the plain ranking when nothing in the pool meets the needs', () => {
-    expect(chooseAutoModel([offer('tiny:1b')], { preferred: { engineId: 'tiny:1b' }, catalog, needs: ['tools'] })?.model).toBe('tiny:1b');
+  it('keeps the preferred model when nothing in the pool meets the needs, rather than switching to another that also fails', () => {
+    const noTools = [row('notools:27b', { tools: false, params: 27, intelligence: 20 }), row('tiny:1b', { tools: false, params: 1 })];
+
+    expect(chooseAutoModel([offer('tiny:1b')], { preferred: { engineId: 'tiny:1b' }, catalog, needs: ['tools'] })).toEqual({
+      model: 'tiny:1b',
+      reason: 'preferred',
+    });
+    expect(
+      chooseAutoModel([offer('notools:27b'), offer('tiny:1b')], { preferred: { engineId: 'tiny:1b' }, catalog: noTools, needs: ['tools'] }),
+    ).toEqual({ model: 'tiny:1b', reason: 'preferred' });
+  });
+
+  it('falls back to the plain ranking when nothing meets the needs and no preference is in the pool', () => {
+    expect(chooseAutoModel([offer('tiny:1b')], { catalog, needs: ['tools'] })).toEqual({ model: 'tiny:1b', reason: 'ranked' });
+  });
+
+  it('only judges thinking on Ollama rows, whose engine refuses it; other engines ignore a reasoning effort', () => {
+    const lemonade = [
+      { ...row('Qwen3.6-27B-GGUF', { tools: true, params: 27, backend: 'lemonade' }), metadata: { capabilities: { tools: true, reasoning: false } } },
+      {
+        ...row('gpt-oss-20b-mxfp4-GGUF', { tools: true, params: 20, backend: 'lemonade' }),
+        metadata: { capabilities: { tools: true, reasoning: true } },
+      },
+    ] as CuratedModel[];
+    const offers = [offer('gpt-oss-20b-mxfp4-GGUF', { backends: ['lemonade'] }), offer('Qwen3.6-27B-GGUF', { backends: ['lemonade'] })];
+
+    expect(
+      chooseAutoModel(offers, { preferred: { engineId: 'Qwen3.6-27B-GGUF', backend: 'lemonade' }, catalog: lemonade, needs: ['tools', 'thinking'] }),
+    ).toEqual({ model: 'Qwen3.6-27B-GGUF', reason: 'preferred' });
   });
 
   it('on the real catalog, an OpenClaw turn goes to qwen3.5:4b, not to the gemma3:1b the operator loaded', () => {
@@ -258,7 +285,7 @@ describe('chooseAutoModel', () => {
       needs: ['tools', 'thinking'],
     });
     expect(choice?.model).toBe('qwen3.5:4b');
-    expect(choice?.passedOver?.model).toBe('gemma3:1b');
+    expect(choice?.passedOver).toEqual({ model: 'gemma3:1b', lacks: ['tools', 'thinking'] });
   });
 });
 
@@ -267,11 +294,13 @@ describe('autoModelNeeds', () => {
     expect(autoModelNeeds({ model: 'auto', tools: [{ type: 'function' }], think: true })).toEqual(['tools', 'thinking']);
     expect(autoModelNeeds({ model: 'auto', think: 'high' })).toEqual(['thinking']);
     expect(autoModelNeeds({ model: 'auto', reasoning_effort: 'low' })).toEqual(['thinking']);
+    expect(autoModelNeeds({ model: 'auto', reasoning: { effort: 'medium' } })).toEqual(['thinking']);
   });
 
   it('needs nothing from a plain chat, an empty tool list or thinking turned off', () => {
     expect(autoModelNeeds({ model: 'auto', messages: [] })).toEqual([]);
     expect(autoModelNeeds({ model: 'auto', tools: [], think: false, reasoning_effort: 'none' })).toEqual([]);
+    expect(autoModelNeeds({ model: 'auto', reasoning: { effort: 'none' } })).toEqual([]);
     expect(autoModelNeeds(undefined)).toEqual([]);
     expect(autoModelNeeds('not json')).toEqual([]);
   });
