@@ -388,11 +388,20 @@ chunk, the usage chunk (when `stream_options.include_usage` asks for it) and `da
 `chat.completion` object for a non-streamed request; OpenAI's error body for any other status. The
 mapping follows Ollama's own (`openai/openai.go` and `middleware/openai.go` at v0.40.15), so the app
 sees what `/v1` would have sent, at the window it asked for. Only `num_ctx` is taken from `options`,
-as `/v1` takes none. A request that names no window, or carries something Ollama refuses on `/v1`
-(an image URL instead of base64 data, tool arguments that are not a JSON object), goes to `/v1` as
-before and gets Ollama's own answer. One difference: a stream Ollama ends with an error partway
-through ends with an OpenAI `error` event here, where `/v1` sends an empty chunk. Other engines run
-the window they were started with, so their `/v1` requests are never translated.
+as `/v1` takes none. A request that carries something Ollama refuses on `/v1` (an image URL
+instead of base64 data, tool arguments that are not a JSON object) goes to `/v1` as before and gets
+Ollama's own answer. One difference: a stream Ollama ends with an error partway through ends with an
+OpenAI `error` event here, where `/v1` sends an empty chunk. Other engines run the window they were
+started with, so their `/v1` requests are never translated.
+
+A chat completion that names no window goes to `/api/chat` too when `/v1` would reload its model.
+Hermes names `num_ctx` on its main turns but not on side calls such as title generation, so on `/v1`
+each side call reloaded the model at the engine's default and the next main turn reloaded it again.
+On this node's own Ollama such a request runs at the window its model is already loaded at, when
+`/api/ps` reports that window within 500 ms, the prompt estimate is at most half of it and the window
+is above the cap this node states. At the cap `/v1` reloads nothing, so the request stays there. A
+node that states no cap can't tell what `/v1` would have given the request, so there it may run at a
+smaller window than before. Placement still counts it at the engine's default.
 
 ## Slot-aware placement
 
@@ -725,7 +734,9 @@ generating for work the request cannot join waits, or runs slower, in ways the r
 - **The same model at another window.** `num_ctx` is a load parameter, so Ollama waits for the
   running requests to finish and then reloads the model at the new window. A request with no
   `num_ctx` runs at the engine's default, `OLLAMA_CONTEXT_LENGTH`, as does any `/v1` request other
-  than a chat completion that names one (Ollama drops `options` there).
+  than a chat completion that names one (Ollama drops `options` there). A `/v1` chat completion that
+  names none may run at its model's loaded window instead (see
+  [above](#v1-chat-at-the-window-it-names)), but this judgement still counts it at the default.
 
 Measured on beta-max, 2026-09-26 at about 23:50Z. A Hermes turn asked for `qwen3.6:35b` at `num_ctx`
 65536 while Ollama held that model at its 32768 default for two Hermes `/v1` requests, and was

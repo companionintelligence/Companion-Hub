@@ -181,7 +181,7 @@ describe('nativeChatPlan', () => {
 });
 
 describe('nativeChatPlanAt', () => {
-  it('maps a request that names no window at the window given, and refuses one that names its own', () => {
+  it('maps a request that names no window at the window given but refuses one that names its own', () => {
     const untitled = { model: 'm', messages: [{ role: 'user', content: 'Title this' }], max_tokens: 10 };
     expect(nativeChatPlanAt(untitled, 65_536)?.request).toMatchObject({ options: { num_ctx: 65_536, num_predict: 10 }, stream: false });
     expect(nativeChatPlanAt(turn(), 65_536)).toBeNull();

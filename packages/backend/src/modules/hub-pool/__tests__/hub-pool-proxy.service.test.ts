@@ -8328,7 +8328,7 @@ describe('PoolProxyService', () => {
       });
     });
 
-    it('stays on /v1 when the request names no window, exactly as before', async () => {
+    it('stays on /v1 when the request names no window and its model is not loaded', async () => {
       vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
       const body = { model: MODEL, stream: true, messages: [{ role: 'user', content: 'hi' }] };
 
@@ -8351,7 +8351,7 @@ describe('PoolProxyService', () => {
     });
 
     // Hermes names num_ctx on its main turns but not on side calls such as title generation. On /v1 a
-    // side call ran at the engine default and reloaded the model, and the next main turn reloaded it again.
+    // side call ran at the engine default and reloaded the model. The next main turn reloaded it again.
     describe('one that names no window', () => {
       const loadedAt = (contextLength: number, id = MODEL) =>
         ollama.listResident.mockResolvedValue({
@@ -8411,13 +8411,24 @@ describe('PoolProxyService', () => {
         expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
       });
 
-      it('stays on /v1 when the loaded window is below the default this node states, which /v1 would give it', async () => {
+      it('stays on /v1 when the loaded window is at or below the default this node states, which /v1 would give it', async () => {
         configuration.getInferencePreferences.mockReturnValue({ maxNumCtx: 32_768 } as never);
         loadedAt(8192);
 
         await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: titleCall(), model: MODEL, res: createMockResponse() });
 
         expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
+
+        // At the default itself `/v1` reloads nothing, so there is nothing to translate it for.
+        vi.mocked(global.fetch).mockClear();
+        loadedAt(32_768);
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: titleCall(), model: MODEL, res: createMockResponse() });
+        expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
+
+        vi.mocked(global.fetch).mockClear();
+        loadedAt(65_536);
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: titleCall(), model: MODEL, res: createMockResponse() });
+        expect(sentTo()).toBe('http://local-ollama:11434/api/chat');
       });
 
       it('stays on /v1 when residency fails or takes too long to answer', async () => {
@@ -8426,8 +8437,21 @@ describe('PoolProxyService', () => {
         expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
 
         vi.mocked(global.fetch).mockClear();
-        ollama.listResident.mockImplementation(() => new Promise(() => undefined));
-        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: titleCall(), model: MODEL, res: createMockResponse() });
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        try {
+          ollama.listResident.mockImplementation(() => new Promise(() => undefined));
+          const sent = service.proxyRequest({
+            path: '/v1/chat/completions',
+            method: 'POST',
+            body: titleCall(),
+            model: MODEL,
+            res: createMockResponse(),
+          });
+          await vi.advanceTimersByTimeAsync(PLACEMENT_PROBE_BUDGET_MS);
+          await sent;
+        } finally {
+          vi.useRealTimers();
+        }
         expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
       });
 

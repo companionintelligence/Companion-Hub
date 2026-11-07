@@ -10,8 +10,9 @@
  * host's default window while OpenClaw, on the native route, asked for the handout's. On a
  * CPU-only machine each switch between the two reloaded the model and threw away its prompt cache.
  *
- * Only a request that names `options.num_ctx` is translated, because that is the one thing `/v1`
- * loses. Everything else maps the way Ollama's own middleware maps it (`openai/openai.go` and
+ * A request that names `options.num_ctx` is translated, because that is the one thing `/v1` loses.
+ * One that names none is translated only through {@link nativeChatPlanAt}, at the window its model
+ * is already loaded at, so it doesn't reload it. Everything else maps the way Ollama's own middleware maps it (`openai/openai.go` and
  * `middleware/openai.go` at v0.40.15), so the caller sees what `/v1` would have sent. A request
  * this module can't map exactly (an image URL Ollama refuses, tool arguments that aren't a JSON
  * object, an unknown content part) is not translated: it goes to `/v1` as before and gets Ollama's
