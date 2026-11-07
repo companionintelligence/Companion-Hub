@@ -65,6 +65,12 @@ export type UpdateOptions = {
    * may be there to answer.
    */
   includeDesktopApp?: boolean;
+  /**
+   * With `includeDesktopApp: false`, still let the desktop app take the update when nothing else can
+   * update this Hub: a Windows install, which the updater container can't reach and whose installer
+   * runs without a prompt. A browser on another computer asks for this. The daily check doesn't.
+   */
+  desktopAppWhenOnlyWay?: boolean;
 };
 
 /** Hub container probe — `/.dockerenv` plus Podman's containerenv. Not the `/data` heuristic. */
@@ -421,7 +427,10 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
    * When `includeDesktopApp` allows it and the desktop app's listener answers, the desktop app takes the
    * update instead: it installs its own new version, then recreates the stack on the new pin.
    */
-  async performUpdate(targetVersion?: string, { includeDesktopApp = true }: UpdateOptions = {}): Promise<PerformUpdateResult> {
+  async performUpdate(
+    targetVersion?: string,
+    { includeDesktopApp = true, desktopAppWhenOnlyWay = false }: UpdateOptions = {},
+  ): Promise<PerformUpdateResult> {
     const requested = targetVersion === undefined ? undefined : normalizeHubVersionTag(targetVersion);
 
     const running = await this.inspectRunningHub();
@@ -440,7 +449,9 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     const envFile = mountTargets.envFile;
     const planResult = resolveComposeUpdatePlan(running.container, mountTargets);
 
-    const listenerReachable = includeDesktopApp && (await this.probeHostListener());
+    const onlyTheDesktopApp = !planResult.ok && planResult.updatedByDesktopApp === true;
+    const desktopAppMayTakeIt = includeDesktopApp || (desktopAppWhenOnlyWay && onlyTheDesktopApp);
+    const listenerReachable = desktopAppMayTakeIt && (await this.probeHostListener());
     if (listenerReachable) {
       const previous = this.pinHubStackVersionInEnv(envFile, pinned);
       const host = await this.triggerHostListener();

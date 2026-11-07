@@ -63,7 +63,7 @@ describe('SystemUpdateController', () => {
       updateService.performUpdate.mockResolvedValue({ success: true, stack: 'updating', host: 'skipped' } as any);
 
       await controller.performUpdate({ targetVersion: '1.1.0', includeDesktopApp: false });
-      expect(updateService.performUpdate).toHaveBeenCalledWith('1.1.0', { includeDesktopApp: false });
+      expect(updateService.performUpdate).toHaveBeenCalledWith('1.1.0', { includeDesktopApp: false, desktopAppWhenOnlyWay: true });
     });
 
     it('keeps the desktop app in the update when the caller says so or says nothing', async () => {

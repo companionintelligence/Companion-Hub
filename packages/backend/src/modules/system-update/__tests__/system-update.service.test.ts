@@ -537,6 +537,56 @@ describe('SystemUpdateService', () => {
       expect(vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1]).toContain(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.2.71`);
     });
 
+    // A browser on another computer asks for the Hub image only (#2316), except where nothing else can
+    // update the Hub: the updater container can't reach a Windows install, and its installer is silent.
+    describe('from a browser (Hub image only unless the desktop app is the only way)', () => {
+      const browser = { includeDesktopApp: false, desktopAppWhenOnlyWay: true };
+
+      it('updates the Hub image without asking the desktop app when the stack can be reproduced', async () => {
+        insideHubContainer(PINNED_ENV);
+        withListenerToken();
+        vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) =>
+          String(target) === '/data/.env' ? PINNED_ENV : 'listener-token\n') as never);
+        vi.mocked(axios.get).mockResolvedValue({ status: 200 });
+        vi.mocked(axios.post).mockResolvedValue({ status: 200 });
+        await installDocker(core6Appliance(RELEASE_PIN));
+
+        const result = await service.performUpdate('0.2.71', browser);
+
+        expect(result).toEqual({ success: true, message: 'Update initiated, hub will restart shortly', stack: 'updating', host: 'skipped' });
+        expect(axios.get).not.toHaveBeenCalled();
+        expect(axios.post).not.toHaveBeenCalled();
+      });
+
+      it('hands a Windows install to its desktop app', async () => {
+        const env = `CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.3.4\nCI_HUB_VERSION=0.3.4\n`;
+        insideHubContainer(env);
+        withListenerToken();
+        vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) => (String(target) === '/data/.env' ? env : 'listener-token\n')) as never);
+        vi.mocked(axios.get).mockResolvedValue({ status: 200 });
+        vi.mocked(axios.post).mockResolvedValue({ status: 200 });
+        await installDocker(windowsDesktopWslEngine());
+
+        const result = await service.performUpdate('0.3.5', browser);
+
+        expect(result).toEqual({ success: true, message: 'Update initiated, hub will restart shortly', stack: 'skipped', host: 'started' });
+        expect(axios.post).toHaveBeenCalledWith(expect.stringMatching(/\/update$/), null, expect.anything());
+      });
+
+      it('still refuses a Windows install for the daily check, which never asks the desktop app', async () => {
+        const env = `CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.3.4\nCI_HUB_VERSION=0.3.4\n`;
+        insideHubContainer(env);
+        withListenerToken();
+        vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) => (String(target) === '/data/.env' ? env : 'listener-token\n')) as never);
+        vi.mocked(axios.get).mockResolvedValue({ status: 200 });
+        vi.mocked(axios.post).mockResolvedValue({ status: 200 });
+        await installDocker(windowsDesktopWslEngine());
+
+        await expect(service.performUpdate('0.3.5', { includeDesktopApp: false })).rejects.toThrow(ConflictException);
+        expect(axios.post).not.toHaveBeenCalled();
+      });
+    });
+
     it('puts the pin back when the listener fails and the stack cannot be reproduced either', async () => {
       const container = core6Appliance(RELEASE_PIN);
       container.Config = { ...container.Config, Labels: { 'org.opencontainers.image.version': 'latest' } };

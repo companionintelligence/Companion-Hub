@@ -24,8 +24,9 @@ export class SystemUpdateController {
   /**
    * `includeDesktopApp: false` updates the Hub image only, as the daily auto-update does. A browser
    * that isn't the Hub machine's own window sends it: handing the update to the desktop app there
-   * installs the app first, which waits for a password typed on the Hub machine's screen, where the
-   * person in the browser can't see it (#2316).
+   * installs the app first, which on Linux waits for a password typed on the Hub machine's screen,
+   * where the person in the browser can't see it (#2316). A Windows install still goes to its desktop
+   * app, because nothing else can update it and its installer doesn't ask.
    */
   @Post()
   @UseGuards(AuthGuard, HubManagerGuard)
@@ -41,7 +42,7 @@ export class SystemUpdateController {
       throw new BadRequestException('includeDesktopApp must be true or false');
     }
     if (includeDesktopApp === false) {
-      return this.systemUpdateService.performUpdate(targetVersion, { includeDesktopApp: false });
+      return this.systemUpdateService.performUpdate(targetVersion, { includeDesktopApp: false, desktopAppWhenOnlyWay: true });
     }
     return this.systemUpdateService.performUpdate(targetVersion);
   }
