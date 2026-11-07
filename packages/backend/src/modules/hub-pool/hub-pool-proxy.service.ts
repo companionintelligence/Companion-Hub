@@ -77,7 +77,7 @@ import {
   type ResponseTapObserver,
 } from './response-usage-tap';
 import { POOL_AFFINITY_HEADER, PrefixAffinityStore, applyPrefixAffinity, derivePrefixKey, type PrefixKey } from './hub-pool-prefix-affinity';
-import { chooseAutoModel, collectPoolModelOffers, type AutoModelPreference, type NodeModelInventory } from './pool-auto-model';
+import { autoModelNeeds, chooseAutoModel, collectPoolModelOffers, type AutoModelPreference, type NodeModelInventory } from './pool-auto-model';
 import {
   judgeRequestError,
   lastCandidateRequestError,
@@ -1735,7 +1735,7 @@ export class PoolProxyService {
    * the operator had set nothing, took the registry's pinned or loaded model and then the first one
    * the engine listed — beta-ms-a2's newest pull, `deepseek-r1:8b`.
    */
-  async resolveModelAlias(model: string): Promise<string | undefined> {
+  async resolveModelAlias(model: string, body?: unknown): Promise<string | undefined> {
     if (model !== AUTO_MODEL) {
       return model;
     }
@@ -1744,8 +1744,14 @@ export class PoolProxyService {
     const choice = chooseAutoModel(collectPoolModelOffers(inventories), {
       preferred: this.preferredChatModel(),
       catalog: this.modelRegistry?.getCatalog() ?? [],
+      needs: autoModelNeeds(body),
     });
-    if (choice) {
+    if (choice?.passedOver) {
+      const lacking = choice.passedOver.lacks === 'tools' ? 'tool calling' : 'thinking';
+      this.logger.log(
+        `[PoolProxy] "${AUTO_MODEL}" passed over the Settings → Inference model "${choice.passedOver.model}" (no ${lacking}, which this request uses) for "${choice.model}"`,
+      );
+    } else if (choice) {
       this.logger.debug(`[PoolProxy] "${AUTO_MODEL}" resolved to "${choice.model}" (${choice.reason})`);
     }
     return choice?.model;
@@ -2660,7 +2666,7 @@ export class PoolProxyService {
     const { path, method, res } = params;
     const startedAt = Date.now();
     const clientClosed = watch.clientClosed;
-    const model = await this.resolveModelAlias(params.model);
+    const model = await this.resolveModelAlias(params.model, params.body);
     if (!model) {
       const failed = this.routingLog.record({
         at: new Date().toISOString(),
@@ -4162,7 +4168,7 @@ export class PoolProxyService {
     if (!isRecord(body)) return body;
     const fields = ['name', 'model'].filter((field) => body[field] === AUTO_MODEL);
     if (fields.length === 0) return body;
-    const resolved = await this.resolveModelAlias(AUTO_MODEL);
+    const resolved = await this.resolveModelAlias(AUTO_MODEL, body);
     if (!resolved) return null;
     return { ...body, ...Object.fromEntries(fields.map((field) => [field, resolved])) };
   }

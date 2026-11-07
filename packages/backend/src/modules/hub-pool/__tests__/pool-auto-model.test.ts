@@ -13,6 +13,7 @@ import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 import { CURATED_MODELS } from '@/modules/inference/catalog/curated-models';
 import {
   AUTO_MIN_PARAMS_B,
+  autoModelNeeds,
   catalogEntryFor,
   chooseAutoModel,
   collectPoolModelOffers,
@@ -220,6 +221,59 @@ describe('chooseAutoModel', () => {
 
   it('answers undefined when nothing in the pool can chat', () => {
     expect(chooseAutoModel([offer('embedder'), offer('nomic-embed-text:latest')], { catalog })).toBeUndefined();
+  });
+
+  // Load on gemma3:1b in Settings → AI made it the Settings → Inference model, and every OpenClaw turn
+  // (tools and think on every request) went to it and failed in 5 ms (#2311).
+  it('passes over the preferred model for a request that needs what the catalog says it lacks', () => {
+    expect(chooseAutoModel([offer('capable:27b'), offer('tiny:1b')], { preferred: { engineId: 'tiny:1b' }, catalog, needs: ['tools'] })).toEqual({
+      model: 'capable:27b',
+      reason: 'ranked',
+      passedOver: { model: 'tiny:1b', lacks: 'tools' },
+    });
+  });
+
+  it('still honours the preferred model for a plain chat request', () => {
+    expect(chooseAutoModel([offer('capable:27b'), offer('tiny:1b')], { preferred: { engineId: 'tiny:1b' }, catalog, needs: [] })?.model).toBe(
+      'tiny:1b',
+    );
+  });
+
+  it('gives an uncatalogued preferred model the benefit of the doubt', () => {
+    expect(
+      chooseAutoModel([offer('capable:27b'), offer('mystery:3b')], { preferred: { engineId: 'mystery:3b' }, catalog, needs: ['tools', 'thinking'] })
+        ?.model,
+    ).toBe('mystery:3b');
+  });
+
+  it('falls back to the plain ranking when nothing in the pool meets the needs', () => {
+    expect(chooseAutoModel([offer('tiny:1b')], { preferred: { engineId: 'tiny:1b' }, catalog, needs: ['tools'] })?.model).toBe('tiny:1b');
+  });
+
+  it('on the real catalog, an OpenClaw turn goes to qwen3.5:4b, not to the gemma3:1b the operator loaded', () => {
+    const offers = collectPoolModelOffers([node(['qwen3.5:4b', 'gemma3:1b', 'nomic-embed-text:latest'], { local: true })]);
+    const choice = chooseAutoModel(offers, {
+      preferred: { engineId: 'gemma3:1b', backend: 'ollama' },
+      catalog: CURATED_MODELS,
+      needs: ['tools', 'thinking'],
+    });
+    expect(choice?.model).toBe('qwen3.5:4b');
+    expect(choice?.passedOver?.model).toBe('gemma3:1b');
+  });
+});
+
+describe('autoModelNeeds', () => {
+  it('reads tools and thinking off a request body, in both dialects', () => {
+    expect(autoModelNeeds({ model: 'auto', tools: [{ type: 'function' }], think: true })).toEqual(['tools', 'thinking']);
+    expect(autoModelNeeds({ model: 'auto', think: 'high' })).toEqual(['thinking']);
+    expect(autoModelNeeds({ model: 'auto', reasoning_effort: 'low' })).toEqual(['thinking']);
+  });
+
+  it('needs nothing from a plain chat, an empty tool list or thinking turned off', () => {
+    expect(autoModelNeeds({ model: 'auto', messages: [] })).toEqual([]);
+    expect(autoModelNeeds({ model: 'auto', tools: [], think: false, reasoning_effort: 'none' })).toEqual([]);
+    expect(autoModelNeeds(undefined)).toEqual([]);
+    expect(autoModelNeeds('not json')).toEqual([]);
   });
 });
 

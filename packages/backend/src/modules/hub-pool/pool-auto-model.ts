@@ -88,6 +88,38 @@ export interface AutoModelPreference {
 export interface AutoModelChoice {
   model: string;
   reason: 'preferred' | 'ranked';
+  /** The Settings → Inference model, when it was passed over because the catalog says it can't take this request. */
+  passedOver?: { model: string; lacks: AutoModelNeed };
+}
+
+/** A capability a request needs from whatever `auto` stands for. */
+export type AutoModelNeed = 'tools' | 'thinking';
+
+/**
+ * What an `auto` request needs, read off its body: tool definitions, or a request to think (Ollama's
+ * `think`, the OpenAI dialect's `reasoning_effort`). OpenClaw sends both on every turn.
+ */
+export function autoModelNeeds(body: unknown): AutoModelNeed[] {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return [];
+  }
+  const record = body as Record<string, unknown>;
+  const needs: AutoModelNeed[] = [];
+  if (Array.isArray(record.tools) && record.tools.length > 0) {
+    needs.push('tools');
+  }
+  const think = record.think;
+  const thinks = think === true || (typeof think === 'string' && think !== '' && think !== 'false');
+  if (thinks || (typeof record.reasoning_effort === 'string' && record.reasoning_effort !== '' && record.reasoning_effort !== 'none')) {
+    needs.push('thinking');
+  }
+  return needs;
+}
+
+/** The first need the catalog says `offer` can't meet, or `undefined`. An uncatalogued model is given the benefit of the doubt. */
+function unmetNeed(offer: PoolModelOffer, catalog: readonly CuratedModel[], needs: readonly AutoModelNeed[]): AutoModelNeed | undefined {
+  const capabilities = catalogEntryFor(offer, catalog)?.metadata?.capabilities;
+  return needs.find((need) => (need === 'tools' ? capabilities?.tools === false : capabilities?.reasoning === false));
 }
 
 /**
@@ -209,12 +241,22 @@ export function rankAutoModelOffers(offers: readonly PoolModelOffer[], catalog: 
     .map((keys) => keys.offer);
 }
 
-/** The model `auto` stands for, or `undefined` when nothing in the pool can chat. */
+/**
+ * The model `auto` stands for, or `undefined` when nothing in the pool can chat.
+ *
+ * `needs` (from {@link autoModelNeeds}) is what this request asks of the model. The operator's model
+ * is honoured unless the catalog says it can't do one of them: `gemma3:1b` has neither tool calling
+ * nor thinking, and loading it in Settings → AI made it the Settings → Inference model, so every
+ * OpenClaw turn went to it and failed in 5 ms with "does not support thinking" (#2311). The Hub
+ * already refuses to hand an agent such a model; `auto` now agrees. The ranking then skips any
+ * model the catalog says can't meet the needs, and falls back to the full ranking only when none can.
+ */
 export function chooseAutoModel(
   offers: readonly PoolModelOffer[],
-  options: { preferred?: AutoModelPreference | null; catalog: readonly CuratedModel[] },
+  options: { preferred?: AutoModelPreference | null; catalog: readonly CuratedModel[]; needs?: readonly AutoModelNeed[] },
 ): AutoModelChoice | undefined {
-  const { preferred, catalog } = options;
+  const { preferred, catalog, needs = [] } = options;
+  let passedOver: AutoModelChoice['passedOver'];
   if (preferred) {
     const match = offers.find(
       (offer) =>
@@ -223,8 +265,12 @@ export function chooseAutoModel(
         // Not `isAutoChatCandidate`: an operator who names a cloud tag in Settings has looked at it.
         isChatModel(offer, catalogEntryFor(offer, catalog)),
     );
-    if (match) return { model: match.model, reason: 'preferred' };
+    const lacks = match ? unmetNeed(match, catalog, needs) : undefined;
+    if (match && !lacks) return { model: match.model, reason: 'preferred' };
+    if (match && lacks) passedOver = { model: match.model, lacks };
   }
-  const best = rankAutoModelOffers(offers, catalog)[0];
-  return best ? { model: best.model, reason: 'ranked' } : undefined;
+  const ranked = rankAutoModelOffers(offers, catalog);
+  const best = ranked.find((offer) => !unmetNeed(offer, catalog, needs)) ?? ranked[0];
+  if (!best) return undefined;
+  return passedOver ? { model: best.model, reason: 'ranked', passedOver } : { model: best.model, reason: 'ranked' };
 }
