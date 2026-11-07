@@ -136,13 +136,13 @@ export class AppService implements OnApplicationShutdown {
       // And not Docker's prune even for the Hub's own networks: Stop Hub keeps every app
       // container stopped to start it again, so their networks have only stopped users
       // when the Hub boots (#2313). pruneIdleManagedNetworks counts stopped containers.
-      void Promise.race([
-        pruneIdleManagedNetworks(this.docker, HUB_MANAGED_LABEL),
-        new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error('Docker network prune timed out after 15s')), 15_000);
-        }),
-      ])
-        .then((removed) => this.logger.info(removed.length > 0 ? `Docker networks pruned: ${removed.join(', ')}` : 'Docker networks pruned'))
+      void withTimeout(pruneIdleManagedNetworks(this.docker, HUB_MANAGED_LABEL), 15_000, 'Docker network prune timed out after 15s')
+        .then(({ removed, failed }) => {
+          this.logger.info(removed.length > 0 ? `Docker networks pruned: ${removed.join(', ')}` : 'Docker networks pruned');
+          for (const { networkName, message } of failed) {
+            this.logger.warn(`Docker network prune could not remove ${networkName}: ${message}`);
+          }
+        })
         .catch((error) => {
           if (this.isDockerBootstrapPermissionIssue(error)) {
             this.logger.warn(

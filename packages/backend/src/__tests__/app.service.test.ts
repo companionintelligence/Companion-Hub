@@ -517,7 +517,7 @@ describe('AppService', () => {
     it('prunes only Hub-managed networks, never every idle network on the host', async () => {
       // A bare prune deletes the network of every stopped compose stack on the machine
       // (Docker counts only running containers as "in use"), which broke `make dev` in
-      // sibling checkouts after each reboot. The filter is the whole fix.
+      // sibling checkouts after each reboot. The label filter keeps the boot off them.
       dockerode.listNetworks.mockResolvedValue([]);
 
       await appService.bootstrap();
@@ -530,8 +530,8 @@ describe('AppService', () => {
     it('keeps the network of an app whose containers Stop Hub left stopped (#2313)', async () => {
       const remove = vi.fn().mockResolvedValue(undefined);
       dockerode.listNetworks.mockResolvedValue([
-        { Name: 'excalidraw_ci-marketplace_network', Id: 'net-stopped' },
-        { Name: 'old-app_ci-marketplace_network', Id: 'net-orphan' },
+        { Name: 'excalidraw_ci-marketplace_network', Id: 'net-stopped', Labels: { 'ci-hub.managed': 'true' } },
+        { Name: 'old-app_ci-marketplace_network', Id: 'net-orphan', Labels: { 'ci-hub.managed': 'true' } },
       ] as never);
       dockerode.listContainers.mockResolvedValue([
         { State: 'exited', NetworkSettings: { Networks: { 'excalidraw_ci-marketplace_network': { NetworkID: 'net-stopped' } } } },
@@ -544,6 +544,21 @@ describe('AppService', () => {
       expect(dockerode.getNetwork).toHaveBeenCalledExactlyOnceWith('net-orphan');
       expect(remove).toHaveBeenCalledTimes(1);
       expect(loggerService.info).toHaveBeenCalledWith('Docker networks pruned: old-app_ci-marketplace_network');
+    });
+
+    it('logs a network the prune could not remove', async () => {
+      dockerode.listNetworks.mockResolvedValue([
+        { Name: 'stuck_ci-marketplace_network', Id: 'net-stuck', Labels: { 'ci-hub.managed': 'true' } },
+      ] as never);
+      dockerode.listContainers.mockResolvedValue([] as never);
+      dockerode.getNetwork.mockReturnValue({ remove: vi.fn().mockRejectedValue(new Error('(HTTP code 500) server error')) } as never);
+
+      await appService.bootstrap();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(loggerService.warn).toHaveBeenCalledWith(
+        'Docker network prune could not remove stuck_ci-marketplace_network: (HTTP code 500) server error',
+      );
     });
 
     it('schedules a background app store catalog sync after marketplace init', async () => {
