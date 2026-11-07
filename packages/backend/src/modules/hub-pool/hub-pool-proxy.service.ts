@@ -77,7 +77,14 @@ import {
   type ResponseTapObserver,
 } from './response-usage-tap';
 import { POOL_AFFINITY_HEADER, PrefixAffinityStore, applyPrefixAffinity, derivePrefixKey, type PrefixKey } from './hub-pool-prefix-affinity';
-import { chooseAutoModel, collectPoolModelOffers, type AutoModelPreference, type NodeModelInventory } from './pool-auto-model';
+import {
+  autoModelNeeds,
+  chooseAutoModel,
+  collectPoolModelOffers,
+  type AutoModelChoice,
+  type AutoModelPreference,
+  type NodeModelInventory,
+} from './pool-auto-model';
 import {
   judgeRequestError,
   lastCandidateRequestError,
@@ -596,6 +603,9 @@ const PEER_PAIRING_STATUSES: ReadonlySet<number> = new Set([401, 403]);
  * request that ranks it, and agent traffic ranks all day. Each refusal is still in the routing log.
  */
 const PEER_ENGINE_REFUSAL_WARN_INTERVAL_MS = 10 * 60_000;
+
+/** How often the same `auto` pass-over goes out at log level; see `PoolProxyService.noteAutoPassOver`. */
+const AUTO_PASS_OVER_NOTE_INTERVAL_MS = 10 * 60_000;
 
 /**
  * How long a request waits in the Hub, with its model's load refused only because other models'
@@ -1718,6 +1728,8 @@ export class PoolProxyService {
   private readonly prefixAffinity = new PrefixAffinityStore();
   /** When each peer engine's key refusal was last warned about — see {@link warnPeerEngineRefusal}. Bounded by peers × engines × two statuses. */
   private readonly peerEngineRefusalWarnedAt = new Map<string, number>();
+  /** The last `auto` pass-over line written at log level, and when. See {@link noteAutoPassOver}. */
+  private lastAutoPassOverNote: { line: string; at: number } | undefined;
   /**
    * Engines that have been answering 200 with cut-off or degenerate output, and are withheld from the
    * front of the walk for a cooldown — see `hub-pool-output-check.ts`. Per node, engine and model.
@@ -1735,7 +1747,7 @@ export class PoolProxyService {
    * the operator had set nothing, took the registry's pinned or loaded model and then the first one
    * the engine listed — beta-ms-a2's newest pull, `deepseek-r1:8b`.
    */
-  async resolveModelAlias(model: string): Promise<string | undefined> {
+  async resolveModelAlias(model: string, body?: unknown): Promise<string | undefined> {
     if (model !== AUTO_MODEL) {
       return model;
     }
@@ -1744,11 +1756,32 @@ export class PoolProxyService {
     const choice = chooseAutoModel(collectPoolModelOffers(inventories), {
       preferred: this.preferredChatModel(),
       catalog: this.modelRegistry?.getCatalog() ?? [],
+      needs: autoModelNeeds(body),
     });
-    if (choice) {
+    if (choice?.passedOver) {
+      this.noteAutoPassOver(choice.passedOver, choice.model);
+    } else if (choice) {
       this.logger.debug(`[PoolProxy] "${AUTO_MODEL}" resolved to "${choice.model}" (${choice.reason})`);
     }
     return choice?.model;
+  }
+
+  /**
+   * The operator's line for `auto` passing over their Settings > Inference model. An agent sends a
+   * turn every few seconds and the setting stays put, so it goes out at log level once per
+   * {@link AUTO_PASS_OVER_NOTE_INTERVAL_MS} for the same pass-over and at debug in between.
+   */
+  private noteAutoPassOver(passedOver: NonNullable<AutoModelChoice['passedOver']>, chosen: string): void {
+    const lacking = passedOver.lacks.map((need) => (need === 'tools' ? 'tool calling' : 'thinking')).join(' or ');
+    const line = `[PoolProxy] "${AUTO_MODEL}" passed over the Settings > Inference model "${passedOver.model}" (no ${lacking}, which this request uses) for "${chosen}"`;
+    const now = Date.now();
+    const last = this.lastAutoPassOverNote;
+    if (last && last.line === line && now - last.at < AUTO_PASS_OVER_NOTE_INTERVAL_MS) {
+      this.logger.debug(line);
+      return;
+    }
+    this.lastAutoPassOverNote = { line, at: now };
+    this.logger.log(line);
   }
 
   /** Settings → Inference, as an engine id. A catalog id maps through its row, an engine id stands as itself. */
@@ -2660,7 +2693,7 @@ export class PoolProxyService {
     const { path, method, res } = params;
     const startedAt = Date.now();
     const clientClosed = watch.clientClosed;
-    const model = await this.resolveModelAlias(params.model);
+    const model = await this.resolveModelAlias(params.model, params.body);
     if (!model) {
       const failed = this.routingLog.record({
         at: new Date().toISOString(),
@@ -4162,7 +4195,7 @@ export class PoolProxyService {
     if (!isRecord(body)) return body;
     const fields = ['name', 'model'].filter((field) => body[field] === AUTO_MODEL);
     if (fields.length === 0) return body;
-    const resolved = await this.resolveModelAlias(AUTO_MODEL);
+    const resolved = await this.resolveModelAlias(AUTO_MODEL, body);
     if (!resolved) return null;
     return { ...body, ...Object.fromEntries(fields.map((field) => [field, resolved])) };
   }
