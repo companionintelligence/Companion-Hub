@@ -513,6 +513,28 @@ describe('GeneralActionsContainer', () => {
     expect(screen.queryByTestId('host-listener-ready')).not.toBeInTheDocument();
   });
 
+  // A browser's update leaves the desktop app out (#2316), so "Update will refresh the app" was untrue.
+  it('tells a browser where to update the desktop app when the Hub can reach it too', async () => {
+    mockFetchHostListenerStatus.mockResolvedValue(true);
+
+    render(<GeneralActionsContainer />);
+
+    expect(await screen.findByTestId('host-listener-unavailable')).toHaveTextContent('Open Companion Hub on the computer that runs this Hub');
+    expect(screen.queryByTestId('host-listener-ready')).not.toBeInTheDocument();
+  });
+
+  it('says a browser update refreshes the desktop app on a Windows install, which the app updates', async () => {
+    mockFetchHostListenerStatus.mockResolvedValue(true);
+    getUpdateBlocks.mockResolvedValue(
+      sdkOk({ updateBlockedReason: null, autoUpdateBlockedReason: 'started on Windows', desktopAppUpdatesHub: true }),
+    );
+
+    render(<GeneralActionsContainer />);
+
+    expect(await screen.findByTestId('host-listener-ready')).toBeInTheDocument();
+    expect(screen.queryByTestId('host-listener-unavailable')).not.toBeInTheDocument();
+  });
+
   describe('in the desktop window', () => {
     function offerDesktopUpdate(downloadUrl = 'https://dl.ci.computer/v0.2.78/linux/deb/x64/Companion%20Hub_0.2.78_amd64.deb') {
       const update: UpdateInfo = {
@@ -1010,6 +1032,38 @@ describe('GeneralActionsContainer', () => {
       );
       expect(screen.getByTestId('hub-update-btn')).toHaveTextContent('Update stack to 0.3.5');
       expect(screen.queryByTestId('hub-update-blocked')).not.toBeInTheDocument();
+    });
+
+    // core-3: the updater can't pin the env file compose reads, so only the desktop app can update it.
+    // A browser asks for the Hub image only (#2316), but the Hub still hands this one to the desktop app.
+    describe('on a Linux Hub that only its desktop app can update', () => {
+      const ENV_REFUSAL = "Compose started this Hub with --env-file /home/ci/.local/share/companion-hub/.env, but the Hub's /data/.env is .env.dev.";
+
+      beforeEach(() => {
+        getUpdateBlocks.mockResolvedValue(sdkOk({ updateBlockedReason: null, autoUpdateBlockedReason: ENV_REFUSAL, desktopAppUpdatesHub: false }));
+      });
+
+      it('offers the button in a browser and says the update refreshes the desktop app', async () => {
+        mockFetchHostListenerStatus.mockResolvedValue(true);
+
+        render(<GeneralActionsContainer />);
+
+        expect(await screen.findByTestId('host-listener-ready')).toBeInTheDocument();
+        expect(screen.getByTestId('hub-update-btn')).toHaveTextContent('Update stack to 0.3.5');
+        expect(screen.queryByTestId('hub-update-blocked')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('host-listener-unavailable')).not.toBeInTheDocument();
+      });
+
+      it('keeps the button in the desktop window', async () => {
+        mockIsTauri.mockReturnValue(true);
+
+        render(<GeneralActionsContainer />);
+
+        // The Hub's answer has arrived once the switch says the daily update can't run here.
+        await screen.findByTestId('auto-update-blocked');
+        expect(screen.getByTestId('hub-update-btn')).toHaveTextContent('Update stack to 0.3.5');
+        expect(screen.queryByTestId('hub-update-blocked')).not.toBeInTheDocument();
+      });
     });
 
     it('shows the button as before when the Hub does not answer', async () => {

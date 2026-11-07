@@ -927,6 +927,7 @@
   "SETTINGS_ACTIONS_VERSION_LABEL": "Version {{version}}",
   "SETTINGS_ACTIONS_UPDATE_DESKTOP_STARTED": "Update started. Companion Hub will restart shortly.",
   "SETTINGS_ACTIONS_UPDATE_HOST_STARTED": "Update started on the host. The Hub will restart shortly.",
+  "SETTINGS_ACTIONS_UPDATE_HOST_STARTED_REMOTE": "The desktop app on the Hub's computer is installing the update. If that computer asks for a password, type it there. The Hub restarts after that.",
   "SETTINGS_ACTIONS_UPDATE_HOST_UNAVAILABLE": "Host update listener unavailable. Run: companion-hub update",
   "SETTINGS_ACTIONS_UPDATE_HOST_UNREACHABLE": "Could not reach the host updater. Run companion-hub update in a terminal on this machine.",
   "SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL": "No download URL available for this platform.",

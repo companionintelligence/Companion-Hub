@@ -21,14 +21,30 @@ export class SystemUpdateController {
     return this.systemUpdateService.checkForUpdates();
   }
 
+  /**
+   * `includeDesktopApp: false` leaves the desktop app out wherever the Hub image can be updated
+   * without it. A browser that isn't the Hub machine's own window sends it: handing the update to the
+   * desktop app there installs the app first, which on Linux waits for a password typed on the Hub
+   * machine's screen, where the person in the browser can't see it (#2316). A Hub whose stack the
+   * updater can't reproduce (a Windows install, for one) still goes to its desktop app, unlike the
+   * daily auto-update, because nothing else can update it. The page then says where a password
+   * prompt would appear.
+   */
   @Post()
   @UseGuards(AuthGuard, HubManagerGuard)
-  async performUpdate(@Body() body?: { targetVersion?: string }) {
+  async performUpdate(@Body() body?: { targetVersion?: string; includeDesktopApp?: boolean }) {
     const targetVersion: unknown = body?.targetVersion;
+    const includeDesktopApp: unknown = body?.includeDesktopApp;
     // The service checks again for its other callers (MCP, auto-update). Refusing here keeps a
     // bad request from reaching any update work.
     if (targetVersion !== undefined && (typeof targetVersion !== 'string' || !isHubVersionTag(targetVersion.trim()))) {
       throw new BadRequestException(HUB_VERSION_TAG_MESSAGE);
+    }
+    if (includeDesktopApp !== undefined && typeof includeDesktopApp !== 'boolean') {
+      throw new BadRequestException('includeDesktopApp must be true or false');
+    }
+    if (includeDesktopApp === false) {
+      return this.systemUpdateService.performUpdate(targetVersion, { includeDesktopApp: false, desktopAppWhenOnlyWay: true });
     }
     return this.systemUpdateService.performUpdate(targetVersion);
   }
