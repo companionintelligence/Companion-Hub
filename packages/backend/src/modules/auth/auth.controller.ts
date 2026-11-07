@@ -287,6 +287,27 @@ function isCorsPreflight(req: Request): boolean {
   return value === 'OPTIONS' && present('origin') && present('access-control-request-method');
 }
 
+/**
+ * A service worker that removes itself. Traefik's `ci-hub-sw-reset` middleware (assets/traefik/
+ * dynamic/dynamic.yml) hands it to a browser that isn't signed in when the browser fetches an app's
+ * `/sw.js` to update its worker. A worker script behind the sign-in redirect is refused, so a browser
+ * holding a worker from before the sign-in kept answering every page load from its cache and never
+ * reached the sign-in (#2324). This one takes over, unregisters and reloads the app's open pages, so the
+ * next page load reaches the sign-in. Once signed in, the app registers its own worker again. It holds
+ * nothing of any app.
+ */
+export const SERVICE_WORKER_RESET_SCRIPT = `self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    (async () => {
+      await self.registration.unregister();
+      const clients = await self.clients.matchAll({ type: 'window' });
+      await Promise.all(clients.map((client) => client.navigate(client.url).catch(() => undefined)));
+    })(),
+  );
+});
+`;
+
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -1864,6 +1885,15 @@ export class AuthController {
     }
     const appUrn = await this.forwardAuthSecrets.resolveAppUrnForHost(forwardedHost);
     return appUrn != null && isMemoryProviderApp({ urn: appUrn });
+  }
+
+  /** See {@link SERVICE_WORKER_RESET_SCRIPT}. Public: Traefik asks for it after the sign-in refused a request. */
+  @ApiExcludeEndpoint()
+  @Get('/service-worker-reset.js')
+  serviceWorkerReset(@Res() res: Response) {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).send(SERVICE_WORKER_RESET_SCRIPT);
   }
 
   @Get('/traefik')

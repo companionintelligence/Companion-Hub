@@ -32,6 +32,12 @@ export const HUB_ROUTE_NAME_SUFFIXES: readonly string[] = [INSECURE_ROUTER_SUFFI
 
 /** The file-provider middleware that strips visitor-set forwarded headers from tunnel requests. */
 export const EDGE_HEADERS_MIDDLEWARE = 'ci-hub-edge-headers@file';
+/** See `ci-hub-sw-reset` in assets/traefik/dynamic/dynamic.yml. */
+export const SW_RESET_MIDDLEWARE = 'ci-hub-sw-reset@file';
+/** The routers that take a signed-out browser's fetch of an app's `/sw.js` (#2324). */
+const SW_RESET_ROUTER_SUFFIX = '-sw-reset';
+/** What a browser sends when it fetches a service worker script, and nothing else does. */
+const SW_RESET_RULE_SUFFIX = ' && Path(`/sw.js`) && Header(`Service-Worker`, `script`)';
 
 /**
  * The file-provider `errors` middleware that swaps Traefik's bare 502 and 504 for the Hub's
@@ -279,6 +285,29 @@ export class TraefikLabelsBuilder {
       Object.assign(this.labels, {
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.middlewares`]: middlewareChain,
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${INSECURE_ROUTER_SUFFIX}.middlewares`]: middlewareChain,
+      });
+    }
+
+    if (this.params.enableAuth) {
+      // A browser that holds a worker from before the sign-in fetches `/sw.js` to update it, gets
+      // the sign-in redirect and refuses it, so the old worker keeps serving the cached app (#2324).
+      // These routers take only that fetch, on both entry points like the routers above, and wrap
+      // the same chain in the reset middleware. Their rule is longer than the host rule, so Traefik
+      // ranks them first for that one request and for nothing else. The service is the app's own,
+      // so a signed-in browser still gets the app's `/sw.js`.
+      const swResetRouter = `${this.params.appId}-${this.params.storeId}${SW_RESET_ROUTER_SUFFIX}`;
+      const swResetChain = middlewares.flatMap((name) => (name === 'ci-hub@file' ? [SW_RESET_MIDDLEWARE, name] : [name])).join(',');
+      const swResetRule = `${hostRule}${SW_RESET_RULE_SUFFIX}`;
+      Object.assign(this.labels, {
+        [`traefik.http.routers.${swResetRouter}${INSECURE_ROUTER_SUFFIX}.rule`]: swResetRule,
+        [`traefik.http.routers.${swResetRouter}${INSECURE_ROUTER_SUFFIX}.entrypoints`]: 'web',
+        [`traefik.http.routers.${swResetRouter}${INSECURE_ROUTER_SUFFIX}.service`]: `${this.params.appId}-${this.params.storeId}`,
+        [`traefik.http.routers.${swResetRouter}${INSECURE_ROUTER_SUFFIX}.middlewares`]: swResetChain,
+        [`traefik.http.routers.${swResetRouter}.rule`]: swResetRule,
+        [`traefik.http.routers.${swResetRouter}.entrypoints`]: 'websecure',
+        [`traefik.http.routers.${swResetRouter}.service`]: `${this.params.appId}-${this.params.storeId}`,
+        [`traefik.http.routers.${swResetRouter}.tls.certresolver`]: 'myresolver',
+        [`traefik.http.routers.${swResetRouter}.middlewares`]: swResetChain,
       });
     }
 

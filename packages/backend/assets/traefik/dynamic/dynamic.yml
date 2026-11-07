@@ -116,6 +116,27 @@ http:
         service: ci-hub-app-starting
         query: "/api/apps/starting?status={originalStatus}"
 
+    # A signed-out browser updating an app's service worker (#2324). The app's `-sw-reset` routers
+    # (traefik-labels.builder.ts) match only `GET`-style fetches of `/sw.js` that carry the
+    # `Service-Worker: script` header browsers send for worker scripts, and put this in front of the
+    # forward auth. When the forward auth refuses, the browser gets the Hub's self-removing worker
+    # with a 200 instead of the redirect a browser refuses for a worker script, and the next page
+    # load reaches the sign-in. A signed-in request passes the forward auth and gets the app's own
+    # `/sw.js` untouched. Only the forward auth's refusals are caught: its redirect to the sign-in
+    # and its 401 and 403.
+    ci-hub-sw-reset:
+      errors:
+        status:
+          - "302"
+          - "401"
+          - "403"
+        statusRewrites:
+          "302": 200
+          "401": 200
+          "403": 200
+        service: ci-hub-app-starting
+        query: "/api/auth/service-worker-reset.js"
+
   services:
     # The Hub, for the page above, at the same tagged address as forward auth (see the top of this
     # file). Keeps the visitor's `Host` (Traefik's default, written out because the page depends on

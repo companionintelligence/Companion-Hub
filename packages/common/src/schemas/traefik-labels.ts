@@ -50,9 +50,9 @@ export const HUB_FORWARD_AUTH_MIDDLEWARES: ReadonlySet<string> = new Set(['ci-hu
 
 /**
  * The Hub's middlewares any app may put in a chain: forward auth under both providers, the edge
- * header strip and the starting page (assets/traefik/dynamic/dynamic.yml).
+ * header strip, the starting page and the service worker reset (assets/traefik/dynamic/dynamic.yml).
  */
-const HUB_MIDDLEWARES = new Set([...HUB_FORWARD_AUTH_MIDDLEWARES, 'ci-hub-edge-headers@file', 'ci-hub-app-starting@file']);
+const HUB_MIDDLEWARES = new Set([...HUB_FORWARD_AUTH_MIDDLEWARES, 'ci-hub-edge-headers@file', 'ci-hub-app-starting@file', 'ci-hub-sw-reset@file']);
 
 /** `traefik.http.<routers|services|middlewares>.<name>.<option>`. Traefik reads labels without regard to case. */
 const HTTP_OBJECT_LABEL = /^traefik\.http\.(routers|services|middlewares)\.([^.]+)\.(.+)$/i;

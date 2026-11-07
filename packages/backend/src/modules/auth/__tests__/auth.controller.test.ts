@@ -499,6 +499,21 @@ describe('AuthController', () => {
       });
     });
 
+    // Traefik's ci-hub-sw-reset middleware fetches this when the sign-in refused a worker script (#2324).
+    it('serves the self-removing service worker as uncached JavaScript', () => {
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader: vi.fn() } as unknown as Response;
+
+      authController.serviceWorkerReset(res);
+
+      expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'application/javascript; charset=utf-8');
+      expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
+      expect(res.status).toHaveBeenCalledWith(200);
+      const script = vi.mocked(res.send).mock.calls[0]?.[0] as string;
+      expect(script).toContain('self.skipWaiting()');
+      expect(script).toContain('self.registration.unregister()');
+      expect(script).not.toMatch(/fetch\(|importScripts|caches\./);
+    });
+
     const memoryPassthroughCases: Array<{ uri?: string; extra?: Record<string, string> }> = [
       { uri: '/api/authenticate/oidc/native/exchange' },
       { uri: '/api/authenticate?client=native' },
