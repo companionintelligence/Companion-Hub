@@ -66,9 +66,10 @@ export type UpdateOptions = {
    */
   includeDesktopApp?: boolean;
   /**
-   * With `includeDesktopApp: false`, still let the desktop app take the update when nothing else can
-   * update this Hub: a Windows install, which the updater container can't reach and whose installer
-   * runs without a prompt. A browser on another computer asks for this. The daily check doesn't.
+   * With `includeDesktopApp: false`, still let the desktop app take the update when the updater
+   * container can't reproduce this Hub's stack, so nothing else can update it: a Windows install, or a
+   * compose layout the updater can't pin. A browser on another computer asks for this, so it can still
+   * update such a Hub. The daily check doesn't, because nobody may be there to answer a password prompt.
    */
   desktopAppWhenOnlyWay?: boolean;
 };
@@ -449,8 +450,7 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     const envFile = mountTargets.envFile;
     const planResult = resolveComposeUpdatePlan(running.container, mountTargets);
 
-    const onlyTheDesktopApp = !planResult.ok && planResult.updatedByDesktopApp === true;
-    const desktopAppMayTakeIt = includeDesktopApp || (desktopAppWhenOnlyWay && onlyTheDesktopApp);
+    const desktopAppMayTakeIt = includeDesktopApp || (desktopAppWhenOnlyWay && !planResult.ok);
     const listenerReachable = desktopAppMayTakeIt && (await this.probeHostListener());
     if (listenerReachable) {
       const previous = this.pinHubStackVersionInEnv(envFile, pinned);

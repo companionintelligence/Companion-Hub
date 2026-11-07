@@ -875,7 +875,7 @@ describe('update-service', () => {
   });
 
   describe('performStackUpdate', () => {
-    it('lets the desktop app take the update from the Hub window, and says it started there', async () => {
+    it('lets the desktop app take the update from the Hub window and says it started there', async () => {
       Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
       mockSdkPerformUpdate.mockResolvedValue(sdkOk({ success: true, stack: 'skipped', host: 'started' }));
 
@@ -888,9 +888,18 @@ describe('update-service', () => {
       expect(mockSdkPerformUpdate).toHaveBeenCalledWith({ body: { targetVersion: '1.1.0' } });
     });
 
+    // A browser reaches the desktop app only where nothing else can update the Hub. Its install can ask
+    // for a password on the Hub machine, so the browser is told where to look.
+    it('tells a browser the Hub machine may ask for a password when the desktop app took the update', async () => {
+      mockSdkPerformUpdate.mockResolvedValue(sdkOk({ success: true, stack: 'skipped', host: 'started' }));
+
+      await expect(performStackUpdate('1.1.0')).resolves.toMatchObject({ ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_HOST_STARTED_REMOTE' });
+      expect(mockSdkPerformUpdate).toHaveBeenCalledWith({ body: { targetVersion: '1.1.0', includeDesktopApp: false } });
+    });
+
     // The desktop app's own install waits for a password typed on the Hub machine, which a browser on
     // another computer can't see: the Hub sat on the old version for as long as nobody typed it.
-    it('updates only the Hub image from a browser, and says the desktop app is updated on the Hub machine (#2316)', async () => {
+    it('updates only the Hub image from a browser and says the desktop app is updated on the Hub machine (#2316)', async () => {
       mockSdkPerformUpdate.mockResolvedValue(sdkOk({ success: true, stack: 'updating', host: 'skipped' }));
 
       await expect(performStackUpdate('1.1.0')).resolves.toEqual({

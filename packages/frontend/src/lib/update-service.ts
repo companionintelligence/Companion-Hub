@@ -631,10 +631,11 @@ export async function installDesktopUpdate(info: UpdateInfo, callbacks: DesktopU
  * Hub-driven update: stack pull, and host listener when the desktop app is running.
  *
  * Only the Hub machine's own window lets the desktop app take the update. The desktop app installs
- * itself first, and on Linux that waits for a password typed on the Hub machine. Someone in a browser
- * on another computer never sees that prompt, and the Hub sat on the old version until somebody at the
- * machine typed it (#2316). A browser updates the Hub image only, like the daily auto-update, and is
- * told the desktop app is updated on the machine.
+ * itself first and on Linux that waits for a password typed on the Hub machine. Someone in a browser
+ * on another computer never sees that prompt. The Hub sat on the old version until somebody at the
+ * machine typed it (#2316). A browser updates the Hub image only, like the daily auto-update. It is
+ * told the desktop app is updated on the machine. Where only the desktop app can update the Hub, the
+ * browser is told the machine may ask for a password.
  */
 export async function performStackUpdate(targetVersion?: string): Promise<UpdateActionResult> {
   try {
@@ -649,16 +650,15 @@ export async function performStackUpdate(targetVersion?: string): Promise<Update
       const stack = data.stack;
       let messageKey = 'SETTINGS_ACTIONS_UPDATE_RESTARTING';
       if (host === 'started') {
-        messageKey = 'SETTINGS_ACTIONS_UPDATE_HOST_STARTED';
-      } else if (!hubWindow && host === 'skipped' && stack === 'updating') {
-        // The browser left the desktop app out on purpose: say where it gets updated.
-        messageKey = 'SETTINGS_ACTIONS_UPDATE_STACK_HOST_UNAVAILABLE';
-      } else if (host === 'unavailable' || host === 'failed') {
-        // The Hub could not hand the update to the desktop app, which is no sign that the app isn't
-        // running: desktop apps up to 0.2.77 keep their listener token where the Hub can't read it.
-        // In the desktop window, the Desktop app card updates the app itself.
-        messageKey =
-          isTauri() && !isTauriMobileSync() ? 'SETTINGS_ACTIONS_UPDATE_STACK_DESKTOP_SEPARATE' : 'SETTINGS_ACTIONS_UPDATE_STACK_HOST_UNAVAILABLE';
+        // A browser gets here only when nothing but the desktop app can update this Hub. Its install can
+        // ask for a password on the Hub machine's screen, so say so.
+        messageKey = hubWindow ? 'SETTINGS_ACTIONS_UPDATE_HOST_STARTED' : 'SETTINGS_ACTIONS_UPDATE_HOST_STARTED_REMOTE';
+      } else if (host === 'unavailable' || host === 'failed' || host === 'skipped') {
+        // `skipped`: a browser left the desktop app out on purpose. Otherwise the Hub could not hand
+        // the update to the desktop app, which is no sign that the app isn't running: desktop apps up
+        // to 0.2.77 keep their listener token where the Hub can't read it. Either way, say where the
+        // app gets updated. In the desktop window, its Desktop app card does it.
+        messageKey = hubWindow ? 'SETTINGS_ACTIONS_UPDATE_STACK_DESKTOP_SEPARATE' : 'SETTINGS_ACTIONS_UPDATE_STACK_HOST_UNAVAILABLE';
       }
       return { ok: true, messageKey, stack, host };
     }

@@ -22,11 +22,13 @@ export class SystemUpdateController {
   }
 
   /**
-   * `includeDesktopApp: false` updates the Hub image only, as the daily auto-update does. A browser
-   * that isn't the Hub machine's own window sends it: handing the update to the desktop app there
-   * installs the app first, which on Linux waits for a password typed on the Hub machine's screen,
-   * where the person in the browser can't see it (#2316). A Windows install still goes to its desktop
-   * app, because nothing else can update it and its installer doesn't ask.
+   * `includeDesktopApp: false` leaves the desktop app out wherever the Hub image can be updated
+   * without it. A browser that isn't the Hub machine's own window sends it: handing the update to the
+   * desktop app there installs the app first, which on Linux waits for a password typed on the Hub
+   * machine's screen, where the person in the browser can't see it (#2316). A Hub whose stack the
+   * updater can't reproduce (a Windows install, for one) still goes to its desktop app, unlike the
+   * daily auto-update, because nothing else can update it. The page then says where a password
+   * prompt would appear.
    */
   @Post()
   @UseGuards(AuthGuard, HubManagerGuard)

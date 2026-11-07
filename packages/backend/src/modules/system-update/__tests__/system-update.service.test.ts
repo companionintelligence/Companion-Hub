@@ -538,7 +538,7 @@ describe('SystemUpdateService', () => {
     });
 
     // A browser on another computer asks for the Hub image only (#2316), except where nothing else can
-    // update the Hub: the updater container can't reach a Windows install, and its installer is silent.
+    // update the Hub because the updater container can't reproduce its stack.
     describe('from a browser (Hub image only unless the desktop app is the only way)', () => {
       const browser = { includeDesktopApp: false, desktopAppWhenOnlyWay: true };
 
@@ -583,6 +583,31 @@ describe('SystemUpdateService', () => {
         await installDocker(windowsDesktopWslEngine());
 
         await expect(service.performUpdate('0.3.5', { includeDesktopApp: false })).rejects.toThrow(ConflictException);
+        expect(axios.post).not.toHaveBeenCalled();
+      });
+
+      // core-3's layout: the updater can't pin the env file compose reads, so only the desktop app can
+      // update it. A browser still gets that, and the page says a password may be asked on the machine.
+      it('hands a Linux stack the updater cannot reproduce to the desktop app', async () => {
+        insideHubContainer(PINNED_ENV);
+        withListenerToken();
+        vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) =>
+          String(target) === '/data/.env' ? PINNED_ENV : 'listener-token\n') as never);
+        vi.mocked(axios.get).mockResolvedValue({ status: 200 });
+        vi.mocked(axios.post).mockResolvedValue({ status: 200 });
+        await installDocker(core3EnvLabelDiffersFromMount(RELEASE_PIN));
+
+        const result = await service.performUpdate('0.2.71', browser);
+
+        expect(result).toEqual({ success: true, message: 'Update initiated, hub will restart shortly', stack: 'skipped', host: 'started' });
+        expect(axios.post).toHaveBeenCalledWith(expect.stringMatching(/\/update$/), null, expect.anything());
+      });
+
+      it('still refuses that stack when the desktop app does not answer', async () => {
+        insideHubContainer(PINNED_ENV);
+        await installDocker(core3EnvLabelDiffersFromMount(RELEASE_PIN));
+
+        await expect(service.performUpdate('0.2.71', browser)).rejects.toThrow(ConflictException);
         expect(axios.post).not.toHaveBeenCalled();
       });
     });

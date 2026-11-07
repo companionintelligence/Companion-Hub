@@ -279,6 +279,9 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
       desktopApp: blocks?.desktopAppUpdatesHub === true,
     });
   }, []);
+  // A browser's update leaves the desktop app out (#2316) unless only the desktop app can update this
+  // Hub: the updater can't reproduce the stack (the daily update's refusal) and the update isn't blocked.
+  const browserUpdateUsesDesktopApp = stackBlock.auto !== null && stackBlock.update === null;
 
   // `blocked`, not `check`: this runs on every visit, and `check` also looks up the registry and wakes
   // every connected agent when an update is available. Only the Hub update card reads the answer, so a
@@ -754,8 +757,10 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
         </CardHeader>
         <CardContent>
           {/* The Hub can't reach the listener of any desktop app up to 0.2.77, running or not, so in the
-              desktop window it is no sign the app is down. A browser can say where to update instead. */}
-          {!desktopWindow && hostListenerReachable === false ? (
+              desktop window it is no sign the app is down. A browser can say where to update instead.
+              It says so when the listener answers too: a browser's update leaves the app out unless
+              only the app can update this Hub (#2316). */}
+          {!desktopWindow && (hostListenerReachable === false || (hostListenerReachable === true && !browserUpdateUsesDesktopApp)) ? (
             <p className="text-sm text-muted-foreground mb-4" data-testid="host-listener-unavailable">
               <Trans
                 i18nKey="SETTINGS_ACTIONS_HOST_LISTENER_UNAVAILABLE"
@@ -763,7 +768,7 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
               />
             </p>
           ) : null}
-          {hostListenerReachable === true ? (
+          {hostListenerReachable === true && (desktopWindow || browserUpdateUsesDesktopApp) ? (
             <p className="text-sm text-muted-foreground mb-4" data-testid="host-listener-ready">
               {t('SETTINGS_ACTIONS_HOST_LISTENER_READY')}
             </p>
