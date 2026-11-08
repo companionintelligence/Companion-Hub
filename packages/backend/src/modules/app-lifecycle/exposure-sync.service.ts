@@ -288,6 +288,12 @@ export class ExposureSyncService implements OnModuleDestroy {
    * refusal is then news again.
    */
   private readonly toastedStandingRefusals = new Map<AppUrn, PublicDnsFailureReason>();
+  /**
+   * The standing refusal the last answered sync gave each app, toasted or not. The app page reads it
+   * through {@link publicDnsRefusalFor} so it can say why an app has no public address instead of
+   * calling the missing record "DNS propagating" for as long as the refusal stands (#2312).
+   */
+  private currentStandingRefusals: ReadonlyMap<AppUrn, PublicDnsFailureReason> = new Map();
 
   private readonly lastTailscaleServeToastAt = new Map<string, number>();
   private static readonly TAILSCALE_SERVE_FAILURE_COOLDOWN_MS = 5 * 60_000;
@@ -853,6 +859,11 @@ export class ExposureSyncService implements OnModuleDestroy {
     return this.cloudflareSyncDepth > 0;
   }
 
+  /** Why the last answered sync refused `appUrn` a public address, for a refusal that stands until someone acts. */
+  public publicDnsRefusalFor(appUrn: AppUrn): PublicDnsFailureReason | null {
+    return this.currentStandingRefusals.get(appUrn) ?? null;
+  }
+
   onModuleDestroy() {
     this.clearCloudflareRetry();
   }
@@ -982,11 +993,14 @@ export class ExposureSyncService implements OnModuleDestroy {
       const orgInfo = await this.registrationService.getDeviceRegistrationInfo();
 
       if (!orgInfo) {
+        // No organization, no plan: a refusal from the one this Hub left no longer stands.
+        this.currentStandingRefusals = new Map();
         this.logger.debug('[Cloudflare] Skipping sync: Organization not registered');
         return;
       }
 
       if (!orgInfo.tunnelId) {
+        this.currentStandingRefusals = new Map();
         this.logger.warn(
           `[Cloudflare] Skipping sync: Organization ${orgInfo.id} exists but has no tunnelId. Please complete device registration to provision tunnel.`,
         );
@@ -1103,7 +1117,9 @@ export class ExposureSyncService implements OnModuleDestroy {
       // The partial-failure branch maps app names to database rows, exposed entries,
       // and failure reasons. Index once to avoid a full scan for every failure on
       // Hubs that run many apps.
-      const dbAppByName = indexByFirst(apps, (candidate: AppFromDb) => candidate.appName);
+      // The synced rows come first: a failed name is one this payload sent, and another store's app of
+      // the same name (a failed install, say) must not take its refusal.
+      const dbAppByName = indexByFirst([...syncedDbApps, ...apps], (candidate: AppFromDb) => candidate.appName);
 
       const toToastTarget = (dbApp: AppFromDb): PublicDnsToastTarget => ({
         appUrn: createAppUrn(dbApp.appName, dbApp.appStoreSlug),
@@ -1237,6 +1253,7 @@ export class ExposureSyncService implements OnModuleDestroy {
       if (result.ok) {
         // Only a sync the Portal answered says which apps it stopped refusing.
         this.forgetSettledRefusals(standingRefusals);
+        this.currentStandingRefusals = standingRefusals;
 
         const skipAutoRestartAppUrns = new Set(options?.skipAutoRestartAppUrns ?? []);
 

@@ -3,6 +3,7 @@ import { AppsService } from '../apps.service';
 import type { AppUrn } from '@ci-hub/common/types';
 import { CloudflareClientService } from '../../cloudflare/cloudflare-client.service';
 import { TailscaleService } from '../../tailscale/tailscale.service';
+import { ExposureSyncService } from '../../app-lifecycle/exposure-sync.service';
 
 // Mock axios
 vi.mock('axios', () => ({
@@ -82,10 +83,12 @@ const createMockService = () => {
       supportsServices: true,
     }),
   };
+  const exposureSync = { publicDnsRefusalFor: vi.fn().mockReturnValue(null) };
   const moduleRefMock = {
     get: vi.fn((token: unknown) => {
       if (token === CloudflareClientService) return cloudflareClient;
       if (token === TailscaleService) return tailscaleService;
+      if (token === ExposureSyncService) return exposureSync;
       return undefined;
     }),
   };
@@ -96,7 +99,19 @@ const createMockService = () => {
   (service as any).moduleRef = moduleRefMock;
   (service as any).appsReadService = { getApp: getAppMock };
 
-  return { service, mockApp, mockInfo, mockConfig, mockOrg, getAppMock, getConfigMock, getDeviceRegMock, moduleRefMock, tailscaleService };
+  return {
+    service,
+    mockApp,
+    mockInfo,
+    mockConfig,
+    mockOrg,
+    getAppMock,
+    getConfigMock,
+    getDeviceRegMock,
+    moduleRefMock,
+    tailscaleService,
+    exposureSync,
+  };
 };
 
 describe('AppsService.checkAppAvailability', () => {
@@ -483,6 +498,56 @@ describe('AppsService.checkAppAvailability', () => {
 
     expect(result.errorCode).toBe('DNS_NOT_FOUND');
     expect(httpsGetExcerpt).not.toHaveBeenCalled();
+  });
+
+  // On the free plan the app after the setup wizard is refused a public address. Its record never
+  // comes, so "DNS propagating" was wrong for as long as the plan stayed full (#2312).
+  it('cloudflare mode → says the plan has no public address left when the last sync was refused for that', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    vi.mocked(resolveAtZoneNameservers).mockResolvedValue({ kind: 'nxdomain' });
+    ctx.exposureSync.publicDnsRefusalFor.mockReturnValue('subdomain_quota_exceeded');
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(ctx.exposureSync.publicDnsRefusalFor).toHaveBeenCalledWith('test-app:test-store');
+    expect(result).toMatchObject({ available: false, stage: 'error', errorCode: 'PUBLIC_ADDRESS_QUOTA_EXCEEDED', resolvable: false });
+    expect(result.appUrl).toContain('https://');
+  });
+
+  it('cloudflare mode → any other refusal keeps the probe verdict', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    vi.mocked(resolveAtZoneNameservers).mockResolvedValue({ kind: 'nxdomain' });
+    ctx.exposureSync.publicDnsRefusalFor.mockReturnValue('duplicate_subdomain');
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result).toMatchObject({ errorCode: 'DNS_NOT_FOUND', stage: 'propagating' });
+  });
+
+  // The name resolves and the tunnel answered, so the refusal doesn't explain it. Its code keeps the
+  // re-sync on Resolve and its CLOUDFLARE reason keeps the runtime monitor from calling the app hung.
+  it('cloudflare mode → a verdict the tunnel answered keeps its code despite a remembered refusal', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    vi.mocked(resolveAtZoneNameservers).mockResolvedValue({ kind: 'addresses', addresses: ['104.21.48.168'] });
+    mockedAxiosGet.mockResolvedValue({ status: 502, data: 'Bad Gateway' });
+    ctx.exposureSync.publicDnsRefusalFor.mockReturnValue('subdomain_quota_exceeded');
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(ctx.exposureSync.publicDnsRefusalFor).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ available: false, errorCode: 'CF_UPSTREAM_ERROR', reason: 'CLOUDFLARE', resolvable: true });
+  });
+
+  it('cloudflare mode → an address that answers wins over a refusal the last sync remembered', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    vi.mocked(resolveAtZoneNameservers).mockResolvedValue({ kind: 'addresses', addresses: ['104.21.48.168'] });
+    mockedAxiosGet.mockRejectedValue(new Error('getaddrinfo ENOTFOUND myapp.example.com'));
+    vi.mocked(httpsGetExcerpt).mockResolvedValue({ status: 200, text: '<html>sign in</html>' });
+    ctx.exposureSync.publicDnsRefusalFor.mockReturnValue('subdomain_quota_exceeded');
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result).toMatchObject({ available: true, stage: 'ready' });
   });
 
   it('cloudflare mode → DNS ENOTFOUND = DNS_NOT_FOUND, resolvable, includes appUrl', async () => {

@@ -47,6 +47,7 @@ describe('resolveProbeMessageKey', () => {
   it('maps known backend error codes to translation keys', () => {
     expect(resolveProbeMessageKey('DNS_NOT_FOUND')).toBe('APP_ACTION_ERROR_DNS_NOT_FOUND');
     expect(resolveProbeMessageKey('CF_TUNNEL_NOT_FOUND')).toBe('APP_ACTION_ERROR_CF_TUNNEL_NOT_FOUND');
+    expect(resolveProbeMessageKey('PUBLIC_ADDRESS_QUOTA_EXCEEDED')).toBe('APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED');
   });
 
   it('returns null for unknown or absent codes so the caller can fall back to the raw detail', () => {
@@ -258,6 +259,24 @@ describe('useAppUrlAvailability', () => {
     // Polling has stopped, so the UI must be told to stop waiting.
     expect(result.current.pollingStopped).toBe(true);
     expect(result.current.state).toBe('unreachable');
+  });
+
+  // The Portal refused the app a public address because the plan is full. That never propagates,
+  // so the page must not say it is propagating (#2312).
+  it('reports a plan with no public address left as unreachable, with what to do, not as propagating', async () => {
+    probe({
+      available: false,
+      stage: 'error',
+      errorCode: 'PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+      appUrl: 'https://app.example.com',
+      resolvable: false,
+    });
+
+    const { result } = renderHook(() => useAppUrlAvailability(EXPOSED), { wrapper: wrapper() });
+
+    await waitFor(() => expect(result.current.state).toBe('unreachable'));
+    expect(result.current.statusMessage).toBe('APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED');
+    expect(result.current.resolvable).toBe(false);
   });
 
   it('keeps the last resolved URL when a later probe returns none', async () => {

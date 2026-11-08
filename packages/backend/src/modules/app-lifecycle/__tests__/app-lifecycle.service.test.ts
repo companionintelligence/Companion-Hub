@@ -3920,6 +3920,43 @@ describe('AppLifecycleService', () => {
       expect(logger.error).toHaveBeenCalledTimes(4);
     });
 
+    // The app page asks this instead of calling the missing record "DNS propagating" (#2312).
+    it('remembers which apps the last answered sync refused, until a sync stops refusing them', async () => {
+      expect(exposureSyncService.publicDnsRefusalFor(N8N)).toBeNull();
+
+      await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
+      expect(exposureSyncService.publicDnsRefusalFor(N8N)).toBe('subdomain_quota_exceeded');
+      expect(exposureSyncService.publicDnsRefusalFor(EXCALIDRAW)).toBeNull();
+
+      // A pass the Portal didn't answer says nothing about which apps it refuses.
+      await syncUnanswered(6);
+      expect(exposureSyncService.publicDnsRefusalFor(N8N)).toBe('subdomain_quota_exceeded');
+
+      await syncAfter(6);
+      expect(exposureSyncService.publicDnsRefusalFor(N8N)).toBeNull();
+    });
+
+    it('forgets the refusals once the Hub has no organization to sync with', async () => {
+      await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
+      expect(exposureSyncService.publicDnsRefusalFor(N8N)).toBe('subdomain_quota_exceeded');
+
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue(null as any);
+      await service.triggerCloudflareSync();
+
+      expect(exposureSyncService.publicDnsRefusalFor(N8N)).toBeNull();
+    });
+
+    // Another store's app of the same name that this sync left out must not take the refusal.
+    it('gives a refusal to the synced app when another store ships an app of the same name', async () => {
+      const failedN8n = { ...n8n, appStoreSlug: 'other-store', status: 'install_failed' };
+      appsRepository.getApps.mockResolvedValue([failedN8n, n8n, excalidraw] as any);
+
+      await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
+
+      expect(exposureSyncService.publicDnsRefusalFor(N8N)).toBe('subdomain_quota_exceeded');
+      expect(exposureSyncService.publicDnsRefusalFor('n8n:other-store' as any)).toBeNull();
+    });
+
     it('shows it again when the reason changes', async () => {
       await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
       await syncAfter(6, { n8n: 'duplicate_subdomain' });
