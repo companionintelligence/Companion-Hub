@@ -65,6 +65,13 @@ export type UpdateOptions = {
    * may be there to answer.
    */
   includeDesktopApp?: boolean;
+  /**
+   * With `includeDesktopApp: false`, still let the desktop app take the update when the updater
+   * container can't reproduce this Hub's stack, so nothing else can update it: a Windows install, or a
+   * compose layout the updater can't pin. A browser on another computer asks for this, so it can still
+   * update such a Hub. The daily check doesn't, because nobody may be there to answer a password prompt.
+   */
+  desktopAppWhenOnlyWay?: boolean;
 };
 
 /** Hub container probe — `/.dockerenv` plus Podman's containerenv. Not the `/data` heuristic. */
@@ -421,7 +428,10 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
    * When `includeDesktopApp` allows it and the desktop app's listener answers, the desktop app takes the
    * update instead: it installs its own new version, then recreates the stack on the new pin.
    */
-  async performUpdate(targetVersion?: string, { includeDesktopApp = true }: UpdateOptions = {}): Promise<PerformUpdateResult> {
+  async performUpdate(
+    targetVersion?: string,
+    { includeDesktopApp = true, desktopAppWhenOnlyWay = false }: UpdateOptions = {},
+  ): Promise<PerformUpdateResult> {
     const requested = targetVersion === undefined ? undefined : normalizeHubVersionTag(targetVersion);
 
     const running = await this.inspectRunningHub();
@@ -440,7 +450,8 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     const envFile = mountTargets.envFile;
     const planResult = resolveComposeUpdatePlan(running.container, mountTargets);
 
-    const listenerReachable = includeDesktopApp && (await this.probeHostListener());
+    const desktopAppMayTakeIt = includeDesktopApp || (desktopAppWhenOnlyWay && !planResult.ok);
+    const listenerReachable = desktopAppMayTakeIt && (await this.probeHostListener());
     if (listenerReachable) {
       const previous = this.pinHubStackVersionInEnv(envFile, pinned);
       const host = await this.triggerHostListener();

@@ -2398,6 +2398,7 @@ export type PairDeviceBody = {
 
 export type PerformUpdateBody = {
     targetVersion?: string;
+    includeDesktopApp?: boolean;
 };
 
 export type AvailableDomainsResponseDto = {
