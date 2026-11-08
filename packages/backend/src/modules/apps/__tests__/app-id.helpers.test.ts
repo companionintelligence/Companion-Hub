@@ -41,10 +41,18 @@ describe('assertAppIdFree', () => {
     expect(() => assertAppIdFree(createAppUrn(appName, store), installed())).toThrow('APP_ERROR_APP_ID_RESERVED');
   });
 
-  // The Hub names an app's other routers `<id>-insecure` and `<id>-tailscale`, and its public-host
-  // middleware `<id>-public-host`. App `x` from store `home` and app `x` from store `home-insecure`
-  // would both define the router `x-home-insecure`.
+  // The Hub names an app's other routers `<id>-insecure`, `<id>-tailscale`, `<id>-sw-reset` and
+  // `<id>-sw-reset-insecure`, and its public-host middleware `<id>-public-host`. App `x` from store
+  // `home` and app `x` from store `home-insecure` would both define the router `x-home-insecure`.
   it.each([
+    [
+      ['x', 'home-sw-reset'],
+      ['x', 'home'],
+    ],
+    [
+      ['x', 'home-sw-reset-insecure'],
+      ['x', 'home'],
+    ],
     [
       ['x', 'home-insecure'],
       ['x', 'home'],

@@ -34,8 +34,59 @@ describe('TraefikLabelsBuilder — forward-auth middleware', () => {
         .filter((name): name is string => Boolean(name)),
     );
     for (const router of routers) {
-      expect(labels[`traefik.http.routers.${router}.middlewares`], `router ${router} is unguarded`).toBe('ci-hub-edge-headers@file,ci-hub@file');
+      // The service worker reset routers (#2324) put their middleware in front of the same forward auth.
+      const expected = router.includes('-sw-reset')
+        ? 'ci-hub-edge-headers@file,ci-hub-sw-reset@file,ci-hub@file'
+        : 'ci-hub-edge-headers@file,ci-hub@file';
+      expect(labels[`traefik.http.routers.${router}.middlewares`], `router ${router} is unguarded`).toBe(expected);
     }
+  });
+
+  // A browser holding a worker from before the sign-in can only update it through these (#2324).
+  describe('service worker reset routers', () => {
+    const host = 'Host(`ci-planning-core-2.ci.lan`)';
+
+    it('take only a worker script fetch of /sw.js, on both entry points, for the app service', () => {
+      const labels = build({ enableAuth: true });
+
+      for (const [router, entrypoint] of [
+        ['ci-planning-ci-marketplace-sw-reset-insecure', 'web'],
+        ['ci-planning-ci-marketplace-sw-reset', 'websecure'],
+      ] as const) {
+        expect(labels[`traefik.http.routers.${router}.rule`]).toBe(`${host} && Path(\`/sw.js\`) && Header(\`Service-Worker\`, \`script\`)`);
+        expect(labels[`traefik.http.routers.${router}.entrypoints`]).toBe(entrypoint);
+        expect(labels[`traefik.http.routers.${router}.service`]).toBe('ci-planning-ci-marketplace');
+        expect(labels[`traefik.http.routers.${router}.priority`]).toBeUndefined();
+      }
+      expect(labels['traefik.http.routers.ci-planning-ci-marketplace-sw-reset.tls.certresolver']).toBe('myresolver');
+    });
+
+    it('rank above the app router only by their longer rule', () => {
+      const labels = build({ enableAuth: true });
+
+      const appRule = String(labels['traefik.http.routers.ci-planning-ci-marketplace.rule']);
+      const resetRule = String(labels['traefik.http.routers.ci-planning-ci-marketplace-sw-reset.rule']);
+      expect(resetRule.startsWith(`${appRule} && `)).toBe(true);
+      expect(resetRule.length).toBeGreaterThan(appRule.length);
+    });
+
+    it('keep the public host middleware after the forward auth', () => {
+      const labels = build({ enableAuth: true, cloudflarePublicHostname: 'ci-planning-core-2.example.com' });
+
+      expect(labels['traefik.http.routers.ci-planning-ci-marketplace-sw-reset.middlewares']).toBe(
+        'ci-hub-edge-headers@file,ci-hub-sw-reset@file,ci-hub@file,ci-planning-ci-marketplace-public-host@docker',
+      );
+    });
+
+    it('are left out when the app has no sign-in in front, or no public route', () => {
+      const open = build({ enableAuth: false });
+      const local = new TraefikLabelsBuilder({ ...base, exposureMode: 'local', enableAuth: true }).addCloudflareLabels().build();
+      const tailscale = new TraefikLabelsBuilder({ ...base, exposureMode: 'tailscale', enableAuth: true }).addTailscaleLabels().build();
+
+      for (const labels of [open, local, tailscale]) {
+        expect(Object.keys(labels).filter((key) => key.includes('-sw-reset'))).toEqual([]);
+      }
+    });
   });
 
   it('attaches no login to either router when auth is disabled, only the edge-header strip', () => {
@@ -91,6 +142,10 @@ describe('withAppStartingPage', () => {
         'ci-hub-edge-headers@file,ci-hub@file,ci-planning-ci-marketplace-public-host@docker,ci-hub-app-starting@file',
       'traefik.http.routers.ci-planning-ci-marketplace-insecure.middlewares':
         'ci-hub-edge-headers@file,ci-hub@file,ci-planning-ci-marketplace-public-host@docker,ci-hub-app-starting@file',
+      'traefik.http.routers.ci-planning-ci-marketplace-sw-reset.middlewares':
+        'ci-hub-edge-headers@file,ci-hub-sw-reset@file,ci-hub@file,ci-planning-ci-marketplace-public-host@docker,ci-hub-app-starting@file',
+      'traefik.http.routers.ci-planning-ci-marketplace-sw-reset-insecure.middlewares':
+        'ci-hub-edge-headers@file,ci-hub-sw-reset@file,ci-hub@file,ci-planning-ci-marketplace-public-host@docker,ci-hub-app-starting@file',
     });
   });
 
