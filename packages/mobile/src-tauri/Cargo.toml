@@ -41,6 +41,8 @@ log = "0.4"
 
 # Android Auth Tab (the ASWebAuthenticationSession equivalent) calls back
 # through JNI. Host and iOS builds never link this.
+# Wry's executor uses JNI 0.21 while this native callback uses JNI 0.22; keep
+# their Java objects and environments within their respective API boundaries.
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22.4"
 

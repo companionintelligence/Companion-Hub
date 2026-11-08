@@ -23,6 +23,8 @@ const CATALOG_CREATORS = [
   'Cohere',
   'Thinking Machines',
   'Google (community)',
+  'Recursive',
+  'Xiaomi',
 ];
 
 function iconHtml(creator: string | undefined) {
