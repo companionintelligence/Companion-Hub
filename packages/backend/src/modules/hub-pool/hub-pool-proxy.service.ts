@@ -1,7 +1,7 @@
 import { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { forwardRef, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { Response } from 'express';
-import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
+import { type BackendResidency, INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import type { EngineCapabilities } from '@/modules/inference/backends/backend.interface';
@@ -77,7 +77,14 @@ import {
   type ResponseTapObserver,
 } from './response-usage-tap';
 import { POOL_AFFINITY_HEADER, PrefixAffinityStore, applyPrefixAffinity, derivePrefixKey, type PrefixKey } from './hub-pool-prefix-affinity';
-import { chooseAutoModel, collectPoolModelOffers, type AutoModelPreference, type NodeModelInventory } from './pool-auto-model';
+import {
+  autoModelNeeds,
+  chooseAutoModel,
+  collectPoolModelOffers,
+  type AutoModelChoice,
+  type AutoModelPreference,
+  type NodeModelInventory,
+} from './pool-auto-model';
 import {
   judgeRequestError,
   lastCandidateRequestError,
@@ -97,6 +104,7 @@ import {
 
 /** Added to a forward's deadline message when it ran under the last local candidate's longer budget, so the 502 names the setting that decided it. */
 const LAST_LOCAL_DEADLINE_NOTE = ' (last candidate, on this node)';
+import { type NativeChatPlan, nativeChatPlan, nativeChatPlanAt, nativeChatWindow, openAiChatResponse, optionsNumCtx } from './ollama-native-chat';
 import {
   MAX_JUDGED_BODY_BYTES,
   OutputJudge,
@@ -343,15 +351,12 @@ export function isStreamingRequest(body: unknown, path?: string): boolean {
  * what an engine actually loads the model at. The OpenAI-compatible `/v1` surface has no such field
  * and Ollama ignores one if sent (see `describeFromPeer`'s note on the Hermes probe), so a `/v1`
  * request runs at the serving engine's own default window — which is what the node's cap records.
- * For those, the caller falls back to the prompt estimate; see `applyContextCaps`. Anything but a
- * positive integer is no request, not a tiny one.
+ * The exception is a `/v1` chat completion that names one, which the pool sends to Ollama's native
+ * route (see `requestedWindow`). For the rest, the caller falls back to the prompt estimate; see
+ * `applyContextCaps`. Anything but a positive integer is no request, not a tiny one.
  */
 export function requestedNumCtx(body: unknown): number | null {
-  if (!isRecord(body) || !isRecord(body.options)) {
-    return null;
-  }
-  const raw = body.options.num_ctx;
-  return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : null;
+  return optionsNumCtx(body);
 }
 
 /**
@@ -613,6 +618,9 @@ const PEER_PAIRING_STATUSES: ReadonlySet<number> = new Set([401, 403]);
  * request that ranks it, and agent traffic ranks all day. Each refusal is still in the routing log.
  */
 const PEER_ENGINE_REFUSAL_WARN_INTERVAL_MS = 10 * 60_000;
+
+/** How often the same `auto` pass-over goes out at log level; see `PoolProxyService.noteAutoPassOver`. */
+const AUTO_PASS_OVER_NOTE_INTERVAL_MS = 10 * 60_000;
 
 /**
  * How long a request waits in the Hub, with its model's load refused only because other models'
@@ -1305,8 +1313,31 @@ const WINDOW_RELOADING_BACKENDS: ReadonlySet<InferenceBackendType> = new Set<Inf
 /** Sentinel a residency read's placement budget resolves to, distinct from any answer the engine gives — see `prefixCanStillBeWarm`. */
 const RESIDENCY_BUDGET_ELAPSED = Symbol('residency budget elapsed');
 
-/** The window a request runs at when it names one: `options.num_ctx` on Ollama's native routes, never on `/v1`, where Ollama drops `options` and its default applies. */
+/**
+ * What `listResident` answers, or {@link RESIDENCY_BUDGET_ELAPSED} when it has not answered within
+ * {@link PLACEMENT_PROBE_BUDGET_MS}. Rejects when the read throws, synchronously or not.
+ */
+async function residencyWithinBudget(listResident: () => Promise<BackendResidency>): Promise<BackendResidency | typeof RESIDENCY_BUDGET_ELAPSED> {
+  let budgetTimer: NodeJS.Timeout | undefined;
+  const budget = new Promise<typeof RESIDENCY_BUDGET_ELAPSED>((resolve) => {
+    budgetTimer = setTimeout(() => resolve(RESIDENCY_BUDGET_ELAPSED), PLACEMENT_PROBE_BUDGET_MS);
+  });
+  try {
+    return await Promise.race([listResident(), budget]);
+  } finally {
+    clearTimeout(budgetTimer);
+  }
+}
+
+/**
+ * The window a request runs at when it names one: `options.num_ctx` on Ollama's native routes. A `/v1`
+ * chat completion that names one runs at it too, because the pool sends it to the native route (`nativeChatWindow`, #2310).
+ * Any other `/v1` request is counted at the engine's default, because Ollama's `/v1` drops `options`. A chat
+ * completion that names none may still run at the window its model is loaded at on this node's Ollama, which
+ * is only decided at the forward (`loadedWindowPlan`), so this doesn't know it.
+ */
 function requestedWindow(path: string, body: unknown): number | null {
+  if (path === '/v1/chat/completions') return nativeChatWindow(body);
   return path.startsWith('/api/') ? requestedNumCtx(body) : null;
 }
 
@@ -1735,6 +1766,8 @@ export class PoolProxyService {
   private readonly prefixAffinity = new PrefixAffinityStore();
   /** When each peer engine's key refusal was last warned about — see {@link warnPeerEngineRefusal}. Bounded by peers × engines × two statuses. */
   private readonly peerEngineRefusalWarnedAt = new Map<string, number>();
+  /** The last `auto` pass-over line written at log level, and when. See {@link noteAutoPassOver}. */
+  private lastAutoPassOverNote: { line: string; at: number } | undefined;
   /**
    * Engines that have been answering 200 with cut-off or degenerate output, and are withheld from the
    * front of the walk for a cooldown — see `hub-pool-output-check.ts`. Per node, engine and model.
@@ -1752,7 +1785,7 @@ export class PoolProxyService {
    * the operator had set nothing, took the registry's pinned or loaded model and then the first one
    * the engine listed — beta-ms-a2's newest pull, `deepseek-r1:8b`.
    */
-  async resolveModelAlias(model: string): Promise<string | undefined> {
+  async resolveModelAlias(model: string, body?: unknown): Promise<string | undefined> {
     if (model !== AUTO_MODEL) {
       return model;
     }
@@ -1761,11 +1794,32 @@ export class PoolProxyService {
     const choice = chooseAutoModel(collectPoolModelOffers(inventories), {
       preferred: this.preferredChatModel(),
       catalog: this.modelRegistry?.getCatalog() ?? [],
+      needs: autoModelNeeds(body),
     });
-    if (choice) {
+    if (choice?.passedOver) {
+      this.noteAutoPassOver(choice.passedOver, choice.model);
+    } else if (choice) {
       this.logger.debug(`[PoolProxy] "${AUTO_MODEL}" resolved to "${choice.model}" (${choice.reason})`);
     }
     return choice?.model;
+  }
+
+  /**
+   * The operator's line for `auto` passing over their Settings > Inference model. An agent sends a
+   * turn every few seconds and the setting stays put, so it goes out at log level once per
+   * {@link AUTO_PASS_OVER_NOTE_INTERVAL_MS} for the same pass-over and at debug in between.
+   */
+  private noteAutoPassOver(passedOver: NonNullable<AutoModelChoice['passedOver']>, chosen: string): void {
+    const lacking = passedOver.lacks.map((need) => (need === 'tools' ? 'tool calling' : 'thinking')).join(' or ');
+    const line = `[PoolProxy] "${AUTO_MODEL}" passed over the Settings > Inference model "${passedOver.model}" (no ${lacking}, which this request uses) for "${chosen}"`;
+    const now = Date.now();
+    const last = this.lastAutoPassOverNote;
+    if (last && last.line === line && now - last.at < AUTO_PASS_OVER_NOTE_INTERVAL_MS) {
+      this.logger.debug(line);
+      return;
+    }
+    this.lastAutoPassOverNote = { line, at: now };
+    this.logger.log(line);
   }
 
   /** Settings → Inference, as an engine id. A catalog id maps through its row, an engine id stands as itself. */
@@ -2531,12 +2585,8 @@ export class PoolProxyService {
     if (typeof engine?.listResident !== 'function') {
       return null;
     }
-    let budgetTimer: NodeJS.Timeout | undefined;
-    const budget = new Promise<typeof RESIDENCY_BUDGET_ELAPSED>((resolve) => {
-      budgetTimer = setTimeout(() => resolve(RESIDENCY_BUDGET_ELAPSED), PLACEMENT_PROBE_BUDGET_MS);
-    });
     try {
-      const residency = await Promise.race([engine.listResident(), budget]);
+      const residency = await residencyWithinBudget(engine.listResident.bind(engine));
       if (residency === RESIDENCY_BUDGET_ELAPSED) {
         return `its residency did not answer within ${PLACEMENT_PROBE_BUDGET_MS} ms`;
       }
@@ -2546,8 +2596,6 @@ export class PoolProxyService {
       return residency.models.some((resident) => sameModelId(resident.id, model)) ? null : `${model} is no longer resident there`;
     } catch (error) {
       return `its residency could not be read: ${error instanceof Error ? error.message : String(error)}`;
-    } finally {
-      clearTimeout(budgetTimer);
     }
   }
 
@@ -2677,7 +2725,7 @@ export class PoolProxyService {
     const { path, method, res } = params;
     const startedAt = Date.now();
     const clientClosed = watch.clientClosed;
-    const model = await this.resolveModelAlias(params.model);
+    const model = await this.resolveModelAlias(params.model, params.body);
     if (!model) {
       const failed = this.routingLog.record({
         at: new Date().toISOString(),
@@ -4185,7 +4233,7 @@ export class PoolProxyService {
     if (!isRecord(body)) return body;
     const fields = ['name', 'model'].filter((field) => body[field] === AUTO_MODEL);
     if (fields.length === 0) return body;
-    const resolved = await this.resolveModelAlias(AUTO_MODEL);
+    const resolved = await this.resolveModelAlias(AUTO_MODEL, body);
     if (!resolved) return null;
     return { ...body, ...Object.fromEntries(fields.map((field) => [field, resolved])) };
   }
@@ -4361,20 +4409,77 @@ export class PoolProxyService {
     lastLocal = false,
   ): Promise<globalThis.Response> {
     const backendImpl = this.backends.get(backend);
-    const url = `${backendImpl.getBaseUrl()}${path}`;
     const apiKey = backendImpl.getApiKey?.();
+    const headers = { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) };
+    // Ollama's `/v1` drops `options.num_ctx`, so a chat completion that names a window goes to its native
+    // `/api/chat`, which honours it. The answer comes back in the OpenAI shape (#2310). See `ollama-native-chat.ts`.
+    // One that names none runs at the window its model is already loaded at, when that is safe, so it doesn't reload it.
+    const native =
+      backend === 'ollama' && method === 'POST' && path === '/v1/chat/completions'
+        ? (nativeChatPlan(body) ?? (await this.loadedWindowPlan(backend, body, Buffer.byteLength(payload ?? '', 'utf8'))))
+        : null;
+    if (native) {
+      const upstream = await this.fetchWithConnectTimeout(
+        `${backendImpl.getBaseUrl()}/api/chat`,
+        { method, headers, body: JSON.stringify(native.request) },
+        native.stream,
+        payload?.length ?? 0,
+        clientClosed,
+        lastLocal,
+      );
+      return await openAiChatResponse(upstream, native);
+    }
     return this.fetchWithConnectTimeout(
-      url,
-      {
-        method,
-        headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
-        body: payload,
-      },
+      `${backendImpl.getBaseUrl()}${path}`,
+      { method, headers, body: payload },
       isStreamingRequest(body, path),
       payload?.length ?? 0,
       clientClosed,
       lastLocal,
     );
+  }
+
+  /**
+   * A `/v1` chat completion that names no window, sent at the window its model is already loaded at
+   * on this node's `backend`, or `null` to send it to `/v1` as before.
+   *
+   * Hermes names `num_ctx` on its main turns but not on side calls such as title generation. Once
+   * the main turn runs at its window (see {@link nativeChatPlan}), a side call on `/v1` ran at the
+   * engine's default, so Ollama reloaded the model for it and again for the next main turn: two
+   * reloads per turn, each minutes on a CPU. Running the side call at the loaded window reloads
+   * nothing. The model must be resident at a window Ollama reports, the prompt estimate at most half
+   * of it and the window above the default this node states for the engine. At that default `/v1`
+   * reloads nothing either. Below it `/v1` gives the request more room. A node that states no
+   * default can't rule that out, so there a request may get less room than `/v1` would have given it.
+   * Anything else, a model that isn't loaded included, goes to `/v1` exactly as before. Residency is
+   * read within {@link PLACEMENT_PROBE_BUDGET_MS}.
+   *
+   * Placement and the window bookkeeping still count such a request at the engine's default (see
+   * `requestedWindow`), because the window is only known here, at the forward.
+   */
+  private async loadedWindowPlan(backend: InferenceBackendType, body: unknown, bodyBytes: number): Promise<NativeChatPlan | null> {
+    if (!isRecord(body) || typeof body.model !== 'string' || optionsNumCtx(body) !== null) {
+      return null;
+    }
+    const engine = this.backends.tryGet(backend);
+    if (typeof engine?.listResident !== 'function') {
+      return null;
+    }
+    const model = body.model;
+    // A residency that throws, or isn't a promise, is no answer rather than a failed forward.
+    const residency = await residencyWithinBudget(engine.listResident.bind(engine)).catch(() => null);
+    if (residency === null || residency === RESIDENCY_BUDGET_ELAPSED) {
+      return null;
+    }
+    const loaded = residency?.models?.find((resident) => sameModelId(resident.id, model))?.contextLength;
+    if (typeof loaded !== 'number' || !Number.isInteger(loaded) || loaded <= 0) {
+      return null;
+    }
+    const engineDefault = this.localEngineWindow(backend);
+    if (estimatePromptTokens(bodyBytes) * 2 > loaded || (engineDefault !== null && loaded <= engineDefault)) {
+      return null;
+    }
+    return nativeChatPlanAt(body, loaded);
   }
 
   private async forward(

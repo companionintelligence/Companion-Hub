@@ -9,7 +9,7 @@ export const LOCAL_CANDIDATE_KEY = 'local';
 export interface LocalGeneration {
   backend: InferenceBackendType;
   model: string;
-  /** Its `options.num_ctx`; `null` when it named none — every `/v1` request — so it runs at the engine's default. */
+  /** Its `options.num_ctx`; `null` when it named none, or on a `/v1` request other than a chat completion that names one, so it is counted at the engine's default. A `/v1` chat completion that names none may run at its model's loaded window instead (`PoolProxyService.loadedWindowPlan`), which this doesn't record. */
   numCtx: number | null;
 }
 

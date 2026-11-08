@@ -116,10 +116,27 @@ http:
         service: ci-hub-app-starting
         query: "/api/apps/starting?status={originalStatus}"
 
+    # A signed-out browser updating an app's service worker (#2324). The app's `-sw-reset` routers
+    # (traefik-labels.builder.ts) match only fetches of `/sw.js` that carry the `Service-Worker: script`
+    # header browsers send for worker scripts. They put this in front of the forward auth, which
+    # answers such a fetch with a 401 when nobody is signed in. The browser then gets the Hub's
+    # self-removing worker with a 200 in place of a refusal it can't use, so the next page load
+    # reaches the sign-in. A signed-in request passes the forward auth and gets the app's own `/sw.js`.
+    # This middleware also wraps the app's answer, so an app that answers its own `/sw.js` with a 401
+    # hands that browser the same worker. Only the 401 is caught: an app's redirect or 403 passes.
+    ci-hub-sw-reset:
+      errors:
+        status:
+          - "401"
+        statusRewrites:
+          "401": 200
+        service: ci-hub-app-starting
+        query: "/api/auth/service-worker-reset.js"
+
   services:
-    # The Hub, for the page above, at the same tagged address as forward auth (see the top of this
-    # file). Keeps the visitor's `Host` (Traefik's default, written out because the page depends on
-    # it) rather than the Hub's.
+    # The Hub, for the starting page and the service worker reset above, at the same tagged address
+    # as forward auth (see the top of this file). Keeps the visitor's `Host` (Traefik's default,
+    # written out because the starting page depends on it) rather than the Hub's.
     ci-hub-app-starting:
       loadBalancer:
         passHostHeader: true

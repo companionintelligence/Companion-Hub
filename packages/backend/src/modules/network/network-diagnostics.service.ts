@@ -7,6 +7,8 @@ import { AppsRepository } from '../apps/apps.repository';
 import { DOCKERODE } from '../docker/constants';
 import { cidrOverlaps, normalizeIpv4Cidr } from './cidr-overlap';
 import { HUB_APP_POOL_CIDR } from './network-constants';
+import { isNetworkRemovalRace } from './docker-network-errors';
+import { networksNamedByContainers } from './prune-idle-managed-networks';
 import { collectOccupiedSubnets, type OccupiedSubnet } from './subnet-occupancy';
 
 export interface DuplicateDbSubnetIssue {
@@ -99,13 +101,12 @@ export class NetworkDiagnosticsService {
         await this.docker.getNetwork(orphan.dockerNetworkId).remove();
         removed.push(orphan.dockerNetworkName);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (/already in use|has active endpoints|not found/i.test(message)) {
+        if (isNetworkRemovalRace(error)) {
           skipped.push(orphan.dockerNetworkName);
           continue;
         }
 
-        failed.push({ networkName: orphan.dockerNetworkName, message });
+        failed.push({ networkName: orphan.dockerNetworkName, message: error instanceof Error ? error.message : String(error) });
       }
     }
 
@@ -202,12 +203,7 @@ export class NetworkDiagnosticsService {
       return [];
     });
 
-    const networksInUse = new Set<string>();
-    for (const container of containers) {
-      for (const networkName of Object.keys(container.NetworkSettings?.Networks ?? {})) {
-        networksInUse.add(networkName);
-      }
-    }
+    const networksInUse = networksNamedByContainers(containers);
 
     const orphans: OrphanNetworkIssue[] = [];
 
@@ -227,7 +223,7 @@ export class NetworkDiagnosticsService {
         continue;
       }
 
-      if (networksInUse.has(networkName)) {
+      if (networksInUse.has(networkName) || networksInUse.has(network.Id)) {
         continue;
       }
 

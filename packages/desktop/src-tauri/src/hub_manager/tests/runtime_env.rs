@@ -589,6 +589,71 @@ fn runtime_env_keeps_the_domain_the_hub_learned_from_its_portal() {
 }
 
 #[test]
+fn learning_the_zone_at_pairing_does_not_change_the_stack_hash() {
+    // The start before pairing saved the hash of the env file it rendered with the build default.
+    // Pairing has the Hub rewrite that file with the zone it learned. The launch after renders it
+    // again. That alone used to change the hash, so opening the window recreated the running Hub
+    // (#2314).
+    let (tempdir, data_dir) = portal_test_data_dir();
+    let compose = tempdir.path().join("docker-compose.prod.yml");
+    std::fs::write(&compose, b"services: {}\n").expect("write compose");
+    let env_path = tempdir.path().join(".env");
+
+    // Before pairing a launch renders the file. Its start adds the ports and saves the hash.
+    std::fs::write(
+        &env_path,
+        launch_env_file_content(&render_with_domain(&data_dir, None), ""),
+    )
+    .expect("write env");
+    let ports = crate::port_manager::PortResolution {
+        env_vars: [("HTTP_PORT", 80), ("HTTPS_PORT", 443), ("API_PORT", 5002)]
+            .into_iter()
+            .map(|(var, port)| (var.to_string(), port))
+            .collect(),
+        warnings: Vec::new(),
+        info: Vec::new(),
+    };
+    crate::port_manager::write_ports_to_env(&env_path, &ports).expect("write ports");
+    persist_config_hash(&data_dir, &compose, &env_path);
+
+    // Pairing, as `ConfigurationService.setDomain` writes it: comments and blank lines dropped, the
+    // zone set and no line break at the end.
+    let rewritten_by_hub = std::fs::read_to_string(&env_path)
+        .expect("read env")
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            if line.starts_with("DOMAIN=") {
+                "DOMAIN=zone.example.test"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&env_path, &rewritten_by_hub).expect("write env");
+
+    // The launch after pairing, as `initialize_hub` writes it.
+    let existing = load_runtime_env_values(&data_dir, &env_path);
+    let rendered =
+        render_runtime_env_content_for_portal(&data_dir, &existing, &resolve_portal_url_at(None));
+    std::fs::write(
+        &env_path,
+        launch_env_file_content(&rendered, &rewritten_by_hub),
+    )
+    .expect("write env");
+
+    assert!(std::fs::read_to_string(&env_path)
+        .unwrap()
+        .lines()
+        .any(|line| line == "DOMAIN=zone.example.test"));
+    assert_eq!(
+        std::fs::read_to_string(data_dir.join(".config-hash")).expect("saved hash"),
+        compute_config_hash(&compose, &env_path)
+    );
+}
+
+#[test]
 fn runtime_env_strips_quotes_from_a_learned_domain() {
     // `parse_env_file` only trims, so a hand-edited or third-party-written entry can arrive
     // quoted. Carrying the quotes forward would bake them into every hostname the Hub composes.
