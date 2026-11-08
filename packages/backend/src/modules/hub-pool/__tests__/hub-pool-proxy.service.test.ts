@@ -3932,7 +3932,8 @@ describe('PoolProxyService', () => {
         expect(entry?.promptCeiling?.estimatedTokens).toBe(entry?.contextCap?.numCtx);
       });
 
-      it('ignores options.num_ctx on a /v1 request, as Ollama does: it runs at the engine default all the same', async () => {
+      // The pool sends such a request to Ollama's native route, which loads the model at that window (#2310).
+      it('takes options.num_ctx on a /v1 chat completion as its window, like the native turn', async () => {
         servePeers(core17AndCore2());
         answerWith200();
 
@@ -3940,6 +3941,28 @@ describe('PoolProxyService', () => {
           path: '/v1/chat/completions',
           method: 'POST',
           body: { model: MODEL, stream: true, options: { num_ctx: 65_536 }, messages: [{ role: 'user', content: 'hello' }] },
+          model: MODEL,
+          res: createMockResponse(),
+        });
+
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-2.tailxyz.ts.net' });
+        expect(entry?.contextCap).toEqual({
+          numCtx: 65_536,
+          source: 'request',
+          excluded: [{ node: 'core-17.tailxyz.ts.net', maxNumCtx: CORE17_CAP }],
+          overridden: false,
+        });
+      });
+
+      it('ignores options.num_ctx on a /v1 request the pool leaves on /v1, as Ollama does', async () => {
+        servePeers(core17AndCore2());
+        answerWith200();
+
+        await service.proxyRequest({
+          path: '/v1/completions',
+          method: 'POST',
+          body: { model: MODEL, stream: true, options: { num_ctx: 65_536 }, prompt: 'hello' },
           model: MODEL,
           res: createMockResponse(),
         });
@@ -6855,12 +6878,12 @@ describe('PoolProxyService', () => {
         expect(ids(await hermesTurn())).toEqual([null, 'core-2']);
       });
 
-      it('records a /v1 turn at the engine default even when its body names a window: Ollama drops `options` there', async () => {
+      it('records a /v1 completion at the engine default even when its body names a window: Ollama drops `options` there', async () => {
         const upstream = holdUpstream();
         const v1 = service.proxyRequest({
-          path: '/v1/chat/completions',
+          path: '/v1/completions',
           method: 'POST',
-          body: { model: MODEL, stream: true, options: { num_ctx: HERMES_NUM_CTX }, messages: [{ role: 'user', content: 'hi' }] },
+          body: { model: MODEL, stream: true, options: { num_ctx: HERMES_NUM_CTX }, prompt: 'hi' },
           model: MODEL,
           res: createMockResponse(),
         });
@@ -6870,6 +6893,25 @@ describe('PoolProxyService', () => {
         // does not state, it cannot be shown to.
         expect(ids(await hermesTurn())).toEqual(['core-2', null]);
         expect(ids(await hermesV1())).toEqual([null, 'core-2']);
+
+        upstream.release();
+        await v1;
+      });
+
+      // The pool sends it to Ollama's native route, which loads the model at that window (#2310).
+      it('records a /v1 chat completion that names a window at that window, so the native turn joins it', async () => {
+        const upstream = holdUpstream();
+        const v1 = service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: { model: MODEL, stream: true, options: { num_ctx: HERMES_NUM_CTX }, messages: [{ role: 'user', content: 'hi' }] },
+          model: MODEL,
+          res: createMockResponse(),
+        });
+        await vi.waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+        expect(String(vi.mocked(global.fetch).mock.calls[0]?.[0])).toMatch(/\/api\/chat$/);
+
+        expect(ids(await hermesTurn())).toEqual([null, 'core-2']);
 
         upstream.release();
         await v1;
@@ -8228,6 +8270,225 @@ describe('PoolProxyService', () => {
       expect(await service.resolveModelAlias(AUTO_MODEL)).toBe(MODEL);
       // Twelve probes per request used to be the cost of `auto`; the snapshot answers both reads.
       expect(ollama.healthCheck).not.toHaveBeenCalled();
+    });
+  });
+
+  // Ollama's /v1 drops options.num_ctx, so Companion Memory and Hermes ran at the host default while
+  // OpenClaw asked for the handout's, and each switch reloaded the model (#2310).
+  describe('a /v1 chat completion that names a window, on Ollama', () => {
+    const MODEL = 'qwen3.5:4b';
+    const at = '2026-11-07T10:00:00.000Z';
+    const answer = [
+      { model: MODEL, created_at: at, message: { role: 'assistant', content: 'OK' }, done: false },
+      {
+        model: MODEL,
+        created_at: at,
+        message: { role: 'assistant', content: '' },
+        done: true,
+        done_reason: 'stop',
+        prompt_eval_count: 12,
+        eval_count: 2,
+      },
+    ]
+      .map((line) => `${JSON.stringify(line)}\n`)
+      .join('');
+
+    beforeEach(() => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      vi.mocked(global.fetch).mockImplementation(async () => new Response(answer, { status: 200 }));
+    });
+
+    it("goes to Ollama's native /api/chat with that window, and the app gets OpenAI's stream back", async () => {
+      const res = createMockResponse();
+      const body = { model: MODEL, stream: true, options: { num_ctx: 65_536 }, messages: [{ role: 'user', content: 'Reply OK' }] };
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model: MODEL, res });
+
+      const [url, init] = vi.mocked(global.fetch).mock.calls[0] ?? [];
+      expect(String(url)).toBe('http://local-ollama:11434/api/chat');
+      expect(JSON.parse(String(init?.body))).toEqual({
+        model: MODEL,
+        messages: [{ role: 'user', content: 'Reply OK' }],
+        options: { num_ctx: 65_536 },
+        stream: true,
+      });
+      expect(headersSetOn(res)['content-type']).toBe('text/event-stream');
+      const sent = Buffer.concat(res.chunks).toString('utf8');
+      expect(sent).toContain('"object":"chat.completion.chunk"');
+      expect(sent).toContain('"content":"OK"');
+      expect(sent).toContain('"finish_reason":"stop"');
+      // The proxy asks for usage on every stream; the native answer's counts come back in OpenAI's shape.
+      expect(sent).toContain('"usage":{"prompt_tokens":12,"completion_tokens":2,"total_tokens":14}');
+      expect(sent.trimEnd().endsWith('data: [DONE]')).toBe(true);
+      expect(routingLog.list()[0]).toMatchObject({
+        outcome: 'served',
+        path: '/v1/chat/completions',
+        usage: { promptTokens: 12, completionTokens: 2 },
+      });
+    });
+
+    it('stays on /v1 when the request names no window and its model is not loaded', async () => {
+      vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+      const body = { model: MODEL, stream: true, messages: [{ role: 'user', content: 'hi' }] };
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model: MODEL, res: createMockResponse() });
+
+      expect(String(vi.mocked(global.fetch).mock.calls[0]?.[0])).toBe('http://local-ollama:11434/v1/chat/completions');
+    });
+
+    it('stays on /v1 for an engine other than Ollama, which runs the window it was started with', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      lemonade.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+      const body = { model: MODEL, stream: true, options: { num_ctx: 65_536 }, messages: [{ role: 'user', content: 'hi' }] };
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model: MODEL, res: createMockResponse() });
+
+      const url = String(vi.mocked(global.fetch).mock.calls[0]?.[0]);
+      expect(url.endsWith('/v1/chat/completions')).toBe(true);
+      expect(url).not.toContain('local-ollama');
+    });
+
+    // Hermes names num_ctx on its main turns but not on side calls such as title generation. On /v1 a
+    // side call ran at the engine default and reloaded the model. The next main turn reloaded it again.
+    describe('one that names no window', () => {
+      const loadedAt = (contextLength: number, id = MODEL) =>
+        ollama.listResident.mockResolvedValue({
+          backend: 'ollama',
+          source: 'measured',
+          models: [{ id, engineGpuBytes: null, totalBytes: null, expiresAt: null, contextLength, quantization: null }],
+        } as never);
+      const titleCall = (content = 'Title this chat') => ({ model: MODEL, stream: false, max_tokens: 10, messages: [{ role: 'user', content }] });
+      const sentTo = () => String(vi.mocked(global.fetch).mock.calls[0]?.[0]);
+      const sentBody = () => JSON.parse(String(vi.mocked(global.fetch).mock.calls[0]?.[1]?.body));
+
+      beforeEach(() => {
+        vi.mocked(global.fetch).mockImplementation(
+          async () =>
+            new Response(
+              JSON.stringify({ model: MODEL, created_at: at, message: { role: 'assistant', content: 'A title' }, done: true, done_reason: 'stop' }),
+              {
+                status: 200,
+              },
+            ),
+        );
+      });
+
+      it('runs at the window its model is already loaded at, so nothing reloads', async () => {
+        loadedAt(65_536);
+        const res = createMockResponse();
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: titleCall(), model: MODEL, res });
+
+        expect(sentTo()).toBe('http://local-ollama:11434/api/chat');
+        expect(sentBody()).toMatchObject({ options: { num_ctx: 65_536, num_predict: 10 }, stream: false });
+        expect(JSON.parse(Buffer.concat(res.chunks).toString('utf8'))).toMatchObject({ object: 'chat.completion' });
+      });
+
+      it('stays on /v1 when its model is not loaded, or another model is', async () => {
+        ollama.listResident.mockResolvedValue({ backend: 'ollama', source: 'measured', models: [] } as never);
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: titleCall(), model: MODEL, res: createMockResponse() });
+        expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
+
+        vi.mocked(global.fetch).mockClear();
+        loadedAt(65_536, 'gemma3:1b');
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: titleCall(), model: MODEL, res: createMockResponse() });
+        expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
+      });
+
+      it('stays on /v1 when its prompt is more than half the loaded window', async () => {
+        loadedAt(4096);
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: titleCall('x'.repeat(9000)),
+          model: MODEL,
+          res: createMockResponse(),
+        });
+
+        expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
+      });
+
+      it('stays on /v1 when the loaded window is at or below the default this node states, which /v1 would give it', async () => {
+        configuration.getInferencePreferences.mockReturnValue({ maxNumCtx: 32_768 } as never);
+        loadedAt(8192);
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: titleCall(), model: MODEL, res: createMockResponse() });
+
+        expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
+
+        // At the default itself `/v1` reloads nothing, so there is nothing to translate it for.
+        vi.mocked(global.fetch).mockClear();
+        loadedAt(32_768);
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: titleCall(), model: MODEL, res: createMockResponse() });
+        expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
+
+        vi.mocked(global.fetch).mockClear();
+        loadedAt(65_536);
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: titleCall(), model: MODEL, res: createMockResponse() });
+        expect(sentTo()).toBe('http://local-ollama:11434/api/chat');
+      });
+
+      it('stays on /v1 when residency fails or takes too long to answer', async () => {
+        ollama.listResident.mockRejectedValue(new Error('connect ECONNREFUSED'));
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: titleCall(), model: MODEL, res: createMockResponse() });
+        expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
+
+        vi.mocked(global.fetch).mockClear();
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        try {
+          ollama.listResident.mockImplementation(() => new Promise(() => undefined));
+          const sent = service.proxyRequest({
+            path: '/v1/chat/completions',
+            method: 'POST',
+            body: titleCall(),
+            model: MODEL,
+            res: createMockResponse(),
+          });
+          await vi.advanceTimersByTimeAsync(PLACEMENT_PROBE_BUDGET_MS);
+          await sent;
+        } finally {
+          vi.useRealTimers();
+        }
+        expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
+      });
+
+      it('leaves a request that names a window it cannot carry on /v1, whatever is loaded', async () => {
+        loadedAt(65_536);
+        const body = {
+          model: MODEL,
+          options: { num_ctx: 8192 },
+          messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://example.com/a.png' } }] }],
+        };
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model: MODEL, res: createMockResponse() });
+
+        expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
+      });
+    });
+
+    it("translates a peer's forwarded /v1 turn on this node's Ollama too", async () => {
+      const res = createMockResponse();
+      const body = { model: MODEL, stream: false, options: { num_ctx: 32_768 }, messages: [{ role: 'user', content: 'hi' }] };
+      vi.mocked(global.fetch).mockImplementation(
+        async () =>
+          new Response(
+            JSON.stringify({ model: MODEL, created_at: at, message: { role: 'assistant', content: 'hey' }, done: true, done_reason: 'stop' }),
+            {
+              status: 200,
+            },
+          ),
+      );
+
+      await service.forwardToLocalBackendAndRespond('ollama', '/v1/chat/completions', 'POST', body, res, 'core-6.tailxyz.ts.net', MODEL);
+
+      const [url, init] = vi.mocked(global.fetch).mock.calls[0] ?? [];
+      expect(String(url)).toBe('http://local-ollama:11434/api/chat');
+      expect(JSON.parse(String(init?.body))).toMatchObject({ options: { num_ctx: 32_768 }, stream: false });
+      const sent = JSON.parse(Buffer.concat(res.chunks).toString('utf8'));
+      expect(sent).toMatchObject({ object: 'chat.completion', choices: [{ message: { role: 'assistant', content: 'hey' }, finish_reason: 'stop' }] });
     });
   });
 
