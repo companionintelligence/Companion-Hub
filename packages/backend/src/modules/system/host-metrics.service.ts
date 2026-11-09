@@ -172,8 +172,9 @@ export class HostMetricsService {
     if (probe.platform !== 'linux') {
       return probe;
     }
-    const { availableMb } = await this.readLiveMemory();
-    if (availableMb <= 0) {
+    const { totalMb, availableMb } = await this.readLiveMemory();
+    // A much smaller meminfo is a VM's, as with Docker Desktop on Linux: its free memory says nothing about the probed host.
+    if (availableMb <= 0 || this.detectVmWedge(probe, { totalRamMb: totalMb })) {
       return probe;
     }
     return { ...probe, host: { ...probe.host, availableRamMb: Math.min(availableMb, probe.host.totalRamMb) } };

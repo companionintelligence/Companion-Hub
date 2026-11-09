@@ -362,6 +362,17 @@ describe('HostMetricsService', () => {
       expect(load.memoryUsed).toBe(Math.round((16384 - 15000) / 1024));
     });
 
+    it('keeps the stored memory figure when meminfo is a VM much smaller than the probed Linux host', async () => {
+      serveLinuxProbe(linuxProbeFile({ totalRamMb: 65536, availableRamMb: 60000 }), 'MemTotal: 8388608\nMemAvailable: 6291456');
+
+      const load = await service.getDisplayLoad(5, 8);
+
+      expect(load.hasVmWedge).toBe(true);
+      expect(load.memoryTotal).toBe(64);
+      expect(load.memoryUsed).toBe(5);
+      expect(load.percentUsedMemory).toBe(8);
+    });
+
     it('keeps the probe memory on macOS, where meminfo is the Docker Desktop VM', async () => {
       filesystemService.readTextFile.mockImplementation(async (path: string) => {
         if (path === '/data/state/hardware/host_metrics.json') return hostProbeJson();
