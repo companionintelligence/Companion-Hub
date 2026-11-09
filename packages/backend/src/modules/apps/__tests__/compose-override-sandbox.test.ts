@@ -133,6 +133,12 @@ describe('collectComposeOverrideViolations', () => {
       );
     });
 
+    it('refuses declaring a Hub network to join it', () => {
+      expect(rules('services:\n  web:\n    networks: [ci-hub_network]\nnetworks:\n  ci-hub_network:\n')).toContain(
+        'COMPOSE_OVERRIDE_NETWORK_NOT_ALLOWED',
+      );
+    });
+
     it('refuses a network the override does not declare', () => {
       expect(rules(service('networks: [ci-hub_network]'))).toEqual(['COMPOSE_OVERRIDE_NETWORK_NOT_ALLOWED']);
     });
@@ -164,6 +170,19 @@ describe('collectComposeOverrideViolations', () => {
 
     it('takes the merged value a local key sets', () => {
       expect(check('x-a: &a {privileged: true}\nservices:\n  web:\n    <<: *a\n    privileged: false\n')).toEqual([]);
+    });
+
+    it.each([
+      ['U+2028', '\u2028'],
+      ['U+2029', '\u2029'],
+      ['U+0085', '\u0085'],
+      ['a lone CR', '\r'],
+    ])('refuses a comment that %s would end for Compose', (_name, lineBreak) => {
+      expect(rules(`services:\n  web:\n    image: alpine # note${lineBreak}    privileged: true\n`)).toContain('COMPOSE_OVERRIDE_UNREADABLE');
+    });
+
+    it('reads CRLF line endings', () => {
+      expect(check('services:\r\n  web:\r\n    image: alpine\r\n')).toEqual([]);
     });
 
     it.each([
@@ -227,8 +246,50 @@ describe('collectComposeOverrideViolations', () => {
       'APP_DATA_DIR: /elsewhere',
       'FOO=1\r\nAPP_DATA_DIR=/elsewhere\r\n',
       '\ufeffAPP_DATA_DIR=/elsewhere',
+      '\fAPP_DATA_DIR=/elsewhere',
+      'APP_DATA_DIR\v=/elsewhere',
+      '\u00a0APP_DATA_DIR=/elsewhere',
+      'APP_DATA_DIR\u00a0=/elsewhere',
+      '\u0085APP_DATA_DIR=/elsewhere',
+      'export\fAPP_DATA_DIR=/elsewhere',
     ])('refuses an env file that sets the app data folder: %j', (appEnv) => {
-      expect(rules('', appEnv)).toEqual(['COMPOSE_OVERRIDE_APP_DATA_DIR_RESERVED']);
+      expect(rules('', appEnv)).toEqual(['COMPOSE_OVERRIDE_ENV_NAME_RESERVED']);
+    });
+
+    it.each(['APP_ID', 'APP_DOMAIN', 'APP_LOCAL_DOMAIN', 'APP_BASE_HOST', 'APP_URN'])('refuses an env file that sets %s', (name) => {
+      expect(rules('', `${name}=hub.local\n`)).toEqual(['COMPOSE_OVERRIDE_ENV_NAME_RESERVED']);
+    });
+
+    it('leaves a commented-out line in the env file alone', () => {
+      expect(check('', '# APP_DATA_DIR=/elsewhere\n# FOO=$HUB_ONLY_VALUE\n')).toEqual([]);
+    });
+
+    it.each(['COPY=${HUB_ONLY_VALUE}', 'COPY=$HUB_ONLY_VALUE', 'COPY=${MINE:-${HUB_ONLY_VALUE}}'])(
+      'refuses an env file value that uses a variable the Hub defines: %s',
+      (appEnv) => {
+        expect(rules('', appEnv)).toEqual(['COMPOSE_OVERRIDE_VARIABLE_NOT_ALLOWED']);
+      },
+    );
+
+    it('leaves the app’s own variables and escaped dollars in the env file alone', () => {
+      expect(check('', 'FOO=${MINE}\nBAR=$$HUB_ONLY_VALUE\n')).toEqual([]);
+    });
+
+    it.each([
+      ['a list', 'environment:\n  - HUB_ONLY_VALUE'],
+      ['a mapping', 'environment:\n  HUB_ONLY_VALUE:'],
+    ])('refuses a name with no value that the Hub defines, in %s', (_name, body) => {
+      expect(rules(service(body))).toEqual(['COMPOSE_OVERRIDE_VARIABLE_NOT_ALLOWED']);
+    });
+
+    it('allows a name with no value that the Hub does not define, and an empty value', () => {
+      expect(check(service('environment:\n  - MINE\n  - HUB_ONLY_VALUE='))).toEqual([]);
+    });
+
+    it('allows a variable every app is handed, though the Hub defines it too', () => {
+      const appUrn = CUSTOM_APP;
+      const override = service('environment:\n  ZONE: "${TZ}"\n  LOCAL_DOMAIN:');
+      expect(collectComposeOverrideViolations(override, 'ZONE=${TZ}\n', { appUrn, hubEnvironment: ['TZ', 'LOCAL_DOMAIN'] })).toEqual([]);
     });
 
     it('allows other env file names', () => {
@@ -238,6 +299,11 @@ describe('collectComposeOverrideViolations', () => {
     it('still allows a mount under the app data folder', () => {
       expect(check(service('volumes: ["${APP_DATA_DIR}/extra:/extra"]'))).toEqual([]);
     });
+  });
+
+  it('lets a label pin Traefik to a Hub network and no other', () => {
+    expect(check(service('labels:\n  traefik.docker.network: ci-hub_network'))).toEqual([]);
+    expect(rules(service('labels:\n  traefik.docker.network: other'))).toEqual(['CUSTOM_APP_ERROR_TRAEFIK_NETWORK_NOT_HUB']);
   });
 
   describe('normal overrides', () => {

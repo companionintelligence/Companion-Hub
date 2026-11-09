@@ -1,7 +1,14 @@
+import { HUB_ENV_KEYS_INHERITED_BY_APPS, hubAppNetworkNames } from '@/common/constants';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { appIdOf } from '@/modules/apps/app-id.helpers';
 import { securityGrantsFor } from '@/modules/apps/security-grants';
-import { type AppSecurityGrants, collectServiceSecurityViolations, collectTraefikLabelIssues, isReservedHubLabel } from '@ci-hub/common/schemas';
+import {
+  type AppSecurityGrants,
+  collectServiceSecurityViolations,
+  collectTraefikLabelIssues,
+  HUB_OWNED_APP_ENV_VARS,
+  isReservedHubLabel,
+} from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import * as yaml from 'yaml';
 
@@ -33,7 +40,7 @@ const VOLUME_DEFINITION_NOT_ALLOWED = 'COMPOSE_OVERRIDE_VOLUME_DEFINITION_NOT_AL
 const IPC_NOT_ALLOWED = 'COMPOSE_OVERRIDE_IPC_NOT_ALLOWED';
 const VOLUME_TYPE_NOT_ALLOWED = 'COMPOSE_OVERRIDE_VOLUME_TYPE_NOT_ALLOWED';
 const VOLUMES_FROM_NOT_ALLOWED = 'COMPOSE_OVERRIDE_VOLUMES_FROM_NOT_ALLOWED';
-const APP_DATA_DIR_RESERVED = 'COMPOSE_OVERRIDE_APP_DATA_DIR_RESERVED';
+const ENV_NAME_RESERVED = 'COMPOSE_OVERRIDE_ENV_NAME_RESERVED';
 
 /**
  * The Compose keys an override may set on a service: what the builder renders for an app, plus limits
@@ -124,8 +131,14 @@ const OVERRIDE_TAG_KEYS = new Set(['ports', 'environment']);
 /** Every `$NAME` and `${NAME` reference in a string, nested ones included. `$$` is a literal dollar. */
 const VARIABLE_REFERENCE = /\$(?:\$|\{?([A-Za-z_][A-Za-z0-9_]*))/g;
 
-/** The app's data folder is the Hub's to set: the builder's rules clear `${APP_DATA_DIR}` because it did. Compose reads all these spellings. */
-const ASSIGNS_APP_DATA_DIR = /^﻿?[ \t]*(?:export[ \t]+)?APP_DATA_DIR[ \t]*[=:]/m;
+/**
+ * A line of the env file that sets a variable. Compose reads `NAME=`, `NAME:` and `export NAME=`, and
+ * skips any Unicode space around the name. JavaScript's `\s` covers all of those but U+0085.
+ */
+const ENV_FILE_ASSIGNMENT = /^[\s\u0085]*(?:export\s+)?([^\s\u0085=:#]+)[\s\u0085]*[=:]/;
+
+/** Line breaks the two parsers don't read the same way, so an override holding one can't be judged here. */
+const LINE_BREAK_COMPOSE_READS_DIFFERENTLY = /\r(?!\n)|[\u0085\u2028\u2029]/;
 
 function isMapping(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -153,7 +166,8 @@ function optionalString(value: unknown, path: string, violations: ComposeOverrid
   return undefined;
 }
 
-function stringList(value: unknown, path: string, violations: ComposeOverrideViolation[]): string[] {
+/** A setting Compose reads as a list, or nothing. Anything else counts against the override. */
+function listEntries(value: unknown, path: string, violations: ComposeOverrideViolation[]): unknown[] {
   if (value === undefined || value === null) {
     return [];
   }
@@ -161,7 +175,11 @@ function stringList(value: unknown, path: string, violations: ComposeOverrideVio
     violations.push({ path, rule: UNREADABLE });
     return [];
   }
-  return value.flatMap((entry, index) => {
+  return value;
+}
+
+function stringList(value: unknown, path: string, violations: ComposeOverrideViolation[]): string[] {
+  return listEntries(value, path, violations).flatMap((entry, index) => {
     if (typeof entry === 'string') {
       return [entry];
     }
@@ -172,14 +190,7 @@ function stringList(value: unknown, path: string, violations: ComposeOverrideVio
 
 /** `devices` is short syntax strings, or Compose's long form with a `source`: the only part that names the host. */
 function deviceList(value: unknown, path: string, violations: ComposeOverrideViolation[]): string[] {
-  if (value === undefined || value === null) {
-    return [];
-  }
-  if (!Array.isArray(value)) {
-    violations.push({ path, rule: UNREADABLE });
-    return [];
-  }
-  return value.flatMap((entry, index) => {
+  return listEntries(value, path, violations).flatMap((entry, index) => {
     if (typeof entry === 'string') {
       return [entry];
     }
@@ -211,14 +222,7 @@ function shortVolume(entry: string, path: string, violations: ComposeOverrideVio
 }
 
 function volumeList(value: unknown, path: string, violations: ComposeOverrideViolation[]): { hostPath?: string; volumeName?: string }[] {
-  if (value === undefined || value === null) {
-    return [];
-  }
-  if (!Array.isArray(value)) {
-    violations.push({ path, rule: UNREADABLE });
-    return [];
-  }
-  return value.map((entry, index) => {
+  return listEntries(value, path, violations).map((entry, index) => {
     const entryPath = `${path}.${index}`;
     if (typeof entry === 'string') {
       return shortVolume(entry, entryPath, violations);
@@ -280,13 +284,16 @@ function checkServiceNetworks(value: unknown, path: string, allowedNetworks: Rea
   }
 }
 
-function checkLabels(
-  value: unknown,
-  path: string,
-  appId: string,
-  knownAppIds: Iterable<string> | undefined,
-  violations: ComposeOverrideViolation[],
-): void {
+interface ServiceCheckContext {
+  grants: AppSecurityGrants | undefined;
+  allowedNetworks: ReadonlySet<string>;
+  hubNetworks: readonly string[];
+  appId: string;
+  knownAppIds: Iterable<string> | undefined;
+  hubEnvironment: ReadonlySet<string>;
+}
+
+function checkLabels(value: unknown, path: string, context: ServiceCheckContext, violations: ComposeOverrideViolation[]): void {
   if (value === undefined || value === null) {
     return;
   }
@@ -316,12 +323,12 @@ function checkLabels(
       violations.push({ path: `${path}.${key}`, rule: 'CUSTOM_APP_ERROR_LABEL_RESERVED', detail: key });
     }
   }
-  for (const issue of collectTraefikLabelIssues(labels, appId, { knownAppIds })) {
+  for (const issue of collectTraefikLabelIssues(labels, context.appId, { knownAppIds: context.knownAppIds, hubNetworks: context.hubNetworks })) {
     violations.push({ path: `${path}.${issue.label}`, rule: issue.message });
   }
 }
 
-/** Variables the Hub's own process defines. Those aren't the app's to read. */
+/** Variables the Hub's process defines aren't the app's to use. */
 function collectHubVariableReferences(
   value: unknown,
   path: string,
@@ -350,6 +357,35 @@ function collectHubVariableReferences(
   }
 }
 
+/** An `environment` entry that names a variable and gives it no value counts as using that variable. */
+function checkInheritedEnvironment(value: unknown, path: string, hubEnvironment: ReadonlySet<string>, violations: ComposeOverrideViolation[]): void {
+  let names: string[] = [];
+  if (Array.isArray(value)) {
+    names = value.filter((entry): entry is string => typeof entry === 'string' && !entry.includes('='));
+  } else if (isMapping(value)) {
+    names = Object.keys(value).filter((name) => value[name] === null || value[name] === undefined);
+  }
+  for (const name of names) {
+    if (hubEnvironment.has(name)) {
+      violations.push({ path: `${path}.${name}`, rule: VARIABLE_NOT_ALLOWED, detail: name });
+    }
+  }
+}
+
+/** An env file can't set the names the Hub's own checks rely on, or use a variable that isn't the app's. */
+function checkEnvFile(appEnv: string, hubEnvironment: ReadonlySet<string>, violations: ComposeOverrideViolation[]): void {
+  for (const line of appEnv.split('\n')) {
+    const name = ENV_FILE_ASSIGNMENT.exec(line)?.[1];
+    if (!name) {
+      continue;
+    }
+    if (HUB_OWNED_APP_ENV_VARS.has(name)) {
+      violations.push({ path: `appEnv.${name}`, rule: ENV_NAME_RESERVED });
+    }
+    collectHubVariableReferences(line, `appEnv.${name}`, hubEnvironment, violations);
+  }
+}
+
 /** The builder's field names, spelled as the Compose keys someone writes in an override. */
 const COMPOSE_SPELLING: Record<string, string> = {
   capAdd: 'cap_add',
@@ -357,18 +393,7 @@ const COMPOSE_SPELLING: Record<string, string> = {
   securityOpt: 'security_opt',
 };
 
-function checkService(
-  name: string,
-  service: Record<string, unknown>,
-  context: {
-    grants: AppSecurityGrants | undefined;
-    allowedNetworks: ReadonlySet<string>;
-    appId: string;
-    knownAppIds: Iterable<string> | undefined;
-    hubEnvironment: ReadonlySet<string>;
-  },
-  violations: ComposeOverrideViolation[],
-): void {
+function checkService(name: string, service: Record<string, unknown>, context: ServiceCheckContext, violations: ComposeOverrideViolation[]): void {
   const servicePath = `services.${name}`;
 
   for (const key of Object.keys(service)) {
@@ -413,7 +438,8 @@ function checkService(
 
   checkVolumesFrom(service.volumes_from, `${servicePath}.volumes_from`, violations);
   checkServiceNetworks(service.networks, `${servicePath}.networks`, context.allowedNetworks, violations);
-  checkLabels(service.labels, `${servicePath}.labels`, context.appId, context.knownAppIds, violations);
+  checkLabels(service.labels, `${servicePath}.labels`, context, violations);
+  checkInheritedEnvironment(service.environment, `${servicePath}.environment`, context.hubEnvironment, violations);
   collectHubVariableReferences(service, servicePath, context.hubEnvironment, violations);
 }
 
@@ -445,6 +471,7 @@ function checkTopLevelDefinitions(
   rule: string,
   declared: Set<string>,
   violations: ComposeOverrideViolation[],
+  reserved: readonly string[] = [],
 ): void {
   if (value === undefined || value === null) {
     return;
@@ -454,7 +481,7 @@ function checkTopLevelDefinitions(
     return;
   }
   for (const [name, definition] of Object.entries(value)) {
-    if (definition === null || (isMapping(definition) && Object.keys(definition).length === 0)) {
+    if (!reserved.includes(name) && (definition === null || (isMapping(definition) && Object.keys(definition).length === 0))) {
       declared.add(name);
     } else {
       violations.push({ path: `${section}.${name}`, rule });
@@ -463,6 +490,10 @@ function checkTopLevelDefinitions(
 }
 
 function parseOverride(composeYaml: string, violations: ComposeOverrideViolation[]): unknown {
+  if (LINE_BREAK_COMPOSE_READS_DIFFERENTLY.test(composeYaml)) {
+    violations.push({ path: 'override', rule: UNREADABLE, detail: 'a line break other than LF or CRLF' });
+    return undefined;
+  }
   // Compose follows `<<` merge keys, so the result has to have them applied too.
   const doc = yaml.parseDocument(composeYaml, { merge: true, stringKeys: true, uniqueKeys: true, version: '1.2' });
   const firstError = doc.errors[0];
@@ -500,9 +531,12 @@ export function collectComposeOverrideViolations(
   const { appUrn, knownAppIds } = options;
   const violations: ComposeOverrideViolation[] = [];
 
-  if (ASSIGNS_APP_DATA_DIR.test(appEnv)) {
-    violations.push({ path: 'appEnv.APP_DATA_DIR', rule: APP_DATA_DIR_RESERVED });
-  }
+  // Every app is handed these anyway, so they aren't the Hub's alone.
+  const hubEnvironment = new Set(
+    [...(options.hubEnvironment ?? Object.keys(process.env))].filter((name) => !HUB_ENV_KEYS_INHERITED_BY_APPS.has(name)),
+  );
+
+  checkEnvFile(appEnv, hubEnvironment, violations);
 
   const parsed = parseOverride(composeYaml, violations);
   if (parsed === undefined || parsed === null) {
@@ -522,7 +556,9 @@ export function collectComposeOverrideViolations(
   const { appName, appStoreId } = extractAppUrn(appUrn);
   const allowedNetworks = new Set(['default', `${appName}_${appStoreId}_network`]);
   checkTopLevelDefinitions(parsed.volumes, 'volumes', VOLUME_DEFINITION_NOT_ALLOWED, new Set(), violations);
-  checkTopLevelDefinitions(parsed.networks, 'networks', NETWORK_NOT_ALLOWED, allowedNetworks, violations);
+  // An empty declaration merges onto the generated entry of the same name, so it isn't a network of the override's own.
+  const hubNetworks = hubAppNetworkNames();
+  checkTopLevelDefinitions(parsed.networks, 'networks', NETWORK_NOT_ALLOWED, allowedNetworks, violations, hubNetworks);
 
   const services = parsed.services;
   if (services === undefined || services === null) {
@@ -533,12 +569,13 @@ export function collectComposeOverrideViolations(
     return violations;
   }
 
-  const context = {
+  const context: ServiceCheckContext = {
     grants: securityGrantsFor(appUrn),
     allowedNetworks,
+    hubNetworks,
     appId: appIdOf(appName, appStoreId),
     knownAppIds,
-    hubEnvironment: new Set(options.hubEnvironment ?? Object.keys(process.env)),
+    hubEnvironment,
   };
   for (const [name, service] of Object.entries(services)) {
     if (service === null) {

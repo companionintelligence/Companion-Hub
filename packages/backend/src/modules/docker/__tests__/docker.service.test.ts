@@ -343,7 +343,7 @@ describe('DockerService', () => {
     it('checks the env file even when there is no compose override', async () => {
       useUserConfig(null, true, 'APP_DATA_DIR=/elsewhere\n');
 
-      await expect(service.composeApp(appUrn, 'up --detach')).rejects.toThrow(/COMPOSE_OVERRIDE_APP_DATA_DIR_RESERVED/);
+      await expect(service.composeApp(appUrn, 'up --detach')).rejects.toThrow(/COMPOSE_OVERRIDE_ENV_NAME_RESERVED/);
     });
 
     it('still stops an app that has a refused override', async () => {

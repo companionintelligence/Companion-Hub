@@ -1013,7 +1013,8 @@ reading takes `view` (`configure` on a `_user` app), and every change takes `con
 An override saved there, and the env file beside it, is held to the app sandbox when it is saved and each time the
 app's containers are created (`compose-override-sandbox.ts`). The check runs at `compose up` too because a file can
 also come from a restore or an older Hub. It applies the builder's rules with the app's own grants and refuses any
-Compose key it doesn't know to be harmless. An override that can't be read as YAML is refused.
+Compose key it doesn't know to be harmless. An override that can't be read as YAML is refused. The env file can't set a name the
+Hub's checks take as the app's own (`HUB_OWNED_APP_ENV_VARS`), and neither file can use a value from outside the app.
 
 An app's log stream (`/api/sse/app-logs`) takes the verb reading its settings takes (`settingsReadAction`),
 since a container prints its env values at start. A stream sends at most 1000 lines at the start
