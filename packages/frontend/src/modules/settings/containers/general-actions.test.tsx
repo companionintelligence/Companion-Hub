@@ -558,6 +558,29 @@ describe('GeneralActionsContainer', () => {
 
       await waitFor(() => expect(performStackUpdate).toHaveBeenCalledWith('4.8.0', { noDesktopApp: true }));
     });
+
+    // Desktop apps up to 0.2.77 keep their token where the Hub can't read it, so the window is one too.
+    it('keeps the desktop app advice in the desktop window, whatever the Hub can see of the app', async () => {
+      vi.mocked(isTauri).mockReturnValue(true);
+      (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+      mockUseAppContext.mockReturnValue({
+        version: { current: '4.7.0', latest: '4.8.0', body: '', releases: [] },
+        refreshAppContext: vi.fn(),
+        userSettings: { ciHubDeviceSlug: 'core' },
+      } as unknown as ReturnType<typeof useAppContext>);
+      vi.mocked(performStackUpdate).mockResolvedValue({ ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_RESTARTING' });
+
+      render(<GeneralActionsContainer />);
+      await waitFor(() => expect(mockFetchHostListenerStatus).toHaveBeenCalled());
+      await screen.findByTestId('desktop-shell-update-card');
+      // The status answer lands asynchronously; let it settle before clicking.
+      await act(async () => {
+        await Promise.resolve();
+      });
+      await userEvent.click(await screen.findByTestId('hub-update-btn'));
+
+      await waitFor(() => expect(performStackUpdate).toHaveBeenCalledWith('4.8.0', { noDesktopApp: false }));
+    });
   });
 
   it('keeps the Desktop app card when the Hub could not say whether it has one', async () => {

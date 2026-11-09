@@ -131,8 +131,6 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   // False until the Hub answers, so the Desktop app card doesn't show and then vanish on a Hub without one.
   const [hostListenerAnswered, setHostListenerAnswered] = useState(false);
   const hostListenerReachable = hostListener?.reachable ?? null;
-  // A `cihub` install has no desktop app, so the card and its advice lead nowhere. Unknown keeps the card.
-  const noDesktopApp = hostListener?.desktopApp === false;
   // The app context offers a stack update whenever the registry has a newer tag. Only the Hub knows
   // whether it will take it (a Windows desktop install, a node whose compose env file isn't the one
   // it mounts). Without its answer the button ends in "Update failed".
@@ -150,6 +148,9 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   // The desktop app's own window, where this page can ask the app to install its update. `isTauri()`
   // is true in the phone app too, which only reaches a Hub over the network, like a browser.
   const desktopWindow = desktop && !isTauriMobileSync();
+  // A `cihub` install has no desktop app, so the card and its advice lead nowhere. Unknown keeps the card,
+  // and the desktop window is the app itself, whatever the Hub can see of it.
+  const noDesktopApp = !desktopWindow && hostListener?.desktopApp === false;
 
   const getUpdateMessage = useCallback(
     (result: UpdateActionResult) =>
