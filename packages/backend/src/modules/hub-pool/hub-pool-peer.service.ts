@@ -101,7 +101,7 @@ async function peerRefusalDetail(response: Response): Promise<string | null> {
  *
  * A model the Hub has tracked (loaded, pinned or pull-checked) comes out of `listModels` twice: under
  * its catalog id from the registry and under its engine id from the backend's own inventory. The
- * engine id is the one kept. It is what requests carry and what routing compares, and it is what this
+ * engine id is the one kept. It is what requests carry and what routing compares. It is also what this
  * node advertised before the Hub touched the model, so a load no longer changes the list. Compared
  * per engine because Lemonade can list a model the Hub registered as `user.<id>`. Only a row the
  * engine reported can replace a tracked one, so two tracked spellings of one model can't both go.

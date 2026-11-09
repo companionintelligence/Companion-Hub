@@ -273,7 +273,7 @@ export class RoutingLogQueryDto extends createZodDto(routingLogQuerySchema) {}
 
 /**
  * Bounded, but deliberately not validated against a grammar: a model id is whatever the engine
- * calls it (`llama3.2:3b`, `hf.co/org/repo:Q4_K_M`), and it is stored as given. On the request path
+ * calls it (`llama3.2:3b`, `hf.co/org/repo:Q4_K_M`) and it is stored as given. On the request path
  * it is compared with `sameModelId`, which folds only the implicit `:latest`. Any normalization here
  * would produce pins that look correct on the settings card and silently never match.
  */
