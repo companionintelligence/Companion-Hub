@@ -23,7 +23,6 @@ import {
   DEFAULT_DEMO_MODE,
   DEFAULT_DISABLE_PASSWORD_RESET,
   DEFAULT_GUEST_DASHBOARD,
-  DEFAULT_ALLOW_AUTO_THEMES,
   DEFAULT_ALLOW_ERROR_MONITORING,
   DEFAULT_PERSIST_TRAEFIK_CONFIG,
   DEFAULT_QUEUE_TIMEOUT_IN_MINUTES,
@@ -928,10 +927,6 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set(
     'GUEST_DASHBOARD',
     resolve('GUEST_DASHBOARD', { envMap, settingsVal: boolStr(settingsData.guestDashboard), fallback: DEFAULT_GUEST_DASHBOARD }),
-  );
-  envMap.set(
-    'ALLOW_AUTO_THEMES',
-    resolve('ALLOW_AUTO_THEMES', { envMap, settingsVal: boolStr(settingsData.allowAutoThemes), fallback: DEFAULT_ALLOW_AUTO_THEMES }),
   );
   // Not `resolve()`'s settingsVal slot: that slot is env-first, and this one key must not be.
   const errorMonitoringEnv = resolve('ALLOW_ERROR_MONITORING', { envMap, fallback: DEFAULT_ALLOW_ERROR_MONITORING });

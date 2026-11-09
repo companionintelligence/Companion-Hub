@@ -596,8 +596,6 @@
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_MODAL_TITLE": "Włączyć ustawienia zaawansowane?",
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_SUBTITLE": "Ustawienia zaawansowane do użytku tylko wtedy, gdy wiesz, co robisz.",
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_TITLE": "Ustawienia zaawansowane",
-  "SETTINGS_GENERAL_ALLOW_AUTO_THEMES": "Zezwól na automatyczną zmianę motywu",
-  "SETTINGS_GENERAL_ALLOW_AUTO_THEMES_HINT": "Niech zaskoczą cię motywy, które zmieniają się automatycznie zależnie od pory roku.",
   "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING": "Zezwól na anonimowe monitorowanie błędów",
   "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING_HINT": "Monitorowanie błędów służy do śledzenie błędów i poprawiania Companion Hub. Pozostaw tę opcję włączoną, aby pomóc nam ulepszać Companion Hub.",
   "SETTINGS_GENERAL_APPS_REPO": "URL repozytorium aplikacji",

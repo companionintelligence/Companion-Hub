@@ -36,7 +36,6 @@ const SETTINGS_PATH = path.join(DATA_DIR, 'state', 'settings.json');
  */
 const ONE_OF_EVERY_KEY: Required<PersistedSettings> = {
   advancedSettings: true,
-  allowAutoThemes: false,
   allowErrorMonitoring: false,
   appDataPath: '/srv/ci-hub',
   appsRepoUrl: 'https://github.com/companionintelligence/ci-hub-appstore.git',

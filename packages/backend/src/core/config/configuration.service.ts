@@ -66,7 +66,6 @@ const envSchema = z
       .default(true),
     GUEST_DASHBOARD: z.string().transform((val) => val.toLowerCase() === 'true'),
     ALLOW_ERROR_MONITORING: z.string().transform((val) => val.toLowerCase() === 'true'),
-    ALLOW_AUTO_THEMES: z.string().transform((val) => val.toLowerCase() === 'true'),
     PERSIST_TRAEFIK_CONFIG: z.string().transform((val) => val.toLowerCase() === 'true'),
     QUEUE_TIMEOUT_IN_MINUTES: z.coerce.number().default(5),
     LOG_LEVEL: z.enum(LOG_LEVEL_ENUM).default('info').catch('info'),
@@ -459,7 +458,6 @@ export class ConfigurationService {
       version: env.data.CI_HUB_VERSION,
       isProduction: NODE_ENV === 'production',
       userSettings: {
-        allowAutoThemes: env.data.ALLOW_AUTO_THEMES,
         // The user's error-reporting consent. This used to be hardcoded `true`, which
         // silently discarded the switch on every boot. The precedence now lives in one
         // shared resolver rather than being restated here — `generateSystemEnvFile` had

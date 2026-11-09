@@ -16,7 +16,6 @@ import { useAppContext } from '@/context/app-context';
 
 type HeaderProps = {
   isLoggedIn?: boolean;
-  allowAutoThemes?: boolean;
 };
 
 export const Header = (props: HeaderProps) => {

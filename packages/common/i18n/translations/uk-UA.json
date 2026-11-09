@@ -596,8 +596,6 @@
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_MODAL_TITLE": "Увімкнути розширені налаштування?",
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_SUBTITLE": "Додаткові налаштування призначені лише для тих, хто розуміє, що робить.",
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_TITLE": "Розширені налаштування",
-  "SETTINGS_GENERAL_ALLOW_AUTO_THEMES": "Дозволити автоматичне змінення тем",
-  "SETTINGS_GENERAL_ALLOW_AUTO_THEMES_HINT": "Будьте приємно здивовані темами, які автоматично змінюються залежно від часу року.",
   "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING": "Дозволяти анонімний моніторинг помилок",
   "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING_HINT": "Моніторинг помилок використовується для відстеження помилок і покращення Companion Hub. Залиште цю опцію увімкненою, щоб допомогти нам удосконалювати Companion Hub.",
   "SETTINGS_GENERAL_APPS_REPO": "URL репозиторію додатків",

@@ -596,8 +596,6 @@
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_MODAL_TITLE": "Aktivera avancerade inställningar?",
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_SUBTITLE": "Avancerade inställningar används endast om du vet vad du gör.",
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_TITLE": "Avancerade inställningar",
-  "SETTINGS_GENERAL_ALLOW_AUTO_THEMES": "Tillåt automatiskt teman",
-  "SETTINGS_GENERAL_ALLOW_AUTO_THEMES_HINT": "Bli förvånad över teman som förändras automatiskt baserat på tiden på året.",
   "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING": "Tillåt anonym felövervakning",
   "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING_HINT": "Felövervakning används för att spåra fel och förbättra Companion Hub. Håll detta alternativ aktiverat för att hjälpa oss att förbättra Companion Hub.",
   "SETTINGS_GENERAL_APPS_REPO": "Appar repo URL",

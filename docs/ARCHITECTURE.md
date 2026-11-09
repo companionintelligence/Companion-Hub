@@ -890,5 +890,4 @@ See [`e2e/README.md`](../e2e/README.md) for full lane documentation.
 | `DEMO_MODE` | `false` | Read-only demo mode |
 | `GUEST_DASHBOARD` | `false` | Allow unauthenticated dashboard access |
 | `ADVANCED_SETTINGS` | `false` | Show advanced settings in UI |
-| `ALLOW_AUTO_THEMES` | `true` | Allow automatic theme switching |
 | `DISABLE_PASSWORD_RESET` | `false` | Disable password reset flow |

@@ -18,7 +18,6 @@ export type UserContextDto = {
     isConfigured: boolean;
     isGuestDashboardEnabled: boolean;
     isPasswordResetDisabled: boolean;
-    allowAutoThemes: boolean;
     allowErrorMonitoring: boolean;
     themeColor: string;
     themeBase: string;
@@ -41,7 +40,6 @@ export type AppContextDto = {
     };
     userSettings: {
         advancedSettings: boolean;
-        allowAutoThemes: boolean;
         allowErrorMonitoring: boolean;
         appDataPath: string;
         appsRepoUrl?: string;
@@ -148,7 +146,6 @@ export type HubAccessDto = {
 
 export type UserSettingsBody = {
     advancedSettings?: boolean;
-    allowAutoThemes?: boolean;
     allowErrorMonitoring?: boolean;
     appDataPath?: string;
     appsRepoUrl?: string;

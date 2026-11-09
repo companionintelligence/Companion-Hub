@@ -724,7 +724,6 @@ const APPLIANCE_ENV: Record<string, string> = {
   CI_HUB_FORWARD_AUTH_URL: 'http://auth',
   DEMO_MODE: 'false',
   GUEST_DASHBOARD: 'false',
-  ALLOW_AUTO_THEMES: 'true',
   PERSIST_TRAEFIK_CONFIG: 'false',
   TZ: 'UTC',
   ROOT_FOLDER_HOST: '/host',
