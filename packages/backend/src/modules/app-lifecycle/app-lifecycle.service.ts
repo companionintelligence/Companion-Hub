@@ -1232,8 +1232,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     // Aborting somebody else's install or update weighs what stopping the app does, so it takes
     // `stop` — the verb the cancel route asserts. Before the registry is read; see `assertActorMay`.
-    // Unmarked, unlike stopping the app: cancelling an install undoes it, down to the data it was
-    // installing onto, so a managed key needs `full` to cancel another app's operation.
+    // Unmarked, unlike stopping the app: cancelling an install undoes it, down to the data it wrote,
+    // so a managed key needs `full` to cancel another app's operation.
     await this.assertActorMay(params.actor, appUrn, 'stop');
     const entry = this.operationRegistry.get(appUrn);
     if (!entry) {

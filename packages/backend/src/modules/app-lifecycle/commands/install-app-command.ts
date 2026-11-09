@@ -16,6 +16,7 @@ import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { withTimeout } from '@/common/helpers/with-timeout';
 import { AppLifecycleCommand, type CommandExecutionContext } from './command';
 import { AppLifecycleError, type AppCommandResult } from './app-lifecycle-errors';
 import { hostPortMoveOf } from './main-host-port';
@@ -73,6 +74,9 @@ async function getOpenclawFallbackEntrypoint(): Promise<string> {
 
 /** What the app already had on this Hub before an install wrote anything. A cancel leaves it there. */
 type EarlierAppData = { files: boolean; volumes: boolean };
+
+/** Both checks are local calls. A Docker engine or a disk that stops answering must not hold up the install queue. */
+const EARLIER_DATA_CHECK_TIMEOUT_MS = 15_000;
 
 export class InstallAppCommand extends AppLifecycleCommand {
   public async execute(appUrn: AppUrn, form: AppEventFormInput, ctx?: CommandExecutionContext): Promise<AppCommandResult> {
@@ -561,42 +565,40 @@ export class InstallAppCommand extends AppLifecycleCommand {
   /**
    * What the app already had on this Hub before this install wrote anything: the data folder and named volumes an
    * uninstall with Delete all data off keeps. A folder left by an install that failed looks the same and counts too.
-   * A check that fails counts as data being there: a cancel then keeps something it could have removed instead of
-   * removing what it had to keep.
+   * A check that fails or doesn't answer in time counts as data being there: a cancel then keeps something it could
+   * have removed instead of removing what it had to keep.
    */
   private async readEarlierData(appUrn: AppUrn): Promise<EarlierAppData> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const present = async (what: string, check: () => Promise<boolean>): Promise<boolean> => {
       try {
-        return await check();
+        return await withTimeout(check(), EARLIER_DATA_CHECK_TIMEOUT_MS, 'no answer in time');
       } catch (err) {
         logger.warn(`Could not check ${appUrn} for ${what} from before this install, so a cancel will keep them: ${err}`);
         return true;
       }
     };
 
-    return {
-      files: await present('app data', () => appFilesManager.hasAppData(appUrn)),
-      volumes: await present('named volumes', async () => {
-        const volumes = await this.moduleRef.get(AppVolumeArchiveService, { strict: false }).listAppVolumes(appUrn);
-        return volumes.length > 0;
-      }),
-    };
+    const [files, volumes] = await Promise.all([
+      present('app data', () => appFilesManager.hasAppData(appUrn)),
+      present('named volumes', () => this.moduleRef.get(AppVolumeArchiveService, { strict: false }).hasProjectVolumes(appUrn)),
+    ]);
+
+    return { files, volumes };
   }
 
   /**
    * Best-effort cleanup after an install is cancelled mid-flight: tears down containers, project networks,
-   * port allocations, the agent webhook, the app directory, and the app's data and volumes unless they were
-   * there before this install, so no orphaned resources are left behind. Pulled images are intentionally
-   * kept (faster re-install, and so we never force-remove an image another installed app might share).
-   * Every step is individually guarded and idempotent; the compose-down runs WITHOUT the (now-aborted)
-   * signal so cleanup completes. Does NOT delete the DB record — the service owns that (see
-   * AppLifecycleService.handleCancelledResult).
+   * port allocations, the agent webhook and the app directory. The app's data and volumes go too unless they
+   * were there before this install. Pulled images are intentionally kept: a re-install is faster and we never
+   * force-remove an image another installed app might share. Every step is individually guarded and
+   * idempotent; the compose-down runs WITHOUT the (now-aborted) signal so cleanup completes. The DB record
+   * stays for the service to delete (see AppLifecycleService.handleCancelledResult).
    *
    * @param earlier What the app had before this install. Kept data is left exactly as it is, along with
    * anything this install added to it: the Hub cannot tell a file this install wrote from one kept
-   * by an uninstall, and a later install starts from the same place a completed one would.
+   * by an uninstall. A later install starts from the same place a completed one would.
    * @returns A human-readable summary message for the cancellation result.
    */
   private async compensateInstallCancel(appUrn: AppUrn, earlier: EarlierAppData): Promise<string> {
@@ -619,10 +621,18 @@ export class InstallAppCommand extends AppLifecycleCommand {
       logger.warn(`[install-cancel] failed to release ports for ${appUrn}: ${err}`);
     }
 
+    // Without `-v` below, the anonymous volumes of this install's containers would stay behind with nothing to
+    // remove them. `rm -v` takes those and no named ones. It has to run first: `down` removes the containers
+    // that say which volumes are theirs.
+    if (earlier.volumes) {
+      await dockerService
+        .composeApp(appUrn, 'rm --force --stop -v')
+        .catch((err) => logger.warn(`[install-cancel] removing the containers' anonymous volumes failed for ${appUrn} (continuing): ${err}`));
+    }
+
     // Tear down whatever was partially created. `--rmi local` only removes locally-built images, so pulled
-    // images stay (faster re-install, and we never force-remove an image another installed app might share).
-    // `-v` removes the app's named volumes as well as its anonymous ones, so it goes only when there were
-    // no named volumes before this install. Otherwise it would delete what an uninstall kept.
+    // images stay. `-v` removes the app's named volumes as well as its anonymous ones, so it goes only when
+    // there were no named volumes before this install. Otherwise it would delete what an uninstall kept.
     try {
       await dockerService.composeApp(appUrn, earlier.volumes ? 'down --remove-orphans --rmi local' : 'down --remove-orphans -v --rmi local');
     } catch (err) {

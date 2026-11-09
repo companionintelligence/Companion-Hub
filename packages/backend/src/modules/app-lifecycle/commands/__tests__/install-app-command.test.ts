@@ -167,7 +167,7 @@ describe('InstallAppCommand — pull policy', () => {
     appFilesManager.hasAppData.mockResolvedValue(false);
 
     appVolumes = mock<AppVolumeArchiveService>();
-    appVolumes.listAppVolumes.mockResolvedValue([]);
+    appVolumes.hasProjectVolumes.mockResolvedValue(false);
 
     const marketplaceService = mock<MarketplaceService>();
 
@@ -717,11 +717,12 @@ describe('InstallAppCommand — pull policy', () => {
       const result = await cancelDuringThePull();
 
       expect(composeDown()).toEqual(['down --remove-orphans -v --rmi local']);
+      expect(composeArgs.filter((args) => args.startsWith('rm '))).toEqual([]);
       expect(appFilesManager.deleteAppDataDir).toHaveBeenCalledWith(appUrn);
       expect(result.message).toContain('cleaned up');
     });
 
-    it('leaves a folder that already held files, and still removes volumes when there were none', async () => {
+    it('leaves a folder that already held files and still removes volumes when there were none', async () => {
       appFilesManager.hasAppData.mockResolvedValue(true);
 
       const result = await cancelDuringThePull();
@@ -733,7 +734,7 @@ describe('InstallAppCommand — pull policy', () => {
     });
 
     it('keeps named volumes from before the install, even when the data folder was empty', async () => {
-      appVolumes.listAppVolumes.mockResolvedValue([{ name: 'test-app_store_db', key: 'db' }]);
+      appVolumes.hasProjectVolumes.mockResolvedValue(true);
 
       const result = await cancelDuringThePull();
 
@@ -751,11 +752,49 @@ describe('InstallAppCommand — pull policy', () => {
     });
 
     it('keeps volumes when the check for earlier volumes fails', async () => {
-      appVolumes.listAppVolumes.mockRejectedValue(new Error('docker is not answering'));
+      appVolumes.hasProjectVolumes.mockRejectedValue(new Error('docker is not answering'));
 
       await cancelDuringThePull();
 
       expect(composeDown()).toEqual(['down --remove-orphans --rmi local']);
+    });
+
+    it('clears the anonymous volumes of its containers before a down that keeps named ones', async () => {
+      appVolumes.hasProjectVolumes.mockResolvedValue(true);
+
+      await cancelDuringThePull();
+
+      const teardown = composeArgs.filter((args) => args.startsWith('rm ') || args.startsWith('down --remove-orphans'));
+      expect(teardown).toEqual(['rm --force --stop -v', 'down --remove-orphans --rmi local']);
+    });
+
+    it('still takes the install down when clearing the anonymous volumes fails', async () => {
+      appVolumes.hasProjectVolumes.mockResolvedValue(true);
+      dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
+        composeArgs.push(args);
+        if (args.startsWith('rm ')) {
+          throw new Error('compose rm failed');
+        }
+      });
+
+      await cancelDuringThePull();
+
+      expect(composeDown()).toEqual(['down --remove-orphans --rmi local']);
+    });
+
+    it('stops waiting for a Docker engine that does not answer and keeps the volumes', async () => {
+      vi.useFakeTimers();
+      try {
+        appVolumes.hasProjectVolumes.mockReturnValue(new Promise(() => undefined));
+
+        const cancelled = cancelDuringThePull();
+        await vi.advanceTimersByTimeAsync(15_000);
+        await cancelled;
+
+        expect(composeDown()).toEqual(['down --remove-orphans --rmi local']);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('checks before the install writes anything', async () => {
@@ -765,7 +804,7 @@ describe('InstallAppCommand — pull policy', () => {
 
       const firstWrite = marketplaceService.copyAppFromRepoToInstalled.mock.invocationCallOrder[0] as number;
       expect(appFilesManager.hasAppData.mock.invocationCallOrder[0]).toBeLessThan(firstWrite);
-      expect(appVolumes.listAppVolumes.mock.invocationCallOrder[0]).toBeLessThan(firstWrite);
+      expect(appVolumes.hasProjectVolumes.mock.invocationCallOrder[0]).toBeLessThan(firstWrite);
     });
 
     it('a failed install still runs no cleanup, kept data or not', async () => {
