@@ -676,6 +676,42 @@ describe('StartAppCommand — pull policy', () => {
         expect(composeArgs.at(-1)).toBe('down --remove-orphans');
       });
 
+      it('takes the app down when the dependency is left running with its health check failing', async () => {
+        dockerode.listContainers.mockImplementation((async (options: { filters: { health?: string[] } }) =>
+          options.filters.health ? restartingDb : []) as any);
+
+        const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(result.success).toBe(false);
+        expect(composeArgs.at(-1)).toBe('down --remove-orphans');
+      });
+
+      it('rebuilds the routes after taking the app down', async () => {
+        dockerode.listContainers.mockResolvedValue(restartingDb);
+
+        await command.execute(appUrn, { exposedLocal: true, stopIfNotUp: true });
+
+        expect(traefikConfigService.regenerateTraefikConfig).toHaveBeenCalledWith(0);
+      });
+
+      it('still reports the compose failure when the routes cannot be rebuilt', async () => {
+        dockerode.listContainers.mockResolvedValue(restartingDb);
+        traefikConfigService.regenerateTraefikConfig.mockRejectedValue(new Error('traefik config is locked'));
+
+        const result = await command.execute(appUrn, { exposedLocal: true, stopIfNotUp: true });
+
+        expect(result.success).toBe(false);
+        expect(result.message).toContain('dependency failed to start');
+      });
+
+      it('leaves the routes alone when nothing was taken down', async () => {
+        dockerode.listContainers.mockResolvedValue([]);
+
+        await command.execute(appUrn, { exposedLocal: true, stopIfNotUp: true });
+
+        expect(traefikConfigService.regenerateTraefikConfig).not.toHaveBeenCalled();
+      });
+
       it('takes nothing down when no container is left restarting, as after a failed pull', async () => {
         dockerode.listContainers.mockResolvedValue([]);
 

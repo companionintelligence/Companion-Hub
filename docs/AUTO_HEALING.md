@@ -229,7 +229,8 @@ failed install, start and restart then look at them about once a second
   a row. It has 30 s from the first look. A run under way when that ends gets to finish, so
   40 s at most. Docker's retries back off, to one at about 13 s and the next at about 25 s, so a
   service whose database takes longer than that fails the check. The status sync still moves it
-  to `running` once it settles;
+  to `running` once it settles. A Start or Restart a person or a key asked for has 120 s instead
+  of 30 s, because a failure there removes the containers and nothing retries after that;
 - a container exited with an error, or is `dead`;
 - no container is running after 10 s.
 
@@ -239,9 +240,15 @@ are fine. A container whose health check says `starting` counts as up after 5 s 
 many apps take minutes to answer and the app page shows that as Initializing. A service that
 first crashes later than 5 s after it starts passes this check. The status sync reports it.
 
-A failed install ends `install_failed` and a failed start or restart ends `stopped`. The
-containers stay up either way, since the others may be useful. The toast names the service and the
-exit code. The app page adds the log line that best says why, also after a reload, because the Hub
+A failed install ends `install_failed` and a failed start or restart ends `stopped`. After an
+install or one of the Hub's own starts and restarts (a boot, Start all, a saved config, the start
+after an update) the containers stay up, since the others may be useful and Docker's retries can
+still bring the app back. A Start or Restart a person or a key asked for runs
+`down --remove-orphans` instead, as Stop does, so `stopped` is true. Named volumes and bind mounts
+stay. The crashed container's `docker logs` go with it. The whole app goes down, also when only
+one of its services failed. The same happens when `compose up` itself fails and leaves a container
+restarting or unhealthy, as a dependency that never gets healthy does. The toast names the service
+and the exit code. The app page adds the log line that best says why, also after a reload, because the Hub
 keeps the reason on the lifecycle job. That read takes what reading the app's logs takes, so a
 member who may only see a custom app doesn't get it. The toast's event goes to every signed-in
 session, so it carries no log text.
