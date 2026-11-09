@@ -1,6 +1,6 @@
 import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import type { AppStore } from '@/types/app.types';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import { describe, expect, it, vi } from 'vitest';
 import { EditAppStoreDialog } from './edit-app-store-dialog';
 
@@ -38,10 +38,17 @@ describe('EditAppStoreDialog', () => {
   it('refreshes the store list before reporting the save', async () => {
     const queryClient = new QueryClient();
     queryClient.setQueryData(ALL_STORES_KEY, { appStores: [APP_STORE] });
-    let wasInvalidatedAtToast = false;
-    toastSuccess.mockImplementation(() => {
-      wasInvalidatedAtToast = queryClient.getQueryState(ALL_STORES_KEY)?.isInvalidated ?? false;
-    });
+    let finishRefetch = () => {};
+    const refetch = vi.fn(
+      () =>
+        new Promise<{ appStores: AppStore[] }>((resolve) => {
+          finishRefetch = () => resolve({ appStores: [{ ...APP_STORE, name: 'Home Shelf' }] });
+        }),
+    );
+    // The observer makes the query active, so invalidating it refetches.
+    const unsubscribe = new QueryObserver(queryClient, { queryKey: ALL_STORES_KEY, queryFn: refetch, staleTime: Number.POSITIVE_INFINITY }).subscribe(
+      () => {},
+    );
 
     render(
       <QueryClientProvider client={queryClient}>
@@ -55,8 +62,12 @@ describe('EditAppStoreDialog', () => {
     await userEvent.type(name, 'Home Shelf');
     await userEvent.click(screen.getByRole('button', { name: 'COMMON_SAVE' }));
 
-    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('APP_STORE_EDIT_DIALOG_SUCCESS'));
+    await waitFor(() => expect(refetch).toHaveBeenCalled());
     expect(mutationFn).toHaveBeenCalled();
-    expect(wasInvalidatedAtToast).toBe(true);
+    expect(toastSuccess).not.toHaveBeenCalled();
+
+    finishRefetch();
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('APP_STORE_EDIT_DIALOG_SUCCESS'));
+    unsubscribe();
   });
 });

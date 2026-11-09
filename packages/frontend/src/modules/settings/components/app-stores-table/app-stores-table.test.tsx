@@ -41,6 +41,13 @@ describe('AppStoresTable', () => {
     expect(screen.queryByText('CI Portal')).not.toBeInTheDocument();
   });
 
+  it('links only the built-in store, even when another store carries its name', () => {
+    render(<AppStoresTable appStores={[{ ...APP_STORE, name: 'CI Marketplace' }]} />);
+
+    expect(screen.getByText('CI Marketplace').closest('a')).toBeNull();
+    expect(screen.queryByText('CI Portal')).not.toBeInTheDocument();
+  });
+
   it('keeps row actions available', () => {
     render(<AppStoresTable appStores={[APP_STORE]} />);
 
