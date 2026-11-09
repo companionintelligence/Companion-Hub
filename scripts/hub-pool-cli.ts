@@ -11,6 +11,7 @@
  * the pool routes all declare an empty response schema in swagger.json, so the generated client types
  * them as `unknown` and there is nothing to import.
  */
+import { parseDbTimestampMs } from '../packages/backend/src/common/helpers/db-timestamp';
 import { sanitizeForBox } from './lib/cli-ui';
 import { hubApiFetch } from './public-web-cli';
 
@@ -762,9 +763,10 @@ function ruleRow(widths: readonly number[]): string {
 /** `2026-09-05 10:00:01Z`. Non-ISO input is echoed sanitized rather than rendered as `Invalid Date`. */
 export function formatPoolTimestamp(value: string | null | undefined): string {
   if (!value) return '-';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return sanitizeForBox(value);
-  return parsed
+  // The Hub sends `last_seen_at` as UTC with no zone, and `new Date` would read that in this machine's zone.
+  const parsed = parseDbTimestampMs(value);
+  if (Number.isNaN(parsed)) return sanitizeForBox(value);
+  return new Date(parsed)
     .toISOString()
     .replace('T', ' ')
     .replace(/\.\d{3}Z$/, 'Z');
