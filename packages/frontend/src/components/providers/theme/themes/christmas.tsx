@@ -3,14 +3,15 @@ import { LetItGo } from 'let-it-go';
 import { useEffect, useRef } from 'react';
 
 // Above the page, which paints its own solid background, and below the header and dialogs (z-50).
-const SNOW_Z_INDEX = '40';
+// The canvas covers the whole window at this height, so it must never take a click.
+const SNOW_STYLE = { zIndex: '40', pointerEvents: 'none' } as const;
 
 export const ChristmasTheme = () => {
   const resolvedTheme = useResolvedTheme();
   const snowRef = useRef<LetItGo | null>(null);
 
   useEffect(() => {
-    const snow = new LetItGo({ number: 60, radiusRange: [1, 2], alphaRange: [0.4, 0.8], style: { zIndex: SNOW_Z_INDEX } });
+    const snow = new LetItGo({ number: 60, radiusRange: [1, 2], alphaRange: [0.4, 0.8], style: SNOW_STYLE });
     snowRef.current = snow;
 
     return () => {

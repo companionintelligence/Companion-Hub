@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChristmasTheme } from './christmas';
 
 const snow = vi.hoisted(() => ({
-  instances: [] as { options: { style?: { zIndex?: string } }; color?: string; clear: ReturnType<typeof vi.fn> }[],
+  instances: [] as { options: { style?: { zIndex?: string; pointerEvents?: string } }; color?: string; clear: ReturnType<typeof vi.fn> }[],
 }));
 
 vi.mock('let-it-go', () => ({
@@ -41,6 +41,12 @@ describe('ChristmasTheme', () => {
     render(<ChristmasTheme />);
 
     expect(Number(theSnow().options.style?.zIndex)).toBeGreaterThan(0);
+  });
+
+  it('never takes a click, because the canvas covers the whole page', () => {
+    render(<ChristmasTheme />);
+
+    expect(theSnow().options.style?.pointerEvents).toBe('none');
   });
 
   it('colours the snow from the theme and follows a change of theme', async () => {
