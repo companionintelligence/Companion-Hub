@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { openExternal } from '@/lib/helpers/open-external';
 import { UserSettingsContainer } from './user-settings';
 
-const pending = vi.hoisted(() => ({ settings: false, mode: false, modeMutate: vi.fn() }));
+const pending = vi.hoisted(() => ({ settings: false, mode: false, modeMutate: vi.fn(), settingsSaved: undefined as (() => void) | undefined }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getPortalConfigOptions: () => ({ queryKey: ['portal-config'] }),
@@ -13,14 +13,23 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 
 vi.mock('@tanstack/react-query', () => ({
   useQuery: () => ({ data: { portalUrl: 'https://portal.example.com' } }),
-  useMutation: (options: { mutationKey?: string[] }) =>
-    options.mutationKey?.[0] === 'mode' ? { mutate: pending.modeMutate, isPending: pending.mode } : { mutate: vi.fn(), isPending: pending.settings },
+  useMutation: (options: { mutationKey?: string[]; onSuccess?: () => void }) => {
+    if (options.mutationKey?.[0] === 'settings') pending.settingsSaved = options.onSuccess;
+    return options.mutationKey?.[0] === 'mode'
+      ? { mutate: pending.modeMutate, isPending: pending.mode }
+      : { mutate: vi.fn(), isPending: pending.settings };
+  },
 }));
 
 vi.mock('@/lib/helpers/open-external', () => ({ openExternal: vi.fn().mockResolvedValue(true) }));
 
 vi.mock('@/context/app-context', () => ({
   useAppContext: () => ({ refreshAppContext: vi.fn(), user: { advancedMode: false } }),
+}));
+
+const refreshUserContext = vi.hoisted(() => vi.fn());
+vi.mock('@/context/user-context', () => ({
+  useUserContext: () => ({ refreshUserContext }),
 }));
 
 vi.mock('../components/user-settings-form/user-settings-form', () => ({
@@ -53,6 +62,16 @@ describe('UserSettingsContainer pending state', () => {
     pending.mode = true;
     rerender(<UserSettingsContainer />);
     expect(screen.getByRole('switch')).toBeDisabled();
+  });
+
+  // "Allow auto themes" is read from the user context, which the app context refresh doesn't touch.
+  it('refreshes the user context after a save, so a theme setting applies without a reload', () => {
+    render(<UserSettingsContainer />);
+    refreshUserContext.mockClear();
+
+    pending.settingsSaved?.();
+
+    expect(refreshUserContext).toHaveBeenCalledTimes(1);
   });
 
   it('opens the Companion Portal account deletion settings and privacy policy', () => {

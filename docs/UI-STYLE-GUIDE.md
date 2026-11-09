@@ -61,8 +61,8 @@ also packaged as a Tauri 2 desktop app.
   token-based status colors** if these ever move toward canon.
 - **Theme bases:** five selectable neutral palettes (`slate`, `gray`, `zinc`, `neutral`, `stone`)
   via `document.body.dataset.bsThemeBase`. Hub-specific personalization; not part of canon.
-- **Seasonal auto-theme:** Christmas theme (Nov 1 – Dec 26), gated behind an `allowAutoThemes`
-  flag. Hub-only.
+- **Seasonal auto-theme:** Christmas theme (Dec 1 to Dec 26), gated behind an `allowAutoThemes`
+  flag. Falling snow in the theme's own colour. The logo slot still holds the plain mark. Hub-only.
 - **Ambient background:** static radial teal gradient on `body` (light + dark) in `globals.css`.
 - **Custom scrollbars** and `.no-scrollbar` utility in `globals.css`.
 - **Default theme:** Hub follows the canonical default (`system`).

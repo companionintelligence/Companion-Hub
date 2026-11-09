@@ -12,20 +12,15 @@ export const AutoThemeProvider = (props: PropsWithChildren<Props>) => {
   const { children } = props;
   const { allowAutoThemes } = useUserContext();
 
-  const theme = getAutoTheme();
-
-  if (!allowAutoThemes) {
-    return children;
-  }
-
-  switch (theme) {
-    case 'christmas':
-      return (
+  // The theme renders beside the page, not around it, so switching it on or off doesn't remount the page.
+  return (
+    <>
+      {allowAutoThemes && getAutoTheme() === 'christmas' && (
         <Suspense>
-          <ChristmasTheme>{children}</ChristmasTheme>
+          <ChristmasTheme />
         </Suspense>
-      );
-    default:
-      return children;
-  }
+      )}
+      {children}
+    </>
+  );
 };
