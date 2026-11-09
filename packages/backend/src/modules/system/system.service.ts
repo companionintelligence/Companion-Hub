@@ -5,6 +5,9 @@ import { Injectable } from '@nestjs/common';
 import si from 'systeminformation';
 import { HostMetricsService } from './host-metrics.service';
 
+// Base64 and whitespace only between the markers, so a match can't run across another PEM block.
+const PEM_CERTIFICATE_BLOCK = /-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+-----END CERTIFICATE-----/g;
+
 @Injectable()
 export class SystemService {
   constructor(
@@ -26,7 +29,10 @@ export class SystemService {
     // The Hub stopped generating this file when TLS moved to the tunnel, so most Hubs have none.
     if (await this.filesystem.pathExists(filePath)) {
       const file = await this.filesystem.readTextFile(filePath);
-      return file?.trim() ? file : undefined;
+      // Every signed-in member can call this. The file can also hold the private key or be a symlink
+      // to something else, so only certificate blocks leave the Hub.
+      const certificates = file?.match(PEM_CERTIFICATE_BLOCK);
+      return certificates ? `${certificates.join('\n')}\n` : undefined;
     }
   }
 

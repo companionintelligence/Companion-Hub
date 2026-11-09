@@ -75,17 +75,49 @@ describe('SystemService', () => {
   });
 
   describe('getLocalCertificate', () => {
-    it('should return certificate content if exists', async () => {
+    const certificate = '-----BEGIN CERTIFICATE-----\nQ0VSVA==\n-----END CERTIFICATE-----';
+    const intermediate = '-----BEGIN CERTIFICATE-----\nQ0hBSU4=\n-----END CERTIFICATE-----';
+    const privateKey = '-----BEGIN PRIVATE KEY-----\nU0VDUkVU\n-----END PRIVATE KEY-----';
+
+    it('should return the certificate from the folder compose mounts into Traefik', async () => {
       filesystemService.pathExists.mockResolvedValue(true);
-      filesystemService.readTextFile.mockResolvedValue('CERT_CONTENT');
+      filesystemService.readTextFile.mockResolvedValue(`${certificate}\n`);
 
       const result = await service.getLocalCertificate();
 
       expect(filesystemService.pathExists).toHaveBeenCalledWith('/data/state/traefik/tls/cert.pem');
-      expect(result).toBe('CERT_CONTENT');
+      expect(result).toBe(`${certificate}\n`);
     });
 
-    it.each(['', '  \n', null])('should return undefined for a file with nothing in it (%j)', async (content) => {
+    it('should keep every certificate of a chain', async () => {
+      filesystemService.pathExists.mockResolvedValue(true);
+      filesystemService.readTextFile.mockResolvedValue(`${certificate}\r\n${intermediate}\r\n`);
+
+      expect(await service.getLocalCertificate()).toBe(`${certificate}\n${intermediate}\n`);
+    });
+
+    it.each([
+      ['before the certificate', `${privateKey}\n${certificate}\n`],
+      ['after the certificate', `${certificate}\n${privateKey}\n`],
+    ])('should leave out a private key %s', async (_where, content) => {
+      filesystemService.pathExists.mockResolvedValue(true);
+      filesystemService.readTextFile.mockResolvedValue(content);
+
+      const result = await service.getLocalCertificate();
+
+      expect(result).toBe(`${certificate}\n`);
+      expect(result).not.toContain('PRIVATE KEY');
+      expect(result).not.toContain('U0VDUkVU');
+    });
+
+    it.each([
+      ['empty', ''],
+      ['blank', '  \n'],
+      ['unreadable', null],
+      ['only a private key', privateKey],
+      ['not PEM at all', '{"hubLocalKey":"value"}'],
+      ['a certificate marker with no end around a key', `-----BEGIN CERTIFICATE-----\n${privateKey}\n-----END CERTIFICATE-----`],
+    ])('should return undefined for a file that holds no certificate (%s)', async (_name, content) => {
       filesystemService.pathExists.mockResolvedValue(true);
       filesystemService.readTextFile.mockResolvedValue(content as any);
 
