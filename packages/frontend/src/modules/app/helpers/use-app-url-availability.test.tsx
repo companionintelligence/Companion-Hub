@@ -342,6 +342,24 @@ describe('useAppUrlAvailability', () => {
       expect(result.current.publicAddressRefusal).toBe(QUOTA_COPY);
     });
 
+    it('still names the refusal when probing gives up after Retry with no verdict', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      probe(REFUSED);
+      const { result } = renderHook(() => useAppUrlAvailability(EXPOSED), { wrapper: wrapper() });
+      await waitFor(() => expect(result.current.publicAddressRefusal).toBe(QUOTA_COPY));
+
+      h.get.mockRejectedValue(new Error('network down'));
+      act(() => result.current.reset());
+      await waitFor(() => expect(result.current.state).toBe('checking'));
+
+      await act(async () => {
+        vi.advanceTimersByTime(5 * 60_000 + 1_000);
+      });
+
+      expect(result.current.state).toBe('unreachable');
+      expect(result.current.statusMessage).toBe(QUOTA_COPY);
+    });
+
     it('drops the refusal as soon as a verdict no longer carries one', async () => {
       probe(REFUSED);
       const { result } = renderHook(() => useAppUrlAvailability(EXPOSED), { wrapper: wrapper() });

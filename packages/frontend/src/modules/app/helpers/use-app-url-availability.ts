@@ -346,7 +346,8 @@ export function useAppUrlAvailability(input: {
   });
 
   // Prefer localized error copy, but always provide a fallback for the status tooltip.
-  const messageKey = resolveProbeMessageKey(probe?.errorCode);
+  // The held refusal covers the case where probing gave up after Retry without getting another verdict.
+  const messageKey = resolveProbeMessageKey(probe?.errorCode) ?? refusalKey;
   const genericMessageKey = state === 'propagating' ? 'APP_STATUS_RUNNING_PROPAGATING_DETAIL' : 'APP_ACTION_APPLICATION_ERROR';
   const statusMessage =
     state === 'propagating' || state === 'unreachable' ? (messageKey ? t(messageKey) : probe?.detail) || t(genericMessageKey) : null;

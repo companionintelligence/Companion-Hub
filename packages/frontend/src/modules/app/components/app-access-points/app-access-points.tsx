@@ -304,7 +304,8 @@ export function buildAppAccessPoints(input: {
   // and reading it showed "Enabled" for a route nothing served.
   const publicWebConfigured = publishesPublicWebRoute(storedExposureForm(record)) || Boolean(configuredPublicDomain) || Boolean(record.exposed);
   const publicActive = Boolean(publicUrl && publicWebConfigured) && !publicAddressRefused;
-  const publicRefused = Boolean(info.exposable && publicUrl && publicWebConfigured && publicAddressRefused);
+  // No `publicUrl` here: a subdomain the Portal refused as invalid sanitizes to nothing, so it has no address to build.
+  const publicRefused = Boolean(info.exposable && publicWebConfigured && publicAddressRefused);
   const publicState: AccessPointState = publicRefused
     ? 'unavailable'
     : publicActive
