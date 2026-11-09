@@ -93,6 +93,19 @@ export type SettingsFormValues = {
   themeBase?: string;
 };
 
+/**
+ * Leaves out each value the Hub already had that the schema refuses, the rule Local domain and Internal IP
+ * follow below. With Advanced settings off those fields aren't on the page, so a refusal would stop every
+ * save with nothing to correct, including the save that turns Advanced settings on.
+ */
+const withoutRefusedHubValues = (values: SettingsFormValues, hubValues?: Partial<SettingsFormValues>) =>
+  Object.fromEntries(
+    Object.entries(values).filter(([key, value]) => {
+      const field = key as keyof SettingsFormValues;
+      return value !== hubValues?.[field] || settingsSchema.shape[field]?.safeParse(value).success !== false;
+    }),
+  );
+
 type FieldErrors = { [K in keyof SettingsFormValues]?: string };
 
 interface IProps {
@@ -177,7 +190,8 @@ export const UserSettingsForm = (props: IProps) => {
 
     // Past the checks above, an Internal IP that is not IPv4 is the Hub's own, so it stays out of the request.
     const { internalIp, ...rest } = values;
-    const result = settingsSchema.safeParse(isIpv4(trimmed(internalIp)) ? { ...rest, internalIp: trimmed(internalIp) } : rest);
+    const request = isIpv4(trimmed(internalIp)) ? { ...rest, internalIp: trimmed(internalIp) } : rest;
+    const result = settingsSchema.safeParse(withoutRefusedHubValues(request, initialValues));
 
     if (result.success) {
       onSubmit(result.data);

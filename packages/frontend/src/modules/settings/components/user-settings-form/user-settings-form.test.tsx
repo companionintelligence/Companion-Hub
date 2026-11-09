@@ -178,6 +178,44 @@ describe('UserSettingsForm Advanced settings messages', () => {
   });
 });
 
+describe('UserSettingsForm values the Hub already had', () => {
+  const brokenForwardAuth = { ...newHubSettings, forwardAuthUrl: 'not-a-url' };
+
+  it('saves with Advanced settings off when the Hub reports a Forward auth URL the form refuses', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={brokenForwardAuth} onSubmit={onSubmit} />);
+
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty('forwardAuthUrl');
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ port: 80, maxBackups: 5 }));
+  });
+
+  it('saves with Advanced settings on while the refused value is left as it was', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={{ ...brokenForwardAuth, advancedSettings: true }} onSubmit={onSubmit} />);
+
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty('forwardAuthUrl');
+  });
+
+  it('still refuses that field once the person changes it to something else that is not a URL', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={{ ...brokenForwardAuth, advancedSettings: true }} onSubmit={onSubmit} />);
+    const field = screen.getByLabelText(/^forward auth url/i);
+
+    await userEvent.clear(field);
+    await userEvent.type(field, 'still not a url');
+    await submit();
+
+    expect(await screen.findByText('Invalid URL')).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
 describe('UserSettingsForm Internal IP check', () => {
   const advancedSettings = { ...newHubSettings, advancedSettings: true };
   const internalIpField = () => screen.getByLabelText(/^internal ip/i);
