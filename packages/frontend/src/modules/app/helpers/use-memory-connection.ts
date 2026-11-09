@@ -88,6 +88,29 @@ export interface MemoryConnectionStatus {
 export const MEMORY_STATUS_QUERY_PREFIX = 'memory-connection-status';
 export const memoryStatusQueryKey = (appUrn: string) => [MEMORY_STATUS_QUERY_PREFIX, appUrn];
 
+/**
+ * How often to re-read the status, or false when an event will say it changed. Exported for tests.
+ *
+ * While Companion Memory is actively coming up ('starting': installing / booting / mid-maintenance), poll so the
+ * badge + Connect button flip to ready shortly after it does. The status is keyed by THIS app's urn, so ci-memory's
+ * own status change doesn't refetch it on its own. The SSE cache also invalidates this on ci-memory lifecycle events
+ * (instant); this is the safety net if one is missed. A refused address is lifted by an exposure sync, which no event
+ * announces, so that wait polls too, unless the app is connected: there the button doesn't depend on it and every
+ * read checks the key with Companion Memory. 'offline' (stopped/failed) and any other 'ready' are settled states:
+ * offline to ready is driven by a start event the SSE cache already catches, so polling them would just burn requests.
+ */
+export function memoryStatusPollMs(status: MemoryConnectionStatus | null | undefined): number | false {
+  if (!status?.applicable) {
+    return false;
+  }
+
+  if (status.providerStatus === 'starting') {
+    return 10_000;
+  }
+
+  return status.reason === 'memory_address_refused' && status.state !== 'connected' ? 30_000 : false;
+}
+
 /** An installed app still holding a live Companion Memory connection. */
 export interface MemoryConsumer {
   appUrn: string;
@@ -187,18 +210,7 @@ export function useMemoryConnection(appUrn: string) {
       return (data ?? null) as MemoryConnectionStatus | null;
     },
     staleTime: 15_000,
-    // While Companion Memory is actively coming up ('starting': installing / booting
-    // / mid-maintenance), poll so the badge + Connect button flip to ready shortly
-    // after it does — the status is keyed by THIS app's urn, so ci-memory's own
-    // status change doesn't refetch it on its own. The SSE cache also invalidates
-    // this on ci-memory lifecycle events (instant); this is the safety net if one is
-    // missed. Deliberately NOT polling while 'offline' (stopped/failed) or 'ready':
-    // those are settled states, and offline→ready is driven by a start event the SSE
-    // cache already catches, so polling them would just burn requests indefinitely.
-    refetchInterval: (q) => {
-      const data = q.state.data as MemoryConnectionStatus | null | undefined;
-      return data?.applicable && data.providerStatus === 'starting' ? 10_000 : false;
-    },
+    refetchInterval: (q) => memoryStatusPollMs(q.state.data as MemoryConnectionStatus | null | undefined),
   });
 
   const disconnect = useMutation({
