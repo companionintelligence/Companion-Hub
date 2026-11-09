@@ -219,6 +219,9 @@ describe('portRangeRefusal', () => {
     ['-1', 'MIN'],
     [70000, 'MAX'],
     [0, 'MIN'],
+    ['70000-70010', 'MAX'],
+    ['8000-70000', 'MAX'],
+    ['0-10', 'MIN'],
   ])('refuses %j', (value, refusal) => {
     expect(portRangeRefusal(value)).toBe(refusal);
   });

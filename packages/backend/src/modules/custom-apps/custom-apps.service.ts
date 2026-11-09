@@ -124,14 +124,14 @@ export class CustomAppService {
   }
 
   /**
-   * Refuse a port Docker can never publish or listen on: an internal port or either side of a Port Mapping,
-   * in a service or an override. MCP callers reach this with no schema, so nothing here is trusted to be well formed.
+   * Refuse a port outside 1 to 65535: an internal port or either side of a Port Mapping, in a service or an
+   * override. MCP callers reach this with no schema, so nothing here is trusted to be well formed.
    */
   private assertPortsInRange(config: CreateCustomAppDto['config']): void {
     const assertInRange = (value: unknown, field: 'INTERNAL' | 'HOST' | 'CONTAINER') => {
       const refusal = portRangeRefusal(value);
       if (refusal) {
-        throw new TranslatableError(`CUSTOM_APP_ERROR_${field}_PORT_${refusal}`, undefined, HttpStatus.BAD_REQUEST);
+        throw new TranslatableError(`CUSTOM_APP_ERROR_${field}_PORT_${refusal}`, { port: String(value) }, HttpStatus.BAD_REQUEST);
       }
     };
 
