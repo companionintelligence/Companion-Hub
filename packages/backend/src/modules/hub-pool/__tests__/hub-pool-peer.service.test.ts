@@ -849,6 +849,23 @@ describe('HubPoolPeerService', () => {
       expect((await service.getPoolStatus()).peers[0]?.probeFailure).toBeNull();
     });
 
+    it.each([
+      ['identity-mismatch', 'identity_changed'],
+      [undefined, 'unauthorized'],
+    ])('keeps warning when a switched-off peer refuses this Hub (%s)', async (header, kind) => {
+      const logger = mock<LoggerService>();
+      (service as unknown as { logger: LoggerService }).logger = logger;
+      const peer = stalePeer({ enabled: false, status: 'unreachable', consecutiveFailures: 3 });
+      repo.listAll.mockResolvedValue([peer]);
+      vi.mocked(global.fetch).mockResolvedValue(refusal(header));
+
+      await refresh(peer);
+
+      expect((await service.getPoolStatus()).peers[0]?.probeFailure?.kind).toBe(kind);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('cihub pool unpair beta-max.tailxyz.ts.net'));
+      expect(logger.debug).not.toHaveBeenCalledWith(expect.stringContaining('capabilities probe'));
+    });
+
     it('warns when a PIN pairing request is swallowed by the stale row it is meant to replace', async () => {
       const logger = mock<LoggerService>();
       (service as unknown as { logger: LoggerService }).logger = logger;
