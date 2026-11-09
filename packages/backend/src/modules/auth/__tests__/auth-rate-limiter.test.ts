@@ -205,6 +205,19 @@ describe('AuthRateLimiter.admitRequest', () => {
     expect(() => limiter.admitRequest('login', { ip: GATEWAY, headers: {} })).toThrow('AUTH_ERROR_RATE_LIMITED');
   });
 
+  it('limits a header with a zone suffix as the address alone, so a forged one cannot grow the key', () => {
+    const limiter = limiterAt({ now: 1_000_000 });
+
+    limiter.admitRequest('login', tunnelled(`::ffff:198.51.100.1%${'a'.repeat(4096)}`));
+    limiter.admitRequest('login', tunnelled(`2001:db8:aaaa:bbbb::1%${'b'.repeat(4096)}`));
+
+    const tracked = [...(limiter as unknown as { hits: Map<string, number[]> }).hits.keys()];
+
+    expect(tracked).toContain('login:198.51.100.1');
+    expect(tracked).toContain('login:2001:db8:aaaa:bbbb::/64');
+    expect(tracked.every((key) => key.length < 64)).toBe(true);
+  });
+
   it('caps everyone named by the header together, so inventing addresses does not buy unlimited guesses', () => {
     const limiter = limiterAt({ now: 1_000_000 });
 

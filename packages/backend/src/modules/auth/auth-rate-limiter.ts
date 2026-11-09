@@ -1,5 +1,6 @@
 import { isIP, isIPv6 } from 'node:net';
 import { TranslatableError } from '@/common/error/translatable-error';
+import { normalizeIpLiteral } from '@/common/helpers/ip-address';
 import { ProxyTrustService } from '@/modules/network/proxy-trust.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 
@@ -107,7 +108,8 @@ export class AuthRateLimiter {
     }
 
     const header = request.headers?.['cf-connecting-ip'];
-    const address = typeof header === 'string' ? header.trim() : undefined;
+    // Normalized so the key is the address alone: `isIP` also accepts a zone suffix of any length.
+    const address = typeof header === 'string' ? normalizeIpLiteral(header) : null;
 
     return address && isIP(address) ? address : undefined;
   }
