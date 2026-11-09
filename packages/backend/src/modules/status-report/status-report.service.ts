@@ -5,9 +5,10 @@ import { Injectable } from '@nestjs/common';
 import { DATA_DIR } from '@/common/constants';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { LoggerService } from '@/core/logger/logger.service';
-import type { InferenceStatus } from '@ci-hub/common/types';
+import type { HardwareProfile, InferenceStatus } from '@ci-hub/common/types';
 import { AppsReadService } from '../apps/apps-read.service';
 import { HardwareInspectorService } from '../inference/hardware-inspector.service';
+import { readRocmHostProbe } from '../inference/host-rocm-availability';
 import { HubPoolIdentityService } from '../hub-pool/hub-pool-identity.service';
 import { InferenceRouterService } from '../inference/inference-router.service';
 import { RegistrationService } from '../registration/registration.service';
@@ -167,13 +168,25 @@ export class StatusReportService {
             vendor: profile.gpu.vendor ?? null,
             model: profile.gpu.model ?? null,
             vramMb: profile.gpu.vramMb ?? null,
-            // A card that is present with a broken driver is a finding, not an absence. The host's probe
-            // counts: the Hub container has no GPU devices on most hosts, and that alone is no fault (#2291).
-            driverWorking: this.hardware.gpuRuntimeReady(profile.gpu),
+            // A card that is present with a broken driver is a finding, not an absence.
+            driverWorking: await this.gpuDriverWorking(profile.gpu),
           }
         : null,
       hardwareTier: profile?.tier ?? null,
     };
+  }
+
+  /**
+   * False only when a check that could have seen the card came back empty. The Hub container has no
+   * GPU devices on most hosts, so failing to reach the card from here is no fault by itself (#2291).
+   * NVIDIA has its runtime and host probe. AMD has the host's ROCm probe, which only Linux writes.
+   * Intel has no check at all, so the report has nothing to accuse its driver with.
+   */
+  private async gpuDriverWorking(gpu: HardwareProfile['gpu']): Promise<boolean> {
+    if (this.hardware.gpuRuntimeReady(gpu)) return true;
+    if (gpu.vendor === 'nvidia') return false;
+    if (gpu.vendor === 'amd') return (await readRocmHostProbe()) === null;
+    return true;
   }
 
   private async readInference(): Promise<{ backends: StatusBackend[]; models: StatusModel[] }> {

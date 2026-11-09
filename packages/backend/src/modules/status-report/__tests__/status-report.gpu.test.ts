@@ -1,6 +1,13 @@
+import fs from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { HardwareInspectorService } from '../../inference/hardware-inspector.service';
 import { StatusReportService } from '../status-report.service';
+
+/** What `cihub up` leaves behind on a Linux host: the probe's own view of `/dev/kfd`. */
+async function writeRocmProbe(content: string) {
+  await fs.promises.mkdir('/data/state/hardware', { recursive: true });
+  await fs.promises.writeFile('/data/state/hardware/rocm.json', content);
+}
 
 /** The report as `buildReport` makes it for one GPU, with the real answer to "can inference reach it". */
 async function reportFor(gpu: Record<string, unknown>) {
@@ -29,8 +36,24 @@ describe('the status report GPU line', () => {
     expect(await reportFor({ runtimeAvailable: false, hostRocmKfdAvailable: true })).toMatchObject({ driverWorking: true });
   });
 
-  it('still reports an AMD card that neither the container nor the host can use', async () => {
+  it('still reports an AMD card that neither the container nor the host probe can find', async () => {
+    await writeRocmProbe('{"available":false,"source":"host-dev-kfd"}');
     expect(await reportFor({ runtimeAvailable: false, hostRocmKfdAvailable: false })).toMatchObject({ driverWorking: false });
+  });
+
+  // Only Linux writes rocm.json, so on Windows and macOS there is nothing to read.
+  it('does not call an AMD driver broken when the host probe never ran', async () => {
+    expect(await reportFor({ runtimeAvailable: false, hostRocmKfdAvailable: false })).toMatchObject({ driverWorking: true });
+  });
+
+  it('does not call an AMD driver broken when the host probe cannot be parsed', async () => {
+    await writeRocmProbe('{not json');
+    expect(await reportFor({ runtimeAvailable: false, hostRocmKfdAvailable: false })).toMatchObject({ driverWorking: true });
+  });
+
+  // `runtimeAvailable` is the AMD /dev/kfd test for every vendor but NVIDIA, so it is always false on Intel.
+  it('does not call an Intel driver broken, because nothing checks one', async () => {
+    expect(await reportFor({ vendor: 'intel', model: 'UHD Graphics 770', runtimeAvailable: false })).toMatchObject({ driverWorking: true });
   });
 
   it('still calls a driver working when the container can reach the card itself', async () => {
