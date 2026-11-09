@@ -149,12 +149,14 @@ function runtimeHealthQueryKey(appUrn: string) {
 
 /**
  * Refetch every app record after the Hub comes back. What a restart changed was announced while no
- * browser was connected, and no app query polls, so an open page kept what it had read before (#2286).
+ * browser was connected. No app query polls, so an open page kept what it had read before (#2286).
  */
 export function invalidateAppRecords(queryClient: QueryClient) {
   void queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
   void queryClient.invalidateQueries({ queryKey: getInstalledAppUrnsQueryKey() });
-  void queryClient.invalidateQueries({ predicate: (query) => (query.queryKey[0] as { _id?: string } | undefined)?._id === 'getApp' });
+  void queryClient.invalidateQueries({ queryKey: [{ _id: 'getApp' }] });
+  // A listing read that failed while the Hub was away holds the page on "not found" with its record query off.
+  void queryClient.invalidateQueries({ queryKey: ['app-listing'], predicate: (query) => query.state.status === 'error' });
 }
 
 /**

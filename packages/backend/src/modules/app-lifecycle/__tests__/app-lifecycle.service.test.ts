@@ -227,10 +227,10 @@ describe('AppLifecycleService', () => {
 
       storesLoaded();
       await running;
-      expect(command.execute).toHaveBeenCalledWith('test-app', expect.anything());
+      expect(command.execute).toHaveBeenCalledWith('test-app', expect.anything(), expect.anything());
     });
 
-    // Startup recovery fails an install still waiting its turn, and its message still comes (#2286).
+    // Startup recovery fails an install still waiting its turn. Its message still comes (#2286).
     it.each([
       ['install_failed', { id: 1, status: 'install_failed' }],
       ['gone', null],
@@ -246,6 +246,49 @@ describe('AppLifecycleService', () => {
       expect(command.execute).not.toHaveBeenCalled();
       expect(reply).toHaveBeenCalledWith(expect.objectContaining({ success: false, cancelled: true }));
       expect(installPipelineTracker.getActive()).toBeNull();
+    });
+
+    // Recovery failed the install and the operator retried it while the old message waited its turn.
+    it('does not run a redelivered install once a retry of the app has registered', async () => {
+      const appUrn = 'test-app' as any;
+      const data = { appUrn, command: 'install', requestId: '00000000-0000-4000-8000-000000000005', form: {} } as any;
+      const retryRequestId = '00000000-0000-4000-8000-000000000006';
+      operationRegistry.register(appUrn, { requestId: retryRequestId, command: 'install', tier: 'safe' });
+      const command = { execute: vi.fn() };
+      commandFactory.createCommand.mockReturnValue(command as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'installing' } as any);
+      const reply = vi.fn().mockResolvedValue(undefined);
+
+      await service.invokeCommand(data, reply);
+
+      expect(command.execute).not.toHaveBeenCalled();
+      expect(reply).toHaveBeenCalledWith(expect.objectContaining({ success: false, cancelled: true }));
+      expect(operationRegistry.get(appUrn)?.requestId).toBe(retryRequestId);
+    });
+
+    it('lets Cancel reach an install that resumes after a restart', async () => {
+      const appUrn = 'test-app' as any;
+      const data = { appUrn, command: 'install', requestId: '00000000-0000-4000-8000-000000000007', form: {} } as any;
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'installing' } as any);
+      let finish: (result: { success: boolean; cancelled?: boolean; message: string }) => void = () => undefined;
+      const command = {
+        execute: vi.fn().mockReturnValue(
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+        ),
+      };
+      commandFactory.createCommand.mockReturnValue(command as any);
+
+      const running = service.invokeCommand(data, vi.fn().mockResolvedValue(undefined));
+      await vi.waitFor(() => expect(command.execute).toHaveBeenCalled());
+
+      expect(await service.cancelOperation({ actor: TEST_ACTOR, appUrn })).toMatchObject({ outcome: 'cancelling' });
+      expect(command.execute.mock.calls[0][2].signal.aborted).toBe(true);
+
+      finish({ success: false, cancelled: true, message: 'cancelled' });
+      await running;
+      expect(operationRegistry.get(appUrn)).toBeUndefined();
     });
 
     it('should execute command and sync cloudflare on success', async () => {
@@ -274,7 +317,7 @@ describe('AppLifecycleService', () => {
 
       expect(mutex.acquire).toHaveBeenCalledWith('__install-pipeline__');
       expect(mutex.acquire).toHaveBeenCalledWith('test-app');
-      expect(command.execute).toHaveBeenCalledWith('test-app', expect.anything());
+      expect(command.execute).toHaveBeenCalledWith('test-app', expect.anything(), expect.anything());
       expect(cloudflareClientService.syncState).toHaveBeenCalled();
       expect(reply).toHaveBeenCalledWith({ success: true, message: 'OK' });
     });
