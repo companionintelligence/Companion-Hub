@@ -4,6 +4,7 @@ import { InstallAppCommand, extractComposeImages, mapPullProgressToInstallProgre
 import { withMovedPort } from '../main-host-port';
 import type { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
+import { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -679,7 +680,7 @@ describe('InstallAppCommand — pull policy', () => {
   });
 
   describe('removing the data of a cancelled install', () => {
-    const cancelDuringComposeUp = async () => {
+    const cancelDuringComposeUp = async (deadline?: AppCommandDeadline) => {
       const ac = new AbortController();
       dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
         if (args.includes('up --detach')) {
@@ -687,7 +688,7 @@ describe('InstallAppCommand — pull policy', () => {
           throw new DOMException('Aborted', 'AbortError');
         }
       });
-      return (await command.execute(appUrn, {}, { signal: ac.signal, setPhase: vi.fn() })) as Record<string, unknown>;
+      return (await command.execute(appUrn, {}, { signal: ac.signal, setPhase: vi.fn(), deadline })) as Record<string, unknown>;
     };
 
     it('removes it and reports a clean cancel when the Hub can delete it', async () => {
@@ -703,9 +704,28 @@ describe('InstallAppCommand — pull policy', () => {
 
       const result = await cancelDuringComposeUp();
 
-      expect(dockerService.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn);
+      expect(dockerService.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, undefined);
       expect(appFilesManager.deleteAppDataDir).toHaveBeenCalledWith(appUrn);
       expect(result).toMatchObject({ cancelled: true, message: `Install of ${appUrn} was cancelled and cleaned up` });
+      expect(result.warningCode).toBeUndefined();
+    });
+
+    it('holds the root helper to the time the command has left', async () => {
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+      const deadline = AppCommandDeadline.after(60_000);
+
+      await cancelDuringComposeUp(deadline);
+
+      expect(dockerService.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, deadline);
+    });
+
+    it('does not claim a clean-up when data from before this install is still there', async () => {
+      appFilesManager.hasAppData.mockResolvedValue(true);
+      appFilesManager.deleteAppDataDir.mockResolvedValue(false);
+
+      const result = await cancelDuringComposeUp();
+
+      expect(result.message).not.toContain('cleaned up');
       expect(result.warningCode).toBeUndefined();
     });
 

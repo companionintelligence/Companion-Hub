@@ -5,7 +5,7 @@ import type { ConfigurationService } from '@/core/config/configuration.service';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { AppUrn } from '@ci-hub/common/types';
 
-// The real filesystem: the suite's memfs mock cannot refuse a listing, and a refused listing is the case that matters here.
+// The real filesystem: the suite's memfs mock cannot refuse a listing and a refused listing is the case that matters here.
 vi.unmock('node:fs');
 vi.unmock('fs');
 

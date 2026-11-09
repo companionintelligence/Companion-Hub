@@ -1,3 +1,4 @@
+import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { AppFilesManager } from '@/modules/apps/app-files-manager';
 import type { DockerService } from '@/modules/docker/docker.service';
@@ -14,6 +15,7 @@ export async function removeAppDataWithPrivilegedFallback(
   dockerService: DockerService,
   logger: LoggerService,
   appUrn: AppUrn,
+  deadline?: AppCommandDeadline,
 ): Promise<{ removed: boolean; hostPath?: string }> {
   const first = await appFilesManager.deleteAppDataDirDetailed(appUrn);
   if (first.removed) {
@@ -38,7 +40,7 @@ export async function removeAppDataWithPrivilegedFallback(
   }
 
   logger.warn(`App ${appUrn} app-data not removable as non-root; attempting a privileged cleanup of ${hostPath ?? 'its data directory'}`);
-  const emptied = await dockerService.removeAppDataDirAsRoot(appUrn);
+  const emptied = await dockerService.removeAppDataDirAsRoot(appUrn, deadline);
   // The helper only empties the folder (never the mountpoint), so the Hub still removes the empty
   // folder itself, which also checks the result from the Hub's own view.
   if (emptied && (await appFilesManager.deleteAppDataDir(appUrn))) {
