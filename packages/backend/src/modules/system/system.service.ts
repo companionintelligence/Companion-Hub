@@ -6,7 +6,8 @@ import si from 'systeminformation';
 import { HostMetricsService } from './host-metrics.service';
 
 // Base64 and whitespace only between the markers, so a match can't run across another PEM block.
-const PEM_CERTIFICATE_BLOCK = /-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+-----END CERTIFICATE-----/g;
+// At least one base64 character, so a pair of markers around nothing doesn't count as a certificate.
+const PEM_CERTIFICATE_BLOCK = /-----BEGIN CERTIFICATE-----\s*[A-Za-z0-9+/=][A-Za-z0-9+/=\s]*-----END CERTIFICATE-----/g;
 
 @Injectable()
 export class SystemService {

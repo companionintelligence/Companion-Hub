@@ -6,7 +6,7 @@ import { type SettingsFormValues, UserSettingsForm } from './user-settings-form'
 const { apiFetch, saveBlobAsFile } = vi.hoisted(() => ({ apiFetch: vi.fn(), saveBlobAsFile: vi.fn() }));
 
 vi.mock('@/lib/api-fetch', async (importOriginal) => ({ ...(await importOriginal<typeof import('@/lib/api-fetch')>()), apiFetch }));
-vi.mock('@/lib/save-file', () => ({ saveBlobAsFile }));
+vi.mock('@/lib/save-file', async (importOriginal) => ({ ...(await importOriginal<typeof import('@/lib/save-file')>()), saveBlobAsFile }));
 vi.mock('sonner', async (importOriginal) => {
   const actual = await importOriginal<typeof import('sonner')>();
   return { ...actual, toast: { ...actual.toast, error: vi.fn(), success: vi.fn() } };
@@ -68,15 +68,45 @@ describe('Download certificate', () => {
     await waitFor(() => expect(saveBlobAsFile).toHaveBeenCalledWith('cert.pem', pem));
     expect(apiFetch).toHaveBeenCalledWith('/api/system/certificate');
     expect(toast.error).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('says where the desktop app put the file', async () => {
+    apiFetch.mockResolvedValue({ ok: true, status: 200, blob: async () => new Blob(['pem']) });
+    saveBlobAsFile.mockResolvedValueOnce('/home/you/Downloads/cert (1).pem');
+
+    await clickDownload();
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Saved cert (1).pem\nto /home/you/Downloads'));
   });
 
   it('says there is no certificate instead of saving an empty file', async () => {
-    apiFetch.mockResolvedValue({ ok: false, status: 404 });
+    apiFetch.mockResolvedValue({ ok: false, status: 404, json: async () => ({ statusCode: 404, message: 'SETTINGS_GENERAL_CERTIFICATE_NONE' }) });
 
     await clickDownload();
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('This Hub has no certificate to download.'));
     expect(saveBlobAsFile).not.toHaveBeenCalled();
+  });
+
+  it('does not take a 404 from something other than the Hub to mean there is no certificate', async () => {
+    apiFetch.mockResolvedValue({ ok: false, status: 404, json: () => Promise.reject(new SyntaxError('404 page not found')) });
+
+    await clickDownload();
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Couldn't download the certificate. Please try again."));
+    expect(saveBlobAsFile).not.toHaveBeenCalled();
+  });
+
+  it('holds the button while the download runs', async () => {
+    let answer: (response: unknown) => void = () => undefined;
+    apiFetch.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+
+    await clickDownload();
+
+    expect(screen.getByRole('button', { name: 'Download certificate' })).toBeDisabled();
+    answer({ ok: true, status: 200, blob: async () => new Blob(['pem']) });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Download certificate' })).toBeEnabled());
   });
 
   it('says the download failed when the Hub cannot be asked', async () => {
@@ -86,6 +116,16 @@ describe('Download certificate', () => {
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Couldn't download the certificate. Please try again."));
     expect(saveBlobAsFile).not.toHaveBeenCalled();
+  });
+
+  it('saves the settings on Enter in a field instead of downloading', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={newHubSettings} onSubmit={onSubmit} />);
+
+    await userEvent.type(localDomainField(), '{Enter}');
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(apiFetch).not.toHaveBeenCalled();
   });
 });
 

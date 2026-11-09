@@ -7,8 +7,7 @@ import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import type { Locale } from '@/lib/i18n/locales';
 import { SlidersHorizontal, Sliders, Info, User, Copy } from 'lucide-react';
 import clsx from 'clsx';
-import type React from 'react';
-import { Suspense, lazy, useEffect } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -19,7 +18,7 @@ import { AdvancedSettingsModal } from '../advanced-settings-modal/advanced-setti
 import './user-settings-form.css';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { apiFetch } from '@/lib/api-fetch';
-import { saveBlobAsFile } from '@/lib/save-file';
+import { saveBlobAsFile, splitSavedPath } from '@/lib/save-file';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import { THEME_COLOR_ENUM } from '../color-selector/color-selector';
 import { THEME_BASE_ENUM, type ThemeBase, ThemeBaseSelector } from '../theme-base-selector/theme-base-selector';
@@ -115,6 +114,7 @@ export const UserSettingsForm = (props: IProps) => {
   const { onSubmit, initialValues, loading, currentLocale = 'en-US', submitErrors, publicHubHostname, manageHub = true } = props;
   const { t } = useTranslation();
   const advancedSettingsDisclosure = useDisclosure();
+  const [downloadingCertificate, setDownloadingCertificate] = useState(false);
 
   const validateFields = (values: SettingsFormValues) => {
     const errors: { [K in keyof SettingsFormValues]?: string } = {};
@@ -171,17 +171,26 @@ export const UserSettingsForm = (props: IProps) => {
     }
   };
 
-  const downloadCertificate = async (e: React.MouseEvent<HTMLButtonElement>) => {
-    e.preventDefault();
+  const downloadCertificate = async () => {
+    setDownloadingCertificate(true);
     try {
       const response = await apiFetch('/api/system/certificate');
       if (response.ok) {
-        await saveBlobAsFile('cert.pem', await response.blob());
+        // Only the desktop app reports a path. A browser shows its own download UI.
+        const savedPath = await saveBlobAsFile('cert.pem', await response.blob());
+        if (savedPath) {
+          const { folder, file } = splitSavedPath(savedPath);
+          toast.success(t('SETTINGS_GENERAL_CERTIFICATE_SAVED', { file, folder }));
+        }
         return;
       }
-      toast.error(t(response.status === 404 ? 'SETTINGS_GENERAL_CERTIFICATE_NONE' : 'SETTINGS_GENERAL_CERTIFICATE_FAILED'));
+      // Traefik answers 404 too while the Hub restarts, so only the Hub's own key means there is no certificate.
+      const refusal = (await response.json().catch(() => null)) as { message?: string } | null;
+      toast.error(t(refusal?.message === 'SETTINGS_GENERAL_CERTIFICATE_NONE' ? refusal.message : 'SETTINGS_GENERAL_CERTIFICATE_FAILED'));
     } catch {
       toast.error(t('SETTINGS_GENERAL_CERTIFICATE_FAILED'));
+    } finally {
+      setDownloadingCertificate(false);
     }
   };
 
@@ -456,7 +465,7 @@ export const UserSettingsForm = (props: IProps) => {
                   {renderFieldCopyButton(publicHubHostname ?? '')}
                 </Input>
               </div>
-              <Button variant="outline" className="mt-2 mb-2" onClick={downloadCertificate}>
+              <Button type="button" variant="outline" className="mt-2 mb-2" onClick={downloadCertificate} loading={downloadingCertificate}>
                 {t('SETTINGS_GENERAL_DOWNLOAD_CERTIFICATE')}
               </Button>
             </div>

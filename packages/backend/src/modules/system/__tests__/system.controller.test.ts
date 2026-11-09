@@ -223,6 +223,7 @@ describe('SystemController', () => {
         status: 404,
         response: { message: 'SETTINGS_GENERAL_CERTIFICATE_NONE' },
       });
+      expect(res.set).not.toHaveBeenCalled();
       expect(res.send).not.toHaveBeenCalled();
     });
   });

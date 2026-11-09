@@ -117,6 +117,7 @@ describe('SystemService', () => {
       ['only a private key', privateKey],
       ['not PEM at all', '{"hubLocalKey":"value"}'],
       ['a certificate marker with no end around a key', `-----BEGIN CERTIFICATE-----\n${privateKey}\n-----END CERTIFICATE-----`],
+      ['markers around nothing', '-----BEGIN CERTIFICATE-----\n\n-----END CERTIFICATE-----\n'],
     ])('should return undefined for a file that holds no certificate (%s)', async (_name, content) => {
       filesystemService.pathExists.mockResolvedValue(true);
       filesystemService.readTextFile.mockResolvedValue(content as any);
