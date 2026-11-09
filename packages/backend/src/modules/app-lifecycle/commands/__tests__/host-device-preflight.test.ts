@@ -37,8 +37,8 @@ type ModuleRefOptions = {
   composeJson?: unknown;
   userCompose?: string | null;
   architecture?: Architecture;
-  /** What `docker info` lists. 'unreachable' makes it throw. Left out, no Docker is on offer at all. */
-  dockerRuntimes?: string[] | 'unreachable';
+  /** What `docker info` lists. 'unreachable' makes it throw, 'unreported' leaves the field out. Left out, no Docker is on offer at all. */
+  dockerRuntimes?: string[] | 'unreachable' | 'unreported';
 };
 
 /**
@@ -83,6 +83,7 @@ function createModuleRef(options: ModuleRefOptions = {}): ModuleRef {
         return {
           info: async () => {
             if (dockerRuntimes === 'unreachable') throw new Error('connect ENOENT /var/run/docker.sock');
+            if (dockerRuntimes === 'unreported') return {};
             return { Runtimes: Object.fromEntries(dockerRuntimes.map((name) => [name, { path: name }])) };
           },
         };
@@ -278,6 +279,34 @@ describe('assertHostDevicesAvailable', () => {
       const moduleRef = createModuleRef({ composeJson: composeManifest(undefined, 'kata'), dockerRuntimes: 'unreachable' });
 
       await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).resolves.toBeUndefined();
+    });
+
+    it('leaves the answer to compose up when Docker does not report its runtimes', async () => {
+      markKvmInHostKernelOnly();
+      const moduleRef = createModuleRef({ composeJson: composeManifest(undefined, 'kata'), dockerRuntimes: 'unreported' });
+
+      await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).resolves.toBeUndefined();
+    });
+
+    it('goes by the runtime the override replaces the base one with', async () => {
+      const moduleRef = createModuleRef({
+        composeJson: composeManifest(undefined, 'kata'),
+        userCompose: yaml.stringify({ services: { main: { runtime: 'runc' } } }),
+        dockerRuntimes: ['runc'],
+      });
+
+      await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).resolves.toBeUndefined();
+    });
+
+    it('keeps the base runtime when the override sets one for a different service', async () => {
+      markKvmInHostKernelOnly();
+      const moduleRef = createModuleRef({
+        composeJson: composeManifest(undefined, 'kata'),
+        userCompose: yaml.stringify({ services: { sidecar: { runtime: 'runc' } } }),
+        dockerRuntimes: ['runc'],
+      });
+
+      await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).rejects.toMatchObject({ errorCode: KATA_RUNTIME_MISSING_CODE });
     });
 
     it('does not ask Docker about a device passthrough with no runtime', async () => {

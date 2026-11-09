@@ -47,7 +47,7 @@ async function dockerRuntimes(moduleRef: ModuleRef): Promise<Set<string> | null>
   try {
     const docker = moduleRef.get<Dockerode>(DOCKERODE, { strict: false });
     const info = await docker.info();
-    return new Set(Object.keys(info.Runtimes ?? {}));
+    return info.Runtimes ? new Set(Object.keys(info.Runtimes)) : null;
   } catch {
     return null;
   }
@@ -68,29 +68,26 @@ function isKvmHostDevice(device: string): boolean {
 
 /**
  * Returns which special host devices a raw user docker-compose.yml override
- * declares. Failures to parse are silently ignored so a malformed override
- * never blocks an otherwise-valid install/start.
+ * declares and the runtime it sets per service. Failures to parse are silently
+ * ignored so a malformed override never blocks an otherwise-valid install/start.
  */
-function userComposeRequiredDevices(composeYaml: string): { requiresKfd: boolean; requiresKvm: boolean; kataRuntimes: string[] } {
-  const none = { requiresKfd: false, requiresKvm: false, kataRuntimes: [] };
+function userComposeRequiredDevices(composeYaml: string): { requiresKfd: boolean; requiresKvm: boolean; runtimes: Map<string, string> } {
+  const none = { requiresKfd: false, requiresKvm: false, runtimes: new Map<string, string>() };
   try {
     const parsed = yaml.parse(composeYaml) as { services?: Record<string, { devices?: unknown[]; runtime?: unknown } | null> } | null;
     if (!parsed?.services) return none;
     let requiresKfd = false;
     let requiresKvm = false;
-    const kataRuntimes: string[] = [];
-    for (const svc of Object.values(parsed.services)) {
-      if (typeof svc?.runtime === 'string' && isConfidentialRuntime(svc.runtime)) {
-        requiresKvm = true;
-        kataRuntimes.push(svc.runtime);
-      }
+    const runtimes = new Map<string, string>();
+    for (const [name, svc] of Object.entries(parsed.services)) {
+      if (typeof svc?.runtime === 'string') runtimes.set(name, svc.runtime);
       for (const device of svc?.devices ?? []) {
         if (typeof device !== 'string') continue;
         if (isKfdHostDevice(device)) requiresKfd = true;
         if (isKvmHostDevice(device)) requiresKvm = true;
       }
     }
-    return { requiresKfd, requiresKvm, kataRuntimes };
+    return { requiresKfd, requiresKvm, runtimes };
   } catch {
     return none;
   }
@@ -110,17 +107,14 @@ export async function assertHostDevicesAvailable(moduleRef: ModuleRef, appUrn: A
   // Check the base installed compose (docker-compose.json) with architecture overrides applied.
   let requiresKfd = false;
   let requiresKvm = false;
-  const kataRuntimes = new Set<string>();
+  const runtimes = new Map<string, string>();
   const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
   if (composeJson.content) {
     const { services, overrides } = parseInstalledComposeJson(composeJson.content, securityGrantsFor(appUrn));
     const architecture = config.get('architecture');
     const mergedServices = mergeArchitectureOverrides(services, overrides, architecture);
     for (const service of mergedServices) {
-      if (service.runtime && isConfidentialRuntime(service.runtime)) {
-        requiresKvm = true;
-        kataRuntimes.add(service.runtime);
-      }
+      if (service.runtime) runtimes.set(service.name, service.runtime);
       for (const device of service.devices ?? []) {
         if (typeof device !== 'string') continue;
         if (isKfdHostDevice(device)) requiresKfd = true;
@@ -133,13 +127,17 @@ export async function assertHostDevicesAvailable(moduleRef: ModuleRef, appUrn: A
   // composeApp layers this file on top of the generated docker-compose.yml via an additional
   // -f flag. Docker Compose appends list fields across -f files, so an override that adds
   // /dev/kfd or /dev/kvm will be present in the effective compose even when the base does not.
+  // `runtime` is a single value, so there the override replaces what the base set for that service.
   const userCompose = await appFilesManager.getUserComposeFile(appUrn);
   if (userCompose.content) {
     const fromUser = userComposeRequiredDevices(userCompose.content);
     requiresKfd = requiresKfd || fromUser.requiresKfd;
     requiresKvm = requiresKvm || fromUser.requiresKvm;
-    for (const runtime of fromUser.kataRuntimes) kataRuntimes.add(runtime);
+    for (const [service, runtime] of fromUser.runtimes) runtimes.set(service, runtime);
   }
+
+  const kataRuntimes = [...new Set(runtimes.values())].filter((runtime) => isConfidentialRuntime(runtime));
+  if (kataRuntimes.length > 0) requiresKvm = true;
 
   if (requiresKfd && !(await isRocmKfdPassthroughAvailable())) {
     throw createRocmKfdMissingError();
@@ -149,9 +147,9 @@ export async function assertHostDevicesAvailable(moduleRef: ModuleRef, appUrn: A
     throw createKvmMissingError();
   }
 
-  if (kataRuntimes.size > 0) {
+  if (kataRuntimes.length > 0) {
     const registered = await dockerRuntimes(moduleRef);
-    const missing = registered && [...kataRuntimes].find((runtime) => !registered.has(runtime));
+    const missing = registered && kataRuntimes.find((runtime) => !registered.has(runtime));
     if (missing) {
       throw createKataRuntimeMissingError(missing);
     }
