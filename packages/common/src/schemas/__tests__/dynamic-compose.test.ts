@@ -1654,3 +1654,29 @@ describe('dynamicComposeFormSchema', () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe('an environment variable with no value', () => {
+  const service = (environment: unknown) => ({ name: 'web', image: 'nginx:alpine', internalPort: 80, isMain: true, environment });
+
+  it.each([
+    ['an empty string', { key: 'FOO', value: '' }, 'CUSTOM_APP_ERROR_ENV_VALUE_MIN_LENGTH'],
+    // What the form sends for an empty field. It matches no branch, and a bare union said "Invalid input".
+    ['no value', { key: 'FOO' }, 'CUSTOM_APP_ERROR_ENV_VALUE_REQUIRED'],
+  ])('names the rule for %s', (_name, variable, message) => {
+    const { success, error } = dynamicComposeFormSchema.safeParse({ services: [service([variable])] });
+    expect(success).toBe(false);
+    expect(error?.issues[0]).toMatchObject({ message, path: ['services', 0, 'environment', 0, 'value'] });
+  });
+
+  it("gives the form's resolver, which reads a union's first branch, the same words", () => {
+    const { error } = dynamicComposeFormSchema.safeParse({ services: [service([{ key: 'FOO' }])] });
+    const issue = error?.issues[0] as unknown as { errors: { message: string }[][] };
+    expect(issue.errors[0]?.[0]?.message).toBe('CUSTOM_APP_ERROR_ENV_VALUE_REQUIRED');
+  });
+
+  it('still takes a string, a number or a boolean', () => {
+    for (const value of ['bar', 0, 5, false, true]) {
+      expect(dynamicComposeFormSchema.safeParse({ services: [service([{ key: 'FOO', value }])] }).success, String(value)).toBe(true);
+    }
+  });
+});

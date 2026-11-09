@@ -15342,15 +15342,11 @@
                           "value": {
                             "anyOf": [
                               {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "minLength": 1
-                                  },
-                                  {
-                                    "type": "number"
-                                  }
-                                ]
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "number"
                               },
                               {
                                 "type": "boolean"
@@ -15929,15 +15925,11 @@
                                 "value": {
                                   "anyOf": [
                                     {
-                                      "anyOf": [
-                                        {
-                                          "type": "string",
-                                          "minLength": 1
-                                        },
-                                        {
-                                          "type": "number"
-                                        }
-                                      ]
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "type": "number"
                                     },
                                     {
                                       "type": "boolean"
@@ -16565,15 +16557,11 @@
                           "value": {
                             "anyOf": [
                               {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "minLength": 1
-                                  },
-                                  {
-                                    "type": "number"
-                                  }
-                                ]
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "number"
                               },
                               {
                                 "type": "boolean"
@@ -17152,15 +17140,11 @@
                                 "value": {
                                   "anyOf": [
                                     {
-                                      "anyOf": [
-                                        {
-                                          "type": "string",
-                                          "minLength": 1
-                                        },
-                                        {
-                                          "type": "number"
-                                        }
-                                      ]
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "type": "number"
                                     },
                                     {
                                       "type": "boolean"
