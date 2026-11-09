@@ -280,6 +280,9 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           showSuccessOrPortMoved('APP_RESTART_SUCCESS', appName, movedHostPort);
           break;
         case 'restart_error':
+          if (showHostCapabilityToast(errorCode)) {
+            break;
+          }
           if (serviceFailure) {
             showServiceFailureToast('APP_ERROR_APP_FAILED_TO_RESTART_BECAUSE', appName, serviceFailure);
             break;

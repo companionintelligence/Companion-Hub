@@ -86,8 +86,10 @@ describe('SSEProvider', () => {
   it.each([
     ['start_error', 'kvm_missing', 'This app needs hardware virtualization (KVM). It is not available on this machine.'],
     ['install_error', 'kvm_missing', 'This app needs hardware virtualization (KVM). It is not available on this machine.'],
+    ['restart_error', 'kvm_missing', 'This app needs hardware virtualization (KVM). It is not available on this machine.'],
     ['start_error', 'kata_runtime_missing', "This app needs the Kata container runtime. It isn't set up in Docker on this machine."],
     ['install_error', 'kata_runtime_missing', "This app needs the Kata container runtime. It isn't set up in Docker on this machine."],
+    ['restart_error', 'kata_runtime_missing', "This app needs the Kata container runtime. It isn't set up in Docker on this machine."],
   ])('%s with %s says what the machine lacks', (event, errorCode, message) => {
     let onEvent: ((data: unknown) => void) | undefined;
     mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
