@@ -839,6 +839,12 @@ describe('hub-pool-cli pins', () => {
       expect(text).toContain(`cihub pool unpin --model ${kept}`);
     });
 
+    it('keeps the follow-up command on the Hub this unpin went to', () => {
+      const text = formatPoolUnpinLines(COVERS, [modelPin('nomic-embed-text:latest')], 'nomic-embed-text', 'dev').join('\n');
+
+      expect(text).toContain('cihub pool unpin --model nomic-embed-text:latest dev');
+    });
+
     it('says the pool-wide pin takes over when one is set', () => {
       const text = formatPoolUnpinLines(COVERS, [poolWide], 'nomic-embed-text').join('\n');
 

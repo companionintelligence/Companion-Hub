@@ -1363,8 +1363,10 @@ export function formatPoolPinLines(pins: PoolStatusPin[] | undefined): string[] 
  * Asks those pins the question routing asks ({@link resolvePinFor}), because removing a model pin
  * doesn't always end the steering: a pin stored under the model's other spelling still applies and
  * so does the pool-wide pin. `model` is absent for the pool-wide pin, which leaves model pins alone.
+ * `env` goes into the follow-up command so it reaches the Hub this one did: without it the CLI falls
+ * back to `local`.
  */
-export function formatPoolUnpinLines(covers: string, remaining: readonly PoolStatusPin[], model?: string): string[] {
+export function formatPoolUnpinLines(covers: string, remaining: readonly PoolStatusPin[], model?: string, env?: string): string[] {
   const governing = model === undefined ? null : resolvePinFor(remaining, model);
   if (!governing) {
     return [`Routing for ${covers} is back to the ranker (least-loaded, with the local head start).`];
@@ -1373,7 +1375,10 @@ export function formatPoolUnpinLines(covers: string, remaining: readonly PoolSta
     return [`Routing for ${covers} now follows the pool-wide pin.`];
   }
   const other = sanitizeForBox(governing.model ?? '?');
-  return [`Requests for ${covers} still follow the pin saved as "${other}".`, `Remove that one too with: cihub pool unpin --model ${other}`];
+  return [
+    `Requests for ${covers} still follow the pin saved as "${other}".`,
+    `Remove that one too with: cihub pool unpin --model ${other}${env ? ` ${env}` : ''}`,
+  ];
 }
 
 /**

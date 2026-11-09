@@ -898,5 +898,5 @@ export function upsertPoolPin(pins: readonly HubPoolPin[], pin: HubPoolPin): Hub
 /** Remove the pin `(scope, model)` names. The length is unchanged when nothing matched, so a no-op DELETE never rewrites settings.json. */
 export function removePoolPin(pins: readonly HubPoolPin[], scope: PoolPinScope, model?: string): HubPoolPin[] {
   const removed = findAddressedPin(pins, { scope, model });
-  return pins.filter((pin) => pin !== removed);
+  return removed ? pins.filter((pin) => !samePinTarget(pin, removed)) : [...pins];
 }

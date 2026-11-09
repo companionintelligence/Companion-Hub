@@ -219,7 +219,7 @@ Saving and removing find the pin the same way: the spelling given wins, otherwis
 
 **A hard `require` mode was designed and cut.** With a default-scope `require` pin at a peer, every app still discovers *this* node's model list from the local-only listing routes and would then get an unfailoverable 502 for every model the peer lacks — embeddings included, since the embedding host points at the same pool URL. It also turns a peer outage into a first-byte-budget hang per request for the whole 90 s–15 min window before the unreachable threshold trips, while the pin still reads as healthy. Nothing anyone asked for needed it.
 
-`GET /api/inference/pool/status` reports every pin with its target resolved to a node name and `targetAvailable` computed from the same predicates routing uses — which is the only place a pin that has quietly stopped applying is visible. `POST /api/inference/pool/pins` upserts one (there is no id: it finds the pin from `(scope, model)` by the rule above); `DELETE /api/inference/pool/pins?scope=model&model=<id>` removes it the same way, addressed by query because model ids contain `/` and `:`.
+`GET /api/inference/pool/status` reports every pin with its target resolved to a node name and `targetAvailable` computed from the same predicates routing uses. It is the only place a pin that has quietly stopped applying is visible. `POST /api/inference/pool/pins` upserts one (there is no id: it finds the pin from `(scope, model)` by the rule above); `DELETE /api/inference/pool/pins?scope=model&model=<id>` removes it the same way, addressed by query because model ids contain `/` and `:`.
 
 ## Prompt ceilings
 

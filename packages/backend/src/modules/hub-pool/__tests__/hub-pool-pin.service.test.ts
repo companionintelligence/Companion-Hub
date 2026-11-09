@@ -161,6 +161,11 @@ describe('upsertPoolPin / removePoolPin', () => {
     expect(removePoolPin([defaultPin, modelPin], 'model', 'not-pinned')).toEqual([defaultPin, modelPin]);
   });
 
+  it('removes every copy of the addressed pin, so none keeps steering after a removal', () => {
+    expect(removePoolPin([defaultPin, pin(), modelPin], 'default')).toEqual([modelPin]);
+    expect(removePoolPin([defaultPin, modelPin, pin({ scope: 'model', model: 'a:1b' })], 'model', 'a:1b')).toEqual([defaultPin]);
+  });
+
   describe('the two spellings of :latest', () => {
     const onBare = pin({ scope: 'model', model: 'nomic-embed-text', targetKind: 'peer', peerId: 'peer-a' });
     const onLatest = pin({ scope: 'model', model: 'nomic-embed-text:latest', targetKind: 'peer', peerId: 'peer-b' });
