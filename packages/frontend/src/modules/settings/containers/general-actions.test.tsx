@@ -10,6 +10,7 @@ import {
   installDesktopUpdate,
   isTauri,
   openDesktopDownloadPage,
+  performStackUpdate,
   performUpdate,
   restartDesktopApp,
   type UpdateInfo,
@@ -71,6 +72,7 @@ vi.mock('@/lib/update-service', async () => {
     getDesktopRestartState: vi.fn(),
     getInstalledDesktopVersion: vi.fn(),
     isTauri: vi.fn(),
+    performStackUpdate: vi.fn(),
     performUpdate: vi.fn(),
     restartDesktopApp: vi.fn(),
     installDesktopUpdate: vi.fn(),
@@ -141,7 +143,7 @@ describe('GeneralActionsContainer', () => {
     mockIsTauri.mockReturnValue(false);
     mockGetInstalledDesktopVersion.mockResolvedValue(null);
     mockCheckForUpdates.mockResolvedValue(null);
-    mockFetchHostListenerStatus.mockResolvedValue(false);
+    mockFetchHostListenerStatus.mockResolvedValue({ reachable: false, desktopApp: true });
     mockGetDesktopRestartState.mockResolvedValue(null);
   });
 
@@ -500,7 +502,7 @@ describe('GeneralActionsContainer', () => {
   });
 
   it('tells a browser where to update the desktop app when the Hub cannot reach it', async () => {
-    mockFetchHostListenerStatus.mockResolvedValue(false);
+    mockFetchHostListenerStatus.mockResolvedValue({ reachable: false, desktopApp: true });
 
     render(<GeneralActionsContainer />);
 
@@ -513,9 +515,62 @@ describe('GeneralActionsContainer', () => {
     expect(screen.queryByTestId('host-listener-ready')).not.toBeInTheDocument();
   });
 
+  describe('on a Hub with no desktop app', () => {
+    beforeEach(() => {
+      mockFetchHostListenerStatus.mockResolvedValue({ reachable: false, desktopApp: false });
+    });
+
+    // A started update leaves its pending marker behind, which would carry into the next test.
+    afterEach(() => {
+      sessionStorage.clear();
+    });
+
+    it('leaves the Desktop app card out of a browser', async () => {
+      render(<GeneralActionsContainer />);
+
+      await waitFor(() => expect(mockFetchHostListenerStatus).toHaveBeenCalled());
+      await screen.findByTestId('hub-check-updates-btn');
+      await waitFor(() => expect(screen.queryByTestId('desktop-shell-update-card')).not.toBeInTheDocument());
+      expect(screen.queryByTestId('host-listener-unavailable')).not.toBeInTheDocument();
+    });
+
+    it('still shows the card in the desktop window, which is the desktop app', async () => {
+      vi.mocked(isTauri).mockReturnValue(true);
+      (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+
+      render(<GeneralActionsContainer />);
+
+      expect(await screen.findByTestId('desktop-shell-update-card')).toBeInTheDocument();
+    });
+
+    it('asks for an update without the desktop app advice', async () => {
+      mockUseAppContext.mockReturnValue({
+        version: { current: '4.7.0', latest: '4.8.0', body: '', releases: [] },
+        refreshAppContext: vi.fn(),
+        userSettings: { ciHubDeviceSlug: 'core' },
+      } as unknown as ReturnType<typeof useAppContext>);
+      vi.mocked(performStackUpdate).mockResolvedValue({ ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_RESTARTING' });
+
+      render(<GeneralActionsContainer />);
+      await waitFor(() => expect(mockFetchHostListenerStatus).toHaveBeenCalled());
+      await waitFor(() => expect(screen.queryByTestId('desktop-shell-update-card')).not.toBeInTheDocument());
+      await userEvent.click(await screen.findByTestId('hub-update-btn'));
+
+      await waitFor(() => expect(performStackUpdate).toHaveBeenCalledWith('4.8.0', { noDesktopApp: true }));
+    });
+  });
+
+  it('keeps the Desktop app card when the Hub could not say whether it has one', async () => {
+    mockFetchHostListenerStatus.mockResolvedValue(null);
+
+    render(<GeneralActionsContainer />);
+
+    expect(await screen.findByTestId('desktop-shell-update-card')).toBeInTheDocument();
+  });
+
   // A browser's update leaves the desktop app out (#2316), so "Update will refresh the app" was untrue.
   it('tells a browser where to update the desktop app when the Hub can reach it too', async () => {
-    mockFetchHostListenerStatus.mockResolvedValue(true);
+    mockFetchHostListenerStatus.mockResolvedValue({ reachable: true, desktopApp: true });
 
     render(<GeneralActionsContainer />);
 
@@ -524,7 +579,7 @@ describe('GeneralActionsContainer', () => {
   });
 
   it('says a browser update refreshes the desktop app on a Windows install, which the app updates', async () => {
-    mockFetchHostListenerStatus.mockResolvedValue(true);
+    mockFetchHostListenerStatus.mockResolvedValue({ reachable: true, desktopApp: true });
     getUpdateBlocks.mockResolvedValue(
       sdkOk({ updateBlockedReason: null, autoUpdateBlockedReason: 'started on Windows', desktopAppUpdatesHub: true }),
     );
@@ -894,7 +949,7 @@ describe('GeneralActionsContainer', () => {
   it('does not POST the host listener from the browser tab', async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
-    mockFetchHostListenerStatus.mockResolvedValue(false);
+    mockFetchHostListenerStatus.mockResolvedValue({ reachable: false, desktopApp: true });
 
     render(<GeneralActionsContainer />);
 
@@ -1044,7 +1099,7 @@ describe('GeneralActionsContainer', () => {
       });
 
       it('offers the button in a browser and says the update refreshes the desktop app', async () => {
-        mockFetchHostListenerStatus.mockResolvedValue(true);
+        mockFetchHostListenerStatus.mockResolvedValue({ reachable: true, desktopApp: true });
 
         render(<GeneralActionsContainer />);
 

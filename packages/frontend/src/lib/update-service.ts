@@ -411,13 +411,22 @@ export interface UpdateActionResult {
   host?: 'started' | 'unavailable' | 'failed' | 'skipped';
 }
 
-export async function fetchHostListenerStatus(): Promise<boolean | null> {
+export interface HostListenerStatus {
+  /** The desktop app on the Hub's computer answers right now. */
+  reachable: boolean;
+  /** False when no desktop app runs this Hub at all, as on a `cihub` install. */
+  desktopApp: boolean;
+}
+
+export async function fetchHostListenerStatus(): Promise<HostListenerStatus | null> {
   try {
     const { getHostListenerStatus } = await import('@/api-client/sdk.gen');
     const { sdkResult } = await import('@/lib/sdk-unwrap');
     const result = await sdkResult(getHostListenerStatus());
     if (!result.ok) return null;
-    return Boolean((result.data as { reachable?: boolean } | null)?.reachable);
+    const data = result.data as { reachable?: boolean; desktopApp?: boolean } | null;
+    // A Hub from before `desktopApp` says nothing, which must read as "may have one".
+    return { reachable: Boolean(data?.reachable), desktopApp: data?.desktopApp !== false };
   } catch {
     return null;
   }
@@ -637,7 +646,10 @@ export async function installDesktopUpdate(info: UpdateInfo, callbacks: DesktopU
  * told the desktop app is updated on the machine. Where only the desktop app can update the Hub, the
  * browser is told the machine may ask for a password.
  */
-export async function performStackUpdate(targetVersion?: string): Promise<UpdateActionResult> {
+export async function performStackUpdate(
+  targetVersion?: string,
+  { noDesktopApp = false }: { noDesktopApp?: boolean } = {},
+): Promise<UpdateActionResult> {
   try {
     const { performUpdate } = await import('@/api-client/sdk.gen');
     const { sdkErrorMessage, sdkResult } = await import('@/lib/sdk-unwrap');
@@ -653,7 +665,7 @@ export async function performStackUpdate(targetVersion?: string): Promise<Update
         // A browser gets here only when nothing but the desktop app can update this Hub. Its install can
         // ask for a password on the Hub machine's screen, so say so.
         messageKey = hubWindow ? 'SETTINGS_ACTIONS_UPDATE_HOST_STARTED' : 'SETTINGS_ACTIONS_UPDATE_HOST_STARTED_REMOTE';
-      } else if (host === 'unavailable' || host === 'failed' || host === 'skipped') {
+      } else if (!noDesktopApp && (host === 'unavailable' || host === 'failed' || host === 'skipped')) {
         // `skipped`: a browser left the desktop app out on purpose. Otherwise the Hub could not hand
         // the update to the desktop app, which is no sign that the app isn't running: desktop apps up
         // to 0.2.77 keep their listener token where the Hub can't read it. Either way, say where the

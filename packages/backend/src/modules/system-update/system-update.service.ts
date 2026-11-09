@@ -378,8 +378,12 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     return path.join(logsDir, 'hub-stack-update.log');
   }
 
-  async getHostListenerStatus(): Promise<{ reachable: boolean }> {
-    return { reachable: await this.probeHostListener() };
+  /**
+   * `reachable`: the desktop app answers right now. `desktopApp`: a desktop app runs this Hub at all,
+   * open or closed. Only the desktop app writes the listener token, so a `cihub` install has none.
+   */
+  async getHostListenerStatus(): Promise<{ reachable: boolean; desktopApp: boolean }> {
+    return { reachable: await this.probeHostListener(), desktopApp: this.getHostUpdateListenerToken() !== null };
   }
 
   async probeHostListener(): Promise<boolean> {

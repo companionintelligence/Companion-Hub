@@ -633,7 +633,7 @@ describe('SystemUpdateService', () => {
       vi.mocked(axios.get).mockRejectedValue(new Error('timeout'));
 
       await expect(service.probeHostListener()).resolves.toBe(false);
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: false });
       expect(axios.get).toHaveBeenCalledWith(expect.stringMatching(/\/health$/), expect.anything());
     });
   });
@@ -828,28 +828,41 @@ describe('SystemUpdateService', () => {
     it('reaches the listener with the token the desktop app keeps in state/', async () => {
       withFiles({ [STATE_TOKEN]: 'state-token\n' });
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: true });
       expectSentToken('state-token');
     });
 
     it('prefers state/ over a token an older desktop build left at the data folder root', async () => {
       withFiles({ [STATE_TOKEN]: 'state-token\n', [ROOT_TOKEN]: 'legacy-token\n' });
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: true });
       expectSentToken('state-token');
     });
 
     it('falls back to the data folder root, where older desktop builds wrote the token', async () => {
       withFiles({ [ROOT_TOKEN]: 'legacy-token\n' });
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: true });
       expectSentToken('legacy-token');
+    });
+
+    it('says this Hub has no desktop app when neither token file exists', async () => {
+      withFiles({});
+
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false, desktopApp: false });
+    });
+
+    it('says a desktop app runs this Hub when its token is there, even while the app is closed', async () => {
+      withFiles({ [STATE_TOKEN]: 'state-token\n' });
+      vi.mocked(axios.get).mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false, desktopApp: true });
     });
 
     it('reports the listener unreachable, without calling it, when neither file exists', async () => {
       withFiles({});
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: false });
       expect(axios.get).not.toHaveBeenCalled();
     });
 
@@ -858,7 +871,7 @@ describe('SystemUpdateService', () => {
     it('does not follow a symlink in place of the token', async () => {
       withFiles({ [STATE_TOKEN]: SYMLINK });
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: false });
       expect(axios.get).not.toHaveBeenCalled();
     });
 
@@ -866,7 +879,7 @@ describe('SystemUpdateService', () => {
     it('does not wait on a FIFO in place of the token', async () => {
       withFiles({ [STATE_TOKEN]: FIFO });
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: false });
       expect((openFlags.get(STATE_TOKEN) ?? 0) & fs.constants.O_NONBLOCK).not.toBe(0);
       expect(axios.get).not.toHaveBeenCalled();
     });
@@ -879,7 +892,7 @@ describe('SystemUpdateService', () => {
     ])('does not send %s as the token', async (_name, entry) => {
       withFiles({ [STATE_TOKEN]: entry });
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: false });
       expect(axios.get).not.toHaveBeenCalled();
     });
 
@@ -896,14 +909,14 @@ describe('SystemUpdateService', () => {
       it('calls the listener at the Windows host address the desktop app recorded', async () => {
         withFiles({ [STATE_TOKEN]: 'state-token\n', [STATE_HOST]: '172.27.96.1\n' });
 
-        await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+        await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: true });
         expectCalledAt('http://172.27.96.1:17400');
       });
 
       it('calls host.docker.internal when the desktop app recorded no address', async () => {
         withFiles({ [STATE_TOKEN]: 'state-token\n' });
 
-        await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+        await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: true });
         expectCalledAt('http://host.docker.internal:17400');
       });
 
