@@ -228,8 +228,12 @@ import type {
 // Index scores dropped noticeably across almost every re-checked model between the 2026-05 and 2026-07-27
 // passes (e.g. gpt-oss-120b 33.3→24, llama-3.3-70b 14.5→9) — consistent with AA having rebased/recalibrated
 // the index in between, not with the older numbers being wrong at the time they were entered.
+//
+// 2026-11-08: four new local Ollama tags verified by rendering their official library /tags pages in a
+// real browser: mimo-v2.6:9b, flint:40b, nemotron-3.5-bolt:e4b, and lfm3:1.7b. Sizes and context below
+// are the listed Q4_K_M/default builds; no Artificial Analysis entries were found, so scores stay blank.
 const CATALOG_TOON = `
-llms[105|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,ramGb}:
+llms[109|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,ramGb}:
   gemma4-e2b|gemma4:e2b|Gemma 4 E2B|general|2|7.2|cpu-only|128|Google|7.8|1|1|1|1|||
   gemma4-e4b|gemma4:e4b|Gemma 4 E4B|general|4|9.6|cpu-only|128|Google|8.9|1|1|1|1|63.2|0.84|40.4|4.26
   gemma4-12b|gemma4:12b|Gemma 4 12B|general|12|7.6|low|256|Google|14.2|1|1|1|0|114.2|2.46|24.4
@@ -335,6 +339,10 @@ llms[105|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reas
   codestral-22b|codestral:22b|Codestral 22B|coding|22|12.6|medium|32|Mistral||0|0|0|0|||
   deepcoder-1-5b|deepcoder:1.5b|DeepCoder 1.5B|coding|1.5|1.1|cpu-only|64|Agentica||1|0|0|0|||
   deepcoder-14b|deepcoder:14b|DeepCoder 14B|coding|14|9|low|64|Agentica||1|0|0|0|||
+  mimo-v2-6-9b|mimo-v2.6:9b|MiMo-V2.6 9B|coding|9|6.6|low|256|Xiaomi||1|1|1|0||||
+  flint-40b|flint:40b|Flint 40B|coding|39.8|23|medium|256|Recursive||1|0|1|0||||
+  nemotron-3-5-bolt-e4b|nemotron-3.5-bolt:e4b|Nemotron 3.5 Bolt E4B|reasoning|4|7.9|low|128|NVIDIA||1|1|1|0||||
+  lfm3-1-7b|lfm3:1.7b|LFM3 1.7B|general|1.7|1.1|cpu-only|256|Liquid AI||1|0|1|0||||
 `;
 
 /** A decoded TOON row: every column mapped to its raw string cell (empty string when blank). */
@@ -450,6 +458,7 @@ const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
   'glm-4-7-flash-30b': 3, // GLM-4.7 Flash — 30B-A3B MoE
   'nemotron-3-5-lightning-30b': 3, // Nemotron 3.5 Lightning — 30B-A3B MoE
   'deepseek-v4-flash-0731-284b': 13, // DeepSeek V4 Flash 0731 — 284B total / 13B active MoE
+  'flint-40b': 2.5, // Flint 40B — 39.8B total / 2.5B active per token, per Recursive's model page
   'ornith-1-5-35b': 3, // Ornith 1.5 35B — 35B-A3B MoE per the library readme; the 9B/397B sizes are dense
   'qwen3-coder-30b': 3, // Qwen3-Coder-30B-A3B — same 30B-A3B MoE as qwen3-30b/qwen3-coder-30b-vllm above
   'qwen3-coder-480b': 35, // Qwen3-Coder-480B-A35B

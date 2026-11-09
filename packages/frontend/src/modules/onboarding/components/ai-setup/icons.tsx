@@ -189,6 +189,31 @@ export function ThinkingMachinesIcon({ className }: IconProps) {
   );
 }
 
+/** Recursive — linked branches that fold back into a new pass. */
+export function RecursiveIcon({ className }: IconProps) {
+  return (
+    <Glyph className={className}>
+      <path d="M5 6h5a3 3 0 0 1 3 3v1" />
+      <path d="M19 18h-5a3 3 0 0 1-3-3v-1" />
+      <path d="m10 8 3 3 3-3M14 16l-3-3-3 3" />
+      <circle cx="5" cy="6" r="1.5" />
+      <circle cx="19" cy="18" r="1.5" />
+    </Glyph>
+  );
+}
+
+/** Xiaomi — an original signal mark for its multimodal model lab, not a logo reproduction. */
+export function XiaomiIcon({ className }: IconProps) {
+  return (
+    <Glyph className={className}>
+      <circle cx="7" cy="8" r="2" />
+      <circle cx="17" cy="8" r="2" />
+      <circle cx="12" cy="17" r="2" />
+      <path d="m8.5 9.5 2.3 5.2M15.5 9.5l-2.3 5.2M9 8h6" />
+    </Glyph>
+  );
+}
+
 /* ── Models ──────────────────────────────────────────────────────────────────────────────────── */
 
 /** Isometric cube — generic model fallback. */
@@ -261,6 +286,8 @@ const CREATOR_GLYPH: Record<string, (props: IconProps) => ReactNode> = {
   'liquid ai': LiquidAiIcon,
   cohere: CohereIcon,
   'thinking machines': ThinkingMachinesIcon,
+  recursive: RecursiveIcon,
+  xiaomi: XiaomiIcon,
 };
 
 /**

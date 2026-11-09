@@ -11,16 +11,42 @@ describe('curated-models (TOON catalog)', () => {
   const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
 
-  it('decodes the full catalog (105 Ollama LLMs + 41 Lemonade LLMs + 8 vLLM LLMs + 64 oMLX LLMs + voice + embeddings) with unique ids', () => {
-    expect(llms.filter((m) => m.backend === 'ollama').length).toBe(105);
+  it('decodes the full catalog (109 Ollama LLMs + 41 Lemonade LLMs + 8 vLLM LLMs + 64 oMLX LLMs + voice + embeddings) with unique ids', () => {
+    expect(llms.filter((m) => m.backend === 'ollama').length).toBe(109);
     expect(llms.filter((m) => m.backend === 'lemonade').length).toBe(41);
     expect(llms.filter((m) => m.backend === 'vllm').length).toBe(8);
     expect(llms.filter((m) => m.backend === 'omlx').length).toBe(64);
-    expect(llms.length).toBe(218);
+    expect(llms.length).toBe(222);
     // 4 Ollama embeddings + 2 Lemonade embeddings (v1.5, recommended; v1, kept for existing indexes).
     expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(6);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);
     expect(new Set(CURATED_MODELS.map((m) => m.id)).size).toBe(CURATED_MODELS.length);
+  });
+
+  it('includes the newly verified local Ollama models with accurate tags and capabilities', () => {
+    const expected = [
+      ['mimo-v2-6-9b', 'mimo-v2.6:9b', 9, 256_000, 'Xiaomi', true, true, true],
+      ['flint-40b', 'flint:40b', 39.8, 256_000, 'Recursive', true, false, true],
+      ['nemotron-3-5-bolt-e4b', 'nemotron-3.5-bolt:e4b', 4, 128_000, 'NVIDIA', true, true, true],
+      ['lfm3-1-7b', 'lfm3:1.7b', 1.7, 256_000, 'Liquid AI', true, false, true],
+    ] as const;
+
+    for (const [id, tag, params, contextWindow, creator, reasoning, vision, tools] of expected) {
+      const model = byId.get(id);
+      expect(model, id).toBeDefined();
+      expect(model).toMatchObject({
+        backend: 'ollama',
+        backendModelId: tag,
+        parameterScale: params,
+        runtime: { contextWindow, reasoning, quantization: 'q4_K_M' },
+        metadata: { creator, capabilities: { reasoning, vision, tools, audio: false } },
+      });
+    }
+    expect(byId.get('flint-40b')?.activeParameterScale).toBe(2.5);
+    expect(byId.get('mimo-v2-6-9b')?.requirements.diskMb).toBe(Math.round(6.6 * 1024));
+    expect(byId.get('flint-40b')?.requirements.diskMb).toBe(Math.round(23 * 1024));
+    expect(byId.get('nemotron-3-5-bolt-e4b')?.requirements.diskMb).toBe(Math.round(7.9 * 1024));
+    expect(byId.get('lfm3-1-7b')?.requirements.diskMb).toBe(Math.round(1.1 * 1024));
   });
 
   it('declares the native host platform matrix for every curated backend', () => {

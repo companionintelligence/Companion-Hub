@@ -102,10 +102,12 @@ fn interpret(
 #[cfg(target_os = "android")]
 mod android {
     use super::{interpret, AuthSessionError};
-    use jni::objects::{JClass, JObject, JString, JValue};
-    use jni::JNIEnv;
+    use jni::objects::JString;
+    use jni::{Env, EnvUnowned};
     use std::sync::mpsc;
     use std::sync::Mutex;
+    use tauri::wry::prelude::jni::objects::JValue as WryJValue;
+    use tauri::wry::prelude::{JClass as WryJClass, JNIEnv as WryJNIEnv, JObject as WryJObject};
     use tauri::Manager;
 
     static PENDING: Mutex<Option<mpsc::Sender<Result<Option<String>, AuthSessionError>>>> =
@@ -120,31 +122,41 @@ mod android {
         }
     }
 
-    fn java_string(env: &mut JNIEnv, value: &JString) -> Option<String> {
+    fn java_string(env: &mut Env, value: &JString) -> Option<String> {
         if value.as_raw().is_null() {
             return None;
         }
-        env.get_string(value).ok().map(|text| text.into())
+        value.try_to_string(env).ok()
     }
 
     /// Called from `AuthSession.nativeOnResult`. Auth Tab delivers the
     /// redirect here. Custom Tabs delivers `OPENED` as soon as the tab is up.
     #[no_mangle]
     pub extern "system" fn Java_computer_ci_app_hub_AuthSession_nativeOnResult<'local>(
-        mut env: JNIEnv<'local>,
+        mut env: EnvUnowned<'local>,
         _class: jni::objects::JClass<'local>,
         url: JString<'local>,
         code: JString<'local>,
         message: JString<'local>,
     ) {
-        finish(
-            java_string(&mut env, &url),
-            java_string(&mut env, &code),
-            java_string(&mut env, &message),
-        );
+        let _ = env
+            .with_env(|env| {
+                finish(
+                    java_string(env, &url),
+                    java_string(env, &code),
+                    java_string(env, &message),
+                );
+                Ok::<_, jni::errors::Error>(())
+            })
+            .resolve::<jni::errors::LogErrorAndDefault>();
     }
 
-    fn launch(env: &mut JNIEnv, activity: &JObject, url: &str, scheme: &str) -> Result<(), String> {
+    fn launch(
+        env: &mut WryJNIEnv,
+        activity: &WryJObject,
+        url: &str,
+        scheme: &str,
+    ) -> Result<(), String> {
         let class_name = env
             .new_string("computer.ci.app.hub.AuthSession")
             .map_err(|err| err.to_string())?;
@@ -153,11 +165,11 @@ mod android {
                 activity,
                 "getAppClass",
                 "(Ljava/lang/String;)Ljava/lang/Class;",
-                &[JValue::Object(&*class_name)],
+                &[WryJValue::Object(&*class_name)],
             )
             .and_then(|value| value.l())
             .map_err(|err| err.to_string())?;
-        let class = JClass::from(class_obj);
+        let class = WryJClass::from(class_obj);
         let url_j = env.new_string(url).map_err(|err| err.to_string())?;
         let scheme_j = env.new_string(scheme).map_err(|err| err.to_string())?;
         env.call_static_method(
@@ -165,9 +177,9 @@ mod android {
             "start",
             "(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;)V",
             &[
-                JValue::Object(activity),
-                JValue::Object(&*url_j),
-                JValue::Object(&*scheme_j),
+                WryJValue::Object(activity),
+                WryJValue::Object(&*url_j),
+                WryJValue::Object(&*scheme_j),
             ],
         )
         .map_err(|err| err.to_string())?;
