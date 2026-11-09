@@ -20,3 +20,8 @@ export function requiresDeviceRegistration(status: RegistrationStatus): boolean 
 export function requiresPortalRePairing(status: RegistrationStatus): boolean {
   return status.phase === 'degraded' && status.degradedReasons.includes('tunnel_token_missing');
 }
+
+/** Three check-ins in a row got no verdict from Portal. The Hub still works and keeps trying. */
+export function isPortalUnreachable(status: RegistrationStatus): boolean {
+  return status.phase === 'degraded' && status.degradedReasons.includes('cloud_validation_failed');
+}
