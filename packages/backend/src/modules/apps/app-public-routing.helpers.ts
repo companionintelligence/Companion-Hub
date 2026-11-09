@@ -1,5 +1,5 @@
 import { requiresHubLoginOnPublicRoute, servedOpenPort } from '@ci-hub/common/schemas';
-import { publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm } from '@ci-hub/common/types';
+import { publishesPublicWebRoute, resolveRoutingSubdomain, sanitizeAppSubdomain, storedExposureForm } from '@ci-hub/common/types';
 import type { AppFormHostPortFields } from './app-exposure.helpers';
 
 export type AppPublicRoutingSnapshot = AppFormHostPortFields & {
@@ -54,6 +54,16 @@ export function canServeOnCustomDomain(snapshot: AppFormHostPortFields): boolean
 export { resolveRoutingSubdomain };
 
 /**
+ * The label Companion Portal files an app under. A name someone set is read the way a save stores it
+ * (`normalizeSubmittedForm`), so a row written before saves did that is not a move. The routing name is
+ * left as it is because the Portal keeps the underscore in a custom app's `<app>-_user`.
+ */
+function publishedLabel(localSubdomain: string | null | undefined, appName: string, appStoreSlug: string): string {
+  const name = resolveRoutingSubdomain(localSubdomain, appName, appStoreSlug);
+  return localSubdomain?.trim() ? sanitizeAppSubdomain(name) : name;
+}
+
+/**
  * Returns true when a config save changes the public hostname/subdomain Companion Portal
  * publishes, so the previous DNS record must be released before the new one is created.
  *
@@ -65,7 +75,7 @@ export function didPublicRoutingIdentityChange(
   after: AppPublicRoutingSnapshot,
   appName: string,
   appStoreSlug: string,
-  defaultPublicDomain?: string,
+  defaultPublicDomain: string,
 ): boolean {
   const wasPublished = publishesCloudflarePublicRoute(before);
   const willPublish = publishesCloudflarePublicRoute(after);
@@ -78,9 +88,9 @@ export function didPublicRoutingIdentityChange(
     return true;
   }
 
-  const oldSubdomain = resolveRoutingSubdomain(before.localSubdomain, appName, appStoreSlug);
-  const newSubdomain = resolveRoutingSubdomain(after.localSubdomain, appName, appStoreSlug);
-  const fallbackPublicDomain = defaultPublicDomain?.trim() || null;
+  const oldSubdomain = publishedLabel(before.localSubdomain, appName, appStoreSlug);
+  const newSubdomain = publishedLabel(after.localSubdomain, appName, appStoreSlug);
+  const fallbackPublicDomain = defaultPublicDomain.trim() || null;
   const oldPublicDomain = before.publicDomain?.trim() || fallbackPublicDomain;
   const newPublicDomain = after.publicDomain?.trim() || fallbackPublicDomain;
 

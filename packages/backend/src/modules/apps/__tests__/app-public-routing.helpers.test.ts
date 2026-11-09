@@ -55,6 +55,7 @@ describe('app-public-routing.helpers', () => {
   describe('didPublicRoutingIdentityChange', () => {
     const appName = 'airtrail';
     const appStoreSlug = 'ci-marketplace';
+    const hubDomain = 'example.com';
 
     it('detects subdomain changes for cloudflare apps', () => {
       expect(
@@ -63,6 +64,7 @@ describe('app-public-routing.helpers', () => {
           { exposureMode: 'cloudflare', localSubdomain: 'airtrail-new' },
           appName,
           appStoreSlug,
+          hubDomain,
         ),
       ).toBe(true);
     });
@@ -75,8 +77,35 @@ describe('app-public-routing.helpers', () => {
           { exposureMode: 'cloudflare', localSubdomain: 'airtrail-ci-marketplace' },
           appName,
           appStoreSlug,
+          hubDomain,
         ),
       ).toBe(false);
+    });
+
+    // A save stores the canonical spelling, and the Portal files both under it.
+    it('reads a stored name the way a save stores it, so an old spelling is not a move', () => {
+      expect(
+        didPublicRoutingIdentityChange(
+          { exposureMode: 'cloudflare', localSubdomain: 'My--App' },
+          { exposureMode: 'cloudflare', localSubdomain: 'my-app' },
+          appName,
+          appStoreSlug,
+          hubDomain,
+        ),
+      ).toBe(false);
+    });
+
+    // The Portal keeps the underscore in a routing name, so these are two addresses there.
+    it("sees a custom app's `<app>-_user` and the `<app>-user` a save would store as two addresses", () => {
+      expect(
+        didPublicRoutingIdentityChange(
+          { exposureMode: 'cloudflare', localSubdomain: null },
+          { exposureMode: 'cloudflare', localSubdomain: 'airtrail-user' },
+          appName,
+          '_user',
+          hubDomain,
+        ),
+      ).toBe(true);
     });
 
     // The Settings form fills an empty public domain with the Hub's own, the one such an app already serves on (#2272).
@@ -87,7 +116,7 @@ describe('app-public-routing.helpers', () => {
           { exposureMode: 'cloudflare', localSubdomain: 'airtrail', publicDomain: 'example.com' },
           appName,
           appStoreSlug,
-          'example.com',
+          hubDomain,
         ),
       ).toBe(false);
     });
@@ -99,7 +128,7 @@ describe('app-public-routing.helpers', () => {
           { exposureMode: 'cloudflare', localSubdomain: 'airtrail', publicDomain: 'other.com' },
           appName,
           appStoreSlug,
-          'example.com',
+          hubDomain,
         ),
       ).toBe(true);
     });
@@ -111,13 +140,20 @@ describe('app-public-routing.helpers', () => {
           { exposureMode: 'cloudflare', localSubdomain: 'airtrail', publicDomain: 'other.com' },
           appName,
           appStoreSlug,
+          hubDomain,
         ),
       ).toBe(true);
     });
 
     it('returns false when local-only settings change unrelated fields', () => {
       expect(
-        didPublicRoutingIdentityChange({ exposureMode: 'local', openPort: true }, { exposureMode: 'local', openPort: false }, appName, appStoreSlug),
+        didPublicRoutingIdentityChange(
+          { exposureMode: 'local', openPort: true },
+          { exposureMode: 'local', openPort: false },
+          appName,
+          appStoreSlug,
+          hubDomain,
+        ),
       ).toBe(false);
     });
 
@@ -128,6 +164,7 @@ describe('app-public-routing.helpers', () => {
           { exposureMode: 'local', exposedLocal: false, localSubdomain: 'airtrail' },
           appName,
           appStoreSlug,
+          hubDomain,
         ),
       ).toBe(true);
     });
