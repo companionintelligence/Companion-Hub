@@ -83,6 +83,13 @@ export function storeParamToWrite(
   return storeId;
 }
 
+const STORE_INDEX_PATTERN = /^\/store\/?$/;
+
+/** True on the store's browse page, the only address its `q`, `category` and `store` params belong to. */
+export function isStoreIndexPath(pathname: string): boolean {
+  return STORE_INDEX_PATTERN.test(pathname);
+}
+
 /** Featured is curated; non-empty search should browse the full catalog. */
 export function shouldLeaveFeaturedForSearch(category: StoreCategoryFilter | undefined, query: string): boolean {
   return category === 'featured' && query.trim().length > 0;

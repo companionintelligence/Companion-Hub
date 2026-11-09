@@ -2,7 +2,7 @@ import { getEnabledAppStoresOptions } from '@/api-client/@tanstack/react-query.g
 import { CATALOG_PAGE_SIZE } from '@/lib/catalog-page-size';
 import { searchAppsInfiniteOptions } from '@/lib/marketplace-search-query';
 import { getInstalledAppUrnsOptions } from '@/lib/installed-app-urns-query';
-import { applyStoreBrowseParams, parseStoreBrowseParams, storeParamToWrite } from '@/lib/store-browse-params';
+import { applyStoreBrowseParams, isStoreIndexPath, parseStoreBrowseParams, storeParamToWrite } from '@/lib/store-browse-params';
 import { invalidateStoreCatalogQueries } from '@/lib/invalidate-store-catalog-queries';
 import { pullAppStores } from '@/api-client/sdk.gen';
 import { EmptyPage } from '@/components/empty-page/empty-page';
@@ -25,7 +25,7 @@ import { keepPreviousData, useInfiniteQuery, useQuery, useMutation, useQueryClie
 import clsx from 'clsx';
 import { ArrowLeftRight, LayoutGrid, Loader2, RefreshCw, Store } from 'lucide-react';
 import { useCallback, useEffect, useState, useMemo, useRef } from 'react';
-import { Navigate, useNavigate, useParams, useSearchParams } from 'react-router';
+import { Navigate, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 
@@ -54,6 +54,10 @@ export default () => {
   const customAppAccess = useCustomAppAccess();
   const { manageHub } = useHubAccess();
   const params = useParams<{ storeId: string }>();
+  const { pathname } = useLocation();
+  // The layout keeps this page mounted while it animates out, by which time the address belongs to the next
+  // page. Reading or writing the query then would put the store's filters on that page's address.
+  const ownsAddress = isStoreIndexPath(pathname);
   const [searchParams, setSearchParams] = useSearchParams();
   const { setCategory, category, storeId, setStoreId, search, setSearch, setSearchImmediate } = useAppStoreState();
   const [localSearch, setLocalSearch] = useState(search);
@@ -66,6 +70,10 @@ export default () => {
   }, [search]);
 
   useEffect(() => {
+    if (!ownsAddress) {
+      return;
+    }
+
     if (isWritingBrowseUrl.current) {
       isWritingBrowseUrl.current = false;
       return;
@@ -85,7 +93,7 @@ export default () => {
       hasInitializedDefaultCategory.current = true;
       setCategory(DEFAULT_STORE_CATEGORY);
     }
-  }, [searchParams, setCategory, setSearchImmediate]);
+  }, [ownsAddress, searchParams, setCategory, setSearchImmediate]);
 
   const { data: appStores } = useQuery({
     ...getEnabledAppStoresOptions(),
@@ -94,6 +102,10 @@ export default () => {
   const knownStoreSlugs = useMemo(() => appStores?.appStores?.map((store) => store.slug), [appStores]);
 
   useEffect(() => {
+    if (!ownsAddress) {
+      return;
+    }
+
     setSearchParams(
       (prev) => {
         const next = applyStoreBrowseParams(prev, {
@@ -111,7 +123,7 @@ export default () => {
       },
       { replace: true },
     );
-  }, [search, category, storeId, knownStoreSlugs, setSearchParams]);
+  }, [ownsAddress, search, category, storeId, knownStoreSlugs, setSearchParams]);
 
   const queryClient = useQueryClient();
 
@@ -179,6 +191,10 @@ export default () => {
 
   // Sync ?store= query param to Zustand, or fall back to first available store
   useEffect(() => {
+    if (!ownsAddress) {
+      return;
+    }
+
     const storeParam = searchParams.get('store');
     if (storeParam && appStores?.appStores?.some((s) => s.slug === storeParam)) {
       if (storeId !== storeParam) setStoreId(storeParam);
@@ -203,7 +219,7 @@ export default () => {
         });
       }
     }
-  }, [appStores, storeId, setStoreId, ciCloudStore, searchParams, setSearchParams]);
+  }, [ownsAddress, appStores, storeId, setStoreId, ciCloudStore, searchParams, setSearchParams]);
 
   const handleStoreSwitch = useCallback(
     (slug: string) => {

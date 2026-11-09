@@ -19,12 +19,14 @@ const { mockStoreState, mockSearchAppsInfiniteOptions } = vi.hoisted(() => ({
 const mockNavigate = vi.fn();
 const mockSetSearchParams = vi.fn();
 let capturedSearchParams = new URLSearchParams();
+let capturedPathname = '/store';
 
 vi.mock('react-router', async () => {
   const actual = await vi.importActual<typeof import('react-router')>('react-router');
   return {
     ...actual,
     useParams: vi.fn(() => ({})),
+    useLocation: () => ({ pathname: capturedPathname, search: '', hash: '', state: null, key: 'default' }),
     useNavigate: () => mockNavigate,
     useSearchParams: vi.fn(() => [capturedSearchParams, mockSetSearchParams]),
     Navigate: vi.fn(({ to }: { to: string }) => <div data-testid="navigate-to">{to}</div>),
@@ -175,6 +177,7 @@ describe('AppStorePage — multi-store UX', () => {
     manageHub = true;
     mockUseParams.mockReturnValue({});
     capturedSearchParams = new URLSearchParams();
+    capturedPathname = '/store';
     mockStoreState.category = undefined;
     mockStoreState.storeId = 'ci-apps';
     mockStoreState.search = '';
@@ -537,6 +540,25 @@ describe('AppStorePage — multi-store UX', () => {
 
     expect(mockStoreState.setSearchImmediate).toHaveBeenCalledWith('ollama');
     expect(mockStoreState.setCategory).toHaveBeenCalledWith('ai');
+  });
+
+  // The dashboard layout keeps the old page mounted through its exit animation, so it sees the next page's address.
+  it("leaves the next page's address alone while it animates out", () => {
+    capturedPathname = '/home';
+    setupQueries();
+    mockStoreState.category = 'featured';
+    mockStoreState.storeId = 'community';
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockSetSearchParams).not.toHaveBeenCalled();
+    expect(mockStoreState.setSearchImmediate).not.toHaveBeenCalled();
+    expect(mockStoreState.setCategory).not.toHaveBeenCalled();
+    expect(mockStoreState.setStoreId).not.toHaveBeenCalled();
   });
 
   it('writes browse params to the URL when search and category are set', () => {

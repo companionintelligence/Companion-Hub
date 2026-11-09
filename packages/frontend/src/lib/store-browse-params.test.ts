@@ -5,12 +5,21 @@ import {
   buildStoreIndexPath,
   categoryFromUrlParam,
   categoryToUrlParam,
+  isStoreIndexPath,
   parseStoreBrowseParams,
   shouldLeaveFeaturedForSearch,
   storeParamToWrite,
 } from './store-browse-params';
 
 describe('store-browse-params', () => {
+  it('recognizes only the browse page as the store index', () => {
+    expect(isStoreIndexPath('/store')).toBe(true);
+    expect(isStoreIndexPath('/store/')).toBe(true);
+    expect(isStoreIndexPath('/store/ci-marketplace')).toBe(false);
+    expect(isStoreIndexPath('/store/ci-marketplace/notes')).toBe(false);
+    expect(isStoreIndexPath('/home')).toBe(false);
+  });
+
   it('round-trips category slugs', () => {
     expect(categoryFromUrlParam('featured')).toBe('featured');
     expect(categoryFromUrlParam('alternatives')).toBe('__alternatives__');
