@@ -596,6 +596,59 @@ describe('StartAppCommand — pull policy', () => {
       expect(composeArgs.some((args) => args.startsWith('down') || args.startsWith('stop'))).toBe(false);
     });
 
+    describe('when someone asked for this start', () => {
+      it('takes the containers down, so Stopped is true and Docker stops retrying', async () => {
+        dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
+
+        const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(result).toMatchObject({ success: false, serviceFailure: crashLoop.serviceFailure });
+        expect(composeArgs).toContain('down --remove-orphans');
+      });
+
+      it('rebuilds the routes after the containers are gone', async () => {
+        const order: string[] = [];
+        dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
+        dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+          order.push(args.split(' ')[0] ?? args);
+        });
+        traefikConfigService.regenerateTraefikConfig.mockImplementation(async () => {
+          order.push('traefik');
+        });
+
+        await command.execute(appUrn, { exposedLocal: true, stopIfNotUp: true });
+
+        expect(order).toEqual(['up', 'down', 'traefik']);
+      });
+
+      it('still reports the failure when the containers cannot be taken down', async () => {
+        dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
+        dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+          if (args.startsWith('down')) throw new Error('daemon is busy');
+        });
+
+        const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(result).toMatchObject({ success: false, serviceFailure: crashLoop.serviceFailure });
+      });
+
+      it('does not touch an app that came up', async () => {
+        const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(result.success).toBe(true);
+        expect(composeArgs.some((args) => args.startsWith('down'))).toBe(false);
+      });
+
+      it('does not touch the app when Docker could not answer the check', async () => {
+        dockerService.waitForManagedAppContainersReady.mockRejectedValue(new Error('socket hang up'));
+
+        const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(result.success).toBe(true);
+        expect(composeArgs.some((args) => args.startsWith('down'))).toBe(false);
+      });
+    });
+
     it('still routes an exposed app when a service fails, since its other containers go on serving', async () => {
       dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
 

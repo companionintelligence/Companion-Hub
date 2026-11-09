@@ -1292,22 +1292,30 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    *
    * `appFormSchema` passes unknown keys through into the stored config, so a stored
    * `onlyRecreateChanged` would otherwise stop every dashboard start from force-recreating.
-   * Only the caller decides it: the Hub boot and the start after an update.
+   * Only the caller decides it: the Hub boot and the start after an update. Likewise `stopIfNotUp`.
    */
-  private startCommandForm(storedConfig: unknown, options: { skipPull?: boolean; onlyRecreateChanged?: boolean }): Record<string, unknown> {
-    const { onlyRecreateChanged: _storedRecreateMode, ...config } = (storedConfig ?? {}) as Record<string, unknown>;
-    return { ...config, skipPull: options.skipPull, ...(options.onlyRecreateChanged ? { onlyRecreateChanged: true } : {}) };
+  private startCommandForm(
+    storedConfig: unknown,
+    options: { skipPull?: boolean; onlyRecreateChanged?: boolean; stopIfNotUp?: boolean },
+  ): Record<string, unknown> {
+    const { onlyRecreateChanged: _storedRecreateMode, stopIfNotUp: _storedStopIfNotUp, ...config } = (storedConfig ?? {}) as Record<string, unknown>;
+    return {
+      ...config,
+      skipPull: options.skipPull,
+      ...(options.onlyRecreateChanged ? { onlyRecreateChanged: true } : {}),
+      ...(options.stopIfNotUp ? { stopIfNotUp: true } : {}),
+    };
   }
 
   async startApp(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean; actor: LifecycleActor }) {
     // Before the app is even read — see `assertActorMay`.
     await this.assertActorMay(params.actor, params.appUrn, 'start');
-    return this.withOperationClaim(params.appUrn, 'start', () => this.dispatchStart(params));
+    return this.withOperationClaim(params.appUrn, 'start', () => this.dispatchStart({ ...params, stopIfNotUp: params.actor.kind !== 'system' }));
   }
 
   /** `startApp` past its grant check, with the app claimed: by this start, or by the install it is part of. */
-  private async dispatchStart(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean }) {
-    const { appUrn, skipPull, onlyRecreateChanged } = params;
+  private async dispatchStart(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean; stopIfNotUp?: boolean }) {
+    const { appUrn, skipPull, onlyRecreateChanged, stopIfNotUp } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -1324,7 +1332,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       appUrn,
       command: 'start',
       requestId,
-      form: this.startCommandForm(app.config, { skipPull, onlyRecreateChanged }),
+      form: this.startCommandForm(app.config, { skipPull, onlyRecreateChanged, stopIfNotUp }),
     })
       .then(async (raw) => {
         const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort } = raw as z.output<
@@ -2385,7 +2393,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'restart');
-    this.publishRegistered(appUrn, requestId, { command: 'restart', appUrn, requestId, form: { ...app.config, skipPull } })
+    const { stopIfNotUp: _storedStopIfNotUp, ...storedConfig } = (app.config ?? {}) as Record<string, unknown>;
+    const form = { ...storedConfig, skipPull, ...(params.actor.kind === 'system' ? {} : { stopIfNotUp: true }) };
+    this.publishRegistered(appUrn, requestId, { command: 'restart', appUrn, requestId, form })
       .then(async (raw) => {
         const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort } = raw as z.output<
           typeof appEventResultSchema

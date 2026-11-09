@@ -3832,6 +3832,45 @@ describe('AppLifecycleService', () => {
       expect(published.form).toMatchObject({ port: 8080 });
     });
 
+    describe('whether a start that does not come up takes the containers down', () => {
+      const publishedForm = () => (appEventsQueue.publish.mock.calls.at(-1)?.[0] as { form?: Record<string, unknown> } | undefined)?.form ?? {};
+
+      const storedConfig = (config: Record<string, unknown>) =>
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 1, name: 'test-app', status: 'stopped', config } as any);
+
+      beforeEach(() => {
+        storedConfig({ port: 8080 });
+        appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+      });
+
+      it('asks for it when someone asked for the start', async () => {
+        await service.startApp({ actor: TEST_ACTOR, appUrn: 'test-app' as any });
+
+        expect(publishedForm()).toMatchObject({ stopIfNotUp: true, port: 8080 });
+      });
+
+      it('leaves the containers alone for the Hub own start, even when the stored config carries the flag', async () => {
+        storedConfig({ stopIfNotUp: true, port: 8080 });
+        await service.startApp({ actor: { kind: 'system', reason: 'bootstrap-restart' }, appUrn: 'test-app' as any });
+
+        expect(publishedForm()).not.toHaveProperty('stopIfNotUp');
+        expect(publishedForm()).toMatchObject({ port: 8080 });
+      });
+
+      it('asks for it on a restart someone asked for', async () => {
+        await service.restartApp({ actor: TEST_ACTOR, appUrn: 'test-app' as any });
+
+        expect(publishedForm()).toMatchObject({ stopIfNotUp: true, port: 8080 });
+      });
+
+      it('leaves the containers alone for the Hub own restart, even when the stored config carries the flag', async () => {
+        storedConfig({ stopIfNotUp: true, port: 8080 });
+        await service.restartApp({ actor: { kind: 'system', reason: 'inference-env-refresh' }, appUrn: 'test-app' as any });
+
+        expect(publishedForm()).not.toHaveProperty('stopIfNotUp');
+      });
+    });
+
     it('should throw if app not found', async () => {
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
       await expect(service.startApp({ actor: TEST_ACTOR, appUrn: 'missing' as any })).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');

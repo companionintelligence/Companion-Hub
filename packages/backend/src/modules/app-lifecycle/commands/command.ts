@@ -159,6 +159,25 @@ export class AppLifecycleCommand {
     }
   }
 
+  /**
+   * Take down an app whose Start or Restart did not come up, as Stop does. The app is reported as stopped, but
+   * Docker would go on restarting the crashing container behind that, and the app could come up by itself with
+   * the page still saying Stopped. Removing the containers rather than stopping them keeps a `restart: always`
+   * service from coming back when Docker restarts.
+   *
+   * Only for a start someone asked for. The Hub's own starts leave the containers alone, since an app at boot
+   * can be waiting on something that comes up later, and Docker's retries are what brings it back.
+   */
+  protected async stopAppThatDidNotComeUp(appUrn: AppUrn): Promise<void> {
+    const logger = this.moduleRef.get(LoggerService, { strict: false });
+    try {
+      await this.moduleRef.get(DockerService, { strict: false }).composeApp(appUrn, 'down --remove-orphans');
+      logger.info(`Took down the containers of ${appUrn}, which did not come up`);
+    } catch (error) {
+      logger.warn(`Could not take down ${appUrn} after it did not come up: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   protected handleAppError = async (err: unknown, appId: string, event: string): Promise<AppCommandFailureResult> => {
     return reportAndTranslateAppError(this.moduleRef, err, appId, event);
   };

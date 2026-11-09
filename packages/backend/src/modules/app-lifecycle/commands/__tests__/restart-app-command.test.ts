@@ -254,6 +254,41 @@ describe('RestartAppCommand — pull policy', () => {
     expect(traefikConfigService.regenerateTraefikConfig).toHaveBeenCalledTimes(2);
   });
 
+  describe('a restart that did not come up', () => {
+    const crashLoop = {
+      ok: false,
+      message: 'web keeps restarting (exit 3)',
+      errorDetail: 'web (restarting, exit 3)',
+      serviceFailure: { kind: 'restarting', service: 'web', exitCode: 3 },
+    };
+    const composeCommands = () => dockerService.composeApp.mock.calls.map(([, args]: [string, string]) => args.split(' ')[0]);
+
+    it('takes the containers down again when someone asked for it', async () => {
+      dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
+
+      const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+      expect(result).toMatchObject({ success: false, serviceFailure: crashLoop.serviceFailure });
+      expect(composeCommands()).toEqual(['down', 'up', 'down']);
+    });
+
+    it('leaves them to Docker when the Hub restarted the app itself', async () => {
+      dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(composeCommands()).toEqual(['down', 'up']);
+    });
+
+    it('takes nothing down when the app came up', async () => {
+      const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+      expect(result.success).toBe(true);
+      expect(composeCommands()).toEqual(['down', 'up']);
+    });
+  });
+
   it('reports success when the containers came up', async () => {
     const result = await command.execute(appUrn, {});
 
