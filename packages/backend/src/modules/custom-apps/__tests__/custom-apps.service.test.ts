@@ -412,6 +412,15 @@ describe('CustomAppService', () => {
       });
     });
 
+    it('refuses a note for an app with no config.json and writes nothing', async () => {
+      filesystem.readJsonFile.mockResolvedValue(null);
+
+      await expect(service.updateAppMetadata(CUSTOM, '# Hello')).rejects.toThrow('Failed to read app info');
+
+      expect(filesystem.writeJsonFile).not.toHaveBeenCalled();
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+
     it('refuses a note with frontmatter that is not valid and writes nothing', async () => {
       await expect(service.updateAppMetadata(CUSTOM, '---\ncategories:\n  - not-a-category\n---\n')).rejects.toThrow('Invalid frontmatter');
 
