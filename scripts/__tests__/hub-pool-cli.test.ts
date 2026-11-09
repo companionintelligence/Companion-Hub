@@ -258,6 +258,35 @@ describe('hub-pool-cli formatters', () => {
           pin: { scope: 'model', targetKind: 'local', mode: 'prefer' },
           affinity: { key: 'header', outcome: 'skipped', remembered: 'local', inFlight: 2, maxInFlight: 2 },
           slots: { demoted: [{ node: 'local', backend: 'ollama', inFlight: 3, slots: 1 }], overridden: false },
+          requestError: { signature: 'client-error', basis: 'confirmed', confirms: 'local' },
+          promptCeiling: { estimatedTokens: 20_000, excluded: [{ node: 'local', maxPromptTokens: 16_000 }], overridden: false },
+          contextCap: { numCtx: 65_536, source: 'request', excluded: [{ node: 'local', maxNumCtx: 16_384 }], overridden: false },
+          throughput: {
+            estimatedTokens: 20_000,
+            budgetMs: 60_000,
+            estimates: [
+              { node: 'local', backend: 'ollama', tokensPerSec: 50, predictedMs: 400_000, source: 'observed', deadline: false, slow: true },
+            ],
+            unmeasured: [{ node: 'local', backend: 'ollama', prior: 'unknown' }],
+            slowerDemoted: [
+              {
+                node: 'local',
+                backend: 'ollama',
+                predictedMs: 40_000,
+                inFlight: 0,
+                fasterNode: 'local',
+                fasterBackend: 'vllm',
+                fasterMs: 4_000,
+                fasterInFlight: 0,
+              },
+            ],
+            overridden: false,
+          },
+          contention: {
+            numCtx: 65_536,
+            demoted: [{ node: 'local', backend: 'ollama', busyWith: [{ model: 'qwen3.6:35b', numCtx: 65_536 }], runsAt: 65_536, behind: ['local'] }],
+            overridden: false,
+          },
         },
       ],
       summary: { recorded: 1, capacity: 200, served: 1, failed: 0, failovers: 1, lastAt: '2026-09-05T10:00:01.000Z' },
@@ -269,6 +298,13 @@ describe('hub-pool-cli formatters', () => {
     expect(notes.join('\n')).toContain('pinned (this model → hub-a.example-tailnet.ts.net)');
     expect(notes.join('\n')).toContain('moved hub-a.example-tailnet.ts.net (3 in flight, 1 slot)');
     expect(notes.join('\n')).toContain('hub-a.example-tailnet.ts.net holds this prompt');
+    expect(notes.join('\n')).toContain('as hub-a.example-tailnet.ts.net had');
+    expect(notes.join('\n')).toContain('hub-a.example-tailnet.ts.net (ceiling 16000)');
+    expect(notes.join('\n')).toContain('hub-a.example-tailnet.ts.net (cap 16384)');
+    expect(notes.join('\n')).toContain('hub-a.example-tailnet.ts.net (~50 tok/s');
+    expect(notes.join('\n')).toContain('hub-a.example-tailnet.ts.net (unmeasured)');
+    expect(notes.join('\n')).toContain('hub-a.example-tailnet.ts.net (~40 s) behind hub-a.example-tailnet.ts.net (~4 s)');
+    expect(notes.join('\n')).toContain('behind hub-a.example-tailnet.ts.net');
     expect(notes.join('\n')).not.toMatch(/\blocal\b/);
   });
 

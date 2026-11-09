@@ -826,7 +826,7 @@ states no default. `behind` lists the nodes the engine gave way to, and is empty
 place. `overriddenBy` is `'affinity'` when the engine would have given way but prefix affinity held
 it, and `null` otherwise, including when affinity qualified the engine but the prefix could not still
 be warm there (the row's `affinity` is then a `skipped` with `qualified: true`). `cihub pool log`
-prints one of four lines:
+prints one of four lines. A Hub with a tailnet name prints that name where these say `this Hub`:
 
 - `↳ moved this Hub (busy with qwen3.8:27b at num_ctx 65536; this one at num_ctx 65536) behind <node>`
   when the engine gave way.

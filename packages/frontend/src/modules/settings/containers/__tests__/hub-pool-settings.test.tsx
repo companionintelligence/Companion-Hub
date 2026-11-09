@@ -532,8 +532,15 @@ describe('HubPoolSection', () => {
         row({}),
         row({ at: '2026-09-05T10:00:01.000Z', outcome: 'failed', status: 500 }),
         row({ at: '2026-09-05T10:00:02.000Z', node: 'hub-b' }),
+        row({
+          at: '2026-09-05T10:00:03.000Z',
+          node: 'hub-b',
+          failedOverFrom: ['local'],
+          attempts: [{ node: 'local', backend: 'ollama', status: 500, reason: 'HTTP 500' }],
+        }),
+        row({ at: '2026-09-05T10:00:04.000Z', node: 'hub-b', failedOverFrom: ['local'] }),
       ],
-      summary: { recorded: 3, capacity: 200, served: 2, failed: 1, failovers: 0, lastAt: '2026-09-05T10:00:02.000Z' },
+      summary: { recorded: 5, capacity: 200, served: 4, failed: 1, failovers: 2, lastAt: '2026-09-05T10:00:04.000Z' },
     };
 
     renderSection();
@@ -541,7 +548,10 @@ describe('HubPoolSection', () => {
     expect(await screen.findByText('HUB_POOL_ROUTING_LOCAL_SERVED')).toBeTruthy();
     expect(screen.getByText('HUB_POOL_ROUTING_LOCAL_SENT')).toBeTruthy();
     // A peer keeps the wording it had.
-    expect(screen.getByText('HUB_POOL_ROUTING_OUTBOUND')).toBeTruthy();
+    expect(screen.getAllByText('HUB_POOL_ROUTING_OUTBOUND')).toHaveLength(3);
+    // The failover hover, with what each node answered and from a Hub that only names them.
+    expect(i18nCalls).toContainEqual({ key: 'HUB_POOL_ROUTING_FAILOVER', params: { nodes: 'HUB_POOL_LOCAL_NODE_LABEL (HTTP 500)' } });
+    expect(i18nCalls).toContainEqual({ key: 'HUB_POOL_ROUTING_FAILOVER', params: { nodes: 'HUB_POOL_LOCAL_NODE_LABEL' } });
   });
 
   /**

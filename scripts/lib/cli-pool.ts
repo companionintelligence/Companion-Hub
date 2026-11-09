@@ -114,6 +114,9 @@ const POOL_USAGE = `Usage: ${BASE_COMMAND} pool <${POOL_SUBCOMMANDS.join('|')}> 
 /** How long `pool doctor` runs before it starts narrating. Below this, the box arrives on its own. */
 const POOL_DOCTOR_PROGRESS_AFTER_MS = 3_000;
 
+/** `pool log` only wants this node's name from `/status`, which can wait on a rebuild of the local inventory. */
+const POOL_LOG_NAME_TIMEOUT_MS = 3_000;
+
 export interface ParsedPoolArgs {
   subcommand: PoolSubcommand;
   target?: string;
@@ -505,8 +508,11 @@ export async function runPoolCommand(args: string[]) {
     }
 
     if (parsed.subcommand === 'log') {
-      // The name is a nicety on the NODE column, so a status that fails doesn't cost the log.
-      const [log, status] = await Promise.all([fetchPoolRoutingLog(envFile, parsed.limit), fetchPoolStatus(envFile).catch(() => null)]);
+      // The name is a nicety on the NODE column, so a status that fails or runs late doesn't cost the log.
+      const [log, status] = await Promise.all([
+        fetchPoolRoutingLog(envFile, parsed.limit),
+        fetchPoolStatus(envFile, POOL_LOG_NAME_TIMEOUT_MS).catch(() => null),
+      ]);
       printMessageBox(
         `Hub Pool routing log  [${env}]`,
         formatPoolRoutingLogLines(log, status?.localNode.nodeFqdn),

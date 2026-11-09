@@ -138,7 +138,9 @@ describe('column drops', () => {
 
     expect(screen.getAllByText('This Hub').length).toBeGreaterThan(0);
     expect(screen.queryByText('local')).toBeNull();
-    expect(container.querySelector('[title="local"]')).toBeNull();
+    expect(container.querySelector('[title*="local"]')).toBeNull();
+    // The hover that lists the nodes passed over.
+    expect(container.querySelector('[title="Tried first: This Hub (HTTP 500)"]')).not.toBeNull();
     // The peer keeps the short name it had.
     expect(screen.getAllByText('hub-b').length).toBeGreaterThan(0);
   });
