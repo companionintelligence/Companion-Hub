@@ -5,11 +5,11 @@ Every direct dependency declared in this repository's manifests — both
 each group. Transitive dependencies are not listed; resolve them with your
 package manager's own `licenses` command.
 
-**185 direct dependencies** across 11 licence groups.
+**184 direct dependencies** across 11 licence groups.
 
 | Licence | Count |
 | --- | ---: |
-| MIT | 125 |
+| MIT | 124 |
 | MIT OR Apache-2.0 | 17 |
 | Apache-2.0 | 14 |
 | Apache-2.0 OR MIT | 12 |
@@ -74,7 +74,6 @@ package manager's own `licenses` command.
 49. [`isomorphic-git`](https://isomorphic-git.org/) `1.42.2` — runtime
 50. [`jose`](https://github.com/panva/jose) `6.2.12` — runtime
 51. [`jsonwebtoken`](https://github.com/auth0/node-jsonwebtoken#readme) `9.0.3` — runtime
-52. [`let-it-go`](https://eastsun5566.github.io/let-it-go/) `1.1.0` — runtime
 53. [`lottie-react`](https://lottiereact.com) `3.1.2` — runtime
 54. [`minisearch`](https://lucaong.github.io/minisearch/) `7.2.0` — runtime
 55. [`pg`](https://github.com/brianc/node-postgres) `8.23.0` — runtime

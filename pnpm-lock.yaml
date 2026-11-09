@@ -468,9 +468,6 @@ importers:
       isbot:
         specifier: ^5.2.2
         version: 5.2.2
-      let-it-go:
-        specifier: ^3.0.0
-        version: 3.0.0
       lottie-react:
         specifier: ^3.1.2
         version: 3.1.2(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -5094,10 +5091,6 @@ packages:
 
   launch-editor@2.14.2:
     resolution: {integrity: sha512-NHJEb30MGBCkmZXLZwz25t37QR4aY03ZzPYUJXOJaOa92uWwExI9SBQUuIznBYc1xkD7cJNGX7oc3Nl3sq2kQQ==}
-
-  let-it-go@3.0.0:
-    resolution: {integrity: sha512-7Yj2d+GbxYMMsFGD3Biz+wunFeA0s6VHEgQAh34xi0E4YrbN5caBuINzQcUIAQkTgQOTMhdjuGwtEhx6CzSsJA==}
-    engines: {node: '>=22'}
 
   leven@3.1.0:
     resolution: {integrity: sha512-qsda+H8jTaUaN/x5vzW2rzc+8Rw4TAQ/4KjB46IwK5VH+IlVeeeje/EoZRpiXvIqjFgK84QffqPztGI3VBLG1A==}
@@ -11223,8 +11216,6 @@ snapshots:
     dependencies:
       picocolors: 1.1.1
       shell-quote: 1.12.0
-
-  let-it-go@3.0.0: {}
 
   leven@3.1.0: {}
 

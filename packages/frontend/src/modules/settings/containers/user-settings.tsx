@@ -1,7 +1,6 @@
 import { updateUserSettingsMutation, updateAdvancedModeMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
 import { useAppContext } from '@/context/app-context';
-import { useUserContext } from '@/context/user-context';
 import { openExternal } from '@/lib/helpers/open-external';
 import { portalAccountSettingsUrl } from '@/lib/hub-removal-watch';
 import type { Locale } from '@/lib/i18n/locales';
@@ -31,7 +30,6 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname, manage
   const currentLocale = i18next.language;
   const { t } = useTranslation();
   const { refreshAppContext, user } = useAppContext();
-  const { refreshUserContext } = useUserContext();
   const { data: portalConfig } = useQuery(portalConfigQueryOptions());
   const [requireRestart, setRequireRestart] = useState(initialValues?.advancedSettings);
   const [advancedModeDraft, setAdvancedModeDraft] = useState<boolean | null>(null);
@@ -44,8 +42,6 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname, manage
     onSuccess: () => {
       toast.success(requireRestart ? t('SETTINGS_GENERAL_SETTINGS_UPDATED_RESTART') : t('SETTINGS_GENERAL_SETTINGS_UPDATED'));
       refreshAppContext();
-      // The Hub-wide appearance settings in this form, such as "Allow auto themes", are read from here.
-      void refreshUserContext();
       // "Allow error monitoring" lives in this form. Re-ask the Hub straight
       // away so a flip takes effect on the next captured error rather than at
       // the next staleness refresh.

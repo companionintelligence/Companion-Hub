@@ -4,7 +4,6 @@ import { type PropsWithChildren, Suspense, useEffect } from 'react';
 import { subscribeHubResume } from '@/lib/hub-resume';
 import { ErrorBoundary } from 'react-error-boundary';
 import { ErrorPage } from '../error/error-page';
-import { AutoThemeProvider } from './theme/auto-theme-provider';
 import { HubSessionRefresh } from './hub-session-refresh';
 import { DesktopPortalAuthListener } from './desktop-portal-auth-listener';
 import { DesktopInstallIntentListener } from './desktop-install-intent-listener';
@@ -115,7 +114,7 @@ export const Providers = ({ children }: PropsWithChildren) => {
                 <DesktopPortalAuthListener />
                 <DesktopInstallIntentListener />
                 <HubSessionRefresh />
-                <AutoThemeProvider>{children}</AutoThemeProvider>
+                {children}
               </UserContextProvider>
             </Suspense>
           </ErrorBoundary>

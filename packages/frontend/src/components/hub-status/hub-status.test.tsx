@@ -48,10 +48,6 @@ vi.mock('react-router', async (importOriginal) => {
   };
 });
 
-vi.mock('@/lib/theme/theme', () => ({
-  getLogo: () => '/logo.svg',
-}));
-
 beforeEach(() => {
   revalidateMock.mockClear();
   updateMocks.isDesktopUpdateRunning.mockReturnValue(false);
