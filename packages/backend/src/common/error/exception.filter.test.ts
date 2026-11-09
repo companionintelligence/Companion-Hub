@@ -143,6 +143,10 @@ describe('MainExceptionFilter', () => {
   });
 
   it('answers a refusal the person caused with its key and writes no error line', () => {
+    request.method = 'PATCH';
+    request.path = '/api/auth/password';
+    request.url = '/api/auth/password';
+
     filter.catch(new TranslatableError('AUTH_ERROR_INVALID_PASSWORD', {}, HttpStatus.BAD_REQUEST), createHost());
 
     expect(logger.error).not.toHaveBeenCalled();

@@ -85,17 +85,9 @@ describe('AuthService', () => {
     passwordService.hash.mockResolvedValue('hashed-local' as never);
   });
 
-  describe('what the person typed wrong answers 400 and is not reported as a crash', () => {
+  describe('a refusal the person caused answers 400 and is not reported as a crash', () => {
     const user = { id: 7, username: 'owner@example.com', password: 'hash', totpEnabled: true, totpSecret: 'enc', salt: 'salt' };
-    const status = async (attempt: Promise<unknown>, message: string) => {
-      const error = (await attempt.then(
-        () => undefined,
-        (refusal: unknown) => refusal,
-      )) as { message: string; getStatus(): number };
-
-      expect(error.message).toBe(message);
-      return error.getStatus();
-    };
+    const refused = (message: string) => ({ message, status: 400 });
 
     beforeEach(() => {
       configurationService.get.mockReturnValue(false as never);
@@ -103,65 +95,69 @@ describe('AuthService', () => {
       passwordService.verify.mockResolvedValue(false as never);
     });
 
+    afterEach(() => {
+      vi.mocked(TotpAuthenticator.check).mockRestore?.();
+    });
+
     it('a wrong current password in Change password', async () => {
-      expect(
-        await status(
-          authService.changePassword({ userId: 7, currentPassword: 'wrong', newPassword: 'long-enough-1' }),
-          'AUTH_ERROR_INVALID_PASSWORD',
-        ),
-      ).toBe(400);
+      await expect(authService.changePassword({ userId: 7, currentPassword: 'wrong', newPassword: 'long-enough-1' })).rejects.toMatchObject(
+        refused('AUTH_ERROR_INVALID_PASSWORD'),
+      );
     });
 
     it('a wrong password in Change username', async () => {
-      expect(
-        await status(authService.changeUsername({ userId: 7, password: 'wrong', newUsername: 'new@example.com' }), 'AUTH_ERROR_INVALID_PASSWORD'),
-      ).toBe(400);
+      await expect(authService.changeUsername({ userId: 7, password: 'wrong', newUsername: 'new@example.com' })).rejects.toMatchObject(
+        refused('AUTH_ERROR_INVALID_PASSWORD'),
+      );
     });
 
     it('a new password that is too short', async () => {
       passwordService.verify.mockResolvedValue(true as never);
 
-      expect(
-        await status(authService.changePassword({ userId: 7, currentPassword: 'right', newPassword: 'short' }), 'AUTH_ERROR_INVALID_PASSWORD_LENGTH'),
-      ).toBe(400);
+      await expect(authService.changePassword({ userId: 7, currentPassword: 'right', newPassword: 'short' })).rejects.toMatchObject(
+        refused('AUTH_ERROR_INVALID_PASSWORD_LENGTH'),
+      );
     });
 
     it('a username that is not an email or is already taken', async () => {
       passwordService.verify.mockResolvedValue(true as never);
 
-      expect(
-        await status(authService.changeUsername({ userId: 7, password: 'right', newUsername: 'not-an-email' }), 'AUTH_ERROR_INVALID_USERNAME'),
-      ).toBe(400);
+      await expect(authService.changeUsername({ userId: 7, password: 'right', newUsername: 'not-an-email' })).rejects.toMatchObject(
+        refused('AUTH_ERROR_INVALID_USERNAME'),
+      );
 
       userRepository.getUserByUsername.mockResolvedValue({ id: 8 } as never);
-      expect(
-        await status(
-          authService.changeUsername({ userId: 7, password: 'right', newUsername: 'taken@example.com' }),
-          'AUTH_ERROR_USER_ALREADY_EXISTS',
-        ),
-      ).toBe(400);
+      await expect(authService.changeUsername({ userId: 7, password: 'right', newUsername: 'taken@example.com' })).rejects.toMatchObject(
+        refused('AUTH_ERROR_USER_ALREADY_EXISTS'),
+      );
     });
 
     it('a wrong password in the 2FA "Password needed" dialog, to turn it on or off', async () => {
-      expect(await status(authService.disableTotp({ userId: 7, password: 'wrong' }), 'AUTH_ERROR_INVALID_PASSWORD')).toBe(400);
+      await expect(authService.disableTotp({ userId: 7, password: 'wrong' })).rejects.toMatchObject(refused('AUTH_ERROR_INVALID_PASSWORD'));
 
       userRepository.getUserById.mockResolvedValue({ ...user, totpEnabled: false } as never);
-      expect(await status(authService.getTotpUri({ userId: 7, password: 'wrong' }), 'AUTH_ERROR_INVALID_PASSWORD')).toBe(400);
+      await expect(authService.getTotpUri({ userId: 7, password: 'wrong' })).rejects.toMatchObject(refused('AUTH_ERROR_INVALID_PASSWORD'));
     });
 
-    it('a wrong code on the sign-in 2FA page, and a 2FA page that has expired', async () => {
+    it('a wrong code on the sign-in 2FA page and a 2FA page that has expired', async () => {
       const store = new Map<string, string>([['session', '7']]);
       cacheService.get.mockImplementation((key: string) => store.get(key) as never);
       cacheService.set.mockImplementation(((key: string, value: string) => store.set(key, value)) as never);
       vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(false);
       encryptionService.decrypt.mockReturnValue('secret' as never);
 
-      expect(await status(authService.verifyTotp({ totpSessionId: 'session', totpCode: '000000' }), 'AUTH_ERROR_TOTP_INVALID_CODE')).toBe(400);
-      expect(await status(authService.verifyTotp({ totpSessionId: 'gone', totpCode: '000000' }), 'AUTH_ERROR_TOTP_SESSION_NOT_FOUND')).toBe(400);
+      await expect(authService.verifyTotp({ totpSessionId: 'session', totpCode: '000000' })).rejects.toMatchObject(
+        refused('AUTH_ERROR_TOTP_INVALID_CODE'),
+      );
+      await expect(authService.verifyTotp({ totpSessionId: 'gone', totpCode: '000000' })).rejects.toMatchObject(
+        refused('AUTH_ERROR_TOTP_SESSION_NOT_FOUND'),
+      );
 
       // A request already past the first check when another one ended the session.
       cacheService.get.mockReturnValueOnce('7' as never).mockReturnValueOnce(undefined as never);
-      expect(await status(authService.verifyTotp({ totpSessionId: 'session', totpCode: '000000' }), 'AUTH_ERROR_TOTP_SESSION_NOT_FOUND')).toBe(400);
+      await expect(authService.verifyTotp({ totpSessionId: 'session', totpCode: '000000' })).rejects.toMatchObject(
+        refused('AUTH_ERROR_TOTP_SESSION_NOT_FOUND'),
+      );
     });
 
     it('a wrong code when turning 2FA on', async () => {
@@ -169,7 +165,7 @@ describe('AuthService', () => {
       vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(false);
       encryptionService.decrypt.mockReturnValue('secret' as never);
 
-      expect(await status(authService.setupTotp({ userId: 7, totpCode: '000000' }), 'AUTH_ERROR_TOTP_INVALID_CODE')).toBe(400);
+      await expect(authService.setupTotp({ userId: 7, totpCode: '000000' })).rejects.toMatchObject(refused('AUTH_ERROR_TOTP_INVALID_CODE'));
     });
   });
 
