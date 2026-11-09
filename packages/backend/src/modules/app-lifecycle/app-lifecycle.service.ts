@@ -1025,7 +1025,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
       this.logger.info(`[lifecycle] install of ${appUrn} cancelled${result.message ? `: ${result.message}` : ''}`);
       // Use 'missing' (not 'uninstalled') to match uninstall_success — both delete the app record.
-      this.sseService.emit('app', { event: 'install_cancelled', appUrn, appStatus: 'missing' });
+      this.sseService.emit('app', {
+        event: 'install_cancelled',
+        appUrn,
+        appStatus: 'missing',
+        warningCode: result.warningCode,
+        warningDetail: result.warningDetail,
+      });
       void this.emitInstallQueueUpdate();
       return;
     }

@@ -133,6 +133,7 @@ describe('InstallAppCommand — pull policy', () => {
       imageIdsLocally: vi.fn().mockResolvedValue(new Set()),
       imageTagsLocally: vi.fn().mockResolvedValue([]),
       removeAppImages: vi.fn().mockResolvedValue(undefined),
+      removeAppDataDirAsRoot: vi.fn().mockResolvedValue(true),
     };
 
     const logger = mockDeep<LoggerService>();
@@ -162,6 +163,9 @@ describe('InstallAppCommand — pull policy', () => {
     appFilesManager.writeDockerComposeYml.mockResolvedValue();
     appFilesManager.deleteAppFolder.mockResolvedValue(true);
     appFilesManager.deleteAppDataDir.mockResolvedValue(true);
+    appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: true, permissionDenied: false });
+    appFilesManager.getAppDataHostDir.mockReturnValue('/srv/app-data/store/test-app');
+    appFilesManager.hasAppData.mockResolvedValue(false);
 
     const marketplaceService = mock<MarketplaceService>();
 
@@ -672,6 +676,73 @@ describe('InstallAppCommand — pull policy', () => {
     expect((result as any).cancelled).toBe(true);
     const afm = (command as any).moduleRef.get(AppFilesManager);
     expect(afm.deleteAppFolder).toHaveBeenCalledWith(appUrn);
+  });
+
+  describe('removing the data of a cancelled install', () => {
+    const cancelDuringComposeUp = async () => {
+      const ac = new AbortController();
+      dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
+        if (args.includes('up --detach')) {
+          ac.abort();
+          throw new DOMException('Aborted', 'AbortError');
+        }
+      });
+      return (await command.execute(appUrn, {}, { signal: ac.signal, setPhase: vi.fn() })) as Record<string, unknown>;
+    };
+
+    it('removes it and reports a clean cancel when the Hub can delete it', async () => {
+      const result = await cancelDuringComposeUp();
+
+      expect(result).toMatchObject({ cancelled: true, message: `Install of ${appUrn} was cancelled and cleaned up` });
+      expect(result.warningCode).toBeUndefined();
+      expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
+    });
+
+    it('goes to the root helper for files a container wrote as another user', async () => {
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+
+      const result = await cancelDuringComposeUp();
+
+      expect(dockerService.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn);
+      expect(appFilesManager.deleteAppDataDir).toHaveBeenCalledWith(appUrn);
+      expect(result).toMatchObject({ cancelled: true, message: `Install of ${appUrn} was cancelled and cleaned up` });
+      expect(result.warningCode).toBeUndefined();
+    });
+
+    it('says what is left and where when even the root helper cannot remove it', async () => {
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+      dockerService.removeAppDataDirAsRoot.mockResolvedValue(false);
+
+      const result = await cancelDuringComposeUp();
+
+      expect(result).toMatchObject({
+        cancelled: true,
+        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/store/test-app',
+      });
+      expect(result.message).not.toContain('cleaned up');
+    });
+
+    it('keeps root away from data that was there before this install and warns about nothing', async () => {
+      appFilesManager.hasAppData.mockResolvedValue(true);
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+
+      const result = await cancelDuringComposeUp();
+
+      expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
+      expect(result.warningCode).toBeUndefined();
+      expect(appFilesManager.deleteAppDataDir).toHaveBeenCalledWith(appUrn);
+    });
+
+    it('warns without a path when the app folder is what could not go', async () => {
+      appFilesManager.deleteAppFolder.mockResolvedValue(false);
+
+      const result = await cancelDuringComposeUp();
+
+      expect(result.warningCode).toBe('APP_INSTALL_CANCELLED_PARTIAL_REMNANT');
+      expect(result.warningDetail).toBeUndefined();
+      expect(result.message).toContain('app folder');
+    });
   });
 
   it('returns cancelled (before compose up) when the signal is already aborted', async () => {
@@ -1198,6 +1269,7 @@ describe('InstallAppCommand — plan-based pre-flight', () => {
       imageIdsLocally: vi.fn().mockResolvedValue(new Set()),
       imageTagsLocally: vi.fn().mockResolvedValue([]),
       removeAppImages: vi.fn().mockResolvedValue(undefined),
+      removeAppDataDirAsRoot: vi.fn().mockResolvedValue(true),
     };
 
     const logger = mockDeep<LoggerService>();

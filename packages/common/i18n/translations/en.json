@@ -389,6 +389,8 @@
   "APP_INSTALL_FORM_PORT_HINT": "Port on which the app will be accessible",
   "APP_INSTALL_SUCCESS": "App {{id}} installed successfully",
   "APP_INSTALL_CANCELLED": "Cancelled installing {{id}}",
+  "APP_INSTALL_CANCELLED_PARTIAL_REMNANT": "Cancelled installing {{id}}, but some of its files could not be removed and may remain on disk.",
+  "APP_INSTALL_CANCELLED_PARTIAL_REMNANT_MANUAL": "Cancelled installing {{id}}, but some of its files couldn't be removed automatically. To delete them, run this on the host: <cmd>{{command}}</cmd>",
   "APP_CANCEL_INSTALL_TITLE": "Cancel installing {{name}}?",
   "APP_CANCEL_INSTALL_BODY": "This stops the download and removes the partially installed app. You can install it again anytime.",
   "APP_CANCEL_INSTALL_SUBMIT": "Cancel install",

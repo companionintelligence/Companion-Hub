@@ -19,6 +19,7 @@ import { AppLifecycleCommand, type CommandExecutionContext } from './command';
 import { AppLifecycleError, type AppCommandResult } from './app-lifecycle-errors';
 import { hostPortMoveOf } from './main-host-port';
 import { pullAppImagesRecorded, uniqueServiceImages } from './pull-app-images';
+import { removeAppDataWithPrivilegedFallback } from './remove-app-data';
 import { isAbortError, throwIfAborted } from '@/common/abort';
 import { type AppSecurityGrants, type HostPortMove, parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
@@ -128,6 +129,8 @@ export class InstallAppCommand extends AppLifecycleCommand {
     }
 
     const refusedHostPorts = new Set<number>();
+    // Read before this install creates anything. What is there now was not written by this install.
+    const dataFromEarlier = await (async () => appFilesManager.hasAppData(appUrn))().catch(() => false);
 
     try {
       ctx?.setPhase('preparing');
@@ -497,8 +500,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // A user-requested cancel: tear down whatever was partially created and report a cancellation
       // (not a failure). The service finalizes the cancel (deletes the record + emits install_cancelled).
       if (isAbortError(err)) {
-        const message = await this.compensateInstallCancel(appUrn);
-        return { success: false, cancelled: true, message };
+        return { success: false, cancelled: true, ...(await this.compensateInstallCancel(appUrn, dataFromEarlier)) };
       }
       // The row, config and app.env stay on a port the run moved to, whatever failed after the move.
       return { ...(await this.handleAppError(err, appUrn, 'install')), movedHostPort: hostPortMoveOf(form, refusedHostPorts) };
@@ -560,9 +562,13 @@ export class InstallAppCommand extends AppLifecycleCommand {
    * guarded and idempotent; the compose-down runs WITHOUT the (now-aborted) signal so cleanup completes.
    * Does NOT delete the DB record — the service owns that (see AppLifecycleService.handleCancelledResult).
    *
-   * @returns A human-readable summary message for the cancellation result.
+   * @returns A human-readable summary for the cancellation result. When the app's data could not be
+   * removed, also the warning the page shows, with where it is on the host.
    */
-  private async compensateInstallCancel(appUrn: AppUrn): Promise<string> {
+  private async compensateInstallCancel(
+    appUrn: AppUrn,
+    dataFromEarlier: boolean,
+  ): Promise<{ message: string; warningCode?: string; warningDetail?: string }> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
@@ -603,11 +609,37 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // AgentNotifyService may be unavailable; ignore.
     }
 
-    await appFilesManager.deleteAppFolder(appUrn).catch((err) => logger.warn(`[install-cancel] deleteAppFolder failed for ${appUrn}: ${err}`));
-    await appFilesManager.deleteAppDataDir(appUrn).catch((err) => logger.warn(`[install-cancel] deleteAppDataDir failed for ${appUrn}: ${err}`));
+    const folderRemoved = await appFilesManager.deleteAppFolder(appUrn).catch((err) => {
+      logger.warn(`[install-cancel] deleteAppFolder failed for ${appUrn}: ${err}`);
+      return false;
+    });
+    // A folder that was there before this install holds data kept by an uninstall, or left by an install that failed.
+    // Root must not get to that, and nothing tells the person to delete it. A database this install started wrote its
+    // files as its own user, so those need the root helper.
+    const data = dataFromEarlier
+      ? { removed: true, hostPath: undefined }
+      : await removeAppDataWithPrivilegedFallback(appFilesManager, dockerService, logger, appUrn).catch((err) => {
+          logger.warn(`[install-cancel] removing the app data failed for ${appUrn}: ${err}`);
+          return { removed: false, hostPath: undefined };
+        });
+    if (dataFromEarlier) {
+      await appFilesManager.deleteAppDataDir(appUrn).catch((err) => logger.warn(`[install-cancel] deleteAppDataDir failed for ${appUrn}: ${err}`));
+    }
+
+    if (!folderRemoved || !data.removed) {
+      const leftover = [folderRemoved ? null : 'app folder', data.removed ? null : 'app data'].filter(Boolean).join(' and ');
+      logger.warn(
+        `[install-cancel] the ${leftover} of ${appUrn} could not be fully removed; a disk remnant may remain${data.hostPath ? ` at ${data.hostPath}` : ''}`,
+      );
+      return {
+        message: `Install of ${appUrn} was cancelled, but its ${leftover} could not be fully removed and may leave a remnant on disk`,
+        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT',
+        ...(data.hostPath ? { warningDetail: data.hostPath } : {}),
+      };
+    }
 
     logger.info(`[install-cancel] compensation complete for ${appUrn}`);
-    return `Install of ${appUrn} was cancelled and cleaned up`;
+    return { message: `Install of ${appUrn} was cancelled and cleaned up` };
   }
 
   private async markInstallSucceeded(

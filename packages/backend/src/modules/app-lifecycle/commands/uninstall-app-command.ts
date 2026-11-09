@@ -10,6 +10,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { AppLifecycleCommand } from './command';
 import { handOverKeptImages, sortImagesByOtherApps } from './pull-app-images';
+import { removeAppDataWithPrivilegedFallback } from './remove-app-data';
 
 export class UninstallAppCommand extends AppLifecycleCommand {
   constructor(
@@ -121,7 +122,7 @@ export class UninstallAppCommand extends AppLifecycleCommand {
       let dataRemoved = true;
       let dataRemnantHostPath: string | undefined;
       if (this.deleteAllData) {
-        const outcome = await this.removeAppDataWithPrivilegedFallback(appFilesManager, dockerService, logger, appUrn);
+        const outcome = await removeAppDataWithPrivilegedFallback(appFilesManager, dockerService, logger, appUrn);
         dataRemoved = outcome.removed;
         dataRemnantHostPath = outcome.hostPath;
       }
@@ -152,53 +153,5 @@ export class UninstallAppCommand extends AppLifecycleCommand {
     } catch (err) {
       return this.handleAppError(err, appUrn, 'uninstall');
     }
-  }
-
-  /**
-   * Remove the app's data dir, escalating to a privileged (root) cleanup when the
-   * non-root delete hits a permission error (a container-created root-owned path such
-   * as MinIO's `.minio.sys`). Returns whether it's gone and — when it isn't — the HOST
-   * path to surface for a manual `rm`.
-   */
-  private async removeAppDataWithPrivilegedFallback(
-    appFilesManager: AppFilesManager,
-    dockerService: DockerService,
-    logger: LoggerService,
-    appUrn: AppUrn,
-  ): Promise<{ removed: boolean; hostPath?: string }> {
-    const first = await appFilesManager.deleteAppDataDirDetailed(appUrn);
-    if (first.removed) {
-      return { removed: true };
-    }
-
-    // The host path is ONLY for user-facing guidance (the manual `rm` command), so
-    // resolving it must never turn an otherwise-successful uninstall into a failure.
-    // getAppDataHostDir can throw on a misconfigured non-absolute ROOT_FOLDER_HOST;
-    // treat that as "path unavailable" (a generic remnant warning) rather than aborting.
-    let hostPath: string | undefined;
-    try {
-      hostPath = appFilesManager.getAppDataHostDir(appUrn);
-    } catch (err) {
-      logger.warn(
-        `App ${appUrn}: could not resolve host app-data path for manual-cleanup guidance: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-
-    // Only a permission error is worth escalating to root — anything else won't be
-    // fixed by root either, so surface the manual path straight away.
-    if (!first.permissionDenied) {
-      return { removed: false, hostPath };
-    }
-
-    logger.warn(`App ${appUrn} app-data not removable as non-root; attempting a privileged cleanup of ${hostPath ?? 'its data directory'}`);
-    const emptied = await dockerService.removeAppDataDirAsRoot(appUrn);
-    // The helper only empties the dir (never the mountpoint), so the Hub still removes
-    // the now-empty directory itself — re-verify from the Hub's own view.
-    if (emptied && (await appFilesManager.deleteAppDataDir(appUrn))) {
-      logger.info(`App ${appUrn} app-data removed via privileged cleanup`);
-      return { removed: true };
-    }
-
-    return { removed: false, hostPath };
   }
 }

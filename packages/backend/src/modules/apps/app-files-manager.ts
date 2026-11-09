@@ -363,6 +363,12 @@ export class AppFilesManager {
     });
   }
 
+  /** Whether the app has data on disk. An uninstall with Delete all data off leaves it for a later install to pick up. */
+  public async hasAppData(appUrn: AppUrn): Promise<boolean> {
+    const { appDataDir } = this.getAppPaths(appUrn);
+    return (await this.filesystem.pathExists(appDataDir)) && (await this.filesystem.listFiles(appDataDir)).length > 0;
+  }
+
   public async createAppDataDir(appUrn: AppUrn) {
     const { appDataDir } = this.getAppPaths(appUrn);
     await this.filesystem.createDirectory(appDataDir);
