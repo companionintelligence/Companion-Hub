@@ -22,7 +22,7 @@ import * as yaml from 'yaml';
  */
 
 /** A setting in an override that the sandbox refuses. */
-export interface ComposeOverrideViolation {
+interface ComposeOverrideViolation {
   /** Where in the override: `services.web.cap_add.0`, or `appEnv.<name>` for the env file. */
   path: string;
   /** The rule it broke. A `CUSTOM_APP_ERROR_*` key when the builder has the same rule. */
