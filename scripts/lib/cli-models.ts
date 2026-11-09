@@ -2,8 +2,8 @@
  * Local model management and the MCP toggle.
  *
  * `cihub models` drives Ollama directly because it is the embeddings backend every chat backend
- * shares; richer per-backend model control lives behind the Hub API. Ollama is the Hub's own
- * container in a checkout and a native service on the host on an installed Hub.
+ * shares; richer per-backend model control lives behind the Hub API. Ollama is normally a native
+ * service on the host. No shipped compose file runs one, so the container is only a custom stack's.
  */
 
 import { upsertEnvVar } from '../env-file.js';
@@ -26,7 +26,10 @@ export function runModelsCommand(args: string[]) {
   if (!ollamaContainer && !commandExists('ollama')) {
     printMessageBox(
       'Models',
-      ['No Ollama found: the Hub runs no Ollama container and this machine has no `ollama` command.', 'Start the hub first: cihub up'],
+      [
+        'No Ollama found: the Hub runs no Ollama container and this machine has no `ollama` command.',
+        'Install Ollama on this machine, then run this again.',
+      ],
       'red',
     );
     process.exitCode = 1;
