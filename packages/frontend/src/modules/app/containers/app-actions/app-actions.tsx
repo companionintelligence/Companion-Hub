@@ -550,7 +550,7 @@ export const AppActions = ({
     appUrl,
     localUrl,
     statusMessage,
-    publicAddressRefused,
+    publicAddressRefusal,
     withinGracePeriod,
     pollingStopped,
     resolvable,
@@ -598,7 +598,7 @@ export const AppActions = ({
     // can be wrong (or merely pessimistic), so never trap the user behind it.
     // Except for an address the Portal refused: no record exists, so it could only end on a browser error.
     const openAnywayLink =
-      appUrl && !publicAddressRefused ? (
+      appUrl && !publicAddressRefusal ? (
         <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
           {t('APP_ACTION_OPEN_ANYWAY')}
         </button>

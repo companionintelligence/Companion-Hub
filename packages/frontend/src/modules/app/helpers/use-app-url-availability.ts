@@ -37,8 +37,8 @@ export interface AppUrlAvailability {
   localUrl: string | null;
   /** Already-translated explanation ("DNS propagating..."); null when ready/idle. */
   statusMessage: string | null;
-  /** The Portal refused this app a public address, so `appUrl` will not resolve however long the page waits. */
-  publicAddressRefused: boolean;
+  /** Why the Portal refused this app a public address, already translated. `appUrl` will not resolve however long the page waits. */
+  publicAddressRefusal: string | null;
   /** The backend believes a `resolve` attempt could fix this. */
   resolvable: boolean;
   /** Early window in which a not-yet-available route is expected, not a fault. */
@@ -172,6 +172,25 @@ function useLastKnownUrl(value: string | undefined, resetKey: string): string | 
 }
 
 /**
+ * The message key of the refusal in the latest verdict.
+ * Retry clears the verdict while the next probe runs, so the refusal is held until a verdict says otherwise.
+ * Without that, the dead link and "Enabled" come back for as long as the probe takes.
+ */
+function useHeldRefusalKey(probe: AppUrlProbeResult | null, enabled: boolean, resetKey: string): string | null {
+  const ref = useRef<{ key: string; messageKey: string | null }>({ key: resetKey, messageKey: null });
+
+  if (ref.current.key !== resetKey || !enabled) {
+    ref.current = { key: resetKey, messageKey: null };
+  }
+
+  if (enabled && probe) {
+    ref.current = { key: resetKey, messageKey: (probe.errorCode && REFUSED_PUBLIC_ADDRESS_MESSAGE_KEYS[probe.errorCode]) || null };
+  }
+
+  return ref.current.messageKey;
+}
+
+/**
  * Call once per page so consumers share the poll cadence, grace window, and give-up budget.
  */
 export function useAppUrlAvailability(input: {
@@ -256,6 +275,7 @@ export function useAppUrlAvailability(input: {
   // Both latches reset per app.
   const lastKnownAppUrl = useLastKnownUrl(probe?.appUrl, appUrn);
   const lastKnownLocalUrl = useLastKnownUrl(probe?.localUrl, appUrn);
+  const refusalKey = useHeldRefusalKey(probe, enabled, appUrn);
 
   // A failed Hub request says nothing about the app, so keep the UI neutral until another probe decides.
   // Deduplicate failures because repeated polling would otherwise flood the console.
@@ -336,7 +356,7 @@ export function useAppUrlAvailability(input: {
     appUrl: probe?.appUrl ?? lastKnownAppUrl,
     localUrl: probe?.localUrl ?? lastKnownLocalUrl,
     statusMessage,
-    publicAddressRefused: Boolean(probe?.errorCode && probe.errorCode in REFUSED_PUBLIC_ADDRESS_MESSAGE_KEYS),
+    publicAddressRefusal: refusalKey ? t(refusalKey) : null,
     resolvable: Boolean(probe?.resolvable),
     withinGracePeriod: !graceElapsed && !pollingStopped,
     pollingStopped,
@@ -355,7 +375,7 @@ export const IDLE_APP_URL_AVAILABILITY: AppUrlAvailability = {
   appUrl: null,
   localUrl: null,
   statusMessage: null,
-  publicAddressRefused: false,
+  publicAddressRefusal: null,
   resolvable: false,
   withinGracePeriod: false,
   pollingStopped: false,

@@ -1143,7 +1143,7 @@ describe('AppActions', () => {
         makeAvailability({
           state: 'unreachable',
           statusMessage: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED',
-          publicAddressRefused: true,
+          publicAddressRefusal: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED',
           withinGracePeriod: false,
           appUrl: 'https://app.example.com',
         }),
@@ -1158,7 +1158,7 @@ describe('AppActions', () => {
         makeAvailability({
           state: 'unreachable',
           statusMessage: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED',
-          publicAddressRefused: true,
+          publicAddressRefusal: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED',
           withinGracePeriod: false,
           pollingStopped: true,
           appUrl: 'https://app.example.com',
@@ -1166,6 +1166,19 @@ describe('AppActions', () => {
       );
 
       expect(screen.getByTestId('action-common_retry')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'APP_ACTION_OPEN_ANYWAY' })).not.toBeInTheDocument();
+    });
+
+    // Retry clears the verdict while the next probe runs, and the refusal has to outlast that.
+    it('offers no "Open anyway" for a refused address while Retry waits for the next verdict', () => {
+      renderExposed(
+        makeAvailability({
+          state: 'checking',
+          publicAddressRefusal: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+          appUrl: 'https://app.example.com',
+        }),
+      );
+
       expect(screen.queryByRole('button', { name: 'APP_ACTION_OPEN_ANYWAY' })).not.toBeInTheDocument();
     });
 
