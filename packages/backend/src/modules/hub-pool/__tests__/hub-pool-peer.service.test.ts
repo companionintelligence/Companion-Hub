@@ -670,6 +670,23 @@ describe('HubPoolPeerService', () => {
       expect(repo.listByStatuses).toHaveBeenCalledWith(['connected', 'unreachable']);
     });
 
+    it('still probes a switched-off peer but warns only about peers in use', async () => {
+      const logger = mock<LoggerService>();
+      (service as unknown as { logger: LoggerService }).logger = logger;
+      const refresh = (service as unknown as { refreshOnePeer: (p: HubPoolPeer) => Promise<void> }).refreshOnePeer.bind(service);
+      vi.mocked(global.fetch).mockRejectedValue(new Error('fetch failed'));
+
+      await refresh(mockPeer({ status: 'unreachable', consecutiveFailures: 18966, enabled: false, presentTokenEncrypted: 'ENC:token' }));
+
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining('capabilities probe'));
+
+      await refresh(mockPeer({ status: 'unreachable', consecutiveFailures: 4, enabled: true, presentTokenEncrypted: 'ENC:token' }));
+
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('capabilities probe'));
+    });
+
     it('drives a peer to unreachable and back to connected once it answers again', async () => {
       const capabilities = { hardwareTier: 'high', backends: [], updatedAt: new Date().toISOString() };
       const peer = mockPeer({ status: 'connected', consecutiveFailures: 2, presentTokenEncrypted: 'ENC:token' });
