@@ -583,6 +583,65 @@ describe('GeneralActionsContainer', () => {
     });
   });
 
+  describe('on a Hub that has said it has no desktop app, then goes quiet', () => {
+    // A started update leaves its pending marker behind, which would carry into the next test.
+    afterEach(() => {
+      sessionStorage.clear();
+    });
+
+    it('leaves the card out when a later check gets no answer', async () => {
+      mockFetchHostListenerStatus.mockResolvedValueOnce({ reachable: false, desktopApp: false }).mockResolvedValue(null);
+
+      render(<GeneralActionsContainer />);
+      await waitFor(() => expect(mockFetchHostListenerStatus).toHaveBeenCalledTimes(1));
+      await userEvent.click(await screen.findByTestId('hub-check-updates-btn'));
+
+      await waitFor(() => expect(mockToastSuccess).toHaveBeenCalled());
+      expect(mockFetchHostListenerStatus).toHaveBeenCalledTimes(2);
+      expect(screen.queryByTestId('desktop-shell-update-card')).not.toBeInTheDocument();
+    });
+
+    it('asks again once the Hub is back from an update', async () => {
+      mockFetchHostListenerStatus.mockResolvedValueOnce(null).mockResolvedValue({ reachable: false, desktopApp: false });
+
+      render(<GeneralActionsContainer />);
+      expect(await screen.findByTestId('desktop-shell-update-card')).toBeInTheDocument();
+
+      act(() => {
+        resolveStackUpdate({ state: 'completed', version: '4.7.0' });
+      });
+
+      await waitFor(() => expect(screen.queryByTestId('desktop-shell-update-card')).not.toBeInTheDocument());
+    });
+
+    it('asks the Hub before updating when its first answer has not come', async () => {
+      mockUseAppContext.mockReturnValue({
+        version: { current: '4.7.0', latest: '4.8.0', body: '', releases: [] },
+        refreshAppContext: vi.fn(),
+        userSettings: { ciHubDeviceSlug: 'core' },
+      } as unknown as ReturnType<typeof useAppContext>);
+      vi.mocked(performStackUpdate).mockResolvedValue({ ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_RESTARTING' });
+      mockFetchHostListenerStatus.mockReturnValueOnce(new Promise(() => undefined)).mockResolvedValue({ reachable: false, desktopApp: false });
+
+      render(<GeneralActionsContainer />);
+      await userEvent.click(await screen.findByTestId('hub-update-btn'));
+
+      await waitFor(() => expect(performStackUpdate).toHaveBeenCalledWith('4.8.0', { noDesktopApp: true }));
+    });
+  });
+
+  // Desktop apps up to 0.2.77 keep their token where the Hub can't read it, Windows ones among them.
+  it('keeps the Desktop app card on a Hub that says its desktop app updates it', async () => {
+    mockFetchHostListenerStatus.mockResolvedValue({ reachable: false, desktopApp: false });
+    getUpdateBlocks.mockResolvedValue(
+      sdkOk({ updateBlockedReason: 'started on Windows', autoUpdateBlockedReason: 'started on Windows', desktopAppUpdatesHub: true }),
+    );
+
+    render(<GeneralActionsContainer />);
+
+    expect(await screen.findByTestId('desktop-shell-update-card')).toBeInTheDocument();
+  });
+
   it('keeps the Desktop app card when the Hub could not say whether it has one', async () => {
     mockFetchHostListenerStatus.mockResolvedValue(null);
 

@@ -63,9 +63,10 @@ on Linux. The Hub container mounts `state/` at `/data/state` and reads the token
   API returns it. It doesn't follow a symlink in the token's place, and it sends nothing but
   one printable word.
 - **Older desktop builds** wrote the token at the root of the data folder. The Hub
-  container doesn't mount the root, so the Hub never finds the token. A browser reads such
-  a Hub as having no desktop app, like a `cihub` install, and shows no Desktop app card.
-  The app's own window always has the card, and updating the app moves the token to `state/`.
+  container doesn't mount the root, so the Hub never finds the token. A browser treats such
+  a Hub like a `cihub` install and shows no Desktop app card, unless the Hub says its desktop
+  app updates it, as on Windows. The app's own window always has the card. Updating the app
+  moves the token to `state/`.
 - **Upgrading the desktop app.** A listener that an older build started keeps port 17400
   until it exits, and it checks each request against the file at the root. Where that file
   exists, a newer listener writes the same token there too, so the Hub reaches whichever

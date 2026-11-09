@@ -90,6 +90,15 @@ const SHELL_INSTALL_PHASE_KEYS: Record<string, string> = {
 };
 
 /**
+ * A `cihub` install has no desktop app, so the card and its advice lead nowhere. Unknown keeps the card.
+ * The desktop window is the app itself, whatever the Hub can see of it. A Hub that says its desktop app
+ * updates it has one, even when it can't read the app's token.
+ */
+function hubHasNoDesktopApp(listener: HostListenerStatus | null | undefined, desktopWindow: boolean, desktopAppUpdatesHub: boolean): boolean {
+  return !desktopWindow && !desktopAppUpdatesHub && listener?.desktopApp === false;
+}
+
+/**
  * `manageHub`: whether this person may change the whole Hub (`useHubAccess`). A member doesn't see the
  * Hub update, auto-updates, app store repository, setup wizard or factory reset; the desktop app's own
  * update and the phone app's Hub switch act on this device, so they stay.
@@ -127,9 +136,9 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   const [shellRestart, setShellRestart] = useState<DesktopRestartState | null>(null);
   const [restartingShell, setRestartingShell] = useState(false);
   const [shellInstall, setShellInstall] = useState<ShellInstallState>({ state: 'idle' });
-  const [hostListener, setHostListener] = useState<HostListenerStatus | null>(null);
-  // False until the Hub answers, so the Desktop app card doesn't show and then vanish on a Hub without one.
-  const [hostListenerAnswered, setHostListenerAnswered] = useState(false);
+  // `undefined` until the Hub answers, so the Desktop app card doesn't show and then vanish on a Hub
+  // without one. `null` when it couldn't say.
+  const [hostListener, setHostListener] = useState<HostListenerStatus | null | undefined>(undefined);
   const hostListenerReachable = hostListener?.reachable ?? null;
   // The app context offers a stack update whenever the registry has a newer tag. Only the Hub knows
   // whether it will take it (a Windows desktop install, a node whose compose env file isn't the one
@@ -148,9 +157,7 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   // The desktop app's own window, where this page can ask the app to install its update. `isTauri()`
   // is true in the phone app too, which only reaches a Hub over the network, like a browser.
   const desktopWindow = desktop && !isTauriMobileSync();
-  // A `cihub` install has no desktop app, so the card and its advice lead nowhere. Unknown keeps the card,
-  // and the desktop window is the app itself, whatever the Hub can see of it.
-  const noDesktopApp = !desktopWindow && hostListener?.desktopApp === false;
+  const noDesktopApp = hubHasNoDesktopApp(hostListener, desktopWindow, stackBlock.desktopApp);
 
   const getUpdateMessage = useCallback(
     (result: UpdateActionResult) =>
@@ -246,8 +253,9 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   }, [desktop]);
 
   const refreshHostListenerStatus = useCallback(async () => {
-    setHostListener(await fetchHostListenerStatus());
-    setHostListenerAnswered(true);
+    const status = await fetchHostListenerStatus();
+    // A Hub that doesn't answer this time, say mid-restart, hasn't taken back what it said before.
+    setHostListener((previous) => status ?? previous ?? null);
   }, []);
 
   useEffect(() => {
@@ -264,8 +272,10 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
             : t('SETTINGS_ACTIONS_UPDATE_NOT_CONFIRMED', { version: outcome.version }),
         );
         void refreshAppContext();
+        // Asked while the Hub was restarting, it couldn't say whether it has a desktop app.
+        void refreshHostListenerStatus();
       }),
-    [refreshAppContext, t],
+    [refreshAppContext, refreshHostListenerStatus, t],
   );
 
   const handleStopWaiting = useCallback(() => {
@@ -346,7 +356,11 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
     setUpdating(true);
     setStackMessage(null);
     try {
-      const stackResult = await performStackUpdate(version.latest, { noDesktopApp });
+      // The button shows before the Hub has said whether it has a desktop app.
+      const listener = hostListener === undefined ? await fetchHostListenerStatus() : hostListener;
+      const stackResult = await performStackUpdate(version.latest, {
+        noDesktopApp: hubHasNoDesktopApp(listener, desktopWindow, stackBlock.desktopApp),
+      });
       if (stackResult.ok) {
         markStackUpdatePending(version.current);
         clearHubSteadySession();
@@ -359,7 +373,7 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
       setStackMessage(t('SETTINGS_ACTIONS_UPDATE_REQUEST_FAILED'));
       setUpdating(false);
     }
-  }, [getUpdateMessage, noDesktopApp, t, version.latest, version.current]);
+  }, [desktopWindow, getUpdateMessage, hostListener, stackBlock.desktopApp, t, version.latest, version.current]);
 
   const handleShellUpdate = useCallback(async () => {
     setUpdatingShell(true);
@@ -752,7 +766,7 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
         </Card>
       )}
 
-      {desktopWindow || (hostListenerAnswered && !noDesktopApp) ? (
+      {desktopWindow || (hostListener !== undefined && !noDesktopApp) ? (
         <Card data-testid="desktop-shell-update-card">
           <CardHeader>
             <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_SHELL_UPDATE_TITLE')}</CardTitle>
