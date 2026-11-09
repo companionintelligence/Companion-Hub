@@ -209,7 +209,7 @@ describe('upsertPoolPin / removePoolPin', () => {
       expect(removePoolPin([existing], 'model', named)).toEqual([existing]);
     });
 
-    it('leaves the default pin out of it, and a model pin out of the default', () => {
+    it('leaves the default pin out of it and a model pin out of the default', () => {
       expect(removePoolPin([defaultPin, onBare], 'default')).toEqual([onBare]);
       expect(upsertPoolPin([onBare], defaultPin)).toEqual([onBare, defaultPin]);
     });
