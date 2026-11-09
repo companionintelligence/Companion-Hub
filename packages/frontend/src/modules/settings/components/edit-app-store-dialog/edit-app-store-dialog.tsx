@@ -86,6 +86,7 @@ export const EditAppStoreDialog = ({ appStore }: Props) => {
                     checked={Boolean(value)}
                     onCheckedChange={onChange}
                     {...rest}
+                    disabled={editAppStore.isPending}
                     label={t('APP_STORE_EDIT_DIALOG_ENABLED')}
                   />
                 )}

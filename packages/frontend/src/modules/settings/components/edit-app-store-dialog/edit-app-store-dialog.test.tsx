@@ -1,3 +1,4 @@
+import { getAllAppStoresQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import type { AppStore } from '@/types/app.types';
 import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
@@ -9,7 +10,8 @@ const { mutationFn, toastSuccess } = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
 }));
 
-vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
+vi.mock('@/api-client/@tanstack/react-query.gen', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api-client/@tanstack/react-query.gen')>()),
   updateAppStoreMutation: () => ({ mutationFn }),
 }));
 
@@ -22,7 +24,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 const APP_STORE: AppStore = { slug: 'ci-marketplace', name: 'CI Marketplace', enabled: true, url: 'https://portal.example.com/api' };
-const ALL_STORES_KEY = [{ _id: 'getAllAppStores' }];
+const ALL_STORES_KEY = getAllAppStoresQueryKey();
 
 // The Switch measures itself with ResizeObserver, which jsdom doesn't have.
 vi.stubGlobal(
@@ -63,11 +65,14 @@ describe('EditAppStoreDialog', () => {
     await userEvent.click(screen.getByRole('button', { name: 'COMMON_SAVE' }));
 
     await waitFor(() => expect(refetch).toHaveBeenCalled());
-    expect(mutationFn).toHaveBeenCalled();
+    expect(mutationFn).toHaveBeenCalledWith({ path: { id: APP_STORE.slug }, body: { name: 'Home Shelf', enabled: true } }, expect.anything());
     expect(toastSuccess).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByRole('switch')).toBeDisabled();
 
     finishRefetch();
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('APP_STORE_EDIT_DIALOG_SUCCESS'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     unsubscribe();
   });
 });

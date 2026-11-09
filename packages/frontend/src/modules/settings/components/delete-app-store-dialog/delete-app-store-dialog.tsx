@@ -25,7 +25,7 @@ export const DeleteAppStoreDialog = ({ appStore }: Props) => {
       toast.error(t(e.message, e.intlParams));
     },
     onSuccess: async () => {
-      // Closed first: the refetch removes this row, and this dialog with it.
+      // Close before the refetch because it removes this row and this dialog with it.
       deleteAppStoreDisclosure.close();
       await invalidateStoreCatalogQueries(queryClient);
       toast.success(t('APP_STORE_DELETE_SUCCESS'));

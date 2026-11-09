@@ -1,3 +1,4 @@
+import { getAllAppStoresQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { render, screen, userEvent, waitFor, within } from '@/tests/test-utils';
 import type { AppStore } from '@/types/app.types';
 import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
@@ -9,7 +10,8 @@ const { mutationFn, toastSuccess } = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
 }));
 
-vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
+vi.mock('@/api-client/@tanstack/react-query.gen', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api-client/@tanstack/react-query.gen')>()),
   deleteAppStoreMutation: () => ({ mutationFn }),
 }));
 
@@ -22,7 +24,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 const APP_STORE: AppStore = { slug: 'community-apps', name: 'Community Apps', enabled: true, url: 'https://community.example.com/repo.git' };
-const ALL_STORES_KEY = [{ _id: 'getAllAppStores' }];
+const ALL_STORES_KEY = getAllAppStoresQueryKey();
 
 describe('DeleteAppStoreDialog', () => {
   it('refreshes the store list before reporting the removal', async () => {
@@ -51,8 +53,9 @@ describe('DeleteAppStoreDialog', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: 'COMMON_DELETE' }));
 
     await waitFor(() => expect(refetch).toHaveBeenCalled());
-    expect(mutationFn).toHaveBeenCalled();
+    expect(mutationFn).toHaveBeenCalledWith({ path: { id: APP_STORE.slug } }, expect.anything());
     expect(toastSuccess).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
 
     finishRefetch();
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('APP_STORE_DELETE_SUCCESS'));
