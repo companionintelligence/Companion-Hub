@@ -582,12 +582,23 @@ describe('AppsService.checkAppAvailability', () => {
   it('tailscale mode → still probes a port served before the refusal began', async () => {
     ctx.mockApp.exposureMode = 'tailscale';
     ctx.tailscaleService.getServePermission.mockReturnValue({ denied: true, remedy: 'x', deniedSince: '2026-11-09T00:00:00.000Z' });
-    ctx.tailscaleService.getServeStatus.mockResolvedValue({ entries: [{ listenPort: ctx.mockApp.port }] });
+    ctx.tailscaleService.getServeStatus.mockResolvedValue({ entries: [{ listenPort: ctx.mockApp.port, host: 'hub-tailscale-1.example.ts.net' }] });
     mockedAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
 
     const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
 
     expect(result.available).toBe(true);
+  });
+
+  it('tailscale mode → names the refusal when the port is only served under the name the node had before', async () => {
+    ctx.mockApp.exposureMode = 'tailscale';
+    ctx.tailscaleService.getServePermission.mockReturnValue({ denied: true, remedy: 'x', deniedSince: '2026-11-09T00:00:00.000Z' });
+    ctx.tailscaleService.getServeStatus.mockResolvedValue({ entries: [{ listenPort: ctx.mockApp.port, host: 'old-name.example.ts.net' }] });
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result).toMatchObject({ errorCode: 'TAILSCALE_SERVE_REFUSED', resolvable: false });
+    expect(mockedAxiosGet).not.toHaveBeenCalled();
   });
 
   it('tailscale mode → uses node MagicDNS hostname with the app vpn port', async () => {
