@@ -8,14 +8,16 @@ import { SSEProvider } from './sse-provider';
 
 const { appNameCache } = vi.hoisted(() => ({ appNameCache: { dropped: false } }));
 
-const { mockUseSSE, mockHandleAppSseEvent, mockToastWarning, mockToastError, mockToastDismiss, mockToastSuccess } = vi.hoisted(() => ({
-  mockUseSSE: vi.fn(),
-  mockHandleAppSseEvent: vi.fn(),
-  mockToastWarning: vi.fn(),
-  mockToastError: vi.fn(),
-  mockToastDismiss: vi.fn(),
-  mockToastSuccess: vi.fn(),
-}));
+const { mockUseSSE, mockHandleAppSseEvent, mockInvalidateAppRecords, mockToastWarning, mockToastError, mockToastDismiss, mockToastSuccess } =
+  vi.hoisted(() => ({
+    mockUseSSE: vi.fn(),
+    mockHandleAppSseEvent: vi.fn(),
+    mockInvalidateAppRecords: vi.fn(),
+    mockToastWarning: vi.fn(),
+    mockToastError: vi.fn(),
+    mockToastDismiss: vi.fn(),
+    mockToastSuccess: vi.fn(),
+  }));
 
 vi.mock('@/lib/hooks/use-sse', () => ({
   useSSE: (...args: unknown[]) => mockUseSSE(...args),
@@ -23,6 +25,7 @@ vi.mock('@/lib/hooks/use-sse', () => ({
 
 vi.mock('@/modules/app/helpers/app-sse-cache', () => ({
   handleAppSseEvent: (...args: unknown[]) => mockHandleAppSseEvent(...args),
+  invalidateAppRecords: (...args: unknown[]) => mockInvalidateAppRecords(...args),
   // The page's name for the app, as the cache would give it, until an event has taken it out.
   cachedAppName: (_queryClient: unknown, appUrn: string, fallback: string) =>
     appUrn === 'uptime-kuma:ci-marketplace' && !appNameCache.dropped ? 'Uptime Kuma' : fallback,
@@ -460,6 +463,17 @@ describe('SSEProvider', () => {
       fire({ event: 'hub_hello', version: '0.2.71' });
       expect(isStackUpdatePending()).toBe(true);
       expect(invalidate).not.toHaveBeenCalled();
+    });
+
+    // What a restart changed was announced while no browser was connected (#2286).
+    it('refetches every app record when the Hub greets again after a restart, not on its first greeting', () => {
+      const { fire } = mountWithHandler();
+      fire({ event: 'hub_hello', version: '0.2.72' });
+      expect(mockInvalidateAppRecords).not.toHaveBeenCalled();
+
+      fire({ event: 'hub_hello', version: '0.2.72' });
+
+      expect(mockInvalidateAppRecords).toHaveBeenCalledTimes(1);
     });
 
     it('is inert when nothing is pending', () => {

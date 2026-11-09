@@ -49,6 +49,10 @@ function isGrantDenied(error: unknown): error is TranslatableError {
   return typeof error === 'object' && error !== null && 'message' in error && error.message === 'APP_ACTION_GRANT_DENIED';
 }
 
+function isAppNotInstalled(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'message' in error && error.message === 'APP_ERROR_APP_NOT_FOUND';
+}
+
 // Laid out like the loaded page (hero card, then About and Information) so
 // nothing jumps when the app arrives.
 function AppDetailsSkeleton() {
@@ -136,7 +140,9 @@ export default () => {
     retry: false,
   });
   const installRequestPending = useInstallRequestPending(appUrn);
-  const fetchedRecord = getApp.isError ? undefined : getApp.data;
+  // Only the Hub's own "not installed" or refusal means there is no record to show. A read that failed
+  // while the Hub restarts says nothing about the app, and it left a plain Install on an installed app (#2286).
+  const fetchedRecord = isAppNotInstalled(getApp.error) || isGrantDenied(getApp.error) ? undefined : getApp.data;
   // An install still in the Hub's checks has no row yet; the page shows it as installing anyway,
   // whether this page sent it or another one did (the Hub names it in `operation`).
   const installUnderWay = installRequestPending || fetchedRecord?.operation?.command === 'install';

@@ -3,12 +3,12 @@ import { useSSE } from '@/lib/hooks/use-sse';
 import { applyHubHello } from '@/lib/hub-hello';
 import { usesSameOriginHubApi } from '@/lib/hub-runtime-mode';
 import { appServiceFailureText } from '@/modules/app/helpers/app-service-failure';
-import { cachedAppName, handleAppSseEvent, type AppSsePayload } from '@/modules/app/helpers/app-sse-cache';
+import { cachedAppName, handleAppSseEvent, invalidateAppRecords, type AppSsePayload } from '@/modules/app/helpers/app-sse-cache';
 import { extractAppUrn } from '@/utils/app-helpers';
 import type { AppServiceFailure } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { useQueryClient } from '@tanstack/react-query';
-import type { PropsWithChildren } from 'react';
+import { type PropsWithChildren, useRef } from 'react';
 import { toast } from 'sonner';
 import { Trans, useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router';
@@ -45,6 +45,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const greetedBefore = useRef(false);
 
   // Shows an error toast whose "see logs" text links to the Settings logs tab.
   const showLogsErrorToast = (i18nKey: string, appName: string) => {
@@ -91,6 +92,11 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
       // In dev the bundle is Vite's and the version never matches the API's, so a same-origin
       // reload is a production-only concern.
       if (event === 'hub_hello') {
+        // Any greeting after the first is the Hub coming back from a restart.
+        if (greetedBefore.current) {
+          invalidateAppRecords(queryClient);
+        }
+        greetedBefore.current = true;
         applyHubHello(
           payload.version,
           {

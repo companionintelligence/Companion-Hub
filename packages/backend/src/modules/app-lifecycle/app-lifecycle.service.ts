@@ -810,6 +810,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   async invokeCommand(data: z.infer<typeof appEventSchema>, reply: (response: z.output<typeof appEventResultSchema>) => Promise<void>) {
+    // This consumer registers before bootstrap has loaded the app stores, so a redelivered command waits for them.
+    await this.marketplaceService.whenInitialized();
+
     // Serialize installs so a second "Install" cannot compete with an in-progress image pull.
     let releasePipeline: (() => void) | undefined;
     const isInstall = data.command === 'install';

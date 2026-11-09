@@ -53,6 +53,10 @@ export class MarketplaceService implements OnModuleInit {
   private initializeSeq = 0;
   /** The `initialize` whose map `stores` holds. One that began before it does not swap its own in. */
   private swappedSeq = 0;
+  private markInitialized: () => void = () => undefined;
+  private readonly initialized = new Promise<void>((resolve) => {
+    this.markInitialized = resolve;
+  });
 
   constructor(
     private readonly configuration: ConfigurationService,
@@ -67,7 +71,25 @@ export class MarketplaceService implements OnModuleInit {
     this.marketplaceCacheBus.register(() => this.invalidateCache());
   }
 
+  /**
+   * Settles once the Hub's first `initialize` has finished, whether or not it found the stores.
+   *
+   * RabbitMQ redelivers an install the restart cut off as soon as the lifecycle consumer registers,
+   * which is before bootstrap loads the stores, so the install failed with "Store not found" (#2286).
+   */
+  whenInitialized(): Promise<void> {
+    return this.initialized;
+  }
+
   async initialize() {
+    try {
+      await this.loadStores();
+    } finally {
+      this.markInitialized();
+    }
+  }
+
+  private async loadStores() {
     // Built aside and swapped in whole. Emptied first, the map held no store while the table was read. An
     // install or restore that looked one up then failed with "Store not found". One runs when a catalog
     // download ends, at any time, such as the one a factory reset starts.

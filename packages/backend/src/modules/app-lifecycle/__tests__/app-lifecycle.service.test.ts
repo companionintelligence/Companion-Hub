@@ -208,6 +208,27 @@ describe('AppLifecycleService', () => {
   });
 
   describe('invokeCommand', () => {
+    // RabbitMQ redelivers an install the restart cut off before bootstrap has loaded the stores (#2286).
+    it('waits for the app stores before running a redelivered command', async () => {
+      const data = { appUrn: 'test-app', command: 'install', requestId: '00000000-0000-4000-8000-000000000002', form: {} } as any;
+      const command = { execute: vi.fn().mockResolvedValue({ success: true, message: 'OK' }) };
+      commandFactory.createCommand.mockReturnValue(command as any);
+      let storesLoaded: () => void = () => undefined;
+      marketplaceService.whenInitialized.mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          storesLoaded = resolve;
+        }),
+      );
+
+      const running = service.invokeCommand(data, vi.fn());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(command.execute).not.toHaveBeenCalled();
+
+      storesLoaded();
+      await running;
+      expect(command.execute).toHaveBeenCalledWith('test-app', expect.anything());
+    });
+
     it('should execute command and sync cloudflare on success', async () => {
       const data = {
         appUrn: 'test-app',
