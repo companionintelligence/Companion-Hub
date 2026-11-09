@@ -1,15 +1,18 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
+import { ArrowLeft } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
-import { DEFAULT_PORTAL_URL, persistPortalUrl, readPersistedPortalUrl } from '../portal-client';
+import { clearPortalAuth, DEFAULT_PORTAL_URL, persistPortalUrl, readPersistedPortalUrl, readStoredPortalAuth } from '../portal-client';
 import { clientLoader } from './connect-page';
 
 export { clientLoader };
 
 const TOUCH = 'min-h-[44px]';
+/** Both buttons share one width, centred, instead of stretching across the card. */
+const ACTION = `w-52 self-center ${TOUCH}`;
 
 /**
  * Advanced cloud-connect settings. Not the first-connect path.
@@ -22,9 +25,15 @@ export default function ConnectAdvancedPage() {
   const navigate = useNavigate();
   const [portalUrl, setPortalUrl] = useState(readPersistedPortalUrl);
 
+  // With a Portal sign-in stored, `/connect` reopens on the Hub picker, not on Log in.
+  const [returnsToHubChoice] = useState(() => readStoredPortalAuth() !== null);
+
   const handleSavePortal = (event: FormEvent) => {
     event.preventDefault();
-    persistPortalUrl(portalUrl);
+    const previous = readPersistedPortalUrl();
+    // A sign-in belongs to the Companion server that issued it. Never carry
+    // its tokens over to a different one.
+    if (persistPortalUrl(portalUrl) !== previous) clearPortalAuth();
     navigate('/connect');
   };
 
@@ -52,13 +61,14 @@ export default function ConnectAdvancedPage() {
               onChange={(e) => setPortalUrl(e.target.value)}
             />
             <p className="text-xs text-muted-foreground">{t('MOBILE_CONNECT_PORTAL_HINT')}</p>
-            <Button type="submit" variant="outline" className={TOUCH}>
+            <Button type="submit" variant="outline" className={ACTION}>
               {t('MOBILE_CONNECT_SAVE_PORTAL')}
             </Button>
           </form>
 
-          <Button type="button" variant="ghost" className={`w-full ${TOUCH}`} onClick={() => navigate('/connect')}>
-            {t('MOBILE_CONNECT_BACK_TO_LOGIN')}
+          <Button type="button" variant="outline" className={`gap-2 ${ACTION}`} onClick={() => navigate('/connect')}>
+            <ArrowLeft aria-hidden className="size-4" />
+            {t(returnsToHubChoice ? 'MOBILE_CONNECT_BACK_TO_HUB_CHOICE' : 'MOBILE_CONNECT_BACK_TO_LOGIN')}
           </Button>
         </CardContent>
       </Card>

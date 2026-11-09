@@ -2657,6 +2657,7 @@
   "MOBILE_CONNECT_PORTAL_HINT": "Log in signs you in at this address, then lists the Hubs on that account.",
   "MOBILE_CONNECT_SAVE_PORTAL": "Save URL",
   "MOBILE_CONNECT_BACK_TO_LOGIN": "Back to Log in",
+  "MOBILE_CONNECT_BACK_TO_HUB_CHOICE": "Back to Hub Choice",
   "MOBILE_CONNECT_NO_HUBS": "No Hubs found on this account yet.",
   "MOBILE_CONNECT_NO_ADDRESS": "No address yet",
   "MOBILE_CONNECT_UNREACHABLE": "unreachable",

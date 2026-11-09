@@ -49,4 +49,34 @@ describe('ConnectAdvancedPage', () => {
     expect(localStorage.getItem('ci-hub.portalUrl.v2')).toBe('https://hub.example.test');
     expect(navigate).toHaveBeenCalledWith('/connect');
   });
+
+  it('names the back button after where it lands: Log in when signed out', () => {
+    renderPage();
+    expect(screen.getByRole('button', { name: /^back to log in$/i })).toBeInTheDocument();
+  });
+
+  it('names the back button after where it lands: the Hub picker when a Portal sign-in is stored', () => {
+    sessionStorage.setItem('ci-hub.portalAuth', JSON.stringify({ token: 'AT', cookie: null, kind: 'oauth' }));
+    renderPage();
+    expect(screen.getByRole('button', { name: /^back to hub choice$/i })).toBeInTheDocument();
+  });
+
+  it('drops the Portal sign-in when the Companion URL changes', async () => {
+    sessionStorage.setItem('ci-hub.portalAuth', JSON.stringify({ token: 'AT', cookie: null, kind: 'oauth' }));
+    renderPage();
+    const urlField = screen.getByLabelText('Companion URL');
+    await user.clear(urlField);
+    await user.type(urlField, 'https://hub.example.test');
+    await user.click(screen.getByRole('button', { name: /^save url$/i }));
+
+    expect(sessionStorage.getItem('ci-hub.portalAuth')).toBeNull();
+  });
+
+  it('keeps the Portal sign-in when Save URL changes nothing', async () => {
+    sessionStorage.setItem('ci-hub.portalAuth', JSON.stringify({ token: 'AT', cookie: null, kind: 'oauth' }));
+    renderPage();
+    await user.click(screen.getByRole('button', { name: /^save url$/i }));
+
+    expect(sessionStorage.getItem('ci-hub.portalAuth')).not.toBeNull();
+  });
 });
