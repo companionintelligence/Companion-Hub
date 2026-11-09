@@ -1,8 +1,9 @@
 /**
  * Local model management and the MCP toggle.
  *
- * `cihub models` drives the Ollama container directly because it is the embeddings backend every
- * chat backend shares; richer per-backend model control lives behind the Hub API.
+ * `cihub models` drives Ollama directly because it is the embeddings backend every chat backend
+ * shares; richer per-backend model control lives behind the Hub API. Ollama is the Hub's own
+ * container in a checkout and a native service on the host on an installed Hub.
  */
 
 import { upsertEnvVar } from '../env-file.js';
@@ -10,8 +11,9 @@ import { publicWebRepairHasFailures, resolveHubApiBase, runPublicWebRepair, runP
 import { resolveEnvFromArgs, usageAndExit } from './cli-args.js';
 import { getEnvFileOrExit, renderConfigLines } from './cli-compose-env.js';
 import { findComposeName } from './cli-doctor.js';
-import { run } from './cli-proc.js';
+import { commandExists, run } from './cli-proc.js';
 import { requireRepoRoot } from './cli-repo-context.js';
+import { requireRepoOrApplianceContext, resolveHubContext } from './hub-context.js';
 import { BASE_COMMAND, type HubEnv } from './cli-types.js';
 import { bold, printMessageBox } from './cli-ui.js';
 
@@ -21,15 +23,22 @@ export function runModelsCommand(args: string[]) {
   const subcommand = args[0] || 'list';
 
   const ollamaContainer = findComposeName('ollama');
-  if (!ollamaContainer) {
-    printMessageBox('Models', ['Ollama container not running. Start the hub first: cihub up'], 'red');
+  if (!ollamaContainer && !commandExists('ollama')) {
+    printMessageBox(
+      'Models',
+      ['No Ollama found: the Hub runs no Ollama container and this machine has no `ollama` command.', 'Start the hub first: cihub up'],
+      'red',
+    );
     process.exitCode = 1;
     return;
   }
+  // The Hub's own container when it has one, otherwise the host's Ollama, in the same `ollama <verb>` form.
+  const ollama = (...ollamaArgs: string[]) =>
+    ollamaContainer ? run('docker', ['exec', ollamaContainer, 'ollama', ...ollamaArgs]) : run('ollama', ollamaArgs);
 
   if (subcommand === 'list') {
-    printMessageBox('Installed models', [`Container: ${ollamaContainer}`], 'cyan');
-    run('docker', ['exec', ollamaContainer, 'ollama', 'list']);
+    printMessageBox('Installed models', [ollamaContainer ? `Container: ${ollamaContainer}` : 'Ollama on this machine'], 'cyan');
+    ollama('list');
     return;
   }
 
@@ -40,8 +49,12 @@ export function runModelsCommand(args: string[]) {
     // `-it` allocates a TTY, and `docker exec -it` on a non-TTY stdin fails outright with "the input
     // device is not a TTY". Every fleet call arrives over `ssh -n`, so the flags have to follow the
     // stream we actually have rather than assuming a terminal.
-    const ttyFlags = process.stdin.isTTY ? ['-it'] : [];
-    run('docker', ['exec', ...ttyFlags, ollamaContainer, 'ollama', 'pull', name]);
+    if (ollamaContainer) {
+      const ttyFlags = process.stdin.isTTY ? ['-it'] : [];
+      run('docker', ['exec', ...ttyFlags, ollamaContainer, 'ollama', 'pull', name]);
+    } else {
+      ollama('pull', name);
+    }
     return;
   }
 
@@ -49,7 +62,7 @@ export function runModelsCommand(args: string[]) {
     const name = args[1];
     if (!name) usageAndExit('Usage: models rm <model-name>');
     printMessageBox('Removing model', [`Removing ${bold(name)} from Ollama\u2026`], 'yellow');
-    run('docker', ['exec', ollamaContainer, 'ollama', 'rm', name]);
+    ollama('rm', name);
     return;
   }
 
@@ -61,9 +74,12 @@ export function runModelsCommand(args: string[]) {
 // --- MCP ---
 
 export function setMcpState(env: HubEnv, enabled: boolean) {
-  const envFileName = getEnvFileOrExit(env);
-  upsertEnvVar(envFileName, 'MCP_ENABLED', enabled ? 'true' : 'false');
-  const lines = renderConfigLines(env);
+  requireRepoOrApplianceContext(`${BASE_COMMAND} mcp`);
+  const ctx = resolveHubContext(env);
+  upsertEnvVar(ctx.envFile, 'MCP_ENABLED', enabled ? 'true' : 'false');
+  const lines = renderConfigLines(ctx);
+  // The Hub reads this once, at boot, so the file changing changes nothing until it restarts.
+  lines.push('', `Restart the Hub to apply this: ${bold(`${BASE_COMMAND} restart${ctx.appliance ? '' : ` ${ctx.env}`}`)}`);
   if (enabled) {
     lines.push('', `Create a key with ${bold(`${BASE_COMMAND} api-key create`)} — MCP requires an 'mcp'-scoped key.`);
   }
