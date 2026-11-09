@@ -237,6 +237,41 @@ describe('hub-pool-cli formatters', () => {
     expect(row(null)).toContain('this Hub');
   });
 
+  it("uses this Hub's name on every line of a row, with the log's key on none of them", () => {
+    const log: PoolRoutingLogResponse = {
+      entries: [
+        {
+          at: '2026-09-05T10:00:01.000Z',
+          direction: 'outbound',
+          path: '/api/chat',
+          model: 'gemma3:270m',
+          node: 'beta-1.tailxyz.ts.net',
+          peerId: 'peer-1',
+          backend: 'ollama',
+          candidates: 2,
+          attempt: 2,
+          failedOverFrom: ['local'],
+          attempts: [{ node: 'local', backend: 'ollama', status: 500, reason: 'HTTP 500' }],
+          outcome: 'served',
+          status: 200,
+          durationMs: 33,
+          pin: { scope: 'model', targetKind: 'local', mode: 'prefer' },
+          affinity: { key: 'header', outcome: 'skipped', remembered: 'local', inFlight: 2, maxInFlight: 2 },
+          slots: { demoted: [{ node: 'local', backend: 'ollama', inFlight: 3, slots: 1 }], overridden: false },
+        },
+      ],
+      summary: { recorded: 1, capacity: 200, served: 1, failed: 0, failovers: 1, lastAt: '2026-09-05T10:00:01.000Z' },
+    };
+
+    const notes = formatPoolRoutingLogLines(log, 'hub-a.example-tailnet.ts.net').filter((line) => line.includes('↳'));
+
+    expect(notes.join('\n')).toContain('failed over from hub-a.example-tailnet.ts.net (HTTP 500)');
+    expect(notes.join('\n')).toContain('pinned (this model → hub-a.example-tailnet.ts.net)');
+    expect(notes.join('\n')).toContain('moved hub-a.example-tailnet.ts.net (3 in flight, 1 slot)');
+    expect(notes.join('\n')).toContain('hub-a.example-tailnet.ts.net holds this prompt');
+    expect(notes.join('\n')).not.toMatch(/\blocal\b/);
+  });
+
   it('renders the failover chain, not just a count', () => {
     const log: PoolRoutingLogResponse = {
       entries: [
@@ -259,7 +294,7 @@ describe('hub-pool-cli formatters', () => {
       summary: { recorded: 1, capacity: 200, served: 1, failed: 0, failovers: 1, lastAt: '2026-09-05T10:00:01.000Z' },
     };
     const text = formatPoolRoutingLogLines(log).join('\n');
-    expect(text).toContain('↳ failed over from local');
+    expect(text).toContain('↳ failed over from this Hub');
     expect(text).toContain('2/3');
     expect(text).toContain('✓ served 200');
     // Column widths must not eat the timestamp or the peer name — both identify the decision.
@@ -297,7 +332,7 @@ describe('hub-pool-cli formatters', () => {
       summary: { recorded: 1, capacity: 200, served: 1, failed: 0, failovers: 1, lastAt: '2026-09-30T10:00:01.000Z' },
     };
     const text = formatPoolRoutingLogLines(log).join('\n');
-    expect(text).toContain(`↳ failed over from local (local load refused: ${refusal}), ${PEER_A} (HTTP 503)`);
+    expect(text).toContain(`↳ failed over from this Hub (local load refused: ${refusal}), ${PEER_A} (HTTP 503)`);
     expect(text).toContain(`↳ sent to this node's engine although the Hub refused to load the model here: ${refusal}`);
 
     const plain = formatPoolRoutingLogLines({ ...log, entries: [{ ...(log.entries[0] as (typeof log.entries)[number]), localLoadRefused: null }] });
@@ -492,7 +527,7 @@ describe('hub-pool-cli formatters', () => {
     expect(text).toContain('3 failed (2 bad answers from their nodes) ·');
     expect(text).toContain("↳ this Hub answered with only <unusedN> placeholder tokens — the node's fault, not the request's");
     expect(text).not.toContain('refused the request itself');
-    expect(text).toContain('↳ failed over from local (truncated-upstream), beta-1.tailxyz.ts.net (HTTP 500)');
+    expect(text).toContain('↳ failed over from this Hub (truncated-upstream), beta-1.tailxyz.ts.net (HTTP 500)');
     expect(text).toContain("↳ the node answered with a response cut off before the dialect's final frame");
     expect(text).toContain('↳ fetch failed (ECONNREFUSED)');
     expect(text).toContain('41207');
@@ -988,7 +1023,7 @@ describe('hub-pool-cli prompt ceiling', () => {
     ]);
 
     expect(text).toContain(
-      "landed on local, which holds this prompt's prefix, by ranking alone: affinity stood aside at 1 in flight (limit 1; session from prompt digest)",
+      "landed on this Hub, which holds this prompt's prefix, by ranking alone: affinity stood aside at 1 in flight (limit 1; session from prompt digest)",
     );
     expect(text).not.toContain('followed its prompt prefix');
   });
@@ -1476,7 +1511,7 @@ describe('hub-pool-cli Ollama slots', () => {
       expect(text).toContain(`↳ moved ${BETA_MAX} (2 in flight, 2 slots) behind nodes with a free slot`);
     });
 
-    it('names this node as local, lists every demoted node in ranked order, and says "slot" for one', () => {
+    it('names this Hub, lists every demoted node in ranked order, and says "slot" for one', () => {
       const text = logOf([
         routingEntry({
           slots: {
@@ -1489,7 +1524,7 @@ describe('hub-pool-cli Ollama slots', () => {
         }),
       ]);
 
-      expect(text).toContain(`↳ moved local (3 in flight, 1 slot), ${BETA_MAX} (2 in flight, 2 slots) behind nodes with a free slot`);
+      expect(text).toContain(`↳ moved this Hub (3 in flight, 1 slot), ${BETA_MAX} (2 in flight, 2 slots) behind nodes with a free slot`);
     });
 
     it('says so when the request was placed on a full engine anyway', () => {
@@ -1533,7 +1568,7 @@ describe('hub-pool-cli local engine contention', () => {
     runsAt: 65_536,
     behind: [CORE_2],
   };
-  const engine = 'local (busy with qwen3.8:27b at num_ctx 65536, qwen3.6:35b at the engine default; this one at num_ctx 65536)';
+  const engine = 'this Hub (busy with qwen3.8:27b at num_ctx 65536, qwen3.6:35b at the engine default; this one at num_ctx 65536)';
 
   function routingEntry(overrides: Partial<PoolRoutingLogResponse['entries'][number]> = {}): PoolRoutingLogResponse['entries'][number] {
     return {
@@ -1577,7 +1612,7 @@ describe('hub-pool-cli local engine contention', () => {
       }),
     ]);
 
-    expect(text).toContain(`↳ moved local (busy with qwen3.6:35b at num_ctx 65536; this one at the engine default) behind ${CORE_2}`);
+    expect(text).toContain(`↳ moved this Hub (busy with qwen3.6:35b at num_ctx 65536; this one at the engine default) behind ${CORE_2}`);
   });
 
   it('says so when failover reached the contended engine anyway', () => {

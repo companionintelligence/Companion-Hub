@@ -1744,12 +1744,12 @@ function describeRequestErrorSignature(signature: string): string {
 }
 
 /** A failover chain with why each node was passed over, where the Hub says; the node names alone from an older one. */
-function describeFailoverChain(entry: Pick<PoolRoutingRecord, 'failedOverFrom' | 'attempts'>): string {
+function describeFailoverChain(entry: Pick<PoolRoutingRecord, 'failedOverFrom' | 'attempts'>, nodeName: (node: string) => string): string {
   const attempts = entry.attempts ?? [];
   if (attempts.length === 0) {
-    return entry.failedOverFrom.map(sanitizeForBox).join(', ');
+    return entry.failedOverFrom.map((node) => sanitizeForBox(nodeName(node))).join(', ');
   }
-  return attempts.map((attempt) => `${sanitizeForBox(attempt.node)} (${sanitizeForBox(attempt.reason)})`).join(', ');
+  return attempts.map((attempt) => `${sanitizeForBox(nodeName(attempt.node))} (${sanitizeForBox(attempt.reason)})`).join(', ');
 }
 
 /** Where a routing-log row's affinity key came from, in the words an app operator can act on. Never the key itself. */
@@ -1808,6 +1808,8 @@ function describeContextWindow(numCtx: number | null): string {
 export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse, localNodeName?: string | null): string[] {
   const summary = log.summary;
   const header = [formatRoutingCounts(summary), `Last decision  ${formatPoolTimestamp(summary.lastAt)}`, ''];
+  // `local` is the log's key for this node, not a name an operator would know it by.
+  const nodeName = (node: string) => (node === LOCAL_ROUTING_NODE ? (localNodeName ?? 'this Hub') : node);
 
   if (log.entries.length === 0) {
     return [
@@ -1829,14 +1831,13 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse, localNode
   for (const entry of log.entries) {
     const outcome = entry.outcome === 'served' ? `${OK} served` : `${FAIL} failed`;
     const status = entry.status === null ? '' : ` ${entry.status}`;
-    // `local` is the log's key for this node, not a name an operator would know it by.
-    const nodeName = entry.node === LOCAL_ROUTING_NODE ? (localNodeName ?? 'this Hub') : entry.node;
+    const servingNode = entry.node ? nodeName(entry.node) : null;
     lines.push(
       [
         cell(formatPoolTimestamp(entry.at), LOG_WIDTHS[0]),
         cell(entry.direction === 'inbound' ? 'in' : 'out', LOG_WIDTHS[1]),
         cell(entry.model ?? '-', LOG_WIDTHS[2]),
-        cell(nodeName ?? '-', LOG_WIDTHS[3]),
+        cell(servingNode ?? '-', LOG_WIDTHS[3]),
         cell(`${entry.attempt}/${entry.candidates}`, LOG_WIDTHS[4]),
         cell(String(entry.durationMs), LOG_WIDTHS[5]),
         cell(typeof entry.totalMs === 'number' ? String(entry.totalMs) : '-', LOG_WIDTHS[6]),
@@ -1849,7 +1850,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse, localNode
     // the node that broke. Neither is true: nobody was waiting for the answer any more.
     if (entry.clientClosed) {
       lines.push(
-        `  ↳ the app closed its connection after ${entry.durationMs} ms; ${sanitizeForBox(nodeName ?? '?')} had not answered yet — not a routing failure`,
+        `  ↳ the app closed its connection after ${entry.durationMs} ms; ${sanitizeForBox(servingNode ?? '?')} had not answered yet — not a routing failure`,
       );
     }
     // Next, for the same reason: a `x failed 500` beside a node name reads as that node breaking,
@@ -1858,11 +1859,11 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse, localNode
     if (requestError?.basis === 'node') {
       // The opposite verdict, so the opposite sentence: a `x failed 200` IS that node breaking.
       lines.push(
-        `  ↳ ${sanitizeForBox(nodeName ?? '?')} answered with ${describeRequestErrorSignature(requestError.signature)} — the node's fault, not the request's`,
+        `  ↳ ${sanitizeForBox(servingNode ?? '?')} answered with ${describeRequestErrorSignature(requestError.signature)} — the node's fault, not the request's`,
       );
     } else if (requestError) {
-      const node = sanitizeForBox(nodeName ?? '?');
-      const agreed = requestError.basis === 'confirmed' && requestError.confirms ? `, as ${sanitizeForBox(requestError.confirms)} had` : '';
+      const node = sanitizeForBox(servingNode ?? '?');
+      const agreed = requestError.basis === 'confirmed' && requestError.confirms ? `, as ${sanitizeForBox(nodeName(requestError.confirms))} had` : '';
       const untried = Math.max(0, entry.candidates - entry.attempt);
       // On the last candidate there were no others to spare it: "not sent to the other 0 candidates"
       // would read as the pool stopping early, when it had asked everyone it could.
@@ -1875,13 +1876,15 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse, localNode
     // Named on the row it shaped: an operator seeing everything land on one node cannot otherwise
     // tell a pin from the ranker having decided the same thing.
     if (entry.pin) {
-      lines.push(`  ↳ pinned (${entry.pin.scope === 'model' ? 'this model' : 'all models'} → ${entry.pin.targetKind})`);
+      lines.push(
+        `  ↳ pinned (${entry.pin.scope === 'model' ? 'this model' : 'all models'} → ${entry.pin.targetKind === 'local' ? sanitizeForBox(nodeName(LOCAL_ROUTING_NODE)) : entry.pin.targetKind})`,
+      );
     }
     // Only when the ceiling changed something: an operator reading why fzzy got nothing needs this
     // line, and a note on every request that merely stayed under a ceiling would bury it.
     const ceiling = entry.promptCeiling;
     if (ceiling && ceiling.excluded.length > 0) {
-      const nodes = ceiling.excluded.map((excluded) => `${sanitizeForBox(excluded.node)} (ceiling ${excluded.maxPromptTokens})`).join(', ');
+      const nodes = ceiling.excluded.map((excluded) => `${sanitizeForBox(nodeName(excluded.node))} (ceiling ${excluded.maxPromptTokens})`).join(', ');
       lines.push(
         ceiling.overridden
           ? `  ↳ ~${ceiling.estimatedTokens}-token prompt placed anyway over the ceiling of ${nodes}: no node under its ceiling could serve it`
@@ -1891,7 +1894,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse, localNode
     // Only when a cap changed something, for the same reason as the ceiling line above.
     const cap = entry.contextCap;
     if (cap && cap.excluded.length > 0) {
-      const nodes = cap.excluded.map((excluded) => `${sanitizeForBox(excluded.node)} (cap ${excluded.maxNumCtx})`).join(', ');
+      const nodes = cap.excluded.map((excluded) => `${sanitizeForBox(nodeName(excluded.node))} (cap ${excluded.maxNumCtx})`).join(', ');
       const window = cap.source === 'request' ? `num_ctx ${cap.numCtx}` : `~${cap.numCtx}-token prompt with no num_ctx`;
       lines.push(
         cap.overridden
@@ -1907,7 +1910,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse, localNode
       const nodes = slow
         .map(
           (estimate) =>
-            `${sanitizeForBox(estimate.node)} (~${estimate.tokensPerSec} tok/s${estimate.extrapolated && estimate.fromPromptTokens ? ` measured at ~${estimate.fromPromptTokens} tokens` : ''}, ${estimate.deadline ? '≥' : '~'}${Math.round(estimate.predictedMs / 1000)} s)`,
+            `${sanitizeForBox(nodeName(estimate.node))} (~${estimate.tokensPerSec} tok/s${estimate.extrapolated && estimate.fromPromptTokens ? ` measured at ~${estimate.fromPromptTokens} tokens` : ''}, ${estimate.deadline ? '≥' : '~'}${Math.round(estimate.predictedMs / 1000)} s)`,
         )
         .join(', ');
       lines.push(
@@ -1921,7 +1924,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse, localNode
     const unmeasured = throughput?.unmeasured ?? [];
     if (throughput && unmeasured.length > 0) {
       const nodes = unmeasured
-        .map((entry) => `${sanitizeForBox(entry.node)} (${entry.prior === 'cpu-only' ? 'unmeasured, no GPU advertised' : 'unmeasured'})`)
+        .map((entry) => `${sanitizeForBox(nodeName(entry.node))} (${entry.prior === 'cpu-only' ? 'unmeasured, no GPU advertised' : 'unmeasured'})`)
         .join(', ');
       lines.push(
         `  ↳ ~${throughput.estimatedTokens}-token prompt put ${nodes} behind nodes measured to answer within ${Math.round(throughput.budgetMs / 1000)} s`,
@@ -1935,7 +1938,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse, localNode
       const moves = slowerDemoted
         .map(
           (entry) =>
-            `${sanitizeForBox(entry.node)} (${seconds(entry.predictedMs)}) behind ${sanitizeForBox(entry.fasterNode)} (${seconds(entry.fasterMs)})`,
+            `${sanitizeForBox(nodeName(entry.node))} (${seconds(entry.predictedMs)}) behind ${sanitizeForBox(nodeName(entry.fasterNode))} (${seconds(entry.fasterMs)})`,
         )
         .join(', ');
       lines.push(`  ↳ ~${throughput.estimatedTokens}-token prompt moved ${moves}: predicted much faster`);
@@ -1946,7 +1949,10 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse, localNode
     const slots = entry.slots;
     if (slots && slots.demoted.length > 0) {
       const nodes = slots.demoted
-        .map((demoted) => `${sanitizeForBox(demoted.node)} (${demoted.inFlight} in flight, ${demoted.slots} slot${demoted.slots === 1 ? '' : 's'})`)
+        .map(
+          (demoted) =>
+            `${sanitizeForBox(nodeName(demoted.node))} (${demoted.inFlight} in flight, ${demoted.slots} slot${demoted.slots === 1 ? '' : 's'})`,
+        )
         .join(', ');
       lines.push(
         slots.overridden
@@ -1960,7 +1966,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse, localNode
     if (contention && contention.demoted.length > 0) {
       const formatDemoted = (demoted: PoolRoutingContention['demoted'][number]) => {
         const busy = demoted.busyWith.map((generation) => `${sanitizeForBox(generation.model)} at ${describeContextWindow(generation.numCtx)}`);
-        return `${sanitizeForBox(demoted.node)} (busy with ${busy.join(', ')}; this one at ${describeContextWindow(demoted.runsAt)})`;
+        return `${sanitizeForBox(nodeName(demoted.node))} (busy with ${busy.join(', ')}; this one at ${describeContextWindow(demoted.runsAt)})`;
       };
       const placed = contention.overridden
         ? (contention.demoted.find((demoted) => demoted.node === entry.node && demoted.backend === entry.backend) ?? contention.demoted[0])
@@ -1977,7 +1983,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse, localNode
         const moved = contention.demoted.filter((demoted) => demoted.behind.length > 0);
         if (moved.length > 0) {
           lines.push(
-            `  ↳ moved ${moved.map((demoted) => `${formatDemoted(demoted)} behind ${demoted.behind.map(sanitizeForBox).join(', ')}`).join('; ')}`,
+            `  ↳ moved ${moved.map((demoted) => `${formatDemoted(demoted)} behind ${demoted.behind.map((node) => sanitizeForBox(nodeName(node))).join(', ')}`).join('; ')}`,
           );
         }
       }
@@ -1997,7 +2003,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse, localNode
     if (affinity) {
       const underLimit = affinity.inFlight !== null && affinity.inFlight < affinity.maxInFlight;
       const qualified = affinityQualified(affinity);
-      const node = sanitizeForBox(affinity.remembered ?? '?');
+      const node = sanitizeForBox(nodeName(affinity.remembered ?? '?'));
       const inFlight = affinity.inFlight ?? 0;
       const undetermined = `this Hub's row does not say whether its margin qualified it (${describeAffinityLimit(affinity)}; ${describeAffinityKey(affinity)})`;
       if (affinity.outcome === 'hit') {
@@ -2020,7 +2026,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse, localNode
     }
     // The chain, not a count: which nodes refused, and with what, is the whole point of reading this log.
     if (entry.failedOverFrom.length > 0) {
-      lines.push(`  ↳ failed over from ${describeFailoverChain(entry)}`);
+      lines.push(`  ↳ failed over from ${describeFailoverChain(entry, nodeName)}`);
     }
     // A local answer after the Hub refused the load is the one that may have overcommitted the card
     // or spilled the model into system memory; the row reads the same as any other without this.

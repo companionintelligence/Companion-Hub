@@ -964,7 +964,8 @@ Runs before the device-key gate, like `doctor` — the node most likely to need 
 The answer to "is pooling actually doing anything". One line per routing decision — time, direction,
 model, the node that served it, which ranked candidate won, time to response headers, and outcome — with
 a `↳ failed over from …` line naming the chain whenever a candidate was tried and rejected. `in` rows are
-work a *peer* sent to this node's engines.
+work a *peer* sent to this node's engines. This node appears under its tailnet name, or as `this Hub` when
+it has none; `local` is only the key the routing log stores for it.
 
 The log is in-memory, process-local and holds the last 200 decisions, so an empty log means "nothing
 routed since this Hub started", not "nothing ever routed". Duration is time to headers, not the streamed

@@ -169,7 +169,7 @@ Both Hubs still need to be on the same tailnet, because a peer is stored under i
 
   were reported as a release blocker — "placement returns no candidate and times out at 30 s" — when placement had ranked **fourteen** candidates, `local` was prefilling the first, and the app had given up after 30 s. The only surviving hint was `attempt`, which is `1` on a hang-up and `candidates.length` when every candidate really failed, and no operator is going to read a routing failure out of that. The same null also put the row in the dashboard's `Unplaced` bucket, which `triage.ts` raises as a red "nothing was even tried at a node" fault.
 
-  So: `cihub pool log` prints `↳ the app closed its connection after 30031 ms; local had not answered yet — not a routing failure` under such a row, and both `cihub pool log` and `cihub pool status` break the count out as `4 failed (4 abandoned by the caller)`. The count stays inside `failed` — the request genuinely went unanswered — but an operator can now tell the two apart at a glance. **The Hub's own `httpServer.requestTimeout = 30_000` in `main.ts` is not the cause, and raising it is not the fix.** It is the first thing an investigator finds when every cut lands at ~30 s, but Node clears that timer once the request has been *received*, so a response that takes minutes is untouched by it — pinned against a real socket in `hub-pool-proxy-timeout.test.ts`. What it does cut is a client that promises a body and never sends it, which is what it is there for. Look upstream instead: the calling app's read timeout, or a reverse proxy between it and the Hub. **A cluster of these is a statement about caller patience against this fleet's time to first byte, not about placement**: a 47k-token turn is ~300 s of prefill on a GPU node here, so any client with a 30 s or 60 s read timeout will produce them whenever a second turn queues behind a first.
+  So: `cihub pool log` prints `↳ the app closed its connection after 30031 ms; this Hub had not answered yet — not a routing failure` under such a row, and both `cihub pool log` and `cihub pool status` break the count out as `4 failed (4 abandoned by the caller)`. The count stays inside `failed` — the request genuinely went unanswered — but an operator can now tell the two apart at a glance. **The Hub's own `httpServer.requestTimeout = 30_000` in `main.ts` is not the cause, and raising it is not the fix.** It is the first thing an investigator finds when every cut lands at ~30 s, but Node clears that timer once the request has been *received*, so a response that takes minutes is untouched by it — pinned against a real socket in `hub-pool-proxy-timeout.test.ts`. What it does cut is a client that promises a body and never sends it, which is what it is there for. Look upstream instead: the calling app's read timeout, or a reverse proxy between it and the Hub. **A cluster of these is a statement about caller patience against this fleet's time to first byte, not about placement**: a 47k-token turn is ~300 s of prefill on a GPU node here, so any client with a 30 s or 60 s read timeout will produce them whenever a second turn queues behind a first.
 - **Recovery**: a peer that fails three consecutive health polls is marked `unreachable` and stops being offered as a candidate, but it keeps being polled — the first successful probe puts it straight back to `connected`. No operator action is needed, and unpairing is never the way to fix a node that was merely offline.
 
 ## Required configuration
@@ -828,12 +828,12 @@ it, and `null` otherwise, including when affinity qualified the engine but the p
 be warm there (the row's `affinity` is then a `skipped` with `qualified: true`). `cihub pool log`
 prints one of four lines:
 
-- `↳ moved local (busy with qwen3.8:27b at num_ctx 65536; this one at num_ctx 65536) behind <node>`
+- `↳ moved this Hub (busy with qwen3.8:27b at num_ctx 65536; this one at num_ctx 65536) behind <node>`
   when the engine gave way.
-- `↳ placed anyway on local (…): nothing it gave way to answered` when failover reached it.
-- `↳ kept local (…) first: every node after it was busier, or moved behind it by a line above` when
+- `↳ placed anyway on this Hub (…): nothing it gave way to answered` when failover reached it.
+- `↳ kept this Hub (…) first: every node after it was busier, or moved behind it by a line above` when
   it kept its place and served the request.
-- `↳ kept local (…) first: it holds this session's prompt prefix, which prefix affinity follows over contention`
+- `↳ kept this Hub (…) first: it holds this session's prompt prefix, which prefix affinity follows over contention`
   when affinity held it and it served the request.
 
 ## Prefix affinity
