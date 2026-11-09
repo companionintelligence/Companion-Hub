@@ -45,10 +45,13 @@
 }
 
 /*
- * Tauri WKWebView is edge-to-edge (`enableEdgeToEdge`) but often reports
- * safe-area-inset-top as 0. Dynamic Island / notch is ~59px; home indicator ~34px.
+ * Tauri WKWebView is edge-to-edge but often reports safe-area-inset-top as 0.
+ * Dynamic Island / notch is ~59px; home indicator ~34px.
+ *
+ * Not on Android: the app pads its WebView by the real system bars there
+ * (SystemBars.kt), so a floor would pad a second time.
  */
-html.ci-mobile {
+html.ci-mobile:not(.ci-android) {
   --safe-area-top: max(env(safe-area-inset-top, 0px), 59px);
   --safe-area-bottom: max(env(safe-area-inset-bottom, 0px), 34px);
 }
