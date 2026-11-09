@@ -550,6 +550,25 @@ describe('AppsService.checkAppAvailability', () => {
     expect(result).toMatchObject({ available: true, stage: 'ready' });
   });
 
+  it('publicAddressRefusalFor gives the reason the last sync refused the address', async () => {
+    ctx.exposureSync.publicDnsRefusalFor.mockReturnValue('conflict');
+
+    await expect(ctx.service.publicAddressRefusalFor('test-app:test-store' as AppUrn)).resolves.toBe('conflict');
+    expect(ctx.exposureSync.publicDnsRefusalFor).toHaveBeenCalledWith('test-app:test-store');
+  });
+
+  it('publicAddressRefusalFor is null when the last sync refused nothing', async () => {
+    await expect(ctx.service.publicAddressRefusalFor('test-app:test-store' as AppUrn)).resolves.toBeNull();
+  });
+
+  it('publicAddressRefusalFor is null when the exposure sync cannot be resolved', async () => {
+    ctx.moduleRefMock.get.mockImplementation(() => {
+      throw new Error('no provider');
+    });
+
+    await expect(ctx.service.publicAddressRefusalFor('test-app:test-store' as AppUrn)).resolves.toBeNull();
+  });
+
   it('cloudflare mode → DNS ENOTFOUND = DNS_NOT_FOUND, resolvable, includes appUrl', async () => {
     ctx.mockApp.exposureMode = 'cloudflare';
     mockedAxiosGet.mockRejectedValue(new Error('getaddrinfo ENOTFOUND myapp.example.com'));

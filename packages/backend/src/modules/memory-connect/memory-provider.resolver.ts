@@ -1,10 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import type { AppInfo } from '@ci-hub/common/schemas';
 import { type AppUrn, normalizeStoredHostname } from '@ci-hub/common/types';
+import { createAppUrn } from '@/common/helpers/app-helpers';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppsReadService } from '@/modules/apps/apps-read.service';
 import { AppsService } from '@/modules/apps/apps.service';
+import type { PublicDnsFailureReason } from '@/modules/cloudflare/cloudflare-client.service';
 import { isMemoryProviderApp } from './memory-provider.predicate';
 
 /** Fallbacks when ci-memory's manifest omits an explicit provider descriptor. */
@@ -17,9 +19,6 @@ const DEFAULT_PROVIDER_PORT = 8642;
  * missing-route 404. Sending the browser there only shows it that error.
  */
 const ROUTE_DOWN_ERROR_CODES: ReadonlySet<string> = new Set(['CF_TUNNEL_NOT_FOUND', 'CF_ORIGIN_DOWN', 'CF_UPSTREAM_ERROR']);
-
-/** Verdicts for a public address the Portal refused. No DNS record exists, so the browser would only reach an error. */
-const REFUSED_ADDRESS_ERROR_CODE_PREFIX = 'PUBLIC_ADDRESS_';
 
 /** Where the Hub can reach an installed Companion Memory, both internally and for the browser. */
 export interface ResolvedMemoryProvider {
@@ -50,6 +49,13 @@ export interface MemoryConsumerEnv {
  * BEGINS — long before ci-memory is reachable — so "installed" must not read as "ready".
  */
 export type MemoryProviderRuntimeStatus = 'ready' | 'starting' | 'offline' | 'absent';
+
+/** What {@link MemoryProviderResolver.getProviderRuntimeInfo} reads for the status poll. */
+export interface MemoryProviderRuntimeInfo {
+  status: MemoryProviderRuntimeStatus;
+  localOnly: boolean;
+  publicAddressRefusal?: PublicDnsFailureReason;
+}
 
 /**
  * App statuses in which ci-memory is booting / coming up (not reachable yet, but on
@@ -196,16 +202,16 @@ export class MemoryProviderResolver {
    * as local to match the conservative fallback used everywhere else). Only a
    * Cloudflare-tunnelled provider is reachable by an arbitrary public browser.
    *
-   * `publicAddressRefused` is set when ci-memory is on Public web and the last sync says the Portal
-   * refused its address: its consent page has no address a browser can reach (#2309). Read from memory,
-   * like the rest of this status poll. A custom hostname keeps it unset: the refusal names the platform
-   * hostname, the connect flow goes to the custom one, and the Portal can keep serving that after a DNS
+   * `publicAddressRefusal` is why the last sync says the Portal refused ci-memory's address on Public web,
+   * so its consent page may have no address a browser can reach (#2309). Read from memory, like the rest
+   * of this status poll. A custom hostname keeps it unset: the refusal names the platform
+   * hostname and the connect flow goes to the custom one, which the Portal can keep serving after a DNS
    * write for the platform name fails.
    */
-  async getProviderRuntimeInfo(): Promise<{ status: MemoryProviderRuntimeStatus; localOnly: boolean; publicAddressRefused?: true }> {
+  async getProviderRuntimeInfo(): Promise<MemoryProviderRuntimeInfo> {
     const installed = await this.appsReadService.getInstalledAppsLite();
 
-    const row = installed.find((r) => isMemoryProviderApp({ urn: `${r.appName}:${r.appStoreSlug}` as AppUrn }));
+    const row = installed.find((r) => isMemoryProviderApp({ urn: createAppUrn(r.appName, r.appStoreSlug) }));
 
     if (!row) {
       return { status: 'absent', localOnly: false };
@@ -214,11 +220,11 @@ export class MemoryProviderResolver {
     const localOnly = (row.exposureMode || 'local') !== 'cloudflare';
 
     if (row.status === 'running') {
-      const publicAddressRefused =
-        !localOnly &&
-        !normalizeStoredHostname(row.customDomain) &&
-        (await this.appsService.isPublicAddressRefused(`${row.appName}:${row.appStoreSlug}` as AppUrn));
-      return publicAddressRefused ? { status: 'ready', localOnly, publicAddressRefused } : { status: 'ready', localOnly };
+      const publicAddressRefusal =
+        !localOnly && !normalizeStoredHostname(row.customDomain)
+          ? await this.appsService.publicAddressRefusalFor(createAppUrn(row.appName, row.appStoreSlug))
+          : null;
+      return publicAddressRefusal ? { status: 'ready', localOnly, publicAddressRefusal } : { status: 'ready', localOnly };
     }
 
     return { status: PROVIDER_STARTING_STATUSES.has(row.status) ? 'starting' : 'offline', localOnly };
@@ -259,11 +265,12 @@ export class MemoryProviderResolver {
         // address, and the browser sent there landed on a bare 404 while ci-memory's containers were down.
         // Any other failure keeps the address, as before: a probe that got no answer at all says more about
         // the Hub's own network than about what the browser will reach.
-        if (
-          availability.errorCode &&
-          (ROUTE_DOWN_ERROR_CODES.has(availability.errorCode) || availability.errorCode.startsWith(REFUSED_ADDRESS_ERROR_CODE_PREFIX))
-        ) {
-          this.logger.info(`[MemoryConnect] ci-memory does not answer at its public address yet (${availability.errorCode})`);
+        const routeDown = Boolean(availability.errorCode && ROUTE_DOWN_ERROR_CODES.has(availability.errorCode));
+        // Asked as the status poll asks, so a page opened before the refusal can't reach the address the button
+        // now hides, whichever reason the Portal gave. An address that answers wins over a remembered refusal.
+        const refused = !availability.available && Boolean((await this.getProviderRuntimeInfo()).publicAddressRefusal);
+        if (routeDown || refused) {
+          this.logger.info(`[MemoryConnect] ci-memory does not answer at its public address (${availability.errorCode ?? 'refused'})`);
         } else {
           publicUrl = availability.appUrl;
         }

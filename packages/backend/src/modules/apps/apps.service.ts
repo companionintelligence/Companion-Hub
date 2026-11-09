@@ -394,14 +394,14 @@ export class AppsService {
     };
   }
 
-  /** Whether the last sync says the Portal refused this app a public address, for a reason that stands until someone acts. */
-  public async isPublicAddressRefused(appUrn: AppUrn): Promise<boolean> {
+  /** Why the last sync says the Portal refused this app a public address, for a refusal that stands until someone acts. */
+  public async publicAddressRefusalFor(appUrn: AppUrn): Promise<PublicDnsFailureReason | null> {
     try {
       // Imported here like AppLifecycleService below: a static import closes a require cycle.
       const { ExposureSyncService } = await import('../app-lifecycle/exposure-sync.service');
-      return Boolean(this.moduleRef.get(ExposureSyncService, { strict: false })?.publicDnsRefusalFor(appUrn));
+      return this.moduleRef.get(ExposureSyncService, { strict: false })?.publicDnsRefusalFor(appUrn) ?? null;
     } catch {
-      return false;
+      return null;
     }
   }
 

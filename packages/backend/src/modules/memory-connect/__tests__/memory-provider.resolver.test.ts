@@ -18,7 +18,7 @@ function makeResolver(installed: Array<{ info: AppInfo }>) {
   };
   const appsService = {
     checkAppAvailability: vi.fn().mockResolvedValue({ available: true, appUrl: 'https://ci-memory.example.com' }),
-    isPublicAddressRefused: vi.fn().mockResolvedValue(false),
+    publicAddressRefusalFor: vi.fn().mockResolvedValue(null),
   };
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
   return {
@@ -132,10 +132,10 @@ describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
   it('flags a Public web provider whose address the Portal refused (#2309)', async () => {
     const { resolver, appsReadService, appsService } = makeResolver([]);
     appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('cloudflare'));
-    appsService.isPublicAddressRefused.mockResolvedValue(true);
+    appsService.publicAddressRefusalFor.mockResolvedValue('subdomain_quota_exceeded');
 
-    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: false, publicAddressRefused: true });
-    expect(appsService.isPublicAddressRefused).toHaveBeenCalledWith('ci-memory:ci-marketplace');
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: false, publicAddressRefusal: 'subdomain_quota_exceeded' });
+    expect(appsService.publicAddressRefusalFor).toHaveBeenCalledWith('ci-memory:ci-marketplace');
   });
 
   // The refusal names the platform hostname. The connect flow goes to a custom hostname when there is one and
@@ -143,7 +143,7 @@ describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
   it('does not flag a refused platform address when the provider has a custom hostname', async () => {
     const { resolver, appsReadService, appsService } = makeResolver([]);
     appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('cloudflare', 'memory.acme.example'));
-    appsService.isPublicAddressRefused.mockResolvedValue(true);
+    appsService.publicAddressRefusalFor.mockResolvedValue('conflict');
 
     expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: false });
   });
@@ -151,10 +151,10 @@ describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
   it('does not ask about an address for a provider that has no public route', async () => {
     const { resolver, appsReadService, appsService } = makeResolver([]);
     appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('local'));
-    appsService.isPublicAddressRefused.mockResolvedValue(true);
+    appsService.publicAddressRefusalFor.mockResolvedValue('subdomain_quota_exceeded');
 
     expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true });
-    expect(appsService.isPublicAddressRefused).not.toHaveBeenCalled();
+    expect(appsService.publicAddressRefusalFor).not.toHaveBeenCalled();
   });
 
   it('treats a missing exposureMode as local (conservative pre-column default)', async () => {
@@ -264,18 +264,50 @@ describe('MemoryProviderResolver.findProvider', () => {
     expect(provider?.publicUrl).toBeUndefined();
   });
 
-  // The Portal refused ci-memory an address: there's no DNS record, so the connect flow can't go there (#2309).
-  it('withholds the public URL when the Portal refused CI Memory its public address', async () => {
-    const { resolver, appsService } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
-    appsService.checkAppAvailability.mockResolvedValue({
-      available: false,
-      appUrl: 'https://ci-memory.example.com',
-      errorCode: 'PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+  describe('a public address the Portal refused (#2309)', () => {
+    const memoryRow = (customDomain: string | null = null) => [
+      { appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running', exposureMode: 'cloudflare', customDomain },
+    ];
+
+    function refusedProvider(customDomain?: string) {
+      const made = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
+      made.appsReadService.getInstalledAppsLite.mockResolvedValue(memoryRow(customDomain));
+      made.appsService.publicAddressRefusalFor.mockResolvedValue('conflict');
+      return made;
+    }
+
+    // The status poll blocks on every standing refusal. Only the plan-limit one has its own verdict. The others
+    // reach here as a plain missing record, so a page opened earlier would still send the browser there.
+    it.each(['PUBLIC_ADDRESS_QUOTA_EXCEEDED', 'DNS_NOT_FOUND'])('withholds the public URL on a %s verdict', async (errorCode) => {
+      const { resolver, appsService } = refusedProvider();
+      appsService.checkAppAvailability.mockResolvedValue({ available: false, appUrl: 'https://ci-memory.example.com', errorCode });
+
+      const provider = await resolver.findProvider({ withPublicUrl: true });
+
+      expect(provider?.publicUrl).toBeUndefined();
     });
 
-    const provider = await resolver.findProvider({ withPublicUrl: true });
+    it('keeps the public URL when the address answers despite the remembered refusal', async () => {
+      const { resolver } = refusedProvider();
 
-    expect(provider?.publicUrl).toBeUndefined();
+      const provider = await resolver.findProvider({ withPublicUrl: true });
+
+      expect(provider?.publicUrl).toBe('https://ci-memory.example.com');
+    });
+
+    // The status poll offers Connect on a custom hostname, so the click has to go there too.
+    it('keeps a custom hostname the probe could not resolve', async () => {
+      const { resolver, appsService } = refusedProvider('memory.acme.example');
+      appsService.checkAppAvailability.mockResolvedValue({
+        available: false,
+        appUrl: 'https://memory.acme.example',
+        errorCode: 'PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+      });
+
+      const provider = await resolver.findProvider({ withPublicUrl: true });
+
+      expect(provider?.publicUrl).toBe('https://memory.acme.example');
+    });
   });
 
   it('withholds the public URL when the tunnel itself says CI Memory has no connector', async () => {
