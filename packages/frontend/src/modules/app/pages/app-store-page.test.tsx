@@ -94,7 +94,6 @@ const mockUsePortalCatalog = vi.hoisted(() =>
     alternatives: {},
     isLoading: false,
     isError: false,
-    alternativesError: undefined,
     refetchAlternatives: vi.fn(),
   })),
 );
@@ -182,7 +181,6 @@ describe('AppStorePage — multi-store UX', () => {
       alternatives: {},
       isLoading: false,
       isError: false,
-      alternativesError: undefined,
       refetchAlternatives: vi.fn(),
     });
   });
@@ -307,7 +305,6 @@ describe('AppStorePage — multi-store UX', () => {
       },
       isLoading: false,
       isError: false,
-      alternativesError: undefined,
       refetchAlternatives: vi.fn(),
     });
 
@@ -339,7 +336,6 @@ describe('AppStorePage — multi-store UX', () => {
       },
       isLoading: false,
       isError: false,
-      alternativesError: undefined,
       refetchAlternatives: vi.fn(),
     });
 
@@ -537,6 +533,26 @@ describe('AppStorePage — multi-store UX', () => {
 
     expect(mockStoreState.setSearchImmediate).toHaveBeenCalledWith('ollama');
     expect(mockStoreState.setCategory).toHaveBeenCalledWith('ai');
+  });
+
+  it('shows only the sentence and Retry when the alternatives fail to load', () => {
+    setupQueries();
+    mockStoreState.category = '__alternatives__';
+    mockUsePortalCatalog.mockReturnValue({
+      alternatives: {},
+      isLoading: false,
+      isError: true,
+      refetchAlternatives: vi.fn(),
+    });
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    const banner = screen.getByText(/APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS/);
+    expect(banner).toHaveTextContent(/^APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS COMMON_RETRY$/);
   });
 
   it('writes browse params to the URL when search and category are set', () => {

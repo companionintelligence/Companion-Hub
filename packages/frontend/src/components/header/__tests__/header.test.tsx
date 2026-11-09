@@ -111,6 +111,16 @@ describe('Header', () => {
     expect(screen.getByRole('menuitem', { name: /COMMON_SETTINGS|Settings/i })).toBeInTheDocument();
   });
 
+  it('gives each theme in the phone menu an icon', async () => {
+    renderHeader(true);
+
+    await userEvent.click(screen.getByRole('button', { name: 'HEADER_OPEN_MENU' }));
+
+    for (const name of ['THEME_LIGHT', 'THEME_DARK', 'COMMON_SYSTEM']) {
+      expect(screen.getByRole('menuitem', { name }).querySelector('svg')).not.toBeNull();
+    }
+  });
+
   it('dims the page from document.body and closes the phone menu when the page is clicked', async () => {
     renderHeader(true);
 

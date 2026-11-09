@@ -1,4 +1,6 @@
 import { render, screen } from '@testing-library/react';
+import en from '@ci-hub/common/i18n/translations/en.json';
+import i18next from 'i18next';
 import { describe, expect, it, vi } from 'vitest';
 
 import { QueuedInstallsIndicator } from './queued-installs-indicator';
@@ -18,6 +20,16 @@ vi.mock('react-i18next', () => ({
     </span>
   ),
 }));
+
+describe('install queue wording', () => {
+  it('counts one waiting install in the singular', async () => {
+    const i18n = i18next.createInstance();
+    await i18n.init({ lng: 'en', resources: { en: { translation: en } } });
+
+    expect(i18n.t('INSTALL_QUEUE_WAITING_ONLY', { count: 1 })).toBe('1 install waiting in queue');
+    expect(i18n.t('INSTALL_QUEUE_WAITING_ONLY', { count: 2 })).toBe('2 installs waiting in queue');
+  });
+});
 
 describe('QueuedInstallsIndicator', () => {
   it('renders waiting-only queue before the pipeline starts', () => {
