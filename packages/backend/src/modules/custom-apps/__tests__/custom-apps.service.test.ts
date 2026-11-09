@@ -412,6 +412,22 @@ describe('CustomAppService', () => {
       });
     });
 
+    it('keeps dashes inside a stated value', async () => {
+      await service.updateAppMetadata(CUSTOM, '---\nname: "My---App"\nwebsite: https://a---b.example.com\n---\n\n# Hello\n');
+
+      expect(filesystem.writeJsonFile).toHaveBeenCalledWith('/data/apps/_user/myapp/config.json', {
+        ...appInfo,
+        name: 'My---App',
+        website: 'https://a---b.example.com',
+      });
+    });
+
+    it('leaves the app alone when the frontmatter names nothing the app has', async () => {
+      await service.updateAppMetadata(CUSTOM, '---\ntitle: Mine\n---\n\n# Hello\n');
+
+      expect(filesystem.writeJsonFile).not.toHaveBeenCalled();
+    });
+
     it('refuses a note for an app with no config.json and writes nothing', async () => {
       filesystem.readJsonFile.mockResolvedValue(null);
 
