@@ -18,6 +18,9 @@ const DEFAULT_PROVIDER_PORT = 8642;
  */
 const ROUTE_DOWN_ERROR_CODES: ReadonlySet<string> = new Set(['CF_TUNNEL_NOT_FOUND', 'CF_ORIGIN_DOWN', 'CF_UPSTREAM_ERROR']);
 
+/** Verdicts for a public address the Portal refused. No DNS record exists, so the browser would only reach an error. */
+const REFUSED_ADDRESS_ERROR_CODE_PREFIX = 'PUBLIC_ADDRESS_';
+
 /** Where the Hub can reach an installed Companion Memory, both internally and for the browser. */
 export interface ResolvedMemoryProvider {
   /** URN of the installed ci-memory app. */
@@ -192,8 +195,12 @@ export class MemoryProviderResolver {
    * `tailscale`, and a missing/empty value (pre-`exposureMode` installs, treated
    * as local to match the conservative fallback used everywhere else). Only a
    * Cloudflare-tunnelled provider is reachable by an arbitrary public browser.
+   *
+   * `publicAddressRefused` is set when ci-memory is on Public web and the last sync says the Portal
+   * refused its address: its consent page has no address a browser can reach (#2309). Read from memory,
+   * like the rest of this status poll.
    */
-  async getProviderRuntimeInfo(): Promise<{ status: MemoryProviderRuntimeStatus; localOnly: boolean }> {
+  async getProviderRuntimeInfo(): Promise<{ status: MemoryProviderRuntimeStatus; localOnly: boolean; publicAddressRefused?: true }> {
     const installed = await this.appsReadService.getInstalledAppsLite();
 
     const row = installed.find((r) => isMemoryProviderApp({ urn: `${r.appName}:${r.appStoreSlug}` as AppUrn }));
@@ -205,7 +212,8 @@ export class MemoryProviderResolver {
     const localOnly = (row.exposureMode || 'local') !== 'cloudflare';
 
     if (row.status === 'running') {
-      return { status: 'ready', localOnly };
+      const publicAddressRefused = !localOnly && (await this.appsService.isPublicAddressRefused(`${row.appName}:${row.appStoreSlug}` as AppUrn));
+      return publicAddressRefused ? { status: 'ready', localOnly, publicAddressRefused } : { status: 'ready', localOnly };
     }
 
     return { status: PROVIDER_STARTING_STATUSES.has(row.status) ? 'starting' : 'offline', localOnly };
@@ -246,7 +254,10 @@ export class MemoryProviderResolver {
         // address, and the browser sent there landed on a bare 404 while ci-memory's containers were down.
         // Any other failure keeps the address, as before: a probe that got no answer at all says more about
         // the Hub's own network than about what the browser will reach.
-        if (availability.errorCode && ROUTE_DOWN_ERROR_CODES.has(availability.errorCode)) {
+        if (
+          availability.errorCode &&
+          (ROUTE_DOWN_ERROR_CODES.has(availability.errorCode) || availability.errorCode.startsWith(REFUSED_ADDRESS_ERROR_CODE_PREFIX))
+        ) {
           this.logger.info(`[MemoryConnect] ci-memory does not answer at its public address yet (${availability.errorCode})`);
         } else {
           publicUrl = availability.appUrl;

@@ -19,7 +19,8 @@ export type ConnectBlockedReason =
   | 'memory_offline'
   | 'hub_not_provisioned'
   | 'hub_unreachable'
-  | 'provider_local_only';
+  | 'provider_local_only'
+  | 'memory_address_refused';
 
 /**
  * Why the Connect action is unavailable, as user-facing copy. Without this a
@@ -33,6 +34,7 @@ const BLOCKED_REASON_KEYS: Record<ConnectBlockedReason, string> = {
   hub_not_provisioned: 'MEMORY_CONNECT_BLOCKED_HUB_NOT_PROVISIONED',
   hub_unreachable: 'MEMORY_CONNECT_BLOCKED_HUB_UNREACHABLE',
   provider_local_only: 'MEMORY_CONNECT_BLOCKED_PROVIDER_LOCAL_ONLY',
+  memory_address_refused: 'MEMORY_CONNECT_BLOCKED_ADDRESS_REFUSED',
 };
 
 /**

@@ -394,6 +394,17 @@ export class AppsService {
     };
   }
 
+  /** Whether the last sync says the Portal refused this app a public address, for a reason that stands until someone acts. */
+  public async isPublicAddressRefused(appUrn: AppUrn): Promise<boolean> {
+    try {
+      // Imported here like AppLifecycleService below: a static import closes a require cycle.
+      const { ExposureSyncService } = await import('../app-lifecycle/exposure-sync.service');
+      return Boolean(this.moduleRef.get(ExposureSyncService, { strict: false })?.publicDnsRefusalFor(appUrn));
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * The app's direct LAN address (`http(s)://<internalIp>:<port><url_suffix>`), or
    * undefined when it has no directly reachable port.

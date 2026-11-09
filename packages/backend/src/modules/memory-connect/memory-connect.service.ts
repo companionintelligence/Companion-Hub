@@ -102,7 +102,9 @@ export type ConnectBlockedReason =
   /** The Hub's public origin is down and this caller cannot reach the LAN route either. */
   | 'hub_unreachable'
   /** ci-memory only has a LAN address and this caller is off-network. */
-  | 'provider_local_only';
+  | 'provider_local_only'
+  /** The Portal refused ci-memory a public address, so its consent page has no address to reach. */
+  | 'memory_address_refused';
 
 /** Launcher availability is caller-scoped because a LAN route is not reachable from every browser. */
 export interface ConnectLaunchers {
@@ -612,7 +614,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       this.connections.getState(appUrn, hubUserId),
       hubUserId ? this.connections.getActiveConnection(appUrn) : Promise.resolve(undefined),
       // A transient provider lookup failure withholds launchers instead of failing the independent state poll.
-      this.resolver.getProviderRuntimeInfo().catch(() => ({ status: 'absent' as const, localOnly: false })),
+      this.resolver.getProviderRuntimeInfo().catch(() => ({ status: 'absent' as const, localOnly: false, publicAddressRefused: undefined })),
     ]);
 
     // A gate that knows someone else connected the app can say so rather than ask again.
@@ -624,6 +626,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       appUrn,
       providerStatus: providerInfo.status,
       providerLocalOnly: providerInfo.localOnly,
+      providerAddressRefused: providerInfo.publicAddressRefused,
       origin,
     });
 
@@ -652,7 +655,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     // Read-only for other people's connections, as in getStatus. A provider row that is still
     // installing must not read as ready.
     const [providerInfo, row, active] = await Promise.all([
-      this.resolver.getProviderRuntimeInfo().catch(() => ({ status: 'absent' as const, localOnly: false })),
+      this.resolver.getProviderRuntimeInfo().catch(() => ({ status: 'absent' as const, localOnly: false, publicAddressRefused: undefined })),
       this.connections.getRow(appUrn, hubUserId),
       this.connections.getActiveConnection(appUrn),
     ]);
@@ -701,6 +704,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       appUrn,
       providerStatus,
       providerLocalOnly: providerInfo.localOnly,
+      providerAddressRefused: providerInfo.publicAddressRefused,
       origin,
     });
 
@@ -921,6 +925,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     providerStatus: MemoryProviderRuntimeStatus;
     origin?: RequestOriginContext;
     providerLocalOnly?: boolean;
+    providerAddressRefused?: boolean;
   }): Promise<ConnectLaunchers> {
     const blocked = (reason: ConnectBlockedReason): ConnectLaunchers => ({
       connectUrl: null,
@@ -933,6 +938,11 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return blocked(
         input.providerStatus === 'absent' ? 'memory_absent' : input.providerStatus === 'starting' ? 'memory_starting' : 'memory_offline',
       );
+    }
+
+    // ci-memory's consent page is on its public address, so with none the flow ends on a browser error.
+    if (input.providerAddressRefused) {
+      return blocked('memory_address_refused');
     }
 
     // Block only confirmed remote callers; an ambiguous rewritten host may belong to a valid LAN visitor.

@@ -18,6 +18,7 @@ function makeResolver(installed: Array<{ info: AppInfo }>) {
   };
   const appsService = {
     checkAppAvailability: vi.fn().mockResolvedValue({ available: true, appUrl: 'https://ci-memory.example.com' }),
+    isPublicAddressRefused: vi.fn().mockResolvedValue(false),
   };
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
   return {
@@ -126,6 +127,24 @@ describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
     expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: false });
   });
 
+  it('flags a Public web provider whose address the Portal refused (#2309)', async () => {
+    const { resolver, appsReadService, appsService } = makeResolver([]);
+    appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('cloudflare'));
+    appsService.isPublicAddressRefused.mockResolvedValue(true);
+
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: false, publicAddressRefused: true });
+    expect(appsService.isPublicAddressRefused).toHaveBeenCalledWith('ci-memory:ci-marketplace');
+  });
+
+  it('does not ask about an address for a provider that has no public route', async () => {
+    const { resolver, appsReadService, appsService } = makeResolver([]);
+    appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('local'));
+    appsService.isPublicAddressRefused.mockResolvedValue(true);
+
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true });
+    expect(appsService.isPublicAddressRefused).not.toHaveBeenCalled();
+  });
+
   it('treats a missing exposureMode as local (conservative pre-column default)', async () => {
     const { resolver, appsReadService } = makeResolver([]);
     appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory(undefined));
@@ -230,6 +249,20 @@ describe('MemoryProviderResolver.findProvider', () => {
     const provider = await resolver.findProvider({ withPublicUrl: true });
 
     expect(provider?.appUrn).toBe('ci-memory:ci-marketplace');
+    expect(provider?.publicUrl).toBeUndefined();
+  });
+
+  // The Portal refused ci-memory an address: there's no DNS record, so the connect flow can't go there (#2309).
+  it('withholds the public URL when the Portal refused CI Memory its public address', async () => {
+    const { resolver, appsService } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
+    appsService.checkAppAvailability.mockResolvedValue({
+      available: false,
+      appUrl: 'https://ci-memory.example.com',
+      errorCode: 'PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+    });
+
+    const provider = await resolver.findProvider({ withPublicUrl: true });
+
     expect(provider?.publicUrl).toBeUndefined();
   });
 
