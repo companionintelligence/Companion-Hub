@@ -16,7 +16,7 @@
  */
 import { HttpStatus, RequestMethod, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import type { ExecutionContext } from '@nestjs/common';
-import { GUARDS_METADATA, METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { GUARDS_METADATA, INTERCEPTORS_METADATA, METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiKeyStoreUnavailableError } from '@/modules/api-keys/api-key.errors';
@@ -24,6 +24,7 @@ import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { HubPoolOllamaCompatController } from '@/modules/hub-pool/hub-pool-ollama-compat.controller';
 import { HubPoolController } from '@/modules/hub-pool/hub-pool.controller';
 import { InferenceController } from '@/modules/inference/inference.controller';
+import { TunnelErrorStatusInterceptor } from '@/modules/inference/tunnel-error-status.interceptor';
 import { InferenceAccessGuard, type InferenceAuthenticatedRequest, inferenceTailnetAuth } from '../inference-access.guard';
 
 const INFERENCE_KEY = 'a'.repeat(64);
@@ -526,5 +527,26 @@ describe('the inference route table', () => {
       'HubPoolOllamaCompatController.version': 'GET version → InferenceAccessGuard',
       'HubPoolOllamaCompatController.tags': 'GET tags → InferenceAccessGuard',
     });
+  });
+
+  // Cloudflare replaces a 502, 503 or 504 body, so a route that relays engine or pool errors needs the status rule (#2274).
+  it('sends every guarded route that relays engine or pool errors through TunnelErrorStatusInterceptor', () => {
+    const withoutTheRule: string[] = [];
+    for (const controller of [InferenceController, HubPoolController, HubPoolOllamaCompatController]) {
+      for (const name of Object.getOwnPropertyNames(controller.prototype)) {
+        const handler = (controller.prototype as unknown as Record<string, unknown>)[name];
+        if (typeof handler !== 'function') {
+          continue;
+        }
+        const guards = (Reflect.getMetadata(GUARDS_METADATA, handler) ?? []) as unknown[];
+        const interceptors = (Reflect.getMetadata(INTERCEPTORS_METADATA, handler) ?? []) as unknown[];
+        if (guards.includes(InferenceAccessGuard) && !interceptors.includes(TunnelErrorStatusInterceptor)) {
+          withoutTheRule.push(`${controller.name}.${name}`);
+        }
+      }
+    }
+
+    // Neither calls an engine, so neither has an upstream error to relay.
+    expect(withoutTheRule).toEqual(['InferenceController.mediaAcquire', 'InferenceController.mediaRelease']);
   });
 });

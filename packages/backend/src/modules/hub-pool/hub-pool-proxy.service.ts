@@ -2839,7 +2839,8 @@ export class PoolProxyService {
       // `localBackends` is the container's-eye view of every local engine: the operator reading
       // this on a node that plainly runs the model needs the probed URL and the error, not a
       // second look at the inventory. Those URLs and errors stay on the machine's own network: a
-      // reply through the tunnel gets the reason alone, and the operator has `cihub pool log`.
+      // reply through the tunnel gets the reason alone, and the routing log's row says only
+      // `no candidate`, so the operator repeats the request from inside to see them.
       res
         .status(502)
         .json(

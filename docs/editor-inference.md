@@ -152,7 +152,9 @@ Hub does not download weights for oMLX or vLLM. Whatever the server reports on `
 
 The 401 and 503 refusals, and a single-node Hub's 502s, are OpenAI-shaped — `{ "error": { "message", "type" } }`, the 401s with a `code` as well — so an editor shows `error.message` verbatim. A pooled Hub writes its 502s as `{ "error": "<message>" }`, a plain string: the pooled rows below quote that string, and a client that reads only `error.message` shows a bare 502 for them.
 
-Through the public address the same replies arrive as 500 instead of 502, 503 or 504, because Cloudflare replaces the body of those three statuses with its own `error code: 502`. A client retries a 500 the same way. A reply through the tunnel also leaves out what only makes sense on the Hub's own network: `localBackends`, the engines' addresses and which node failed. `cihub pool log` on the Hub shows those.
+Through the public address a 502, 503 or 504 from an engine or the pool arrives as 500, because Cloudflare replaces the body of those three statuses with its own `error code: 502`. A client retries a 500 the same way. The key-store 503 in the table below keeps its status and reads as Cloudflare's text, because the Hub writes it before that rule runs.
+
+A reply through the tunnel also leaves out what only makes sense on the Hub's own network: `localBackends`, the engines' addresses and the reason a pool candidate failed. To see those, send the same request from the Hub's own network or tailnet. On a pooled Hub, `cihub pool log` names the node and the upstream status. The `X-Hub-Pool-Served-By` header still names the node that answered, on the public address too.
 
 | Response | Meaning | Fix |
 |---|---|---|
