@@ -369,6 +369,57 @@ describe('CustomAppService', () => {
     });
   });
 
+  describe('updateAppMetadata', () => {
+    const CUSTOM = 'myapp:_user' as any;
+    const appInfo = {
+      id: 'myapp',
+      name: 'My Nginx',
+      categories: ['utilities'],
+      description: 'Custom application: My Nginx',
+      version: '1.0.0',
+      supported_architectures: ['amd64'],
+    };
+
+    beforeEach(() => {
+      filesystem.readJsonFile.mockResolvedValue(appInfo as any);
+    });
+
+    it('leaves the app alone when the note has no frontmatter', async () => {
+      await service.updateAppMetadata(CUSTOM, '# Hello');
+
+      expect(filesystem.writeJsonFile).not.toHaveBeenCalled();
+      expect(filesystem.writeTextFile).toHaveBeenCalledWith('/data/apps/_user/myapp/metadata/description.md', '# Hello');
+    });
+
+    it('keeps the category and description when the note states neither', async () => {
+      await service.updateAppMetadata(CUSTOM, '---\nname: "My Nginx"\nshort_desc: User-created custom app\nversion: 1.0.0\n---\n\n# Hello\n');
+
+      expect(filesystem.writeJsonFile).toHaveBeenCalledWith('/data/apps/_user/myapp/config.json', {
+        ...appInfo,
+        name: 'My Nginx',
+        short_desc: 'User-created custom app',
+        version: '1.0.0',
+      });
+    });
+
+    it('still takes what a note states', async () => {
+      await service.updateAppMetadata(CUSTOM, '---\nversion: 2.0.0\ncategories:\n  - media\n---\n\n# Hello\n');
+
+      expect(filesystem.writeJsonFile).toHaveBeenCalledWith('/data/apps/_user/myapp/config.json', {
+        ...appInfo,
+        version: '2.0.0',
+        categories: ['media'],
+      });
+    });
+
+    it('refuses a note with frontmatter that is not valid and writes nothing', async () => {
+      await expect(service.updateAppMetadata(CUSTOM, '---\ncategories:\n  - not-a-category\n---\n')).rejects.toThrow('Invalid frontmatter');
+
+      expect(filesystem.writeJsonFile).not.toHaveBeenCalled();
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+  });
+
   // These write `docker-compose.json` / `config.json` / `description.md` into `apps/<store>/<app>/`,
   // a layout every installed store app shares. The URN is whatever the caller sent.
   describe('provenance: only apps created here can be rewritten here', () => {

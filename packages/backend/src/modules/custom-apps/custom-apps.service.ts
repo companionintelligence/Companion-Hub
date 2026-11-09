@@ -332,24 +332,24 @@ export class CustomAppService {
     const configPath = path.join(dataDir, 'apps', appStoreId, appName, 'config.json');
 
     const frontmatterYml = getFrontmatter(description) || {};
+    const frontmatter = await frontmatterSchema.safeParseAsync(frontmatterYml);
 
-    if (frontmatterYml) {
-      const frontmatter = await frontmatterSchema.safeParseAsync(frontmatterYml);
+    if (!frontmatter.success) {
+      throw new Error(`Invalid frontmatter: ${frontmatter.error.message}`);
+    }
 
-      if (!frontmatter.success) {
-        throw new Error(`Invalid frontmatter: ${frontmatter.error.message}`);
-      }
+    // The schema fills in defaults for what a note leaves out (`categories`, `description`, `version`).
+    // A note the Hub writes has none of those, so only the fields this note states may change the app.
+    const stated = Object.fromEntries(Object.entries(frontmatter.data ?? {}).filter(([key]) => Object.hasOwn(frontmatterYml, key)));
 
+    if (Object.keys(stated).length > 0) {
       const appInfo = await this.filesystem.readJsonFile(configPath);
 
       if (!appInfo) {
         throw new Error(`Failed to read app info at ${configPath}`);
       }
 
-      const ok = await this.filesystem.writeJsonFile(configPath, {
-        ...appInfo,
-        ...frontmatter.data,
-      });
+      const ok = await this.filesystem.writeJsonFile(configPath, { ...appInfo, ...stated });
 
       if (!ok) {
         throw new Error(`Failed to update app info at ${configPath}`);
