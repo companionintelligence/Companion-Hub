@@ -103,8 +103,42 @@ describe('resolvePinFor', () => {
     expect(resolvePinFor([defaultPin, modelPin], 'other:1b')).toBe(defaultPin);
   });
 
-  it('compares the model verbatim, because candidate matching does', () => {
+  it('treats a case variant as a different model, because candidate matching does', () => {
     expect(resolvePinFor([modelPin], 'Llama3.2:3B')).toBeNull();
+  });
+
+  it.each([
+    ['nomic-embed-text', 'nomic-embed-text'],
+    ['nomic-embed-text', 'nomic-embed-text:latest'],
+    ['nomic-embed-text:latest', 'nomic-embed-text'],
+    ['nomic-embed-text:latest', 'nomic-embed-text:latest'],
+    ['hf.co/org/repo', 'hf.co/org/repo:latest'],
+  ])('applies a pin on %s to a request for %s', (pinned, requested) => {
+    const saved = pin({ scope: 'model', model: pinned, targetKind: 'peer', peerId: 'peer-a' });
+
+    expect(resolvePinFor([defaultPin, saved], requested)).toBe(saved);
+  });
+
+  it.each([
+    ['gemma3:270m', 'gemma3:1b'],
+    ['gemma3:270m', 'gemma3'],
+    ['gemma3:270m', 'gemma3:latest'],
+    ['gemma3', 'gemma3:270m'],
+    ['gemma3:latest', 'gemma3:270m'],
+  ])('does not apply a pin on %s to a request for %s', (pinned, requested) => {
+    expect(resolvePinFor([pin({ scope: 'model', model: pinned, targetKind: 'peer', peerId: 'peer-a' })], requested)).toBeNull();
+  });
+
+  it('falls back to the default pin when the only model pin is on another tag', () => {
+    expect(resolvePinFor([defaultPin, pin({ scope: 'model', model: 'gemma3:270m' })], 'gemma3:1b')).toBe(defaultPin);
+  });
+
+  it('keeps each spelling on its own pin when both were saved', () => {
+    const onBare = pin({ scope: 'model', model: 'nomic-embed-text', targetKind: 'peer', peerId: 'peer-a' });
+    const onLatest = pin({ scope: 'model', model: 'nomic-embed-text:latest', targetKind: 'peer', peerId: 'peer-b' });
+
+    expect(resolvePinFor([onBare, onLatest], 'nomic-embed-text:latest')).toBe(onLatest);
+    expect(resolvePinFor([onLatest, onBare], 'nomic-embed-text')).toBe(onBare);
   });
 });
 
@@ -222,6 +256,19 @@ describe('resolveStatusPins', () => {
     const backends = [{ type: 'ollama' as const, healthy: true, modelsLoaded: ['nomic-embed-text:latest'] }];
 
     expect(resolveStatusPins([pin({ scope: 'model', model: 'nomic-embed-text' })], [], backends)[0]?.targetAvailable).toBe(true);
+  });
+
+  it('reports a pin on :latest as available when the node lists the bare name', () => {
+    const backends = [{ type: 'ollama' as const, healthy: true, modelsLoaded: ['nomic-embed-text'] }];
+
+    expect(resolveStatusPins([pin({ scope: 'model', model: 'nomic-embed-text:latest' })], [], backends)[0]?.targetAvailable).toBe(true);
+  });
+
+  it('reports a pin on one tag as unavailable when the node holds only another tag', () => {
+    const backends = [{ type: 'ollama' as const, healthy: true, modelsLoaded: ['gemma3:270m'] }];
+
+    expect(resolveStatusPins([pin({ scope: 'model', model: 'gemma3:1b' })], [], backends)[0]?.targetAvailable).toBe(false);
+    expect(resolveStatusPins([pin({ scope: 'model', model: 'gemma3' })], [], backends)[0]?.targetAvailable).toBe(false);
   });
 
   it('reports a local pin for a model this node does not have as unavailable', () => {

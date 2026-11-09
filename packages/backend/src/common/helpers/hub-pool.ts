@@ -857,15 +857,22 @@ function withLatestTag(id: string): string {
  *
  * A model pin wins over the default pin and they never stack: two pins for one request would need a
  * precedence rule between two operator decisions that both say "this node", and the model-specific
- * one is unambiguously the more specific intent. Comparison is verbatim and case-sensitive, because
- * candidate matching is `modelsLoaded.includes(model)` in both `probeLocalCandidates` and
- * `peerCandidates` — normalizing here would make pins that look right silently never match.
+ * one is unambiguously the more specific intent. Models compare the way candidate matching compares
+ * them ({@link sameModelId}), so a pin on `name` governs a request for `name:latest` and the reverse;
+ * anything looser would make pins that look right apply to a model no candidate serves. A pin
+ * spelled the way the request is wins over one that only folds to it, so two pins saved under the two
+ * spellings each keep the requests they had.
  */
 export function resolvePinFor(pins: readonly HubPoolPin[] | undefined, model: string): HubPoolPin | null {
   if (!pins?.length) {
     return null;
   }
-  return pins.find((pin) => pin.scope === 'model' && pin.model === model) ?? pins.find((pin) => pin.scope === 'default') ?? null;
+  return (
+    pins.find((pin) => pin.scope === 'model' && pin.model === model) ??
+    pins.find((pin) => pin.scope === 'model' && pin.model !== undefined && sameModelId(pin.model, model)) ??
+    pins.find((pin) => pin.scope === 'default') ??
+    null
+  );
 }
 
 /** Whether two pins address the same thing — the identity an upsert replaces on, standing in for the unique index a table would have had. */
