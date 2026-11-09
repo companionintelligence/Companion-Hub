@@ -21,7 +21,15 @@ export function requiresPortalRePairing(status: RegistrationStatus): boolean {
   return status.phase === 'degraded' && status.degradedReasons.includes('tunnel_token_missing');
 }
 
-/** Three check-ins in a row got no verdict from Portal. The Hub still works and keeps trying. */
-export function isPortalUnreachable(status: RegistrationStatus): boolean {
+/**
+ * Three check-ins in a row failed. Portal may be down or may have answered: a body it refused counts,
+ * and so does a refused device key until the refusal has lasted ten minutes. The Hub keeps trying.
+ */
+export function isPortalCheckInFailing(status: RegistrationStatus): boolean {
   return status.phase === 'degraded' && status.degradedReasons.includes('cloud_validation_failed');
+}
+
+/** Portal has gone on refusing this Hub's device key. No retry helps, only pairing again. */
+export function isPortalRejected(status: RegistrationStatus): boolean {
+  return status.phase === 'degraded' && status.degradedReasons.includes('portal_rejected');
 }
