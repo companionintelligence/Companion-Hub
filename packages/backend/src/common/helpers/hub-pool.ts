@@ -867,32 +867,36 @@ export function resolvePinFor(pins: readonly HubPoolPin[] | undefined, model: st
   if (!pins?.length) {
     return null;
   }
-  return (
-    pins.find((pin) => pin.scope === 'model' && pin.model === model) ??
-    pins.find((pin) => pin.scope === 'model' && pin.model !== undefined && sameModelId(pin.model, model)) ??
-    pins.find((pin) => pin.scope === 'default') ??
-    null
-  );
+  return findAddressedPin(pins, { scope: 'model', model }) ?? pins.find((pin) => pin.scope === 'default') ?? null;
 }
 
-/** Whether two pins address the same thing — the identity an upsert replaces on, standing in for the unique index a table would have had. */
+/** Whether two pins are spelled alike: the same scope and, for a model pin, the same model id character for character. */
 export function samePinTarget(a: Pick<HubPoolPin, 'scope' | 'model'>, b: Pick<HubPoolPin, 'scope' | 'model'>): boolean {
   return a.scope === b.scope && (a.scope === 'default' || a.model === b.model);
 }
 
-/** Upsert by `(scope, model)`, preserving list order so the settings card does not reshuffle under an edit. */
-export function upsertPoolPin(pins: readonly HubPoolPin[], pin: HubPoolPin): HubPoolPin[] {
-  const existing = pins.findIndex((candidate) => samePinTarget(candidate, pin));
-  if (existing === -1) {
-    return [...pins, pin];
-  }
-  const next = [...pins];
-  next[existing] = pin;
-  return next;
+/**
+ * The stored pin that `target` names: the one spelled as given, otherwise the one that folds to it
+ * under {@link sameModelId}. Routing, saving and removing all find a pin through here, so a pin that
+ * steers a request is the pin a save replaces and a removal takes away. Two pins already stored under
+ * the two spellings stay separate, because each is then the exact match for its own spelling.
+ */
+function findAddressedPin(pins: readonly HubPoolPin[], target: Pick<HubPoolPin, 'scope' | 'model'>): HubPoolPin | undefined {
+  const { scope, model } = target;
+  return (
+    pins.find((pin) => samePinTarget(pin, target)) ??
+    pins.find((pin) => pin.scope === scope && pin.model !== undefined && model !== undefined && sameModelId(pin.model, model))
+  );
 }
 
-/** Remove the pin addressing `(scope, model)`. Returns the same array identity when nothing matched, so a no-op DELETE never rewrites settings.json. */
+/** Replace the pin `pin` names or append it, preserving list order so the settings card does not reshuffle under an edit. */
+export function upsertPoolPin(pins: readonly HubPoolPin[], pin: HubPoolPin): HubPoolPin[] {
+  const replaced = findAddressedPin(pins, pin);
+  return replaced ? pins.map((candidate) => (candidate === replaced ? pin : candidate)) : [...pins, pin];
+}
+
+/** Remove the pin `(scope, model)` names. The length is unchanged when nothing matched, so a no-op DELETE never rewrites settings.json. */
 export function removePoolPin(pins: readonly HubPoolPin[], scope: PoolPinScope, model?: string): HubPoolPin[] {
-  const next = pins.filter((pin) => !samePinTarget(pin, { scope, model }));
-  return next.length === pins.length ? [...pins] : next;
+  const removed = findAddressedPin(pins, { scope, model });
+  return pins.filter((pin) => pin !== removed);
 }

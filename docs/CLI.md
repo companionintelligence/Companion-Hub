@@ -643,7 +643,7 @@ cihub pool allow-bearer [env] [--yes]         # recovery switch: allow the legac
 | ---- | ------ |
 | `--yes` | Skip the confirmation prompt. Required for `pair`/`approve`/`reject`/`unpair`/`enable`/`disable` on a non-interactive terminal |
 | `--name <label>` | `pair` only: a display label for the peer |
-| `--model <id>` | `pin`/`unpin` only: which model the pin covers. Omit it for the pool-wide pin. `name` and `name:latest` route as one model; anything else is compared verbatim, so case matters. `unpin` removes the spelling you give, as `cihub pool status` lists it |
+| `--model <id>` | `pin`/`unpin` only: which model the pin covers. Omit it for the pool-wide pin. `name` and `name:latest` are one model when routing, saving and removing; anything else is compared verbatim, so case matters. If both spellings are stored as separate pins, each is touched only when named exactly |
 | `--pin <digits>` | `pair` only: the six digits minted on the *other* Hub. Required when the target is an address |
 | `--limit N` | `log` only: how many decisions to show, 1–200 (default: all 200 retained) |
 | `--check-latency` | `doctor` only: also measure non-streaming first-byte latency. Spends GPU time, so it is skipped otherwise |

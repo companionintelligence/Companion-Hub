@@ -11,6 +11,7 @@
  * the pool routes all declare an empty response schema in swagger.json, so the generated client types
  * them as `unknown` and there is nothing to import.
  */
+import { resolvePinFor } from '../packages/backend/src/common/helpers/hub-pool.js';
 import { sanitizeForBox } from './lib/cli-ui';
 import { hubApiFetch } from './public-web-cli';
 
@@ -1354,6 +1355,25 @@ export function formatPoolPinLines(pins: PoolStatusPin[] | undefined): string[] 
     '  normally, so a pin can never take inference down. Remove one with: cihub pool unpin',
   );
   return lines;
+}
+
+/**
+ * What `cihub pool unpin` can truthfully say once the Hub has answered with the pins it kept.
+ *
+ * Asks those pins the question routing asks ({@link resolvePinFor}), because removing a model pin
+ * doesn't always end the steering: a pin stored under the model's other spelling still applies and
+ * so does the pool-wide pin. `model` is absent for the pool-wide pin, which leaves model pins alone.
+ */
+export function formatPoolUnpinLines(covers: string, remaining: readonly PoolStatusPin[], model?: string): string[] {
+  const governing = model === undefined ? null : resolvePinFor(remaining, model);
+  if (!governing) {
+    return [`Routing for ${covers} is back to the ranker (least-loaded, with the local head start).`];
+  }
+  if (governing.scope === 'default') {
+    return [`Routing for ${covers} now follows the pool-wide pin.`];
+  }
+  const other = sanitizeForBox(governing.model ?? '?');
+  return [`Requests for ${covers} still follow the pin saved as "${other}".`, `Remove that one too with: cihub pool unpin --model ${other}`];
 }
 
 /**

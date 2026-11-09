@@ -11,6 +11,7 @@ import {
   approvePoolPeer,
   cancelPairingPin,
   deletePoolPin,
+  formatPoolUnpinLines,
   fetchPoolPeers,
   fetchPoolRoutingLog,
   fetchInferencePreferences,
@@ -893,7 +894,7 @@ async function runPoolPinCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
     printMessageBox(
       `Pin removed  [${env}]`,
       [
-        `Routing for ${covers} is back to the ranker (least-loaded, with the local head start).`,
+        ...formatPoolUnpinLines(covers, pins, parsed.model),
         ...(pins.length > 0 ? ['', `${pins.length} other pin(s) remain — see: ${BASE_COMMAND} pool status`] : []),
       ],
       'yellow',
