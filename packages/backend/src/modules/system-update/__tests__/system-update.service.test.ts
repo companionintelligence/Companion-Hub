@@ -35,6 +35,7 @@ vi.mock('node:fs', () => ({
     appendFileSync: vi.fn(),
     openSync: vi.fn(() => 3),
     fstatSync: vi.fn(),
+    lstatSync: vi.fn(),
     closeSync: vi.fn(),
     constants: { O_RDONLY: 0, O_NOFOLLOW: 0o400000, O_NONBLOCK: 0o4000 },
     promises: { writeFile: vi.fn() },
@@ -794,6 +795,10 @@ describe('SystemUpdateService', () => {
     function withFiles(files: Record<string, string>) {
       const openFiles = new Map<number, string>();
       openFlags.clear();
+      vi.mocked(fs.lstatSync).mockImplementation(((target: unknown) => {
+        if (files[String(target)] === undefined) throw Object.assign(new Error(`ENOENT: ${String(target)}`), { code: 'ENOENT' });
+        return {};
+      }) as never);
       vi.mocked(fs.openSync).mockImplementation(((target: unknown, flags: unknown) => {
         openFlags.set(String(target), Number(flags));
         const entry = files[String(target)];
@@ -871,7 +876,7 @@ describe('SystemUpdateService', () => {
     it('does not follow a symlink in place of the token', async () => {
       withFiles({ [STATE_TOKEN]: SYMLINK });
 
-      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: false });
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false, desktopApp: true });
       expect(axios.get).not.toHaveBeenCalled();
     });
 
@@ -879,7 +884,7 @@ describe('SystemUpdateService', () => {
     it('does not wait on a FIFO in place of the token', async () => {
       withFiles({ [STATE_TOKEN]: FIFO });
 
-      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: false });
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false, desktopApp: true });
       expect((openFlags.get(STATE_TOKEN) ?? 0) & fs.constants.O_NONBLOCK).not.toBe(0);
       expect(axios.get).not.toHaveBeenCalled();
     });
@@ -892,7 +897,7 @@ describe('SystemUpdateService', () => {
     ])('does not send %s as the token', async (_name, entry) => {
       withFiles({ [STATE_TOKEN]: entry });
 
-      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: false });
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false, desktopApp: true });
       expect(axios.get).not.toHaveBeenCalled();
     });
 
