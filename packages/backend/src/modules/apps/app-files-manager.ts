@@ -363,9 +363,15 @@ export class AppFilesManager {
     });
   }
 
-  /** Whether the app has data on disk. An uninstall with Delete all data off leaves it for a later install to pick up. */
+  /**
+   * Whether the app has data on disk. An uninstall with Delete all data off leaves it for a later install to pick up.
+   * A folder the Hub cannot read counts, because `pathExists` and `listFiles` report that one as missing or empty.
+   */
   public async hasAppData(appUrn: AppUrn): Promise<boolean> {
     const { appDataDir } = this.getAppPaths(appUrn);
+    if ((await this.filesystem.findUnreadable(appDataDir, { maxEntries: 1, maxFound: 1 })).length > 0) {
+      return true;
+    }
     return (await this.filesystem.pathExists(appDataDir)) && (await this.filesystem.listFiles(appDataDir)).length > 0;
   }
 

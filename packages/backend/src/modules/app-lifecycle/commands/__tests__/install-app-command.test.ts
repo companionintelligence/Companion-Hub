@@ -734,6 +734,16 @@ describe('InstallAppCommand — pull policy', () => {
       expect(appFilesManager.deleteAppDataDir).toHaveBeenCalledWith(appUrn);
     });
 
+    it('keeps root away when it cannot tell what was there before this install', async () => {
+      appFilesManager.hasAppData.mockRejectedValue(new Error('EIO'));
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+
+      const result = await cancelDuringComposeUp();
+
+      expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
+      expect(result.warningCode).toBeUndefined();
+    });
+
     it('warns without a path when the app folder is what could not go', async () => {
       appFilesManager.deleteAppFolder.mockResolvedValue(false);
 
@@ -1293,6 +1303,7 @@ describe('InstallAppCommand — plan-based pre-flight', () => {
     appFilesManager.getAppEnv.mockResolvedValue({ content: '', path: '/tmp/.env' });
     appFilesManager.getUserComposeFile.mockResolvedValue({ content: null, path: '/tmp/user-compose.yml' });
     appFilesManager.setAppDataDirPermissions.mockResolvedValue();
+    appFilesManager.hasAppData.mockResolvedValue(false);
     appFilesManager.getInstalledAppInfo.mockResolvedValue({
       id: 'test-app',
       name: 'Test App',

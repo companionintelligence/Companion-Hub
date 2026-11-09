@@ -129,8 +129,9 @@ export class InstallAppCommand extends AppLifecycleCommand {
     }
 
     const refusedHostPorts = new Set<number>();
-    // Read before this install creates anything. What is there now was not written by this install.
-    const dataFromEarlier = await (async () => appFilesManager.hasAppData(appUrn))().catch(() => false);
+    // Read before this install creates anything. What is there now was not written by this install, and when
+    // that can't be told, the folder is treated the same way: a cancel must not send root at it.
+    const dataFromEarlier = await appFilesManager.hasAppData(appUrn).catch(() => true);
 
     try {
       ctx?.setPhase('preparing');

@@ -333,7 +333,12 @@ What cancelling an install (`AppLifecycleService.cancelOperation`) does depends 
   install queue go out, and the worker skips the message when it reaches it
   (`takeSettledBeforeStart`), even if the app has been installed again since.
 - A running install's abort reaches the pull or `compose up`, and the worker compensates and sends
-  `install_cancelled`. From `finalizing` on, the cancel is refused.
+  `install_cancelled`. From `finalizing` on, the cancel is refused. Compensation removes the app's
+  folders. A data folder that was empty or missing when the install began goes to the root helper
+  for files a container wrote as another user, and `install_cancelled` carries
+  `APP_INSTALL_CANCELLED_PARTIAL_REMNANT` and the host path if anything stays. A data folder that
+  already held files, or that the Hub couldn't read (kept by an uninstall, left by a failed
+  attempt), gets neither: the Hub's own delete removes what it can and nothing is reported.
 
 ## One lifecycle operation per app
 
