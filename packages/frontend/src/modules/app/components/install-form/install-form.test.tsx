@@ -3162,7 +3162,21 @@ describe('InstallForm - the exposure mode of an app already installed', () => {
 
     await submit(container);
 
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ localSubdomain: routingName })));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.not.objectContaining({ localSubdomain: expect.anything() })));
+  });
+
+  it('sends a name typed over the routing name of an app with no stored subdomain', async () => {
+    const { container, onSubmit } = renderForm(
+      { port: 9898, exposureMode: 'cloudflare', publicDomain: 'example.com' },
+      { info: { ...customApp, urn: 'exp-test:ci-marketplace' } as AppInfo },
+    );
+
+    await waitFor(() => expect(screen.getByLabelText(/APP_INSTALL_FORM_LOCAL_SUBDOMAIN/)).toHaveValue('exp-test-ci-marketplace'));
+    fireEvent.change(screen.getByLabelText(/APP_INSTALL_FORM_LOCAL_SUBDOMAIN/), { target: { value: 'renamed' } });
+
+    await submit(container);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ localSubdomain: 'renamed' })));
   });
 
   it('keeps the bare app name as the default for an app moving to Public Web from This machine only', async () => {

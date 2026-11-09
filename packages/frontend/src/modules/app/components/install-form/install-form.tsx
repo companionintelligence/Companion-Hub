@@ -1278,7 +1278,10 @@ export const InstallForm: React.FC<IProps> = ({
     // list. Recorded at submission time (not after a backend round-trip), same as its export/copy
     // actions. Secrets are stripped inside recordLastUsedConfig before anything touches storage.
     setRecentConfigs(recordLastUsedConfig(info.id, formValues, formFields));
-    onSubmit(formValues);
+    // An app on the Web with no subdomain stored keeps none while the field holds its routing name. The
+    // Portal publishes `<app>-_user` as it is and this name has no underscore, so sending it would move the app.
+    const keepsRoutingName = keepsPublished && !initialValues?.localSubdomain && formValues.localSubdomain === fallbackSubdomain;
+    onSubmit(keepsRoutingName ? { ...formValues, localSubdomain: undefined } : formValues);
   };
 
   const onInvalid = () => {
