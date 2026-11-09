@@ -306,7 +306,15 @@ describe('InferenceController — local /v1 path answers with the engine, not a 
       expect(res.status).toBe(500);
       const body = (await res.json()) as { error: { message: string; type: string } };
       expect(body.error.type).toBe('server_error');
-      expect(body.error.message).toMatch(/ECONNREFUSED/);
+      expect(body.error.message).toBe('The inference engine did not answer (ECONNREFUSED).');
+    });
+
+    it('reads an empty marker as no marker, so the status and the engine address stay as they are from inside', async () => {
+      ollamaBackend.getBaseUrl.mockReturnValue(deadEngineUrl);
+      const res = await post('/v1/chat/completions', { model: 'gemma3:4b', messages: [{ role: 'user', content: 'hi' }] }, { 'cf-ray': '' });
+      expect(res.status).toBe(502);
+      const body = (await res.json()) as { error: { message: string } };
+      expect(body.error.message).toMatch(/ECONNREFUSED 127\.0\.0\.1:/);
     });
 
     it('answers 500 with its reason when there is no image backend', async () => {

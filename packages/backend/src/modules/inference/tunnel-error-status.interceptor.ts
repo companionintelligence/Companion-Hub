@@ -1,7 +1,7 @@
 import { type CallHandler, type ExecutionContext, Injectable, type NestInterceptor } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import type { Observable } from 'rxjs';
-import { TUNNEL_MARKER_HEADERS } from '@/common/helpers/hub-pool';
+import { arrivedThroughTunnel } from '@/common/helpers/hub-pool';
 
 /** Statuses Cloudflare's edge answers with its own text (`error code: 502`) in place of the origin's body. */
 const STATUSES_CLOUDFLARE_REPLACES: ReadonlySet<number> = new Set([502, 503, 504]);
@@ -21,7 +21,7 @@ export class TunnelErrorStatusInterceptor implements NestInterceptor {
     const req = http.getRequest<Request>();
     const res = http.getResponse<Response>();
 
-    if (TUNNEL_MARKER_HEADERS.some((header) => req.headers[header] !== undefined)) {
+    if (arrivedThroughTunnel(req)) {
       const setStatus = res.status.bind(res);
       res.status = (code: number) => setStatus(STATUSES_CLOUDFLARE_REPLACES.has(code) ? 500 : code);
     }

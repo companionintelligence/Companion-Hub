@@ -719,6 +719,19 @@ export const MDNS_PEER_NAME_PAIRING_REFUSAL =
 export const TUNNEL_MARKER_HEADERS = ['cf-ray', 'cf-connecting-ip', 'cf-visitor', 'true-client-ip'] as const;
 
 /**
+ * Whether a request came through the Cloudflare tunnel, reading the markers the way
+ * `internalOriginRefusal` and {@link callerSourceIp} do: an empty header is no marker.
+ *
+ * Only for deciding what a reply says. A marker proves nothing about who sent it (anyone on the LAN
+ * can add one), so this must never admit anything. Adding one only makes `InferenceAccessGuard` ask
+ * for a key and the reply say less.
+ */
+export function arrivedThroughTunnel(request: { headers?: Record<string, string | string[] | undefined> } | undefined): boolean {
+  const headers = request?.headers ?? {};
+  return TUNNEL_MARKER_HEADERS.some((header) => Boolean(headers[header]));
+}
+
+/**
  * The caller's own address, or `undefined` when this Hub cannot honestly say what it is.
  *
  * `request.ip` is NOT the caller behind Traefik or the Cloudflare tunnel: it is the proxy's own
