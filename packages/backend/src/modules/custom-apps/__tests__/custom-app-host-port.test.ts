@@ -5,9 +5,9 @@ import {
   customAppMainPortAvoids,
   ensureCustomAppHostPort,
   hubHostPorts,
-  internalPortRefusal,
   mappedHostPorts,
   parsePort,
+  portRangeRefusal,
 } from '../custom-app-host-port';
 
 const APP_URN = 'my-nginx:_user' as AppUrn;
@@ -210,18 +210,20 @@ describe('hubHostPorts', () => {
   });
 });
 
-describe('internalPortRefusal', () => {
+describe('portRangeRefusal', () => {
   it.each([
-    ['70000', 'CUSTOM_APP_ERROR_INTERNAL_PORT_MAX'],
-    ['65536', 'CUSTOM_APP_ERROR_INTERNAL_PORT_MAX'],
-    [' 70000 ', 'CUSTOM_APP_ERROR_INTERNAL_PORT_MAX'],
-    ['0', 'CUSTOM_APP_ERROR_INTERNAL_PORT_MIN'],
-    ['-1', 'CUSTOM_APP_ERROR_INTERNAL_PORT_MIN'],
-  ])('refuses the text %j', (value, refusal) => {
-    expect(internalPortRefusal(value)).toBe(refusal);
+    ['70000', 'MAX'],
+    ['65536', 'MAX'],
+    [' 70000 ', 'MAX'],
+    ['0', 'MIN'],
+    ['-1', 'MIN'],
+    [70000, 'MAX'],
+    [0, 'MIN'],
+  ])('refuses %j', (value, refusal) => {
+    expect(portRangeRefusal(value)).toBe(refusal);
   });
 
-  it.each(['80', '65535', '1', '${APP_PORT}', '8000-8010', '', undefined, 80, 70000])('leaves %j alone', (value) => {
-    expect(internalPortRefusal(value)).toBeUndefined();
+  it.each(['80', '65535', '1', '${APP_PORT}', '8000-8010', '', undefined, null, 80, 65535, true])('leaves %j alone', (value) => {
+    expect(portRangeRefusal(value)).toBeUndefined();
   });
 });

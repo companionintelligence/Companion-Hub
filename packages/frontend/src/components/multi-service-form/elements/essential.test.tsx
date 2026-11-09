@@ -5,10 +5,10 @@ import { useForm } from 'react-hook-form';
 import { describe, expect, it, vi } from 'vitest';
 import { EssentialConfig } from './essential';
 
-const Harness = ({ onValid }: { onValid: (data: unknown) => void }) => {
+const Harness = ({ onValid, savedPort = 80 }: { onValid: (data: unknown) => void; savedPort?: number | string }) => {
   const form = useForm({
     resolver: zodResolver(dynamicComposeFormSchema as any),
-    defaultValues: { services: [{ name: 'web', image: 'nginx:alpine', isMain: true, internalPort: 80 }] },
+    defaultValues: { services: [{ name: 'web', image: 'nginx:alpine', isMain: true, internalPort: savedPort }] },
   });
   return (
     <form onSubmit={form.handleSubmit(onValid)}>
@@ -45,6 +45,28 @@ describe('EssentialConfig internal port', () => {
 
     await waitFor(() => expect(onValid).toHaveBeenCalledOnce());
     expect(onValid.mock.calls[0]?.[0]).toMatchObject({ services: [{ internalPort: 8080 }] });
+  });
+
+  it('sends a port saved as text as a number when it is saved again', async () => {
+    const onValid = vi.fn();
+    render(<Harness onValid={onValid} savedPort="8080" />);
+
+    expect(screen.getByPlaceholderText('9091')).toHaveValue('8080');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(onValid).toHaveBeenCalledOnce());
+    expect(onValid.mock.calls[0]?.[0]).toMatchObject({ services: [{ internalPort: 8080 }] });
+  });
+
+  it('refuses a bad port saved as text until it is changed', async () => {
+    const onValid = vi.fn();
+    render(<Harness onValid={onValid} savedPort="70000" />);
+
+    expect(screen.getByPlaceholderText('9091')).toHaveValue('70000');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Internal port must be at most 65535')).toBeInTheDocument();
+    expect(onValid).not.toHaveBeenCalled();
   });
 
   it('leaves an env reference as typed', async () => {

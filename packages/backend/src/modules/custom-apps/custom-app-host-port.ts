@@ -4,7 +4,7 @@ import type { AppsRepository } from '@/modules/apps/apps.repository';
 import type { PortManagerService } from '@/modules/network/port-manager.service';
 
 /**
- * A port written as a number or as the digits the create form submits, with stray whitespace allowed.
+ * A port written as a number or as digits (a config saved by an older form, the JSON editor, the API), with stray whitespace allowed.
  * Anything else (an env reference, a range, a value outside 1 to 65535) is not a plain port.
  */
 export function parsePort(value: unknown): number | undefined {
@@ -14,17 +14,18 @@ export function parsePort(value: unknown): number | undefined {
 }
 
 /**
- * Which rule an internal port breaks when it is a plain number written as text. The schema only ranges
- * real numbers, so `"70000"` passed and Docker refused it at start. `parsePort` can't tell this from an
- * env reference, which is allowed and stays out of here.
+ * Which end of 1 to 65535 a port is past, whether it is a number or digits written as text. The schema only
+ * ranges real numbers, so `"70000"` passed and Docker refused it at start, and the MCP tools reach the service
+ * with no schema at all. `parsePort` can't tell this from an env reference or a range, which are allowed and
+ * stay out of here.
  */
-export function internalPortRefusal(value: unknown): 'CUSTOM_APP_ERROR_INTERNAL_PORT_MIN' | 'CUSTOM_APP_ERROR_INTERNAL_PORT_MAX' | undefined {
-  if (typeof value !== 'string' || !/^-?\d+$/.test(value.trim())) {
+export function portRangeRefusal(value: unknown): 'MIN' | 'MAX' | undefined {
+  const port = typeof value === 'string' && /^-?\d+$/.test(value.trim()) ? Number(value) : value;
+  if (typeof port !== 'number') {
     return undefined;
   }
-  const port = Number(value);
-  if (port < 1) return 'CUSTOM_APP_ERROR_INTERNAL_PORT_MIN';
-  return port > 65535 ? 'CUSTOM_APP_ERROR_INTERNAL_PORT_MAX' : undefined;
+  if (port < 1) return 'MIN';
+  return port > 65535 ? 'MAX' : undefined;
 }
 
 export type MappedHostPort = { hostPort: number; protocol: 'tcp' | 'udp' };

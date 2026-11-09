@@ -4,15 +4,13 @@ import type { z } from 'zod';
 import type { FieldErrors, UseFormRegister } from 'react-hook-form';
 import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import { useTranslation } from 'react-i18next';
+import { plainPortAsNumber } from './plain-port-as-number';
 
 type Props = {
   register: UseFormRegister<z.infer<typeof dynamicComposeSchema>>;
   serviceIndex: number;
   errors?: FieldErrors<z.infer<typeof dynamicComposeSchema>>;
 };
-
-/** A number typed here is held to the schema's range. Anything else, such as an env reference, stays as typed. */
-const plainPortAsNumber = (value: unknown) => (typeof value === 'string' && /^-?\d+$/.test(value.trim()) ? Number(value) : value);
 
 export const EssentialConfig = ({ register, errors, serviceIndex }: Props) => {
   const { t } = useTranslation();
