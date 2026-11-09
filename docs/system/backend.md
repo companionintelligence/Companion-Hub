@@ -98,7 +98,7 @@ which used to also carry the four steps they share. Those now live in their own 
 | Module | Step |
 |---|---|
 | `commands/compose-preparation.ts` | Renders the app's `docker-compose.yml` from its manifest — architecture overrides, exposure hostnames, resource limits, subnet |
-| `commands/host-device-preflight.ts` | Fails fast when a manifest wants `/dev/kfd` or `/dev/kvm` the host cannot provide |
+| `commands/host-device-preflight.ts` | Fails fast when a manifest wants `/dev/kfd` or `/dev/kvm` the host cannot provide, or a Kata runtime Docker doesn't have |
 | `commands/network-recovery.ts` | Runs compose, retrying with a fresh subnet when Docker reports an overlapping bridge range |
 | `commands/failure-reporting.ts` | Turns a thrown error into the structured result the queue replies with, and reports it |
 

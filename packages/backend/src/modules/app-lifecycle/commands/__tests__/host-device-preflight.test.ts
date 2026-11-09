@@ -1,6 +1,7 @@
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { isRocmKfdPassthroughAvailable } from '@/modules/inference/host-rocm-availability';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { DOCKERODE } from '@/modules/docker/constants';
 import type { FsMock } from '@/tests/__mocks__/fs';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { ModuleRef } from '@nestjs/core';
@@ -8,6 +9,8 @@ import fs from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as yaml from 'yaml';
 import {
+  KATA_RUNTIME_MISSING_CODE,
+  KATA_RUNTIME_MISSING_USER_MESSAGE,
   KVM_MISSING_CODE,
   KVM_MISSING_DETAIL,
   KVM_MISSING_USER_MESSAGE,
@@ -34,6 +37,8 @@ type ModuleRefOptions = {
   composeJson?: unknown;
   userCompose?: string | null;
   architecture?: Architecture;
+  /** What `docker info` lists. 'unreachable' makes it throw. Left out, no Docker is on offer at all. */
+  dockerRuntimes?: string[] | 'unreachable';
 };
 
 /**
@@ -73,6 +78,15 @@ function createModuleRef(options: ModuleRefOptions = {}): ModuleRef {
       }
       if (token === ConfigurationService) return config;
       if (token === AppFilesManager) return appFilesManager;
+      if (token === DOCKERODE && options.dockerRuntimes !== undefined) {
+        const { dockerRuntimes } = options;
+        return {
+          info: async () => {
+            if (dockerRuntimes === 'unreachable') throw new Error('connect ENOENT /var/run/docker.sock');
+            return { Runtimes: Object.fromEntries(dockerRuntimes.map((name) => [name, { path: name }])) };
+          },
+        };
+      }
       throw new Error(`Unexpected provider requested from ModuleRef: ${String(token)}`);
     },
   } as unknown as ModuleRef;
@@ -98,6 +112,11 @@ function composeManifest(devices?: string[], runtime?: string): unknown {
 function markKvmPresent(mode?: number): void {
   (fs as unknown as FsMock).__applyMockFiles({ '/dev/kvm': '' });
   if (mode !== undefined) fs.chmodSync('/dev/kvm', mode);
+}
+
+/** A Hub inside its container: the host kernel lists the device in sysfs, and there is no node in /dev. */
+function markKvmInHostKernelOnly(): void {
+  (fs as unknown as FsMock).__applyMockFiles({ '/sys/class/misc/kvm/dev': '10:232\n' });
 }
 
 describe('assertHostDevicesAvailable', () => {
@@ -203,6 +222,67 @@ describe('assertHostDevicesAvailable', () => {
     it('resolves once /dev/kvm exists on the host', async () => {
       markKvmPresent();
       const moduleRef = createModuleRef({ composeJson: composeManifest(['/dev/kvm']) });
+
+      await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).resolves.toBeUndefined();
+    });
+  });
+
+  describe('a Hub in its container, which has no /dev/kvm of its own', () => {
+    it('finds KVM through the host kernel for a device passthrough', async () => {
+      markKvmInHostKernelOnly();
+      const moduleRef = createModuleRef({ composeJson: composeManifest(['/dev/kvm']) });
+
+      await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).resolves.toBeUndefined();
+    });
+
+    it('finds KVM through the host kernel for a kata runtime', async () => {
+      markKvmInHostKernelOnly();
+      const moduleRef = createModuleRef({ composeJson: composeManifest(undefined, 'kata'), dockerRuntimes: ['runc', 'kata'] });
+
+      await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).resolves.toBeUndefined();
+    });
+
+    it('still says no KVM when the host kernel has none', async () => {
+      const moduleRef = createModuleRef({ composeJson: composeManifest(undefined, 'kata'), dockerRuntimes: ['runc'] });
+
+      await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).rejects.toMatchObject({ errorCode: KVM_MISSING_CODE });
+    });
+  });
+
+  describe('a kata runtime Docker has not been set up with', () => {
+    it('says the runtime is missing once KVM is there, and names it in the detail', async () => {
+      markKvmInHostKernelOnly();
+      const moduleRef = createModuleRef({ composeJson: composeManifest(undefined, 'kata-qemu'), dockerRuntimes: ['runc', 'io.containerd.runc.v2'] });
+
+      await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).rejects.toMatchObject({
+        name: 'AppLifecycleError',
+        message: KATA_RUNTIME_MISSING_USER_MESSAGE,
+        errorCode: KATA_RUNTIME_MISSING_CODE,
+        errorDetail: expect.stringContaining('kata-qemu'),
+      });
+    });
+
+    it('checks a runtime declared only in the user override', async () => {
+      markKvmInHostKernelOnly();
+      const moduleRef = createModuleRef({
+        composeJson: composeManifest(['/dev/kvm'], 'runc'),
+        userCompose: yaml.stringify({ services: { main: { runtime: 'kata' } } }),
+        dockerRuntimes: ['runc'],
+      });
+
+      await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).rejects.toMatchObject({ errorCode: KATA_RUNTIME_MISSING_CODE });
+    });
+
+    it('leaves the answer to compose up when Docker cannot be asked', async () => {
+      markKvmInHostKernelOnly();
+      const moduleRef = createModuleRef({ composeJson: composeManifest(undefined, 'kata'), dockerRuntimes: 'unreachable' });
+
+      await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).resolves.toBeUndefined();
+    });
+
+    it('does not ask Docker about a device passthrough with no runtime', async () => {
+      markKvmInHostKernelOnly();
+      const moduleRef = createModuleRef({ composeJson: composeManifest(['/dev/kvm']), dockerRuntimes: ['runc'] });
 
       await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).resolves.toBeUndefined();
     });

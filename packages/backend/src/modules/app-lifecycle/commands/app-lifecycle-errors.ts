@@ -6,6 +6,8 @@ export const ROCM_KFD_MISSING_CODE = 'rocm_kfd_missing';
 
 export const KVM_MISSING_CODE = 'kvm_missing';
 
+export const KATA_RUNTIME_MISSING_CODE = 'kata_runtime_missing';
+
 export const NETWORK_OVERLAP_CODE = 'network_overlap';
 
 /** A service did not come up after `compose up`, which the Hub read from Docker (`AppLifecycleCommand.appCameUpError`). */
@@ -76,6 +78,16 @@ export function createKvmMissingError(): AppLifecycleError {
   return new AppLifecycleError(KVM_MISSING_USER_MESSAGE, {
     code: KVM_MISSING_CODE,
     detail: KVM_MISSING_DETAIL,
+  });
+}
+
+/** Short user-facing message for apps whose Kata runtime Docker on this machine doesn't have. */
+export const KATA_RUNTIME_MISSING_USER_MESSAGE = "This app needs the Kata container runtime. It isn't set up in Docker on this machine.";
+
+export function createKataRuntimeMissingError(runtime: string): AppLifecycleError {
+  return new AppLifecycleError(KATA_RUNTIME_MISSING_USER_MESSAGE, {
+    code: KATA_RUNTIME_MISSING_CODE,
+    detail: `Docker on this machine has no runtime named "${runtime}". Install Kata Containers and register that runtime with Docker, then start the app again.`,
   });
 }
 
