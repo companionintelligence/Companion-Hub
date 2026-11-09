@@ -34,7 +34,7 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AuthGuard } from './auth.guard';
-import { AuthRateLimiter, authClientKey, type AuthRateScope } from './auth-rate-limiter';
+import { AuthRateLimiter, type AuthRateScope } from './auth-rate-limiter';
 import { AuthService, type PairedOrgMembership } from './auth.service';
 import { absentRoute, DidAuthFlagGuard, DidAuthJsonGuard, DidAuthSameOriginGuard } from './did-auth.guard';
 import { DidAuthRefusal, type DidAuthPurpose, DidAuthService } from './did-auth.service';
@@ -338,7 +338,7 @@ export class AuthController {
    * throws keeps its slot.
    */
   private async rateLimited<T>(scope: AuthRateScope, req: Request, step: () => Promise<T>): Promise<T> {
-    const refund = this.rateLimiter.admit(scope, authClientKey(req));
+    const refund = this.rateLimiter.admitRequest(scope, req);
     const result = await step();
     refund();
 
@@ -679,7 +679,7 @@ export class AuthController {
   @Post('/register')
   @ApiResponse({ type: RegisterDto })
   async register(@Body() body: RegisterBody, @Res({ passthrough: true }) res: Response, @Req() req: Request) {
-    this.rateLimiter.admit('register', authClientKey(req));
+    this.rateLimiter.admitRequest('register', req);
     const result = await this.authService.register(body);
 
     if (result.requiresEmailVerification) {
@@ -1225,7 +1225,7 @@ export class AuthController {
     if (!isDirectLoopbackRequest(req)) {
       throw new ForbiddenException();
     }
-    this.rateLimiter.admit('desktopWaitingChallenge', authClientKey(req));
+    this.rateLimiter.admitRequest('desktopWaitingChallenge', req);
     return { nonce: this.desktopWaitingChallenges.issue() };
   }
 
@@ -1601,7 +1601,7 @@ export class AuthController {
   @Post('/password-reset/request')
   @ApiResponse({ type: PasswordResetRequestDto })
   async requestPasswordReset(@Body() body: PasswordResetRequestBody, @Req() req: Request) {
-    this.rateLimiter.admit('passwordResetRequest', authClientKey(req));
+    this.rateLimiter.admitRequest('passwordResetRequest', req);
 
     const { domain, localDomain } = this.config.getConfig();
     const hubOrigin = resolveTrustedReturnOrigin(req, { domain, localDomain });

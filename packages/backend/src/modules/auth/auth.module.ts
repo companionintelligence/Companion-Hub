@@ -1,6 +1,7 @@
 import { ApiKeyModule } from '@/modules/api-keys/api-key.module';
 import { AppsModule } from '@/modules/apps/apps.module';
 import { EnvModule } from '@/modules/env/env.module';
+import { NetworkModule } from '@/modules/network/network.module';
 import { EncryptionModule } from '@/core/encryption/encryption.module';
 import { PasswordModule } from '@/core/password/password.module';
 import { PortalModule } from '@/core/portal/portal.module';
@@ -24,7 +25,17 @@ import { SessionManager } from './session.manager';
   // secret). Cycle-safe: no module imports AuthModule (AuthGuard is consumed as a bare class).
   // SessionUserCache is provided by the global CacheModule — declaring it here too would mint a
   // second instance, so writes invalidated on one would still be served stale by the other.
-  imports: [UserModule, EncryptionModule, PasswordModule, RegistrationModule, forwardRef(() => PortalModule), AppsModule, EnvModule, ApiKeyModule],
+  imports: [
+    UserModule,
+    EncryptionModule,
+    PasswordModule,
+    RegistrationModule,
+    forwardRef(() => PortalModule),
+    AppsModule,
+    EnvModule,
+    ApiKeyModule,
+    NetworkModule,
+  ],
   controllers: [AuthController, OobiController],
   // MemoryProviderResolver is stateless (it reads the installed apps each call), so a second
   // instance here is safe, and it spares AuthModule importing MemoryConnectModule and its graph.

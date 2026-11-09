@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { AuthRateLimiter, authClientKey } from '../auth-rate-limiter';
 
 const CLIENT = '203.0.113.7';
+const GATEWAY = '172.23.0.1';
 
 function limiterAt(clock: { now: number }) {
-  const limiter = new AuthRateLimiter();
+  const limiter = new AuthRateLimiter({ isHostGateway: (ip: string | undefined | null) => ip === GATEWAY } as never);
   limiter.now = () => clock.now;
   return limiter;
 }
+
+const tunnelled = (visitor: string, peer = GATEWAY) => ({ ip: peer, headers: { 'cf-connecting-ip': visitor } });
 
 /** Admit `count` requests to `scope` that all fail, the way wrong guesses do. */
 function failTimes(limiter: AuthRateLimiter, scope: Parameters<AuthRateLimiter['admit']>[0], client: string, count: number) {
@@ -164,6 +167,73 @@ describe('AuthRateLimiter', () => {
 
     const tracked = (limiter as unknown as { hits: Map<string, number[]> }).hits.size;
     expect(tracked).toBeLessThanOrEqual(10_001);
+  });
+});
+
+describe('AuthRateLimiter.admitRequest', () => {
+  it('gives each visitor through the tunnel their own budget, and leaves the machine out of it', () => {
+    const limiter = limiterAt({ now: 1_000_000 });
+
+    for (let i = 0; i < 10; i++) limiter.admitRequest('login', tunnelled(CLIENT));
+
+    expect(() => limiter.admitRequest('login', tunnelled(CLIENT))).toThrow('AUTH_ERROR_RATE_LIMITED');
+    expect(() => limiter.admitRequest('login', tunnelled('198.51.100.20'))).not.toThrow();
+    expect(() => limiter.admitRequest('login', { ip: GATEWAY, headers: {} })).not.toThrow();
+  });
+
+  it('limits a visitor on IPv6 as their whole /64', () => {
+    const limiter = limiterAt({ now: 1_000_000 });
+
+    for (let i = 0; i < 10; i++) limiter.admitRequest('login', tunnelled(`2001:db8:aaaa:bbbb::${i + 1}`));
+
+    expect(() => limiter.admitRequest('login', tunnelled('2001:db8:aaaa:bbbb::ffff'))).toThrow('AUTH_ERROR_RATE_LIMITED');
+  });
+
+  it('ignores the header from anywhere but the gateway: a LAN host cannot name someone else', () => {
+    const limiter = limiterAt({ now: 1_000_000 });
+
+    for (let i = 0; i < 10; i++) limiter.admitRequest('login', tunnelled(`198.51.100.${i + 1}`, '192.168.1.50'));
+
+    expect(() => limiter.admitRequest('login', tunnelled('198.51.100.200', '192.168.1.50'))).toThrow('AUTH_ERROR_RATE_LIMITED');
+  });
+
+  it.each(['not-an-address', '203.0.113.7, 198.51.100.1', ''])('falls back to the peer for a header that is not one address (%j)', (header) => {
+    const limiter = limiterAt({ now: 1_000_000 });
+
+    for (let i = 0; i < 10; i++) limiter.admitRequest('login', tunnelled(header));
+
+    expect(() => limiter.admitRequest('login', { ip: GATEWAY, headers: {} })).toThrow('AUTH_ERROR_RATE_LIMITED');
+  });
+
+  it('caps everyone named by the header together, so inventing addresses does not buy unlimited guesses', () => {
+    const limiter = limiterAt({ now: 1_000_000 });
+
+    for (let i = 0; i < 100; i++) limiter.admitRequest('login', tunnelled(`198.51.${Math.floor(i / 250)}.${(i % 250) + 1}`));
+
+    expect(() => limiter.admitRequest('login', tunnelled('203.0.113.200'))).toThrow('AUTH_ERROR_RATE_LIMITED');
+    // The machine itself is not in that pool.
+    expect(() => limiter.admitRequest('login', { ip: GATEWAY, headers: {} })).not.toThrow();
+  });
+
+  it("gives back a refused request's slot in neither budget", () => {
+    const limiter = limiterAt({ now: 1_000_000 });
+
+    for (let i = 0; i < 100; i++) limiter.admitRequest('login', tunnelled(`198.51.0.${(i % 250) + 1}`));
+    expect(() => limiter.admitRequest('login', tunnelled(CLIENT))).toThrow('AUTH_ERROR_RATE_LIMITED');
+
+    const tracked = (limiter as unknown as { hits: Map<string, number[]> }).hits;
+
+    expect(tracked.has(`login:${CLIENT}`)).toBe(false);
+  });
+
+  it('hands back both budgets when a request succeeds', () => {
+    const limiter = limiterAt({ now: 1_000_000 });
+
+    for (let i = 0; i < 25; i++) limiter.admitRequest('login', tunnelled(CLIENT))();
+
+    expect(() => {
+      for (let i = 0; i < 10; i++) limiter.admitRequest('login', tunnelled(CLIENT));
+    }).not.toThrow();
   });
 });
 

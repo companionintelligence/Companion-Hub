@@ -13,6 +13,7 @@ import { CacheService } from '@/core/cache/cache.service';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { ProxyTrustService } from '@/modules/network/proxy-trust.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { UserRepository } from '@/modules/user/user.repository';
@@ -32,8 +33,10 @@ const wrongCredentials = () => new TranslatableError('AUTH_ERROR_INVALID_CREDENT
 describe('AuthController rate limiting', () => {
   let controller: AuthController;
   let authService: MockProxy<AuthService>;
+  let proxyTrust: MockProxy<ProxyTrustService>;
 
   beforeEach(async () => {
+    proxyTrust = mock<ProxyTrustService>();
     const moduleRef = await Test.createTestingModule({
       controllers: [AuthController],
       providers: [
@@ -50,6 +53,7 @@ describe('AuthController rate limiting', () => {
         { provide: SessionUserCache, useValue: mock<SessionUserCache>() },
         { provide: ForwardAuthIdentityResolver, useValue: mock<ForwardAuthIdentityResolver>() },
         { provide: MemoryApiKeyCheck, useValue: mock<MemoryApiKeyCheck>() },
+        { provide: ProxyTrustService, useValue: proxyTrust },
         AuthRateLimiter,
       ],
     }).compile();
@@ -75,6 +79,29 @@ describe('AuthController rate limiting', () => {
       });
 
       expect(authService.login).toHaveBeenCalledTimes(10);
+    });
+
+    it('keeps a stranger on the public address from locking out the machine or the next visitor', async () => {
+      const gateway = '172.23.0.1';
+      proxyTrust.isHostGateway.mockImplementation((ip) => ip === gateway);
+      authService.login.mockRejectedValue(wrongCredentials());
+      const throughTunnel = (visitor: string) => req(gateway, { headers: { 'cf-connecting-ip': visitor } });
+
+      for (let i = 0; i < 10; i++) {
+        await expect(
+          controller.login({ username: `x${i}@example.org`, password: 'x' } as never, res(), throughTunnel('203.0.113.9')),
+        ).rejects.toThrow('AUTH_ERROR_INVALID_CREDENTIALS');
+      }
+
+      await expect(controller.login({ username: 'y@example.org', password: 'x' } as never, res(), throughTunnel('203.0.113.9'))).rejects.toThrow(
+        'AUTH_ERROR_RATE_LIMITED',
+      );
+      await expect(controller.login({ username: 'y@example.org', password: 'x' } as never, res(), throughTunnel('198.51.100.20'))).rejects.toThrow(
+        'AUTH_ERROR_INVALID_CREDENTIALS',
+      );
+      await expect(controller.login({ username: 'y@example.org', password: 'x' } as never, res(), req(gateway))).rejects.toThrow(
+        'AUTH_ERROR_INVALID_CREDENTIALS',
+      );
     });
 
     it('does not limit someone who signs in successfully, however often', async () => {

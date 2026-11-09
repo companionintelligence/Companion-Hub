@@ -224,6 +224,41 @@ describe('ProxyTrustService', () => {
     });
   });
 
+  describe('isHostGateway', () => {
+    it('knows the host only after the networks have been read', async () => {
+      expect(service.isHostGateway('172.23.0.1')).toBe(false);
+
+      networkInspect.mockResolvedValue({ IPAM: { Config: [{ Subnet: '172.23.0.0/16', Gateway: '172.23.0.1' }] } });
+      containerInspect.mockResolvedValue(traefikOnHubNetwork('172.23.0.7'));
+      await service.refresh();
+
+      expect(service.isHostGateway('172.23.0.1')).toBe(true);
+      expect(service.isHostGateway('::ffff:172.23.0.1')).toBe(true);
+      expect(service.isHostGateway('172.23.0.8')).toBe(false);
+      expect(service.isTrustedProxy('172.23.0.1')).toBe(false);
+    });
+
+    it('takes the first host as the gateway when the network does not name one', async () => {
+      networkInspect.mockResolvedValue({ IPAM: { Config: [{ Subnet: '172.23.0.0/16' }] } });
+      containerInspect.mockResolvedValue(traefikOnHubNetwork('172.23.0.7'));
+      await service.refresh();
+
+      expect(service.isHostGateway('172.23.0.1')).toBe(true);
+    });
+
+    it('forgets a gateway it can no longer read', async () => {
+      networkInspect.mockResolvedValue({ IPAM: { Config: [{ Subnet: '172.23.0.0/16', Gateway: '172.23.0.1' }] } });
+      containerInspect.mockResolvedValue(traefikOnHubNetwork('172.23.0.7'));
+      await service.refresh();
+      expect(service.isHostGateway('172.23.0.1')).toBe(true);
+
+      networkInspect.mockRejectedValue(new Error('no such network'));
+      await service.refresh();
+
+      expect(service.isHostGateway('172.23.0.1')).toBe(false);
+    });
+  });
+
   it('ignores anything that is not an IPv4 literal', async () => {
     networkInspect.mockResolvedValue(edgeNetwork);
     containerInspect.mockResolvedValue(traefikOnHubNetwork('172.19.0.7'));
