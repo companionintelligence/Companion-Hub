@@ -190,8 +190,26 @@ describe('applyHubHello', () => {
     expect(isStackUpdatePending()).toBe(false);
     expect(effects.invalidateVersion).toHaveBeenCalledTimes(1);
     expect(effects.reload).not.toHaveBeenCalled();
-    // The page lives on and its subscribers heard the outcome, so nothing is left to show later.
-    expect(readKeptStackUpdateOutcome()).toBeNull();
+  });
+
+  it('keeps the outcome when no reload follows, for a panel that was not on screen to hear it', () => {
+    // A page reloaded onto the new Hub already has the new bundle, so nothing reloads it again.
+    markStackUpdatePending('0.2.71', NOW - 30_000);
+    const effects = { invalidateVersion: vi.fn(), reload: vi.fn() };
+
+    applyHubHello('0.2.72', { bundleVersion: '0.2.72', sameOriginBundle: true, now: NOW }, effects);
+
+    expect(effects.reload).not.toHaveBeenCalled();
+    expect(readKeptStackUpdateOutcome()).toEqual({ state: 'completed', version: '0.2.72' });
+  });
+
+  it('keeps a not-confirmed outcome for the same reason', () => {
+    markStackUpdatePending('0.2.71', NOW - 11 * 60 * 1000);
+    const effects = { invalidateVersion: vi.fn(), reload: vi.fn() };
+
+    applyHubHello('0.2.71', { bundleVersion: '0.2.71', sameOriginBundle: true, now: NOW }, effects);
+
+    expect(readKeptStackUpdateOutcome()).toEqual({ state: 'not_confirmed', version: '0.2.71' });
   });
 
   it('leaves a fresh pending marker alone when the old container answers', () => {

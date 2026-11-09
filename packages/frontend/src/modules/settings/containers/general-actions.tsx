@@ -116,7 +116,7 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   const [checking, setChecking] = useState(false);
   const [stackMessage, setStackMessage] = useState<string | null>(() => {
     if (isStackUpdatePending()) return t('SETTINGS_ACTIONS_UPDATE_RESTARTING');
-    // An update that finished by reloading this page has only this left to say so.
+    // An update that ended while no panel was mounted has only this left to say so.
     const kept = readKeptStackUpdateOutcome();
     return kept ? stackUpdateOutcomeMessage(t, kept) : null;
   });
@@ -265,6 +265,8 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   useEffect(
     () =>
       subscribeStackUpdate((outcome) => {
+        // On screen now, so the next visit doesn't repeat it.
+        clearKeptStackUpdateOutcome();
         setUpdating(false);
         setStackMessage(stackUpdateOutcomeMessage(t, outcome));
         void refreshAppContext();
@@ -273,7 +275,17 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   );
 
   // Shown once: the state above has it now, and coming back to this tab later shouldn't repeat it.
-  useEffect(() => clearKeptStackUpdateOutcome(), []);
+  // Reading it again here catches an outcome that landed between the first render and the subscription.
+  useEffect(() => {
+    if (!isStackUpdatePending()) {
+      const kept = readKeptStackUpdateOutcome();
+      if (kept) {
+        setUpdating(false);
+        setStackMessage(stackUpdateOutcomeMessage(t, kept));
+      }
+    }
+    clearKeptStackUpdateOutcome();
+  }, [t]);
 
   const handleStopWaiting = useCallback(() => {
     clearStackUpdatePending();

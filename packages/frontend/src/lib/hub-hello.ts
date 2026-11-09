@@ -115,6 +115,7 @@ export function applyHubHello(
       effects.invalidateVersion();
       const bundle = normalizeVersion(context.bundleVersion);
       if (context.sameOriginBundle && bundle !== decision.version && claimReloadForVersion(decision.version)) {
+        // A panel on screen heard it and cleared the kept copy, but that panel is about to go.
         keepStackUpdateOutcome(outcome);
         effects.reload();
       }

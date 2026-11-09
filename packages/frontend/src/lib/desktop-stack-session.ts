@@ -14,8 +14,9 @@ const STACK_UPDATE_PENDING_KEY = 'ci-hub-stack-update-pending';
 const STACK_UPDATE_EVENT = 'ci-hub:stack-update';
 
 /**
- * The outcome of an update that ends in a page reload. The reload swaps the old Hub's bundle for the
- * new one and wipes the page's state, so the event above reaches nobody who can still show it.
+ * How the last update ended, for the Settings panel to show when it next mounts. The event above
+ * only reaches a panel that is on screen: the Hub's hello can arrive while another page is open or
+ * before the lazy panel has loaded, and the reload that swaps the old Hub's bundle wipes the page.
  */
 const STACK_UPDATE_KEPT_OUTCOME_KEY = 'ci-hub-stack-update-outcome';
 
@@ -100,10 +101,12 @@ export function clearStackUpdatePending(): void {
 /** Clear the marker and tell subscribers how the update ended. */
 export function resolveStackUpdate(outcome: StackUpdateOutcome): void {
   clearStackUpdatePending();
+  // Kept first: a panel on screen clears it when it hears the event, and nobody else can show it.
+  keepStackUpdateOutcome(outcome);
   window.dispatchEvent(new CustomEvent<StackUpdateOutcome>(STACK_UPDATE_EVENT, { detail: outcome }));
 }
 
-/** Keep an outcome for the first Settings panel to mount after a reload. */
+/** Keep an outcome for the next Settings panel to mount. */
 export function keepStackUpdateOutcome(outcome: StackUpdateOutcome): void {
   try {
     sessionStorage.setItem(STACK_UPDATE_KEPT_OUTCOME_KEY, JSON.stringify(outcome));
