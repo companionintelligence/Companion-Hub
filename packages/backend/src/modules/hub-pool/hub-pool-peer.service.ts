@@ -32,6 +32,7 @@ import {
   resolveHubPoolDirections,
   resolveHubPoolEnabled,
   resolvePoolMaxPromptTokens,
+  sameModelId,
   type HubPoolDirectionalState,
   type HubPoolEnabledState,
   type HubPoolInboundRefusal,
@@ -92,6 +93,21 @@ async function peerRefusalDetail(response: Response): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * The ids to advertise for one backend, one per model.
+ *
+ * A model the Hub has tracked (loaded, pinned or pull-checked) comes out of `listModels` twice: under
+ * its catalog id from the registry and under its engine id from the backend's own inventory. The
+ * engine id is the one kept. It is what requests carry and what routing compares, and it is what this
+ * node advertised before the Hub touched the model, so a load no longer changes the list.
+ */
+function oneIdPerModel(models: Array<{ id: string; backend_model_id?: string }>): string[] {
+  const ids = models.map((model) => model.id);
+  return models
+    .filter(({ id, backend_model_id: engineId }) => !engineId || !ids.some((other) => other !== id && sameModelId(other, engineId)))
+    .map((model) => model.id);
 }
 
 /** Consecutive failed capability probes before a connected peer is marked unreachable (matches the 3-strikes convention in registration.service.ts). */
@@ -1473,7 +1489,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
           return {
             type: b.type,
             healthy: b.healthy,
-            modelsLoaded: models.filter((m) => m.backend === b.type && m.local && m.state !== 'available' && !unservable.has(m.id)).map((m) => m.id),
+            modelsLoaded: oneIdPerModel(models.filter((m) => m.backend === b.type && m.local && m.state !== 'available' && !unservable.has(m.id))),
           };
         }),
       };

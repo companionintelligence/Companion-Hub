@@ -955,6 +955,33 @@ describe('HubPoolPeerService', () => {
       expect(capabilities.backends).toEqual([{ type: 'ollama', healthy: true, modelsLoaded: ['llama3.2:3b'] }]);
     });
 
+    it('advertises a model the Hub has tracked once, under the id its engine knows it by', async () => {
+      const row = {
+        object: 'model',
+        created: 0,
+        owned_by: 'local:ollama',
+        state: 'loaded',
+        backend: 'ollama',
+        modality: ['text'],
+        local: true,
+      } as const;
+      inferenceRouter.listModels.mockResolvedValue([
+        { ...row, id: 'gemma3-270m', backend_model_id: 'gemma3:270m' },
+        { ...row, id: 'gemma3:270m' },
+        // `:latest` is the same model to Ollama, so these two are one as well.
+        { ...row, id: 'nomic-embed-text', backend_model_id: 'nomic-embed-text' },
+        { ...row, id: 'nomic-embed-text:latest' },
+        // The engine doesn't list this one, so the catalog id is all there is to advertise.
+        { ...row, id: 'qwen3-5-9b', backend_model_id: 'qwen3.5:9b', state: 'pulled' },
+      ]);
+
+      const capabilities = await service.getOwnCapabilities();
+
+      expect(capabilities.backends).toEqual([
+        { type: 'ollama', healthy: true, modelsLoaded: ['gemma3:270m', 'nomic-embed-text:latest', 'qwen3-5-9b'] },
+      ]);
+    });
+
     it('does not advertise a model the local engine has been unable to serve', async () => {
       inferenceRouter.getStatus.mockResolvedValue({
         ...ownStatus,
