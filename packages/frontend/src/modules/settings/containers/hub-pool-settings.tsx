@@ -58,6 +58,7 @@ import {
   type PoolSettings,
   type PoolStatus,
   isUnverifiedCandidate,
+  isServablePeer,
   mergePoolModels,
   peerLabel,
 } from '../helpers/hub-pool-shared';
@@ -564,7 +565,7 @@ export const HubPoolSection = () => {
   const poolNodes = [
     localLabel,
     ...status.peers
-      .filter((peer) => peer.status === 'connected')
+      .filter(isServablePeer)
       .map((peer) => peerLabel(peer))
       .sort((a, b) => a.localeCompare(b)),
   ];

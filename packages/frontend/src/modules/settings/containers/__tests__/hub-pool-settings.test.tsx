@@ -258,6 +258,34 @@ describe('HubPoolSection', () => {
       expect(screen.queryByText('HUB_POOL_STATUS_CONNECTED')).toBeNull();
     });
 
+    it('leaves a switched-off peer out of what the pool can serve', async () => {
+      fixtures.status = baseStatus({
+        peers: [
+          connectedPeer({
+            id: 'peer-off',
+            displayName: 'Parked Hub',
+            nodeFqdn: 'hub-c.example-tailnet.ts.net',
+            enabled: false,
+            lastCapabilities: {
+              hardwareTier: 'server',
+              backends: [{ type: 'vllm', healthy: true, modelsLoaded: ['only-parked:7b'] }],
+              updatedAt: '2026-09-05T10:00:00.000Z',
+            },
+          }),
+          connectedPeer(),
+        ],
+        peerCounts: { total: 2, connected: 2, pending: 0, unreachable: 0, disabled: 1 },
+      });
+
+      renderSection();
+
+      const rows = await screen.findAllByTestId('hub-pool-model');
+      expect(rows.map((row) => row.getAttribute('data-model'))).toEqual(['llama3.2:3b', 'qwen3:8b']);
+      expect(rows.map((row) => row.getAttribute('data-nodes'))).toEqual(['HUB_POOL_LOCAL_NODE_LABEL,Studio Hub', 'Studio Hub']);
+      expect(screen.queryByRole('columnheader', { name: 'Parked Hub' })).toBeNull();
+      expect(screen.getByRole('columnheader', { name: 'Studio Hub' })).toBeTruthy();
+    });
+
     it('says a peer is refusing OUR work rather than showing it as a node with no models', async () => {
       fixtures.status = baseStatus({
         peers: [
