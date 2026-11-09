@@ -37,6 +37,8 @@ export interface AppUrlAvailability {
   localUrl: string | null;
   /** Already-translated explanation ("DNS propagating..."); null when ready/idle. */
   statusMessage: string | null;
+  /** The Portal refused this app a public address, so `appUrl` will not resolve however long the page waits. */
+  publicAddressRefused: boolean;
   /** The backend believes a `resolve` attempt could fix this. */
   resolvable: boolean;
   /** Early window in which a not-yet-available route is expected, not a fault. */
@@ -62,6 +64,18 @@ const MAX_POLL_MS = 5 * 60_000;
 const RESOLVE_RECHECK_DELAY_MS = 3_000;
 
 /**
+ * The Portal refused the app a public address for a reason that stands until someone acts: not
+ * propagation and no retry fixes it, so the copy says what the person can change (#2312, #2271).
+ */
+const REFUSED_PUBLIC_ADDRESS_MESSAGE_KEYS: Record<string, string> = {
+  PUBLIC_ADDRESS_QUOTA_EXCEEDED: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+  PUBLIC_ADDRESS_DUPLICATE_SUBDOMAIN: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_DUPLICATE_SUBDOMAIN',
+  PUBLIC_ADDRESS_CONFLICT: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_CONFLICT',
+  PUBLIC_ADDRESS_ZONE_UNAVAILABLE: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_ZONE_UNAVAILABLE',
+  PUBLIC_ADDRESS_INVALID_SUBDOMAIN: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_INVALID_SUBDOMAIN',
+};
+
+/**
  * Map `UNKNOWN` so raw Node exceptions never reach users through the backend detail fallback.
  * Keep these keys aligned with `checkAppAvailability`.
  */
@@ -77,9 +91,7 @@ const PROBE_MESSAGE_KEYS: Record<string, string> = {
   NO_DEVICE_REGISTRATION: 'APP_ACTION_ERROR_NO_DEVICE_REGISTRATION',
   // Without this the user saw the backend's raw English detail string.
   TAILSCALE_NOT_READY: 'APP_ACTION_ERROR_TAILSCALE_NOT_READY',
-  // The Portal refused the app a public address because the plan is full: not propagation, and no
-  // retry fixes it, so the copy says what the person can change (#2312).
-  PUBLIC_ADDRESS_QUOTA_EXCEEDED: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+  ...REFUSED_PUBLIC_ADDRESS_MESSAGE_KEYS,
   UNKNOWN: 'APP_ACTION_APPLICATION_ERROR',
 };
 
@@ -324,6 +336,7 @@ export function useAppUrlAvailability(input: {
     appUrl: probe?.appUrl ?? lastKnownAppUrl,
     localUrl: probe?.localUrl ?? lastKnownLocalUrl,
     statusMessage,
+    publicAddressRefused: Boolean(probe?.errorCode && probe.errorCode in REFUSED_PUBLIC_ADDRESS_MESSAGE_KEYS),
     resolvable: Boolean(probe?.resolvable),
     withinGracePeriod: !graceElapsed && !pollingStopped,
     pollingStopped,
@@ -342,6 +355,7 @@ export const IDLE_APP_URL_AVAILABILITY: AppUrlAvailability = {
   appUrl: null,
   localUrl: null,
   statusMessage: null,
+  publicAddressRefused: false,
   resolvable: false,
   withinGracePeriod: false,
   pollingStopped: false,

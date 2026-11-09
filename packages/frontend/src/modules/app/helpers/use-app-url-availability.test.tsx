@@ -277,6 +277,31 @@ describe('useAppUrlAvailability', () => {
     await waitFor(() => expect(result.current.state).toBe('unreachable'));
     expect(result.current.statusMessage).toBe('APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED');
     expect(result.current.resolvable).toBe(false);
+    expect(result.current.publicAddressRefused).toBe(true);
+  });
+
+  it.each([
+    ['PUBLIC_ADDRESS_DUPLICATE_SUBDOMAIN'],
+    ['PUBLIC_ADDRESS_CONFLICT'],
+    ['PUBLIC_ADDRESS_ZONE_UNAVAILABLE'],
+    ['PUBLIC_ADDRESS_INVALID_SUBDOMAIN'],
+  ])('marks the address refused and gives its own copy for %s', async (errorCode) => {
+    probe({ available: false, stage: 'error', errorCode, appUrl: 'https://app.example.com', resolvable: false });
+
+    const { result } = renderHook(() => useAppUrlAvailability(EXPOSED), { wrapper: wrapper() });
+
+    await waitFor(() => expect(result.current.state).toBe('unreachable'));
+    expect(result.current.statusMessage).toBe(`APP_ACTION_ERROR_${errorCode}`);
+    expect(result.current.publicAddressRefused).toBe(true);
+  });
+
+  it('does not call a record that is still coming up refused', async () => {
+    probe({ available: false, stage: 'propagating', errorCode: 'DNS_NOT_FOUND', appUrl: 'https://app.example.com', resolvable: true });
+
+    const { result } = renderHook(() => useAppUrlAvailability(EXPOSED), { wrapper: wrapper() });
+
+    await waitFor(() => expect(result.current.state).toBe('propagating'));
+    expect(result.current.publicAddressRefused).toBe(false);
   });
 
   it('keeps the last resolved URL when a later probe returns none', async () => {

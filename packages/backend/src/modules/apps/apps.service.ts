@@ -89,6 +89,39 @@ function dnsNotFoundResult(exposureMode: string, appUrl: string): AppAvailabilit
   };
 }
 
+/**
+ * The verdict for each refusal that stands until someone acts. The probe can only see the missing DNS
+ * record, which reads as "DNS propagating", and the Portal won't publish the address however long the
+ * page waits, so these say what happened instead and no re-sync is offered.
+ */
+const REFUSED_PUBLIC_ADDRESS_VERDICTS: Partial<Record<PublicDnsFailureReason, Pick<AppAvailabilityResult, 'reason' | 'errorCode' | 'detail'>>> = {
+  subdomain_quota_exceeded: {
+    reason: 'PLAN_LIMIT',
+    errorCode: 'PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+    detail: "The organization's plan has no public app addresses left, so Companion Portal refused this app one.",
+  },
+  duplicate_subdomain: {
+    reason: 'DUPLICATE_SUBDOMAIN',
+    errorCode: 'PUBLIC_ADDRESS_DUPLICATE_SUBDOMAIN',
+    detail: 'Another app on this Hub already uses this subdomain, so Companion Portal refused this app one.',
+  },
+  conflict: {
+    reason: 'ADDRESS_CONFLICT',
+    errorCode: 'PUBLIC_ADDRESS_CONFLICT',
+    detail: 'Another device already holds this public address, so Companion Portal refused it for this app.',
+  },
+  zone_unreachable: {
+    reason: 'ZONE_UNAVAILABLE',
+    errorCode: 'PUBLIC_ADDRESS_ZONE_UNAVAILABLE',
+    detail: "This app's domain is not set up for this device, so Companion Portal refused it a public address.",
+  },
+  invalid_subdomain: {
+    reason: 'INVALID_SUBDOMAIN',
+    errorCode: 'PUBLIC_ADDRESS_INVALID_SUBDOMAIN',
+    detail: "This app's subdomain is not a valid web address, so Companion Portal refused it a public address.",
+  },
+};
+
 /** Cloudflare's own error as it answers a client that does not ask for HTML, this probe included. */
 const CLOUDFLARE_PLAIN_ERROR = /^\s*error code:\s*(\d{3,4})\s*$/i;
 
@@ -366,10 +399,10 @@ export class AppsService {
   }
 
   /**
-   * A public address the Portal refused because the organization's plan has none left is not on its
-   * way, however long the page waits. The probe can only see the missing DNS record, which reads as
-   * "DNS propagating", so the app page said that for as long as the plan stayed full (#2312). Ask the
-   * last sync instead and say what the person can do. Any other verdict is returned unchanged.
+   * A public address the Portal refused for a reason that stands until someone acts is not on its way,
+   * however long the page waits. The probe can only see the missing DNS record, which reads as
+   * "DNS propagating", so the app page said that for as long as the refusal stood (#2312, #2271). Ask
+   * the last sync instead and say what the person can do. Any other verdict is returned unchanged.
    */
   private async explainRefusedPublicAddress(appUrn: AppUrn, probed: AppAvailabilityResult): Promise<AppAvailabilityResult> {
     let refusal: PublicDnsFailureReason | null = null;
@@ -380,18 +413,11 @@ export class AppsService {
     } catch {
       return probed;
     }
-    if (refusal !== 'subdomain_quota_exceeded') {
+    const verdict = refusal ? REFUSED_PUBLIC_ADDRESS_VERDICTS[refusal] : undefined;
+    if (!verdict) {
       return probed;
     }
-    return {
-      available: false,
-      appUrl: probed.appUrl,
-      stage: 'error',
-      reason: 'PLAN_LIMIT',
-      errorCode: 'PUBLIC_ADDRESS_QUOTA_EXCEEDED',
-      detail: "The organization's plan has no public app addresses left, so Companion Portal refused this app one.",
-      resolvable: false,
-    };
+    return { available: false, appUrl: probed.appUrl, stage: 'error', resolvable: false, ...verdict };
   }
 
   /**

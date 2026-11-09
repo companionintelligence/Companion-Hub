@@ -519,6 +519,26 @@ describe('AppAccessPoints', () => {
     expect(screen.queryByText('APP_DETAILS_ACCESS_PENDING')).not.toBeInTheDocument();
   });
 
+  it('names the refusal on the Public domain card and offers no link when the Portal refused the address', () => {
+    render(
+      <MemoryRouter>
+        <AppAccessPoints
+          app={{ status: 'running', port: 8138, localSubdomain: 'bitboard', exposureMode: 'cloudflare', exposed: true } as any}
+          info={
+            { urn: 'bitboard:community', name: 'Bitboard', no_gui: false, https: false, port: 8138, dynamic_config: true, exposable: true } as any
+          }
+          publicAddressRefusal="No public address: the plan has none left."
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('APP_DETAILS_ACCESS_REFUSED')).toBeInTheDocument();
+    expect(screen.getByTestId('public-access-refused')).toHaveTextContent('No public address: the plan has none left.');
+    // Three cards, one Open each: the public one stays disabled so the refused address can't be opened.
+    expect(screen.getAllByRole('button', { name: 'APP_ACTION_OPEN' })[0]).toBeDisabled();
+    expect(screen.queryByText(/https:\/\/bitboard/)).not.toBeInTheDocument();
+  });
+
   it('still says Pending when tailscaled has not refused anything', () => {
     render(
       <MemoryRouter>

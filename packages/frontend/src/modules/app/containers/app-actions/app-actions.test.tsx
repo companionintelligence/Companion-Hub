@@ -1137,6 +1137,38 @@ describe('AppActions', () => {
       expect(screen.queryByText('APP_ACTION_ERROR_DNS_NOT_FOUND')).not.toBeInTheDocument();
     });
 
+    // No DNS record exists for an address the Portal refused, so the link could only end on a browser error (#2271).
+    it('offers no "Open anyway" for an address the Portal refused, and still says why', () => {
+      renderExposed(
+        makeAvailability({
+          state: 'unreachable',
+          statusMessage: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+          publicAddressRefused: true,
+          withinGracePeriod: false,
+          appUrl: 'https://app.example.com',
+        }),
+      );
+
+      expect(screen.queryByRole('button', { name: 'APP_ACTION_OPEN_ANYWAY' })).not.toBeInTheDocument();
+      expect(screen.getByText('APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED')).toBeInTheDocument();
+    });
+
+    it('offers no "Open anyway" for a refused address once probing has stopped either', () => {
+      renderExposed(
+        makeAvailability({
+          state: 'unreachable',
+          statusMessage: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+          publicAddressRefused: true,
+          withinGracePeriod: false,
+          pollingStopped: true,
+          appUrl: 'https://app.example.com',
+        }),
+      );
+
+      expect(screen.getByTestId('action-common_retry')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'APP_ACTION_OPEN_ANYWAY' })).not.toBeInTheDocument();
+    });
+
     it('offers Resolve with the reason once the grace window has passed', () => {
       renderExposed(
         makeAvailability({
