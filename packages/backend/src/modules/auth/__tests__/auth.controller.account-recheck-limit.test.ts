@@ -1,6 +1,6 @@
 /**
  * Confirming a signed-in person's own password or two-factor code is limited per account: one budget
- * across every route that asks for it, the same size and window as signing in, and only wrong answers
+ * across every route that asks for it, the same size and window as signing in. Only wrong answers
  * count against it.
  */
 import { HttpStatus } from '@nestjs/common';
@@ -136,7 +136,7 @@ describe('AuthController account re-check limit', () => {
     await expect(changePassword(req(OTHER_ACCOUNT))).rejects.toThrow('AUTH_ERROR_INVALID_PASSWORD');
   });
 
-  it('does not count a correct answer, and a correct answer does not clear earlier wrong ones', async () => {
+  it('does not count a correct answer or let one clear earlier wrong ones', async () => {
     authService.getTotpUri.mockRejectedValue(wrongPassword());
     for (let i = 0; i < 5; i++) {
       await expect(getTotpUri()).rejects.toThrow('AUTH_ERROR_INVALID_PASSWORD');

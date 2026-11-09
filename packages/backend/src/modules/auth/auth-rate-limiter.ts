@@ -44,8 +44,8 @@ const MAX_TRACKED_KEYS = 10_000;
  * ⚠ ROUTES THAT TAKE NO SESSION ARE KEYED BY CLIENT ADDRESS, NEVER BY ACCOUNT. Keying by email would
  * let anyone who knows the operator's address lock the operator out by failing a few times on purpose.
  * `accountRecheck` is keyed by account id because its routes need that account's own session (or a
- * host-local credential, which speaks as the first operator), so a stranger cannot spend the budget, and
- * a person's budget stays the same from whichever address they are on.
+ * host-local credential, which speaks as the first operator). A stranger cannot spend that budget and a
+ * person keeps the same one from whichever address they are on.
  *
  * The address is whatever Express resolved through the Hub's trusted-proxy configuration, so it is
  * the real client behind Traefik and the tunnel, not the proxy's own. Where a caller reaches the Hub
@@ -167,8 +167,8 @@ export class AuthRateLimiter {
     }
 
     // Everything is live and the table is still over the cap: drop the oldest entries first. Account
-    // budgets stay. There is one per person on this Hub, so they cannot grow the table, and a client
-    // rotating through addresses must not be able to wipe the one budget that ignores the address.
+    // budgets stay: there is one per person on this Hub, so they cannot grow the table and the budget
+    // that ignores the address must not be emptied by traffic from other addresses.
     for (const key of this.hits.keys()) {
       if (this.hits.size <= MAX_TRACKED_KEYS) {
         break;

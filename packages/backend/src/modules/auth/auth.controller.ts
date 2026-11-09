@@ -374,7 +374,7 @@ export class AuthController {
       if (!isWrongPasswordOrCode(error)) {
         refund();
       } else if (this.rateLimiter.isSpent('accountRecheck', clientKey)) {
-        // Reached by the answer that used up the budget, so someone who stays exactly at the limit, and is never refused, is still reported.
+        // Reached by the answer that used up the budget, so someone who stays exactly at the limit without being refused is still reported.
         this.reportAccountRecheckLimit(clientKey, userId, req);
       }
 
