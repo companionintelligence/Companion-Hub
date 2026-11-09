@@ -7,6 +7,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
+import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
 import { APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN } from '@/modules/docker/managed-app-containers';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
@@ -52,7 +53,7 @@ vi.mock('@/modules/inference/host-rocm-availability', () => ({
 describe('RestartAppCommand — pull policy', () => {
   let command: RestartAppCommand;
   let dockerService: any;
-  let dockerode: ReturnType<typeof mock<Dockerode>>;
+  let dockerReadFacade: ReturnType<typeof mock<DockerReadFacade>>;
   let composeArgs: string[];
   let appFilesManager: any;
   let entitlements: ReturnType<typeof mock<MarketplaceEntitlementService>>;
@@ -116,12 +117,17 @@ describe('RestartAppCommand — pull policy', () => {
     subnetManager.allocateSubnet.mockResolvedValue('172.20.0.0/16');
     subnetManager.releaseSubnet.mockResolvedValue(undefined);
 
-    dockerode = mock<Dockerode>();
+    const dockerode = mock<Dockerode>();
     // @ts-expect-error
     dockerode.pruneContainers.mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 });
 
+    dockerReadFacade = mock<DockerReadFacade>();
+    dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue([]);
+    dockerReadFacade.describeAppCameUpFailure.mockResolvedValue({ ok: false, message: 'db keeps restarting', errorDetail: 'db (restarting)' });
+
     const moduleRef = {
       get: vi.fn((token: any) => {
+        if (token === DockerReadFacade) return dockerReadFacade;
         if (token === LoggerService) return logger;
         if (token === ConfigurationService) return config;
         if (token === AppFilesManager) return appFilesManager;
@@ -296,11 +302,32 @@ describe('RestartAppCommand — pull policy', () => {
       expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn, APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN);
     });
 
+    it('still reports the failed service when the routes cannot be rebuilt', async () => {
+      dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
+      // The first rebuild is the one between `down` and `up`, which has always been allowed to fail the restart.
+      traefikConfigService.regenerateTraefikConfig.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('traefik config is locked'));
+
+      const result = await command.execute(appUrn, { exposedLocal: true, stopIfNotUp: true });
+
+      expect(result).toMatchObject({ success: false, serviceFailure: crashLoop.serviceFailure });
+    });
+
     it('takes the app down when compose up fails with a container left restarting', async () => {
       dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
         if (args.startsWith('up')) throw new Error('dependency failed to start: container test-app-db-1 is unhealthy');
       });
-      dockerode.listContainers.mockResolvedValue([{ Id: 'db', Names: ['/test-app-db-1'] }] as any);
+      dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue([
+        {
+          id: 'db',
+          service: 'db',
+          containerName: 'test-app-db-1',
+          state: 'restarting',
+          exitCode: 1,
+          restartCount: 4,
+          startedAtMs: null,
+          health: null,
+        },
+      ]);
 
       const result = await command.execute(appUrn, { stopIfNotUp: true });
 

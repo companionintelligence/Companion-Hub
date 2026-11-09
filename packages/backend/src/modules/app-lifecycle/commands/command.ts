@@ -1,12 +1,10 @@
 import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
-import { withTimeout } from '@/common/helpers/with-timeout';
 import { LoggerService } from '@/core/logger/logger.service';
 import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
 import { getEffectiveExposureMode } from '@/modules/apps/app-exposure.helpers';
 import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
-import { appUrnLabelSets, listContainersMatchingAnyLabelSets } from '@/modules/docker/hub-container-query';
-import { APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN, type AppCameUpTiming } from '@/modules/docker/managed-app-containers';
+import { APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN, type AppCameUpTiming, type AppContainerLook } from '@/modules/docker/managed-app-containers';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import type { PortAllocation } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
@@ -57,9 +55,13 @@ export interface LifecycleCommand {
   afterReply?(): Promise<void>;
 }
 
-/** The containers of this app that Docker is restart-looping right now. */
-export function listRestartingAppContainers(docker: Pick<Dockerode, 'listContainers'>, appUrn: AppUrn): Promise<Dockerode.ContainerInfo[]> {
-  return listContainersMatchingAnyLabelSets(docker, appUrnLabelSets(appUrn), true, { status: ['restarting'] });
+/**
+ * Whether a failed `compose up` left this container failing. A crash loop reads `running` between two crashes
+ * with its health check back at `starting`, so a restart count counts then. A count alone says nothing: `up`
+ * can fail before it recreates anything, as a pull does, and the service may have been fine for weeks since.
+ */
+function isLeftFailing({ state, health, restartCount }: AppContainerLook): boolean {
+  return state === 'restarting' || health === 'unhealthy' || (health === 'starting' && (restartCount ?? 0) > 0);
 }
 
 /**
@@ -202,56 +204,59 @@ export class AppLifecycleCommand {
   }
 
   /**
+   * The routes after a Start or Restart failed: either the other containers stay up and go on serving or they
+   * just went down, and the routes follow both. A rebuild that fails must not replace the failure being reported.
+   */
+  protected async rebuildRoutesAfterFailure(appUrn: AppUrn, form: AppEventFormInput): Promise<void> {
+    if (getEffectiveExposureMode(form) === 'local') {
+      return;
+    }
+    await this.moduleRef
+      .get(TraefikConfigService, { strict: false })
+      .regenerateTraefikConfig(0)
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.moduleRef.get(LoggerService, { strict: false }).warn(`Could not rebuild the routes after ${appUrn} failed: ${detail}`);
+      });
+  }
+
+  /**
    * `compose up` failed in a Start or Restart. Rethrows the failure. One someone asked for first takes the app
    * down if a dependency was left failing, with the routes following as they do after a failed check.
    */
   protected async failComposeUp(appUrn: AppUrn, form: AppEventFormInput, error: unknown): Promise<never> {
-    if (form.stopIfNotUp && (await this.stopAppLeftFailing(appUrn)) && getEffectiveExposureMode(form) !== 'local') {
-      await this.moduleRef
-        .get(TraefikConfigService, { strict: false })
-        .regenerateTraefikConfig(0)
-        .catch((routesError: unknown) => {
-          const detail = routesError instanceof Error ? routesError.message : String(routesError);
-          this.moduleRef.get(LoggerService, { strict: false }).warn(`Could not rebuild the routes after taking down ${appUrn}: ${detail}`);
-        });
+    if (form.stopIfNotUp && (await this.stopAppLeftFailing(appUrn))) {
+      await this.rebuildRoutesAfterFailure(appUrn, form);
     }
     throw error;
   }
 
   /**
    * A dependency that does not get healthy fails the `up` ("dependency failed to start"). Compose leaves it
-   * restarting or running with its health check failing and Docker keeps it alive either way, so the app goes
+   * crash-looping or running with its health check failing and Docker keeps it alive either way, so the app goes
    * down as after a failed check. The container's log goes with it, so its end is kept in the Hub's log first.
-   * An `up` that failed for another reason, as a pull does before anything changed, leaves the app as it is.
+   * An `up` that failed with no container failing, as a pull usually does, leaves the app as it is.
    * Returns whether the app was taken down.
    */
   private async stopAppLeftFailing(appUrn: AppUrn): Promise<boolean> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
-    const found = await Promise.all(
-      ([{ status: ['restarting'] }, { health: ['unhealthy'] }] as Record<string, string[]>[]).map((filters) =>
-        listContainersMatchingAnyLabelSets(this.docker, appUrnLabelSets(appUrn), true, filters),
-      ),
-    ).catch((error: unknown) => {
+    const dockerRead = this.moduleRef.get(DockerReadFacade, { strict: false });
+    const containers = await dockerRead.lookAtManagedAppContainers(appUrn).catch((error: unknown) => {
       logger.warn(`Could not look for failing containers of ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
       return [];
     });
-    const failing = [...new Map(found.flat().map((container) => [container.Id, container])).values()];
+    const failing = containers.filter(isLeftFailing);
     if (failing.length === 0) {
       return false;
     }
 
-    const dockerRead = this.moduleRef.get(DockerReadFacade, { strict: false });
-    await Promise.all(
-      failing.map(async (container) => {
-        const name = container.Names?.[0]?.replace(/^\//, '') || container.Id;
-        const logTail = await withTimeout(
-          dockerRead?.tailContainerLogs(name, 20) ?? Promise.resolve(''),
-          5_000,
-          'Docker did not return the logs in time',
-        ).catch(() => '');
-        logger.warn(`[AppDiag] ${appUrn} left ${name} failing (${container.Status}):\n${logTail}`);
-      }),
-    );
+    const { errorDetail } = await dockerRead.describeAppCameUpFailure({
+      outcome: 'failed',
+      kind: 'restarting',
+      containers: failing,
+      containersSeen: containers.length,
+    });
+    logger.warn(`[AppDiag] ${appUrn} left failing by compose up:\n${errorDetail ?? ''}`);
     await this.stopAppThatDidNotComeUp(appUrn);
     return true;
   }

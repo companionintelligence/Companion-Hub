@@ -6,13 +6,14 @@ import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { customAppMainPortAvoids, ensureCustomAppHostPort, hubHostPorts, mappedHostPorts } from '@/modules/custom-apps/custom-app-host-port';
+import { appUrnLabelSets, listContainersMatchingAnyLabelSets } from '@/modules/docker/hub-container-query';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import type Dockerode from 'dockerode';
-import { AppLifecycleCommand, listRestartingAppContainers } from './command';
+import { AppLifecycleCommand } from './command';
 import { hostPortMoveOf } from './main-host-port';
 
 /**
@@ -43,7 +44,7 @@ export function startComposeCommand(options: { forcePull: boolean; onlyRecreateC
  */
 export async function removeRestartingAppContainers(docker: Pick<Dockerode, 'listContainers' | 'getContainer'>, appUrn: AppUrn): Promise<string[]> {
   const removed: string[] = [];
-  for (const container of await listRestartingAppContainers(docker, appUrn)) {
+  for (const container of await listContainersMatchingAnyLabelSets(docker, appUrnLabelSets(appUrn), true, { status: ['restarting'] })) {
     await docker.getContainer(container.Id).remove({ force: true });
     removed.push(container.Names?.[0]?.replace(/^\//, '') || container.Id);
   }
@@ -122,16 +123,15 @@ export class StartAppCommand extends AppLifecycleCommand {
       // `compose up` returning says nothing about a service that crashes as soon as it starts.
       const notUp = await this.appCameUpErrorAfterStart(appUrn, form);
 
-      // Regenerate Traefik file-based config after app starts. Also when a service failed: either the
-      // other containers stay up and go on serving or they just went down and the routes have to follow.
-      // The check above is the wait for them to start.
+      if (notUp) {
+        await this.rebuildRoutesAfterFailure(appUrn, form);
+        throw notUp;
+      }
+
+      // Regenerate Traefik file-based config after app starts. The check above is the wait for them to start.
       if (getEffectiveExposureMode(form) !== 'local') {
         logger.debug(`Regenerating Traefik config for exposed app ${appUrn}`);
         await traefikConfigService.regenerateTraefikConfig(0);
-      }
-
-      if (notUp) {
-        throw notUp;
       }
 
       logger.info(`App ${appUrn} started`);
