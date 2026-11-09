@@ -386,6 +386,29 @@ describe('HubPoolSection', () => {
     expect(screen.queryByTestId('hub-pool-unreachable-hint')).toBeNull();
   });
 
+  it('keeps the re-pair steps on a switched-off peer that refuses this Hub', async () => {
+    fixtures.status = baseStatus({
+      peers: [
+        connectedPeer({
+          status: 'unreachable',
+          enabled: false,
+          consecutiveFailures: 5,
+          inFlightRequests: 0,
+          probeFailure: { kind: 'identity_changed', action: 'Re-pair: (1) here: cihub pool unpair hub-b.example-tailnet.ts.net; ...' },
+        }),
+      ],
+      peerCounts: { total: 1, connected: 0, pending: 0, unreachable: 1 },
+      reason: 'no_peers',
+      routingActive: false,
+    });
+
+    renderSection();
+
+    const hint = await screen.findByTestId('hub-pool-peer-needs-repair-hint');
+    expect(hint.textContent).toContain('cihub pool unpair hub-b.example-tailnet.ts.net');
+    expect(screen.queryByTestId('hub-pool-unreachable-hint')).toBeNull();
+  });
+
   it('tells the operator an unreachable peer heals itself instead of needing an unpair', async () => {
     fixtures.status = baseStatus({
       peers: [connectedPeer({ status: 'unreachable', consecutiveFailures: 3, inFlightRequests: 0 })],
