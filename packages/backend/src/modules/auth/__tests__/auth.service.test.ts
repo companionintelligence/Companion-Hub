@@ -158,6 +158,10 @@ describe('AuthService', () => {
 
       expect(await status(authService.verifyTotp({ totpSessionId: 'session', totpCode: '000000' }), 'AUTH_ERROR_TOTP_INVALID_CODE')).toBe(400);
       expect(await status(authService.verifyTotp({ totpSessionId: 'gone', totpCode: '000000' }), 'AUTH_ERROR_TOTP_SESSION_NOT_FOUND')).toBe(400);
+
+      // A request already past the first check when another one ended the session.
+      cacheService.get.mockReturnValueOnce('7' as never).mockReturnValueOnce(undefined as never);
+      expect(await status(authService.verifyTotp({ totpSessionId: 'session', totpCode: '000000' }), 'AUTH_ERROR_TOTP_SESSION_NOT_FOUND')).toBe(400);
     });
 
     it('a wrong code when turning 2FA on', async () => {
