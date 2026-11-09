@@ -207,6 +207,36 @@ describe('hub-pool-cli formatters', () => {
     expect(formatPoolTimestamp('not a date')).toBe('not a date');
   });
 
+  it("names this Hub in the NODE column instead of the log's key", () => {
+    const log: PoolRoutingLogResponse = {
+      entries: [
+        {
+          at: '2026-09-05T10:00:01.000Z',
+          direction: 'outbound',
+          path: '/api/chat',
+          model: 'gemma3:270m',
+          node: 'local',
+          peerId: null,
+          backend: 'ollama',
+          candidates: 1,
+          attempt: 1,
+          failedOverFrom: [],
+          outcome: 'served',
+          status: 200,
+          durationMs: 33,
+        },
+      ],
+      summary: { recorded: 1, capacity: 200, served: 1, failed: 0, failovers: 0, lastAt: '2026-09-05T10:00:01.000Z' },
+    };
+
+    const row = (name?: string | null) => formatPoolRoutingLogLines(log, name).find((line) => line.includes('gemma3:270m')) ?? '';
+
+    expect(row('hub-a.example-tailnet.ts.net')).toContain('hub-a.example-tailnet.ts.net');
+    expect(row('hub-a.example-tailnet.ts.net')).not.toMatch(/\blocal\b/);
+    // No tailnet name to show on this Hub.
+    expect(row(null)).toContain('this Hub');
+  });
+
   it('renders the failover chain, not just a count', () => {
     const log: PoolRoutingLogResponse = {
       entries: [
@@ -304,7 +334,7 @@ describe('hub-pool-cli formatters', () => {
     }).join('\n');
 
     expect(text).toContain('4 failed (4 abandoned by the caller)');
-    expect(text).toContain('↳ the app closed its connection after 30031 ms; local had not answered yet');
+    expect(text).toContain('↳ the app closed its connection after 30031 ms; this Hub had not answered yet');
     expect(text).toContain('not a routing failure');
     // The node the request was placed on, where an operator looks first — not the `-` that says
     // nothing was selected.
@@ -460,7 +490,7 @@ describe('hub-pool-cli formatters', () => {
     }).join('\n');
 
     expect(text).toContain('3 failed (2 bad answers from their nodes) ·');
-    expect(text).toContain("↳ local answered with only <unusedN> placeholder tokens — the node's fault, not the request's");
+    expect(text).toContain("↳ this Hub answered with only <unusedN> placeholder tokens — the node's fault, not the request's");
     expect(text).not.toContain('refused the request itself');
     expect(text).toContain('↳ failed over from local (truncated-upstream), beta-1.tailxyz.ts.net (HTTP 500)');
     expect(text).toContain("↳ the node answered with a response cut off before the dialect's final frame");

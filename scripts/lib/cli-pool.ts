@@ -505,8 +505,13 @@ export async function runPoolCommand(args: string[]) {
     }
 
     if (parsed.subcommand === 'log') {
-      const log = await fetchPoolRoutingLog(envFile, parsed.limit);
-      printMessageBox(`Hub Pool routing log  [${env}]`, formatPoolRoutingLogLines(log), log.summary.failed > 0 ? 'yellow' : 'cyan');
+      // The name is a nicety on the NODE column, so a status that fails doesn't cost the log.
+      const [log, status] = await Promise.all([fetchPoolRoutingLog(envFile, parsed.limit), fetchPoolStatus(envFile).catch(() => null)]);
+      printMessageBox(
+        `Hub Pool routing log  [${env}]`,
+        formatPoolRoutingLogLines(log, status?.localNode.nodeFqdn),
+        log.summary.failed > 0 ? 'yellow' : 'cyan',
+      );
       return;
     }
 

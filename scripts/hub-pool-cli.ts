@@ -1725,6 +1725,9 @@ function formatRoutingCounts(summary: {
 
 const LOG_WIDTHS = [20, 4, 20, 34, 5, 7, 8] as const;
 
+/** The routing log's name for this node. */
+const LOCAL_ROUTING_NODE = 'local';
+
 /** A request-error label in the words an app's operator can act on. An unknown label prints as itself. */
 function describeRequestErrorSignature(signature: string): string {
   const words: Record<string, string> = {
@@ -1802,7 +1805,7 @@ function describeContextWindow(numCtx: number | null): string {
   return numCtx === null ? 'the engine default' : `num_ctx ${numCtx}`;
 }
 
-export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[] {
+export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse, localNodeName?: string | null): string[] {
   const summary = log.summary;
   const header = [formatRoutingCounts(summary), `Last decision  ${formatPoolTimestamp(summary.lastAt)}`, ''];
 
@@ -1826,12 +1829,14 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
   for (const entry of log.entries) {
     const outcome = entry.outcome === 'served' ? `${OK} served` : `${FAIL} failed`;
     const status = entry.status === null ? '' : ` ${entry.status}`;
+    // `local` is the log's key for this node, not a name an operator would know it by.
+    const nodeName = entry.node === LOCAL_ROUTING_NODE ? (localNodeName ?? 'this Hub') : entry.node;
     lines.push(
       [
         cell(formatPoolTimestamp(entry.at), LOG_WIDTHS[0]),
         cell(entry.direction === 'inbound' ? 'in' : 'out', LOG_WIDTHS[1]),
         cell(entry.model ?? '-', LOG_WIDTHS[2]),
-        cell(entry.node ?? '-', LOG_WIDTHS[3]),
+        cell(nodeName ?? '-', LOG_WIDTHS[3]),
         cell(`${entry.attempt}/${entry.candidates}`, LOG_WIDTHS[4]),
         cell(String(entry.durationMs), LOG_WIDTHS[5]),
         cell(typeof entry.totalMs === 'number' ? String(entry.totalMs) : '-', LOG_WIDTHS[6]),
@@ -1844,7 +1849,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     // the node that broke. Neither is true: nobody was waiting for the answer any more.
     if (entry.clientClosed) {
       lines.push(
-        `  ↳ the app closed its connection after ${entry.durationMs} ms; ${sanitizeForBox(entry.node ?? '?')} had not answered yet — not a routing failure`,
+        `  ↳ the app closed its connection after ${entry.durationMs} ms; ${sanitizeForBox(nodeName ?? '?')} had not answered yet — not a routing failure`,
       );
     }
     // Next, for the same reason: a `x failed 500` beside a node name reads as that node breaking,
@@ -1853,10 +1858,10 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     if (requestError?.basis === 'node') {
       // The opposite verdict, so the opposite sentence: a `x failed 200` IS that node breaking.
       lines.push(
-        `  ↳ ${sanitizeForBox(entry.node ?? '?')} answered with ${describeRequestErrorSignature(requestError.signature)} — the node's fault, not the request's`,
+        `  ↳ ${sanitizeForBox(nodeName ?? '?')} answered with ${describeRequestErrorSignature(requestError.signature)} — the node's fault, not the request's`,
       );
     } else if (requestError) {
-      const node = sanitizeForBox(entry.node ?? '?');
+      const node = sanitizeForBox(nodeName ?? '?');
       const agreed = requestError.basis === 'confirmed' && requestError.confirms ? `, as ${sanitizeForBox(requestError.confirms)} had` : '';
       const untried = Math.max(0, entry.candidates - entry.attempt);
       // On the last candidate there were no others to spare it: "not sent to the other 0 candidates"
