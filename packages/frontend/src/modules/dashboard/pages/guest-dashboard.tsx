@@ -14,29 +14,18 @@ import { EmptyPage } from '@/components/empty-page/empty-page';
 import { useUserContext } from '@/context/user-context';
 import { GuestLinkTile } from '../components/guest-link-tile';
 import { openExternal } from '@/lib/helpers/open-external';
+import { guestTileAddresses } from './guest-tile-addresses';
 
-const LOCAL_BROWSER_HOST = '127.0.0.1';
 const SKELETON_KEYS = Array.from({ length: CATALOG_PAGE_SIZE }, (_, i) => `guest-skeleton-${i}`);
 
-const Tile = ({ data, sslPort }: { data: GuestAppsDto['installed'][number]; sslPort: number }) => {
+const Tile = ({ data, sslPort, publicDomain }: { data: GuestAppsDto['installed'][number]; sslPort: number; publicDomain: string }) => {
   const { info, app } = data;
+  const addresses = guestTileAddresses({ data, sslPort, publicDomain, viewerHostname: window.location.hostname });
+  const tile = <AppTile key={info.urn} info={info} status={app.status} updateAvailable={false} />;
 
-  const directPort = app.port ?? info.port ?? null;
-
-  const handleOpen = (type: string) => {
-    let url = '';
-    const urlSuffix = info.url_suffix || '';
-
-    if (type === 'domain' && app.domain) {
-      url = `https://${app.domain}${sslPort === 443 ? '' : `:${sslPort}`}${urlSuffix}`;
-    }
-
-    if (type === 'local' && directPort) {
-      url = `http://${LOCAL_BROWSER_HOST}:${directPort}${urlSuffix}`;
-    }
-
-    openExternal(url);
-  };
+  if (addresses.length === 0) {
+    return tile;
+  }
 
   return (
     <DropdownMenu modal={false}>
@@ -49,24 +38,21 @@ const Tile = ({ data, sslPort }: { data: GuestAppsDto['installed'][number]; sslP
           tabIndex={0}
           className="relative group cursor-pointer rounded-lg transition-[color,background-color,border-color,box-shadow,opacity,transform] duration-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
         >
-          <AppTile key={info.urn} info={info} status={app.status} updateAvailable={false} />
+          {tile}
         </div>
       </DropdownMenuTrigger>
       <DropdownMenuContent>
         <DropdownMenuGroup>
-          {app.exposed && app.domain && (
-            <DropdownMenuItem onClick={() => handleOpen('domain')}>
-              <Lock className="text-success mr-2" size={16} />
-              {app.domain}
-              {sslPort === 443 ? '' : `:${sslPort}`}
+          {addresses.map((address) => (
+            <DropdownMenuItem key={address.key} onClick={() => openExternal(address.url)}>
+              {address.key === 'public' ? (
+                <Lock className="text-success mr-2" size={16} />
+              ) : (
+                <LockOpen className="text-muted-foreground mr-2" size={16} />
+              )}
+              {address.label}
             </DropdownMenuItem>
-          )}
-          {(app.exposedLocal || app.openPort || !info.dynamic_config) && directPort && (
-            <DropdownMenuItem onClick={() => handleOpen('local')}>
-              <LockOpen className="text-muted-foreground mr-2" size={16} />
-              {LOCAL_BROWSER_HOST}:{directPort}
-            </DropdownMenuItem>
-          )}
+          ))}
         </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -75,7 +61,7 @@ const Tile = ({ data, sslPort }: { data: GuestAppsDto['installed'][number]; sslP
 
 export const GuestDashboard = () => {
   const { t } = useTranslation();
-  const { sslPort } = useUserContext();
+  const { sslPort, domain } = useUserContext();
 
   const {
     data: appsData,
@@ -147,7 +133,7 @@ export const GuestDashboard = () => {
             !appsError &&
             SKELETON_KEYS.map((key) => <div key={key} data-testid="app-tile-skeleton" className="h-24 animate-pulse rounded-lg bg-muted/40" />)}
           {installed.slice(0, paintedCount).map((appData) => {
-            return <Tile key={appData.app.id} data={appData} sslPort={sslPort} />;
+            return <Tile key={appData.app.id} data={appData} sslPort={sslPort} publicDomain={domain} />;
           })}
           {linksData?.links.map((link) => (
             <GuestLinkTile key={link.id} link={link} />

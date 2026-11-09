@@ -14,6 +14,8 @@ import { hasUpdateAvailable } from '@ci-hub/common/validation';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { PortAllocationRepository } from '../network/port-allocation.repository';
 import { LifecycleJobService } from '../app-lifecycle/lifecycle-job.service';
+import { RegistrationService } from '../registration/registration.service';
+import { guestPublicUrl } from './app-public-routing.helpers';
 import { AppFilesManager } from './app-files-manager';
 import { AppsRepository } from './apps.repository';
 
@@ -240,7 +242,43 @@ export class AppsReadService {
     const apps = await this.appsRepository.getGuestDashboardApps();
     this.logger.debug(`Got ${apps.length} guest dashboard apps`);
 
-    return this.populateAppInfo(apps);
+    const populated = await this.populateAppInfo(apps);
+    const hub = await this.guestRoutingNames();
+    const refused = await this.publicAddressRefusals();
+
+    return populated.map((entry) => ({
+      ...entry,
+      publicUrl: refused(createAppUrn(entry.app.appName, entry.app.appStoreSlug)) ? null : guestPublicUrl(entry.app, entry.info, hub),
+    }));
+  }
+
+  /** Whether the last answered sync refused an app its public address: it has no DNS record, so a guest must not be sent there. */
+  private async publicAddressRefusals(): Promise<(appUrn: AppUrn) => boolean> {
+    try {
+      // Imported here as in AppsService: a static import closes a require cycle.
+      const { ExposureSyncService } = await import('../app-lifecycle/exposure-sync.service');
+      const exposureSync = this.moduleRef?.get(ExposureSyncService, { strict: false });
+
+      return (appUrn) => Boolean(exposureSync?.publicDnsRefusalFor(appUrn));
+    } catch {
+      return () => false;
+    }
+  }
+
+  /** What a public hostname is built from. A guest still gets the page when this can't be read, without the public addresses. */
+  private async guestRoutingNames() {
+    const registration = await Promise.resolve(this.moduleRef?.get(RegistrationService, { strict: false }).getDeviceRegistrationInfo()).catch(
+      (error: unknown) => {
+        this.logger.debug('Could not read the device registration for the guest dashboard:', error);
+        return null;
+      },
+    );
+
+    return {
+      orgSlug: registration?.slug,
+      hubSubdomain: registration?.hubSubdomain,
+      domain: this.configurationService.getConfig().userSettings.domain,
+    };
   }
 
   public async getApp(appUrn: AppUrn) {

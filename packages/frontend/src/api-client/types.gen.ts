@@ -805,6 +805,7 @@ export type GuestAppsDto = {
             customDomain?: string;
             pendingRestart: boolean;
             ignoredVersion: number;
+            publicUrl?: string;
         };
         info: {
             id: string;

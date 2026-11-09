@@ -9,6 +9,8 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { PortAllocationRepository } from '../../network/port-allocation.repository';
 import { InstallPipelineTracker } from '../install-pipeline.tracker';
 import { LifecycleJobService } from '../../app-lifecycle/lifecycle-job.service';
+import { ExposureSyncService } from '../../app-lifecycle/exposure-sync.service';
+import { RegistrationService } from '../../registration/registration.service';
 import type { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 
@@ -247,5 +249,68 @@ describe('AppsReadService.getApp failure', () => {
 
     await expect(service.getApp(appUrn)).resolves.toMatchObject({ failure: null });
     expect(jobService.listJobs).not.toHaveBeenCalled();
+  });
+});
+
+describe('AppsReadService.getGuestDashboardApps', () => {
+  const row = {
+    id: 3,
+    appName: 'jellyfin',
+    appStoreSlug: 'ci-marketplace',
+    localSubdomain: 'jellyfin',
+    exposureMode: 'cloudflare',
+    exposedLocal: true,
+  };
+  const urn = 'jellyfin:ci-marketplace';
+
+  function build(options: { refused?: string[]; registration?: () => Promise<unknown> } = {}) {
+    const appsRepository = mock<AppsRepository>();
+    appsRepository.getGuestDashboardApps.mockResolvedValue([row] as never);
+    const appFilesManager = mock<AppFilesManager>();
+    appFilesManager.getInstalledAppInfo.mockResolvedValue({ urn, exposable: true } as never);
+    appFilesManager.getDockerComposeJson.mockResolvedValue({ content: null } as never);
+    const marketplaceService = mock<MarketplaceService>();
+    marketplaceService.getAppUpdateInfo.mockResolvedValue({ latestVersion: 1, latestDockerVersion: '1', minHubVersion: null } as never);
+    const configurationService = mock<ConfigurationService>();
+    configurationService.getConfig.mockReturnValue({ userSettings: { domain: 'example.com' } } as never);
+    const moduleRef = mock<ModuleRef>();
+    moduleRef.get.mockImplementation(((token: unknown) => {
+      if (token === RegistrationService) {
+        return { getDeviceRegistrationInfo: options.registration ?? (async () => ({ slug: 'my-org', hubSubdomain: 'hub-my-device-my-org' })) };
+      }
+      return token === ExposureSyncService
+        ? { publicDnsRefusalFor: (appUrn: string) => (options.refused?.includes(appUrn) ? 'subdomain_quota_exceeded' : null) }
+        : undefined;
+    }) as never);
+
+    return new AppsReadService(
+      appsRepository,
+      appFilesManager,
+      mock<LoggerService>(),
+      marketplaceService,
+      configurationService,
+      mock<PortAllocationRepository>(),
+      mock<InstallPipelineTracker>(),
+      moduleRef,
+    );
+  }
+
+  it('gives an app on Public web its public address', async () => {
+    const [entry] = await build().getGuestDashboardApps();
+
+    expect(entry?.publicUrl).toBe('https://jellyfin-my-device-my-org.example.com');
+  });
+
+  it('gives no address the Portal refused, because no DNS record exists for it', async () => {
+    const [entry] = await build({ refused: [urn] }).getGuestDashboardApps();
+
+    expect(entry?.publicUrl).toBeNull();
+  });
+
+  it('still serves the tile when the registration cannot be read', async () => {
+    const [entry] = await build({ registration: () => Promise.reject(new Error('database down')) }).getGuestDashboardApps();
+
+    expect(entry?.app).toMatchObject({ id: 3 });
+    expect(entry?.publicUrl).toBeNull();
   });
 });
