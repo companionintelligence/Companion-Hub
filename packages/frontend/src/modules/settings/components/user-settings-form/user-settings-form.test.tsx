@@ -37,8 +37,6 @@ async function typeLocalDomain(value: string) {
   await userEvent.type(localDomainField(), value);
 }
 
-const submit = () => userEvent.click(screen.getByRole('button', { name: 'Update settings' }));
-
 const forwardAuthField = () => screen.getByLabelText(/^forward auth url/i);
 
 async function retype(field: HTMLElement, value: string) {
@@ -47,6 +45,8 @@ async function retype(field: HTMLElement, value: string) {
     await userEvent.type(field, value);
   }
 }
+
+const submit = () => userEvent.click(screen.getByRole('button', { name: 'Update settings' }));
 
 it('lets a keyboard user focus a setting hint', () => {
   render(<UserSettingsForm initialValues={newHubSettings} onSubmit={vi.fn()} />);
