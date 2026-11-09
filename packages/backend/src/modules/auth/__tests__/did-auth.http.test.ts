@@ -54,7 +54,6 @@ import { UserRepository } from '@/modules/user/user.repository';
 import { AuthController } from '../auth.controller';
 import { AuthMiddleware } from '../auth.middleware';
 import { AuthRateLimiter } from '../auth-rate-limiter';
-import { ProxyTrustService } from '@/modules/network/proxy-trust.service';
 import { AuthService } from '../auth.service';
 import { BearerOrgMembershipCache } from '../bearer-org-membership.cache';
 import { DID_AUTH_FLAG, DidAuthService } from '../did-auth.service';
@@ -233,7 +232,6 @@ const FAKES = [
   { provide: RegistrationService, useValue: mock<RegistrationService>() },
   { provide: BearerOrgMembershipCache, useValue: mock<BearerOrgMembershipCache>() },
   { provide: MemoryApiKeyCheck, useValue: mock<MemoryApiKeyCheck>() },
-  { provide: ProxyTrustService, useValue: mock<ProxyTrustService>() },
   { provide: EncryptionService, useValue: mock<EncryptionService>() },
   { provide: FilesystemService, useValue: mock<FilesystemService>() },
   { provide: PasswordService, useValue: mock<PasswordService>() },

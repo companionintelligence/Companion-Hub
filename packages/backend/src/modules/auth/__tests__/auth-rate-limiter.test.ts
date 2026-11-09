@@ -1,16 +1,20 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AuthRateLimiter, authClientKey } from '../auth-rate-limiter';
 
+vi.mock('@/common/helpers/this-host-address', async (importOriginal) =>
+  (await import('@/tests/utils/appliance-host-address')).onAppliance(await importOriginal()),
+);
+
 const CLIENT = '203.0.113.7';
-const GATEWAY = '172.23.0.1';
+const GATEWAY = '172.18.0.1';
 
 function limiterAt(clock: { now: number }) {
-  const limiter = new AuthRateLimiter({ isHostGateway: (ip: string | undefined | null) => ip === GATEWAY } as never);
+  const limiter = new AuthRateLimiter();
   limiter.now = () => clock.now;
   return limiter;
 }
 
-const tunnelled = (visitor: string, peer = GATEWAY) => ({ ip: peer, headers: { 'cf-connecting-ip': visitor } });
+const tunnelled = (visitor: string, peer = GATEWAY) => ({ ip: peer, socket: { remoteAddress: peer }, headers: { 'cf-connecting-ip': visitor } });
 
 /** Admit `count` requests to `scope` that all fail, the way wrong guesses do. */
 function failTimes(limiter: AuthRateLimiter, scope: Parameters<AuthRateLimiter['admit']>[0], client: string, count: number) {
@@ -213,9 +217,38 @@ describe('AuthRateLimiter.admitRequest', () => {
 
     const tracked = [...(limiter as unknown as { hits: Map<string, number[]> }).hits.keys()];
 
-    expect(tracked).toContain('login:198.51.100.1');
-    expect(tracked).toContain('login:2001:db8:aaaa:bbbb::/64');
+    expect(tracked).toContain('login:tunnel:198.51.100.1');
+    expect(tracked).toContain('login:tunnel:2001:db8:aaaa:bbbb::/64');
     expect(tracked.every((key) => key.length < 64)).toBe(true);
+  });
+
+  it.each([
+    ['a LAN client', '192.168.1.50'],
+    ['the machine', GATEWAY],
+  ])('does not spend the budget of %s when the header names its address', (_who, address) => {
+    const limiter = limiterAt({ now: 1_000_000 });
+
+    for (let i = 0; i < 10; i++) limiter.admitRequest('login', tunnelled(address));
+
+    expect(() => limiter.admitRequest('login', { ip: address, socket: { remoteAddress: address }, headers: {} })).not.toThrow();
+  });
+
+  it('reads the socket for the peer, not the address a forwarded header can set', () => {
+    const limiter = limiterAt({ now: 1_000_000 });
+    const claimsGateway = (visitor: string) => ({ ip: GATEWAY, socket: { remoteAddress: '192.168.1.50' }, headers: { 'cf-connecting-ip': visitor } });
+
+    for (let i = 0; i < 10; i++) limiter.admitRequest('login', claimsGateway(`198.51.100.${i + 1}`));
+
+    expect(() => limiter.admitRequest('login', claimsGateway('198.51.100.200'))).toThrow('AUTH_ERROR_RATE_LIMITED');
+  });
+
+  it('keeps the shared pool spent when the table fills up with live clients', () => {
+    const limiter = limiterAt({ now: 1_000_000 });
+
+    for (let i = 0; i < 100; i++) limiter.admitRequest('login', tunnelled(`198.51.0.${(i % 250) + 1}`));
+    for (let i = 0; i < 10_500; i++) limiter.admit('login', `2001:db8:0:${i.toString(16)}::/64`);
+
+    expect(() => limiter.admitRequest('login', tunnelled('203.0.113.200'))).toThrow('AUTH_ERROR_RATE_LIMITED');
   });
 
   it('caps everyone named by the header together, so inventing addresses does not buy unlimited guesses', () => {
@@ -236,13 +269,14 @@ describe('AuthRateLimiter.admitRequest', () => {
 
     const tracked = (limiter as unknown as { hits: Map<string, number[]> }).hits;
 
-    expect(tracked.has(`login:${CLIENT}`)).toBe(false);
+    expect(tracked.has(`login:tunnel:${CLIENT}`)).toBe(false);
   });
 
   it('hands back both budgets when a request succeeds', () => {
     const limiter = limiterAt({ now: 1_000_000 });
 
-    for (let i = 0; i < 25; i++) limiter.admitRequest('login', tunnelled(CLIENT))();
+    // More than the pool holds, so a slot the pool kept would surface here too.
+    for (let i = 0; i < 101; i++) limiter.admitRequest('login', tunnelled(CLIENT))();
 
     expect(() => {
       for (let i = 0; i < 10; i++) limiter.admitRequest('login', tunnelled(CLIENT));

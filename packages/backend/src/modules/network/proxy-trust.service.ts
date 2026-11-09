@@ -1,4 +1,4 @@
-import { hubAppNetworkNames, hubNetworkName } from '@/common/constants';
+import { hubNetworkName } from '@/common/constants';
 import { normalizeIpLiteral } from '@/common/helpers/ip-address';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
@@ -81,7 +81,6 @@ export interface ProxyTrustSnapshot {
 @Injectable()
 export class ProxyTrustService implements OnModuleInit, OnModuleDestroy {
   private ranges: Range[] = [];
-  private hostGateways = new Set<number>();
   private timer: NodeJS.Timeout | null = null;
   private resolving: Promise<string[]> | null = null;
   private readonly listeners = new Set<(snapshot: ProxyTrustSnapshot) => void>();
@@ -203,21 +202,6 @@ export class ProxyTrustService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Whether `ip` is the host's own address on one of the Hub's Docker networks: the address a
-   * connection to the Hub's published port arrives from once Docker has translated it.
-   *
-   * ⚠ NEVER a reason to believe a forwarded header for a guard. Everything that reaches the
-   * published port through the host looks like this: the Cloudflare tunnel for the Hub's own
-   * hostname, a browser on `localhost`, and any app container that dials the host (measured on
-   * Docker 29). It is kept apart from {@link isTrustedProxy} for that reason.
-   */
-  isHostGateway(ip: string | undefined | null): boolean {
-    const normalized = normalizeIpLiteral(ip);
-    const parsed = normalized ? parseIpv4Cidr(`${normalized}/32`) : null;
-    return parsed ? this.hostGateways.has(parsed.start) : false;
-  }
-
-  /**
    * Re-read the hops from Docker. Concurrent callers share one in-flight read.
    * A lookup that fails drops what it would have vouched for until the next
    * read: not seeing Docker can narrow trust, never widen it.
@@ -240,8 +224,6 @@ export class ProxyTrustService implements OnModuleInit, OnModuleDestroy {
     if (traefik) {
       next.push(traefik);
     }
-
-    this.hostGateways = await this.readHostGateways();
 
     const before = this.trustedProxyCidrs().join(',');
     this.ranges = next;
@@ -324,29 +306,6 @@ export class ProxyTrustService implements OnModuleInit, OnModuleDestroy {
 
     this.logger.warn(`Edge network ${HUB_EDGE_NETWORK_NAME} has no IPv4 subnet; its hops are untrusted`);
     return [];
-  }
-
-  /** The gateways of the networks the Hub is published on. One that cannot be read is simply left out. */
-  private async readHostGateways(): Promise<Set<number>> {
-    const gateways = new Set<number>();
-
-    for (const name of hubAppNetworkNames()) {
-      try {
-        const info = await this.docker.getNetwork(name).inspect();
-        const configs = (info as { IPAM?: { Config?: Array<{ Subnet?: string; Gateway?: string }> } }).IPAM?.Config ?? [];
-
-        for (const config of configs) {
-          const subnet = config.Subnet ? parseIpv4Cidr(config.Subnet) : null;
-          if (subnet) {
-            gateways.add((config.Gateway ? parseIpv4Cidr(`${config.Gateway}/32`)?.start : undefined) ?? subnet.start + 1);
-          }
-        }
-      } catch (error) {
-        this.logger.debug(`Network ${name} not readable: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-
-    return gateways;
   }
 
   private async traefikAddress(): Promise<Range | null> {

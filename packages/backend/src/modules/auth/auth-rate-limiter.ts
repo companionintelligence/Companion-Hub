@@ -1,7 +1,7 @@
 import { isIP, isIPv6 } from 'node:net';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { normalizeIpLiteral } from '@/common/helpers/ip-address';
-import { ProxyTrustService } from '@/modules/network/proxy-trust.service';
+import { isThisHostAddress } from '@/common/helpers/this-host-address';
 import { HttpStatus, Injectable } from '@nestjs/common';
 
 /**
@@ -43,6 +43,9 @@ export interface AuthClientRequest {
 
 const TUNNEL_POOL = 'tunnel';
 
+/** Marks a shared pool's key in the table. A client's key is a scope and an address, so it never contains this. */
+const POOL_KEY_PART = ':pool:';
+
 /**
  * How many clients' worth of a scope everyone named by `CF-Connecting-IP` shares between them.
  *
@@ -77,8 +80,6 @@ export class AuthRateLimiter {
   /** The clock. A field rather than a constructor argument so Nest has nothing to inject; tests replace it. */
   public now: () => number = Date.now;
 
-  constructor(private readonly proxyTrust: ProxyTrustService) {}
-
   /**
    * {@link admit} for an incoming request, keyed on who sent it.
    *
@@ -88,22 +89,25 @@ export class AuthRateLimiter {
    * itself and refuses a visitor's own copy (error 1000), which is why this one and no other: a
    * visitor's `X-Forwarded-For` entries and `True-Client-IP` arrive at the Hub intact.
    *
-   * ⚠ Only for this limiter, and only from the gateway. From anywhere else the header is ignored, or
-   * anyone on the LAN could name themselves after someone else. From the gateway a caller on the
-   * machine can still write it (an app container that dials the host arrives from there too), so it
-   * chooses whose budget it spends but not how much: {@link TUNNEL_POOL_FACTOR} caps the total.
-   * Never feed this into `req.ip` or a guard: it is good enough to say whose turn it is, not who
-   * someone is.
+   * ⚠ Only for this limiter, and only from the gateway (or loopback, see `isThisHostAddress`). From
+   * anywhere else the header is ignored, or anyone on the LAN could name themselves after someone
+   * else. From the gateway a caller on the machine can still write it (an app container that dials
+   * the host arrives from there too), so it chooses which tunnel visitor's budget it spends but not
+   * how much: {@link TUNNEL_POOL_FACTOR} caps the total. Those budgets are held apart from the ones
+   * direct peers are counted under, so naming a LAN address or the gateway spends nothing of that
+   * client's own. Never feed this into `req.ip` or a guard: it is good enough to say whose turn it
+   * is, not who someone is.
    */
   public admitRequest(scope: AuthRateScope, request: AuthClientRequest): () => void {
     const visitor = this.tunnelVisitor(request);
 
-    return visitor ? this.admit(scope, addressKey(visitor), TUNNEL_POOL) : this.admit(scope, authClientKey(request));
+    return visitor ? this.admit(scope, `${TUNNEL_POOL}:${addressKey(visitor)}`, TUNNEL_POOL) : this.admit(scope, authClientKey(request));
   }
 
   /** The address in `CF-Connecting-IP` when {@link admitRequest} should believe it, otherwise `undefined`. */
   private tunnelVisitor(request: AuthClientRequest): string | undefined {
-    if (!this.proxyTrust.isHostGateway(request.ip ?? request.socket?.remoteAddress)) {
+    // The socket's peer and not `req.ip`, which `HUB_TRUST_PROXY` lets a header rewrite.
+    if (!isThisHostAddress(request.socket?.remoteAddress)) {
       return undefined;
     }
 
@@ -130,7 +134,7 @@ export class AuthRateLimiter {
     const budgets: Array<{ key: string; limit: number }> = [{ key: `${scope}:${clientKey}`, limit }];
 
     if (sharedPool) {
-      budgets.push({ key: `${scope}:pool:${sharedPool}`, limit: limit * TUNNEL_POOL_FACTOR });
+      budgets.push({ key: `${scope}${POOL_KEY_PART}${sharedPool}`, limit: limit * TUNNEL_POOL_FACTOR });
     }
 
     // Every budget is checked before any is spent, so being refused by the pool costs the client nothing.
@@ -218,12 +222,15 @@ export class AuthRateLimiter {
       }
     }
 
-    // Everything is live and the table is still over the cap: drop the oldest entries first.
+    // Everything is live and the table is still over the cap: drop the oldest entries first. Never a
+    // shared pool: there is one per scope, and it is usually the oldest, so dropping it would refill it.
     for (const key of this.hits.keys()) {
       if (this.hits.size <= MAX_TRACKED_KEYS) {
         break;
       }
-      this.hits.delete(key);
+      if (!key.includes(POOL_KEY_PART)) {
+        this.hits.delete(key);
+      }
     }
   }
 }

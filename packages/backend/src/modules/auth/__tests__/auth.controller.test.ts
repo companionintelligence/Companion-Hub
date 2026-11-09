@@ -5,7 +5,6 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
 import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
-import { ProxyTrustService } from '@/modules/network/proxy-trust.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { ForbiddenException, HttpStatus, UnauthorizedException, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
@@ -89,7 +88,6 @@ describe('AuthController', () => {
         BearerOrgMembershipCache,
         SessionUserCache,
         // Real instance: the limits are what the rate-limit tests assert.
-        { provide: ProxyTrustService, useValue: mock<ProxyTrustService>() },
         AuthRateLimiter,
       ],
     }).compile();
@@ -3890,7 +3888,6 @@ describe('AuthController — GET /api/auth/favicon.png, real HTTP dispatch', () 
         { provide: ForwardAuthIdentityResolver, useValue: mock<ForwardAuthIdentityResolver>() },
         // Memory's answer about an API key; tests that care set what Memory would answer.
         { provide: MemoryApiKeyCheck, useValue: mock<MemoryApiKeyCheck>() },
-        { provide: ProxyTrustService, useValue: mock<ProxyTrustService>() },
         AuthRateLimiter,
       ],
     }).compile();
@@ -3944,7 +3941,6 @@ describe('AuthController — POST /api/auth/portal/desktop-waiting, real HTTP di
         { provide: ForwardAuthIdentityResolver, useValue: mock<ForwardAuthIdentityResolver>() },
         // Memory's answer about an API key; tests that care set what Memory would answer.
         { provide: MemoryApiKeyCheck, useValue: mock<MemoryApiKeyCheck>() },
-        { provide: ProxyTrustService, useValue: mock<ProxyTrustService>() },
         AuthRateLimiter,
       ],
     }).compile();

@@ -13,7 +13,6 @@ import { CacheService } from '@/core/cache/cache.service';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { ProxyTrustService } from '@/modules/network/proxy-trust.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { UserRepository } from '@/modules/user/user.repository';
@@ -26,6 +25,10 @@ import { MemoryApiKeyCheck } from '../memory-api-key.check';
 import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
 import { SessionManager } from '../session.manager';
 
+vi.mock('@/common/helpers/this-host-address', async (importOriginal) =>
+  (await import('@/tests/utils/appliance-host-address')).onAppliance(await importOriginal()),
+);
+
 const req = (ip: string, extra: Record<string, unknown> = {}) => ({ ip, headers: {}, ...extra }) as unknown as Request;
 const res = () => ({ cookie: vi.fn() }) as unknown as Response;
 const wrongCredentials = () => new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
@@ -33,10 +36,8 @@ const wrongCredentials = () => new TranslatableError('AUTH_ERROR_INVALID_CREDENT
 describe('AuthController rate limiting', () => {
   let controller: AuthController;
   let authService: MockProxy<AuthService>;
-  let proxyTrust: MockProxy<ProxyTrustService>;
 
   beforeEach(async () => {
-    proxyTrust = mock<ProxyTrustService>();
     const moduleRef = await Test.createTestingModule({
       controllers: [AuthController],
       providers: [
@@ -53,7 +54,6 @@ describe('AuthController rate limiting', () => {
         { provide: SessionUserCache, useValue: mock<SessionUserCache>() },
         { provide: ForwardAuthIdentityResolver, useValue: mock<ForwardAuthIdentityResolver>() },
         { provide: MemoryApiKeyCheck, useValue: mock<MemoryApiKeyCheck>() },
-        { provide: ProxyTrustService, useValue: proxyTrust },
         AuthRateLimiter,
       ],
     }).compile();
@@ -82,10 +82,9 @@ describe('AuthController rate limiting', () => {
     });
 
     it('keeps a stranger on the public address from locking out the machine or the next visitor', async () => {
-      const gateway = '172.23.0.1';
-      proxyTrust.isHostGateway.mockImplementation((ip) => ip === gateway);
+      const gateway = '172.18.0.1';
       authService.login.mockRejectedValue(wrongCredentials());
-      const throughTunnel = (visitor: string) => req(gateway, { headers: { 'cf-connecting-ip': visitor } });
+      const throughTunnel = (visitor: string) => req(gateway, { socket: { remoteAddress: gateway }, headers: { 'cf-connecting-ip': visitor } });
 
       for (let i = 0; i < 10; i++) {
         await expect(
