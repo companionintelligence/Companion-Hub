@@ -3,6 +3,7 @@ import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AppRuntimeMonitorService } from '../app-runtime-monitor.service';
@@ -53,6 +54,7 @@ describe('AppsController — GET /api/apps/starting, real HTTP dispatch', () => 
         { provide: MarketplaceWhoIsService, useValue: mock<MarketplaceWhoIsService>() },
         { provide: InferenceEnvStalenessService, useValue: mock<InferenceEnvStalenessService>() },
         { provide: AppStartingPageService, useValue: page },
+        { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
         // For the guards on the controller's other routes.
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
