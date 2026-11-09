@@ -166,14 +166,17 @@ export const isUnverifiedCandidate = (device: DiscoverablePoolPeer) => device.ve
 
 export const peerLabel = (peer: { displayName: string | null; nodeFqdn: string }) => peer.displayName || peer.nodeFqdn;
 
-/** A peer this Hub would route to: answering, and not switched off by the operator. */
+/**
+ * A connected peer the operator hasn't switched off, the same test Resources applies. The router is
+ * stricter: it also drops every peer while outbound is off and any peer reporting `acceptingWork: false`.
+ */
 export const isServablePeer = (peer: Pick<PoolPeer, 'status' | 'enabled'>) => peer.status === 'connected' && peer.enabled !== false;
 
 /**
  * What the pool can actually serve: every model any reachable node reports, and which nodes have it.
  * Unreachable peers are left out on purpose — their `lastCapabilities` is a cached snapshot of a node
  * that is not currently answering, so listing it would promise capacity the pool cannot deliver.
- * Switched-off peers are left out for the same reason, and Resources counts them the same way.
+ * Switched-off peers are left out too because routing won't send them work. Resources does the same.
  */
 export const mergePoolModels = (status: PoolStatus, localLabel: string): Array<{ model: string; nodes: string[] }> => {
   const byModel = new Map<string, Set<string>>();
