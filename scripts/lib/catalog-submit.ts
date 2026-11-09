@@ -412,8 +412,8 @@ export async function prepareSubmitPlan(dir: string, orgSlug: string, registryHo
     return { ok: false as const, error: `Catalog id exceeds ${MAX_CATALOG_ID_LENGTH} characters` };
   }
 
-  // Not `?? []`: the checks below loop over the services, so an app with none would pass every one.
-  if (!Array.isArray(compose.services) || compose.services.length === 0) {
+  // The checks below loop over the services, so an app with none would pass every one.
+  if (!Array.isArray(compose?.services) || compose.services.length === 0) {
     return { ok: false as const, error: "docker-compose.json has no services. 'services' must be a list with at least one service." };
   }
   for (const service of compose.services) {

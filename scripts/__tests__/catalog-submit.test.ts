@@ -121,6 +121,7 @@ describe('submit directory', () => {
     ['an empty file', {}],
     ['an empty list', { services: [] }],
     ['a map instead of a list', { services: { web: { image: 'nginx' } } }],
+    ['a null document', null],
   ])('rejects an app whose compose has no services: %s', async (_label, compose) => {
     const dir = fixtureDir();
     writeFileSync(join(dir, 'docker-compose.json'), JSON.stringify(compose));
