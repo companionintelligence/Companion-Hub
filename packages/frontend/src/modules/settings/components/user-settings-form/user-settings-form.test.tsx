@@ -1,4 +1,4 @@
-import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
+import { render, screen, userEvent, waitFor, within } from '@/tests/test-utils';
 import { describe, expect, it, vi } from 'vitest';
 import { type SettingsFormValues, UserSettingsForm } from './user-settings-form';
 
@@ -49,7 +49,7 @@ it('lets a keyboard user focus a setting hint', () => {
   expect(hint).toHaveFocus();
 });
 
-// The theme and every setting below it apply to the whole Hub, an owner's or admin's to change.
+// Every setting but the language applies to the whole Hub, an owner's or admin's to change.
 it("shows a member only their own language, and nothing that changes the Hub's settings", () => {
   render(<UserSettingsForm initialValues={newHubSettings} onSubmit={vi.fn()} manageHub={false} />);
 
@@ -64,8 +64,9 @@ it("shows a member only their own language, and nothing that changes the Hub's s
 it('offers no Base theme, only Language, in the User settings card', () => {
   render(<UserSettingsForm initialValues={newHubSettings} onSubmit={vi.fn()} />);
 
-  expect(screen.getByRole('combobox', { name: /language/i })).toBeInTheDocument();
-  expect(screen.queryByRole('combobox', { name: /base theme/i })).not.toBeInTheDocument();
+  const card = within(screen.getByText('User settings').closest('.rounded-lg') as HTMLElement);
+  expect(card.getByRole('combobox', { name: /language/i })).toBeInTheDocument();
+  expect(card.getAllByRole('combobox')).toHaveLength(1);
 });
 
 /** The Timezone box. Its label is not tied to it, so find it by its name. */

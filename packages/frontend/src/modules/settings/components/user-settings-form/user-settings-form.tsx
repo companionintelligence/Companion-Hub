@@ -100,7 +100,7 @@ interface IProps {
   publicHubHostname?: string;
   /**
    * Whether this person may change the Hub's settings (`useHubAccess`). A member gets only their own
-   * language; the theme and every setting below it apply to the whole Hub.
+   * language; every other setting here applies to the whole Hub.
    */
   manageHub?: boolean;
 }
