@@ -432,6 +432,7 @@ export const AppActions = ({
     ...ignoreAppVersionMutation(),
     onSuccess: () => {
       toast.success(t('APP_ACTION_IGNORE_VERSION_SUCCESS'));
+      invalidateAppQueries(queryClient, info.urn);
     },
     onError: (e: Error) => {
       toast.error(e.message);
@@ -442,6 +443,7 @@ export const AppActions = ({
     ...unignoreAppVersionMutation(),
     onSuccess: () => {
       toast.success(t('APP_ACTION_UNIGNORE_VERSION_SUCCESS'));
+      invalidateAppQueries(queryClient, info.urn);
     },
     onError: (e: Error) => {
       toast.error(e.message);
