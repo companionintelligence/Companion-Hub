@@ -2,6 +2,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import en from '@ci-hub/common/i18n/translations/en.json';
+import enUS from '@ci-hub/common/i18n/translations/en-US.json';
 import es from '@ci-hub/common/i18n/translations/es-ES.json';
 
 const { mockStoreState, mockSearchAppsInfiniteOptions } = vi.hoisted(() => ({
@@ -558,8 +559,9 @@ describe('AppStorePage — multi-store UX', () => {
   });
 
   it.each([
-    ['English', en.APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS],
-    ['Spanish', es.APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS],
+    ['en', en.APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS],
+    ['en-US', enUS.APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS],
+    ['es-ES', es.APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS],
   ])('ends the alternatives error with a full stop in %s, since Retry follows it directly', (_language, message) => {
     expect(message).toMatch(/\.$/);
   });
