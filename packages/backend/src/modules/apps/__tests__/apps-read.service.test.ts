@@ -263,7 +263,9 @@ describe('AppsReadService.getGuestDashboardApps', () => {
   };
   const urn = 'jellyfin:ci-marketplace';
 
-  function build(options: { refused?: string[]; registration?: () => Promise<unknown> } = {}) {
+  function build(
+    options: { refused?: string[]; registration?: () => Promise<unknown>; guestDashboard?: boolean; registrationMissing?: boolean } = {},
+  ) {
     const appsRepository = mock<AppsRepository>();
     appsRepository.getGuestDashboardApps.mockResolvedValue([row] as never);
     const appFilesManager = mock<AppFilesManager>();
@@ -272,10 +274,15 @@ describe('AppsReadService.getGuestDashboardApps', () => {
     const marketplaceService = mock<MarketplaceService>();
     marketplaceService.getAppUpdateInfo.mockResolvedValue({ latestVersion: 1, latestDockerVersion: '1', minHubVersion: null } as never);
     const configurationService = mock<ConfigurationService>();
-    configurationService.getConfig.mockReturnValue({ userSettings: { domain: 'example.com' } } as never);
+    configurationService.getConfig.mockReturnValue({
+      userSettings: { domain: 'example.com', guestDashboard: options.guestDashboard ?? true },
+    } as never);
     const moduleRef = mock<ModuleRef>();
     moduleRef.get.mockImplementation(((token: unknown) => {
       if (token === RegistrationService) {
+        if (options.registrationMissing) {
+          throw new Error('Nest could not find RegistrationService');
+        }
         return { getDeviceRegistrationInfo: options.registration ?? (async () => ({ slug: 'my-org', hubSubdomain: 'hub-my-device-my-org' })) };
       }
       return token === ExposureSyncService
@@ -304,6 +311,20 @@ describe('AppsReadService.getGuestDashboardApps', () => {
   it('gives no address the Portal refused, because no DNS record exists for it', async () => {
     const [entry] = await build({ refused: [urn] }).getGuestDashboardApps();
 
+    expect(entry?.publicUrl).toBeNull();
+  });
+
+  it('gives no public address while the guest dashboard is turned off', async () => {
+    const [entry] = await build({ guestDashboard: false }).getGuestDashboardApps();
+
+    expect(entry?.app).toMatchObject({ id: 3 });
+    expect(entry?.publicUrl).toBeNull();
+  });
+
+  it('still serves the tile when the registration service cannot be resolved', async () => {
+    const [entry] = await build({ registrationMissing: true }).getGuestDashboardApps();
+
+    expect(entry?.app).toMatchObject({ id: 3 });
     expect(entry?.publicUrl).toBeNull();
   });
 

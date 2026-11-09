@@ -243,12 +243,14 @@ export class AppsReadService {
     this.logger.debug(`Got ${apps.length} guest dashboard apps`);
 
     const populated = await this.populateAppInfo(apps);
-    const hub = await this.guestRoutingNames();
+    // This route takes no sign-in and a public hostname names the organization and the device, so the
+    // setting is asked here too: while the dashboard is off, no visitor is handed one.
+    const hub = this.configurationService.getConfig().userSettings.guestDashboard ? await this.guestRoutingNames() : null;
     const refused = await this.publicAddressRefusals();
 
     return populated.map((entry) => ({
       ...entry,
-      publicUrl: refused(createAppUrn(entry.app.appName, entry.app.appStoreSlug)) ? null : guestPublicUrl(entry.app, entry.info, hub),
+      publicUrl: hub && !refused(createAppUrn(entry.app.appName, entry.app.appStoreSlug)) ? guestPublicUrl(entry.app, entry.info, hub) : null,
     }));
   }
 
@@ -267,12 +269,12 @@ export class AppsReadService {
 
   /** What a public hostname is built from. A guest still gets the page when this can't be read, without the public addresses. */
   private async guestRoutingNames() {
-    const registration = await Promise.resolve(this.moduleRef?.get(RegistrationService, { strict: false }).getDeviceRegistrationInfo()).catch(
-      (error: unknown) => {
-        this.logger.debug('Could not read the device registration for the guest dashboard:', error);
-        return null;
-      },
-    );
+    let registration: Awaited<ReturnType<RegistrationService['getDeviceRegistrationInfo']>> | null | undefined;
+    try {
+      registration = await this.moduleRef?.get(RegistrationService, { strict: false }).getDeviceRegistrationInfo();
+    } catch (error) {
+      this.logger.debug('Could not read the device registration for the guest dashboard:', error);
+    }
 
     return {
       orgSlug: registration?.slug,
