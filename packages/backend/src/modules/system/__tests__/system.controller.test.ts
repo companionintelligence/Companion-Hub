@@ -214,6 +214,17 @@ describe('SystemController', () => {
       });
       expect(res.send).toHaveBeenCalledWith(certContent);
     });
+
+    it('answers 404 instead of an empty file when the Hub has no certificate', async () => {
+      systemService.getLocalCertificate.mockResolvedValue(undefined);
+      const res = { set: vi.fn(), send: vi.fn() } as any;
+
+      await expect(controller.downloadLocalCertificate(res)).rejects.toMatchObject({
+        status: 404,
+        response: { message: 'SETTINGS_GENERAL_CERTIFICATE_NONE' },
+      });
+      expect(res.send).not.toHaveBeenCalled();
+    });
   });
 
   describe('detectServices', () => {

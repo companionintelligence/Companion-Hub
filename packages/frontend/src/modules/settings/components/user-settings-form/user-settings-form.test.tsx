@@ -1,6 +1,16 @@
 import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
-import { describe, expect, it, vi } from 'vitest';
+import { toast } from 'sonner';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type SettingsFormValues, UserSettingsForm } from './user-settings-form';
+
+const { apiFetch, saveBlobAsFile } = vi.hoisted(() => ({ apiFetch: vi.fn(), saveBlobAsFile: vi.fn() }));
+
+vi.mock('@/lib/api-fetch', async (importOriginal) => ({ ...(await importOriginal<typeof import('@/lib/api-fetch')>()), apiFetch }));
+vi.mock('@/lib/save-file', () => ({ saveBlobAsFile }));
+vi.mock('sonner', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('sonner')>();
+  return { ...actual, toast: { ...actual.toast, error: vi.fn(), success: vi.fn() } };
+});
 
 // Polyfill ResizeObserver for Radix UI
 global.ResizeObserver = class ResizeObserver {
@@ -38,6 +48,46 @@ async function typeLocalDomain(value: string) {
 }
 
 const submit = () => userEvent.click(screen.getByRole('button', { name: 'Update settings' }));
+
+describe('Download certificate', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const clickDownload = async () => {
+    render(<UserSettingsForm initialValues={newHubSettings} onSubmit={vi.fn()} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Download certificate' }));
+  };
+
+  it('saves the certificate the Hub sends', async () => {
+    const pem = new Blob(['-----BEGIN CERTIFICATE-----']);
+    apiFetch.mockResolvedValue({ ok: true, status: 200, blob: async () => pem });
+
+    await clickDownload();
+
+    await waitFor(() => expect(saveBlobAsFile).toHaveBeenCalledWith('cert.pem', pem));
+    expect(apiFetch).toHaveBeenCalledWith('/api/system/certificate');
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('says there is no certificate instead of saving an empty file', async () => {
+    apiFetch.mockResolvedValue({ ok: false, status: 404 });
+
+    await clickDownload();
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('This Hub has no certificate to download.'));
+    expect(saveBlobAsFile).not.toHaveBeenCalled();
+  });
+
+  it('says the download failed when the Hub cannot be asked', async () => {
+    apiFetch.mockRejectedValue(new Error('offline'));
+
+    await clickDownload();
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Couldn't download the certificate. Please try again."));
+    expect(saveBlobAsFile).not.toHaveBeenCalled();
+  });
+});
 
 it('lets a keyboard user focus a setting hint', () => {
   render(<UserSettingsForm initialValues={newHubSettings} onSubmit={vi.fn()} />);

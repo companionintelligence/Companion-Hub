@@ -18,6 +18,8 @@ import { z } from 'zod';
 import { AdvancedSettingsModal } from '../advanced-settings-modal/advanced-settings-modal';
 import './user-settings-form.css';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
+import { apiFetch } from '@/lib/api-fetch';
+import { saveBlobAsFile } from '@/lib/save-file';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import { THEME_COLOR_ENUM } from '../color-selector/color-selector';
 import { THEME_BASE_ENUM, type ThemeBase, ThemeBaseSelector } from '../theme-base-selector/theme-base-selector';
@@ -169,9 +171,18 @@ export const UserSettingsForm = (props: IProps) => {
     }
   };
 
-  const downloadCertificate = (e: React.MouseEvent<HTMLButtonElement>) => {
+  const downloadCertificate = async (e: React.MouseEvent<HTMLButtonElement>) => {
     e.preventDefault();
-    window.open('/api/system/certificate');
+    try {
+      const response = await apiFetch('/api/system/certificate');
+      if (response.ok) {
+        await saveBlobAsFile('cert.pem', await response.blob());
+        return;
+      }
+      toast.error(t(response.status === 404 ? 'SETTINGS_GENERAL_CERTIFICATE_NONE' : 'SETTINGS_GENERAL_CERTIFICATE_FAILED'));
+    } catch {
+      toast.error(t('SETTINGS_GENERAL_CERTIFICATE_FAILED'));
+    }
   };
 
   const localDomainValue = watch('localDomain') ?? '';

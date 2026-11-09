@@ -21,11 +21,12 @@ export class SystemService {
 
   public async getLocalCertificate() {
     const { dataDir } = this.config.get('directories');
-    const filePath = `${dataDir}/traefik/tls/cert.pem`;
+    const filePath = `${dataDir}/state/traefik/tls/cert.pem`;
 
+    // The Hub stopped generating this file when TLS moved to the tunnel, so most Hubs have none.
     if (await this.filesystem.pathExists(filePath)) {
       const file = await this.filesystem.readTextFile(filePath);
-      return file;
+      return file?.trim() ? file : undefined;
     }
   }
 

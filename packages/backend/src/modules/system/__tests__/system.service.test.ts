@@ -81,8 +81,15 @@ describe('SystemService', () => {
 
       const result = await service.getLocalCertificate();
 
-      expect(filesystemService.pathExists).toHaveBeenCalledWith('/data/traefik/tls/cert.pem');
+      expect(filesystemService.pathExists).toHaveBeenCalledWith('/data/state/traefik/tls/cert.pem');
       expect(result).toBe('CERT_CONTENT');
+    });
+
+    it.each(['', '  \n', null])('should return undefined for a file with nothing in it (%j)', async (content) => {
+      filesystemService.pathExists.mockResolvedValue(true);
+      filesystemService.readTextFile.mockResolvedValue(content as any);
+
+      expect(await service.getLocalCertificate()).toBeUndefined();
     });
 
     it('should return undefined if not exists', async () => {
