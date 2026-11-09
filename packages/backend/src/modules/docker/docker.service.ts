@@ -373,6 +373,10 @@ export class DockerService {
     return this.dockerReadFacade.isContainerRunning(...args);
   }
 
+  public getRoutedContainerNames(...args: Parameters<DockerReadFacade['getRoutedContainerNames']>) {
+    return this.dockerReadFacade.getRoutedContainerNames(...args);
+  }
+
   public diagnoseAppContainers(...args: Parameters<DockerReadFacade['diagnoseAppContainers']>) {
     return this.dockerReadFacade.diagnoseAppContainers(...args);
   }

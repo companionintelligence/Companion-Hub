@@ -250,6 +250,16 @@ export class DockerReadFacade {
     return null;
   }
 
+  /** The names of the app's containers behind its web route, stopped ones included. */
+  public async getRoutedContainerNames(appUrn: AppUrn): Promise<string[]> {
+    const containers = await withTimeout(
+      listContainersMatchingAnyLabelSets(this.docker, appUrnLabelSets(appUrn, ['traefik.enable=true'])),
+      DOCKER_INSPECT_TIMEOUT_MS,
+      `Docker container listing timed out for ${appUrn}`,
+    );
+    return containers.flatMap((container) => container.Names?.[0]?.replace(/^\//, '') || []);
+  }
+
   public async getAppNetworkTarget(appUrn: AppUrn): Promise<AppNetworkTarget | null> {
     const containers = await listContainersMatchingAnyLabelSets(this.docker, appUrnLabelSets(appUrn, ['traefik.enable=true']), false);
 

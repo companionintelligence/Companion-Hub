@@ -48,6 +48,7 @@ describe('resolveProbeMessageKey', () => {
     expect(resolveProbeMessageKey('DNS_NOT_FOUND')).toBe('APP_ACTION_ERROR_DNS_NOT_FOUND');
     expect(resolveProbeMessageKey('CF_TUNNEL_NOT_FOUND')).toBe('APP_ACTION_ERROR_CF_TUNNEL_NOT_FOUND');
     expect(resolveProbeMessageKey('PUBLIC_ADDRESS_QUOTA_EXCEEDED')).toBe('APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED');
+    expect(resolveProbeMessageKey('TAILSCALE_SERVE_REFUSED')).toBe('APP_ACTION_ERROR_TAILSCALE_SERVE_REFUSED');
   });
 
   it('returns null for unknown or absent codes so the caller can fall back to the raw detail', () => {

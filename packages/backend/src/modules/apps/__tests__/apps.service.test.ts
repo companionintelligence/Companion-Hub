@@ -101,6 +101,8 @@ describe('AppsService', () => {
             tailnet: 'example.ts.net',
             supportsServices: true,
           }),
+          getServePermission: vi.fn().mockReturnValue({ denied: false, remedy: null, deniedSince: null }),
+          getServeStatus: vi.fn().mockResolvedValue({ entries: [] }),
         } as any;
       }
       return undefined as any;
@@ -549,14 +551,31 @@ describe('AppsService', () => {
     it('MUST attempt container restart for PROXY_UPSTREAM_ERROR', async () => {
       const mockRestart = vi.fn().mockResolvedValue(undefined);
       moduleRef.get.mockImplementation((() => ({
+        getRoutedContainerNames: vi.fn().mockResolvedValue(['test-app_test-store-web-1']),
         restartContainer: mockRestart,
         syncExposurePublic: vi.fn(),
         getTunnelToken: () => 'token',
       })) as any);
 
       setupForResolve('proxy502');
-      await service.resolveAppAvailability(appUrn);
-      expect(mockRestart).toHaveBeenCalledWith('test-app');
+      const result = await service.resolveAppAvailability(appUrn);
+      expect(mockRestart).toHaveBeenCalledWith('test-app_test-store-web-1');
+      expect(result.detail).toContain('Restarted container: test-app_test-store-web-1');
+    });
+
+    it('MUST say so instead of restarting a guessed name when the app has no routed container', async () => {
+      const mockRestart = vi.fn().mockResolvedValue(undefined);
+      moduleRef.get.mockImplementation((() => ({
+        getRoutedContainerNames: vi.fn().mockResolvedValue([]),
+        restartContainer: mockRestart,
+        syncExposurePublic: vi.fn(),
+        getTunnelToken: () => 'token',
+      })) as any);
+
+      setupForResolve('proxy502');
+      const result = await service.resolveAppAvailability(appUrn);
+      expect(mockRestart).not.toHaveBeenCalled();
+      expect(result.detail).toContain('no container found');
     });
 
     it('SHOULD call syncExposurePublic for tailscale + CONNECTION_REFUSED', async () => {
@@ -572,6 +591,8 @@ describe('AppsService', () => {
               tailnet: 'example.ts.net',
               supportsServices: true,
             }),
+            getServePermission: vi.fn().mockReturnValue({ denied: false, remedy: null, deniedSince: null }),
+            getServeStatus: vi.fn().mockResolvedValue({ entries: [] }),
           };
         }
         if ((token as { name?: string } | undefined)?.name === 'AppLifecycleService') {
@@ -580,6 +601,7 @@ describe('AppsService', () => {
           };
         }
         return {
+          getRoutedContainerNames: vi.fn().mockResolvedValue(['test-app_test-store-web-1']),
           restartContainer: vi.fn().mockResolvedValue(undefined),
         };
       }) as any);

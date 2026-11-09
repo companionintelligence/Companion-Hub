@@ -72,6 +72,19 @@ function isDnsMiss(error: unknown): boolean {
   return message.includes('ENOTFOUND') || message.includes('getaddrinfo') || message.includes('ENODATA') || message.includes('EAI_AGAIN');
 }
 
+/**
+ * Whether tailscaled is refusing the Hub's Serve changes and this app's port is not already served.
+ * Asked first, because the probe of an unpublished port reads as a broken app: refused, or a TLS error
+ * when the port is plain HTTP on the host (#2273). A port served before the refusal still works.
+ */
+async function isRefusedByTailscale(tailscaleService: TailscaleService, appPort: number | null): Promise<boolean> {
+  if (!tailscaleService.getServePermission().denied) {
+    return false;
+  }
+  const { entries } = await tailscaleService.getServeStatus();
+  return !entries.some((entry) => entry.listenPort === appPort);
+}
+
 function dnsNotFoundResult(exposureMode: string, appUrl: string): AppAvailabilityResult {
   return {
     available: false,
@@ -503,6 +516,17 @@ export class AppsService {
         };
       }
 
+      if (tailscaleService && (await isRefusedByTailscale(tailscaleService, appPort))) {
+        return {
+          available: false,
+          appUrl: undefined,
+          stage: 'error',
+          errorCode: 'TAILSCALE_SERVE_REFUSED',
+          detail: 'Tailscale refused this change. Open Settings > Network to fix it.',
+          resolvable: false,
+        };
+      }
+
       appUrl = vpnUrl;
     } else {
       const cloudflareClient = this.moduleRef.get(CloudflareClientService, { strict: false });
@@ -681,10 +705,16 @@ export class AppsService {
         const { DockerService } = await import('../docker/docker.service');
         const dockerService = this.moduleRef.get(DockerService, { strict: false });
         if (dockerService) {
-          const appName = app.appName;
+          // Compose names containers `<project>-<service>-1`, so the app's name is never one of them.
           try {
-            await dockerService.restartContainer(appName);
-            actions.push(`Restarted container: ${appName}`);
+            const containers = await dockerService.getRoutedContainerNames(appUrn);
+            if (containers.length === 0) {
+              actions.push(`Failed to restart container: no container found for ${app.appName}`);
+            }
+            for (const container of containers) {
+              await dockerService.restartContainer(container);
+              actions.push(`Restarted container: ${container}`);
+            }
           } catch (e) {
             actions.push(`Failed to restart container: ${e instanceof Error ? e.message : String(e)}`);
           }
