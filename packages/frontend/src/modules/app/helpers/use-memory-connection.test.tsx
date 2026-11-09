@@ -3,7 +3,7 @@ import { renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TranslatableError } from '@/types/error.types';
-import { resolveBlockedReasonKey, useMemoryConnection, useMemoryProviderForceGate } from './use-memory-connection';
+import { useMemoryConnection, useMemoryProviderForceGate } from './use-memory-connection';
 
 const h = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
 vi.mock('@/api-client/client.gen', () => ({
@@ -24,12 +24,6 @@ const wrapper = () => {
 
 const PROVIDER = 'ci-memory:ci-marketplace';
 const NORMAL = 'plane:ci-marketplace';
-
-describe('resolveBlockedReasonKey', () => {
-  it('explains a Connect that is blocked because CI Memory was refused a public address', () => {
-    expect(resolveBlockedReasonKey('memory_address_refused')).toBe('MEMORY_CONNECT_BLOCKED_ADDRESS_REFUSED');
-  });
-});
 
 describe('useMemoryProviderForceGate', () => {
   beforeEach(() => h.get.mockReset());

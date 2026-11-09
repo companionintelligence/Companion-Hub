@@ -16,6 +16,7 @@ describe('resolveBlockedReasonKey', () => {
     ['hub_not_provisioned', 'MEMORY_CONNECT_BLOCKED_HUB_NOT_PROVISIONED'],
     ['hub_unreachable', 'MEMORY_CONNECT_BLOCKED_HUB_UNREACHABLE'],
     ['provider_local_only', 'MEMORY_CONNECT_BLOCKED_PROVIDER_LOCAL_ONLY'],
+    ['memory_address_refused', 'MEMORY_CONNECT_BLOCKED_ADDRESS_REFUSED'],
   ] as const)('maps %s to a specific explanation', (reason, key) => {
     expect(resolveBlockedReasonKey(reason)).toBe(key);
   });
