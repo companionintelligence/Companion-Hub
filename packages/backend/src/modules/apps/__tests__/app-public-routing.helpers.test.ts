@@ -67,6 +67,29 @@ describe('app-public-routing.helpers', () => {
       ).toBe(true);
     });
 
+    // The Settings form fills an empty subdomain with this routing name, so a save names it (#2272).
+    it('treats an empty stored subdomain and its routing name as the same address', () => {
+      expect(
+        didPublicRoutingIdentityChange(
+          { exposureMode: 'cloudflare', localSubdomain: null },
+          { exposureMode: 'cloudflare', localSubdomain: 'airtrail-ci-marketplace' },
+          appName,
+          appStoreSlug,
+        ),
+      ).toBe(false);
+    });
+
+    it('compares names as hostname labels, so a custom app whose store has an underscore keeps its address', () => {
+      expect(
+        didPublicRoutingIdentityChange(
+          { exposureMode: 'cloudflare', localSubdomain: null },
+          { exposureMode: 'cloudflare', localSubdomain: 'airtrail-user' },
+          appName,
+          '_user',
+        ),
+      ).toBe(false);
+    });
+
     it('detects public domain changes when the subdomain stays the same', () => {
       expect(
         didPublicRoutingIdentityChange(

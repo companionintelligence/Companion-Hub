@@ -1,5 +1,5 @@
 import { requiresHubLoginOnPublicRoute, servedOpenPort } from '@ci-hub/common/schemas';
-import { publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm } from '@ci-hub/common/types';
+import { publishesPublicWebRoute, resolveRoutingSubdomain, sanitizeAppSubdomain, storedExposureForm } from '@ci-hub/common/types';
 import type { AppFormHostPortFields } from './app-exposure.helpers';
 
 export type AppPublicRoutingSnapshot = AppFormHostPortFields & {
@@ -74,8 +74,9 @@ export function didPublicRoutingIdentityChange(
     return true;
   }
 
-  const oldSubdomain = resolveRoutingSubdomain(before.localSubdomain, appName, appStoreSlug);
-  const newSubdomain = resolveRoutingSubdomain(after.localSubdomain, appName, appStoreSlug);
+  // Compared as hostname labels: a custom app's `<app>-_user` and the `<app>-user` a save stores are one address.
+  const oldSubdomain = sanitizeAppSubdomain(resolveRoutingSubdomain(before.localSubdomain, appName, appStoreSlug));
+  const newSubdomain = sanitizeAppSubdomain(resolveRoutingSubdomain(after.localSubdomain, appName, appStoreSlug));
   const oldPublicDomain = before.publicDomain?.trim() || null;
   const newPublicDomain = after.publicDomain?.trim() || null;
 

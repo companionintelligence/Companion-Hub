@@ -3147,6 +3147,32 @@ describe('InstallForm - the exposure mode of an app already installed', () => {
     );
   });
 
+  // An app with no stored subdomain routes on `<app>-<store>`. Filling the field with the bare name showed
+  // a different address from the app's page and moved the app on a save that touched nothing else (#2272).
+  it.each([
+    ['exp-test:ci-marketplace', 'exp-test-ci-marketplace'],
+    ['exp-test:_user', 'exp-test-user'],
+  ])('keeps the routing name of %s on Public Web with no stored subdomain', async (urn, routingName) => {
+    const { container, onSubmit } = renderForm(
+      { port: 9898, exposureMode: 'cloudflare', publicDomain: 'example.com' },
+      { info: { ...customApp, urn } as AppInfo },
+    );
+
+    await waitFor(() => expect(screen.getByLabelText(/APP_INSTALL_FORM_LOCAL_SUBDOMAIN/)).toHaveValue(routingName));
+
+    await submit(container);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ localSubdomain: routingName })));
+  });
+
+  it('keeps the bare app name as the default for an app moving to Public Web from This machine only', async () => {
+    renderForm({ port: 9898, exposureMode: 'local' });
+
+    fireEvent.click(screen.getByRole('button', { name: PUBLIC }));
+
+    await waitFor(() => expect(screen.getByLabelText(/APP_INSTALL_FORM_LOCAL_SUBDOMAIN/)).toHaveValue('exp-test'));
+  });
+
   it('shows an app saved on Public Web as Public Web, on a Hub that offers it', async () => {
     const { container, onSubmit } = renderForm({ port: 9898, exposureMode: 'cloudflare', localSubdomain: 'exp-test', publicDomain: 'example.com' });
 

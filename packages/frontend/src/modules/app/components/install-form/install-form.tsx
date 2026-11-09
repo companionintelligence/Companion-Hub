@@ -220,6 +220,10 @@ export const InstallForm: React.FC<IProps> = ({
   // An app that is not exposable has no mode to keep: whatever its stored form names, a save sends it local.
   const savedExposureMode = isEdit && info.exposable ? servedExposureMode({ config: initialValues }) : undefined;
   const keepsPublished = keepsPublishedDomain(isEdit, savedExposureMode);
+  // What an empty Subdomain field stands for. An app already on the web with no subdomain stored (API,
+  // MCP, restore and older installs) is served on its routing name. Filling the field with the bare app
+  // name showed a different address from the app's page and moved the app on any save (#2272).
+  const fallbackSubdomain = keepsPublished ? sanitizeAppSubdomain(routingAppSubdomain) : defaultAppSubdomain;
 
   const availableDomainsQuery = useQuery(getDomainsOptions());
   const availableDomainsData = availableDomainsQuery.data;
@@ -246,14 +250,14 @@ export const InstallForm: React.FC<IProps> = ({
     if (watchExposureMode !== 'cloudflare' || !orgSlug) return null;
     const hubSubdomain = ciHubDeviceSlug ? `hub-${ciHubDeviceSlug}-${orgSlug}` : undefined;
     return buildPublicWebIdentity({
-      appSubdomain: watchLocalSubdomain || defaultAppSubdomain,
+      appSubdomain: watchLocalSubdomain || fallbackSubdomain,
       hubSubdomain,
       orgSlug,
       // The root only fills out the name while no domain is known; the address built on it is shown
       // and prefilled only once one is (`publicDomain`).
       publicDomainRoot: publicDomain || domain || 'example.com',
     });
-  }, [watchExposureMode, orgSlug, watchLocalSubdomain, defaultAppSubdomain, ciHubDeviceSlug, publicDomain, domain]);
+  }, [watchExposureMode, orgSlug, watchLocalSubdomain, fallbackSubdomain, ciHubDeviceSlug, publicDomain, domain]);
 
   const tailscalePreviewHost = useMemo(() => {
     if (watchExposureMode !== 'tailscale') return '';
@@ -785,10 +789,9 @@ export const InstallForm: React.FC<IProps> = ({
   // as exposureMode, openPort, or enableAuth.
   useEffect(() => {
     if (watchExposureMode === 'cloudflare' && info.exposable && info.dynamic_config && !watchLocalSubdomain) {
-      const defaultSubdomain = info.urn.split(':')[0];
-      setValue('localSubdomain', defaultSubdomain);
+      setValue('localSubdomain', fallbackSubdomain);
     }
-  }, [watchExposureMode, info.exposable, info.dynamic_config, info.urn, watchLocalSubdomain, setValue]);
+  }, [watchExposureMode, info.exposable, info.dynamic_config, fallbackSubdomain, watchLocalSubdomain, setValue]);
 
   useEffect(() => {
     if (!suggestedAppBaseUrl) return;
@@ -872,7 +875,7 @@ export const InstallForm: React.FC<IProps> = ({
   const { isCheckingDns, dnsAvailabilityError, domainAvailabilityError } = useDnsAvailability({
     // Only once there is a domain to ask about: none while Companion Portal's list is on its way.
     enabled: info.exposable && isProduction && watchExposureMode === 'cloudflare' && Boolean(publicDomain),
-    subdomain: watchLocalSubdomain || defaultAppSubdomain,
+    subdomain: watchLocalSubdomain || fallbackSubdomain,
     selectedDomain: publicDomain,
     checkDnsAvailability,
     setError,
@@ -1003,7 +1006,7 @@ export const InstallForm: React.FC<IProps> = ({
     const cloudflareSuffix = publicWebPreview
       ? publicWebPreview.hostname
           .slice(0, publicWebPreview.hostname.indexOf('.'))
-          .slice(sanitizeAppSubdomain(watchLocalSubdomain || defaultAppSubdomain).length + 1)
+          .slice(sanitizeAppSubdomain(watchLocalSubdomain || fallbackSubdomain).length + 1)
       : (orgSlug ?? domain);
 
     return (
@@ -1038,7 +1041,7 @@ export const InstallForm: React.FC<IProps> = ({
             loading={loading}
             localSubdomainError={errors.localSubdomain?.message || dnsAvailabilityError || undefined}
             publicDomainError={errors.publicDomain?.message || domainAvailabilityError || undefined}
-            placeholder={defaultAppSubdomain}
+            placeholder={fallbackSubdomain}
             isCheckingDns={isCheckingDns}
             domainListNote={domainListNote}
             onRetryDomainList={() => void availableDomainsQuery.refetch()}
@@ -1166,7 +1169,7 @@ export const InstallForm: React.FC<IProps> = ({
 
     // Set default subdomain if not provided and app is exposable
     if (info.exposable && formValues.exposureMode === 'cloudflare' && !formValues.localSubdomain) {
-      formValues.localSubdomain = info.urn.split(':')[0];
+      formValues.localSubdomain = fallbackSubdomain;
     }
 
     // The domain the form shows. None while Companion Portal's list has not given one: the app then
