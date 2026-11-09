@@ -1,4 +1,4 @@
-import { render, screen, userEvent, waitFor, within } from '@/tests/test-utils';
+import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import { describe, expect, it, vi } from 'vitest';
 import { type SettingsFormValues, UserSettingsForm } from './user-settings-form';
 
@@ -64,9 +64,9 @@ it("shows a member only their own language, and nothing that changes the Hub's s
 it('offers no Base theme, only Language, in the User settings card', () => {
   render(<UserSettingsForm initialValues={newHubSettings} onSubmit={vi.fn()} />);
 
-  const card = within(screen.getByText('User settings').closest('.rounded-lg') as HTMLElement);
-  expect(card.getByRole('combobox', { name: /language/i })).toBeInTheDocument();
-  expect(card.getAllByRole('combobox')).toHaveLength(1);
+  const card = screen.getByText('User settings').closest('.rounded-lg');
+  expect(card).toContainElement(screen.getByRole('combobox', { name: /language/i }));
+  expect(screen.getAllByRole('combobox').filter((box) => card?.contains(box))).toHaveLength(1);
 });
 
 /** The Timezone box. Its label is not tied to it, so find it by its name. */
