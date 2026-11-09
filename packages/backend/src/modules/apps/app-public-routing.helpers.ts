@@ -1,5 +1,5 @@
 import { requiresHubLoginOnPublicRoute, servedOpenPort } from '@ci-hub/common/schemas';
-import { publishesPublicWebRoute, resolveRoutingSubdomain, sanitizeAppSubdomain, storedExposureForm } from '@ci-hub/common/types';
+import { publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm } from '@ci-hub/common/types';
 import type { AppFormHostPortFields } from './app-exposure.helpers';
 
 export type AppPublicRoutingSnapshot = AppFormHostPortFields & {
@@ -56,12 +56,16 @@ export { resolveRoutingSubdomain };
 /**
  * Returns true when a config save changes the public hostname/subdomain Companion Portal
  * publishes, so the previous DNS record must be released before the new one is created.
+ *
+ * `defaultPublicDomain` is the domain the tunnel sync publishes a row with no stored one on. A save
+ * that names that domain, as the Settings form does, leaves the app where it is.
  */
 export function didPublicRoutingIdentityChange(
   before: AppPublicRoutingSnapshot,
   after: AppPublicRoutingSnapshot,
   appName: string,
   appStoreSlug: string,
+  defaultPublicDomain?: string,
 ): boolean {
   const wasPublished = publishesCloudflarePublicRoute(before);
   const willPublish = publishesCloudflarePublicRoute(after);
@@ -74,11 +78,11 @@ export function didPublicRoutingIdentityChange(
     return true;
   }
 
-  // Compared as hostname labels: a custom app's `<app>-_user` and the `<app>-user` a save stores are one address.
-  const oldSubdomain = sanitizeAppSubdomain(resolveRoutingSubdomain(before.localSubdomain, appName, appStoreSlug));
-  const newSubdomain = sanitizeAppSubdomain(resolveRoutingSubdomain(after.localSubdomain, appName, appStoreSlug));
-  const oldPublicDomain = before.publicDomain?.trim() || null;
-  const newPublicDomain = after.publicDomain?.trim() || null;
+  const oldSubdomain = resolveRoutingSubdomain(before.localSubdomain, appName, appStoreSlug);
+  const newSubdomain = resolveRoutingSubdomain(after.localSubdomain, appName, appStoreSlug);
+  const fallbackPublicDomain = defaultPublicDomain?.trim() || null;
+  const oldPublicDomain = before.publicDomain?.trim() || fallbackPublicDomain;
+  const newPublicDomain = after.publicDomain?.trim() || fallbackPublicDomain;
 
   return oldSubdomain !== newSubdomain || oldPublicDomain !== newPublicDomain;
 }

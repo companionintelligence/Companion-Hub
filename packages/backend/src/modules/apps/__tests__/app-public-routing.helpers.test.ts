@@ -79,15 +79,29 @@ describe('app-public-routing.helpers', () => {
       ).toBe(false);
     });
 
-    it('compares names as hostname labels, so a custom app whose store has an underscore keeps its address', () => {
+    // The Settings form fills an empty public domain with the Hub's own, the one such an app already serves on (#2272).
+    it('treats an empty stored public domain and the Hub default as the same address', () => {
       expect(
         didPublicRoutingIdentityChange(
-          { exposureMode: 'cloudflare', localSubdomain: null },
-          { exposureMode: 'cloudflare', localSubdomain: 'airtrail-user' },
+          { exposureMode: 'cloudflare', localSubdomain: 'airtrail', publicDomain: null },
+          { exposureMode: 'cloudflare', localSubdomain: 'airtrail', publicDomain: 'example.com' },
           appName,
-          '_user',
+          appStoreSlug,
+          'example.com',
         ),
       ).toBe(false);
+    });
+
+    it('still sees a move from an empty stored public domain to another domain', () => {
+      expect(
+        didPublicRoutingIdentityChange(
+          { exposureMode: 'cloudflare', localSubdomain: 'airtrail', publicDomain: null },
+          { exposureMode: 'cloudflare', localSubdomain: 'airtrail', publicDomain: 'other.com' },
+          appName,
+          appStoreSlug,
+          'example.com',
+        ),
+      ).toBe(true);
     });
 
     it('detects public domain changes when the subdomain stays the same', () => {
