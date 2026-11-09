@@ -205,7 +205,8 @@ export class SystemInspectorService {
         uptime: os.uptime(),
         platform: `${os.type()} ${os.release()} (${os.arch()})`,
         // In the Hub's container `os.hostname()` is the container ID, which changes with every update.
-        // Docker's name for its host is the machine's hostname. Outside a container the two agree.
+        // Docker's name for its host is the machine's hostname on Linux, and the name of Docker's own VM
+        // on Docker Desktop or Colima (`docker-desktop`, `colima`).
         hostname: dockerInfo.hostName || os.hostname(),
         dockerVersion: dockerInfo.version,
         containerCount: dockerInfo.containers,
