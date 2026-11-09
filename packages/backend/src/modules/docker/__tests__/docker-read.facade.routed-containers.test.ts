@@ -28,7 +28,13 @@ describe('DockerReadFacade.getRoutedContainerNames', () => {
     facade = new DockerReadFacade({ warn: vi.fn(), debug: vi.fn() } as never, { listContainers } as never);
   });
 
-  it('returns the routed container then a sibling on its network namespace, and leaves the rest out', async () => {
+  it('returns the routed container then a sibling on its network namespace and leaves the rest out', async () => {
+    await expect(facade.getRoutedContainerNames(appUrn)).resolves.toEqual(['test-app_test-store-web-1', 'test-app_test-store-sidecar-1']);
+  });
+
+  it('names a routed container once when it also shares another routed container network', async () => {
+    listContainers.mockResolvedValue([web, { ...sidecar, Labels: { 'traefik.enable': 'true' } }]);
+
     await expect(facade.getRoutedContainerNames(appUrn)).resolves.toEqual(['test-app_test-store-web-1', 'test-app_test-store-sidecar-1']);
   });
 

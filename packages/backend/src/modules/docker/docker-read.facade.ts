@@ -253,7 +253,7 @@ export class DockerReadFacade {
   /**
    * The names of the containers to restart for the app's web route: those carrying it, stopped ones
    * included, then the ones sharing their network namespace. `docker restart` gives a container a new
-   * namespace, and a `network_mode: service:<routed>` sibling keeps the old one and has no network
+   * namespace and a `network_mode: service:<routed>` sibling keeps the old one and has no network
    * until it restarts too. `downOnly` leaves out a routed container that is running, with its siblings.
    */
   public async getRoutedContainerNames(appUrn: AppUrn, { downOnly = false }: { downOnly?: boolean } = {}): Promise<string[]> {
@@ -263,7 +263,9 @@ export class DockerReadFacade {
       `Docker container listing timed out for ${appUrn}`,
     );
     const routed = containers.filter((container) => container.Labels?.['traefik.enable'] === 'true' && !(downOnly && container.State === 'running'));
-    const sharing = containers.filter((container) => routed.some((owner) => container.HostConfig?.NetworkMode === `container:${owner.Id}`));
+    const sharing = containers.filter(
+      (container) => !routed.includes(container) && routed.some((owner) => container.HostConfig?.NetworkMode === `container:${owner.Id}`),
+    );
     return [...routed, ...sharing].flatMap((container) => container.Names?.[0]?.replace(/^\//, '') || []);
   }
 

@@ -277,10 +277,12 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
 
   // tailscaled started or stopped refusing the Hub's Tailscale Serve changes. Settings → Network
   // and every Private VPN access card read that from the Tailscale status, and once a publish goes
-  // through the served ports change too.
+  // through the served ports change too. The top of an app page gives up polling after five minutes,
+  // usually before anyone has fixed the operator, so its verdict is asked for again here.
   if (event === 'tailscale_serve_permission') {
     void queryClient.invalidateQueries({ queryKey: tailscaleStatusQueryKey() });
     void queryClient.invalidateQueries({ queryKey: getServeStatusQueryKey() });
+    void queryClient.invalidateQueries({ predicate: (query) => (query.queryKey[0] as { _id?: string } | undefined)?._id === 'checkAvailability' });
     return;
   }
 

@@ -323,7 +323,8 @@ export function useAppUrlAvailability(input: {
 
   return {
     state,
-    appUrl: probe?.appUrl ?? lastKnownAppUrl,
+    // Nothing serves this address during a refusal, so an earlier verdict's URL can't bring back "Open anyway".
+    appUrl: probe?.errorCode === 'TAILSCALE_SERVE_REFUSED' ? null : (probe?.appUrl ?? lastKnownAppUrl),
     localUrl: probe?.localUrl ?? lastKnownLocalUrl,
     statusMessage,
     resolvable: Boolean(probe?.resolvable),

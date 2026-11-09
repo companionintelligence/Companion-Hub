@@ -576,6 +576,28 @@ describe('AppsService', () => {
       const result = await service.resolveAppAvailability(appUrn);
       expect(mockRestart).not.toHaveBeenCalled();
       expect(result.detail).toContain('no container found');
+      expect(result.success).toBe(false);
+    });
+
+    it('MUST go on to the next container when one restart fails', async () => {
+      const mockRestart = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('Failed to restart container test-app_test-store-web-1'))
+        .mockResolvedValue(undefined);
+      moduleRef.get.mockImplementation((() => ({
+        getRoutedContainerNames: vi.fn().mockResolvedValue(['test-app_test-store-web-1', 'test-app_test-store-sidecar-1']),
+        restartContainer: mockRestart,
+        syncExposurePublic: vi.fn(),
+        getTunnelToken: () => 'token',
+      })) as any);
+
+      setupForResolve('proxy502');
+      const result = await service.resolveAppAvailability(appUrn);
+
+      expect(mockRestart).toHaveBeenCalledWith('test-app_test-store-sidecar-1');
+      expect(result.success).toBe(true);
+      expect(result.detail).toContain('Restarted container: test-app_test-store-sidecar-1');
+      expect(result.detail).toContain('Failed to restart container test-app_test-store-web-1');
     });
 
     it('SHOULD call syncExposurePublic for tailscale + CONNECTION_REFUSED', async () => {

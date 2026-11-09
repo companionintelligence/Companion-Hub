@@ -518,11 +518,12 @@ export class AppsService {
         };
       }
 
-      if (tailscaleService && tailscaleStatus?.nodeFqdn && (await isRefusedByTailscale(tailscaleService, appPort, tailscaleStatus.nodeFqdn))) {
+      if (tailscaleStatus?.nodeFqdn && (await isRefusedByTailscale(tailscaleService, appPort, tailscaleStatus.nodeFqdn))) {
         return {
           available: false,
           appUrl: undefined,
           stage: 'error',
+          reason: 'TAILSCALE_REFUSED',
           errorCode: 'TAILSCALE_SERVE_REFUSED',
           detail: 'Tailscale refused this change. Open Settings > Network to fix it.',
           resolvable: false,
@@ -652,6 +653,8 @@ export class AppsService {
 
     const exposureMode = app.exposureMode || 'local';
     const actions: string[] = [];
+    const failures: string[] = [];
+    const restartFailure = (e: unknown) => `Failed to restart container: ${e instanceof Error ? e.message : String(e)}`;
 
     try {
       // For Cloudflare errors: re-sync state with Companion Portal
@@ -706,14 +709,19 @@ export class AppsService {
             // means the port isn't published. Restarting a running app can't change that.
             const containers = await dockerService.getRoutedContainerNames(appUrn, { downOnly: tailscaleRepair });
             if (containers.length === 0 && !tailscaleRepair) {
-              actions.push(`Failed to restart container: no container found for ${app.appName}`);
+              failures.push(`Failed to restart container: no container found for ${app.appName}`);
             }
             for (const container of containers) {
-              await dockerService.restartContainer(container);
-              actions.push(`Restarted container: ${container}`);
+              // Stopping at a failure would leave a sibling cut off by its routed container's restart.
+              try {
+                await dockerService.restartContainer(container);
+                actions.push(`Restarted container: ${container}`);
+              } catch (e) {
+                failures.push(restartFailure(e));
+              }
             }
           } catch (e) {
-            actions.push(`Failed to restart container: ${e instanceof Error ? e.message : String(e)}`);
+            failures.push(restartFailure(e));
           }
         }
       }
@@ -729,14 +737,21 @@ export class AppsService {
         }
       }
 
-      if (actions.length === 0) {
+      const attempted = [...actions, ...failures].join('; ');
+
+      if (!attempted) {
         return { success: false, action: 'none', detail: 'No resolution actions available for this error.' };
+      }
+
+      // A repair that only failed changed nothing, so the page must not report it as done and recheck.
+      if (actions.length === 0) {
+        return { success: false, action: attempted, detail: attempted };
       }
 
       return {
         success: true,
-        action: actions.join('; '),
-        detail: `Attempted: ${actions.join('; ')}. The app may take a moment to become available.`,
+        action: attempted,
+        detail: `Attempted: ${attempted}. The app may take a moment to become available.`,
       };
     } catch (e) {
       return {

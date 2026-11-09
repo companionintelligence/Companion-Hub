@@ -565,7 +565,7 @@ describe('AppsService.checkAppAvailability', () => {
     expect(result.stage).toBe('propagating');
   });
 
-  // The probe of a port Tailscale never published reads as a broken app, and Resolve can't change who
+  // The probe of a port Tailscale never published reads as a broken app and Resolve can't change who
   // the host's operator is (#2273).
   it('tailscale mode → names the refusal when tailscaled refuses the Hub and the port is not served', async () => {
     ctx.mockApp.exposureMode = 'tailscale';
@@ -574,7 +574,13 @@ describe('AppsService.checkAppAvailability', () => {
 
     const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
 
-    expect(result).toMatchObject({ available: false, stage: 'error', errorCode: 'TAILSCALE_SERVE_REFUSED', resolvable: false });
+    expect(result).toMatchObject({
+      available: false,
+      stage: 'error',
+      reason: 'TAILSCALE_REFUSED',
+      errorCode: 'TAILSCALE_SERVE_REFUSED',
+      resolvable: false,
+    });
     expect(result.appUrl).toBeUndefined();
     expect(mockedAxiosGet).not.toHaveBeenCalled();
   });
