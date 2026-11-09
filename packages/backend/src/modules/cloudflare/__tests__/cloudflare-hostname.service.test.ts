@@ -98,6 +98,37 @@ describe('CloudflareHostnameService', () => {
     await expect(service.resolvesToExistingAppHostname('dropgate-store', 'companionintelligence.com', 'dropgate:store')).resolves.toBe(true);
   });
 
+  describe('an app with no stored public domain', () => {
+    beforeEach(() => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        appName: 'dropgate',
+        appStoreSlug: 'store',
+        exposureMode: 'cloudflare',
+        localSubdomain: null,
+        publicDomain: null,
+        config: { exposureMode: 'cloudflare' },
+      } as never);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        slug: 'devben',
+        hubSubdomain: 'hub-nvda-devben',
+      } as never);
+    });
+
+    // Its name on another zone is a new one there. Calling it the app's own skips the Portal's answer on whether that zone has room.
+    it('does not take its name on another zone for its own', async () => {
+      await expect(service.resolvesToExistingAppHostname('dropgate-store', 'other.example', 'dropgate:store')).resolves.toBe(false);
+    });
+
+    it("is on the domain the tunnel sync publishes it on, the operator's override of the Hub's when there is one", async () => {
+      configurationService.getConfig.mockReturnValue({
+        domain: 'companionintelligence.com',
+        userSettings: { domain: 'ops.example' },
+      } as ReturnType<ConfigurationService['getConfig']>);
+
+      await expect(service.resolvesToExistingAppHostname('dropgate-store', 'ops.example', 'dropgate:store')).resolves.toBe(true);
+    });
+  });
+
   it('treats legacy exposedLocal apps as cloudflare when matching the current hostname', async () => {
     appsRepository.getAppByUrn.mockResolvedValue({
       appName: 'dropgate',

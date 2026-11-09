@@ -1,4 +1,5 @@
 import { castAppUrn, createAppUrn } from '@/common/helpers/app-helpers';
+import { resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Injectable } from '@nestjs/common';
 import { type AppUrn, buildPublicWebIdentity, resolveRoutingSubdomain, sanitizeAppSubdomain, servedExposureMode } from '@ci-hub/common/types';
@@ -28,18 +29,20 @@ export class CloudflareHostnameService {
     }
 
     const registration = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
-    const defaultDomain = this.configurationService.getConfig().domain;
+    const hubDomain = resolveHubPublicDomainRoot(this.configurationService.getConfig());
     const requestedIdentity = buildPublicWebIdentity({
       appSubdomain: subdomain,
       hubSubdomain: registration?.hubSubdomain ?? undefined,
       orgSlug: registration?.slug ?? undefined,
-      publicDomainRoot: domain || app.publicDomain?.trim() || defaultDomain,
+      publicDomainRoot: domain || app.publicDomain?.trim() || hubDomain,
     });
+    // Where the sync publishes the app now, never the domain being asked about. Moving an app with no
+    // stored domain to another zone is a new name there, and the Portal has to say whether that zone has room.
     const currentIdentity = buildPublicWebIdentity({
-      appSubdomain: app.localSubdomain || `${app.appName}-${app.appStoreSlug}`,
+      appSubdomain: resolveRoutingSubdomain(app.localSubdomain, app.appName, app.appStoreSlug),
       hubSubdomain: registration?.hubSubdomain ?? undefined,
       orgSlug: registration?.slug ?? undefined,
-      publicDomainRoot: app.publicDomain?.trim() || domain || defaultDomain,
+      publicDomainRoot: app.publicDomain?.trim() || hubDomain,
     });
 
     return requestedIdentity.hostname === currentIdentity.hostname;
