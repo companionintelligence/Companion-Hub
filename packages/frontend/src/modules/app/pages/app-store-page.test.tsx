@@ -171,6 +171,7 @@ function setupQueries(stores = [STORE_A, STORE_B]) {
 describe('AppStorePage — multi-store UX', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSetSearchParams.mockReset();
     customAppActions = OWNER_ACTIONS;
     manageHub = true;
     mockUseParams.mockReturnValue({});
@@ -580,6 +581,81 @@ describe('AppStorePage — multi-store UX', () => {
     );
 
     expect(mockStoreState.setCategory).toHaveBeenCalledWith('featured');
+  });
+
+  it('leaves Featured when the address gains a search term while the page is open', () => {
+    capturedSearchParams = new URLSearchParams('store=ci-apps');
+    setupQueries();
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+    expect(mockStoreState.setCategory).toHaveBeenCalledWith('featured');
+    mockStoreState.setCategory.mockClear();
+
+    capturedSearchParams = new URLSearchParams('store=ci-apps&q=uptime');
+    rerender(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockStoreState.setSearchImmediate).toHaveBeenCalledWith('uptime');
+    expect(mockStoreState.setCategory).toHaveBeenCalledWith(undefined);
+  });
+
+  it('keeps the open view when the address has neither a category nor a search term', () => {
+    capturedSearchParams = new URLSearchParams('store=ci-apps');
+    setupQueries();
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+    mockStoreState.setCategory.mockClear();
+
+    capturedSearchParams = new URLSearchParams('store=community');
+    rerender(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockStoreState.setCategory).not.toHaveBeenCalled();
+  });
+
+  it('still follows the next address after its own write turns out to change nothing', () => {
+    capturedSearchParams = new URLSearchParams('store=ci-apps&q=uptime');
+    setupQueries();
+    mockSetSearchParams.mockImplementation((updater: (prev: URLSearchParams) => URLSearchParams) => updater(capturedSearchParams));
+
+    // First pass: the store hasn't taken the search term yet, so the page writes an address without it.
+    const { rerender } = render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    // Second pass: the term has landed, the write matches the address and the URL never moves.
+    mockStoreState.search = 'uptime';
+    rerender(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+    mockStoreState.setCategory.mockClear();
+
+    capturedSearchParams = new URLSearchParams('store=ci-apps&category=development');
+    rerender(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockStoreState.setCategory).toHaveBeenCalledWith('development');
   });
 
   it('writes browse params to the URL when search and category are set', () => {

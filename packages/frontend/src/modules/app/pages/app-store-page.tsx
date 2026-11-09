@@ -76,17 +76,16 @@ export default () => {
 
     setSearchImmediate(query);
 
-    // Featured never runs a search, so a link carrying one opens the full catalog instead.
-    if (parsed.category !== undefined) {
-      hasInitializedDefaultCategory.current = true;
-      setCategory(shouldLeaveFeaturedForSearch(parsed.category, query) ? undefined : parsed.category);
+    // With no category and no search term the address doesn't ask for a view, so once one is open it stays.
+    if (parsed.category === undefined && !query && hasInitializedDefaultCategory.current) {
       return;
     }
 
-    if (!hasInitializedDefaultCategory.current) {
-      hasInitializedDefaultCategory.current = true;
-      setCategory(shouldLeaveFeaturedForSearch(DEFAULT_STORE_CATEGORY, query) ? undefined : DEFAULT_STORE_CATEGORY);
-    }
+    hasInitializedDefaultCategory.current = true;
+
+    // Featured never runs a search, so an address carrying one opens the full catalog instead.
+    const nextCategory = parsed.category ?? (query ? undefined : DEFAULT_STORE_CATEGORY);
+    setCategory(shouldLeaveFeaturedForSearch(nextCategory, query) ? undefined : nextCategory);
   }, [searchParams, setCategory, setSearchImmediate]);
 
   const { data: appStores } = useQuery({
@@ -105,6 +104,8 @@ export default () => {
         });
 
         if (next.toString() === prev.toString()) {
+          // The address isn't changing, so no read will come along to clear a flag set by an earlier write.
+          isWritingBrowseUrl.current = false;
           return prev;
         }
 
