@@ -19,9 +19,12 @@ export default () => {
   const resetToDefaults = useMultiServiceStore((state) => state.resetToDefaults);
 
   // Create starts from a blank app. Edit fills this same store from the saved
-  // config, so it must not reset.
+  // config, so it must not reset. The form reads the store on its first render and
+  // its environment and volume rows keep what they read, so it waits for the reset.
+  const [storeIsReset, setStoreIsReset] = useState(false);
   useEffect(() => {
     resetToDefaults();
+    setStoreIsReset(true);
   }, [resetToDefaults]);
   const [appName, setAppName] = useState('');
   const [appNameError, setAppNameError] = useState<string>();
@@ -95,7 +98,7 @@ export default () => {
           </div>
         </CardContent>
       </Card>
-      <MultiServiceForm onSubmit={onSubmit} />
+      {storeIsReset && <MultiServiceForm onSubmit={onSubmit} />}
     </div>
   );
 };
