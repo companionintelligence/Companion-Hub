@@ -34,7 +34,7 @@ separate dev feed so dev desktop builds can update without touching production.
 | Trigger | Path |
 |---|---|
 | Settings UI (desktop) | **Update to X** on the Desktop app card calls the `perform_desktop_update_command` Tauri command and shows the steps from `get_update_progress_command`. See [The one-click update in the desktop window](#the-one-click-update-in-the-desktop-window). |
-| Settings UI (any browser) | backend `POST /api/system/update` — Hub probes `host.docker.internal:17400/health`, then `POST /update` with the listener token. The tab never talks to `127.0.0.1:17400`. If the listener can't be reached, Hub updates the stack only, and Settings says to update from Companion Hub on the computer that runs the Hub, or with `companion-hub update` in a terminal there. |
+| Settings UI (any browser) | backend `POST /api/system/update` — Hub probes `host.docker.internal:17400/health`, then `POST /update` with the listener token. The tab never talks to `127.0.0.1:17400`. If the listener can't be reached, Hub updates the stack only, and Settings says to update from Companion Hub on the computer that runs the Hub, or with `companion-hub update` in a terminal there. A Hub with no listener token, like a `cihub` install, has no desktop app to mention, so a browser there gets no such advice and no Desktop app card. |
 | CLI | `companion-hub update` (`--check` for exit-code-only: 1 = update available) |
 | Hub Docker stack (separate from app binary) | backend `SystemUpdateService` daily timer, gated by the Settings auto-update toggle; only a release-pinned node moves (see [`hub-stack-self-update.md`](hub-stack-self-update.md)). It never calls the listener. |
 
@@ -63,8 +63,9 @@ on Linux. The Hub container mounts `state/` at `/data/state` and reads the token
   API returns it. It doesn't follow a symlink in the token's place, and it sends nothing but
   one printable word.
 - **Older desktop builds** wrote the token at the root of the data folder. The Hub
-  container doesn't mount the root, so the Hub never found the token, and Settings said
-  the desktop app wasn't running while it was.
+  container doesn't mount the root, so the Hub never finds the token. A browser reads such
+  a Hub as having no desktop app, like a `cihub` install, and shows no Desktop app card.
+  The app's own window always has the card, and updating the app moves the token to `state/`.
 - **Upgrading the desktop app.** A listener that an older build started keeps port 17400
   until it exits, and it checks each request against the file at the root. Where that file
   exists, a newer listener writes the same token there too, so the Hub reaches whichever
