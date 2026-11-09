@@ -539,6 +539,49 @@ describe('AppStorePage — multi-store UX', () => {
     expect(mockStoreState.setCategory).toHaveBeenCalledWith('ai');
   });
 
+  it('opens the full catalog for a link with a search term and no category', () => {
+    capturedSearchParams = new URLSearchParams('store=ci-apps&q=uptime');
+    setupQueries();
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockStoreState.setSearchImmediate).toHaveBeenCalledWith('uptime');
+    expect(mockStoreState.setCategory).toHaveBeenCalledWith(undefined);
+    expect(mockStoreState.setCategory).not.toHaveBeenCalledWith('featured');
+  });
+
+  it('leaves Featured for a link that names it alongside a search term', () => {
+    capturedSearchParams = new URLSearchParams('store=ci-apps&q=uptime&category=featured');
+    setupQueries();
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockStoreState.setSearchImmediate).toHaveBeenCalledWith('uptime');
+    expect(mockStoreState.setCategory).toHaveBeenCalledWith(undefined);
+    expect(mockStoreState.setCategory).not.toHaveBeenCalledWith('featured');
+  });
+
+  it('still opens Featured for a link with no search term', () => {
+    capturedSearchParams = new URLSearchParams('store=ci-apps');
+    setupQueries();
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockStoreState.setCategory).toHaveBeenCalledWith('featured');
+  });
+
   it('writes browse params to the URL when search and category are set', () => {
     setupQueries();
     mockStoreState.search = 'docs';

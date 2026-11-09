@@ -2,7 +2,7 @@ import { getEnabledAppStoresOptions } from '@/api-client/@tanstack/react-query.g
 import { CATALOG_PAGE_SIZE } from '@/lib/catalog-page-size';
 import { searchAppsInfiniteOptions } from '@/lib/marketplace-search-query';
 import { getInstalledAppUrnsOptions } from '@/lib/installed-app-urns-query';
-import { applyStoreBrowseParams, parseStoreBrowseParams, storeParamToWrite } from '@/lib/store-browse-params';
+import { applyStoreBrowseParams, parseStoreBrowseParams, shouldLeaveFeaturedForSearch, storeParamToWrite } from '@/lib/store-browse-params';
 import { invalidateStoreCatalogQueries } from '@/lib/invalidate-store-catalog-queries';
 import { pullAppStores } from '@/api-client/sdk.gen';
 import { EmptyPage } from '@/components/empty-page/empty-page';
@@ -72,18 +72,20 @@ export default () => {
     }
 
     const parsed = parseStoreBrowseParams(searchParams);
+    const query = parsed.q ?? '';
 
-    setSearchImmediate(parsed.q ?? '');
+    setSearchImmediate(query);
 
+    // Featured never runs a search, so a link carrying one opens the full catalog instead.
     if (parsed.category !== undefined) {
       hasInitializedDefaultCategory.current = true;
-      setCategory(parsed.category);
+      setCategory(shouldLeaveFeaturedForSearch(parsed.category, query) ? undefined : parsed.category);
       return;
     }
 
     if (!hasInitializedDefaultCategory.current) {
       hasInitializedDefaultCategory.current = true;
-      setCategory(DEFAULT_STORE_CATEGORY);
+      setCategory(shouldLeaveFeaturedForSearch(DEFAULT_STORE_CATEGORY, query) ? undefined : DEFAULT_STORE_CATEGORY);
     }
   }, [searchParams, setCategory, setSearchImmediate]);
 
