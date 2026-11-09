@@ -218,6 +218,12 @@ describe('resolveStatusPins', () => {
     ]);
   });
 
+  it('reports a pin on the bare name as available when the engine lists the model under :latest', () => {
+    const backends = [{ type: 'ollama' as const, healthy: true, modelsLoaded: ['nomic-embed-text:latest'] }];
+
+    expect(resolveStatusPins([pin({ scope: 'model', model: 'nomic-embed-text' })], [], backends)[0]?.targetAvailable).toBe(true);
+  });
+
   it('reports a local pin for a model this node does not have as unavailable', () => {
     expect(resolveStatusPins([pin({ scope: 'model', model: 'gone:1b' })], [], localBackends)[0]?.targetAvailable).toBe(false);
   });
