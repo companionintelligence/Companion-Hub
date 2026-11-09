@@ -1,5 +1,5 @@
 import type { GuestAppsDto } from '@/api-client';
-import { isLoopbackHost, resolveReachableHubHost } from '@/modules/app/components/app-access-points/app-access-points';
+import { hasDirectLocalAccess, isLoopbackHost, resolveReachableHubHost } from '@/modules/app/components/app-access-points/app-access-points';
 import { hostPortStaysOnLoopback } from '@ci-hub/common/schemas';
 
 const LOOPBACK_HOST = '127.0.0.1';
@@ -48,8 +48,8 @@ export function guestTileAddresses(input: {
   }
 
   const directPort = app.port ?? info.port ?? null;
-  const host =
-    directPort && (app.exposedLocal || app.openPort || !info.dynamic_config) ? guestPortHost(info, input.viewerHostname, input.publicDomain) : null;
+  const publishesPort = hasDirectLocalAccess(app, { hasHostPort: directPort != null, dynamicConfig: info.dynamic_config });
+  const host = publishesPort ? guestPortHost(info, input.viewerHostname, input.publicDomain) : null;
 
   if (host) {
     addresses.push({ key: 'local', url: `${info.https ? 'https' : 'http'}://${host}:${directPort}${urlSuffix}`, label: `${host}:${directPort}` });

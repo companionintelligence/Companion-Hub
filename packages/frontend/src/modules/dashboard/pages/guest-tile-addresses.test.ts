@@ -59,6 +59,17 @@ describe('guestTileAddresses', () => {
     ]);
   });
 
+  it('offers no port on a Private VPN app that kept its host port closed, even where the row says otherwise', () => {
+    const data = tile({ exposureMode: 'tailscale', exposedLocal: true, openPort: false, publicUrl: undefined });
+
+    expect(offered(data, '192.168.1.20')).toEqual([]);
+    expect(offered(data, 'localhost')).toEqual([]);
+  });
+
+  it('offers the port of a Private VPN app that asked for one', () => {
+    expect(offered(tile({ exposureMode: 'tailscale', openPort: true, publicUrl: undefined }), '192.168.1.20')).toEqual(['http://192.168.1.20:18850']);
+  });
+
   it('offers no port for an app that does not publish one', () => {
     expect(offered(tile({ exposedLocal: false, openPort: false, publicUrl: undefined }), '192.168.1.20')).toEqual([]);
   });

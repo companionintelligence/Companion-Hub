@@ -166,7 +166,7 @@ export function isTailscalePortPublished(port: number | null | undefined, served
   return port != null && servedPorts.has(port);
 }
 
-function hasDirectLocalAccess(
+export function hasDirectLocalAccess(
   record: { exposureMode?: string | null; exposedLocal?: boolean; openPort?: boolean },
   options: { hasHostPort: boolean; dynamicConfig: boolean },
 ): boolean {
