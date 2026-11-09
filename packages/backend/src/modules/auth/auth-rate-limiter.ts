@@ -28,6 +28,8 @@ const SCOPES = {
   // does not verify is what a guess looks like, so only failures count there.
   didAuthChallenge: { mode: 'attempts', limit: 20, windowMs: 60_000 },
   didAuth: { mode: 'failures', limit: 10, windowMs: 60_000 },
+  // A signed-in person confirming their own password or two-factor code. The only scope keyed by account: see the class note.
+  accountRecheck: { mode: 'failures', limit: 10, windowMs: 60_000 },
 } as const;
 
 export type AuthRateScope = keyof typeof SCOPES;
@@ -36,10 +38,12 @@ export type AuthRateScope = keyof typeof SCOPES;
 const MAX_TRACKED_KEYS = 10_000;
 
 /**
- * An in-memory limiter for the unauthenticated auth routes.
+ * An in-memory limiter for the auth routes.
  *
- * ⚠ KEYED BY CLIENT ADDRESS, NEVER BY ACCOUNT. Keying by email would let anyone who knows the
- * operator's address lock the operator out by failing a few times on purpose.
+ * ⚠ ROUTES THAT TAKE NO SESSION ARE KEYED BY CLIENT ADDRESS, NEVER BY ACCOUNT. Keying by email would
+ * let anyone who knows the operator's address lock the operator out by failing a few times on purpose.
+ * `accountRecheck` is keyed by account id because its routes sit behind that account's own session, so
+ * nobody else can spend the budget, and a person's budget stays the same from whichever address they are on.
  *
  * The address is whatever Express resolved through the Hub's trusted-proxy configuration, so it is
  * the real client behind Traefik and the tunnel, not the proxy's own. Where a caller reaches the Hub
@@ -88,6 +92,23 @@ export class AuthRateLimiter {
         this.refund(key, at);
       }
     };
+  }
+
+  /**
+   * True the first time it is asked about `clientKey` within a window of `scope`, then false until
+   * that window has passed. For the log line written when a limit is reached: a client that keeps
+   * going past the limit should cost one line, not one per refused request.
+   */
+  public firstRefusalInWindow(scope: AuthRateScope, clientKey: string): boolean {
+    const key = `${scope}:refused:${clientKey}`;
+
+    if (this.recent(key, SCOPES[scope].windowMs).length > 0) {
+      return false;
+    }
+
+    this.record(key, [], this.now());
+
+    return true;
   }
 
   private recent(key: string, windowMs: number): number[] {

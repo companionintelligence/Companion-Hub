@@ -15,6 +15,36 @@ function failTimes(limiter: AuthRateLimiter, scope: Parameters<AuthRateLimiter['
 }
 
 describe('AuthRateLimiter', () => {
+  describe('firstRefusalInWindow', () => {
+    it('is true once per window for a key', () => {
+      const clock = { now: 1_000_000 };
+      const limiter = limiterAt(clock);
+
+      expect(limiter.firstRefusalInWindow('accountRecheck', '7')).toBe(true);
+      expect(limiter.firstRefusalInWindow('accountRecheck', '7')).toBe(false);
+
+      clock.now += 60_001;
+      expect(limiter.firstRefusalInWindow('accountRecheck', '7')).toBe(true);
+    });
+
+    it('keeps keys and scopes apart', () => {
+      const limiter = limiterAt({ now: 1_000_000 });
+
+      expect(limiter.firstRefusalInWindow('accountRecheck', '7')).toBe(true);
+      expect(limiter.firstRefusalInWindow('accountRecheck', '8')).toBe(true);
+      expect(limiter.firstRefusalInWindow('login', '7')).toBe(true);
+    });
+
+    it('does not spend a slot of the budget it reports on', () => {
+      const limiter = limiterAt({ now: 1_000_000 });
+
+      limiter.firstRefusalInWindow('accountRecheck', '7');
+      failTimes(limiter, 'accountRecheck', '7', 10);
+
+      expect(() => limiter.admit('accountRecheck', '7')).toThrow('AUTH_ERROR_RATE_LIMITED');
+    });
+  });
+
   describe('failure scopes (login, totp, password-reset token)', () => {
     it('lets a client fail up to the limit and refuses the next attempt', () => {
       const limiter = limiterAt({ now: 1_000_000 });
