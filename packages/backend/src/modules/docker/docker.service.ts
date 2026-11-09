@@ -27,6 +27,8 @@ import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsRepository } from '../apps/apps.repository';
+import { appIdOf } from '../apps/app-id.helpers';
+import { collectComposeOverrideViolations, describeComposeOverrideViolations } from '../apps/compose-override-sandbox';
 import { APPLE_CONTAINER_ENGINE_NOTICE, isSocktainerVersion } from './container-engine';
 import { DOCKERODE } from './constants';
 import { DockerReadFacade, type ManagedAppContainerVerification } from './docker-read.facade';
@@ -164,6 +166,10 @@ const formatSeconds = (ms: number) => `${Math.round(ms / 100) / 10} s`;
 
 /** Grace period between SIGTERM and SIGKILL for a canceled Compose child process. */
 const COMPOSE_CANCEL_SIGKILL_GRACE_MS = 5_000;
+
+/** The compose subcommands that create containers, and so read an app's user config to decide what they run. */
+const CONTAINER_CREATING_COMPOSE_VERBS = new Set(['up', 'create', 'run']);
+
 // Every privileged helper walks a whole data folder (a database, a media library): deleting, copying or
 // archiving it. Uninstall, Reset, a restore and an update rollback all wait on one, so they get the same
 // bound, which also covers pulling the helper image on a Hub that does not have it yet.
@@ -1061,6 +1067,33 @@ export class DockerService {
     return { args, isCustomConfig };
   };
 
+  /**
+   * Refuses to create an app's containers from a user config the app sandbox doesn't allow. A save is
+   * checked too, but the files can also arrive from a restore or an older Hub. Stopping and removing an
+   * app are left alone so a refused override can still be cleared up.
+   */
+  private async assertUserConfigInSandbox(appUrn: AppUrn): Promise<void> {
+    const app = await this.appsRepository.getAppByUrn(appUrn);
+    if (!(app?.userConfigEnabled ?? true)) {
+      return;
+    }
+    const [userCompose, userEnv] = await Promise.all([this.appFilesManager.getUserComposeFile(appUrn), this.appFilesManager.getUserEnv(appUrn)]);
+    if (!userCompose.content && !userEnv.content) {
+      return;
+    }
+    const installedApps = await this.appsRepository.getApps();
+    const violations = collectComposeOverrideViolations(userCompose.content ?? '', userEnv.content ?? '', {
+      appUrn,
+      knownAppIds: installedApps.map((installed) => appIdOf(installed.appName, installed.appStoreSlug)),
+    });
+    if (violations.length > 0) {
+      throw new Error(
+        `App "${extractAppUrn(appUrn).appName}" has a user config the app sandbox doesn't allow: ${describeComposeOverrideViolations(violations)}. ` +
+          'Remove the setting, or turn the user config off, and start the app again.',
+      );
+    }
+  }
+
   public getBaseComposeArgsHub = async () => {
     const { dataDir } = this.config.get('directories');
     const args: string[] = ['--env-file', path.join(dataDir, '.env')];
@@ -1094,6 +1127,9 @@ export class DockerService {
    */
   public async composeApp(appUrn: AppUrn, command: string, signal?: AbortSignal) {
     const verb = command.trim().split(/\s+/)[0];
+    if (verb && CONTAINER_CREATING_COMPOSE_VERBS.has(verb)) {
+      await this.assertUserConfigInSandbox(appUrn);
+    }
     // Detach first. `compose down` with the Hub still attached exits 0, logs "Resource is still in
     // use", and leaves the network behind.
     if (verb === 'down') {

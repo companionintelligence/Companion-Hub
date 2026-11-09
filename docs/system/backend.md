@@ -1010,6 +1010,11 @@ The port-expose routes still take only a sign-in.
 `/user-config/:urn` (GET, PUT, enable, disable) asserts the same verbs as its MCP tools for every app:
 reading takes `view` (`configure` on a `_user` app), and every change takes `configure`.
 
+An override saved there, and the env file beside it, is held to the app sandbox when it is saved and each time the
+app's containers are created (`compose-override-sandbox.ts`). The check runs at `compose up` too because a file can
+also come from a restore or an older Hub. It applies the builder's rules with the app's own grants and refuses any
+Compose key it doesn't know to be harmless. An override that can't be read as YAML is refused.
+
 An app's log stream (`/api/sse/app-logs`) takes the verb reading its settings takes (`settingsReadAction`),
 since a container prints its env values at start. A stream sends at most 1000 lines at the start
 (`logStreamLines`), as the `hub_get_app_logs` MCP tool does.
