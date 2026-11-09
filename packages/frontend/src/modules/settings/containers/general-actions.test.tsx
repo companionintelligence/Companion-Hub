@@ -15,7 +15,7 @@ import {
   type UpdateInfo,
 } from '@/lib/update-service';
 import { factoryReset } from '@/api-client/sdk.gen';
-import { resolveStackUpdate } from '@/lib/desktop-stack-session';
+import { keepStackUpdateOutcome, readKeptStackUpdateOutcome, resolveStackUpdate } from '@/lib/desktop-stack-session';
 import { TranslatableError } from '@/types/error.types';
 import { sdkFail, sdkOk } from '@/tests/sdk-mock-helpers';
 import { toast } from 'sonner';
@@ -1130,6 +1130,27 @@ describe('GeneralActionsContainer', () => {
 
     expect(screen.queryByTestId('hub-update-status')).not.toBeInTheDocument();
     expect(screen.getByTestId('hub-check-updates-btn')).toBeInTheDocument();
+  });
+
+  it('says the update finished when the update ended by reloading the page, and says it once', async () => {
+    mockUseAppContext.mockReturnValue({
+      version: { current: '4.7.0', latest: '4.7.0', body: '', releases: [] },
+      refreshAppContext: vi.fn(),
+      userSettings: { ciHubDeviceSlug: 'core' },
+    } as unknown as ReturnType<typeof useAppContext>);
+    keepStackUpdateOutcome({ state: 'completed', version: '4.7.0' });
+
+    const first = render(<GeneralActionsContainer />);
+
+    expect(await screen.findByTestId('hub-update-status')).toHaveTextContent('Updated. The Hub is running 4.7.0.');
+    expect(screen.queryByTestId('hub-update-stop-waiting')).not.toBeInTheDocument();
+    expect(readKeptStackUpdateOutcome()).toBeNull();
+
+    first.unmount();
+    render(<GeneralActionsContainer />);
+
+    expect(await screen.findByTestId('hub-check-updates-btn')).toBeInTheDocument();
+    expect(screen.queryByTestId('hub-update-status')).not.toBeInTheDocument();
   });
 
   it('asks for this device name before factory reset', async () => {

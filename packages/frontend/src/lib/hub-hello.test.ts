@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { isStackUpdatePending, markStackUpdatePending, subscribeStackUpdate } from './desktop-stack-session';
+import { isStackUpdatePending, markStackUpdatePending, readKeptStackUpdateOutcome, subscribeStackUpdate } from './desktop-stack-session';
 import { STACK_UPDATE_NOT_CONFIRMED_AFTER_MS, applyHubHello, decideHubHello } from './hub-hello';
 
 const NOW = 1_700_000_000_000;
@@ -173,6 +173,16 @@ describe('applyHubHello', () => {
     unsubscribe();
   });
 
+  it('keeps the outcome for after the reload that a stale bundle needs', () => {
+    markStackUpdatePending('0.2.71', NOW - 30_000);
+    let keptWhenReloading: unknown;
+    const effects = { invalidateVersion: vi.fn(), reload: vi.fn(() => (keptWhenReloading = readKeptStackUpdateOutcome())) };
+
+    applyHubHello('0.2.72', { bundleVersion: '0.2.71', sameOriginBundle: true, now: NOW }, effects);
+
+    expect(keptWhenReloading).toEqual({ state: 'completed', version: '0.2.72' });
+  });
+
   it('does not reload a cross-origin desktop bundle when its update completes', () => {
     markStackUpdatePending('0.2.71', NOW - 30_000);
     const effects = { invalidateVersion: vi.fn(), reload: vi.fn() };
@@ -180,6 +190,8 @@ describe('applyHubHello', () => {
     expect(isStackUpdatePending()).toBe(false);
     expect(effects.invalidateVersion).toHaveBeenCalledTimes(1);
     expect(effects.reload).not.toHaveBeenCalled();
+    // The page lives on and its subscribers heard the outcome, so nothing is left to show later.
+    expect(readKeptStackUpdateOutcome()).toBeNull();
   });
 
   it('leaves a fresh pending marker alone when the old container answers', () => {

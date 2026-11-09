@@ -17,15 +17,19 @@ import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
 import { ArrowUpCircle, Loader2, Smartphone, Star, TriangleAlert, Wand2 } from 'lucide-react';
 import { clearHubConnection, getHubBaseUrlSync, isTauriMobileSync, usesCloudConnect } from '@/lib/mobile-connection';
+import type { TFunction } from 'i18next';
 import { Trans, useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
 import { useState, useEffect, useCallback, useId, useRef } from 'react';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import {
   clearHubSteadySession,
+  clearKeptStackUpdateOutcome,
   clearStackUpdatePending,
   isStackUpdatePending,
   markStackUpdatePending,
+  readKeptStackUpdateOutcome,
+  type StackUpdateOutcome,
   subscribeStackUpdate,
 } from '@/lib/desktop-stack-session';
 import { TranslatableError } from '@/types/error.types';
@@ -88,6 +92,11 @@ const SHELL_INSTALL_PHASE_KEYS: Record<string, string> = {
   relaunch: 'SETTINGS_ACTIONS_SHELL_INSTALL_RESTARTING_APP',
 };
 
+const stackUpdateOutcomeMessage = (t: TFunction, outcome: StackUpdateOutcome) =>
+  outcome.state === 'completed'
+    ? t('SETTINGS_ACTIONS_UPDATE_COMPLETE', { version: outcome.version })
+    : t('SETTINGS_ACTIONS_UPDATE_NOT_CONFIRMED', { version: outcome.version });
+
 /**
  * `manageHub`: whether this person may change the whole Hub (`useHubAccess`). A member doesn't see the
  * Hub update, auto-updates, app store repository, setup wizard or factory reset; the desktop app's own
@@ -105,7 +114,12 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   // resolves it (see `lib/hub-hello.ts`) and the subscription below turns that into UI.
   const [updating, setUpdating] = useState<boolean>(() => isStackUpdatePending());
   const [checking, setChecking] = useState(false);
-  const [stackMessage, setStackMessage] = useState<string | null>(() => (isStackUpdatePending() ? t('SETTINGS_ACTIONS_UPDATE_RESTARTING') : null));
+  const [stackMessage, setStackMessage] = useState<string | null>(() => {
+    if (isStackUpdatePending()) return t('SETTINGS_ACTIONS_UPDATE_RESTARTING');
+    // An update that finished by reloading this page has only this left to say so.
+    const kept = readKeptStackUpdateOutcome();
+    return kept ? stackUpdateOutcomeMessage(t, kept) : null;
+  });
   const [shellMessage, setShellMessage] = useState<string | null>(null);
   const [autoUpdates, setAutoUpdates] = useState(true);
   const [autoUpdatesLoading, setAutoUpdatesLoading] = useState(false);
@@ -252,15 +266,14 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
     () =>
       subscribeStackUpdate((outcome) => {
         setUpdating(false);
-        setStackMessage(
-          outcome.state === 'completed'
-            ? t('SETTINGS_ACTIONS_UPDATE_COMPLETE', { version: outcome.version })
-            : t('SETTINGS_ACTIONS_UPDATE_NOT_CONFIRMED', { version: outcome.version }),
-        );
+        setStackMessage(stackUpdateOutcomeMessage(t, outcome));
         void refreshAppContext();
       }),
     [refreshAppContext, t],
   );
+
+  // Shown once: the state above has it now, and coming back to this tab later shouldn't repeat it.
+  useEffect(() => clearKeptStackUpdateOutcome(), []);
 
   const handleStopWaiting = useCallback(() => {
     clearStackUpdatePending();

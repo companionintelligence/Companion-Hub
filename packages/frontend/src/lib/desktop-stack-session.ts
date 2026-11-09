@@ -13,6 +13,12 @@ const STACK_UPDATE_PENDING_KEY = 'ci-hub-stack-update-pending';
 /** DOM event carrying a {@link StackUpdateOutcome}; the Settings panel subscribes to it. */
 const STACK_UPDATE_EVENT = 'ci-hub:stack-update';
 
+/**
+ * The outcome of an update that ends in a page reload. The reload swaps the old Hub's bundle for the
+ * new one and wipes the page's state, so the event above reaches nobody who can still show it.
+ */
+const STACK_UPDATE_KEPT_OUTCOME_KEY = 'ci-hub-stack-update-outcome';
+
 export interface StackUpdatePending {
   /** Hub version when the update was requested, when the marker recorded one. */
   fromVersion: string | null;
@@ -95,6 +101,37 @@ export function clearStackUpdatePending(): void {
 export function resolveStackUpdate(outcome: StackUpdateOutcome): void {
   clearStackUpdatePending();
   window.dispatchEvent(new CustomEvent<StackUpdateOutcome>(STACK_UPDATE_EVENT, { detail: outcome }));
+}
+
+/** Keep an outcome for the first Settings panel to mount after a reload. */
+export function keepStackUpdateOutcome(outcome: StackUpdateOutcome): void {
+  try {
+    sessionStorage.setItem(STACK_UPDATE_KEPT_OUTCOME_KEY, JSON.stringify(outcome));
+  } catch {
+    // ignore
+  }
+}
+
+export function readKeptStackUpdateOutcome(): StackUpdateOutcome | null {
+  try {
+    const raw = sessionStorage.getItem(STACK_UPDATE_KEPT_OUTCOME_KEY);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw) as Partial<StackUpdateOutcome> | null;
+    if ((parsed?.state === 'completed' || parsed?.state === 'not_confirmed') && typeof parsed.version === 'string') {
+      return { state: parsed.state, version: parsed.version };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function clearKeptStackUpdateOutcome(): void {
+  try {
+    sessionStorage.removeItem(STACK_UPDATE_KEPT_OUTCOME_KEY);
+  } catch {
+    // ignore
+  }
 }
 
 /** Subscribe to {@link resolveStackUpdate}; returns the unsubscribe. */
