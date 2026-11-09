@@ -3,13 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChristmasTheme } from './christmas';
 
 const snow = vi.hoisted(() => ({
-  instances: [] as { options: { style?: { zIndex?: string; pointerEvents?: string } }; color?: string; clear: ReturnType<typeof vi.fn> }[],
+  instances: [] as { options: { color?: string; style?: { zIndex?: string; pointerEvents?: string } }; clear: ReturnType<typeof vi.fn> }[],
 }));
 
 vi.mock('let-it-go', () => ({
   LetItGo: class {
     options: unknown;
-    color?: string;
     clear = vi.fn();
     constructor(options: unknown) {
       this.options = options;
@@ -49,16 +48,18 @@ describe('ChristmasTheme', () => {
     expect(theSnow().options.style?.pointerEvents).toBe('none');
   });
 
-  it('colours the snow from the theme and follows a change of theme', async () => {
+  // Under reduced motion the snow paints once, so a colour set after it's created would never show.
+  it('creates the snow in the theme colour and replaces it on a change of theme', async () => {
     render(<ChristmasTheme />);
-    expect(theSnow().color).toBe('#c5e8dc');
+    expect(theSnow().options.color).toBe('#c5e8dc');
 
     act(() => {
       document.documentElement.style.setProperty('--primary', '#0a6358');
       document.documentElement.className = 'light';
     });
 
-    await waitFor(() => expect(theSnow().color).toBe('#0a6358'));
+    await waitFor(() => expect(snow.instances[1]?.options.color).toBe('#0a6358'));
+    expect(theSnow().clear).toHaveBeenCalledTimes(1);
   });
 
   it('removes the snow when it goes away', () => {
