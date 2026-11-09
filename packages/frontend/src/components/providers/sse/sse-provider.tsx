@@ -92,7 +92,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
       // In dev the bundle is Vite's and the version never matches the API's, so a same-origin
       // reload is a production-only concern.
       if (event === 'hub_hello') {
-        // Any greeting after the first is the Hub coming back from a restart.
+        // Any greeting after the first means the stream dropped and came back, most often a Hub restart.
         if (greetedBefore.current) {
           invalidateAppRecords(queryClient);
         }

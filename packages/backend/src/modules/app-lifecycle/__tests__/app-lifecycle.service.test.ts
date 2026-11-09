@@ -213,6 +213,7 @@ describe('AppLifecycleService', () => {
       const data = { appUrn: 'test-app', command: 'install', requestId: '00000000-0000-4000-8000-000000000002', form: {} } as any;
       const command = { execute: vi.fn().mockResolvedValue({ success: true, message: 'OK' }) };
       commandFactory.createCommand.mockReturnValue(command as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'installing' } as any);
       let storesLoaded: () => void = () => undefined;
       marketplaceService.whenInitialized.mockReturnValueOnce(
         new Promise<void>((resolve) => {
@@ -229,6 +230,24 @@ describe('AppLifecycleService', () => {
       expect(command.execute).toHaveBeenCalledWith('test-app', expect.anything());
     });
 
+    // Startup recovery fails an install still waiting its turn, and its message still comes (#2286).
+    it.each([
+      ['install_failed', { id: 1, status: 'install_failed' }],
+      ['gone', null],
+    ])('does not run a redelivered install whose row is %s', async (_name, row) => {
+      const data = { appUrn: 'test-app', command: 'install', requestId: '00000000-0000-4000-8000-000000000004', form: {} } as any;
+      const command = { execute: vi.fn() };
+      commandFactory.createCommand.mockReturnValue(command as any);
+      appsRepository.getAppByUrn.mockResolvedValue(row as any);
+      const reply = vi.fn().mockResolvedValue(undefined);
+
+      await service.invokeCommand(data, reply);
+
+      expect(command.execute).not.toHaveBeenCalled();
+      expect(reply).toHaveBeenCalledWith(expect.objectContaining({ success: false, cancelled: true }));
+      expect(installPipelineTracker.getActive()).toBeNull();
+    });
+
     it('should execute command and sync cloudflare on success', async () => {
       const data = {
         appUrn: 'test-app',
@@ -240,6 +259,7 @@ describe('AppLifecycleService', () => {
       const command = { execute: vi.fn().mockResolvedValue({ success: true, message: 'OK' }) };
 
       commandFactory.createCommand.mockReturnValue(command as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'installing' } as any);
 
       registrationService.getDeviceRegistrationInfo.mockResolvedValue({
         id: 'org-id',
