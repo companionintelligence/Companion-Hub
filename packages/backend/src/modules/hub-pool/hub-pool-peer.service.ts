@@ -14,6 +14,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
+import type { InferenceBackendType } from '@ci-hub/common/types';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { LoggerService } from '@/core/logger/logger.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
@@ -32,7 +33,6 @@ import {
   resolveHubPoolDirections,
   resolveHubPoolEnabled,
   resolvePoolMaxPromptTokens,
-  sameModelId,
   type HubPoolDirectionalState,
   type HubPoolEnabledState,
   type HubPoolInboundRefusal,
@@ -46,6 +46,7 @@ import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { TailscaleAdminApiService, type TailscaleDevice } from '@/modules/tailscale/tailscale-admin-api.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
+import { sameEngineModelId } from '@/modules/inference/model-availability.util';
 import { HubPoolPeerRepository } from './hub-pool-peer.repository';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from './hub-pool-load.service';
 import { HubPoolIdentityService } from './hub-pool-identity.service';
@@ -101,12 +102,13 @@ async function peerRefusalDetail(response: Response): Promise<string | null> {
  * A model the Hub has tracked (loaded, pinned or pull-checked) comes out of `listModels` twice: under
  * its catalog id from the registry and under its engine id from the backend's own inventory. The
  * engine id is the one kept. It is what requests carry and what routing compares, and it is what this
- * node advertised before the Hub touched the model, so a load no longer changes the list.
+ * node advertised before the Hub touched the model, so a load no longer changes the list. Compared
+ * per engine because Lemonade can list a model the Hub registered as `user.<id>`.
  */
-function oneIdPerModel(models: Array<{ id: string; backend_model_id?: string }>): string[] {
+function oneIdPerModel(backend: InferenceBackendType, models: Array<{ id: string; backend_model_id?: string }>): string[] {
   const ids = models.map((model) => model.id);
   return models
-    .filter(({ id, backend_model_id: engineId }) => !engineId || !ids.some((other) => other !== id && sameModelId(other, engineId)))
+    .filter(({ id, backend_model_id: engineId }) => !engineId || !ids.some((other) => other !== id && sameEngineModelId(backend, other, engineId)))
     .map((model) => model.id);
 }
 
@@ -1489,7 +1491,10 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
           return {
             type: b.type,
             healthy: b.healthy,
-            modelsLoaded: oneIdPerModel(models.filter((m) => m.backend === b.type && m.local && m.state !== 'available' && !unservable.has(m.id))),
+            modelsLoaded: oneIdPerModel(
+              b.type,
+              models.filter((m) => m.backend === b.type && m.local && m.state !== 'available' && !unservable.has(m.id)),
+            ),
           };
         }),
       };

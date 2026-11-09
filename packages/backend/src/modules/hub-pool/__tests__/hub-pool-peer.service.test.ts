@@ -982,6 +982,30 @@ describe('HubPoolPeerService', () => {
       ]);
     });
 
+    it("treats Lemonade's user. namespace as the same model when it advertises a tracked one", async () => {
+      inferenceRouter.getStatus.mockResolvedValue({
+        ...ownStatus,
+        backends: [{ ...ownStatus.backends[0], type: 'lemonade' }],
+      });
+      const row = {
+        object: 'model',
+        created: 0,
+        owned_by: 'local:lemonade',
+        state: 'loaded',
+        backend: 'lemonade',
+        modality: ['text'],
+        local: true,
+      } as const;
+      inferenceRouter.listModels.mockResolvedValue([
+        { ...row, id: 'nomic-embed-text-v1-5-lemonade', backend_model_id: 'nomic-embed-text-v1.5-GGUF' },
+        { ...row, id: 'user.nomic-embed-text-v1.5-GGUF' },
+      ]);
+
+      const capabilities = await service.getOwnCapabilities();
+
+      expect(capabilities.backends).toEqual([{ type: 'lemonade', healthy: true, modelsLoaded: ['user.nomic-embed-text-v1.5-GGUF'] }]);
+    });
+
     it('does not advertise a model the local engine has been unable to serve', async () => {
       inferenceRouter.getStatus.mockResolvedValue({
         ...ownStatus,
