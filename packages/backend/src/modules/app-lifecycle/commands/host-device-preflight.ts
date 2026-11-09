@@ -1,6 +1,8 @@
 import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
+import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { AppsRepository } from '@/modules/apps/apps.repository';
 import { DOCKERODE } from '@/modules/docker/constants';
 import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { isRocmKfdPassthroughAvailable } from '@/modules/inference/host-rocm-availability';
@@ -17,19 +19,14 @@ import { createKataRuntimeMissingError, createKvmMissingError, createRocmKfdMiss
  * is never there to see, whatever the host has. `/sys` is the host's own and readable from an
  * unprivileged container, and the device is only registered once KVM is usable (the module loaded and
  * virtualization on in the firmware), so this needs no extra access. `/dev/kvm` still answers for a Hub
- * run directly on the host.
+ * run directly on the host. A node unreadable there only means the Hub's user isn't in the kvm group:
+ * Docker attaches the device, not the Hub, so the kernel's entry settles that case too.
  */
 const KVM_DEVICE_PATHS = ['/dev/kvm', '/sys/class/misc/kvm/dev'];
 
-/**
- * Fails fast with friendly guidance when a compose manifest declares /dev/kfd or /dev/kvm (or a
- * microVM/Confidential runtime like Kata Containers) but the host cannot provide it, instead of
- * surfacing Docker's raw device-attach or runtime error.
- *
- * Shared by install and start: a device present at install time can still be gone by a later start
- * (ROCm/KVM modules not yet loaded at boot), so start needs the same preflight rather than relying
- * only on translating Docker's error after the fact.
- */
+/** As long as the other Docker reads the Hub bounds. A daemon that doesn't answer in this time is one that can't be asked. */
+const DOCKER_INFO_TIMEOUT_MS = 5_000;
+
 async function isKvmDeviceAvailable(): Promise<boolean> {
   for (const path of KVM_DEVICE_PATHS) {
     try {
@@ -46,7 +43,7 @@ async function isKvmDeviceAvailable(): Promise<boolean> {
 async function dockerRuntimes(moduleRef: ModuleRef): Promise<Set<string> | null> {
   try {
     const docker = moduleRef.get<Dockerode>(DOCKERODE, { strict: false });
-    const info = await docker.info();
+    const info = await withTimeout(docker.info(), DOCKER_INFO_TIMEOUT_MS, 'docker info timed out');
     return info.Runtimes ? new Set(Object.keys(info.Runtimes)) : null;
   } catch {
     return null;
@@ -74,7 +71,10 @@ function isKvmHostDevice(device: string): boolean {
 function userComposeRequiredDevices(composeYaml: string): { requiresKfd: boolean; requiresKvm: boolean; runtimes: Map<string, string> } {
   const none = { requiresKfd: false, requiresKvm: false, runtimes: new Map<string, string>() };
   try {
-    const parsed = yaml.parse(composeYaml) as { services?: Record<string, { devices?: unknown[]; runtime?: unknown } | null> } | null;
+    // Compose follows `<<` merge keys, which `yaml` leaves alone unless told to.
+    const parsed = yaml.parse(composeYaml, { merge: true }) as {
+      services?: Record<string, { devices?: unknown[]; runtime?: unknown } | null>;
+    } | null;
     if (!parsed?.services) return none;
     let requiresKfd = false;
     let requiresKvm = false;
@@ -94,11 +94,12 @@ function userComposeRequiredDevices(composeYaml: string): { requiresKfd: boolean
 }
 
 /**
- * Fail fast with friendly guidance when a compose manifest declares /dev/kfd or /dev/kvm but
- * the host can't provide it, instead of surfacing Docker's raw device-attach error. Shared by
- * install and start: a device present at install time can still be gone by a later start (e.g.
- * ROCm/KVM modules not yet loaded at boot), so start needs this same preflight rather than
- * relying solely on translating Docker's error message after the fact.
+ * Fail fast with friendly guidance when a compose manifest declares /dev/kfd or /dev/kvm, or a
+ * Kata or Confidential runtime, that the host can't provide, instead of surfacing Docker's raw
+ * device-attach or runtime error. Shared by install and start: a device present at install time
+ * can still be gone by a later start (e.g. ROCm/KVM modules not yet loaded at boot), so start
+ * needs this same preflight rather than relying solely on translating Docker's error message
+ * after the fact.
  */
 export async function assertHostDevicesAvailable(moduleRef: ModuleRef, appUrn: AppUrn): Promise<void> {
   const config = moduleRef.get(ConfigurationService, { strict: false });
@@ -128,15 +129,17 @@ export async function assertHostDevicesAvailable(moduleRef: ModuleRef, appUrn: A
   // -f flag. Docker Compose appends list fields across -f files, so an override that adds
   // /dev/kfd or /dev/kvm will be present in the effective compose even when the base does not.
   // `runtime` is a single value, so there the override replaces what the base set for that service.
-  const userCompose = await appFilesManager.getUserComposeFile(appUrn);
-  if (userCompose.content) {
+  // With custom configuration off the file stays on disk and compose leaves it out (getBaseComposeArgsApp).
+  const app = await moduleRef.get(AppsRepository, { strict: false }).getAppByUrn(appUrn);
+  const userCompose = (app?.userConfigEnabled ?? true) ? await appFilesManager.getUserComposeFile(appUrn) : null;
+  if (userCompose?.content) {
     const fromUser = userComposeRequiredDevices(userCompose.content);
     requiresKfd = requiresKfd || fromUser.requiresKfd;
     requiresKvm = requiresKvm || fromUser.requiresKvm;
     for (const [service, runtime] of fromUser.runtimes) runtimes.set(service, runtime);
   }
 
-  const kataRuntimes = [...new Set(runtimes.values())].filter((runtime) => isConfidentialRuntime(runtime));
+  const kataRuntimes = [...runtimes.values()].filter(isConfidentialRuntime);
   if (kataRuntimes.length > 0) requiresKvm = true;
 
   if (requiresKfd && !(await isRocmKfdPassthroughAvailable())) {
@@ -149,7 +152,8 @@ export async function assertHostDevicesAvailable(moduleRef: ModuleRef, appUrn: A
 
   if (kataRuntimes.length > 0) {
     const registered = await dockerRuntimes(moduleRef);
-    const missing = registered && kataRuntimes.find((runtime) => !registered.has(runtime));
+    // A dotted name is a containerd shim (`kata.v2` runs `containerd-shim-kata-v2`). Docker takes those without listing them.
+    const missing = registered && kataRuntimes.find((runtime) => !registered.has(runtime) && !runtime.includes('.'));
     if (missing) {
       throw createKataRuntimeMissingError(missing);
     }

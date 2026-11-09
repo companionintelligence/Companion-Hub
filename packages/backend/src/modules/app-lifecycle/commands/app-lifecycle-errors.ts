@@ -167,9 +167,8 @@ export function translateKvmInstallMessage(message: string): AppLifecycleError |
   const referencesKvm = normalizedMessage.includes('/dev/kvm');
   const missingDevice = normalizedMessage.includes('error gathering device information') && normalizedMessage.includes('no such file or directory');
   const blockedPath = normalizedMessage.includes('file path') && normalizedMessage.includes('is not allowed');
-  const kataKvmError =
-    (normalizedMessage.includes('kata') || normalizedMessage.includes('confidential')) &&
-    (normalizedMessage.includes('kvm') || normalizedMessage.includes('no such file or directory'));
+  // Has to name KVM. A Kata shim that isn't installed, or a missing file of an app with "kata" in its name, is also "no such file or directory".
+  const kataKvmError = (normalizedMessage.includes('kata') || normalizedMessage.includes('confidential')) && normalizedMessage.includes('kvm');
 
   if ((referencesKvm && (missingDevice || blockedPath)) || kataKvmError) {
     return createKvmMissingError();
