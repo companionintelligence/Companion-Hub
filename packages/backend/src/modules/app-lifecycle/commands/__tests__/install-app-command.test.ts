@@ -15,6 +15,7 @@ import { AppHelpers } from '@/modules/apps/app.helpers';
 import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
+import { AppVolumeArchiveService } from '@/modules/docker/app-volume-archive.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { ImageSizeService } from '@/modules/marketplace/image-size.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
@@ -109,6 +110,7 @@ describe('InstallAppCommand — pull policy', () => {
   let dockerReadFacade: any;
   let composeArgs: string[] = [];
   let appFilesManager: ReturnType<typeof mock<AppFilesManager>>;
+  let appVolumes: ReturnType<typeof mock<AppVolumeArchiveService>>;
 
   const appUrn = 'urn:store:test-app' as AppUrn;
 
@@ -162,6 +164,10 @@ describe('InstallAppCommand — pull policy', () => {
     appFilesManager.writeDockerComposeYml.mockResolvedValue();
     appFilesManager.deleteAppFolder.mockResolvedValue(true);
     appFilesManager.deleteAppDataDir.mockResolvedValue(true);
+    appFilesManager.hasAppData.mockResolvedValue(false);
+
+    appVolumes = mock<AppVolumeArchiveService>();
+    appVolumes.listAppVolumes.mockResolvedValue([]);
 
     const marketplaceService = mock<MarketplaceService>();
 
@@ -209,6 +215,7 @@ describe('InstallAppCommand — pull policy', () => {
         if (token === AppsRepository) return appsRepository;
         if (token === CloudflareClientService) return cloudflareService;
         if (token === ImageSizeService) return imageSizeService;
+        if (token === AppVolumeArchiveService) return appVolumes;
         return mock();
       }),
     } as unknown as ModuleRef;
@@ -684,6 +691,98 @@ describe('InstallAppCommand — pull policy', () => {
     expect((result as any).cancelled).toBe(true);
     // The cooperative checkpoint aborts before compose up runs.
     expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
+  });
+
+  describe('cancelling over data from before the install', () => {
+    const composeDown = () => composeArgs.filter((args) => args.startsWith('down --remove-orphans'));
+
+    const cancelDuringThePull = async () => {
+      vi.mocked(parseComposeJson).mockReturnValue({
+        services: [{ name: 'app', image: 'ghcr.io/example/app:latest' }],
+        overrides: [],
+      } as any);
+      const ac = new AbortController();
+      dockerService.pullImages = vi.fn(async () => {
+        ac.abort();
+        throw new DOMException('Aborted', 'AbortError');
+      });
+
+      const result = await command.execute(appUrn, {}, { signal: ac.signal, setPhase: vi.fn() });
+
+      expect((result as any).cancelled).toBe(true);
+      return result;
+    };
+
+    it('removes the folder and volumes of a fresh install', async () => {
+      const result = await cancelDuringThePull();
+
+      expect(composeDown()).toEqual(['down --remove-orphans -v --rmi local']);
+      expect(appFilesManager.deleteAppDataDir).toHaveBeenCalledWith(appUrn);
+      expect(result.message).toContain('cleaned up');
+    });
+
+    it('leaves a folder that already held files, and still removes volumes when there were none', async () => {
+      appFilesManager.hasAppData.mockResolvedValue(true);
+
+      const result = await cancelDuringThePull();
+
+      expect(appFilesManager.deleteAppDataDir).not.toHaveBeenCalled();
+      expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
+      expect(composeDown()).toEqual(['down --remove-orphans -v --rmi local']);
+      expect(result.message).not.toContain('cleaned up');
+    });
+
+    it('keeps named volumes from before the install, even when the data folder was empty', async () => {
+      appVolumes.listAppVolumes.mockResolvedValue([{ name: 'test-app_store_db', key: 'db' }]);
+
+      const result = await cancelDuringThePull();
+
+      expect(composeDown()).toEqual(['down --remove-orphans --rmi local']);
+      expect(appFilesManager.deleteAppDataDir).toHaveBeenCalledWith(appUrn);
+      expect(result.message).not.toContain('cleaned up');
+    });
+
+    it('leaves the folder when the check for earlier files fails', async () => {
+      appFilesManager.hasAppData.mockRejectedValue(new Error('EIO'));
+
+      await cancelDuringThePull();
+
+      expect(appFilesManager.deleteAppDataDir).not.toHaveBeenCalled();
+    });
+
+    it('keeps volumes when the check for earlier volumes fails', async () => {
+      appVolumes.listAppVolumes.mockRejectedValue(new Error('docker is not answering'));
+
+      await cancelDuringThePull();
+
+      expect(composeDown()).toEqual(['down --remove-orphans --rmi local']);
+    });
+
+    it('checks before the install writes anything', async () => {
+      const marketplaceService = (command as any).moduleRef.get(MarketplaceService);
+
+      await cancelDuringThePull();
+
+      const firstWrite = marketplaceService.copyAppFromRepoToInstalled.mock.invocationCallOrder[0] as number;
+      expect(appFilesManager.hasAppData.mock.invocationCallOrder[0]).toBeLessThan(firstWrite);
+      expect(appVolumes.listAppVolumes.mock.invocationCallOrder[0]).toBeLessThan(firstWrite);
+    });
+
+    it('a failed install still runs no cleanup, kept data or not', async () => {
+      appFilesManager.hasAppData.mockResolvedValue(true);
+      dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
+        composeArgs.push(args);
+        if (args.includes('up --detach')) {
+          throw new Error('compose up failed');
+        }
+      });
+
+      const result = await command.execute(appUrn, {}, { signal: new AbortController().signal, setPhase: vi.fn() });
+
+      expect((result as any).cancelled).toBeFalsy();
+      expect(composeDown()).toEqual([]);
+      expect(appFilesManager.deleteAppDataDir).not.toHaveBeenCalled();
+    });
   });
 
   it('still succeeds when called without a cancellation context (backward compatible)', async () => {

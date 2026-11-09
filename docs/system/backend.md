@@ -333,7 +333,10 @@ What cancelling an install (`AppLifecycleService.cancelOperation`) does depends 
   install queue go out, and the worker skips the message when it reaches it
   (`takeSettledBeforeStart`), even if the app has been installed again since.
 - A running install's abort reaches the pull or `compose up`, and the worker compensates and sends
-  `install_cancelled`. From `finalizing` on, the cancel is refused.
+  `install_cancelled`. From `finalizing` on, the cancel is refused. Compensation removes what this
+  install added and leaves what was there when it began: a data folder that already held files
+  stays as it is (with whatever this install wrote into it) and `compose down` drops `-v` when the
+  app already had named volumes. A check that can't answer counts as data being there.
 
 ## One lifecycle operation per app
 
