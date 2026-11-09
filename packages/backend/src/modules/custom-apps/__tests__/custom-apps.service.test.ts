@@ -72,6 +72,43 @@ describe('CustomAppService', () => {
     vi.clearAllMocks();
   });
 
+  describe('an internal port no container can listen on', () => {
+    const composeWithPort = (internalPort: unknown) =>
+      ({ schemaVersion: 2, services: [{ name: 'web', image: 'nginx', isMain: true, internalPort }] }) as any;
+
+    it('refuses a new app before writing anything', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(undefined as any);
+
+      await expect(service.createCustomApp({ name: 'Port Seventy', config: composeWithPort('70000') } as any)).rejects.toThrow(
+        'CUSTOM_APP_ERROR_INTERNAL_PORT_MAX',
+      );
+
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
+    it('refuses an edit and leaves the app as it was', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+
+      await expect(service.updateCustomApp('myapp:_user' as any, composeWithPort('0'))).rejects.toThrow('CUSTOM_APP_ERROR_INTERNAL_PORT_MIN');
+
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it('refuses it in an override too', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+      const config = { ...composeWithPort(80), overrides: [{ services: [{ name: 'web', internalPort: '99999' }] }] };
+
+      await expect(service.updateCustomApp('myapp:_user' as any, config)).rejects.toThrow('CUSTOM_APP_ERROR_INTERNAL_PORT_MAX');
+    });
+
+    it('still takes an env reference', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+
+      await expect(service.updateCustomApp('myapp:_user' as any, composeWithPort('${APP_PORT}'))).resolves.toBeUndefined();
+    });
+  });
+
   describe('createCustomApp', () => {
     it('should create app when valid', async () => {
       appsRepository.getAppByUrn.mockResolvedValue(null as any);

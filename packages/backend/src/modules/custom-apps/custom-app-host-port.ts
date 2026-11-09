@@ -13,6 +13,20 @@ export function parsePort(value: unknown): number | undefined {
   return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : undefined;
 }
 
+/**
+ * Which rule an internal port breaks when it is a plain number written as text. The schema only ranges
+ * real numbers, so `"70000"` passed and Docker refused it at start. `parsePort` can't tell this from an
+ * env reference, which is allowed and stays out of here.
+ */
+export function internalPortRefusal(value: unknown): 'CUSTOM_APP_ERROR_INTERNAL_PORT_MIN' | 'CUSTOM_APP_ERROR_INTERNAL_PORT_MAX' | undefined {
+  if (typeof value !== 'string' || !/^-?\d+$/.test(value.trim())) {
+    return undefined;
+  }
+  const port = Number(value);
+  if (port < 1) return 'CUSTOM_APP_ERROR_INTERNAL_PORT_MIN';
+  return port > 65535 ? 'CUSTOM_APP_ERROR_INTERNAL_PORT_MAX' : undefined;
+}
+
 export type MappedHostPort = { hostPort: number; protocol: 'tcp' | 'udp' };
 
 type PortMappingInput = { hostPort?: unknown; tcp?: boolean; udp?: boolean } | null | undefined;

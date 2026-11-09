@@ -15,6 +15,7 @@ import {
   allocateCustomAppHostPort,
   customAppMainPortAvoids,
   hubHostPorts,
+  internalPortRefusal,
   mappedHostPorts,
   parsePort,
   type MappedHostPort,
@@ -76,6 +77,7 @@ export class CustomAppService {
     const mappings = mappedHostPorts(config.services);
 
     // Before anything is written, so a refusal leaves no files or row behind.
+    this.assertInternalPortsInRange(config);
     await this.assertMappedHostPortsFree(mappings, hubPorts);
 
     try {
@@ -118,6 +120,17 @@ export class CustomAppService {
       await this.portManager.releaseAll(appUrn).catch(() => 0);
       console.error(error);
       throw new TranslatableError('CUSTOM_APP_ERROR_CREATION_FAILED', { name: displayName }, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /** An internal port no container can listen on, in a service or an override, written as text. */
+  private assertInternalPortsInRange(config: CreateCustomAppDto['config']): void {
+    const overrideServices = (config.overrides ?? []).flatMap((override) => override.services);
+    for (const service of [...(config.services ?? []), ...overrideServices]) {
+      const refusal = internalPortRefusal(service?.internalPort);
+      if (refusal) {
+        throw new TranslatableError(refusal, undefined, HttpStatus.BAD_REQUEST);
+      }
     }
   }
 
@@ -176,6 +189,8 @@ export class CustomAppService {
     if (!existingApp) {
       throw new TranslatableError('CUSTOM_APP_ERROR_NOT_FOUND', { urn: appUrn }, HttpStatus.NOT_FOUND);
     }
+
+    this.assertInternalPortsInRange(config);
 
     // An edit can add Port Mappings too, and they are held to the same rule as on creation.
     await this.assertMappedHostPortsFree(mappedHostPorts(config.services), hubHostPorts(this.configService.get('userSettings')));

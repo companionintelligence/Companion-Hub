@@ -5,6 +5,7 @@ import {
   customAppMainPortAvoids,
   ensureCustomAppHostPort,
   hubHostPorts,
+  internalPortRefusal,
   mappedHostPorts,
   parsePort,
 } from '../custom-app-host-port';
@@ -206,5 +207,21 @@ describe('hubHostPorts', () => {
     expect(hubHostPorts({ port: 8000, sslPort: 8001 }, { HTTP_PORT: '8880', HTTPS_PORT: ' 8443 ', TRAEFIK_DASHBOARD_PORT: 'not-a-port' })).toEqual(
       new Set([8880, 8443, 8080, 5002, 6543, 5001, 8000, 8001]),
     );
+  });
+});
+
+describe('internalPortRefusal', () => {
+  it.each([
+    ['70000', 'CUSTOM_APP_ERROR_INTERNAL_PORT_MAX'],
+    ['65536', 'CUSTOM_APP_ERROR_INTERNAL_PORT_MAX'],
+    [' 70000 ', 'CUSTOM_APP_ERROR_INTERNAL_PORT_MAX'],
+    ['0', 'CUSTOM_APP_ERROR_INTERNAL_PORT_MIN'],
+    ['-1', 'CUSTOM_APP_ERROR_INTERNAL_PORT_MIN'],
+  ])('refuses the text %j', (value, refusal) => {
+    expect(internalPortRefusal(value)).toBe(refusal);
+  });
+
+  it.each(['80', '65535', '1', '${APP_PORT}', '8000-8010', '', undefined, 80, 70000])('leaves %j alone', (value) => {
+    expect(internalPortRefusal(value)).toBeUndefined();
   });
 });

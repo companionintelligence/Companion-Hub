@@ -11,6 +11,9 @@ type Props = {
   errors?: FieldErrors<z.infer<typeof dynamicComposeSchema>>;
 };
 
+/** A number typed here is held to the schema's range. Anything else, such as an env reference, stays as typed. */
+const plainPortAsNumber = (value: unknown) => (typeof value === 'string' && /^-?\d+$/.test(value.trim()) ? Number(value) : value);
+
 export const EssentialConfig = ({ register, errors, serviceIndex }: Props) => {
   const { t } = useTranslation();
   return (
@@ -42,7 +45,7 @@ export const EssentialConfig = ({ register, errors, serviceIndex }: Props) => {
       </div>
       <div>
         <Input
-          {...register(`services.${serviceIndex}.internalPort`)}
+          {...register(`services.${serviceIndex}.internalPort`, { setValueAs: plainPortAsNumber })}
           error={t(errors?.services?.[serviceIndex]?.internalPort?.message as string)}
           label={
             <>
