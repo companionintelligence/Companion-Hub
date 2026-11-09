@@ -93,6 +93,8 @@ export type SettingsFormValues = {
   themeBase?: string;
 };
 
+type FieldErrors = { [K in keyof SettingsFormValues]?: string };
+
 interface IProps {
   currentLocale?: Locale;
   currentBaseTheme?: ThemeBase;
@@ -115,7 +117,7 @@ export const UserSettingsForm = (props: IProps) => {
   const advancedSettingsDisclosure = useDisclosure();
 
   const validateFields = (values: SettingsFormValues) => {
-    const errors: { [K in keyof SettingsFormValues]?: string } = {};
+    const errors: FieldErrors = {};
 
     // Check only a Local domain the person changed. The field is read-only until Advanced settings
     // are on, so a value the Hub already had that fails the check would block every save on the page.
@@ -140,6 +142,7 @@ export const UserSettingsForm = (props: IProps) => {
     register,
     handleSubmit,
     setError,
+    setFocus,
     control,
     watch,
     formState: { errors, isDirty },
@@ -153,20 +156,41 @@ export const UserSettingsForm = (props: IProps) => {
     }
   }, [submitErrors, setError]);
 
+  const showFieldErrors = (fieldErrors: FieldErrors) => {
+    const fields = Object.keys(fieldErrors) as (keyof SettingsFormValues)[];
+    for (const field of fields) {
+      setError(field, { message: fieldErrors[field] });
+    }
+    // The first message can be far above the button the person pressed.
+    if (fields[0]) {
+      setFocus(fields[0]);
+    }
+  };
+
   const validate = (values: SettingsFormValues) => {
     const validationErrors = validateFields(values);
 
-    for (const [key, value] of Object.entries(validationErrors)) {
-      if (value) {
-        setError(key as keyof SettingsFormValues, { message: value });
-      }
+    if (Object.keys(validationErrors).length > 0) {
+      showFieldErrors(validationErrors);
+      return;
     }
 
-    if (Object.keys(validationErrors).length === 0) {
-      // Past the checks above, an Internal IP that is not IPv4 is the Hub's own, so it stays out of the request.
-      const { internalIp, ...rest } = values;
-      onSubmit(settingsSchema.parse(isIpv4(trimmed(internalIp)) ? { ...rest, internalIp: trimmed(internalIp) } : rest));
+    // Past the checks above, an Internal IP that is not IPv4 is the Hub's own, so it stays out of the request.
+    const { internalIp, ...rest } = values;
+    const result = settingsSchema.safeParse(isIpv4(trimmed(internalIp)) ? { ...rest, internalIp: trimmed(internalIp) } : rest);
+
+    if (result.success) {
+      onSubmit(result.data);
+      return;
     }
+
+    // A Forward auth URL that isn't a URL, or an emptied Port, lands here.
+    const schemaErrors: FieldErrors = {};
+    for (const issue of result.error.issues) {
+      const field = issue.path[0] as keyof SettingsFormValues;
+      schemaErrors[field] = field === 'forwardAuthUrl' ? t('SETTINGS_GENERAL_INVALID_URL') : t('SETTINGS_GENERAL_INVALID_VALUE');
+    }
+    showFieldErrors(schemaErrors);
   };
 
   const downloadCertificate = (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -542,7 +566,7 @@ export const UserSettingsForm = (props: IProps) => {
                   <Input
                     {...register('eventsTimeout', {
                       valueAsNumber: true,
-                      required: true,
+                      required: t('SETTINGS_GENERAL_INVALID_VALUE'),
                     })}
                     label={
                       <>
@@ -559,7 +583,7 @@ export const UserSettingsForm = (props: IProps) => {
                   <Input
                     {...register('maxBackups', {
                       valueAsNumber: true,
-                      required: true,
+                      required: t('SETTINGS_GENERAL_INVALID_VALUE'),
                     })}
                     label={
                       <>

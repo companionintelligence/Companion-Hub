@@ -116,6 +116,68 @@ describe('UserSettingsForm Local domain check', () => {
   });
 });
 
+describe('UserSettingsForm Advanced settings messages', () => {
+  const advancedSettings = { ...newHubSettings, advancedSettings: true };
+  const forwardAuthField = () => screen.getByLabelText(/^forward auth url/i);
+
+  async function retype(field: HTMLElement, value: string) {
+    await userEvent.clear(field);
+    if (value) {
+      await userEvent.type(field, value);
+    }
+  }
+
+  it.each([
+    ['text that is not a URL', 'not a url'],
+    ['nothing', ''],
+  ])('shows a message under a Forward auth URL of %s, goes to the field and sends nothing', async (_kind, value) => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={advancedSettings} onSubmit={onSubmit} />);
+
+    await retype(forwardAuthField(), value);
+    await submit();
+
+    expect(await screen.findByText('Invalid URL')).toBeInTheDocument();
+    expect(forwardAuthField()).toHaveAttribute('aria-invalid', 'true');
+    expect(forwardAuthField()).toHaveFocus();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('saves a valid Forward auth URL, including after correcting one that was refused', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={advancedSettings} onSubmit={onSubmit} />);
+
+    await retype(forwardAuthField(), 'not a url');
+    await submit();
+    expect(await screen.findByText('Invalid URL')).toBeInTheDocument();
+
+    await retype(forwardAuthField(), 'https://auth.example.com/verify');
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ forwardAuthUrl: 'https://auth.example.com/verify' }));
+    expect(screen.queryByText('Invalid URL')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['Port', /^port(?! \(ssl)/i],
+    ['Port (SSL)', /^port \(ssl\)/i],
+    ['Events timeout', /^events timeout/i],
+    ['Maximum backups to keep', /^maximum backups/i],
+  ])('shows a message under an emptied %s and sends nothing', async (_name, label) => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={advancedSettings} onSubmit={onSubmit} />);
+    const field = screen.getByLabelText(label);
+
+    await retype(field, '');
+    await submit();
+
+    expect(await screen.findByText('Invalid value')).toBeInTheDocument();
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
 describe('UserSettingsForm Internal IP check', () => {
   const advancedSettings = { ...newHubSettings, advancedSettings: true };
   const internalIpField = () => screen.getByLabelText(/^internal ip/i);
