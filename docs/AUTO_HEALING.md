@@ -236,7 +236,17 @@ failed install, start and restart then look at them about once a second
 
 A healthy app waits at most 5 s, less when its containers are already up. A boot that
 recreates nothing takes two looks. A one-shot that exited 0 and a container still `Created`
-are fine. A container whose health check says `starting` counts as up after 5 s of running:
+are fine.
+
+A one-shot service that exited with an error is fine too while something else runs. A one-shot is
+a service with `restart: "no"` that isn't the main service and that no other service needs running.
+Only `service_completed_successfully` waits for a service to finish, so a dependent with any other
+`depends_on` condition, or a bare list, means it is expected to keep running. The app page shows
+Needs attention for a failed one-shot and the Hub's log gets its last lines. With nothing else running
+it is the failure. A one-shot that a service waits on to finish fails `compose up` itself as it
+always has and the dependent stays `Created`.
+
+A container whose health check says `starting` counts as up after 5 s of running:
 many apps take minutes to answer and the app page shows that as Initializing. A service that
 first crashes later than 5 s after it starts passes this check. The status sync reports it.
 
@@ -246,7 +256,8 @@ after an update) the containers stay up, since the others may be useful and Dock
 still bring the app back. A Start or Restart a person or a key asked for runs
 `down --remove-orphans` instead, as Stop does, so `stopped` is true. Named volumes and bind mounts
 stay. The crashed container's `docker logs` go with it. The whole app goes down, also when only
-one of its services failed. The same happens when `compose up` itself fails and leaves a container
+one of its services failed, unless that service is a one-shot. The same happens when
+`compose up` itself fails and leaves a container
 restarting or unhealthy, as a dependency that never gets healthy does. The toast names the service
 and the exit code. The app page adds the log line that best says why, also after a reload, because the Hub
 keeps the reason on the lifecycle job. That read takes what reading the app's logs takes, so a
@@ -259,9 +270,11 @@ session, so it carries no log text.
 groups them by app URN, and reconciles each installed app's DB status against
 reality:
 
-- **`running`**: at least one container is running, and every other one is running or exited
-  cleanly (`Exited (0)`), as a one-shot init service does when it finishes.
-- **`stopped`**: no container is running, or one exited with an error (mixed state is logged).
+- **`running`**: at least one container is running and every other one is running, exited
+  cleanly (`Exited (0)`) as a one-shot init service does when it finishes or is a one-shot that
+  exited with an error.
+- **`stopped`**: no container is running, or a service other than a one-shot exited with an error
+  (mixed state is logged).
   An app whose containers were all stopped with `docker stop`, such as by the desktop's
   **Stop Hub**, is `stopped`, and so is an installed app with no containers at all.
 
