@@ -196,6 +196,24 @@ describe('MultiServiceForm Save JSON', () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['capAdd', ['SYS_ADMIN'], "A custom app can't add this Linux capability."],
+    ['devices', ['/dev/mem:/dev/mem'], "A custom app can't use this host device."],
+    ['securityOpt', ['seccomp=unconfined'], "A custom app can't switch off this security setting."],
+    ['pid', 'host', "A custom app can't share the host's processes or another container's."],
+    ['networkMode', 'container:ci-hub', "A custom app can't use the host's network or another container's network."],
+    ['networkMode', 'mynet', "This network mode isn't allowed. Use bridge, none, default or service:<name>."],
+  ])('saves nothing and names the rule when the JSON asks for %s %j', async (field, value, message) => {
+    const onSubmit = vi.fn();
+    render(<MultiServiceForm onSubmit={onSubmit} />);
+
+    openJsonEditorWith({ services: [{ name: 'web', image: 'alpine:3.20', isMain: true, internalPort: 80, [field]: value }] });
+    fireEvent.click(screen.getByRole('button', { name: 'Save JSON' }));
+
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(`Service web: ${message}`));
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('says the JSON is invalid instead of throwing on an emptied editor', async () => {
     const onSubmit = vi.fn();
     render(<MultiServiceForm onSubmit={onSubmit} />);
