@@ -120,9 +120,22 @@ describe('persisted Portal URL and auth', () => {
     expect(readPersistedPortalUrl()).toBe('https://hub.example.test');
   });
 
-  it('does not restore the internal dev cloud host as the Companion URL', () => {
+  it('does not restore an internal dev cloud host left by an older build', () => {
     localStorage.setItem('ci-hub.portalUrl', 'https://hub.companionintelligence.com');
     expect(readPersistedPortalUrl()).toBe('https://hub.ci.computer');
+  });
+
+  it('keeps an internal host the person saved', () => {
+    localStorage.setItem('ci-hub.portalUrl', 'https://hub.ci.computer');
+    persistPortalUrl('https://hub.companionintelligence.com');
+
+    expect(readPersistedPortalUrl()).toBe('https://hub.companionintelligence.com');
+    expect(localStorage.getItem('ci-hub.portalUrl')).toBeNull();
+  });
+
+  it('still honours a non-internal host saved by an older build', () => {
+    localStorage.setItem('ci-hub.portalUrl', 'https://other.example.com/');
+    expect(readPersistedPortalUrl()).toBe('https://other.example.com');
   });
 
   it('round-trips Portal auth used by Advanced → /connect', () => {

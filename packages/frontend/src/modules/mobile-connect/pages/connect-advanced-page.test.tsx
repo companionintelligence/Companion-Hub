@@ -46,7 +46,7 @@ describe('ConnectAdvancedPage', () => {
     await user.type(urlField, 'https://hub.example.test');
     await user.click(screen.getByRole('button', { name: /^save url$/i }));
 
-    expect(localStorage.getItem('ci-hub.portalUrl')).toBe('https://hub.example.test');
+    expect(localStorage.getItem('ci-hub.portalUrl.v2')).toBe('https://hub.example.test');
     expect(navigate).toHaveBeenCalledWith('/connect');
   });
 });

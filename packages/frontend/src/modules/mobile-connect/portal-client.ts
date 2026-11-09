@@ -4,8 +4,8 @@
  * `CI_CLOUD_URL` / `CI_HUB_ENVIRONMENT` belong to the Hub appliance, not the
  * phone — a `cihub up dev` frontend must not silently aim TestFlight / Play /
  * Simulator Sign in at the internal Portal. Advanced can override the Companion
- * URL; a persisted `hub.companionintelligence.com` is ignored so old installs
- * migrate to production.
+ * URL, to that internal host too. Only a `hub.companionintelligence.com` left
+ * behind by an older build is ignored, so old installs migrate to production.
  *
  * All requests go through the Tauri HTTP plugin (`@tauri-apps/plugin-http`)
  * rather than the webview `fetch`, so cross-origin cookie/CORS limitations of a
@@ -65,15 +65,26 @@ function normalizePortalUrl(url: string): string {
   return url.trim().replace(/\/+$/, '') || DEFAULT_PORTAL_URL;
 }
 
-const PORTAL_URL_STORAGE_KEY = 'ci-hub.portalUrl';
+/**
+ * Written by builds that saved whatever the Advanced form held, the internal
+ * host included, so a stored internal host here is a leftover, not a choice.
+ */
+const LEGACY_PORTAL_URL_STORAGE_KEY = 'ci-hub.portalUrl';
+/** Only ever written by an explicit Save URL, so whatever it holds is honoured, internal host or not. */
+const PORTAL_URL_STORAGE_KEY = 'ci-hub.portalUrl.v2';
 const PORTAL_AUTH_STORAGE_KEY = 'ci-hub.portalAuth';
 
-/** Portal Hub URL for the next Safari OIDC hop. Independent of the chosen appliance. */
+/** Portal Hub URL for the next browser OIDC hop. Independent of the chosen appliance. */
 export function readPersistedPortalUrl(): string {
   try {
-    const stored = typeof localStorage === 'undefined' ? null : localStorage.getItem(PORTAL_URL_STORAGE_KEY);
-    if (stored && !stored.includes('companionintelligence.com')) {
-      return normalizePortalUrl(stored);
+    if (typeof localStorage === 'undefined') return DEFAULT_PORTAL_URL;
+
+    const chosen = localStorage.getItem(PORTAL_URL_STORAGE_KEY);
+    if (chosen) return normalizePortalUrl(chosen);
+
+    const legacy = localStorage.getItem(LEGACY_PORTAL_URL_STORAGE_KEY);
+    if (legacy && !legacy.toLowerCase().includes('companionintelligence.com')) {
+      return normalizePortalUrl(legacy);
     }
     return DEFAULT_PORTAL_URL;
   } catch {
@@ -85,6 +96,7 @@ export function persistPortalUrl(url: string): string {
   const next = normalizePortalUrl(url);
   try {
     localStorage.setItem(PORTAL_URL_STORAGE_KEY, next);
+    localStorage.removeItem(LEGACY_PORTAL_URL_STORAGE_KEY);
   } catch {
     /* private mode / quota */
   }
