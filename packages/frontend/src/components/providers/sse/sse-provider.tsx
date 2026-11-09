@@ -42,8 +42,7 @@ const PUBLIC_DNS_ERROR_KEYS: Record<string, string> = {
 };
 
 /** Whether this is a custom app's page or its edit page. `/apps/<store>/<app>` is a store app's page, even if a custom app has the store's name. */
-const isCustomAppPage = (pathname: string, appId: string) =>
-  (matchPath('/apps/:appId/edit', pathname) ?? matchPath('/apps/:appId', pathname))?.params.appId === appId;
+const isCustomAppPage = (pathname: string, appId: string) => matchPath('/apps/:appId/edit?', pathname)?.params.appId === appId;
 
 export const SSEProvider = ({ children }: PropsWithChildren) => {
   const { t } = useTranslation();
