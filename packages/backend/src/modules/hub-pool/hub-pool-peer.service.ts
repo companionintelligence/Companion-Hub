@@ -46,7 +46,7 @@ import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { TailscaleAdminApiService, type TailscaleDevice } from '@/modules/tailscale/tailscale-admin-api.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
-import { sameEngineModelId } from '@/modules/inference/model-availability.util';
+import { engineModelKey } from '@/modules/inference/model-availability.util';
 import { HubPoolPeerRepository } from './hub-pool-peer.repository';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from './hub-pool-load.service';
 import { HubPoolIdentityService } from './hub-pool-identity.service';
@@ -103,12 +103,13 @@ async function peerRefusalDetail(response: Response): Promise<string | null> {
  * its catalog id from the registry and under its engine id from the backend's own inventory. The
  * engine id is the one kept. It is what requests carry and what routing compares, and it is what this
  * node advertised before the Hub touched the model, so a load no longer changes the list. Compared
- * per engine because Lemonade can list a model the Hub registered as `user.<id>`.
+ * per engine because Lemonade can list a model the Hub registered as `user.<id>`. Only a row the
+ * engine reported can replace a tracked one, so two tracked spellings of one model can't both go.
  */
 function oneIdPerModel(backend: InferenceBackendType, models: Array<{ id: string; backend_model_id?: string }>): string[] {
-  const ids = models.map((model) => model.id);
+  const listedByEngine = new Set(models.filter((model) => !model.backend_model_id).map((model) => engineModelKey(backend, model.id)));
   return models
-    .filter(({ id, backend_model_id: engineId }) => !engineId || !ids.some((other) => other !== id && sameEngineModelId(backend, other, engineId)))
+    .filter((model) => !model.backend_model_id || !listedByEngine.has(engineModelKey(backend, model.backend_model_id)))
     .map((model) => model.id);
 }
 

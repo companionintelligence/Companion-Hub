@@ -1006,6 +1006,26 @@ describe('HubPoolPeerService', () => {
       expect(capabilities.backends).toEqual([{ type: 'lemonade', healthy: true, modelsLoaded: ['user.nomic-embed-text-v1.5-GGUF'] }]);
     });
 
+    it('keeps a model when both of its spellings are tracked rows', async () => {
+      const row = {
+        object: 'model',
+        created: 0,
+        owned_by: 'local:ollama',
+        state: 'loaded',
+        backend: 'ollama',
+        modality: ['text'],
+        local: true,
+      } as const;
+      inferenceRouter.listModels.mockResolvedValue([
+        { ...row, id: 'embedder', backend_model_id: 'embedder' },
+        { ...row, id: 'embedder:latest', backend_model_id: 'embedder:latest' },
+      ]);
+
+      const capabilities = await service.getOwnCapabilities();
+
+      expect(capabilities.backends[0]?.modelsLoaded).toEqual(['embedder', 'embedder:latest']);
+    });
+
     it('does not advertise a model the local engine has been unable to serve', async () => {
       inferenceRouter.getStatus.mockResolvedValue({
         ...ownStatus,
