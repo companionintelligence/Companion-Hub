@@ -54,8 +54,8 @@ describe('AppsController — GET /api/apps/starting, real HTTP dispatch', () => 
         { provide: MarketplaceWhoIsService, useValue: mock<MarketplaceWhoIsService>() },
         { provide: InferenceEnvStalenessService, useValue: mock<InferenceEnvStalenessService>() },
         { provide: AppStartingPageService, useValue: page },
-        { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
         // For the guards on the controller's other routes.
+        { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();

@@ -6,8 +6,8 @@ import { type CanActivate, ForbiddenException, Injectable } from '@nestjs/common
  *
  * `GET /apps/guest` and `GET /links/guest` take no sign-in, because they feed the dashboard to
  * anyone who can reach the Hub. So the setting is the only thing standing between a caller and the
- * apps and links that were marked for guests, and it has to be asked on each request: the Settings
- * page changes it on a running Hub.
+ * apps and links that were marked for guests. It has to be asked on each request because the
+ * Settings page changes it on a running Hub.
  */
 @Injectable()
 export class GuestDashboardGuard implements CanActivate {
