@@ -7318,9 +7318,6 @@
           "themeColor": {
             "type": "string"
           },
-          "themeBase": {
-            "type": "string"
-          },
           "localDomain": {
             "type": "string"
           },
@@ -7346,7 +7343,6 @@
           "allowAutoThemes",
           "allowErrorMonitoring",
           "themeColor",
-          "themeBase",
           "localDomain",
           "domain",
           "sslPort"
@@ -7502,9 +7498,6 @@
               },
               "experimental_insecureCookie": {
                 "type": "boolean"
-              },
-              "themeBase": {
-                "type": "string"
               },
               "themeColor": {
                 "type": "string"
@@ -8018,9 +8011,6 @@
           "timeZone": {},
           "experimental_insecureCookie": {
             "type": "boolean"
-          },
-          "themeBase": {
-            "type": "string"
           },
           "themeColor": {
             "type": "string"

@@ -43,7 +43,6 @@ also packaged as a Tauri 2 desktop app.
 | Button                          | `packages/frontend/src/components/ui/Button/Button.tsx`                                              |
 | Theme provider                  | `packages/frontend/src/components/providers/theme/theme-provider.tsx`                                |
 | Auto/seasonal theme             | `packages/frontend/src/components/providers/theme/auto-theme-provider.tsx`, `packages/frontend/src/lib/theme/theme.ts` |
-| Theme-base selector             | `packages/frontend/src/modules/settings/components/theme-base-selector/`                             |
 | Font load                       | `packages/frontend/src/root.tsx` (Google Fonts `links`)                                              |
 
 ### Conformance to canon
@@ -59,8 +58,6 @@ also packaged as a Tauri 2 desktop app.
 - **Extra Button variants:** `success` (green-600), `warning` (yellow-500), `info` (blue-500).
   These use raw Tailwind palette colors, not tokens. Acceptable as Hub semantics; **prefer
   token-based status colors** if these ever move toward canon.
-- **Theme bases:** none. The five neutral palettes came from Tabler and left with it, so the setting
-  is no longer offered. `THEME_BASE` is still stored, but nothing reads it.
 - **Seasonal auto-theme:** Christmas theme (Nov 1 – Dec 26), gated behind an `allowAutoThemes`
   flag. Hub-only.
 - **Ambient background:** static radial teal gradient on `body` (light + dark) in `globals.css`.

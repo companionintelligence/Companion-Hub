@@ -60,18 +60,12 @@ it("shows a member only their own language, and nothing that changes the Hub's s
   expect(screen.getAllByRole('combobox')).toHaveLength(1);
 });
 
-// Nothing has read the Base theme since the palettes went away, so the box must not come back without them.
-it('has no Base theme box, and saving leaves a stored Base theme out of the request', async () => {
-  const onSubmit = vi.fn();
-  render(<UserSettingsForm initialValues={{ ...newHubSettings, themeBase: 'slate' } as SettingsFormValues} onSubmit={onSubmit} />);
+// The Base theme palettes left with the old CSS framework, so the box saved a choice that changed nothing.
+it('offers no Base theme, only Language, in the User settings card', () => {
+  render(<UserSettingsForm initialValues={newHubSettings} onSubmit={vi.fn()} />);
 
+  expect(screen.getByRole('combobox', { name: /language/i })).toBeInTheDocument();
   expect(screen.queryByRole('combobox', { name: /base theme/i })).not.toBeInTheDocument();
-  await userEvent.click(screen.getByRole('switch', { name: 'Enable guest dashboard' }));
-  await submit();
-
-  await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ guestDashboard: true }));
-  expect(onSubmit).toHaveBeenCalledWith(expect.not.objectContaining({ themeBase: expect.anything() }));
 });
 
 /** The Timezone box. Its label is not tied to it, so find it by its name. */

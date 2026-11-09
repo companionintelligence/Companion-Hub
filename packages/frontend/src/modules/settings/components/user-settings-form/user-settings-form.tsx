@@ -66,8 +66,6 @@ const settingsSchema = z.object({
   forwardAuthUrl: z.url().optional(),
   logLevel: z.enum(LOG_LEVEL_ENUM).optional(),
   themeColor: z.enum(THEME_COLOR_ENUM).optional(),
-  // No Base theme. Its palettes came from the old CSS framework and nothing has read the value since,
-  // so the box saved a choice that changed nothing. A value already stored stays as it is.
 });
 
 export type SettingsFormValues = {
