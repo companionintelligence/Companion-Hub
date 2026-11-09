@@ -89,12 +89,17 @@ function dnsNotFoundResult(exposureMode: string, appUrl: string): AppAvailabilit
   };
 }
 
+type RefusedPublicAddressVerdict = Pick<AppAvailabilityResult, 'reason' | 'errorCode' | 'detail'>;
+
 /**
  * The verdict for each refusal that stands until someone acts. The probe can only see the missing DNS
  * record, which reads as "DNS propagating", and the Portal won't publish the address however long the
  * page waits, so these say what happened instead and no re-sync is offered.
+ *
+ * `satisfies` leaves out only the reasons that pass on their own, so a new standing reason fails to
+ * compile here instead of reading as "DNS propagating".
  */
-const REFUSED_PUBLIC_ADDRESS_VERDICTS: Partial<Record<PublicDnsFailureReason, Pick<AppAvailabilityResult, 'reason' | 'errorCode' | 'detail'>>> = {
+const REFUSED_PUBLIC_ADDRESS_VERDICTS: Partial<Record<PublicDnsFailureReason, RefusedPublicAddressVerdict>> = {
   subdomain_quota_exceeded: {
     reason: 'PLAN_LIMIT',
     errorCode: 'PUBLIC_ADDRESS_QUOTA_EXCEEDED',
@@ -120,7 +125,7 @@ const REFUSED_PUBLIC_ADDRESS_VERDICTS: Partial<Record<PublicDnsFailureReason, Pi
     errorCode: 'PUBLIC_ADDRESS_INVALID_SUBDOMAIN',
     detail: "This app's subdomain is not a valid web address, so Companion Portal refused it a public address.",
   },
-};
+} satisfies Record<Exclude<PublicDnsFailureReason, 'api_error' | 'write_failed' | 'release_pending'>, RefusedPublicAddressVerdict>;
 
 /** Cloudflare's own error as it answers a client that does not ask for HTML, this probe included. */
 const CLOUDFLARE_PLAIN_ERROR = /^\s*error code:\s*(\d{3,4})\s*$/i;
@@ -391,9 +396,10 @@ export class AppsService {
     const probed = await this.probeAppAvailability(app, info);
     // Only a missing record is explained by a refusal. A verdict read from an answer (a Cloudflare
     // error, the Hub's 5xx) means the name resolves, and its code and reason drive the repair and the
-    // runtime monitor.
-    const result =
-      probed.errorCode === 'DNS_NOT_FOUND' && app.exposureMode === 'cloudflare' ? await this.explainRefusedPublicAddress(appUrn, probed) : probed;
+    // runtime monitor. A refusal is about the platform hostname, so it says nothing about a custom
+    // hostname, which is the address probed when the app has one.
+    const refusalCanExplain = probed.errorCode === 'DNS_NOT_FOUND' && app.exposureMode === 'cloudflare' && !normalizeStoredHostname(app.customDomain);
+    const result = refusalCanExplain ? await this.explainRefusedPublicAddress(appUrn, probed) : probed;
 
     return localUrl ? { ...result, localUrl } : result;
   }
