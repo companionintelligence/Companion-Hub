@@ -1,6 +1,8 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MemoryRouter } from 'react-router';
+import en from '@ci-hub/common/i18n/translations/en.json';
+import es from '@ci-hub/common/i18n/translations/es-ES.json';
 
 const { mockStoreState, mockSearchAppsInfiniteOptions } = vi.hoisted(() => ({
   mockStoreState: {
@@ -553,6 +555,13 @@ describe('AppStorePage — multi-store UX', () => {
 
     const banner = screen.getByText(/APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS/);
     expect(banner).toHaveTextContent(/^APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS COMMON_RETRY$/);
+  });
+
+  it.each([
+    ['English', en.APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS],
+    ['Spanish', es.APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS],
+  ])('ends the alternatives error with a full stop in %s, since Retry follows it directly', (_language, message) => {
+    expect(message).toMatch(/\.$/);
   });
 
   it('writes browse params to the URL when search and category are set', () => {
