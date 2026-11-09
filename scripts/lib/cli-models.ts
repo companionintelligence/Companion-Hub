@@ -6,18 +6,32 @@
  * service on the host. No shipped compose file runs one, so the container is only a custom stack's.
  */
 
+import { existsSync } from 'node:fs';
 import { upsertEnvVar } from '../env-file.js';
 import { publicWebRepairHasFailures, resolveHubApiBase, runPublicWebRepair, runPublicWebStatus } from '../public-web-cli.js';
 import { resolveEnvFromArgs, usageAndExit } from './cli-args.js';
 import { getEnvFileOrExit, renderConfigLines } from './cli-compose-env.js';
 import { findComposeName } from './cli-doctor.js';
-import { commandExists, run } from './cli-proc.js';
+import { commandExists, run, runCapture } from './cli-proc.js';
 import { requireRepoRoot } from './cli-repo-context.js';
+import { OLLAMA_RESOLVE_HOST_SH } from './fleet-ollama-version.js';
 import { requireRepoOrApplianceContext, resolveHubContext } from './hub-context.js';
 import { BASE_COMMAND, type HubEnv } from './cli-types.js';
 import { bold, printMessageBox } from './cli-ui.js';
+import { applianceEnvFilePaths } from './paths.js';
 
 // --- models ---
+
+/**
+ * The `OLLAMA_HOST` that reaches this machine's Ollama. Its CLI dials loopback unless told otherwise.
+ * A service bound to its tailnet address answers nothing there, so the CLI reads "could not connect"
+ * on a node that is serving fine. An `OLLAMA_HOST` the operator set stays in charge.
+ */
+function hostOllamaEnv(): Record<string, string> {
+  if (process.env.OLLAMA_HOST || process.platform === 'win32') return {};
+  const { stdout, ok } = runCapture('sh', ['-c', [...OLLAMA_RESOLVE_HOST_SH, 'printf %s "$host"'].join('\n')]);
+  return ok && stdout ? { OLLAMA_HOST: stdout } : {};
+}
 
 export function runModelsCommand(args: string[]) {
   const subcommand = args[0] || 'list';
@@ -36,12 +50,12 @@ export function runModelsCommand(args: string[]) {
     return;
   }
   // The Hub's own container when it has one, otherwise the host's Ollama, in the same `ollama <verb>` form.
-  const ollama = (...ollamaArgs: string[]) =>
-    ollamaContainer ? run('docker', ['exec', ollamaContainer, 'ollama', ...ollamaArgs]) : run('ollama', ollamaArgs);
+  const ollama = (ollamaArgs: string[], execFlags: string[] = []) =>
+    ollamaContainer ? run('docker', ['exec', ...execFlags, ollamaContainer, 'ollama', ...ollamaArgs]) : run('ollama', ollamaArgs, hostOllamaEnv());
 
   if (subcommand === 'list') {
     printMessageBox('Installed models', [ollamaContainer ? `Container: ${ollamaContainer}` : 'Ollama on this machine'], 'cyan');
-    ollama('list');
+    ollama(['list']);
     return;
   }
 
@@ -52,12 +66,7 @@ export function runModelsCommand(args: string[]) {
     // `-it` allocates a TTY, and `docker exec -it` on a non-TTY stdin fails outright with "the input
     // device is not a TTY". Every fleet call arrives over `ssh -n`, so the flags have to follow the
     // stream we actually have rather than assuming a terminal.
-    if (ollamaContainer) {
-      const ttyFlags = process.stdin.isTTY ? ['-it'] : [];
-      run('docker', ['exec', ...ttyFlags, ollamaContainer, 'ollama', 'pull', name]);
-    } else {
-      ollama('pull', name);
-    }
+    ollama(['pull', name], process.stdin.isTTY ? ['-it'] : []);
     return;
   }
 
@@ -65,7 +74,7 @@ export function runModelsCommand(args: string[]) {
     const name = args[1];
     if (!name) usageAndExit('Usage: models rm <model-name>');
     printMessageBox('Removing model', [`Removing ${bold(name)} from Ollama\u2026`], 'yellow');
-    ollama('rm', name);
+    ollama(['rm', name]);
     return;
   }
 
@@ -79,7 +88,10 @@ export function runModelsCommand(args: string[]) {
 export function setMcpState(env: HubEnv, enabled: boolean) {
   requireRepoOrApplianceContext(`${BASE_COMMAND} mcp`);
   const ctx = resolveHubContext(env);
-  upsertEnvVar(ctx.envFile, 'MCP_ENABLED', enabled ? 'true' : 'false');
+  // An install keeps two env files that are meant to match (see applianceEnvFilePaths). The Hub can
+  // be started from either, so a switch written to one alone can leave the other turning MCP back on.
+  const envFiles = ctx.dataDir ? applianceEnvFilePaths(ctx.dataDir).filter((file) => existsSync(file)) : [ctx.envFile];
+  for (const envFile of envFiles) upsertEnvVar(envFile, 'MCP_ENABLED', enabled ? 'true' : 'false');
   const lines = renderConfigLines(ctx);
   // The Hub reads this once, at boot, so the file changing changes nothing until it restarts.
   lines.push('', `Restart the Hub to apply this: ${bold(`${BASE_COMMAND} restart${ctx.appliance ? '' : ` ${ctx.env}`}`)}`);

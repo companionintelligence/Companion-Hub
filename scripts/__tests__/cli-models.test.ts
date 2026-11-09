@@ -13,6 +13,7 @@ import { PUBLIC_WEB_REPAIR_FAIL_PREFIX, PUBLIC_WEB_REPAIR_OK_PREFIX } from '../p
 
 const mocks = vi.hoisted(() => ({
   run: vi.fn(),
+  runCapture: vi.fn(() => ({ stdout: '', ok: false })),
   commandExists: vi.fn(() => false),
   findComposeName: vi.fn(() => ''),
   runPublicWebRepair: vi.fn(async () => [] as string[]),
@@ -23,6 +24,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../lib/cli-proc.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/cli-proc.js')>()),
   run: mocks.run,
+  runCapture: mocks.runCapture,
   commandExists: mocks.commandExists,
 }));
 
@@ -54,11 +56,13 @@ vi.mock('../public-web-cli.js', async (importOriginal) => ({
   runPublicWebRepair: mocks.runPublicWebRepair,
 }));
 
+import { setTailscalePersistedStateProbeForTests } from '../lib/cli-compose-env.js';
 import { runModelsCommand, runPublicWebCommand, setMcpState } from '../lib/cli-models.js';
 
 beforeEach(() => {
   process.exitCode = undefined;
   mocks.run.mockReset();
+  mocks.runCapture.mockReset().mockReturnValue({ stdout: '', ok: false });
   mocks.findComposeName.mockReset().mockReturnValue('');
   mocks.commandExists.mockReset().mockReturnValue(false);
   mocks.requireRepoOrApplianceContext.mockReset();
@@ -70,6 +74,7 @@ beforeEach(() => {
 afterEach(() => {
   process.exitCode = undefined;
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe('models without a running Ollama', () => {
@@ -100,6 +105,26 @@ describe('models without a running Ollama', () => {
     expect(process.exitCode).toBeUndefined();
   });
 
+  it.skipIf(process.platform === 'win32')("asks the host's Ollama at the address it listens on", () => {
+    vi.stubEnv('OLLAMA_HOST', '');
+    mocks.commandExists.mockReturnValue(true);
+    mocks.runCapture.mockReturnValue({ stdout: '100.64.0.7:11434', ok: true });
+
+    runModelsCommand(['list']);
+
+    expect(mocks.run).toHaveBeenCalledWith('ollama', ['list'], { OLLAMA_HOST: '100.64.0.7:11434' });
+  });
+
+  it('leaves an OLLAMA_HOST the operator set alone', () => {
+    vi.stubEnv('OLLAMA_HOST', '10.0.0.5:11434');
+    mocks.commandExists.mockReturnValue(true);
+    mocks.runCapture.mockReturnValue({ stdout: '100.64.0.7:11434', ok: true });
+
+    runModelsCommand(['list']);
+
+    expect(mocks.run).toHaveBeenCalledWith('ollama', ['list'], {});
+  });
+
   it("prefers the Hub's container over a host Ollama", () => {
     mocks.commandExists.mockReturnValue(true);
     mocks.findComposeName.mockReturnValue('ci-hub-ollama-1');
@@ -115,10 +140,41 @@ describe('mcp on an installed Hub', () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'cihub-mcp-'));
+    // renderConfigLines would otherwise `docker run` against this machine's real Tailscale volume.
+    setTailscalePersistedStateProbeForTests(() => false);
   });
 
   afterEach(() => {
+    setTailscalePersistedStateProbeForTests(null);
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('keeps both env files of an install in step', () => {
+    const [primary, compat] = [join(dir, '.env.dev'), join(dir, '.env')];
+    writeFileSync(primary, 'MCP_ENABLED=true\n');
+    writeFileSync(compat, 'MCP_ENABLED=true\n');
+    mocks.resolveHubContext.mockReturnValue({ env: 'prod', appliance: true, envFile: primary, composeFiles: [], cwd: dir, dataDir: dir });
+
+    setMcpState('prod', false);
+
+    expect(readFileSync(primary, 'utf-8')).toContain('MCP_ENABLED=false');
+    expect(readFileSync(compat, 'utf-8')).toContain('MCP_ENABLED=false');
+  });
+
+  it("reports the Hub's own values, not ones exported in this shell", () => {
+    vi.stubEnv('CI_CLOUD_URL', 'https://shell.example.test');
+    vi.stubEnv('MCP_ENABLED', 'true');
+    const envFile = join(dir, '.env');
+    writeFileSync(envFile, 'MCP_ENABLED=true\nCI_CLOUD_URL=https://portal.example.test\n');
+    mocks.resolveHubContext.mockReturnValue({ env: 'prod', appliance: true, envFile, composeFiles: [], cwd: dir, dataDir: dir });
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    setMcpState('prod', false);
+
+    const output = printed.mock.calls.flat().join('\n');
+    expect(output).toContain('https://portal.example.test');
+    expect(output).not.toContain('https://shell.example.test');
+    expect(output).toMatch(/mcp enabled\S*\s+false/);
   });
 
   it('writes the env file the Hub reads and says a restart applies it', () => {

@@ -282,7 +282,10 @@ export function renderConfigLines({ env, envFile, dataDir }: Pick<HubContext, 'e
   const fileVars = parseEnvFile(envFile);
   const rootFolder = dataDir ?? resolveRootFolderHost(envFile);
   const composeProfiles = mergeComposeProfilesFromEnvFile(envFile);
-  const mcpEnabled = (process.env.MCP_ENABLED || fileVars.MCP_ENABLED || 'true') !== 'false';
+  // An installed Hub takes these from its env file alone (compose's `env_file` and the /data/.env
+  // mount), so a value exported in this shell is not the Hub's and must not be printed as if it were.
+  const shellVars: NodeJS.ProcessEnv = dataDir ? {} : process.env;
+  const mcpEnabled = (shellVars.MCP_ENABLED || fileVars.MCP_ENABLED || 'true') !== 'false';
   // Deliberately no `mcp api key` line. Nothing derives MCP_API_KEY any more (env-helpers deletes it
   // rather than minting one) and McpAuthGuard has no env fallback, so the variable authenticates
   // nothing. An appliance upgraded from an older build can still have the dead value sitting in its
@@ -292,7 +295,7 @@ export function renderConfigLines({ env, envFile, dataDir }: Pick<HubContext, 'e
     `${bold('environment')}      ${env}`,
     `${bold('env file')}         ${envFile}`,
     `${bold('root folder')}      ${rootFolder}`,
-    `${bold('cloud url')}        ${process.env.CI_CLOUD_URL || fileVars.CI_CLOUD_URL || CI_CLOUD_DEFAULT}`,
+    `${bold('cloud url')}        ${shellVars.CI_CLOUD_URL || fileVars.CI_CLOUD_URL || CI_CLOUD_DEFAULT}`,
     `${bold('compose profiles')} ${composeProfiles || '(none)'}`,
     `${bold('mcp enabled')}      ${mcpEnabled}`,
   ];
