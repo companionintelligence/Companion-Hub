@@ -37,6 +37,19 @@ describe('describeAllCandidatesFailed', () => {
     expect(msg).toMatch(/deadline, not proof/i);
   });
 
+  // This node's own engine with nothing after it runs under its budget times the factor (#2310), so
+  // the message names that setting rather than the prompt floor it would otherwise blame.
+  it('names the last-candidate factor when the longer budget on this node is what cut it', () => {
+    const msg = describeAllCandidatesFailed('m', 1, new Error('No response headers within 3324000ms (last candidate, on this node)'));
+    expect(msg).toContain('3324000ms');
+    expect(msg).toContain('HUB_POOL_LAST_LOCAL_BUDGET_FACTOR');
+    expect(msg).not.toContain('HUB_POOL_MIN_PREFILL_TOKENS_PER_SEC');
+    expect(msg).toMatch(/deadline, not proof/i);
+    expect(describeAllCandidatesFailed('m', 1, new Error('No completion within 1200000ms (last candidate, on this node)'))).toMatch(
+      /1200000ms for a whole non-streamed completion from this node's own engine/,
+    );
+  });
+
   it('names the completion budget for a non-streamed request, and the undici cap when that is what cut it', () => {
     expect(describeAllCandidatesFailed('m', 2, new Error('No completion within 450000ms'))).toMatch(
       /450000ms for a whole non-streamed completion.*HUB_POOL_COMPLETION_TIMEOUT_MS/,

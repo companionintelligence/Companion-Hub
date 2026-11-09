@@ -68,7 +68,7 @@ import {
   type SlowerPlacement,
   type UnmeasuredPlacement,
 } from '../hub-pool-proxy.service';
-import { firstByteBudgetMs, forwardBudgetMs } from '../hub-pool-budget';
+import { LAST_LOCAL_BUDGET_FACTOR, firstByteBudgetMs, forwardBudgetMs, lastLocalBudgetMs } from '../hub-pool-budget';
 import type { PoolOutputQuarantine } from '../hub-pool-output-check';
 import { LOCAL_LISTING_DEADLINE_MS } from '../pool-model-listing';
 import {
@@ -1519,6 +1519,8 @@ describe('PoolProxyService', () => {
      */
     it('records stream, the forwarded body size, and the budget the forward timer used', async () => {
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      // A busier peer behind this node, so the local engine is not the last candidate and runs under its budget (#2310).
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', MODEL, { inFlightRequests: 3 })]);
       vi.mocked(global.fetch).mockResolvedValueOnce(new Response('data: [DONE]\n\n', { status: 200 }));
       const prompt = 'x'.repeat(184_000);
 
@@ -8314,6 +8316,153 @@ describe('PoolProxyService', () => {
       expect(await service.resolveModelAlias(AUTO_MODEL)).toBe(MODEL);
       // Twelve probes per request used to be the cost of `auto`; the snapshot answers both reads.
       expect(ollama.healthCheck).not.toHaveBeenCalled();
+    });
+  });
+
+  // A CPU-only Companion OS machine with no peers: OpenClaw's ~41,000-token turn was cut at "No
+  // response headers within 831000ms; no candidate left" three times in 41 minutes, and each retry
+  // read the prompt again from token 0 (#2310). The deadline exists to move work to another node.
+  describe('the first-response deadline when nothing is left to fail over to', () => {
+    const MODEL = 'qwen3.5:4b';
+    /** A streamed agent turn about 41,000 tokens long, as OpenClaw sends it. */
+    const TURN = { model: MODEL, stream: true, messages: [{ role: 'user', content: 'x'.repeat(164_000) }] };
+
+    function fetchThatWaitsForever(signals: AbortSignal[]): void {
+      vi.mocked(global.fetch).mockImplementation((_url, init) => {
+        const signal = init?.signal as AbortSignal;
+        signals.push(signal);
+        if (signal.aborted) return Promise.reject(signal.reason);
+        return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason)));
+      });
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("gives this node's own engine the longer budget when it is the only candidate (#2310)", async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      const signals: AbortSignal[] = [];
+      fetchThatWaitsForever(signals);
+      const res = createMockResponse();
+
+      const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: TURN, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      const usual = firstByteBudgetMs(String(vi.mocked(global.fetch).mock.calls[0]?.[1]?.body).length);
+      expect(usual).toBeGreaterThan(800_000);
+      expect(LAST_LOCAL_BUDGET_FACTOR).toBeGreaterThan(1);
+      // Past the budget this turn used to get (about 820 s at the 50 tok/s floor): still waiting.
+      await vi.advanceTimersByTimeAsync(usual + 1_000);
+      expect(signals[0]?.aborted).toBe(false);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      // The row carries the deadline the forward runs under, which the dashboard warns against.
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'pending', budgetMs: lastLocalBudgetMs(usual) });
+
+      // An engine that never answers is still cut, at the longer budget, and nothing is retried.
+      await vi.advanceTimersByTimeAsync(lastLocalBudgetMs(usual) - usual - 1_000);
+      await vi.waitFor(() => expect(signals[0]?.aborted).toBe(true));
+      await inFlight;
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(res.status).toHaveBeenCalledWith(502);
+    });
+
+    it('keeps the longer last-local budget on Ollama native chat forwarding', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      const signals: AbortSignal[] = [];
+      fetchThatWaitsForever(signals);
+      const res = createMockResponse();
+      const body = { model: MODEL, stream: true, options: { num_ctx: 65_536 }, messages: TURN.messages };
+
+      const inFlight = service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      expect(String(vi.mocked(global.fetch).mock.calls[0]?.[0])).toBe('http://local-ollama:11434/api/chat');
+      const usual = firstByteBudgetMs(JSON.stringify(body).length);
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'pending', budgetMs: lastLocalBudgetMs(usual) });
+
+      // Past the ordinary first-byte deadline, native forwarding is still protected by the same
+      // last-local budget as the /api/chat route above.
+      await vi.advanceTimersByTimeAsync(usual + 1_000);
+      expect(signals[0]?.aborted).toBe(false);
+
+      res.destroy();
+      await inFlight;
+      expect(signals[0]?.aborted).toBe(true);
+    });
+
+    it('ends the longer wait when the caller hangs up', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      const signals: AbortSignal[] = [];
+      fetchThatWaitsForever(signals);
+      const res = createMockResponse();
+
+      const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: TURN, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      await vi.advanceTimersByTimeAsync(2 * 831_000);
+      expect(signals[0]?.aborted).toBe(false);
+
+      res.destroy();
+      await inFlight;
+      expect(signals[0]?.aborted).toBe(true);
+    });
+
+    it("gives this node's own engine the longer budget when it is reached last, after a peer failed", async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      const peers = [peerServing('peer-a', MODEL)];
+      peerService.listConnectedPeers.mockResolvedValue(peers);
+      peerService.getPeerById.mockImplementation(async (id) => peers.find((peer) => peer.id === id));
+      peerService.peerAuthHeaders.mockResolvedValue({ Authorization: 'Bearer raw-token' });
+      setPoolPreferences({ poolPins: [{ scope: 'default', targetKind: 'peer', peerId: 'peer-a', mode: 'prefer' }] });
+      const signals: AbortSignal[] = [];
+      vi.mocked(global.fetch).mockImplementation((url, init) => {
+        if (String(url).includes('peer-a')) return Promise.resolve(new Response('busy', { status: 503 }));
+        const signal = init?.signal as AbortSignal;
+        signals.push(signal);
+        return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason)));
+      });
+      const res = createMockResponse();
+
+      const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: TURN, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      expect(String(vi.mocked(global.fetch).mock.calls[0]?.[0])).toContain('peer-a');
+      await vi.advanceTimersByTimeAsync(2 * 831_000);
+      expect(signals[0]?.aborted).toBe(false);
+      const usual = firstByteBudgetMs(String(vi.mocked(global.fetch).mock.calls[1]?.[1]?.body).length);
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'pending', attempt: 2, budgetMs: lastLocalBudgetMs(usual) });
+
+      res.destroy();
+      await inFlight;
+      expect(signals[0]?.aborted).toBe(true);
+    });
+
+    it('still cuts this node at its budget when a peer can take the turn next', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      const peers = [peerServing('peer-a', MODEL, { inFlightRequests: 3 })];
+      peerService.listConnectedPeers.mockResolvedValue(peers);
+      peerService.getPeerById.mockImplementation(async (id) => peers.find((peer) => peer.id === id));
+      peerService.peerAuthHeaders.mockResolvedValue({ Authorization: 'Bearer raw-token' });
+      const signals: AbortSignal[] = [];
+      fetchThatWaitsForever(signals);
+      const res = createMockResponse();
+
+      const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: TURN, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      expect(String(vi.mocked(global.fetch).mock.calls[0]?.[0])).not.toContain('peer-a');
+      expect(routingLog.list()[0]?.budgetMs).toBe(firstByteBudgetMs(String(vi.mocked(global.fetch).mock.calls[0]?.[1]?.body).length));
+      await vi.advanceTimersByTimeAsync(831_000 + 1_000);
+      await vi.waitFor(() => expect(signals).toHaveLength(2));
+      expect(signals[0]?.aborted).toBe(true);
+      expect(String(vi.mocked(global.fetch).mock.calls[1]?.[0])).toContain('peer-a');
+
+      res.destroy();
+      await inFlight;
     });
   });
 
