@@ -295,6 +295,35 @@ describe('InstallAppCommand — pull policy', () => {
       expect(filesystem.makeExecutable).toHaveBeenCalledWith('/tmp/app-data/store/openclaw/data/ci-entrypoint.sh');
       expect(fs.promises.writeFile).not.toHaveBeenCalledWith(expect.stringContaining('ci-wrapper.sh'), expect.anything(), expect.anything());
     });
+
+    it('fails the install when the scripts folder cannot be created', async () => {
+      filesystem.createDirectory.mockResolvedValue(false);
+
+      const result = await command.execute(openclaw, {});
+
+      expect(result.success).toBe(false);
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it('fails the install when the built-in script cannot be written', async () => {
+      filesystem.isFile.mockResolvedValue(false);
+      filesystem.writeTextFile.mockResolvedValue(false);
+
+      const result = await command.execute(openclaw, {});
+
+      expect(result.success).toBe(false);
+      expect(filesystem.makeExecutable).not.toHaveBeenCalled();
+    });
+
+    it('fails the install when a restored script cannot be made executable', async () => {
+      filesystem.isFile.mockResolvedValue(true);
+      filesystem.copyFile.mockResolvedValue(true);
+      filesystem.makeExecutable.mockResolvedValue(false);
+
+      const result = await command.execute(openclaw, {});
+
+      expect(result.success).toBe(false);
+    });
   });
 
   it('MUST omit --pull flag entirely when force_pull is false', async () => {

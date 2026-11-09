@@ -1,7 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { mock } from 'vitest-mock-extended';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LoggerService } from '@/core/logger/logger.service';
 
 // Real files and links: the memfs mock the suite installs cannot tell a link from what it points at.
@@ -52,6 +52,10 @@ describe('FilesystemService containment', () => {
     await fs.promises.rm(appData, { recursive: true, force: true });
     await fs.promises.rm(outside, { recursive: true, force: true });
     await fs.promises.rm(path.join(base, 'install'), { recursive: true, force: true });
+  });
+
+  afterAll(async () => {
+    await fs.promises.rm(base, { recursive: true, force: true });
   });
 
   describe('reading', () => {
@@ -188,7 +192,7 @@ describe('FilesystemService containment', () => {
   });
 
   describe('operations on the link itself', () => {
-    it('sees a link that leads out or nowhere, and removes it without touching the target', async () => {
+    it('sees a link that leads out or nowhere and removes it without touching the target', async () => {
       await fs.promises.symlink(secret, path.join(appOne, 'data', 'out'));
       await fs.promises.symlink(path.join(outside, 'gone'), path.join(appOne, 'data', 'dangling'));
 
@@ -315,6 +319,28 @@ describe('FilesystemService containment', () => {
       await expect(fs.promises.readlink(path.join(dest, 'out-link'))).resolves.toBe(secret);
       await expect(fs.promises.readlink(path.join(dest, 'dangling'))).resolves.toBe(path.join(outside, 'gone'));
       await expect(fs.promises.readFile(path.join(dest, 'real.txt'), 'utf8')).resolves.toBe('kept');
+    });
+
+    it('reports a folder it cannot reach as unreadable and undeletable, not as clean', async () => {
+      if (typeof process.getuid === 'function' && process.getuid() === 0) return;
+      const locked = path.join(appOne, 'locked');
+      const inner = path.join(locked, 'inner');
+      await fs.promises.mkdir(inner, { recursive: true });
+      await fs.promises.chmod(locked, 0o000);
+
+      try {
+        await expect(service.findUnreadable(inner)).resolves.toEqual([inner]);
+        await expect(service.findUndeletable(inner)).resolves.toEqual([inner]);
+      } finally {
+        await fs.promises.chmod(locked, 0o700);
+      }
+    });
+
+    it('answers nothing for a refused folder', async () => {
+      await fs.promises.symlink(outside, path.join(appOne, 'data', 'dir'));
+
+      await expect(service.findUnreadable(path.join(appOne, 'data', 'dir'))).resolves.toEqual([]);
+      await expect(service.findUndeletable(path.join(appOne, 'data', 'dir'))).resolves.toEqual([]);
     });
 
     it('hands a copy filter the paths the caller named when a folder on the way is a link', async () => {

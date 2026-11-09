@@ -251,7 +251,9 @@ export class InstallAppCommand extends AppLifecycleCommand {
         const { appInstalledDir } = appFilesManager.getAppPaths(appUrn);
         const appRepoDir = path.join(directories.dataDir, 'repos', appStoreId, 'apps', appName);
         const targetDir = path.join(containerAppDataPath, 'data');
-        await filesystem.createDirectory(targetDir);
+        if (!(await filesystem.createDirectory(targetDir))) {
+          throw new Error(`Could not create ${targetDir} for the OpenClaw start scripts`);
+        }
 
         // Helper: copy a file from the installed app payload to the data volume,
         // falling back to the provided content string if the source is absent.
@@ -261,7 +263,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
           let restoredFromSource = false;
           for (const sourcePath of candidateSources) {
             // A regular file only. These folders hold what a store's author shipped and what the app's
-            // container wrote, and the filesystem service keeps every step inside them.
+            // container wrote. The filesystem service keeps every step inside them.
             if (!(await filesystem.isFile(sourcePath))) {
               continue;
             }
@@ -272,11 +274,14 @@ export class InstallAppCommand extends AppLifecycleCommand {
             }
             logger.warn(`[OpenClaw] Could not restore ${filename} from ${sourcePath}. Trying next source.`);
           }
-          if (restoredFromSource) {
-            await filesystem.makeExecutable(targetPath);
-          } else {
-            await filesystem.writeTextFile(targetPath, fallbackContent);
-            await filesystem.makeExecutable(targetPath);
+          // The container's entrypoint: without it the install would report success and the app never start.
+          if (!restoredFromSource && !(await filesystem.writeTextFile(targetPath, fallbackContent))) {
+            throw new Error(`Could not write the OpenClaw start script ${targetPath}`);
+          }
+          if (!(await filesystem.makeExecutable(targetPath))) {
+            throw new Error(`Could not make the OpenClaw start script ${targetPath} executable`);
+          }
+          if (!restoredFromSource) {
             logger.warn(fallbackWarning);
           }
         };

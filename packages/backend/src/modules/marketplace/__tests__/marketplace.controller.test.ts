@@ -127,6 +127,8 @@ describe('MarketplaceController demo video', () => {
 
     expect(pipeline).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenLastCalledWith(500);
+    expect(headers['Content-Length']).toBeUndefined();
+    expect(headers['Content-Range']).toBeUndefined();
   });
 
   it('stays quiet when the client aborts mid-stream', async () => {

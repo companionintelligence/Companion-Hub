@@ -18,6 +18,7 @@ import {
 } from '@nestjs/common';
 import { ApiResponse } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
+import type { ReadStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppStoreService } from '../app-stores/app-store.service';
@@ -215,6 +216,16 @@ export class MarketplaceController {
     const start = range ? range.start : 0;
     const end = range ? range.end : size - 1;
 
+    // Before the headers: a 500 sent with this file's Content-Length leaves the client waiting for bytes that never come.
+    let stream: ReadStream;
+
+    try {
+      stream = await this.marketplaceService.createDemoVideoStream(file, start, end);
+    } catch (error) {
+      this.logger.warn(`Demo video could not be opened for ${urn}: ${error instanceof Error ? error.message : String(error)}`);
+      return res.status(500).end();
+    }
+
     res.set({
       ...headers,
       'Content-Length': String(end - start + 1),
@@ -223,8 +234,6 @@ export class MarketplaceController {
     res.status(range ? 206 : 200);
 
     try {
-      const stream = await this.marketplaceService.createDemoVideoStream(file, start, end);
-
       await pipeline(stream, res);
     } catch (error) {
       // Seeking and tab-closing abort in-flight video requests constantly; that is not an error.

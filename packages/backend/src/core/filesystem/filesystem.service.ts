@@ -18,9 +18,9 @@ interface CheckedPath {
 }
 
 /**
- * One allowed folder, and how far a link inside it may lead.
+ * One allowed folder and how far a link inside it may lead.
  *
- * `areaDepth` says how many levels below `dir` make up one area, and a link has to stay inside the
+ * `areaDepth` says how many levels below `dir` make up one area. A link has to stay inside the
  * area it starts in: one app's data, or one of the Hub's folders in its data folder. `null` means
  * links are not followed for the check at all, for folders no app or store can put a link in, where
  * the path as written is the answer.
@@ -99,7 +99,7 @@ export class FilesystemService {
   /**
    * Decides whether `filePath` may be used and where it really is.
    *
-   * The path as written has to be inside an allowed folder, and where it really is, after every link
+   * The path as written has to be inside an allowed folder. Where it really is, after every link
    * on the way, has to stay inside the same area of that folder (see {@link AllowedRoot}). Both ends
    * are resolved, so a data folder that is itself a link or a mount (`/var` on macOS) still matches.
    * Any error while resolving refuses, with the original error so callers still see EACCES.
@@ -400,7 +400,8 @@ export class FilesystemService {
 
     try {
       queue.push((await this.checkPath(dirPath)).written);
-    } catch {
+    } catch (error) {
+      this.noteUnreachable(dirPath, error, found);
       return found;
     }
 
@@ -457,7 +458,8 @@ export class FilesystemService {
 
     try {
       queue.push((await this.checkPath(dirPath)).written);
-    } catch {
+    } catch (error) {
+      this.noteUnreachable(dirPath, error, found);
       return found;
     }
 
@@ -492,6 +494,13 @@ export class FilesystemService {
     }
 
     return found;
+  }
+
+  /** A refused path carries no code and is nothing to look at. One that could not be resolved cannot be listed either. */
+  private noteUnreachable(dirPath: string, error: unknown, found: string[]): void {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+
+    if (code && code !== 'ENOENT') found.push(dirPath);
   }
 
   async removeDirectory(dirPath: string): Promise<boolean> {
@@ -596,9 +605,8 @@ export class FilesystemService {
     try {
       const [{ real: checkedTarget }, { real: checkedRoot }] = await Promise.all([this.checkPath(targetPath), this.checkPath(rootDir)]);
       const [realTarget, realRoot] = await Promise.all([fs.promises.realpath(checkedTarget), fs.promises.realpath(checkedRoot)]);
-      const relative = path.relative(realRoot, realTarget);
 
-      if (!relative || path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)) {
+      if (realTarget === realRoot || !this.isSameOrInside(realRoot, realTarget)) {
         return false;
       }
 
@@ -628,7 +636,7 @@ export class FilesystemService {
    *
    * ⚠ USE THIS WHEN THE ANSWER DECIDES WHETHER TO DESCEND OR TO REPORT. `stat`
    * follows links, so a walk built on it reports the TARGET's kind and walks where
-   * the link leads. This one looks at the entry itself, and only its parent has to
+   * the link leads. This one looks at the entry itself. Only its parent has to
    * resolve inside the allowed area.
    */
   async getLinkStats(filePath: string) {
@@ -644,7 +652,13 @@ export class FilesystemService {
     const { real, noFollow } = await this.checkPath(filePath);
     const handle = await fs.promises.open(real, fs.constants.O_RDONLY | noFollow);
 
-    return handle.createReadStream(options);
+    try {
+      return handle.createReadStream(options);
+    } catch (error) {
+      // A range it refuses throws here, before there is a stream to close the file.
+      await handle.close();
+      throw error;
+    }
   }
 
   async getFileEtag(filePath: string): Promise<string | null> {
