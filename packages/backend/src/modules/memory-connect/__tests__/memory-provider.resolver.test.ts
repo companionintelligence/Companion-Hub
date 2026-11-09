@@ -101,7 +101,9 @@ describe('MemoryProviderResolver.getProviderRuntimeStatus', () => {
 describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  const readyMemory = (exposureMode?: string) => [{ appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running', exposureMode }];
+  const readyMemory = (exposureMode?: string, customDomain: string | null = null) => [
+    { appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running', exposureMode, customDomain },
+  ];
 
   it('is local-only for a LAN-exposed provider', async () => {
     const { resolver, appsReadService } = makeResolver([]);
@@ -134,6 +136,16 @@ describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
 
     expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: false, publicAddressRefused: true });
     expect(appsService.isPublicAddressRefused).toHaveBeenCalledWith('ci-memory:ci-marketplace');
+  });
+
+  // The refusal names the platform hostname. The connect flow goes to a custom hostname when there is one and
+  // the Portal keeps serving that hostname after a DNS write for the platform name fails.
+  it('does not flag a refused platform address when the provider has a custom hostname', async () => {
+    const { resolver, appsReadService, appsService } = makeResolver([]);
+    appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('cloudflare', 'memory.acme.example'));
+    appsService.isPublicAddressRefused.mockResolvedValue(true);
+
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: false });
   });
 
   it('does not ask about an address for a provider that has no public route', async () => {

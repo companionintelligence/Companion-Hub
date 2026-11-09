@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { AppInfo } from '@ci-hub/common/schemas';
-import type { AppUrn } from '@ci-hub/common/types';
+import { type AppUrn, normalizeStoredHostname } from '@ci-hub/common/types';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppsReadService } from '@/modules/apps/apps-read.service';
@@ -198,7 +198,9 @@ export class MemoryProviderResolver {
    *
    * `publicAddressRefused` is set when ci-memory is on Public web and the last sync says the Portal
    * refused its address: its consent page has no address a browser can reach (#2309). Read from memory,
-   * like the rest of this status poll.
+   * like the rest of this status poll. A custom hostname keeps it unset: the refusal names the platform
+   * hostname, the connect flow goes to the custom one, and the Portal can keep serving that after a DNS
+   * write for the platform name fails.
    */
   async getProviderRuntimeInfo(): Promise<{ status: MemoryProviderRuntimeStatus; localOnly: boolean; publicAddressRefused?: true }> {
     const installed = await this.appsReadService.getInstalledAppsLite();
@@ -212,7 +214,10 @@ export class MemoryProviderResolver {
     const localOnly = (row.exposureMode || 'local') !== 'cloudflare';
 
     if (row.status === 'running') {
-      const publicAddressRefused = !localOnly && (await this.appsService.isPublicAddressRefused(`${row.appName}:${row.appStoreSlug}` as AppUrn));
+      const publicAddressRefused =
+        !localOnly &&
+        !normalizeStoredHostname(row.customDomain) &&
+        (await this.appsService.isPublicAddressRefused(`${row.appName}:${row.appStoreSlug}` as AppUrn));
       return publicAddressRefused ? { status: 'ready', localOnly, publicAddressRefused } : { status: 'ready', localOnly };
     }
 
