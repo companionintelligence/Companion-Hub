@@ -111,6 +111,15 @@ export function writePortalAuth(auth: PortalAuth): void {
   }
 }
 
+/** Forget the Portal sign-in. The next visit to `/connect` starts at Log in. */
+export function clearPortalAuth(): void {
+  try {
+    sessionStorage.removeItem(PORTAL_AUTH_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 export function readStoredPortalAuth(): PortalAuth | null {
   try {
     const raw = sessionStorage.getItem(PORTAL_AUTH_STORAGE_KEY);
