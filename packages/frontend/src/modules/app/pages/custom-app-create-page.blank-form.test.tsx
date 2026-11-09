@@ -36,6 +36,7 @@ describe('custom app create after editing an app', () => {
           internalPort: 8080,
           environment: [{ key: 'FOO', value: 'bar' }],
           volumes: [{ hostPath: '/tmp/ci-test', containerPath: '/data' }],
+          addPorts: [{ hostPort: 18080, containerPort: 8081 }],
         },
       ],
     });
@@ -47,7 +48,7 @@ describe('custom app create after editing an app', () => {
     );
 
     expect(screen.getByDisplayValue('nginx:alpine')).toBeInTheDocument();
-    for (const leftover of ['FOO', 'bar', '/tmp/ci-test', '/data']) {
+    for (const leftover of ['FOO', 'bar', '/tmp/ci-test', '/data', '18080', '8081']) {
       expect(screen.queryByDisplayValue(leftover)).not.toBeInTheDocument();
     }
 
