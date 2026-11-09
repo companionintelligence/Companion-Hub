@@ -2,6 +2,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
+import { resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import { InstallPipelineTracker } from './install-pipeline.tracker';
 import { pLimit } from '@/common/helpers/file-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -250,11 +251,11 @@ export class AppsReadService {
 
     return populated.map((entry) => ({
       ...entry,
-      publicUrl: hub && !refused(createAppUrn(entry.app.appName, entry.app.appStoreSlug)) ? guestPublicUrl(entry.app, entry.info, hub) : null,
+      publicUrl: hub ? guestPublicUrl(entry.app, entry.info, hub, refused(createAppUrn(entry.app.appName, entry.app.appStoreSlug))) : null,
     }));
   }
 
-  /** Whether the last answered sync refused an app its public address: it has no DNS record, so a guest must not be sent there. */
+  /** Whether the last answered sync refused an app its platform hostname: that name has no DNS record, so a guest must not be sent there. */
   private async publicAddressRefusals(): Promise<(appUrn: AppUrn) => boolean> {
     try {
       // Imported here as in AppsService: a static import closes a require cycle.
@@ -262,12 +263,16 @@ export class AppsReadService {
       const exposureSync = this.moduleRef?.get(ExposureSyncService, { strict: false });
 
       return (appUrn) => Boolean(exposureSync?.publicDnsRefusalFor(appUrn));
-    } catch {
+    } catch (error) {
+      this.logger.debug('Could not read the public address refusals for the guest dashboard:', error);
       return () => false;
     }
   }
 
-  /** What a public hostname is built from. A guest still gets the page when this can't be read, without the public addresses. */
+  /**
+   * What a public hostname is built from, or `null` when this Hub publishes none: the tunnel sync skips a
+   * Hub with no tunnel. A guest still gets the page when this can't be read, without the public addresses.
+   */
   private async guestRoutingNames() {
     let registration: Awaited<ReturnType<RegistrationService['getDeviceRegistrationInfo']>> | null | undefined;
     try {
@@ -276,10 +281,14 @@ export class AppsReadService {
       this.logger.debug('Could not read the device registration for the guest dashboard:', error);
     }
 
+    if (!registration?.tunnelId) {
+      return null;
+    }
+
     return {
-      orgSlug: registration?.slug,
-      hubSubdomain: registration?.hubSubdomain,
-      domain: this.configurationService.getConfig().userSettings.domain,
+      orgSlug: registration.slug,
+      hubSubdomain: registration.hubSubdomain,
+      domain: resolveHubPublicDomainRoot(this.configurationService.getConfig()),
     };
   }
 

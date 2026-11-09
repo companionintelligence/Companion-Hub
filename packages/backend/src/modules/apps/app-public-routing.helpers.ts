@@ -42,6 +42,9 @@ export function publicRoutingSnapshotOf<T extends AppPublicRoutingSnapshot & { c
  * withheld from it. Same order as the app page: a custom hostname Companion Portal has wired, then
  * the name the tunnel sync publishes. An app with its own `exposed` domain keeps the entry the
  * dashboard already gives it.
+ *
+ * `platformNameRefused` says the last sync refused that published name. A custom hostname has its
+ * own ingress rule and can go on serving through a refusal, so it is still offered.
  */
 export function guestPublicUrl(
   app: Parameters<typeof storedExposureForm>[0] & {
@@ -55,8 +58,10 @@ export function guestPublicUrl(
   },
   info: { exposable?: boolean },
   hub: { orgSlug?: string | null; hubSubdomain?: string | null; domain?: string | null },
+  platformNameRefused = false,
 ): string | null {
-  if (!info.exposable) {
+  // First, so a custom hostname left on the row of an app that moved off Public web is not offered: no tunnel route serves it.
+  if (!info.exposable || !publishesPublicWebRoute(storedExposureForm(app))) {
     return null;
   }
 
@@ -65,12 +70,13 @@ export function guestPublicUrl(
     return `https://${customDomain}`;
   }
 
-  if ((app.exposed && app.domain) || !publishesPublicWebRoute(storedExposureForm(app))) {
+  if ((app.exposed && app.domain) || platformNameRefused) {
     return null;
   }
 
+  // No `hubSubdomain` is not a reason to stop: a registration without one is published as `<app>-<org>`.
   const publicDomainRoot = app.publicDomain?.trim() || hub.domain?.trim();
-  if (!hub.orgSlug || !hub.hubSubdomain || !publicDomainRoot) {
+  if (!hub.orgSlug || !publicDomainRoot) {
     return null;
   }
 

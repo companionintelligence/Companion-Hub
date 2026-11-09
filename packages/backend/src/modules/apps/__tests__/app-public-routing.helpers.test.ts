@@ -39,6 +39,14 @@ describe('app-public-routing.helpers', () => {
       expect(guestPublicUrl({ ...onPublicWeb, customDomain: 'Media.Example.org.' }, { exposable: true }, hub)).toBe('https://media.example.org');
     });
 
+    it('names the app under the organization alone for a registration with no Hub subdomain, as the sync publishes it', () => {
+      expect(guestPublicUrl(onPublicWeb, { exposable: true }, { ...hub, hubSubdomain: null })).toBe('https://jellyfin-my-org.ci0.example');
+    });
+
+    it('keeps a custom hostname when the sync refused the platform name', () => {
+      expect(guestPublicUrl({ ...onPublicWeb, customDomain: 'media.example.org' }, { exposable: true }, hub, true)).toBe('https://media.example.org');
+    });
+
     it.each([
       [
         'it is not on Public web',
@@ -47,12 +55,22 @@ describe('app-public-routing.helpers', () => {
         hub,
       ],
       ['its stored form is local whatever the row says', { ...onPublicWeb, config: { exposureMode: 'local' } }, { exposable: true }, hub],
+      [
+        'a custom hostname is left on an app that moved off Public web',
+        { ...onPublicWeb, customDomain: 'media.example.org', config: { exposureMode: 'tailscale', exposedLocal: true, openPort: false } },
+        { exposable: true },
+        hub,
+      ],
       ['it cannot be exposed', onPublicWeb, { exposable: false }, hub],
       ['it has an exposed domain of its own', { ...onPublicWeb, exposed: true, domain: 'own.example.org' }, { exposable: true }, hub],
       ['the Hub is not paired', onPublicWeb, { exposable: true }, { orgSlug: undefined, hubSubdomain: undefined, domain: 'example.com' }],
       ['no domain is known', { ...onPublicWeb, publicDomain: '' }, { exposable: true }, { ...hub, domain: '' }],
     ])('is null when %s', (_case, app, info, names) => {
       expect(guestPublicUrl(app, info, names)).toBeNull();
+    });
+
+    it('is null when the sync refused the platform name and there is no custom hostname', () => {
+      expect(guestPublicUrl(onPublicWeb, { exposable: true }, hub, true)).toBeNull();
     });
   });
 

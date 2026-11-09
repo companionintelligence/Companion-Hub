@@ -264,10 +264,17 @@ describe('AppsReadService.getGuestDashboardApps', () => {
   const urn = 'jellyfin:ci-marketplace';
 
   function build(
-    options: { refused?: string[]; registration?: () => Promise<unknown>; guestDashboard?: boolean; registrationMissing?: boolean } = {},
+    options: {
+      refused?: string[];
+      registration?: () => Promise<unknown>;
+      guestDashboard?: boolean;
+      registrationMissing?: boolean;
+      customDomain?: string;
+      settingsDomain?: string;
+    } = {},
   ) {
     const appsRepository = mock<AppsRepository>();
-    appsRepository.getGuestDashboardApps.mockResolvedValue([row] as never);
+    appsRepository.getGuestDashboardApps.mockResolvedValue([{ ...row, customDomain: options.customDomain ?? null }] as never);
     const appFilesManager = mock<AppFilesManager>();
     appFilesManager.getInstalledAppInfo.mockResolvedValue({ urn, exposable: true } as never);
     appFilesManager.getDockerComposeJson.mockResolvedValue({ content: null } as never);
@@ -275,7 +282,8 @@ describe('AppsReadService.getGuestDashboardApps', () => {
     marketplaceService.getAppUpdateInfo.mockResolvedValue({ latestVersion: 1, latestDockerVersion: '1', minHubVersion: null } as never);
     const configurationService = mock<ConfigurationService>();
     configurationService.getConfig.mockReturnValue({
-      userSettings: { domain: 'example.com', guestDashboard: options.guestDashboard ?? true },
+      domain: 'paired.example',
+      userSettings: { domain: options.settingsDomain ?? 'example.com', guestDashboard: options.guestDashboard ?? true },
     } as never);
     const moduleRef = mock<ModuleRef>();
     moduleRef.get.mockImplementation(((token: unknown) => {
@@ -283,7 +291,10 @@ describe('AppsReadService.getGuestDashboardApps', () => {
         if (options.registrationMissing) {
           throw new Error('Nest could not find RegistrationService');
         }
-        return { getDeviceRegistrationInfo: options.registration ?? (async () => ({ slug: 'my-org', hubSubdomain: 'hub-my-device-my-org' })) };
+        return {
+          getDeviceRegistrationInfo:
+            options.registration ?? (async () => ({ slug: 'my-org', hubSubdomain: 'hub-my-device-my-org', tunnelId: 'tunnel-1' })),
+        };
       }
       return token === ExposureSyncService
         ? { publicDnsRefusalFor: (appUrn: string) => (options.refused?.includes(appUrn) ? 'subdomain_quota_exceeded' : null) }
@@ -311,6 +322,28 @@ describe('AppsReadService.getGuestDashboardApps', () => {
   it('gives no address the Portal refused, because no DNS record exists for it', async () => {
     const [entry] = await build({ refused: [urn] }).getGuestDashboardApps();
 
+    expect(entry?.publicUrl).toBeNull();
+  });
+
+  it('keeps a custom hostname when the Portal refused the platform name, because it has its own ingress rule', async () => {
+    const [entry] = await build({ refused: [urn], customDomain: 'media.example.org' }).getGuestDashboardApps();
+
+    expect(entry?.publicUrl).toBe('https://media.example.org');
+  });
+
+  it('uses the domain the Hub paired into when no setting overrides it, as the tunnel sync does', async () => {
+    const [entry] = await build({ settingsDomain: '  ' }).getGuestDashboardApps();
+
+    expect(entry?.publicUrl).toBe('https://jellyfin-my-device-my-org.paired.example');
+  });
+
+  it('gives no public address on a Hub with no tunnel, because the sync publishes nothing', async () => {
+    const [entry] = await build({
+      registration: async () => ({ slug: 'my-org', hubSubdomain: 'hub-my-device-my-org', tunnelId: null }),
+      customDomain: 'media.example.org',
+    }).getGuestDashboardApps();
+
+    expect(entry?.app).toMatchObject({ id: 3 });
     expect(entry?.publicUrl).toBeNull();
   });
 
