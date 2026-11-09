@@ -70,6 +70,29 @@ describe('guestTileAddresses', () => {
     expect(offered(tile({ exposureMode: 'tailscale', openPort: true, publicUrl: undefined }), '192.168.1.20')).toEqual(['http://192.168.1.20:18850']);
   });
 
+  it('links a Private VPN app over HTTPS on the tailnet name, with the host port open or closed', () => {
+    const closed = tile({ exposureMode: 'tailscale', openPort: false, publicUrl: undefined });
+    const open = tile({ exposureMode: 'tailscale', openPort: true, publicUrl: undefined });
+
+    expect(offered(closed, 'Hub.tailnet-abc.ts.net')).toEqual(['https://hub.tailnet-abc.ts.net:18850']);
+    expect(offered(open, 'hub.tailnet-abc.ts.net')).toEqual(['https://hub.tailnet-abc.ts.net:18850']);
+  });
+
+  it('keeps plain http for a port Tailscale Serve does not hold, on the tailnet name too', () => {
+    expect(offered(tile({ exposureMode: 'cloudflare' }), 'hub.tailnet-abc.ts.net')).toEqual([
+      'https://app-dev-org.example.com',
+      'http://hub.tailnet-abc.ts.net:18850',
+    ]);
+  });
+
+  it('offers nothing for an app with no interface to open', () => {
+    expect(offered(tile({}, { no_gui: true }), '192.168.1.20')).toEqual([]);
+  });
+
+  it('offers no port link for a port of 0', () => {
+    expect(offered(tile({ port: 0, publicUrl: undefined }, { port: undefined }), '192.168.1.20')).toEqual([]);
+  });
+
   it('offers no port for an app that does not publish one', () => {
     expect(offered(tile({ exposedLocal: false, openPort: false, publicUrl: undefined }), '192.168.1.20')).toEqual([]);
   });

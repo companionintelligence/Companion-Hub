@@ -45,10 +45,10 @@ const Tile = ({ data, sslPort, publicDomain }: { data: GuestAppsDto['installed']
         <DropdownMenuGroup>
           {addresses.map((address) => (
             <DropdownMenuItem key={address.key} onClick={() => openExternal(address.url)}>
-              {address.key === 'public' ? (
-                <Lock className="text-success mr-2" size={16} />
-              ) : (
+              {address.key === 'local' ? (
                 <LockOpen className="text-muted-foreground mr-2" size={16} />
+              ) : (
+                <Lock className="text-success mr-2" size={16} />
               )}
               {address.label}
             </DropdownMenuItem>

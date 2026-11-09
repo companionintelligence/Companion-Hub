@@ -3,9 +3,10 @@ import { hasDirectLocalAccess, isLoopbackHost, resolveReachableHubHost } from '@
 import { hostPortStaysOnLoopback } from '@ci-hub/common/schemas';
 
 const LOOPBACK_HOST = '127.0.0.1';
+const TAILNET_HOST_SUFFIX = '.ts.net';
 
 export interface GuestTileAddress {
-  key: 'public' | 'local';
+  key: 'public' | 'vpn' | 'local';
   url: string;
   label: string;
 }
@@ -37,6 +38,11 @@ export function guestTileAddresses(input: {
   viewerHostname: string;
 }): GuestTileAddress[] {
   const { app, info } = input.data;
+  // Nothing to open, as on the app page.
+  if (info.no_gui) {
+    return [];
+  }
+
   const urlSuffix = info.url_suffix || '';
   const addresses: GuestTileAddress[] = [];
 
@@ -48,7 +54,18 @@ export function guestTileAddresses(input: {
   }
 
   const directPort = app.port ?? info.port ?? null;
-  const publishesPort = hasDirectLocalAccess(app, { hasHostPort: directPort != null, dynamicConfig: info.dynamic_config });
+  if (!directPort) {
+    return addresses;
+  }
+
+  // On the node's own name Tailscale Serve holds a Private VPN app's port, over HTTPS and whether or not the host port is open.
+  const viewer = input.viewerHostname.toLowerCase().replace(/\.+$/, '');
+  if (app.exposureMode === 'tailscale' && viewer.endsWith(TAILNET_HOST_SUFFIX)) {
+    addresses.push({ key: 'vpn', url: `https://${viewer}:${directPort}${urlSuffix}`, label: `${viewer}:${directPort}` });
+    return addresses;
+  }
+
+  const publishesPort = hasDirectLocalAccess(app, { hasHostPort: true, dynamicConfig: info.dynamic_config });
   const host = publishesPort ? guestPortHost(info, input.viewerHostname, input.publicDomain) : null;
 
   if (host) {
