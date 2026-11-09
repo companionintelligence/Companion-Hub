@@ -119,6 +119,16 @@ describe('MarketplaceController demo video', () => {
     expect(marketplaceService.createDemoVideoStream).not.toHaveBeenCalled();
   });
 
+  it('answers 500 when the file cannot be opened for streaming', async () => {
+    marketplaceService.getAppDemoVideo.mockResolvedValue(DEMO_FILE);
+    marketplaceService.createDemoVideoStream.mockRejectedValue(new Error('not allowed') as never);
+
+    await controller.getAppDemoVideo('ci-memory:ci-marketplace', res, makeReq());
+
+    expect(pipeline).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenLastCalledWith(500);
+  });
+
   it('stays quiet when the client aborts mid-stream', async () => {
     marketplaceService.getAppDemoVideo.mockResolvedValue(DEMO_FILE);
     const abort = Object.assign(new Error('aborted'), { code: 'ERR_STREAM_PREMATURE_CLOSE' });

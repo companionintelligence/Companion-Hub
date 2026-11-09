@@ -222,9 +222,9 @@ export class MarketplaceController {
     });
     res.status(range ? 206 : 200);
 
-    const stream = this.marketplaceService.createDemoVideoStream(file, start, end);
-
     try {
+      const stream = await this.marketplaceService.createDemoVideoStream(file, start, end);
+
       await pipeline(stream, res);
     } catch (error) {
       // Seeking and tab-closing abort in-flight video requests constantly; that is not an error.

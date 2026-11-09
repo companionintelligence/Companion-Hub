@@ -9,6 +9,7 @@ import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
+import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { ImageSizeService } from '@/modules/marketplace/image-size.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
@@ -246,10 +247,11 @@ export class InstallAppCommand extends AppLifecycleCommand {
       //   ci-entrypoint.sh — the actual Hub inference auto-config script
       // Ensure both exist even if copyDataDir was skipped or the app payload was incomplete.
       if (appName === 'openclaw') {
+        const filesystem = this.moduleRef.get(FilesystemService, { strict: false });
         const { appInstalledDir } = appFilesManager.getAppPaths(appUrn);
         const appRepoDir = path.join(directories.dataDir, 'repos', appStoreId, 'apps', appName);
         const targetDir = path.join(containerAppDataPath, 'data');
-        await fs.promises.mkdir(targetDir, { recursive: true });
+        await filesystem.createDirectory(targetDir);
 
         // Helper: copy a file from the installed app payload to the data volume,
         // falling back to the provided content string if the source is absent.
@@ -258,26 +260,23 @@ export class InstallAppCommand extends AppLifecycleCommand {
           const candidateSources = [path.join(appInstalledDir, 'data', filename), path.join(appRepoDir, 'data', filename)];
           let restoredFromSource = false;
           for (const sourcePath of candidateSources) {
-            try {
-              await fs.promises.access(sourcePath);
-              await fs.promises.copyFile(sourcePath, targetPath);
+            // A regular file only. These folders hold what a store's author shipped and what the app's
+            // container wrote, and the filesystem service keeps every step inside them.
+            if (!(await filesystem.isFile(sourcePath))) {
+              continue;
+            }
+            if (await filesystem.copyFile(sourcePath, targetPath)) {
               restoredFromSource = true;
               logger.info(`[OpenClaw] Restored ${filename} from ${sourcePath}`);
               break;
-            } catch (err) {
-              if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-                logger.warn(
-                  `[OpenClaw] Unexpected error restoring ${filename} from ${sourcePath}: ${
-                    err instanceof Error ? err.message : String(err)
-                  }. Trying next source.`,
-                );
-              }
             }
+            logger.warn(`[OpenClaw] Could not restore ${filename} from ${sourcePath}. Trying next source.`);
           }
           if (restoredFromSource) {
-            await fs.promises.chmod(targetPath, 0o755);
+            await filesystem.makeExecutable(targetPath);
           } else {
-            await fs.promises.writeFile(targetPath, fallbackContent, { mode: 0o755 });
+            await filesystem.writeTextFile(targetPath, fallbackContent);
+            await filesystem.makeExecutable(targetPath);
             logger.warn(fallbackWarning);
           }
         };
