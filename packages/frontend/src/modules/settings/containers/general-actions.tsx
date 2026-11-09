@@ -274,7 +274,7 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
     [refreshAppContext, t],
   );
 
-  // Shown once: the state above has it now, and coming back to this tab later shouldn't repeat it.
+  // Shown once. The state above has it now so coming back to this tab later doesn't repeat it.
   // Reading it again here catches an outcome that landed between the first render and the subscription.
   useEffect(() => {
     if (!isStackUpdatePending()) {

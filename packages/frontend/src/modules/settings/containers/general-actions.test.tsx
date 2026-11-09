@@ -131,6 +131,7 @@ describe('GeneralActionsContainer', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    sessionStorage.clear();
 
     mockUseAppContext.mockReturnValue({
       version: {
@@ -1141,7 +1142,7 @@ describe('GeneralActionsContainer', () => {
     expect(screen.getByTestId('hub-check-updates-btn')).toBeInTheDocument();
   });
 
-  it('says the update finished when the update ended by reloading the page, and says it once', async () => {
+  it('says the update finished when the update ended by reloading the page and says it once', async () => {
     mockUseAppContext.mockReturnValue({
       version: { current: '4.7.0', latest: '4.7.0', body: '', releases: [] },
       refreshAppContext: vi.fn(),

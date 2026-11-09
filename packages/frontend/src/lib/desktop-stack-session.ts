@@ -16,9 +16,12 @@ const STACK_UPDATE_EVENT = 'ci-hub:stack-update';
 /**
  * How the last update ended, for the Settings panel to show when it next mounts. The event above
  * only reaches a panel that is on screen: the Hub's hello can arrive while another page is open or
- * before the lazy panel has loaded, and the reload that swaps the old Hub's bundle wipes the page.
+ * before the lazy panel has loaded. The reload that swaps the old Hub's bundle wipes the page too.
  */
 const STACK_UPDATE_KEPT_OUTCOME_KEY = 'ci-hub-stack-update-outcome';
+
+/** A tab can stay open for weeks. After this long the Hub may have moved on, so the outcome is dropped unread. */
+const STACK_UPDATE_OUTCOME_KEPT_FOR_MS = 24 * 60 * 60 * 1000;
 
 export interface StackUpdatePending {
   /** Hub version when the update was requested, when the marker recorded one. */
@@ -101,25 +104,26 @@ export function clearStackUpdatePending(): void {
 /** Clear the marker and tell subscribers how the update ended. */
 export function resolveStackUpdate(outcome: StackUpdateOutcome): void {
   clearStackUpdatePending();
-  // Kept first: a panel on screen clears it when it hears the event, and nobody else can show it.
+  // Written before the event because a panel on screen clears it on hearing the event. With no panel this copy is the only record.
   keepStackUpdateOutcome(outcome);
   window.dispatchEvent(new CustomEvent<StackUpdateOutcome>(STACK_UPDATE_EVENT, { detail: outcome }));
 }
 
 /** Keep an outcome for the next Settings panel to mount. */
-export function keepStackUpdateOutcome(outcome: StackUpdateOutcome): void {
+export function keepStackUpdateOutcome(outcome: StackUpdateOutcome, now: number = Date.now()): void {
   try {
-    sessionStorage.setItem(STACK_UPDATE_KEPT_OUTCOME_KEY, JSON.stringify(outcome));
+    sessionStorage.setItem(STACK_UPDATE_KEPT_OUTCOME_KEY, JSON.stringify({ ...outcome, keptAt: now }));
   } catch {
     // ignore
   }
 }
 
-export function readKeptStackUpdateOutcome(): StackUpdateOutcome | null {
+export function readKeptStackUpdateOutcome(now: number = Date.now()): StackUpdateOutcome | null {
   try {
     const raw = sessionStorage.getItem(STACK_UPDATE_KEPT_OUTCOME_KEY);
     if (raw === null) return null;
-    const parsed = JSON.parse(raw) as Partial<StackUpdateOutcome> | null;
+    const parsed = JSON.parse(raw) as (Partial<StackUpdateOutcome> & { keptAt?: number }) | null;
+    if (typeof parsed?.keptAt !== 'number' || now - parsed.keptAt > STACK_UPDATE_OUTCOME_KEPT_FOR_MS) return null;
     if ((parsed?.state === 'completed' || parsed?.state === 'not_confirmed') && typeof parsed.version === 'string') {
       return { state: parsed.state, version: parsed.version };
     }
