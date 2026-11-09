@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { withTimeout } from '@/common/helpers/with-timeout';
 import type {
   HostMetricsContainerSection,
   HostMetricsDisplayLoad,
@@ -22,6 +23,8 @@ const VM_WEDGE_RATIO = 1.25;
  * not the host. A Linux probe stays untouched too when meminfo shows it is looking at a VM.
  */
 const LINUX_DISK_LIVE_MS = 60 * 1000;
+/** `si.fsSize` has no deadline of its own. A `df` stuck on a dead mount never returns. */
+const DISK_STAT_TIMEOUT_MS = 10 * 1000;
 /** How often a live disk figure is written back into the probe file for the next reader of it. */
 const LINUX_DISK_STORE_MS = 4 * 60 * 60 * 1000;
 const OS_RESERVE_MB = 4096;
@@ -177,8 +180,8 @@ export class HostMetricsService {
     if (this.detectVmWedge(probe, { totalRamMb: totalMb })) {
       return probe;
     }
-    // The total comes from the same reading: the probe's can predate a memory change, and a Docker restart doesn't rerun it.
-    const withMemory = availableMb > 0 ? { ...probe, host: { ...probe.host, totalRamMb: totalMb, availableRamMb: availableMb } } : probe;
+    // The total comes from the same reading. The probe's can predate a memory change because a Docker restart doesn't rerun it.
+    const withMemory = totalMb > 0 ? { ...probe, host: { ...probe.host, totalRamMb: totalMb, availableRamMb: availableMb } } : probe;
     return this.withLiveLinuxDisk(withMemory);
   }
 
@@ -248,7 +251,7 @@ export class HostMetricsService {
    */
   private async listFilesystems(): Promise<Awaited<ReturnType<typeof si.fsSize>>> {
     try {
-      const result = await si.fsSize();
+      const result = await withTimeout(si.fsSize(), DISK_STAT_TIMEOUT_MS, `Filesystem stat timed out after ${DISK_STAT_TIMEOUT_MS} ms`);
       if (Array.isArray(result)) {
         return result;
       }
@@ -366,9 +369,11 @@ export class HostMetricsService {
   private async readLiveMemory(): Promise<{ totalMb: number; availableMb: number }> {
     const memResult = { totalMb: 0, availableMb: 0 };
     const memInfo = await this.filesystem.readTextFile('/host/proc/meminfo');
-    if (memInfo) {
+    // With no MemAvailable line the file can't say what is free, so it is no reading. A line that says 0 is one.
+    const availableKb = memInfo?.match(/MemAvailable:\s+(\d+)/)?.[1];
+    if (memInfo && availableKb !== undefined) {
       memResult.totalMb = Math.floor(Number(memInfo.match(/MemTotal:\s+(\d+)/)?.[1] ?? 0) / 1024);
-      memResult.availableMb = Math.floor(Number(memInfo.match(/MemAvailable:\s+(\d+)/)?.[1] ?? 0) / 1024);
+      memResult.availableMb = Math.floor(Number(availableKb) / 1024);
     }
 
     if (!memResult.totalMb) {

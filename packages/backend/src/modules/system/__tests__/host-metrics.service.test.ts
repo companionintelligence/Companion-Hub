@@ -508,6 +508,41 @@ describe('HostMetricsService', () => {
       expect(filesystemService.writeJsonFile).toHaveBeenCalledTimes(1);
     });
 
+    it('shows a Linux host with almost no memory left as full, not the stored figure', async () => {
+      serveLinuxProbe(linuxProbeFile(), 'MemTotal: 16777216\nMemAvailable: 512');
+
+      const load = await service.getDisplayLoad(5, 8);
+
+      expect(load.memoryUsed).toBe(16);
+      expect(load.percentUsedMemory).toBe(100);
+    });
+
+    it('asks systeminformation when meminfo has no MemAvailable line', async () => {
+      serveLinuxProbe(linuxProbeFile({ totalRamMb: 8192, availableRamMb: 8000 }), 'MemTotal: 8388608');
+
+      const load = await service.getDisplayLoad(5, 8);
+
+      expect(load.memoryUsed).toBe(4);
+      expect(load.percentUsedMemory).toBe(50);
+    });
+
+    it('gives up on a disk stat that never returns and keeps the stored figure', async () => {
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'], now: Date.parse('2026-06-01T00:00:00.000Z') });
+      try {
+        serveLinuxProbe(linuxProbeFile({}, new Date().toISOString()));
+        (si.fsSize as any) = vi.fn().mockReturnValue(new Promise(() => {}));
+
+        const pending = service.getDisplayLoad(5, 8);
+        await vi.advanceTimersByTimeAsync(10_000);
+        const load = await pending;
+
+        expect(load.diskSize).toBe(494);
+        expect(load.diskUsed).toBe(477);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('keeps a Linux disk sample inside the four hour window when the live stat is missing', async () => {
       filesystemService.readTextFile.mockImplementation(async (path: string) => {
         if (path === '/data/state/hardware/host_metrics.json') {
