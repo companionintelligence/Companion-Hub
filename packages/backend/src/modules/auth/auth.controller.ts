@@ -362,7 +362,8 @@ export class AuthController {
    * failed check and gives its slot back.
    */
   private async accountRechecked<T>(userId: number, req: Request, step: () => Promise<T>): Promise<T> {
-    const refund = this.admitAccountRecheck(userId, req);
+    const clientKey = String(userId);
+    const refund = this.admitAccountRecheck(clientKey, userId, req);
 
     try {
       const result = await step();
@@ -372,27 +373,32 @@ export class AuthController {
     } catch (error) {
       if (!isWrongPasswordOrCode(error)) {
         refund();
+      } else if (this.rateLimiter.isSpent('accountRecheck', clientKey)) {
+        // Reached by the answer that used up the budget, so someone who stays exactly at the limit, and is never refused, is still reported.
+        this.reportAccountRecheckLimit(clientKey, userId, req);
       }
 
       throw error;
     }
   }
 
-  private admitAccountRecheck(userId: number, req: Request): () => void {
-    const clientKey = String(userId);
-
+  private admitAccountRecheck(clientKey: string, userId: number, req: Request): () => void {
     try {
       return this.rateLimiter.admit('accountRecheck', clientKey);
     } catch (error) {
-      if (this.rateLimiter.firstRefusalInWindow('accountRecheck', clientKey)) {
-        this.logger.warn('Too many wrong password or two-factor attempts on a signed-in account', {
-          userId,
-          path: req.path,
-          ipAddress: req.ip,
-        });
-      }
+      this.reportAccountRecheckLimit(clientKey, userId, req);
 
       throw error;
+    }
+  }
+
+  private reportAccountRecheckLimit(clientKey: string, userId: number, req: Request): void {
+    if (this.rateLimiter.firstNoticeInWindow('accountRecheck', clientKey)) {
+      this.logger.warn('Too many wrong password or two-factor attempts on a signed-in account', {
+        userId,
+        path: req.path,
+        ipAddress: req.ip,
+      });
     }
   }
 

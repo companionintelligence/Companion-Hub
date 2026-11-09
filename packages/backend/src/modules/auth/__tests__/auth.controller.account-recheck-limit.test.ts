@@ -208,7 +208,7 @@ describe('AuthController account re-check limit', () => {
 
   it('writes one warning when the limit is reached, not one per refused request', async () => {
     await useUpBudget();
-    expect(logger.warn).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledTimes(1);
 
     for (let i = 0; i < 25; i++) {
       await expect(changePassword()).rejects.toThrow('AUTH_ERROR_RATE_LIMITED');
@@ -226,9 +226,35 @@ describe('AuthController account re-check limit', () => {
     expect(logger.warn).toHaveBeenCalledTimes(2);
   });
 
+  it('warns about wrong answers that stay at the limit without being refused', async () => {
+    authService.changePassword.mockRejectedValue(wrongPassword());
+
+    // One wrong answer every six seconds, for three minutes: never refused and never under the limit for long.
+    for (let i = 0; i < 30; i++) {
+      await expect(changePassword()).rejects.toThrow('AUTH_ERROR_INVALID_PASSWORD');
+      clock.now += 6_000;
+    }
+
+    expect(logger.warn.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(logger.warn.mock.calls.length).toBeLessThanOrEqual(4);
+  });
+
+  it('does not warn about a few wrong answers', async () => {
+    authService.changePassword.mockRejectedValue(wrongPassword());
+
+    for (let i = 0; i < 9; i++) {
+      await expect(changePassword()).rejects.toThrow('AUTH_ERROR_INVALID_PASSWORD');
+    }
+
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
   it('leaves the budget alone for a request with no signed-in person', async () => {
+    const admit = vi.spyOn(limiter, 'admit');
+
     await expect(changePassword(req(null))).rejects.toThrow('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
 
+    expect(admit).not.toHaveBeenCalled();
     expect(authService.changePassword).not.toHaveBeenCalled();
   });
 });
