@@ -83,7 +83,8 @@ export function storeParamToWrite(
   return storeId;
 }
 
-const STORE_INDEX_PATTERN = /^\/store\/?$/;
+// The router ignores case and extra trailing slashes when it matches a path, so this has to as well.
+const STORE_INDEX_PATTERN = /^\/store\/*$/i;
 
 /** True on the store's browse page, the only address its `q`, `category` and `store` params belong to. */
 export function isStoreIndexPath(pathname: string): boolean {

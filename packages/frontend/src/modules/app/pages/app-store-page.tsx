@@ -2,7 +2,7 @@ import { getEnabledAppStoresOptions } from '@/api-client/@tanstack/react-query.g
 import { CATALOG_PAGE_SIZE } from '@/lib/catalog-page-size';
 import { searchAppsInfiniteOptions } from '@/lib/marketplace-search-query';
 import { getInstalledAppUrnsOptions } from '@/lib/installed-app-urns-query';
-import { applyStoreBrowseParams, isStoreIndexPath, parseStoreBrowseParams, storeParamToWrite } from '@/lib/store-browse-params';
+import { applyStoreBrowseParams, buildStoreIndexPath, isStoreIndexPath, parseStoreBrowseParams, storeParamToWrite } from '@/lib/store-browse-params';
 import { invalidateStoreCatalogQueries } from '@/lib/invalidate-store-catalog-queries';
 import { pullAppStores } from '@/api-client/sdk.gen';
 import { EmptyPage } from '@/components/empty-page/empty-page';
@@ -210,25 +210,33 @@ export default () => {
       if (fallbackSlug) {
         setStoreId(fallbackSlug);
       }
-      // Clear invalid ?store= param from URL
+      // Clear invalid ?store= param from URL. A pushed entry would keep the bad address in the history. Back would
+      // land on it and be sent forward again.
       if (storeParam) {
-        setSearchParams((prev) => {
-          const next = new URLSearchParams(prev);
-          next.delete('store');
-          return next;
-        });
+        setSearchParams(
+          (prev) => {
+            const next = new URLSearchParams(prev);
+            next.delete('store');
+            return next;
+          },
+          { replace: true },
+        );
       }
     }
   }, [ownsAddress, appStores, storeId, setStoreId, ciCloudStore, searchParams, setSearchParams]);
 
   const handleStoreSwitch = useCallback(
     (slug: string) => {
+      if (!ownsAddress) {
+        return;
+      }
+
       setStoreId(slug);
       setSearchParams((prev) => applyStoreBrowseParams(prev, { q: search.trim() ? search : undefined, category, store: slug }), {
         replace: true,
       });
     },
-    [setStoreId, setSearchParams, search, category],
+    [ownsAddress, setStoreId, setSearchParams, search, category],
   );
 
   const onSearch = useCallback(
@@ -274,7 +282,7 @@ export default () => {
   const showSearchAlternatives = Boolean(search.trim()) && !isFeaturedView && !isAlternativesView && hasAlternativeMatches;
 
   if (params.storeId) {
-    return <Navigate to={`/store?store=${params.storeId}`} replace />;
+    return <Navigate to={buildStoreIndexPath({ store: params.storeId })} replace />;
   }
 
   // Root loader already resolved registration for operational hubs. Only block

@@ -146,6 +146,7 @@ const mockUseParams = vi.mocked(useParams);
 
 const STORE_A = { slug: 'ci-apps', name: 'CI Apps', enabled: true, url: '', hash: '', branch: 'main' };
 const STORE_B = { slug: 'community', name: 'Community', enabled: true, url: '', hash: '', branch: 'main' };
+const STORE_MARKETPLACE = { slug: 'ci-marketplace', name: 'CI Marketplace', enabled: true, url: '', hash: '', branch: 'main' };
 
 const OWNER_ACTIONS = ['view', 'start', 'stop', 'restart', 'install', 'update', 'uninstall', 'reset', 'backup', 'restore', 'configure'];
 /** What `GET /api/custom-apps/access` answers: an organization owner or admin unless a test says otherwise. */
@@ -306,6 +307,20 @@ describe('AppStorePage — multi-store UX', () => {
     expect(mockSetSearchParams).not.toHaveBeenCalled();
   });
 
+  it('keeps a store name with reserved characters as one query value in the redirect', () => {
+    setupQueries();
+    capturedPathname = '/store/a%26category%3Dai';
+    mockUseParams.mockReturnValue({ storeId: 'a&category=ai' });
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId('navigate-to')).toHaveTextContent('/store?store=a%26category%3Dai');
+  });
+
   it('shows matching alternatives in catalog search for a proprietary name', () => {
     mockUsePortalCatalog.mockReturnValue({
       alternatives: {
@@ -406,7 +421,11 @@ describe('AppStorePage — multi-store UX', () => {
       </MemoryRouter>,
     );
 
-    expect(mockSetSearchParams).toHaveBeenCalled();
+    const clearing = mockSetSearchParams.mock.calls.find(([updater]) => !updater(new URLSearchParams('store=nonexistent')).has('store'));
+
+    expect(clearing).toBeDefined();
+    // A pushed entry would keep the bad address in the history. Back would land on it and be sent forward again.
+    expect(clearing?.[1]).toEqual({ replace: true });
   });
 
   it('uses the shared store search value for the app query and syncs the mobile input from it', () => {
@@ -553,7 +572,8 @@ describe('AppStorePage — multi-store UX', () => {
   // The dashboard layout keeps the old page mounted through its exit animation, so it sees the next page's address.
   it("leaves the next page's address alone while it animates out", () => {
     capturedPathname = '/home';
-    setupQueries();
+    // With no ?store= on the address and the marketplace listed, the store sync would fall back to the marketplace.
+    setupQueries([STORE_MARKETPLACE, STORE_B]);
     mockStoreState.category = 'featured';
     mockStoreState.storeId = 'community';
 
@@ -567,6 +587,22 @@ describe('AppStorePage — multi-store UX', () => {
     expect(mockStoreState.setSearchImmediate).not.toHaveBeenCalled();
     expect(mockStoreState.setCategory).not.toHaveBeenCalled();
     expect(mockStoreState.setStoreId).not.toHaveBeenCalled();
+  });
+
+  it('ignores a store switch clicked while it animates out', () => {
+    capturedPathname = '/home';
+    setupQueries();
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByText('Community'));
+
+    expect(mockStoreState.setStoreId).not.toHaveBeenCalled();
+    expect(mockSetSearchParams).not.toHaveBeenCalled();
   });
 
   it('writes browse params to the URL when search and category are set', () => {
