@@ -44,7 +44,7 @@ interface LegacyMacHostProbe {
 
 @Injectable()
 export class HostMetricsService {
-  /** Last Linux disk stat, so the three-second dashboard poll does not stat every time. */
+  /** Last Linux disk stat, so each read of the probe does not run a stat of its own. */
   private linuxDiskMemo: { at: number; disk: LinuxDiskSample | null } | null = null;
   /** When this process last tried to store the disk sample, so a failing write is not retried on every poll. */
   private linuxDiskStoreTriedAt: number | null = null;
