@@ -59,8 +59,8 @@ also packaged as a Tauri 2 desktop app.
 - **Extra Button variants:** `success` (green-600), `warning` (yellow-500), `info` (blue-500).
   These use raw Tailwind palette colors, not tokens. Acceptable as Hub semantics; **prefer
   token-based status colors** if these ever move toward canon.
-- **Theme bases:** five selectable neutral palettes (`slate`, `gray`, `zinc`, `neutral`, `stone`)
-  via `document.body.dataset.bsThemeBase`. Hub-specific personalization; not part of canon.
+- **Theme bases:** none. The five neutral palettes came from Tabler and left with it, so the setting
+  is no longer offered. `THEME_BASE` is still stored, but nothing reads it.
 - **Seasonal auto-theme:** Christmas theme (Nov 1 – Dec 26), gated behind an `allowAutoThemes`
   flag. Hub-only.
 - **Ambient background:** static radial teal gradient on `body` (light + dark) in `globals.css`.

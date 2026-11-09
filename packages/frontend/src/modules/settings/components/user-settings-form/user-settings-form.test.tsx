@@ -27,7 +27,6 @@ const newHubSettings: SettingsFormValues = {
   appDataPath: '/app-data',
   forwardAuthUrl: 'http://ci-hub:3000/api/auth/traefik',
   logLevel: 'info',
-  themeBase: 'gray',
 };
 
 const localDomainField = () => screen.getByLabelText(/^local domain/i);
@@ -59,6 +58,20 @@ it("shows a member only their own language, and nothing that changes the Hub's s
   expect(screen.queryByText('General settings')).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Update settings' })).not.toBeInTheDocument();
   expect(screen.getAllByRole('combobox')).toHaveLength(1);
+});
+
+// Nothing has read the Base theme since the palettes went away, so the box must not come back without them.
+it('has no Base theme box, and saving leaves a stored Base theme out of the request', async () => {
+  const onSubmit = vi.fn();
+  render(<UserSettingsForm initialValues={{ ...newHubSettings, themeBase: 'slate' } as SettingsFormValues} onSubmit={onSubmit} />);
+
+  expect(screen.queryByRole('combobox', { name: /base theme/i })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole('switch', { name: 'Enable guest dashboard' }));
+  await submit();
+
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ guestDashboard: true }));
+  expect(onSubmit).toHaveBeenCalledWith(expect.not.objectContaining({ themeBase: expect.anything() }));
 });
 
 /** The Timezone box. Its label is not tied to it, so find it by its name. */

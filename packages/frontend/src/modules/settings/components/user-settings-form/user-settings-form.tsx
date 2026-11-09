@@ -20,7 +20,6 @@ import './user-settings-form.css';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import { THEME_COLOR_ENUM } from '../color-selector/color-selector';
-import { THEME_BASE_ENUM, type ThemeBase, ThemeBaseSelector } from '../theme-base-selector/theme-base-selector';
 import { TimeZoneSuspense } from '@/components/timezone-selector/timezone.suspense';
 
 const TimeZoneSelector = lazy(() =>
@@ -67,7 +66,8 @@ const settingsSchema = z.object({
   forwardAuthUrl: z.url().optional(),
   logLevel: z.enum(LOG_LEVEL_ENUM).optional(),
   themeColor: z.enum(THEME_COLOR_ENUM).optional(),
-  themeBase: z.enum(THEME_BASE_ENUM).optional(),
+  // No Base theme. Its palettes came from the old CSS framework and nothing has read the value since,
+  // so the box saved a choice that changed nothing. A value already stored stays as it is.
 });
 
 export type SettingsFormValues = {
@@ -90,12 +90,10 @@ export type SettingsFormValues = {
   forwardAuthUrl?: string;
   logLevel?: LogLevel;
   themeColor?: string;
-  themeBase?: string;
 };
 
 interface IProps {
   currentLocale?: Locale;
-  currentBaseTheme?: ThemeBase;
   onSubmit: (values: SettingsFormValues) => void;
   initialValues?: Partial<SettingsFormValues>;
   loading?: boolean;
@@ -240,11 +238,6 @@ export const UserSettingsForm = (props: IProps) => {
         </CardHeader>
         <CardContent>
           <LanguageSelector showLabel locale={currentLocale} />
-          <Controller
-            control={control}
-            name="themeBase"
-            render={({ field: { onChange, value } }) => <ThemeBaseSelector value={value as ThemeBase} onChange={onChange} />}
-          />
           {/* ColorSelector hidden — theme colors don't apply yet */}
         </CardContent>
       </Card>
