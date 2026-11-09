@@ -303,7 +303,7 @@ cihub config [env]                                   # show resolved config valu
 - The seed never reads a CI-Hub checkout under the home directory or an env file left by an earlier install. If it passed over a file, if a desktop package at another release is installed, or if a desktop app is running that will rewrite the pin on its next start, the seed says so in a red box. If nothing uses the desktop app, the box says to quit it and leave it closed, since it only rewrites the env while it runs. Don't remove the `companion-hub` package to get rid of it: its uninstall deletes the Hub `cihub up` just set up, with every app and its data, because both use `~/.local/share/companion-hub`, the `ci_hub_pgdata` volume and the same containers.
 - `status` shows three sections: **Containers** (color-coded ●/✗), **Network** (local URL, Cloudflare tunnel URL from `CF_DOMAIN`/`DOMAIN`, Tailscale VPN IP), and **Models** (installed Ollama models).
 
-- Outside a checkout, `config` and `mcp` read and write the installed Hub's env file in the data dir. `models` uses the host's `ollama` command when the Hub has no Ollama container, which is the normal case on an installed Hub.
+- Outside a checkout, `config` reads and `mcp` writes the installed Hub's env files in the data dir. With no install they exit `2`. `models` uses the host's `ollama` command at the address its service listens on when the Hub has no Ollama container, which is the normal case on an installed Hub.
 
 ![Screenshot of cihub status local](./images/cli/status.svg)
 
