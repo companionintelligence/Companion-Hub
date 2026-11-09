@@ -23,8 +23,8 @@ import {
 
 /**
  * Mobile-only entry screen. Portal OIDC in an in-app browser, then pick a Hub.
- * Email/password and a custom Portal URL live under Advanced — same split as
- * Memory's `/device-connect` landing.
+ * A custom Portal URL lives under Advanced — same split as Memory's
+ * `/device-connect` landing.
  */
 export async function clientLoader() {
   const { hubBaseUrl } = await initMobileConnection();
@@ -61,9 +61,10 @@ export default function ConnectPage() {
   const [signInError, setSignInError] = useState<string | null>(null);
 
   // Safari → "Open with Companion Hub" often cold-starts the app. PKCE state
-  // lives in localStorage; Rust stashed the callback URL. Email sign-in on
-  // Advanced stashes Portal auth in sessionStorage. Finish the exchange on
-  // mount, when we become visible again, and when Rust emits the callback.
+  // lives in localStorage; Rust stashed the callback URL. A finished sign-in
+  // leaves its Portal auth in sessionStorage, so a reload lands back on the
+  // picker. Finish the exchange on mount, when we become visible again, and
+  // when Rust emits the callback.
   useEffect(() => {
     let cancelled = false;
     let inFlight = false;

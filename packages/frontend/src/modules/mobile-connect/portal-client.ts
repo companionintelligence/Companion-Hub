@@ -11,10 +11,11 @@
  * rather than the webview `fetch`, so cross-origin cookie/CORS limitations of a
  * `tauri://localhost` origin don't apply.
  *
- * The Portal is better-auth + Hono on Cloudflare Workers. Email/password
- * yields a session (cookie / session token) for `GET /api/devices`. OIDC PKCE
- * yields an opaque access token that `/api/devices` rejects (401) — that
- * token is valid on `GET /api/users/me/apps?slug=hub` (`oauthBearerMiddleware`).
+ * The Portal is better-auth + Hono on Cloudflare Workers. OIDC PKCE yields an
+ * opaque access token that `GET /api/devices` rejects (401) — that token is
+ * valid on `GET /api/users/me/apps?slug=hub` (`oauthBearerMiddleware`). The
+ * app no longer signs in with email/password itself; `kind: 'session'` is what
+ * that path produced, and `/api/devices` is where it listed Hubs.
  */
 
 /** Phone cloud-connect Companion URL. Not derived from Hub appliance env. */
@@ -114,56 +115,6 @@ export function readStoredPortalAuth(): PortalAuth | null {
   } catch {
     return null;
   }
-}
-
-/** Keep just the better-auth session cookie pair from a Set-Cookie header. */
-function extractSessionCookie(setCookie: string | null): string | null {
-  if (!setCookie) return null;
-  // Set-Cookie may contain several cookies; grab the auth ones (prefix "ci").
-  const pairs = setCookie
-    .split(/,(?=[^;]+?=)/)
-    .map((c) => (c.split(';')[0] ?? '').trim())
-    .filter((c) => /session|token|^ci/i.test(c));
-  return pairs.length ? pairs.join('; ') : null;
-}
-
-/** Authenticate to the Portal with email + password. Throws on failure. */
-export async function signInToPortal(email: string, password: string, portalUrl = DEFAULT_PORTAL_URL): Promise<PortalAuth> {
-  const portal = normalizePortalUrl(portalUrl);
-  const doFetch = await nativeFetch();
-
-  const res = await doFetch(`${portal}/api/auth/sign-in/email`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-    signal: AbortSignal.timeout(15_000),
-  });
-
-  if (!res.ok) {
-    let message = `Sign-in failed (${res.status})`;
-    try {
-      const body = (await res.json()) as { message?: string };
-      if (body?.message) message = body.message;
-    } catch {
-      /* keep default */
-    }
-    throw new Error(message);
-  }
-
-  const cookie = extractSessionCookie(res.headers.get('set-cookie'));
-  let token: string | null = null;
-  try {
-    const body = (await res.json()) as { token?: string; session?: { token?: string } };
-    token = body?.token ?? body?.session?.token ?? null;
-  } catch {
-    /* token may only be in the cookie */
-  }
-
-  if (!token && !cookie) {
-    throw new Error('Sign-in succeeded but no session was returned by the Portal.');
-  }
-
-  return { token, cookie, kind: 'session' };
 }
 
 /** Pull the Hub URL out of a device's app list (the privileged "hub" app). */
