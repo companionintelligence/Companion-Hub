@@ -373,6 +373,43 @@ describe('HostMetricsService', () => {
       expect(load.percentUsedMemory).toBe(8);
     });
 
+    it('keeps the stored disk and leaves the file alone when meminfo is a VM much smaller than the probed Linux host', async () => {
+      serveLinuxProbe(
+        linuxProbeFile({ totalRamMb: 65536, availableRamMb: 60000 }, '2026-01-01T00:00:00.000Z'),
+        'MemTotal: 8388608\nMemAvailable: 6291456',
+      );
+
+      const load = await service.getDisplayLoad(5, 8);
+
+      expect(load.hasVmWedge).toBe(true);
+      expect(load.diskSize).toBe(494);
+      expect(load.diskUsed).toBe(477);
+      expect(load.containerDiskTotal).toBe(100);
+      expect(filesystemService.writeJsonFile).not.toHaveBeenCalled();
+    });
+
+    it('takes the Linux memory total from meminfo when the probe predates a memory change', async () => {
+      serveLinuxProbe(linuxProbeFile({ totalRamMb: 16384, availableRamMb: 15000 }), 'MemTotal: 67108864\nMemAvailable: 33554432');
+
+      const load = await service.getDisplayLoad(5, 8);
+
+      expect(load.memoryTotal).toBe(64);
+      expect(load.memoryUsed).toBe(32);
+      expect(load.percentUsedMemory).toBe(50);
+    });
+
+    it('stores the live Linux memory with the disk sample', async () => {
+      serveLinuxProbe(linuxProbeFile({}, '2026-01-01T00:00:00.000Z'));
+      filesystemService.writeJsonFile.mockResolvedValue(true);
+
+      await service.getDisplayLoad(5, 8);
+
+      expect(filesystemService.writeJsonFile).toHaveBeenCalledWith(
+        '/data/state/hardware/host_metrics.json',
+        expect.objectContaining({ host: expect.objectContaining({ availableRamMb: 8192 }) }),
+      );
+    });
+
     it('keeps the probe memory on macOS, where meminfo is the Docker Desktop VM', async () => {
       filesystemService.readTextFile.mockImplementation(async (path: string) => {
         if (path === '/data/state/hardware/host_metrics.json') return hostProbeJson();
@@ -417,6 +454,48 @@ describe('HostMetricsService', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it('keeps the last live Linux disk figure when a later stat fails', async () => {
+      vi.useFakeTimers({ toFake: ['Date'], now: Date.parse('2026-06-01T00:00:00.000Z') });
+      try {
+        serveLinuxProbe(linuxProbeFile({}, new Date().toISOString()));
+        expect((await service.getDisplayLoad(5, 8)).diskUsed).toBe(50);
+
+        (si.fsSize as any) = vi.fn().mockRejectedValue(new Error('stat failed'));
+        vi.setSystemTime(Date.parse('2026-06-01T00:01:00.000Z'));
+
+        expect((await service.getDisplayLoad(5, 8)).diskUsed).toBe(50);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('stats the Linux disk again after the clock steps backwards', async () => {
+      vi.useFakeTimers({ toFake: ['Date'], now: Date.parse('2026-06-01T12:00:00.000Z') });
+      try {
+        serveLinuxProbe(linuxProbeFile({}, new Date().toISOString()));
+        expect((await service.getDisplayLoad(5, 8)).diskUsed).toBe(50);
+
+        (si.fsSize as any) = vi
+          .fn()
+          .mockResolvedValue([
+            { fs: '/dev/sda1', type: 'ext4', size: 100 * 1024 ** 3, used: 80 * 1024 ** 3, available: 20 * 1024 ** 3, use: 80, mount: '/', rw: true },
+          ]);
+        vi.setSystemTime(Date.parse('2026-06-01T11:00:00.000Z'));
+
+        expect((await service.getDisplayLoad(5, 8)).diskUsed).toBe(80);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('runs one Linux disk stat for reads that overlap', async () => {
+      serveLinuxProbe(linuxProbeFile());
+
+      await Promise.all([service.readHostProbe(), service.readHostProbe()]);
+
+      expect(si.fsSize).toHaveBeenCalledTimes(1);
     });
 
     it('does not retry a failing write of the disk sample on every poll', async () => {
