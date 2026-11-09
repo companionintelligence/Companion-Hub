@@ -24,7 +24,7 @@ import { useAppStatus } from '../../helpers/use-app-status';
 
 const PAGE_SIZE = 10;
 
-/** While an app is in one of these, its list of backups is about to change. */
+/** Leaving one of these is the card's cue to fetch its list again. Only a backup or an update with its backup on writes a new file. */
 const LIST_CHANGING_STATUSES: ReadonlySet<AppStatus> = new Set(['backing_up', 'restoring', 'updating']);
 
 /** Statuses in which touching the app's files would race a lifecycle operation that is already doing so. */

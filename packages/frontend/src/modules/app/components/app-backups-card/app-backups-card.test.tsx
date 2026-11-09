@@ -360,22 +360,18 @@ describe('AppBackupsCard', () => {
   });
 
   describe('when a backup, restore or update finishes', () => {
-    it.each([['backing_up'], ['restoring'], ['updating']] as const)('reloads the list as the app leaves %s', async (working) => {
+    it.each([
+      ['backing_up', 'running'],
+      ['restoring', 'running'],
+      ['updating', 'running'],
+      // A failed update can leave the app stopped, and the backup it made is there all the same.
+      ['updating', 'stopped'],
+    ] as const)('reloads the list as the app goes from %s to %s', async (working, after) => {
       const view = mount(card(working));
       await screen.findByText(BACKUPS[0]?.id as string);
       const loads = h.list.mock.calls.length;
 
-      view.rerenderCard(card('running'));
-
-      await waitFor(() => expect(h.list.mock.calls.length).toBeGreaterThan(loads));
-    });
-
-    it('reloads the list when a failed update leaves the app stopped, since its backup is there all the same', async () => {
-      const view = mount(card('updating'));
-      await screen.findByText(BACKUPS[0]?.id as string);
-      const loads = h.list.mock.calls.length;
-
-      view.rerenderCard(card('stopped'));
+      view.rerenderCard(card(after));
 
       await waitFor(() => expect(h.list.mock.calls.length).toBeGreaterThan(loads));
     });
