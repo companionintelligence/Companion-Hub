@@ -78,6 +78,26 @@ describe('CloudflareHostnameService', () => {
     await expect(service.resolvesToExistingAppHostname('dropgate', 'companionintelligence.com')).resolves.toBe(false);
   });
 
+  // Settings asks about the name an app with no stored subdomain routes on. A row that still says local
+  // about an app on the Web must not make that name read as taken and block the save (#2272).
+  it("recognizes an app's own routing name when the row says local but its stored form is on the Web", async () => {
+    appsRepository.getAppByUrn.mockResolvedValue({
+      appName: 'dropgate',
+      appStoreSlug: 'store',
+      exposureMode: 'local',
+      exposedLocal: true,
+      localSubdomain: null,
+      publicDomain: null,
+      config: { exposedLocal: true },
+    } as never);
+    deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+      slug: 'devben',
+      hubSubdomain: 'hub-nvda-devben',
+    } as never);
+
+    await expect(service.resolvesToExistingAppHostname('dropgate-store', 'companionintelligence.com', 'dropgate:store')).resolves.toBe(true);
+  });
+
   it('treats legacy exposedLocal apps as cloudflare when matching the current hostname', async () => {
     appsRepository.getAppByUrn.mockResolvedValue({
       appName: 'dropgate',

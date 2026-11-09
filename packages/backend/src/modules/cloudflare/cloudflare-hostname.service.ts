@@ -1,10 +1,9 @@
 import { castAppUrn, createAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Injectable } from '@nestjs/common';
-import { type AppUrn, buildPublicWebIdentity, resolveRoutingSubdomain, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { type AppUrn, buildPublicWebIdentity, resolveRoutingSubdomain, sanitizeAppSubdomain, servedExposureMode } from '@ci-hub/common/types';
 import { restoreRanSince } from '../app-lifecycle/app-rehydration';
 import { readPairingAppCheck, readRehydrationState } from '../app-lifecycle/registration-recovery-state';
-import { getEffectiveExposureMode } from '../apps/app-exposure.helpers';
 import { AppsRepository } from '../apps/apps.repository';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
 
@@ -22,14 +21,9 @@ export class CloudflareHostnameService {
     }
 
     const app = await this.appsRepository.getAppByUrn(castAppUrn(appUrn));
-    const effectiveExposureMode = app
-      ? getEffectiveExposureMode({
-          exposureMode:
-            app.exposureMode === 'cloudflare' || app.exposureMode === 'tailscale' || app.exposureMode === 'local' ? app.exposureMode : undefined,
-          exposedLocal: app.exposedLocal,
-        })
-      : 'local';
-    if (!app || effectiveExposureMode !== 'cloudflare') {
+    // The stored form, which is what the sync publishes and the Settings form edits. A legacy row can
+    // still say local about an app on the Web, whose own name would then read as taken.
+    if (!app || servedExposureMode(app) !== 'cloudflare') {
       return false;
     }
 
