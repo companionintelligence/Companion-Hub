@@ -11,7 +11,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { type PropsWithChildren, useRef } from 'react';
 import { toast } from 'sonner';
 import { Trans, useTranslation } from 'react-i18next';
-import { Link, useLocation, useNavigate } from 'react-router';
+import { Link, matchPath, useLocation, useNavigate } from 'react-router';
 
 const logsPageHref = '/settings?tab=logs';
 
@@ -41,8 +41,9 @@ const PUBLIC_DNS_ERROR_KEYS: Record<string, string> = {
   write_failed: 'APP_ERROR_PUBLIC_DNS_TEMPORARY',
 };
 
-/** Whether this is a custom app's page or its edit page. */
-const isCustomAppPage = (pathname: string, appId: string) => pathname === `/apps/${appId}` || pathname.startsWith(`/apps/${appId}/`);
+/** Whether this is a custom app's page or its edit page. `/apps/<store>/<app>` is a store app's page, even if a custom app has the store's name. */
+const isCustomAppPage = (pathname: string, appId: string) =>
+  (matchPath('/apps/:appId/edit', pathname) ?? matchPath('/apps/:appId', pathname))?.params.appId === appId;
 
 export const SSEProvider = ({ children }: PropsWithChildren) => {
   const { t } = useTranslation();

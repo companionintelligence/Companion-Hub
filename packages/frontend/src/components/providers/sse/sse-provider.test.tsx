@@ -504,7 +504,7 @@ describe('SSEProvider: a cancelled install of a custom app', () => {
     expect(screen.getByTestId('where')).toHaveTextContent('/store');
   });
 
-  it.each(['/apps/my-tool', '/apps/my-tool/edit'])('leaves %s when that custom app is uninstalled', (path) => {
+  it.each(['/apps/my-tool', '/apps/my-tool/', '/apps/my-tool/edit'])('leaves %s when that custom app is uninstalled', (path) => {
     const send = renderOnAppPage(path);
 
     send({ event: 'uninstall_success', appUrn: 'my-tool:_user', appStatus: 'missing' });
@@ -523,6 +523,14 @@ describe('SSEProvider: a cancelled install of a custom app', () => {
       expect(screen.getByTestId('where').textContent).toBe(path);
     },
   );
+
+  it("stays on a store app's page when the removed custom app has that store's name", () => {
+    const send = renderOnAppPage('/apps/ci-marketplace/uptime-kuma');
+
+    send({ event: 'uninstall_success', appUrn: 'ci-marketplace:_user', appStatus: 'missing' });
+
+    expect(screen.getByTestId('where').textContent).toBe('/apps/ci-marketplace/uptime-kuma');
+  });
 
   it('follows the tab as it moves: the app page is judged when the event arrives', () => {
     let goTo: (path: string) => void = () => undefined;
