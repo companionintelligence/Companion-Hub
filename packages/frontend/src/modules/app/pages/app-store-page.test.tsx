@@ -29,7 +29,11 @@ vi.mock('react-router', async () => {
     useLocation: () => ({ pathname: capturedPathname, search: '', hash: '', state: null, key: 'default' }),
     useNavigate: () => mockNavigate,
     useSearchParams: vi.fn(() => [capturedSearchParams, mockSetSearchParams]),
-    Navigate: vi.fn(({ to }: { to: string }) => <div data-testid="navigate-to">{to}</div>),
+    Navigate: vi.fn(({ to, replace }: { to: string; replace?: boolean }) => (
+      <div data-testid="navigate-to" data-replace={String(Boolean(replace))}>
+        {to}
+      </div>
+    )),
     Link: vi.fn(({ to, children, ...rest }: { to: string; children: React.ReactNode }) => (
       <a href={to} {...rest}>
         {children}
@@ -287,6 +291,7 @@ describe('AppStorePage — multi-store UX', () => {
 
   it('redirects /store/:storeId to /store?store=<storeId>', () => {
     setupQueries();
+    capturedPathname = '/store/community';
     mockUseParams.mockReturnValue({ storeId: 'community' });
 
     render(
@@ -296,6 +301,9 @@ describe('AppStorePage — multi-store UX', () => {
     );
 
     expect(screen.getByTestId('navigate-to')).toHaveTextContent('/store?store=community');
+    // A redirect that stayed in the history would send Back straight here again.
+    expect(screen.getByTestId('navigate-to')).toHaveAttribute('data-replace', 'true');
+    expect(mockSetSearchParams).not.toHaveBeenCalled();
   });
 
   it('shows matching alternatives in catalog search for a proprietary name', () => {

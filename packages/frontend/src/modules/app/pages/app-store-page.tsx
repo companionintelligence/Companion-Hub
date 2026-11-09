@@ -274,7 +274,7 @@ export default () => {
   const showSearchAlternatives = Boolean(search.trim()) && !isFeaturedView && !isAlternativesView && hasAlternativeMatches;
 
   if (params.storeId) {
-    return <Navigate to={`/store?store=${params.storeId}`} />;
+    return <Navigate to={`/store?store=${params.storeId}`} replace />;
   }
 
   // Root loader already resolved registration for operational hubs. Only block
