@@ -1,4 +1,3 @@
-import { TranslatableError } from '@/common/error/translatable-error';
 import { LoggerService } from '@/core/logger/logger.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import { ApiResponse } from '@nestjs/swagger';
@@ -122,22 +121,6 @@ export class SystemController {
     } finally {
       cleanup();
     }
-  }
-
-  @UseGuards(AuthGuard)
-  @Get('/certificate')
-  async downloadLocalCertificate(@Res() res: Response) {
-    const cert = await this.systemService.getLocalCertificate();
-    if (!cert) {
-      throw new TranslatableError('SETTINGS_GENERAL_CERTIFICATE_NONE', undefined, 404);
-    }
-
-    res.set({
-      'Content-Type': 'application/x-pem-file',
-      'Content-Disposition': 'attachment; filename=cert.pem',
-    });
-
-    return res.send(cert);
   }
 
   @UseGuards(AuthGuard)
