@@ -39,6 +39,15 @@ async function typeLocalDomain(value: string) {
 
 const submit = () => userEvent.click(screen.getByRole('button', { name: 'Update settings' }));
 
+const forwardAuthField = () => screen.getByLabelText(/^forward auth url/i);
+
+async function retype(field: HTMLElement, value: string) {
+  await userEvent.clear(field);
+  if (value) {
+    await userEvent.type(field, value);
+  }
+}
+
 it('lets a keyboard user focus a setting hint', () => {
   render(<UserSettingsForm initialValues={newHubSettings} onSubmit={vi.fn()} />);
 
@@ -118,18 +127,12 @@ describe('UserSettingsForm Local domain check', () => {
 
 describe('UserSettingsForm Advanced settings messages', () => {
   const advancedSettings = { ...newHubSettings, advancedSettings: true };
-  const forwardAuthField = () => screen.getByLabelText(/^forward auth url/i);
-
-  async function retype(field: HTMLElement, value: string) {
-    await userEvent.clear(field);
-    if (value) {
-      await userEvent.type(field, value);
-    }
-  }
 
   it.each([
     ['text that is not a URL', 'not a url'],
     ['nothing', ''],
+    ['a host and port with no http://', 'auth.example.com:9000/verify'],
+    ['a scheme that is not http', 'mailto:auth@example.com'],
   ])('shows a message under a Forward auth URL of %s, goes to the field and sends nothing', async (_kind, value) => {
     const onSubmit = vi.fn();
     render(<UserSettingsForm initialValues={advancedSettings} onSubmit={onSubmit} />);
@@ -176,10 +179,48 @@ describe('UserSettingsForm Advanced settings messages', () => {
     expect(field).toHaveAttribute('aria-invalid', 'true');
     expect(onSubmit).not.toHaveBeenCalled();
   });
+
+  it('shows a message under an Events timeout above the 120 the Hub takes and sends nothing', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={advancedSettings} onSubmit={onSubmit} />);
+
+    await retype(screen.getByLabelText(/^events timeout/i), '121');
+    await submit();
+
+    expect(await screen.findByText('Invalid value')).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('shows every refused field at once and goes to the first on the page', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={advancedSettings} onSubmit={onSubmit} />);
+    const internalIpField = screen.getByLabelText(/^internal ip/i);
+
+    await retype(forwardAuthField(), 'not a url');
+    await retype(screen.getByLabelText(/^events timeout/i), '');
+    await retype(internalIpField, 'hub.lan');
+    await submit();
+
+    expect(await screen.findByText('Invalid IP address')).toBeInTheDocument();
+    expect(screen.getByText('Invalid URL')).toBeInTheDocument();
+    expect(screen.getByText('Invalid value')).toBeInTheDocument();
+    await waitFor(() => expect(internalIpField).toHaveFocus());
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
 });
 
 describe('UserSettingsForm values the Hub already had', () => {
   const brokenForwardAuth = { ...newHubSettings, forwardAuthUrl: 'not-a-url' };
+
+  it('saves with an Events timeout above 120 that the Hub already had and leaves it out of the request', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={{ ...newHubSettings, eventsTimeout: 180 }} onSubmit={onSubmit} />);
+
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty('eventsTimeout');
+  });
 
   it('saves with Advanced settings off when the Hub reports a Forward auth URL the form refuses', async () => {
     const onSubmit = vi.fn();
@@ -205,10 +246,8 @@ describe('UserSettingsForm values the Hub already had', () => {
   it('still refuses that field once the person changes it to something else that is not a URL', async () => {
     const onSubmit = vi.fn();
     render(<UserSettingsForm initialValues={{ ...brokenForwardAuth, advancedSettings: true }} onSubmit={onSubmit} />);
-    const field = screen.getByLabelText(/^forward auth url/i);
 
-    await userEvent.clear(field);
-    await userEvent.type(field, 'still not a url');
+    await retype(forwardAuthField(), 'still not a url');
     await submit();
 
     expect(await screen.findByText('Invalid URL')).toBeInTheDocument();
@@ -220,12 +259,7 @@ describe('UserSettingsForm Internal IP check', () => {
   const advancedSettings = { ...newHubSettings, advancedSettings: true };
   const internalIpField = () => screen.getByLabelText(/^internal ip/i);
 
-  async function typeInternalIp(value: string) {
-    await userEvent.clear(internalIpField());
-    if (value) {
-      await userEvent.type(internalIpField(), value);
-    }
-  }
+  const typeInternalIp = (value: string) => retype(internalIpField(), value);
 
   // INTERNAL_IP is read as it was set, so the Hub can report something that is not an IPv4 address.
   it.each([

@@ -59,12 +59,14 @@ const settingsSchema = z.object({
   // request, so a value an older build stored stays as it is.
   port: z.number().min(1).max(65535).optional(),
   sslPort: z.number().min(1).max(65535).optional(),
-  eventsTimeout: z.coerce.number().int().min(1).optional(),
+  // The Hub takes 1 to 120 here, so a higher number gets its message under the field instead of a refused request.
+  eventsTimeout: z.coerce.number().int().min(1).max(120).optional(),
   maxBackups: z.coerce.number().int().min(0).max(100).optional(),
   persistTraefikConfig: z.boolean().optional(),
   domain: z.string().optional(),
   appDataPath: z.string().optional(),
-  forwardAuthUrl: z.url().optional(),
+  // `z.url()` alone reads `auth.example.com:9000/verify` as a URL whose scheme is the host, so the scheme is named.
+  forwardAuthUrl: z.url({ protocol: /^https?$/ }).optional(),
   logLevel: z.enum(LOG_LEVEL_ENUM).optional(),
   themeColor: z.enum(THEME_COLOR_ENUM).optional(),
   themeBase: z.enum(THEME_BASE_ENUM).optional(),
@@ -181,30 +183,23 @@ export const UserSettingsForm = (props: IProps) => {
   };
 
   const validate = (values: SettingsFormValues) => {
-    const validationErrors = validateFields(values);
-
-    if (Object.keys(validationErrors).length > 0) {
-      showFieldErrors(validationErrors);
-      return;
-    }
-
-    // Past the checks above, an Internal IP that is not IPv4 is the Hub's own, so it stays out of the request.
+    // An Internal IP that is not IPv4 is either refused by validateFields or the Hub's own, so it stays out of the request.
     const { internalIp, ...rest } = values;
     const request = isIpv4(trimmed(internalIp)) ? { ...rest, internalIp: trimmed(internalIp) } : rest;
     const result = settingsSchema.safeParse(withoutRefusedHubValues(request, initialValues));
 
-    if (result.success) {
-      onSubmit(result.data);
-      return;
+    const fieldErrors = validateFields(values);
+    // A Forward auth URL that isn't a URL, or an emptied Port, lands here.
+    for (const issue of result.error?.issues ?? []) {
+      const field = issue.path[0] as keyof SettingsFormValues;
+      fieldErrors[field] = field === 'forwardAuthUrl' ? t('SETTINGS_GENERAL_INVALID_URL') : t('SETTINGS_GENERAL_INVALID_VALUE');
     }
 
-    // A Forward auth URL that isn't a URL, or an emptied Port, lands here.
-    const schemaErrors: FieldErrors = {};
-    for (const issue of result.error.issues) {
-      const field = issue.path[0] as keyof SettingsFormValues;
-      schemaErrors[field] = field === 'forwardAuthUrl' ? t('SETTINGS_GENERAL_INVALID_URL') : t('SETTINGS_GENERAL_INVALID_VALUE');
+    if (result.success && Object.keys(fieldErrors).length === 0) {
+      onSubmit(result.data);
+    } else {
+      showFieldErrors(fieldErrors);
     }
-    showFieldErrors(schemaErrors);
   };
 
   const downloadCertificate = (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -580,7 +575,6 @@ export const UserSettingsForm = (props: IProps) => {
                   <Input
                     {...register('eventsTimeout', {
                       valueAsNumber: true,
-                      required: t('SETTINGS_GENERAL_INVALID_VALUE'),
                     })}
                     label={
                       <>
@@ -597,7 +591,6 @@ export const UserSettingsForm = (props: IProps) => {
                   <Input
                     {...register('maxBackups', {
                       valueAsNumber: true,
-                      required: t('SETTINGS_GENERAL_INVALID_VALUE'),
                     })}
                     label={
                       <>
