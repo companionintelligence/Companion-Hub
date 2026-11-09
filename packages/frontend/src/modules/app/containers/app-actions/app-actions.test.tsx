@@ -13,8 +13,8 @@ const hoisted = vi.hoisted(() => ({
   // Options of the START mutation specifically (tagged via startAppMutation below),
   // so its onError can be driven without depending on useMutation call order.
   startOpts: undefined as undefined | Record<string, (arg?: unknown) => void>,
-  ignoreOpts: undefined as undefined | Record<string, (arg?: unknown) => void>,
-  unignoreOpts: undefined as undefined | Record<string, (arg?: unknown) => void>,
+  ignoreOpts: undefined as undefined | Record<string, (...args: unknown[]) => void>,
+  unignoreOpts: undefined as undefined | Record<string, (...args: unknown[]) => void>,
   invalidateAppQueries: vi.fn(),
   navigate: vi.fn(),
   // null => web client (no Tauri); a function => running inside the desktop app.
@@ -90,10 +90,10 @@ vi.mock('@tanstack/react-query', () => ({
       hoisted.startOpts = opts as Record<string, (arg?: unknown) => void>;
     }
     if (opts?.__kind === 'ignore') {
-      hoisted.ignoreOpts = opts as Record<string, (arg?: unknown) => void>;
+      hoisted.ignoreOpts = opts as Record<string, (...args: unknown[]) => void>;
     }
     if (opts?.__kind === 'unignore') {
-      hoisted.unignoreOpts = opts as Record<string, (arg?: unknown) => void>;
+      hoisted.unignoreOpts = opts as Record<string, (...args: unknown[]) => void>;
     }
     return {
       mutate: vi.fn(),
@@ -328,6 +328,8 @@ describe('AppActions', () => {
     hoisted.openPath.mockReset();
     hoisted.openExternal.mockReset();
     hoisted.startOpts = undefined;
+    hoisted.ignoreOpts = undefined;
+    hoisted.unignoreOpts = undefined;
     hoisted.invalidateAppQueries.mockReset();
     // Reset EVERY hoisted spy: mockReturnValue is sticky for the whole file, and vitest
     // is not configured with clearMocks/mockReset, so a leftover value silently leaks
@@ -925,16 +927,17 @@ describe('AppActions', () => {
       expect(shown()).toEqual([UPDATE, UNIGNORE]);
     });
 
-    // The icons above come from the app query, and nothing else would make it fetch again.
+    // The icons above come from the app query and nothing else would make it fetch again. The URN is
+    // the one the request went out for, since the page may have moved to another app by the time it lands.
     it.each([
       ['ignore', () => hoisted.ignoreOpts],
       ['unignore', () => hoisted.unignoreOpts],
     ])('asks for the app again once the %s has gone through', (_name, opts) => {
       renderOffer({ latestVersion: 9, latestDockerVersion: '2026.10.28' });
 
-      opts()?.onSuccess?.();
+      opts()?.onSuccess?.(undefined, { path: { urn: 'other-app:community' } });
 
-      expect(hoisted.invalidateAppQueries).toHaveBeenCalledWith(hoisted.queryClient, makeInfo().urn);
+      expect(hoisted.invalidateAppQueries).toHaveBeenCalledWith(hoisted.queryClient, 'other-app:community');
     });
   });
 
