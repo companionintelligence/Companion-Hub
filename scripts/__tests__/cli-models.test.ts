@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   findComposeName: vi.fn(() => ''),
   runPublicWebRepair: vi.fn(async () => [] as string[]),
   resolveHubContext: vi.fn(),
+  requireRepoOrApplianceContext: vi.fn(),
 }));
 
 vi.mock('../lib/cli-proc.js', async (importOriginal) => ({
@@ -27,7 +28,7 @@ vi.mock('../lib/cli-proc.js', async (importOriginal) => ({
 
 vi.mock('../lib/hub-context.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/hub-context.js')>()),
-  requireRepoOrApplianceContext: () => {},
+  requireRepoOrApplianceContext: mocks.requireRepoOrApplianceContext,
   resolveHubContext: mocks.resolveHubContext,
 }));
 
@@ -60,6 +61,8 @@ beforeEach(() => {
   mocks.run.mockReset();
   mocks.findComposeName.mockReset().mockReturnValue('');
   mocks.commandExists.mockReset().mockReturnValue(false);
+  mocks.requireRepoOrApplianceContext.mockReset();
+  mocks.resolveHubContext.mockReset();
   mocks.runPublicWebRepair.mockReset().mockResolvedValue([]);
   vi.spyOn(console, 'log').mockImplementation(() => {});
 });
@@ -133,6 +136,16 @@ describe('mcp on an installed Hub', () => {
     expect(output).toContain(envFile);
     expect(output).toContain('https://portal.example.test');
     expect(output).toContain('restart');
+  });
+
+  it('writes nothing when there is no install to act on', () => {
+    mocks.requireRepoOrApplianceContext.mockImplementation(() => {
+      throw new Error('exit 2');
+    });
+
+    expect(() => setMcpState('prod', false)).toThrow('exit 2');
+
+    expect(mocks.resolveHubContext).not.toHaveBeenCalled();
   });
 });
 
