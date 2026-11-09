@@ -624,7 +624,7 @@ export class HardwareInspectorService {
    * proof; `runtimeAvailable` is left false so the router and the setup card still say the
    * container has no CUDA.
    */
-  private gpuRuntimeReady(gpu: HardwareProfile['gpu']): boolean {
+  gpuRuntimeReady(gpu: HardwareProfile['gpu']): boolean {
     if (gpu.runtimeAvailable) return true;
     if (gpu.vendor === 'amd') return gpu.hostRocmKfdAvailable === true;
     if (gpu.vendor === 'nvidia') return gpu.hostNvidiaAvailable === true;

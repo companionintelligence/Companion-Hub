@@ -167,8 +167,9 @@ export class StatusReportService {
             vendor: profile.gpu.vendor ?? null,
             model: profile.gpu.model ?? null,
             vramMb: profile.gpu.vramMb ?? null,
-            // A card that is present with a broken driver is a finding, not an absence.
-            driverWorking: profile.gpu.runtimeAvailable !== false,
+            // A card that is present with a broken driver is a finding, not an absence. The host's probe
+            // counts: the Hub container has no GPU devices on most hosts, and that alone is no fault (#2291).
+            driverWorking: this.hardware.gpuRuntimeReady(profile.gpu),
           }
         : null,
       hardwareTier: profile?.tier ?? null,
