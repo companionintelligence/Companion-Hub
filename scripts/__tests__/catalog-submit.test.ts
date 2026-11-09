@@ -117,6 +117,19 @@ describe('submit directory', () => {
     expect(readFileSync(join(dir, 'docker-compose.json'), 'utf8')).toContain('photos:local');
   });
 
+  it.each([
+    ['an empty file', {}],
+    ['an empty list', { services: [] }],
+    ['a map instead of a list', { services: { web: { image: 'nginx' } } }],
+  ])('rejects an app whose compose has no services: %s', async (_label, compose) => {
+    const dir = fixtureDir();
+    writeFileSync(join(dir, 'docker-compose.json'), JSON.stringify(compose));
+
+    const plan = await prepareSubmitPlan(dir, 'acme', 'hub.ci.computer');
+
+    expect(plan).toMatchObject({ ok: false, error: expect.stringContaining('no services') });
+  });
+
   it('rejects placeholder container images before submission', async () => {
     const dir = fixtureDir();
     writeFileSync(
