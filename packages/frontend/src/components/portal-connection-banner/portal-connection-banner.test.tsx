@@ -1,10 +1,17 @@
 import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { useRegistrationStatus } = vi.hoisted(() => ({ useRegistrationStatus: vi.fn() }));
+const { useRegistrationStatus, hubAccess } = vi.hoisted(() => ({
+  useRegistrationStatus: vi.fn(),
+  hubAccess: { manageHub: true, isPending: false },
+}));
 
 vi.mock('@/lib/hooks/use-registration-status', () => ({
   useRegistrationStatus: () => useRegistrationStatus(),
+}));
+
+vi.mock('@/lib/hooks/use-hub-access', () => ({
+  useHubAccess: () => hubAccess,
 }));
 
 vi.mock('react-i18next', () => ({
@@ -19,6 +26,7 @@ const withStatus = (phase: string, degradedReasons: string[] = []) =>
 describe('PortalConnectionBanner', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    hubAccess.manageHub = true;
   });
 
   it('says so when check-ins to the Portal keep failing', () => {
@@ -30,6 +38,7 @@ describe('PortalConnectionBanner', () => {
     expect(banner).toHaveTextContent('PORTAL_CHECK_IN_FAILING_BANNER_TITLE');
     expect(banner).toHaveTextContent('PORTAL_CHECK_IN_FAILING_BANNER_MESSAGE');
     expect(banner).not.toHaveTextContent('PORTAL_REJECTED_BANNER_TITLE');
+    expect(banner).not.toHaveTextContent('cihub register');
     expect(banner).toHaveAttribute('role', 'status');
   });
 
@@ -43,7 +52,21 @@ describe('PortalConnectionBanner', () => {
     const banner = screen.getByTestId('portal-connection-banner');
     expect(banner).toHaveTextContent('PORTAL_REJECTED_BANNER_TITLE');
     expect(banner).toHaveTextContent('PORTAL_REJECTED_BANNER_MESSAGE');
+    expect(banner).toHaveTextContent('cihub register --code <code>');
     expect(banner).not.toHaveTextContent('PORTAL_CHECK_IN_FAILING_BANNER_TITLE');
+  });
+
+  // A member can't get a pairing code, so steps they can't follow would only send them looking for one.
+  it('tells a member who has to act instead of giving them the steps', () => {
+    hubAccess.manageHub = false;
+    withStatus('degraded', ['portal_rejected']);
+
+    render(<PortalConnectionBanner />);
+
+    const banner = screen.getByTestId('portal-connection-banner');
+    expect(banner).toHaveTextContent('PORTAL_REJECTED_BANNER_TITLE');
+    expect(banner).toHaveTextContent('PORTAL_REJECTED_BANNER_MEMBER_MESSAGE');
+    expect(banner).not.toHaveTextContent('cihub register');
   });
 
   it.each([

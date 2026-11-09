@@ -67,7 +67,7 @@ A rejection sets `degraded` with `portal_rejected` only when Portal is still rej
 
 Apart from `DEVICE_NOT_ACTIVE`, a check-in never deletes the registration. The tunnel token authenticates `cloudflared` on its own, and local apps do not need Portal, so deleting the registration over a refused key, or over a body Portal refused, would turn a Portal incident into an outage. A later transient failure doesn't replace `portal_rejected` with `cloud_validation_failed`.
 
-A banner on every dashboard page reports both states. `cloud_validation_failed` reads "Can't check in with the Portal" rather than saying Portal is down, because a body Portal refused counts toward it, and so does a rejected key during the wait above. `portal_rejected` reads "The Portal is refusing this Hub" and names `cihub register --code`.
+A banner on every dashboard page reports both states. `cloud_validation_failed` reads "Can't check in with the Portal" rather than saying Portal is down, because a body Portal refused counts toward it and so does a rejected key during the wait above. `portal_rejected` reads "The Portal is refusing this Hub". Someone who may manage the Hub also sees `cihub register --code`. A member reads that an owner or admin has to pair it again.
 
 ### Pairing a registered Hub again
 
