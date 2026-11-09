@@ -8,6 +8,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { DockerService } from '@/modules/docker/docker.service';
+import { APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN } from '@/modules/docker/managed-app-containers';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
@@ -639,12 +640,57 @@ describe('StartAppCommand — pull policy', () => {
         expect(composeArgs.some((args) => args.startsWith('down'))).toBe(false);
       });
 
+      it('gives a slow app the longer window before calling it failed', async () => {
+        await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn, APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN);
+      });
+
       it('does not touch the app when Docker could not answer the check', async () => {
         dockerService.waitForManagedAppContainersReady.mockRejectedValue(new Error('socket hang up'));
 
         const result = await command.execute(appUrn, { stopIfNotUp: true });
 
         expect(result.success).toBe(true);
+        expect(composeArgs.some((args) => args.startsWith('down'))).toBe(false);
+      });
+    });
+
+    describe('when compose up itself fails', () => {
+      const dependencyFailed = new Error('dependency failed to start: container test-app-db-1 is unhealthy');
+      const restartingDb = [{ Id: 'db', Names: ['/test-app-db-1'] }] as any;
+
+      beforeEach(() => {
+        dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+          composeArgs.push(args);
+          if (args.startsWith('up')) throw dependencyFailed;
+        });
+      });
+
+      it('takes the app down when someone asked for the start and a container is left restarting', async () => {
+        dockerode.listContainers.mockResolvedValue(restartingDb);
+
+        const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(result.success).toBe(false);
+        expect(composeArgs.at(-1)).toBe('down --remove-orphans');
+      });
+
+      it('takes nothing down when no container is left restarting, as after a failed pull', async () => {
+        dockerode.listContainers.mockResolvedValue([]);
+
+        const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(result.success).toBe(false);
+        expect(composeArgs.some((args) => args.startsWith('down'))).toBe(false);
+      });
+
+      it('leaves a restarting container to Docker for the Hub own start', async () => {
+        dockerode.listContainers.mockResolvedValue(restartingDb);
+
+        const result = await command.execute(appUrn, {});
+
+        expect(result.success).toBe(false);
         expect(composeArgs.some((args) => args.startsWith('down'))).toBe(false);
       });
     });
@@ -661,7 +707,7 @@ describe('StartAppCommand — pull policy', () => {
       const result = await command.execute(appUrn, {});
 
       expect(result).toMatchObject({ success: true, message: `App ${appUrn} started successfully` });
-      expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn);
+      expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn, undefined);
     });
 
     it('checks an unchanged boot start too', async () => {

@@ -2,6 +2,7 @@ import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { LoggerService } from '@/core/logger/logger.service';
 import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
 import { DockerService } from '@/modules/docker/docker.service';
+import type { AppCameUpTiming } from '@/modules/docker/managed-app-containers';
 import type { PortAllocation } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -59,6 +60,17 @@ export interface LifecycleCommand {
  * and tests install instance spies over them (`vi.spyOn(command, 'ensureAppDir')`), so the methods
  * have to remain on the prototype for that dispatch to work.
  */
+/** The containers of this app that Docker is restart-looping right now. */
+export async function listRestartingAppContainers(docker: Pick<Dockerode, 'listContainers'>, appUrn: AppUrn): Promise<Dockerode.ContainerInfo[]> {
+  const found = new Map<string, Dockerode.ContainerInfo>();
+  for (const label of [`ci-hub.appurn=${appUrn}`, `ci-os-hub.appurn=${appUrn}`]) {
+    for (const container of (await docker.listContainers({ all: true, filters: { label: [label], status: ['restarting'] } })) ?? []) {
+      found.set(container.Id, container);
+    }
+  }
+  return [...found.values()];
+}
+
 export class AppLifecycleCommand {
   constructor(
     protected moduleRef: ModuleRef,
@@ -140,10 +152,10 @@ export class AppLifecycleCommand {
    * retry, start and restart all ask this. A check Docker could not answer says nothing against the
    * app, so it counts as up: the status sync reads the containers again.
    */
-  protected async appCameUpError(appUrn: AppUrn): Promise<AppLifecycleError | null> {
+  protected async appCameUpError(appUrn: AppUrn, timing?: AppCameUpTiming): Promise<AppLifecycleError | null> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     try {
-      const verification = await this.moduleRef.get(DockerService, { strict: false }).waitForManagedAppContainersReady(appUrn);
+      const verification = await this.moduleRef.get(DockerService, { strict: false }).waitForManagedAppContainersReady(appUrn, timing);
       if (verification.ok) {
         return null;
       }
@@ -175,6 +187,23 @@ export class AppLifecycleCommand {
       logger.info(`Took down the containers of ${appUrn}, which did not come up`);
     } catch (error) {
       logger.warn(`Could not take down ${appUrn} after it did not come up: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * `compose up` failed for a Start or Restart someone asked for. A dependency that crashes fails the `up`
+   * ("dependency failed to start") with the crashing container left to Docker's retries, as a failed
+   * check would. Any other `up` failure leaves nothing Docker would bring back, so the app stays as it is.
+   */
+  protected async stopAppLeftRestarting(appUrn: AppUrn): Promise<void> {
+    const looping = await listRestartingAppContainers(this.docker, appUrn).catch((error: unknown) => {
+      this.moduleRef
+        .get(LoggerService, { strict: false })
+        .warn(`Could not look for restart-looping containers of ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    });
+    if (looping.length > 0) {
+      await this.stopAppThatDidNotComeUp(appUrn);
     }
   }
 

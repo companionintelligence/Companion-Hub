@@ -8,6 +8,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { DockerService } from '@/modules/docker/docker.service';
+import { APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN } from '@/modules/docker/managed-app-containers';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { AppsRepository } from '@/modules/apps/apps.repository';
@@ -51,6 +52,7 @@ vi.mock('@/modules/inference/host-rocm-availability', () => ({
 describe('RestartAppCommand — pull policy', () => {
   let command: RestartAppCommand;
   let dockerService: any;
+  let dockerode: ReturnType<typeof mock<Dockerode>>;
   let composeArgs: string[];
   let appFilesManager: any;
   let entitlements: ReturnType<typeof mock<MarketplaceEntitlementService>>;
@@ -114,7 +116,7 @@ describe('RestartAppCommand — pull policy', () => {
     subnetManager.allocateSubnet.mockResolvedValue('172.20.0.0/16');
     subnetManager.releaseSubnet.mockResolvedValue(undefined);
 
-    const dockerode = mock<Dockerode>();
+    dockerode = mock<Dockerode>();
     // @ts-expect-error
     dockerode.pruneContainers.mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 });
 
@@ -287,13 +289,31 @@ describe('RestartAppCommand — pull policy', () => {
       expect(result.success).toBe(true);
       expect(composeCommands()).toEqual(['down', 'up']);
     });
+
+    it('gives a slow app the longer window before calling it failed', async () => {
+      await command.execute(appUrn, { stopIfNotUp: true });
+
+      expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn, APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN);
+    });
+
+    it('takes the app down when compose up fails with a container left restarting', async () => {
+      dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+        if (args.startsWith('up')) throw new Error('dependency failed to start: container test-app-db-1 is unhealthy');
+      });
+      dockerode.listContainers.mockResolvedValue([{ Id: 'db', Names: ['/test-app-db-1'] }] as any);
+
+      const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+      expect(result.success).toBe(false);
+      expect(composeCommands()).toEqual(['down', 'up', 'down']);
+    });
   });
 
   it('reports success when the containers came up', async () => {
     const result = await command.execute(appUrn, {});
 
     expect(result).toMatchObject({ success: true, message: `App ${appUrn} restarted successfully` });
-    expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn);
+    expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn, undefined);
   });
 
   it('rebuilds the Traefik routes of a Private VPN app, which leaves exposedLocal off', async () => {

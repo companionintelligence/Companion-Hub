@@ -12,7 +12,8 @@ import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import type Dockerode from 'dockerode';
-import { AppLifecycleCommand } from './command';
+import { APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN } from '@/modules/docker/managed-app-containers';
+import { AppLifecycleCommand, listRestartingAppContainers } from './command';
 import { hostPortMoveOf } from './main-host-port';
 
 /**
@@ -43,17 +44,9 @@ export function startComposeCommand(options: { forcePull: boolean; onlyRecreateC
  */
 export async function removeRestartingAppContainers(docker: Pick<Dockerode, 'listContainers' | 'getContainer'>, appUrn: AppUrn): Promise<string[]> {
   const removed: string[] = [];
-  const seen = new Set<string>();
-  for (const label of [`ci-hub.appurn=${appUrn}`, `ci-os-hub.appurn=${appUrn}`]) {
-    const containers = (await docker.listContainers({ all: true, filters: { label: [label], status: ['restarting'] } })) ?? [];
-    for (const container of containers) {
-      if (seen.has(container.Id)) {
-        continue;
-      }
-      seen.add(container.Id);
-      await docker.getContainer(container.Id).remove({ force: true });
-      removed.push(container.Names?.[0]?.replace(/^\//, '') || container.Id);
-    }
+  for (const container of await listRestartingAppContainers(docker, appUrn)) {
+    await docker.getContainer(container.Id).remove({ force: true });
+    removed.push(container.Names?.[0]?.replace(/^\//, '') || container.Id);
   }
   return removed;
 }
@@ -125,10 +118,15 @@ export class StartAppCommand extends AppLifecycleCommand {
         {
           recoverHostPortConflict: (error) => this.moveMainPortOffConflict(appUrn, form, error, refusedHostPorts),
         },
-      );
+      ).catch(async (error: unknown) => {
+        if (form.stopIfNotUp) {
+          await this.stopAppLeftRestarting(appUrn);
+        }
+        throw error;
+      });
 
       // `compose up` returning says nothing about a service that crashes as soon as it starts.
-      const notUp = await this.appCameUpError(appUrn);
+      const notUp = await this.appCameUpError(appUrn, form.stopIfNotUp ? APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN : undefined);
       if (notUp && form.stopIfNotUp) {
         await this.stopAppThatDidNotComeUp(appUrn);
       }

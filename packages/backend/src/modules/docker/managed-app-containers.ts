@@ -49,6 +49,15 @@ export const APP_CAME_UP_TIMING = {
 
 export type AppCameUpTiming = typeof APP_CAME_UP_TIMING;
 
+/**
+ * {@link APP_CAME_UP_TIMING} for a Start or Restart someone asked for, which takes the app down when it
+ * did not come up (`AppLifecycleCommand.stopAppThatDidNotComeUp`). Once the containers are gone nothing
+ * retries, so a service crashing until its database is ready, whose next tries Docker makes at about 51 s
+ * and 102 s, needs the longer window or the app could never be started. It costs a broken app about 90 s
+ * more of Starting before its failure is reported.
+ */
+export const APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN: AppCameUpTiming = { ...APP_CAME_UP_TIMING, settleWithinMs: 120_000 };
+
 interface TrackedContainer {
   firstRestartCount: number | null;
   crashed: boolean;
