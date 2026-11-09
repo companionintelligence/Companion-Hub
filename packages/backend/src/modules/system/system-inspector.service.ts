@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { appUrnFromLabels } from '@/common/constants';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
+import { detectHubContainer } from '@/modules/inference/backends/host-url.util';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { HostMetricsService } from './host-metrics.service';
 import { getVmResourceGuidance } from './host-metrics-guidance';
@@ -205,9 +206,10 @@ export class SystemInspectorService {
         uptime: os.uptime(),
         platform: `${os.type()} ${os.release()} (${os.arch()})`,
         // In the Hub's container `os.hostname()` is the container ID, which changes with every update.
-        // Docker's name for its host is the machine's hostname on Linux, and the name of Docker's own VM
-        // on Docker Desktop or Colima (`docker-desktop`, `colima`).
-        hostname: dockerInfo.hostName || os.hostname(),
+        // Docker's name for its host is the machine's hostname on Linux and the name of Docker's own VM
+        // on Docker Desktop or Colima (`docker-desktop`, `colima`). Outside a container `os.hostname()`
+        // is already the machine's name.
+        hostname: (detectHubContainer() && dockerInfo.hostName) || os.hostname(),
         dockerVersion: dockerInfo.version,
         containerCount: dockerInfo.containers,
         hostResources,

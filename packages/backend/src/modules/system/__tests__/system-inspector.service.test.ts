@@ -12,12 +12,20 @@ import { SystemInspectorService } from '../system-inspector.service';
 
 vi.mock('systeminformation');
 
+const { detectHubContainer } = vi.hoisted(() => ({ detectHubContainer: vi.fn(() => true) }));
+vi.mock('@/modules/inference/backends/host-url.util', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/modules/inference/backends/host-url.util')>()),
+  detectHubContainer,
+}));
+
 describe('SystemInspectorService', () => {
   let service: SystemInspectorService;
   let hostMetrics: MockProxy<HostMetricsService>;
   const docker = { info: vi.fn() };
 
   beforeEach(async () => {
+    docker.info.mockReset();
+    detectHubContainer.mockReturnValue(true);
     hostMetrics = mock<HostMetricsService>();
     hostMetrics.getDisplayLoad.mockResolvedValue({
       diskUsed: 10,
@@ -65,6 +73,20 @@ describe('SystemInspectorService', () => {
       docker.info.mockRejectedValue(new Error('connect ENOENT'));
 
       expect((await service.getSystemHealth()).hostname).toBe('db594972ed61');
+    });
+
+    it("falls back to the process's hostname when Docker reports an empty name", async () => {
+      docker.info.mockResolvedValue({ Name: '', ServerVersion: '29.0.0' });
+
+      expect((await service.getSystemHealth()).hostname).toBe('db594972ed61');
+    });
+
+    it("keeps the process's hostname when the Hub runs outside a container", async () => {
+      detectHubContainer.mockReturnValue(false);
+      vi.mocked(os.hostname).mockReturnValue('my-laptop');
+      docker.info.mockResolvedValue({ Name: 'docker-desktop', ServerVersion: '29.0.0' });
+
+      expect((await service.getSystemHealth()).hostname).toBe('my-laptop');
     });
   });
 });
