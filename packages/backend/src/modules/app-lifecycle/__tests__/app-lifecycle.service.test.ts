@@ -7690,6 +7690,16 @@ describe('AppLifecycleService', () => {
       expect(form).not.toHaveProperty('onlyRecreateChanged');
     });
 
+    it('restartAppAndWait ignores a stopIfNotUp left in the stored config', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, config: { stopIfNotUp: true } } as any);
+
+      await service.restartAppAndWait({ appUrn, skipPull: true });
+
+      const [form] = appEventsQueue.publish.mock.calls.map(([message]) => (message as any).form);
+      expect(form).not.toHaveProperty('stopIfNotUp');
+      expect(form).toMatchObject({ skipPull: true });
+    });
+
     it('restartAppAndWait error: errorCode/errorDetail/settingsPath reach the emitted SSE event', async () => {
       appEventsQueue.publish.mockResolvedValue({
         success: false,

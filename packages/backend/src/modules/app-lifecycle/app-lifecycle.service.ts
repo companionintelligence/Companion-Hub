@@ -1307,6 +1307,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     };
   }
 
+  /** The form a restart command gets from the stored config. `stopIfNotUp` is the caller's alone, as in {@link startCommandForm}. */
+  private restartCommandForm(storedConfig: unknown, options: { skipPull?: boolean; stopIfNotUp?: boolean }): Record<string, unknown> {
+    const { stopIfNotUp: _storedStopIfNotUp, ...config } = (storedConfig ?? {}) as Record<string, unknown>;
+    return { ...config, skipPull: options.skipPull, ...(options.stopIfNotUp ? { stopIfNotUp: true } : {}) };
+  }
+
   async startApp(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean; actor: LifecycleActor }) {
     // Before the app is even read — see `assertActorMay`.
     await this.assertActorMay(params.actor, params.appUrn, 'start');
@@ -2393,8 +2399,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'restart');
-    const { stopIfNotUp: _storedStopIfNotUp, ...storedConfig } = (app.config ?? {}) as Record<string, unknown>;
-    const form = { ...storedConfig, skipPull, ...(params.actor.kind === 'system' ? {} : { stopIfNotUp: true }) };
+    const form = this.restartCommandForm(app.config, { skipPull, stopIfNotUp: params.actor.kind !== 'system' });
     this.publishRegistered(appUrn, requestId, { command: 'restart', appUrn, requestId, form })
       .then(async (raw) => {
         const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort } = raw as z.output<
@@ -2587,7 +2592,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       command: 'restart',
       appUrn,
       requestId,
-      form: { ...app.config, skipPull },
+      form: this.restartCommandForm(app.config, { skipPull }),
     });
     const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort } = raw as z.output<typeof appEventResultSchema>;
 
