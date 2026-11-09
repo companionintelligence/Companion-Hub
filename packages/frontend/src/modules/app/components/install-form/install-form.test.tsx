@@ -3165,6 +3165,67 @@ describe('InstallForm - the exposure mode of an app already installed', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.not.objectContaining({ localSubdomain: expect.anything() })));
   });
 
+  // The Portal keeps the underscore, so the name without it is another record that says nothing about this one.
+  it("asks about a custom app's own name as the Portal has it, on a move to another domain", async () => {
+    MOCK_AVAILABLE_DOMAINS.domains = [
+      { id: 'd1', domain: 'example.com', isDefault: true, offered: true },
+      { id: 'd2', domain: 'other.example', isDefault: false, offered: true },
+    ];
+    const { container } = renderForm({ port: 9898, exposureMode: 'cloudflare', publicDomain: 'other.example' });
+
+    await waitFor(() => expect(screen.getByLabelText(/APP_INSTALL_FORM_LOCAL_SUBDOMAIN/)).toHaveValue('exp-test-user'));
+    await submit(container);
+
+    await waitFor(() => expect(fetchDnsAvailability).toHaveBeenCalled());
+    expect(fetchDnsAvailability.mock.calls.every(([subdomain]) => subdomain === 'exp-test-_user')).toBe(true);
+  });
+
+  it("gives the next app its own routing name when one form is reused, not the last app's", async () => {
+    const edit = (urn: string) => (
+      <MemoryRouter>
+        <InstallForm
+          info={{ ...customApp, urn } as AppInfo}
+          onSubmit={vi.fn()}
+          formId="exposure-form"
+          formFields={[]}
+          initialValues={{ port: 9898, exposureMode: 'cloudflare', publicDomain: 'example.com' }}
+          isEdit
+        />
+      </MemoryRouter>
+    );
+    const { rerender } = render(edit('first:ci-marketplace'));
+    await waitFor(() => expect(screen.getByLabelText(/APP_INSTALL_FORM_LOCAL_SUBDOMAIN/)).toHaveValue('first-ci-marketplace'));
+
+    rerender(edit('second:ci-marketplace'));
+
+    await waitFor(() => expect(screen.getByLabelText(/APP_INSTALL_FORM_LOCAL_SUBDOMAIN/)).toHaveValue('second-ci-marketplace'));
+  });
+
+  it('reports no edit once the field is back on the routing name it opened with', async () => {
+    const onDirtyChange = vi.fn();
+    render(
+      <MemoryRouter>
+        <InstallForm
+          info={{ ...customApp, urn: 'exp-test:ci-marketplace' } as AppInfo}
+          onSubmit={vi.fn()}
+          formId="exposure-form"
+          formFields={[]}
+          initialValues={{ port: 9898, exposureMode: 'cloudflare', publicDomain: 'example.com' }}
+          onDirtyChange={onDirtyChange}
+          isEdit
+        />
+      </MemoryRouter>,
+    );
+    const field = screen.getByLabelText(/APP_INSTALL_FORM_LOCAL_SUBDOMAIN/);
+    await waitFor(() => expect(field).toHaveValue('exp-test-ci-marketplace'));
+
+    fireEvent.change(field, { target: { value: 'renamed' } });
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
+    fireEvent.change(field, { target: { value: 'exp-test-ci-marketplace' } });
+
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
+  });
+
   it('sends a name typed over the routing name of an app with no stored subdomain', async () => {
     const { container, onSubmit } = renderForm(
       { port: 9898, exposureMode: 'cloudflare', publicDomain: 'example.com' },

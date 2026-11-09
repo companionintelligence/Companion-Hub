@@ -90,9 +90,8 @@ export function didPublicRoutingIdentityChange(
 
   const oldSubdomain = publishedLabel(before.localSubdomain, appName, appStoreSlug);
   const newSubdomain = publishedLabel(after.localSubdomain, appName, appStoreSlug);
-  const fallbackPublicDomain = defaultPublicDomain.trim() || null;
-  const oldPublicDomain = before.publicDomain?.trim() || fallbackPublicDomain;
-  const newPublicDomain = after.publicDomain?.trim() || fallbackPublicDomain;
+  const oldPublicDomain = before.publicDomain?.trim() || defaultPublicDomain;
+  const newPublicDomain = after.publicDomain?.trim() || defaultPublicDomain;
 
   return oldSubdomain !== newSubdomain || oldPublicDomain !== newPublicDomain;
 }
