@@ -1,6 +1,9 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { syncTauriWindowBackground } from '@/lib/tauri-window-theme';
 import { ThemeProvider, useTheme } from './theme-provider';
+
+vi.mock('@/lib/tauri-window-theme', () => ({ syncTauriWindowBackground: vi.fn() }));
 
 function ThemeConsumer() {
   const { theme, setTheme } = useTheme();
@@ -11,6 +14,9 @@ function ThemeConsumer() {
       <button onClick={() => setTheme('dark')} type="button">
         Set dark
       </button>
+      <button onClick={() => setTheme('system')} type="button">
+        Set system
+      </button>
     </>
   );
 }
@@ -19,6 +25,10 @@ describe('ThemeProvider', () => {
   beforeEach(() => {
     localStorage.clear();
     document.documentElement.className = '';
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('falls back to the default theme when localStorage reads fail', () => {
@@ -57,24 +67,23 @@ describe('ThemeProvider', () => {
 describe('ThemeProvider following the computer', () => {
   /** Stands in for the browser's dark mode query, so a test can switch the computer's setting. */
   function stubComputerTheme(initiallyDark: boolean) {
-    const listeners = new Set<() => void>();
+    const listeners = new Set<(event: { matches: boolean }) => void>();
     const query = {
       matches: initiallyDark,
-      addEventListener: (_type: string, listener: () => void) => listeners.add(listener),
-      removeEventListener: (_type: string, listener: () => void) => listeners.delete(listener),
+      addEventListener: (_type: string, listener: (event: { matches: boolean }) => void) => listeners.add(listener),
+      removeEventListener: (_type: string, listener: (event: { matches: boolean }) => void) => listeners.delete(listener),
     };
     vi.stubGlobal('matchMedia', () => query);
     return {
       listeners,
       switchTo(dark: boolean) {
         query.matches = dark;
-        for (const listener of listeners) listener();
+        for (const listener of listeners) listener({ matches: dark });
       },
     };
   }
 
   beforeEach(() => {
-    vi.restoreAllMocks();
     localStorage.clear();
     document.documentElement.className = '';
   });
@@ -119,5 +128,38 @@ describe('ThemeProvider following the computer', () => {
 
     expect(document.documentElement).toHaveClass('dark');
     expect(computer.listeners.size).toBe(0);
+  });
+
+  it('follows the computer again when System is picked after a hand-picked theme', () => {
+    const computer = stubComputerTheme(false);
+
+    render(
+      <ThemeProvider defaultTheme="system">
+        <ThemeConsumer />
+      </ThemeProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Set dark' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set system' }));
+    expect(document.documentElement).toHaveClass('light');
+
+    computer.switchTo(true);
+
+    expect(document.documentElement).toHaveClass('dark');
+    expect(document.documentElement).not.toHaveClass('light');
+  });
+
+  it('syncs the desktop window background when the computer changes', () => {
+    const computer = stubComputerTheme(true);
+
+    render(
+      <ThemeProvider defaultTheme="system">
+        <ThemeConsumer />
+      </ThemeProvider>,
+    );
+    vi.mocked(syncTauriWindowBackground).mockClear();
+
+    computer.switchTo(false);
+
+    expect(syncTauriWindowBackground).toHaveBeenCalledTimes(1);
   });
 });
