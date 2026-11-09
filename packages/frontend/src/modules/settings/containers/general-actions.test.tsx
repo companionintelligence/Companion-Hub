@@ -525,13 +525,35 @@ describe('GeneralActionsContainer', () => {
       sessionStorage.clear();
     });
 
-    it('leaves the Desktop app card out of a browser', async () => {
+    it('tells a browser the Hub came from cihub instead of offering the desktop app', async () => {
       render(<GeneralActionsContainer />);
 
-      await waitFor(() => expect(mockFetchHostListenerStatus).toHaveBeenCalled());
-      await screen.findByTestId('hub-check-updates-btn');
-      await waitFor(() => expect(screen.queryByTestId('desktop-shell-update-card')).not.toBeInTheDocument());
+      const note = await screen.findByTestId('desktop-app-cli-install-note');
+      expect(note).toHaveTextContent('This Hub was installed with the cihub command line, so it has no desktop app to update.');
+      expect(note).toHaveTextContent('use Hub stack above or run cihub pool update');
+      expect(note).not.toHaveTextContent('companion-hub');
+      expect(screen.queryByTestId('desktop-shell-update-card')).not.toBeInTheDocument();
       expect(screen.queryByTestId('host-listener-unavailable')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('hub-shell-update-btn')).not.toBeInTheDocument();
+    });
+
+    it('leaves out the update steps for a member, who has no Hub stack card', async () => {
+      render(<GeneralActionsContainer manageHub={false} />);
+
+      const note = await screen.findByTestId('desktop-app-cli-install-note');
+      expect(note).toHaveTextContent('This Hub was installed with the cihub command line, so it has no desktop app to update.');
+      expect(note).not.toHaveTextContent('Hub stack');
+      expect(note).not.toHaveTextContent('cihub pool update');
+    });
+
+    it('says nothing about how the Hub was installed until the Hub answers', async () => {
+      mockFetchHostListenerStatus.mockReturnValue(new Promise(() => undefined));
+
+      render(<GeneralActionsContainer />);
+
+      await screen.findByTestId('hub-check-updates-btn');
+      expect(screen.queryByTestId('desktop-app-cli-install-note')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('desktop-shell-update-card')).not.toBeInTheDocument();
     });
 
     it('still shows the card in the desktop window, which is the desktop app', async () => {
@@ -541,6 +563,7 @@ describe('GeneralActionsContainer', () => {
       render(<GeneralActionsContainer />);
 
       expect(await screen.findByTestId('desktop-shell-update-card')).toBeInTheDocument();
+      expect(screen.queryByTestId('desktop-app-cli-install-note')).not.toBeInTheDocument();
     });
 
     it('asks for an update without the desktop app advice', async () => {
@@ -599,6 +622,7 @@ describe('GeneralActionsContainer', () => {
       await waitFor(() => expect(mockToastSuccess).toHaveBeenCalled());
       expect(mockFetchHostListenerStatus).toHaveBeenCalledTimes(2);
       expect(screen.queryByTestId('desktop-shell-update-card')).not.toBeInTheDocument();
+      expect(screen.getByTestId('desktop-app-cli-install-note')).toBeInTheDocument();
     });
 
     it('asks again once the Hub is back from an update', async () => {

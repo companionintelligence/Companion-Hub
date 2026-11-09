@@ -880,6 +880,8 @@
   "SETTINGS_ACTIONS_CHECKING": "Checking…",
   "SETTINGS_ACTIONS_ON_LATEST_VERSION": "You are on the latest version.",
   "SETTINGS_ACTIONS_SHELL_UPDATE_TITLE": "Desktop app",
+  "SETTINGS_ACTIONS_SHELL_CLI_INSTALL": "This Hub was installed with the <code>cihub</code> command line, so it has no desktop app to update.",
+  "SETTINGS_ACTIONS_SHELL_CLI_INSTALL_HOW_TO_UPDATE": "This Hub was installed with the <code>cihub</code> command line, so it has no desktop app to update. To update the Hub, use Hub stack above or run <code>cihub pool update</code> on the computer that runs it.",
   "SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE": "Download the latest Companion Hub app for this computer. Your Hub stack and data stay on disk.",
   "SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE_WITH_VERSION": "This computer has Companion Hub {{version}} installed. Download replaces the app only — your Hub stack and data stay on disk.",
   "SETTINGS_ACTIONS_SHELL_UP_TO_DATE": "This computer is already on the latest desktop app. You can still download the installer.",

@@ -90,7 +90,7 @@ const SHELL_INSTALL_PHASE_KEYS: Record<string, string> = {
 };
 
 /**
- * A `cihub` install has no desktop app, so the card and its advice lead nowhere. Unknown keeps the card.
+ * A `cihub` install has no desktop app, so the card says that instead of offering one. Unknown keeps the card.
  * The desktop window is the app itself, whatever the Hub can see of it. A Hub that says its desktop app
  * updates it has one, even when it can't read the app's token.
  */
@@ -136,8 +136,8 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   const [shellRestart, setShellRestart] = useState<DesktopRestartState | null>(null);
   const [restartingShell, setRestartingShell] = useState(false);
   const [shellInstall, setShellInstall] = useState<ShellInstallState>({ state: 'idle' });
-  // `undefined` until the Hub answers, so the Desktop app card doesn't show and then vanish on a Hub
-  // without one. `null` when it couldn't say.
+  // `undefined` until the Hub answers, so the Desktop app card doesn't offer a download and then take
+  // it back on a Hub without one. `null` when it couldn't say.
   const [hostListener, setHostListener] = useState<HostListenerStatus | null | undefined>(undefined);
   const hostListenerReachable = hostListener?.reachable ?? null;
   // The app context offers a stack update whenever the registry has a newer tag. Only the Hub knows
@@ -766,7 +766,20 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
         </Card>
       )}
 
-      {desktopWindow || (hostListener !== undefined && !noDesktopApp) ? (
+      {noDesktopApp ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_SHELL_UPDATE_TITLE')}</CardTitle>
+            {/* A member has neither the Hub stack card nor a reason to update from this page. */}
+            <CardDescription data-testid="desktop-app-cli-install-note">
+              <Trans
+                i18nKey={manageHub ? 'SETTINGS_ACTIONS_SHELL_CLI_INSTALL_HOW_TO_UPDATE' : 'SETTINGS_ACTIONS_SHELL_CLI_INSTALL'}
+                components={{ code: <code className="rounded bg-muted px-1 font-mono text-xs" /> }}
+              />
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      ) : desktopWindow || hostListener !== undefined ? (
         <Card data-testid="desktop-shell-update-card">
           <CardHeader>
             <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_SHELL_UPDATE_TITLE')}</CardTitle>
