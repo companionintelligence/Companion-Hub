@@ -649,8 +649,8 @@ const serviceSchemaV2Object = z.object({
     .array(
       z.object({
         key: z.string('CUSTOM_APP_ERROR_ENV_KEY_REQUIRED').min(1, 'CUSTOM_APP_ERROR_ENV_KEY_MIN_LENGTH'),
-        // A missing value matches no branch. The form's resolver shows the first branch's message and
-        // everything else the union's own, so both say the words for it.
+        // A missing value fails all three branches with one issue each. The form's resolver takes the
+        // first on a tie. Everything else reads the union's own message, so both carry the words for it.
         value: z.union(
           [z.string('CUSTOM_APP_ERROR_ENV_VALUE_REQUIRED').min(1, 'CUSTOM_APP_ERROR_ENV_VALUE_MIN_LENGTH'), z.number(), z.boolean()],
           'CUSTOM_APP_ERROR_ENV_VALUE_REQUIRED',

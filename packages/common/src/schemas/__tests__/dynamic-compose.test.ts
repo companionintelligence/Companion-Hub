@@ -1660,7 +1660,7 @@ describe('an environment variable with no value', () => {
 
   it.each([
     ['an empty string', { key: 'FOO', value: '' }, 'CUSTOM_APP_ERROR_ENV_VALUE_MIN_LENGTH'],
-    // What the form sends for an empty field. It matches no branch, and a bare union said "Invalid input".
+    // What the form sends for an empty field. It matches no branch and a bare union said "Invalid input".
     ['no value', { key: 'FOO' }, 'CUSTOM_APP_ERROR_ENV_VALUE_REQUIRED'],
   ])('names the rule for %s', (_name, variable, message) => {
     const { success, error } = dynamicComposeFormSchema.safeParse({ services: [service([variable])] });
@@ -1668,7 +1668,7 @@ describe('an environment variable with no value', () => {
     expect(error?.issues[0]).toMatchObject({ message, path: ['services', 0, 'environment', 0, 'value'] });
   });
 
-  it("gives the form's resolver, which reads a union's first branch, the same words", () => {
+  it("gives the form's resolver, which takes a union's first branch on a tie, the same words", () => {
     const { error } = dynamicComposeFormSchema.safeParse({ services: [service([{ key: 'FOO' }])] });
     const issue = error?.issues[0] as unknown as { errors: { message: string }[][] };
     expect(issue.errors[0]?.[0]?.message).toBe('CUSTOM_APP_ERROR_ENV_VALUE_REQUIRED');
