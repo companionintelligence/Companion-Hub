@@ -624,11 +624,30 @@ export class HardwareInspectorService {
    * proof; `runtimeAvailable` is left false so the router and the setup card still say the
    * container has no CUDA.
    */
-  gpuRuntimeReady(gpu: HardwareProfile['gpu']): boolean {
+  private gpuRuntimeReady(gpu: HardwareProfile['gpu']): boolean {
     if (gpu.runtimeAvailable) return true;
     if (gpu.vendor === 'amd') return gpu.hostRocmKfdAvailable === true;
     if (gpu.vendor === 'nvidia') return gpu.hostNvidiaAvailable === true;
     return false;
+  }
+
+  /**
+   * For the status file: false only when a check that could have seen the card came back empty.
+   * The Hub container has no GPU devices on most hosts, so failing to reach the card from here is
+   * no fault by itself (#2291). NVIDIA has its runtime and host probe. AMD has the host's ROCm
+   * probe, which only Linux writes and which finds nothing under WSL 2, where no card gets a
+   * /dev/kfd. Intel has no check at all, so there is nothing to accuse its driver with.
+   *
+   * The probe is read again because the profile is cached for the life of the process, while
+   * `cihub up` and the desktop app rewrite the file under a Hub that `docker compose up -d` leaves
+   * running. A probe from before the last reboot proves nothing here, as with NVIDIA's.
+   */
+  async gpuDriverWorking(gpu: HardwareProfile['gpu']): Promise<boolean> {
+    if (this.gpuRuntimeReady(gpu)) return true;
+    if (gpu.vendor === 'nvidia') return false;
+    if (gpu.vendor !== 'amd' || gpu.containerHostKind === 'wsl-engine') return true;
+    const probe = await this.readRocmHostProbe();
+    return !probe || probe.available || !this.isHostProbeFromThisBoot(probe.updatedAt);
   }
 
   /**
@@ -948,15 +967,16 @@ export class HardwareInspectorService {
     };
   }
 
-  private async readRocmHostProbe(): Promise<{ available: boolean; source?: string } | null> {
+  private async readRocmHostProbe(): Promise<{ available: boolean; source?: string; updatedAt?: string } | null> {
     try {
       const raw = await this.filesystem.readTextFile('/data/state/hardware/rocm.json');
       if (!raw) return null;
 
-      const parsed = JSON.parse(raw) as { available?: boolean; source?: string };
+      const parsed = JSON.parse(raw) as { available?: boolean; source?: string; updatedAt?: string };
       return {
         available: parsed.available === true,
         source: typeof parsed.source === 'string' ? parsed.source : undefined,
+        updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : undefined,
       };
     } catch {
       return null;

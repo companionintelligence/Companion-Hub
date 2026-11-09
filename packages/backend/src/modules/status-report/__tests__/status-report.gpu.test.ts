@@ -1,26 +1,35 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { HardwareInspectorService } from '../../inference/hardware-inspector.service';
+import { ROCM_HOST_PROBE_PATH } from '../../inference/host-rocm-availability';
 import { StatusReportService } from '../status-report.service';
 
 /** What `cihub up` leaves behind on a Linux host: the probe's own view of `/dev/kfd`. */
 async function writeRocmProbe(content: string) {
-  await fs.promises.mkdir('/data/state/hardware', { recursive: true });
-  await fs.promises.writeFile('/data/state/hardware/rocm.json', content);
+  await fs.promises.mkdir(path.dirname(ROCM_HOST_PROBE_PATH), { recursive: true });
+  await fs.promises.writeFile(ROCM_HOST_PROBE_PATH, content);
+}
+
+function rocmProbe(available: boolean, updatedAt: string = new Date().toISOString()) {
+  return JSON.stringify({ available, source: 'host-dev-kfd', updatedAt });
 }
 
 /** The report as `buildReport` makes it for one GPU, with the real answer to "can inference reach it". */
 async function reportFor(gpu: Record<string, unknown>) {
   const absent = new Proxy({}, { get: () => vi.fn().mockRejectedValue(new Error('not in this test')) });
-  const hardware = {
-    getProfile: vi.fn().mockResolvedValue({ tier: 'large', gpu: { available: true, vendor: 'amd', model: 'Radeon 8060S', vramMb: 102_912, ...gpu } }),
-    gpuRuntimeReady: HardwareInspectorService.prototype.gpuRuntimeReady,
-  };
+  const logger = { warn: vi.fn(), debug: vi.fn(), error: vi.fn() } as never;
+  const hardware = new HardwareInspectorService(logger, new FilesystemService(logger), absent as never);
+  vi.spyOn(hardware, 'getProfile').mockResolvedValue({
+    tier: 'large',
+    gpu: { available: true, vendor: 'amd', model: 'Radeon 8060S', vramMb: 102_912, ...gpu },
+  } as never);
   const systemInspector = { getSystemHealth: vi.fn().mockResolvedValue({}) };
   const service = new StatusReportService(
-    { warn: vi.fn(), debug: vi.fn(), error: vi.fn() } as never,
+    logger,
     absent as never,
-    hardware as never,
+    hardware,
     absent as never,
     absent as never,
     absent as never,
@@ -37,8 +46,27 @@ describe('the status report GPU line', () => {
   });
 
   it('still reports an AMD card that neither the container nor the host probe can find', async () => {
-    await writeRocmProbe('{"available":false,"source":"host-dev-kfd"}');
+    await writeRocmProbe(rocmProbe(false));
     expect(await reportFor({ runtimeAvailable: false, hostRocmKfdAvailable: false })).toMatchObject({ driverWorking: false });
+  });
+
+  // The profile is cached, and `cihub up` rewrites the probe under a Hub that keeps running.
+  it('believes a host probe that now finds the card over a profile cached before it', async () => {
+    await writeRocmProbe(rocmProbe(true));
+    expect(await reportFor({ runtimeAvailable: false, hostRocmKfdAvailable: false })).toMatchObject({ driverWorking: true });
+  });
+
+  // Docker restarts the Hub after a reboot without running the probe again.
+  it('does not call an AMD driver broken on a probe from before the last reboot', async () => {
+    await writeRocmProbe(rocmProbe(false, '2020-01-01T00:00:00.000Z'));
+    expect(await reportFor({ runtimeAvailable: false, hostRocmKfdAvailable: false })).toMatchObject({ driverWorking: true });
+  });
+
+  it('does not call an AMD driver broken under WSL 2, where no card gets a /dev/kfd', async () => {
+    await writeRocmProbe(rocmProbe(false));
+    expect(await reportFor({ runtimeAvailable: false, hostRocmKfdAvailable: false, containerHostKind: 'wsl-engine' })).toMatchObject({
+      driverWorking: true,
+    });
   });
 
   // Only Linux writes rocm.json, so on Windows and macOS there is nothing to read.
