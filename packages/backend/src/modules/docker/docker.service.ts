@@ -2617,7 +2617,7 @@ export class DockerService {
     timing: AppCameUpTiming = APP_CAME_UP_TIMING,
   ): Promise<ManagedAppContainerVerification> {
     const startedAtMs = Date.now();
-    const watch = new AppCameUpWatch(startedAtMs, timing);
+    const watch = new AppCameUpWatch(startedAtMs, timing, await this.appFilesManager.getOneShotServiceNames(appUrn));
 
     for (;;) {
       const look = await this.dockerReadFacade.lookAtManagedAppContainers(appUrn).catch((error: unknown) => {
@@ -2628,6 +2628,15 @@ export class DockerService {
       });
       const verdict = look && watch.judge(look, Date.now());
       if (verdict?.outcome === 'up') {
+        if (verdict.failedOneShots.length > 0) {
+          const { message, errorDetail } = await this.dockerReadFacade.describeAppCameUpFailure({
+            outcome: 'failed',
+            kind: 'exited',
+            containers: verdict.failedOneShots,
+            containersSeen: verdict.failedOneShots.length,
+          });
+          this.logger.warn(`[AppDiag] ${appUrn} came up, but a one-shot service failed: ${message}\n${errorDetail ?? ''}`);
+        }
         return { ok: true, message: 'All containers came up' };
       }
       if (verdict?.outcome === 'failed') {

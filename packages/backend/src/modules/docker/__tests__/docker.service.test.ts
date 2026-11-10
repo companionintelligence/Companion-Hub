@@ -628,6 +628,21 @@ describe('DockerService', () => {
       expect(result.ok).toBe(true);
     });
 
+    it('counts an app whose failed one-shot sits beside a running service as up and logs the one-shot', async () => {
+      appFilesManager.getOneShotServiceNames.mockResolvedValue(new Set(['sync']));
+      containers([
+        { id: 'a', service: 'web', state: 'running' },
+        { id: 'b', service: 'sync', state: 'exited', exit: 1 },
+      ]);
+
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
+
+      expect(result.ok).toBe(true);
+      expect(loggerService.warn).toHaveBeenCalledWith(
+        expect.stringContaining('ghost:ci-marketplace came up, but a one-shot service failed: sync exited (exit 1)'),
+      );
+    });
+
     it('reports nothing running when no labelled containers exist', async () => {
       dockerode.listContainers.mockResolvedValue([] as any);
 

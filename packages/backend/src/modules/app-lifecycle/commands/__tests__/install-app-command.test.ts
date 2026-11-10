@@ -630,7 +630,7 @@ describe('InstallAppCommand — pull policy', () => {
 
     expect(result.success).toBe(false);
     expect(result.message).toContain("None of this app's services");
-    expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn);
+    expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn, undefined);
   });
 
   it('SHOULD regenerate Traefik for an exposed app when a service failed, since the rest stay up', async () => {
