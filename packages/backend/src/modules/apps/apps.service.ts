@@ -9,7 +9,7 @@ import { ModuleRef } from '@nestjs/core';
 import { type AppInfo, hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
 import type { App } from '@/core/database/drizzle/types';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildPublicWebIdentity, normalizeStoredHostname } from '@ci-hub/common/types';
+import { buildPublicWebIdentity, normalizeStoredHostname, publishesHostPort, storedHostPortForm } from '@ci-hub/common/types';
 import axios from 'axios';
 import { httpsGetExcerpt, resolveAtZoneNameservers, type ZoneAnswer } from '../registration/public-reachability';
 import { MarketplaceService } from '../marketplace/marketplace.service';
@@ -459,13 +459,17 @@ export class AppsService {
    * Deliberately mirrors `hasDirectLocalAccess` in the frontend's
    * `app-access-points.tsx` rather than the looser test used by
    * {@link probeAppAvailability} below, because this value is offered to the user
-   * as a route to click. The stricter rule is what keeps two cases from getting a
-   * dead "Open on local network" button:
+   * as a route to click. An app with a stored install form is judged by the rule
+   * compose binds the host port by (`publishesHostPort`): a Private VPN or Public
+   * Web form with a closed port and no `exposedLocal` binds none, and a Private
+   * VPN form with `exposedLocal` binds one.
    *
-   *  - **Tailscale installs** may skip publishing a host port entirely unless
-   *    `openPort` was requested, so `exposedLocal` alone must not qualify.
-   *  - **Pre-`exposureMode` installs** with a dynamic config bind no fixed host
-   *    port, so they only qualify via `openPort` / `exposedLocal`.
+   * A record with no form falls back to the row columns, where `exposed_local` is
+   * true for any exposable app installed without exposure settings, so:
+   *
+   *  - **Tailscale installs** qualify only via `openPort`.
+   *  - **Pre-`exposureMode` installs** with a dynamic config qualify only via
+   *    `openPort` / `exposedLocal`.
    *
    * Offering an address that isn't served would reproduce the exact bug this
    * whole change set exists to remove, so this errs toward returning nothing.
@@ -481,10 +485,13 @@ export class AppsService {
       return undefined;
     }
 
+    const form = storedHostPortForm(app);
     const mode = app.exposureMode;
     let hasDirectLocalAccess: boolean;
 
-    if (mode === 'tailscale') {
+    if (form) {
+      hasDirectLocalAccess = publishesHostPort(form);
+    } else if (mode === 'tailscale') {
       hasDirectLocalAccess = Boolean(app.openPort);
     } else if (mode === 'cloudflare' || mode === 'local') {
       // Both bind the app port on the host, so the LAN address stays valid even

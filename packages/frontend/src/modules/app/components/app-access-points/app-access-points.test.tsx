@@ -1,7 +1,15 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AppAccessPoints, buildAppAccessPoints, isLoopbackAccessUrl, isMalformedAccessUrl, resolveReachableHubHost } from './app-access-points';
+import { publishesHostPort } from '@ci-hub/common/types';
+import {
+  AppAccessPoints,
+  buildAppAccessPoints,
+  hasDirectLocalAccess,
+  isLoopbackAccessUrl,
+  isMalformedAccessUrl,
+  resolveReachableHubHost,
+} from './app-access-points';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -221,6 +229,54 @@ describe('buildAppAccessPoints', () => {
       host: null,
       state: 'unavailable',
     });
+  });
+
+  // #2377: compose binds the host port for a Private VPN form with `exposedLocal`, so the LAN link works.
+  it('marks local access active for a Private VPN app exposed on the local network', () => {
+    const accessPoints = buildAppAccessPoints({
+      app: {
+        status: 'running',
+        port: 8080,
+        localSubdomain: 'bitboard',
+        exposureMode: 'tailscale',
+        exposedLocal: true,
+        openPort: false,
+        config: { exposureMode: 'tailscale', exposedLocal: true, openPort: false },
+      } as any,
+      info: { ...info, port: 8080, url_suffix: '' },
+      sslPort: 443,
+      internalIp: '192.168.1.9',
+      viewerHostname: '192.168.1.9',
+      cloudflareAvailable: true,
+      tailscaleAvailable: true,
+      tailscaleNodeFqdn: 'hub-tailscale-1.example.ts.net',
+      tailscaleHttpsEnabled: true,
+      tailscaleServedPorts: new Set([8080]),
+    });
+
+    expect(accessPoints[2]).toMatchObject({ key: 'local', url: 'http://192.168.1.9:8080', state: 'active' });
+  });
+
+  // #2377: a Public Web form with a closed port and no `exposedLocal` binds no host port, whatever the row says.
+  it('does not mark local access active for a Public Web app whose stored form closes the host port', () => {
+    const accessPoints = buildAppAccessPoints({
+      app: {
+        status: 'running',
+        port: 8080,
+        localSubdomain: 'bitboard',
+        exposureMode: 'cloudflare',
+        openPort: true,
+        config: { exposureMode: 'cloudflare', openPort: false },
+      } as any,
+      info: { ...info, port: 8080, url_suffix: '' },
+      sslPort: 443,
+      internalIp: '192.168.1.9',
+      viewerHostname: '192.168.1.9',
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    });
+
+    expect(accessPoints[2]).toMatchObject({ key: 'local', url: null, state: 'unavailable' });
   });
 
   it('marks public web active for cloudflare apps with a derived public URL', () => {
@@ -487,6 +543,23 @@ describe('buildAppAccessPoints', () => {
     it('keeps the LAN address for every other app', () => {
       expect(build(info)[2]).toMatchObject({ key: 'local', url: 'http://192.168.1.9:18789/login' });
     });
+  });
+});
+
+/** The page offers a LAN link exactly when compose binds the host port, so the two cannot drift apart again (#2377). */
+describe('hasDirectLocalAccess', () => {
+  const modes = [undefined, 'local', 'cloudflare', 'tailscale'] as const;
+  const flags = [undefined, true, false] as const;
+  const forms = modes.flatMap((exposureMode) => flags.flatMap((openPort) => flags.map((exposedLocal) => ({ exposureMode, openPort, exposedLocal }))));
+
+  it.each(forms)('agrees with compose for mode $exposureMode, openPort $openPort, exposedLocal $exposedLocal', (form) => {
+    expect(hasDirectLocalAccess({ ...form, config: form }, { hasHostPort: true, dynamicConfig: true })).toBe(publishesHostPort(form));
+  });
+
+  it('is false without a host port', () => {
+    expect(hasDirectLocalAccess({ exposureMode: 'local', config: { exposureMode: 'local' } }, { hasHostPort: false, dynamicConfig: true })).toBe(
+      false,
+    );
   });
 });
 
