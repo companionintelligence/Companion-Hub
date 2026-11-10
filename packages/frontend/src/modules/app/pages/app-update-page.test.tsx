@@ -1,4 +1,7 @@
 import { render, screen } from '@testing-library/react';
+import en from '@ci-hub/common/i18n/translations/en.json';
+import enUS from '@ci-hub/common/i18n/translations/en-US.json';
+import i18next from 'i18next';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MemoryRouter } from 'react-router';
 
@@ -228,5 +231,21 @@ describe('AppUpdatePage — one-step confirmation', () => {
 
     updateMutation.options?.onSuccess?.();
     expect(mockNavigate).toHaveBeenCalledWith('/apps');
+  });
+});
+
+describe('update steps wording', () => {
+  // UpdateAppCommand downloads the new images while the app keeps running and stops it only after
+  // (#1819). The page said it stops the app first and pulls the images later.
+  it.each([
+    ['en', en],
+    ['en-US', enUS],
+  ])('says in %s that the download comes before the stop', async (lng, fetched) => {
+    const i18n = i18next.createInstance();
+    await i18n.init({ lng, resources: { [lng]: { translation: { ...en, ...fetched } } } });
+
+    expect(i18n.t('APP_UPDATE_WHAT_HAPPENS', { name: 'Notes' })).toBe(
+      "Companion Hub will download Notes's new version first, without stopping the app. Then it stops the app, puts the new version in place, keeps your existing app data and starts the app again if it was running.",
+    );
   });
 });
