@@ -178,6 +178,18 @@ describe('root clientLoader registration gating', () => {
     expect(inherited.headers.get('Location')).toBe('/home');
   });
 
+  // A refused browser handoff lands at `/?handoff=failed`; the dashboard's toast needs it past this hop.
+  it('carries a refused browser handoff on to /home, and no other handoff value', async () => {
+    resolveRegistrationStatus.mockResolvedValue(makeStatus('locally_ready', true));
+    userContext.mockResolvedValue({ data: { isConfigured: true, isLoggedIn: true, isGuestDashboardEnabled: false } });
+
+    const failed = (await clientLoader({ request: new Request('http://localhost/?handoff=failed') } as never)) as Response;
+    const junk = (await clientLoader({ request: new Request('http://localhost/?handoff=%3Cscript%3E') } as never)) as Response;
+
+    expect(failed.headers.get('Location')).toBe('/home?handoff=failed');
+    expect(junk.headers.get('Location')).toBe('/home');
+  });
+
   it('keeps a Mac / desktop client on the normal Hub path and never sends it to /connect', async () => {
     resolveRegistrationStatus.mockResolvedValue(makeStatus('locally_ready', true));
 

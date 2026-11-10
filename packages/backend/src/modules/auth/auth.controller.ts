@@ -129,6 +129,20 @@ import { extractBearerToken, portalClaimsIdentity, verifyPortalIdToken } from '.
 import { loadSessionUser, refuseRevokedSessionUser, sessionIdsFromRequest } from './auth.middleware';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 
+/** A browser-handoff ticket only has to survive the app handing one URL to the system browser. */
+const BROWSER_HANDOFF_TTL_SECONDS = 60;
+/** Long enough to explain a late or repeated arrival of a ticket, short enough to keep the store small. */
+const BROWSER_HANDOFF_ISSUED_TTL_SECONDS = 10 * 60;
+/** Where every refused handoff lands; the dashboard turns the marker into a toast. */
+const BROWSER_HANDOFF_FAILED_REDIRECT = '/?handoff=failed';
+const browserHandoffIssuedKey = (ticket: string) => `browser_handoff_issued:${ticket}`;
+
+/** What the Hub remembers about a browser-handoff ticket it minted, so a refusal of it can say why. */
+interface BrowserHandoffIssued {
+  mintedAt: number;
+  usedAt?: number;
+}
+
 /** Query param carrying the single-use edge-SSO ticket between the Hub and an app host (#77). */
 const EDGE_SSO_TICKET_PARAM = 'cihub_sso';
 const EDGE_SSO_CACHE_PREFIX = 'edge_sso:';
@@ -513,6 +527,22 @@ export class AuthController {
   /** The local root the appliance's LAN hostnames are built with — same precedence as above. */
   private localDomainRoot(): string {
     return resolveHubLocalDomainRoot(this.config.getConfig());
+  }
+
+  /** The issued record for a browser-handoff ticket, or null for one this Hub never minted (read only, never written). */
+  private readBrowserHandoffIssued(ticket: string): BrowserHandoffIssued | null {
+    const raw = this.cache.get(browserHandoffIssuedKey(ticket));
+    if (!raw) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as Partial<BrowserHandoffIssued>;
+      return typeof parsed.mintedAt === 'number'
+        ? { mintedAt: parsed.mintedAt, usedAt: typeof parsed.usedAt === 'number' ? parsed.usedAt : undefined }
+        : null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -945,7 +975,14 @@ export class AuthController {
 
     const ticket = crypto.randomUUID();
     // Keeping the target server-side prevents the consume URL from carrying an open-redirect target.
-    this.cache.set(`browser_handoff:${ticket}`, JSON.stringify({ sessionId, next: body.next }), 60);
+    this.cache.set(`browser_handoff:${ticket}`, JSON.stringify({ sessionId, next: body.next }), BROWSER_HANDOFF_TTL_SECONDS);
+    // Outlives the ticket so a refusal of a ticket this Hub really issued can say why (used, expired),
+    // while a made-up ticket finds neither key and stays silent. Written here, behind AuthGuard.
+    this.cache.set(
+      browserHandoffIssuedKey(ticket),
+      JSON.stringify({ mintedAt: Date.now() } satisfies BrowserHandoffIssued),
+      BROWSER_HANDOFF_ISSUED_TTL_SECONDS,
+    );
 
     return BrowserHandoffMintDto.parse({ url: `${hub.origin}/api/auth/browser-handoff?ticket=${encodeURIComponent(ticket)}` }, { reportOnly: true });
   }
@@ -953,26 +990,51 @@ export class AuthController {
   /**
    * The single-use ticket acts as the credential for a delegated browser session, so missing or stale tickets fail without setting a cookie.
    * Only fresh user-initiated navigation may consume it, preventing login CSRF from page-initiated requests.
-   * Rejections stay silent because this unauthenticated endpoint would otherwise amplify log floods.
+   *
+   * Every refusal lands on `/?handoff=failed`, so the dashboard can say the browser was not signed in
+   * instead of the click looking like it did nothing. Only a refusal of a ticket this Hub really issued
+   * is logged (the issued record is unguessable, so a flood of made-up tickets stays silent and
+   * write-free), and the log names the check that refused it.
    */
   @Get('/browser-handoff')
   async consumeBrowserHandoff(@Query('ticket') ticket: string | undefined, @Req() req: Request, @Res() res: Response) {
     const fetchSite = req.get('sec-fetch-site');
+    const issued = ticket ? this.readBrowserHandoffIssued(ticket) : null;
+    const refuse = (reason: string) => {
+      if (issued) {
+        const age = Math.round((Date.now() - issued.mintedAt) / 1000);
+        const used = issued.usedAt === undefined ? '' : `, used ${Math.round((Date.now() - issued.usedAt) / 1000)}s ago`;
+        this.logger.warn(
+          `[BrowserHandoff] refused a ticket minted ${age}s ago${used}: ${reason} (sec-fetch-site=${fetchSite ?? 'absent'}, ua=${(req.get('user-agent') ?? 'absent').slice(0, 160)})`,
+        );
+      }
+      return res.redirect(BROWSER_HANDOFF_FAILED_REDIRECT);
+    };
+
+    // Checked before the ticket is read, so a lured page-initiated request can neither use nor burn it.
     if (fetchSite !== undefined && fetchSite !== 'none') {
-      return res.redirect('/');
+      return refuse('not a fresh user-initiated navigation');
     }
 
     if (!ticket) {
-      return res.redirect('/');
+      return refuse('no ticket');
     }
 
     const cacheKey = `browser_handoff:${ticket}`;
     const cached = this.cache.get(cacheKey);
     if (!cached) {
-      // Avoid a synchronous store write for every unauthenticated ticket miss.
-      return res.redirect('/');
+      // No store write on a miss: this endpoint is unauthenticated.
+      return refuse(issued?.usedAt === undefined ? `not found and never used (tickets last ${BROWSER_HANDOFF_TTL_SECONDS}s)` : 'already used');
     }
     this.cache.del(cacheKey); // single-use — burn the real hit before acting on it.
+    if (issued) {
+      // A second arrival of this ticket can then say it was already used, and when.
+      this.cache.set(
+        browserHandoffIssuedKey(ticket),
+        JSON.stringify({ ...issued, usedAt: Date.now() } satisfies BrowserHandoffIssued),
+        BROWSER_HANDOFF_ISSUED_TTL_SECONDS,
+      );
+    }
 
     let sessionId: string;
     let next: string;
@@ -981,13 +1043,16 @@ export class AuthController {
       sessionId = parsed.sessionId;
       next = parsed.next;
     } catch {
-      return res.redirect('/');
+      return refuse('unreadable ticket record');
     }
 
     // Revalidate in case registration changed after the ticket was minted.
     const hub = await this.resolvePublicHub();
-    if (!sessionId || !next || !hub || !this.isSafeHandoffNext(next, hub.origin, hub.orgSlug)) {
-      return res.redirect('/');
+    if (!sessionId || !next || !hub) {
+      return refuse(hub ? 'incomplete ticket record' : 'no public Hub origin');
+    }
+    if (!this.isSafeHandoffNext(next, hub.origin, hub.orgSlug)) {
+      return refuse('target no longer allowed');
     }
 
     // Give the browser its own session because browser rotation deletes the replaced ID and would log out the desktop (#944).
@@ -995,7 +1060,11 @@ export class AuthController {
     const userId = this.sessionManager.resolveSessionUserId(sessionId);
     if (userId === null) {
       // Do not plant a session that died during the ticket window.
-      return res.redirect('/');
+      return refuse('the minting session has ended');
+    }
+
+    if (issued) {
+      this.logger.info(`[BrowserHandoff] redeemed a ticket minted ${Math.round((Date.now() - issued.mintedAt) / 1000)}s ago`);
     }
 
     // Reuse a live same-user session to avoid leaving week-long sessions behind.

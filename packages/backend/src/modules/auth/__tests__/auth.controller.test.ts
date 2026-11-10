@@ -3524,7 +3524,8 @@ describe('AuthController', () => {
       expect(result.url).toEqual(
         expect.stringMatching(/^https:\/\/hub-core-2-myorg\.companionintelligence\.com\/api\/auth\/browser-handoff\?ticket=/),
       );
-      expect(cache.set).toHaveBeenCalledTimes(1);
+      // The ticket, then the issued record that explains a later refusal of it.
+      expect(cache.set).toHaveBeenCalledTimes(2);
       const [key, value, ttl] = cache.set.mock.calls[0];
       expect(key).toMatch(/^browser_handoff:/);
       expect(JSON.parse(value as string)).toEqual({ sessionId: 'sess-1', next });
@@ -3680,7 +3681,7 @@ describe('AuthController', () => {
 
       expect(sessionManager.createSession).not.toHaveBeenCalled();
       expect(res.cookie).not.toHaveBeenCalled();
-      expect(res.redirect).toHaveBeenCalledWith('/');
+      expect(res.redirect).toHaveBeenCalledWith('/?handoff=failed');
     });
 
     it.each([
@@ -3698,10 +3699,10 @@ describe('AuthController', () => {
 
       // Login-CSRF guard fires before the ticket is read, so a lured victim never
       // gets the attacker's session and the ticket is left intact.
-      expect(cache.get).not.toHaveBeenCalled();
+      expect(cache.get).not.toHaveBeenCalledWith('browser_handoff:ticket-abc');
       expect(cache.del).not.toHaveBeenCalled();
       expect(res.cookie).not.toHaveBeenCalled();
-      expect(res.redirect).toHaveBeenCalledWith('/');
+      expect(res.redirect).toHaveBeenCalledWith('/?handoff=failed');
     });
 
     it('consume redirects home for a missing/expired/replayed ticket without setting a cookie or writing', async () => {
@@ -3715,7 +3716,7 @@ describe('AuthController', () => {
       // A cache miss must not trigger a delete — this endpoint is unauthenticated, so a
       // per-miss SQLite write would be a flood amplifier.
       expect(cache.del).not.toHaveBeenCalled();
-      expect(res.redirect).toHaveBeenCalledWith('/');
+      expect(res.redirect).toHaveBeenCalledWith('/?handoff=failed');
     });
 
     it('consume refuses a stored next that no longer passes validation', async () => {
@@ -3727,7 +3728,111 @@ describe('AuthController', () => {
       await authController.consumeBrowserHandoff('ticket-xyz', req, res);
 
       expect(res.cookie).not.toHaveBeenCalled();
-      expect(res.redirect).toHaveBeenCalledWith('/');
+      expect(res.redirect).toHaveBeenCalledWith('/?handoff=failed');
+    });
+
+    describe('saying why a real ticket was refused', () => {
+      const next = `${hubOrigin}/api/memory-connect/start?app=urn:store:ci-hermes`;
+      const issuedKey = (ticket: string) => `browser_handoff_issued:${ticket}`;
+      /** A cache holding exactly these keys, so the ticket and its issued record can differ. */
+      const cacheWith = (entries: Record<string, unknown>) =>
+        cache.get.mockImplementation(((key: string) => (key in entries ? JSON.stringify(entries[key]) : undefined)) as never);
+      const navigation = (fetchSite: string | undefined) =>
+        ({
+          cookies: {},
+          get: vi.fn((h: string) =>
+            h === 'sec-fetch-site' ? fetchSite : h === 'user-agent' ? 'Mozilla/5.0 (Linux; Android 10; K) Chrome/157' : undefined,
+          ),
+          headers: {},
+        }) as unknown as Request;
+      const response = () => ({ cookie: vi.fn(), redirect: vi.fn() }) as unknown as Response;
+
+      it('mint keeps an issued record that outlives the ticket', async () => {
+        mockHubOrigin();
+        const req = { cookies: {}, get: vi.fn((h: string) => (h === 'x-ci-hub-session' ? 'sess-1' : undefined)), headers: {} } as unknown as Request;
+
+        await authController.mintBrowserHandoff({ next }, req);
+
+        expect(cache.set).toHaveBeenCalledWith(expect.stringMatching(/^browser_handoff:/), expect.any(String), 60);
+        expect(cache.set).toHaveBeenCalledWith(expect.stringMatching(/^browser_handoff_issued:/), expect.stringContaining('"mintedAt"'), 600);
+      });
+
+      it('logs a real ticket refused as not a fresh navigation, naming the header, and leaves the ticket alone', async () => {
+        cacheWith({ [issuedKey('ticket-abc')]: { mintedAt: Date.now() - 3000 }, 'browser_handoff:ticket-abc': { sessionId: 'sess-1', next } });
+        const res = response();
+
+        await authController.consumeBrowserHandoff('ticket-abc', navigation('cross-site'), res);
+
+        expect(cache.get).not.toHaveBeenCalledWith('browser_handoff:ticket-abc');
+        expect(cache.del).not.toHaveBeenCalled();
+        expect(res.redirect).toHaveBeenCalledWith('/?handoff=failed');
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.stringMatching(/minted 3s ago: not a fresh user-initiated navigation \(sec-fetch-site=cross-site, ua=Mozilla/),
+        );
+      });
+
+      it('logs a second arrival of a ticket as already used, and when', async () => {
+        cacheWith({ [issuedKey('ticket-abc')]: { mintedAt: Date.now() - 5000, usedAt: Date.now() - 2000 } });
+        const res = response();
+
+        await authController.consumeBrowserHandoff('ticket-abc', navigation('none'), res);
+
+        expect(res.redirect).toHaveBeenCalledWith('/?handoff=failed');
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('minted 5s ago, used 2s ago: already used'));
+        // A miss still writes nothing.
+        expect(cache.set).not.toHaveBeenCalled();
+        expect(cache.del).not.toHaveBeenCalled();
+      });
+
+      it('logs a ticket that is gone without ever being used', async () => {
+        cacheWith({ [issuedKey('ticket-abc')]: { mintedAt: Date.now() - 70_000 } });
+        const res = response();
+
+        await authController.consumeBrowserHandoff('ticket-abc', navigation(undefined), res);
+
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.stringContaining('minted 70s ago: not found and never used (tickets last 60s) (sec-fetch-site=absent'),
+        );
+      });
+
+      it('stays silent and write-free for a ticket this Hub never issued', async () => {
+        cacheWith({});
+        const res = response();
+
+        await authController.consumeBrowserHandoff('made-up', navigation('cross-site'), res);
+        await authController.consumeBrowserHandoff('made-up', navigation('none'), res);
+
+        expect(logger.warn).not.toHaveBeenCalled();
+        expect(cache.set).not.toHaveBeenCalled();
+        expect(cache.del).not.toHaveBeenCalled();
+        expect(res.redirect).toHaveBeenCalledWith('/?handoff=failed');
+      });
+
+      it('logs the minting session having ended', async () => {
+        mockHubOrigin();
+        cacheWith({ [issuedKey('ticket-abc')]: { mintedAt: Date.now() - 1000 }, 'browser_handoff:ticket-abc': { sessionId: 'sess-gone', next } });
+        sessionManager.resolveSessionUserId.mockReturnValue(null as never);
+
+        await authController.consumeBrowserHandoff('ticket-abc', navigation('none'), response());
+
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('the minting session has ended'));
+      });
+
+      it('records the use on success, so a repeat can be told apart from an expiry', async () => {
+        mockHubOrigin();
+        config.get.mockReturnValue({ experimental: { insecureCookie: true } } as never);
+        cacheWith({ [issuedKey('ticket-abc')]: { mintedAt: Date.now() - 2000 }, 'browser_handoff:ticket-abc': { sessionId: 'sess-1', next } });
+        sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+        sessionManager.createSession.mockResolvedValue('browser-sess');
+        const res = response();
+
+        await authController.consumeBrowserHandoff('ticket-abc', navigation('none'), res);
+
+        expect(res.redirect).toHaveBeenCalledWith(next);
+        expect(cache.set).toHaveBeenCalledWith(issuedKey('ticket-abc'), expect.stringContaining('"usedAt"'), 600);
+        expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('redeemed a ticket minted 2s ago'));
+        expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('[BrowserHandoff]'));
+      });
     });
   });
 
