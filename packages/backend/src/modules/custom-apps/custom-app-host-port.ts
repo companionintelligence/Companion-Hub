@@ -14,15 +14,37 @@ export function parsePort(value: unknown): number | undefined {
 }
 
 /**
- * Which end of 1 to 65535 a port is past, written as a number, as digits or as a range. The schema only ranges
- * real numbers, so `"70000"` passed and Docker refused it at start, and the MCP tools reach the service with no
- * schema at all. Other text, such as an env reference, stays out of here.
+ * Why a port can't be saved: past one end of 1 to 65535 (`MIN`, `MAX`), written as a number, as digits or as a
+ * range, or not a port at all (`INVALID`). The schema only ranges real numbers and takes any text, so `"70000"`
+ * and `"abc"` passed and Docker refused them at start, and the MCP tools reach the service with no schema at all.
  */
-export function portRangeRefusal(value: unknown): 'MIN' | 'MAX' | undefined {
+export function portRangeRefusal(value: unknown): 'MIN' | 'MAX' | 'INVALID' | undefined {
+  return outOfRange(value) ?? (isPortShaped(value) ? undefined : 'INVALID');
+}
+
+/**
+ * A whole number, or text that is digits, a range low to high, an env reference (`$NAME`, `${NAME}` or
+ * `${NAME:-default}`) or empty, as written: Docker reads `" 80 "` as it stands. Any other type is left to the schema.
+ */
+function isPortShaped(value: unknown): boolean {
+  if (typeof value === 'number') {
+    return Number.isInteger(value);
+  }
+  if (typeof value !== 'string') {
+    return true;
+  }
+  const range = value.match(/^(\d+)-(\d+)$/);
+  if (range) {
+    return Number(range[1]) <= Number(range[2]);
+  }
+  return /^(?:\d*|\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*(?::?[-+?][^}]*)?\})$/.test(value);
+}
+
+function outOfRange(value: unknown): 'MIN' | 'MAX' | undefined {
   const text = typeof value === 'string' ? value.trim() : undefined;
   const range = text?.match(/^(\d+)-(\d+)$/);
   if (range) {
-    return portRangeRefusal(Number(range[1])) ?? portRangeRefusal(Number(range[2]));
+    return outOfRange(Number(range[1])) ?? outOfRange(Number(range[2]));
   }
   const port = text !== undefined && /^-?\d+$/.test(text) ? Number(text) : value;
   if (typeof port !== 'number') {

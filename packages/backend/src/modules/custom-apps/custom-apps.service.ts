@@ -358,18 +358,19 @@ export class CustomAppService {
 
     const configPath = path.join(dataDir, 'apps', appStoreId, appName, 'config.json');
 
-    const frontmatter = await frontmatterSchema.safeParseAsync(getFrontmatter(description) || {});
-
-    if (!frontmatter.success) {
-      throw new Error(`Invalid frontmatter: ${frontmatter.error.message}`);
-    }
-
     // Read even when nothing below writes it. No `config.json` means no such app and `writeTextFile`
     // creates the folders it needs, so saving the note alone would leave a stray app folder behind.
     const appInfo = await this.filesystem.readJsonFile(configPath);
 
     if (!appInfo) {
-      throw new Error(`Failed to read app info at ${configPath}`);
+      throw new TranslatableError('CUSTOM_APP_ERROR_NOT_FOUND', { urn: appUrn }, HttpStatus.NOT_FOUND);
+    }
+
+    const frontmatter = await frontmatterSchema.safeParseAsync(getFrontmatter(description) || {});
+
+    if (!frontmatter.success) {
+      const key = frontmatter.error.issues[0]?.path.join('.') ?? '';
+      throw new TranslatableError('CUSTOM_APP_ERROR_FRONTMATTER_INVALID', { key }, HttpStatus.BAD_REQUEST);
     }
 
     if (Object.keys(frontmatter.data).length > 0) {

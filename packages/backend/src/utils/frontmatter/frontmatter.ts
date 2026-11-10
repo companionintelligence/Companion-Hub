@@ -2,7 +2,7 @@ import YAML from 'yaml';
 
 export function getFrontmatter(content: string) {
   try {
-    if (!content.startsWith('---\n')) {
+    if (!/^---\r?\n/.test(content)) {
       return null;
     }
 
@@ -14,7 +14,9 @@ export function getFrontmatter(content: string) {
       return null;
     }
 
-    return YAML.parse(match[1] ?? '');
+    // Only `key: value` pairs are frontmatter. A note that opens with a horizontal rule around plain text is just text.
+    const parsed: unknown = YAML.parse(match[1] ?? '');
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed : null;
   } catch (error) {
     console.error('Error extracting frontmatter:', error);
     return null;
