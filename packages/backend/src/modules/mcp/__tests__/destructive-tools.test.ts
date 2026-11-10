@@ -269,9 +269,10 @@ describe('MCP tool classification', () => {
     expect(guarded).toEqual(Object.keys(GUARDED_ROUTE_TOOLS).sort());
   });
 
+  // This reads every non-test source file under src, so under the parallel test run it can exceed the 5 s default.
   it('knows every controller that puts HubManagerGuard on a route', () => {
     expect(filesUsingHubManagerGuard()).toEqual(GUARDED_CONTROLLERS.map(([file]) => file).sort());
-  });
+  }, 30_000);
 
   it('never labels a destructive tool read-only', () => {
     // 'read' and 'destructive' are contradictory, and the contradiction resolves the wrong way: the

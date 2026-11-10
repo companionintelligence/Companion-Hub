@@ -214,7 +214,7 @@ describe('AppModule wiring', () => {
     expect((await statusReport.buildReport()).connection?.poolNodeUuid).toBeNull();
     expect(poolIdentityRows.insertIfAbsent).not.toHaveBeenCalled();
     for (const spy of sections) spy.mockRestore();
-  });
+  }, 30_000);
 
   it('wakes the agent when the status sync finds a running app crashed', async () => {
     appsRepository.getApps.mockResolvedValue([

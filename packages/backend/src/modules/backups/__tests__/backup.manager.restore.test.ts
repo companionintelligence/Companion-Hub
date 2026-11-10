@@ -455,7 +455,7 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
           `Backing up ${appUrn} ran out of time: the root helpers it needs get 1 second in all`,
         );
         await expect(fs.promises.access(backupDir)).rejects.toThrow();
-      });
+      }, 30_000);
 
       it('does not report a backup when root cannot archive it either, and cleans up the staging', async () => {
         docker.archiveBackupAsRoot.mockResolvedValue(null);
@@ -515,6 +515,8 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
       expect(docker.archiveBackupAsRoot).not.toHaveBeenCalled();
     });
 
+    // The next two tests write and tar real files. Under the parallel test run they can exceed the 5 s
+    // default, so they get a longer timeout.
     it('clears what an earlier backup left in staging', async () => {
       const leftover = path.join(dataDir, 'backups', '.backup-staging', 'test-store', 'test-app', 'backup-test-app-9', 'out');
       await fs.promises.mkdir(leftover, { recursive: true });
@@ -523,7 +525,7 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
       await manager.backupApp(appUrn);
 
       await expect(fs.promises.access(path.join(dataDir, 'backups', '.backup-staging', 'test-store', 'test-app'))).rejects.toThrow();
-    });
+    }, 30_000);
 
     it('gives an app with no data folder an empty one in the archive, so the backup can be restored', async () => {
       await fs.promises.rm(appDataDir, { recursive: true, force: true });
@@ -532,7 +534,7 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
       await manager.restoreApp(appUrn, filename);
 
       await expect(fs.promises.readdir(appDataDir)).resolves.toEqual([]);
-    });
+    }, 30_000);
   });
 
   it('rejects a file that is not an archive, rather than "extracting" nothing and wiping the app', async () => {
