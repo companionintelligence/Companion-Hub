@@ -38,6 +38,12 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   logoutMutation: () => ({ mutationFn: vi.fn() }),
 }));
 
+const { isMobileClient } = vi.hoisted(() => ({
+  isMobileClient: vi.fn(() => false),
+}));
+
+vi.mock('@/lib/mobile-connection', () => ({ isMobileClient }));
+
 // Polyfill ResizeObserver for Radix UI
 global.ResizeObserver = class ResizeObserver {
   observe() {}
@@ -45,10 +51,10 @@ global.ResizeObserver = class ResizeObserver {
   disconnect() {}
 };
 
-function renderHeader(isLoggedIn = true, initialEntry = '/dashboard') {
+function renderHeader(isLoggedIn = true, initialEntry = '/dashboard', onScrollToTop?: () => void) {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
-      <Header isLoggedIn={isLoggedIn} />
+      <Header isLoggedIn={isLoggedIn} onScrollToTop={onScrollToTop} />
     </MemoryRouter>,
   );
 }
@@ -223,5 +229,47 @@ describe('Header', () => {
     renderHeader(true, '/settings');
 
     expect(screen.getByRole('link', { name: /COMMON_SETTINGS|Settings/i })).toHaveClass('bg-accent', 'text-accent-foreground', 'btn-active');
+  });
+});
+
+describe('Header tap to top', () => {
+  beforeEach(() => {
+    logoutState.isPending = false;
+    isMobileClient.mockReturnValue(true);
+  });
+
+  // The iOS status-bar tap only scrolls the web view, and the store scrolls an inner pane, so on
+  // the mobile app the header band under the status bar does it instead (#1879).
+  it('scrolls the page to the top when the empty header band is tapped on the mobile app', async () => {
+    const onScrollToTop = vi.fn();
+    renderHeader(true, '/store', onScrollToTop);
+
+    await userEvent.click(screen.getByTestId('app-header'));
+
+    expect(onScrollToTop).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the scroll alone when the tap lands on a link, a button or the open menu', async () => {
+    const onScrollToTop = vi.fn();
+    renderHeader(true, '/store', onScrollToTop);
+
+    await userEvent.click(screen.getByTestId('mobile-app-menu-btn'));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'THEME_DARK' }));
+    // The theme heading is part of the menu, not an item, and the menu stays open after a theme pick.
+    await userEvent.click(screen.getByText('HEADER_THEME'));
+    await userEvent.click(screen.getByTestId('mobile-app-menu-scrim'));
+    await userEvent.click(screen.getByRole('link', { name: 'core 2' }));
+
+    expect(onScrollToTop).not.toHaveBeenCalled();
+  });
+
+  it('does nothing on the desktop app or in a browser, where the window edge scrollbar is the control', async () => {
+    isMobileClient.mockReturnValue(false);
+    const onScrollToTop = vi.fn();
+    renderHeader(true, '/store', onScrollToTop);
+
+    await userEvent.click(screen.getByTestId('app-header'));
+
+    expect(onScrollToTop).not.toHaveBeenCalled();
   });
 });

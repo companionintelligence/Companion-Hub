@@ -1,5 +1,5 @@
 import { Header } from '@/components/header/header';
-import { type PropsWithChildren, useEffect, useRef } from 'react';
+import { type PropsWithChildren, useCallback, useEffect, useRef } from 'react';
 import { useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -13,6 +13,7 @@ import { PortalConnectionBanner } from '@/components/portal-connection-banner/po
 import { TunnelStatusBanner } from '@/components/tunnel-status-banner/tunnel-status-banner';
 import { shouldSkipIosPageSlide } from '@/lib/ios-webview-guards';
 import { usePageScrollRestoration } from '@/lib/hooks/use-page-scroll-restoration';
+import { scrollPageToTop } from '@/lib/scroll-page-to-top';
 
 // Routes that use a layout with a persistent sidebar should share a single
 // animation key so the outer wrapper (sidebar + header) doesn't re-mount
@@ -46,6 +47,9 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   const mainRef = useRef<HTMLElement>(null);
   const pageKey = getAnimationKey(location.pathname);
   usePageScrollRestoration(mainRef, pageKey);
+  const scrollToTop = useCallback(() => {
+    if (mainRef.current) scrollPageToTop(mainRef.current, pageKey);
+  }, [pageKey]);
   const { isLoggedIn } = useUserContext();
   const { data: systemData } = useQuery({
     ...systemLoadOptions(),
@@ -114,7 +118,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
 
   return (
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'var(--app-height)' }}>
-      <Header isLoggedIn={isLoggedIn} />
+      <Header isLoggedIn={isLoggedIn} onScrollToTop={scrollToTop} />
       <main
         ref={mainRef}
         className="dashboard-column relative flex h-full flex-1 flex-col overflow-x-hidden overflow-y-auto"
