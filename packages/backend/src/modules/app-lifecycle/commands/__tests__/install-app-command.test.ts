@@ -6,6 +6,7 @@ import type { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
 import { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
+import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -895,6 +896,133 @@ describe('InstallAppCommand — pull policy', () => {
       const result = await cancelDuringComposeUp(undefined, (args) => args.startsWith('down'));
 
       expect(result.message).toContain('its app folder, app data and containers or volumes could not be fully removed');
+    });
+  });
+
+  describe('revoking the managed key of a cancelled install', () => {
+    let apiKeys: ReturnType<typeof mock<ApiKeyService>>;
+    let resolveToken: (token: unknown) => unknown;
+
+    beforeEach(() => {
+      apiKeys = mock<ApiKeyService>();
+      apiKeys.revokeManagedByApp.mockResolvedValue();
+      const moduleRef = (command as any).moduleRef;
+      resolveToken = moduleRef.get.getMockImplementation();
+      moduleRef.get.mockImplementation((token: unknown) => (token === ApiKeyService ? apiKeys : resolveToken(token)));
+    });
+
+    const cancelDuringComposeUp = async () => {
+      const ac = new AbortController();
+      dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
+        if (args.includes('up --detach')) {
+          ac.abort();
+          throw new DOMException('Aborted', 'AbortError');
+        }
+      });
+      return (await command.execute(appUrn, {}, { signal: ac.signal, setPhase: vi.fn() })) as Record<string, unknown>;
+    };
+
+    it('revokes the key before the containers are taken down, and still reports a clean cancel', async () => {
+      const result = await cancelDuringComposeUp();
+
+      expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(appUrn);
+      const [teardown] = dockerService.composeApp.mock.invocationCallOrder.slice(-1);
+      expect(apiKeys.revokeManagedByApp.mock.invocationCallOrder[0]).toBeLessThan(teardown);
+      expect(result).toMatchObject({ cancelled: true, message: `Install of ${appUrn} was cancelled and cleaned up` });
+      expect(result.warningCode).toBeUndefined();
+    });
+
+    it('says the kept data stayed when the revoke fails and nothing else does', async () => {
+      apiKeys.revokeManagedByApp.mockRejectedValue(new Error('db down'));
+      appFilesManager.hasAppData.mockResolvedValue(true);
+
+      const result = await cancelDuringComposeUp();
+
+      expect(result).toMatchObject({ cancelled: true, warningCode: 'APP_INSTALL_CANCELLED_KEY_REMAINS' });
+      expect(result.message).toContain('left in place');
+      expect(result.message).toContain('may stay valid');
+    });
+
+    it('revokes the key on the path that keeps data from before the install', async () => {
+      appFilesManager.hasAppData.mockResolvedValue(true);
+      appVolumes.hasProjectVolumes.mockResolvedValue(true);
+
+      const result = await cancelDuringComposeUp();
+
+      expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(appUrn);
+      expect(result.message).toContain('left in place');
+      expect(result.warningCode).toBeUndefined();
+    });
+
+    it('reports that the key may stay valid when the revoke fails, and still takes the app down', async () => {
+      apiKeys.revokeManagedByApp.mockRejectedValue(new Error('db down'));
+
+      const result = await cancelDuringComposeUp();
+
+      expect(result).toMatchObject({
+        cancelled: true,
+        message: `Install of ${appUrn} was cancelled, but its managed key could not be revoked and may stay valid`,
+        warningCode: 'APP_INSTALL_CANCELLED_KEY_REMAINS',
+      });
+      expect(result.warningDetail).toBeUndefined();
+      expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
+      expect(String(dockerService.composeApp.mock.calls.at(-1)?.[1])).toMatch(/^down/);
+    });
+
+    it('reports that the key may stay valid when the key service cannot be reached', async () => {
+      const moduleRef = (command as any).moduleRef;
+      moduleRef.get.mockImplementation((token: unknown) => {
+        if (token === ApiKeyService) throw new Error('no provider');
+        return resolveToken(token);
+      });
+
+      const result = await cancelDuringComposeUp();
+
+      expect(result).toMatchObject({ cancelled: true, warningCode: 'APP_INSTALL_CANCELLED_KEY_REMAINS' });
+    });
+
+    it('reports the disk leftover and the key together when both could not be removed', async () => {
+      apiKeys.revokeManagedByApp.mockRejectedValue(new Error('db down'));
+      appFilesManager.deleteAppFolder.mockResolvedValue(false);
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+      dockerService.removeAppDataDirAsRoot.mockResolvedValue(false);
+
+      const result = await cancelDuringComposeUp();
+
+      expect(result).toMatchObject({
+        cancelled: true,
+        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT_KEY_REMAINS',
+        warningDetail: '/srv/app-data/store/test-app',
+      });
+      expect(result.message).toContain('app folder');
+      expect(result.message).toContain('may stay valid');
+    });
+
+    it('stops waiting for a revoke that does not answer, and says the key may stay valid', async () => {
+      vi.useFakeTimers();
+      try {
+        apiKeys.revokeManagedByApp.mockReturnValue(new Promise(() => undefined));
+
+        const cancelled = cancelDuringComposeUp();
+        await vi.waitFor(() => expect(apiKeys.revokeManagedByApp).toHaveBeenCalled());
+        await vi.advanceTimersByTimeAsync(15_000);
+        const result = await cancelled;
+
+        expect(result).toMatchObject({ cancelled: true, warningCode: 'APP_INSTALL_CANCELLED_KEY_REMAINS' });
+        expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('revokes the key when the cancel lands before compose up', async () => {
+      const ac = new AbortController();
+      ac.abort();
+
+      const result = await command.execute(appUrn, {}, { signal: ac.signal, setPhase: vi.fn() });
+
+      expect(result).toMatchObject({ cancelled: true });
+      expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(appUrn);
     });
   });
 

@@ -441,6 +441,65 @@ describe('SSEProvider', () => {
     );
   });
 
+  it('warns that a cancelled install left its app key valid when the key could not be revoked', () => {
+    const getOnEvent = renderProvider();
+
+    act(() => {
+      getOnEvent()?.({
+        event: 'install_cancelled',
+        appUrn: 'excalidraw:community',
+        appStatus: 'missing',
+        warningCode: 'APP_INSTALL_CANCELLED_KEY_REMAINS',
+      });
+    });
+
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+    expect(mockToastWarning).toHaveBeenCalledWith('Cancelled installing excalidraw, but its app key could not be revoked and may stay valid.', {
+      duration: 8000,
+    });
+  });
+
+  it('warns with the cleanup command when a cancelled install left a disk leftover and its app key', () => {
+    const getOnEvent = renderProvider();
+
+    act(() => {
+      getOnEvent()?.({
+        event: 'install_cancelled',
+        appUrn: 'excalidraw:community',
+        appStatus: 'missing',
+        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT_KEY_REMAINS',
+        warningDetail: '/srv/app-data/community/excalidraw',
+      });
+    });
+
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+    expect(mockToastWarning).toHaveBeenCalledTimes(1);
+    const [message] = mockToastWarning.mock.calls[0] as [ReactNode];
+
+    const { container } = render(<MemoryRouter>{message}</MemoryRouter>);
+    expect(container).toHaveTextContent('its app key could not be revoked and may stay valid');
+    expect(screen.getByText("sudo rm -rf -- '/srv/app-data/community/excalidraw'")).toBeInTheDocument();
+  });
+
+  it('warns without a command when a cancelled install left a disk leftover and its app key, with no path', () => {
+    const getOnEvent = renderProvider();
+
+    act(() => {
+      getOnEvent()?.({
+        event: 'install_cancelled',
+        appUrn: 'excalidraw:community',
+        appStatus: 'missing',
+        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT_KEY_REMAINS',
+      });
+    });
+
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+    expect(mockToastWarning).toHaveBeenCalledWith(
+      'Cancelled installing excalidraw, but some of its files, containers or volumes could not be removed and may remain, and its app key could not be revoked and may stay valid.',
+      { duration: 8000 },
+    );
+  });
+
   it('shows the plain success toast when uninstall_success has no warningCode', () => {
     const getOnEvent = renderProvider();
 

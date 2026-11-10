@@ -240,6 +240,14 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
               appName,
               warningDetail,
             );
+          } else if (warningCode === 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT_KEY_REMAINS') {
+            showRemnantWarning(
+              { plain: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT_KEY_REMAINS', manual: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT_KEY_REMAINS_MANUAL' },
+              appName,
+              warningDetail,
+            );
+          } else if (warningCode === 'APP_INSTALL_CANCELLED_KEY_REMAINS') {
+            toast.warning(t('APP_INSTALL_CANCELLED_KEY_REMAINS', { id: appName }), { duration: 8000 });
           } else {
             toast.success(t('APP_INSTALL_CANCELLED', { id: appName }));
           }
