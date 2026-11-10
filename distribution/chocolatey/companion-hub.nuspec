@@ -4,7 +4,7 @@
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
   <metadata>
     <id>companion-hub</id>
-    <version>0.2.4</version>
+    <version>0.3.10</version>
     <packageSourceUrl>https://github.com/companionintelligence/Companion-Hub/tree/main/distribution/chocolatey</packageSourceUrl>
     <owners>companionintelligence</owners>
     <title>Companion Hub</title>
@@ -32,7 +32,7 @@ a unified interface for the companion intelligence ecosystem.
 - Unified companion intelligence interface
 - Deep-link support via `cihub://` scheme
     ]]></description>
-    <releaseNotes>https://github.com/companionintelligence/Companion-Hub/releases/tag/v0.2.4</releaseNotes>
+    <releaseNotes>https://github.com/companionintelligence/Companion-Hub/releases/tag/v0.3.10</releaseNotes>
   </metadata>
   <files>
     <file src="tools\**" target="tools" />
