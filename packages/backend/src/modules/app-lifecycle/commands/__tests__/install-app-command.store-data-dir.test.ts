@@ -36,6 +36,7 @@ const { AppStoreFilesManager } = await import('@/modules/app-stores/app-store-fi
 const { InstallAppCommand } = await import('../install-app-command');
 const { GenerateAppEnvCommand } = await import('../generate-env-command');
 const { StopAppCommand } = await import('../stop-app-command');
+const { UpdateAppCommand } = await import('../update-app-command');
 const { DockerService } = await import('@/modules/docker/docker.service');
 
 /*
@@ -49,7 +50,9 @@ describe.skipIf(process.platform === 'win32')('InstallAppCommand on a store app 
   const appUrn = 'blocky:ci' as AppUrn;
   let scratch: string;
   let appDataDir: string;
+  let installed: string;
   let moduleRef: ModuleRef;
+  let services: Map<unknown, unknown>;
 
   beforeEach(async () => {
     scratch = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'install-store-data-dir-'));
@@ -71,7 +74,7 @@ describe.skipIf(process.platform === 'win32')('InstallAppCommand on a store app 
     };
 
     // What copyAppFromRepoToInstalled leaves: the store's definition, with its data folder.
-    const installed = path.join(dataDir, 'apps', 'ci', 'blocky');
+    installed = path.join(dataDir, 'apps', 'ci', 'blocky');
     await fs.promises.mkdir(path.join(installed, 'data'), { recursive: true });
     await fs.promises.writeFile(path.join(installed, 'docker-compose.json'), JSON.stringify(compose));
     await fs.promises.writeFile(path.join(installed, 'data', 'config.yml'), 'upstreams:\n  groups:\n    default: [1.1.1.1]\n');
@@ -92,7 +95,7 @@ describe.skipIf(process.platform === 'win32')('InstallAppCommand on a store app 
     // The real copy, as the store does it.
     const storeFiles = new AppStoreFilesManager(configuration, filesystem, logger, { slug: 'ci' } as never);
 
-    const services = new Map<unknown, unknown>([
+    services = new Map<unknown, unknown>([
       [AppFilesManager, appFilesManager],
       [LoggerService, logger],
       [ConfigurationService, configuration],
@@ -180,5 +183,40 @@ describe.skipIf(process.platform === 'win32')('InstallAppCommand on a store app 
     config.mockRestore();
     expect(stopped.success).toBe(true);
     await expect(fs.promises.lstat(path.join(appDataDir, 'data'))).rejects.toThrow();
+  });
+
+  // dispatchUpdate has no status gate: "Update all", the API and MCP can update an app whose install
+  // failed before the copy. It was not running, so the factory builds the command with wasRunning false.
+  it('an update of an install_failed app makes no volume folder, so the retried install still copies the data', async () => {
+    const docker = { pruneContainers: vi.fn().mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 }) } as unknown as Dockerode;
+    const form = { openPort: true, exposureMode: 'local', skipRun: true } as unknown as AppEventFormInput;
+
+    // The update replaces the installed files with the store's: keep a copy to put back as the repo would.
+    const repo = path.join(scratch, 'repo-blocky');
+    await fs.promises.cp(installed, repo, { recursive: true });
+    const marketplace = services.get(MarketplaceService) as { copyAppFromRepoToInstalled: ReturnType<typeof vi.fn> };
+    marketplace.copyAppFromRepoToInstalled.mockImplementation(async () => {
+      await fs.promises.cp(repo, installed, { recursive: true });
+    });
+    services.set(DockerService, {
+      composeApp: vi.fn().mockResolvedValue(undefined),
+      pullImages: vi.fn().mockResolvedValue(undefined),
+      imageIdLocally: vi.fn().mockResolvedValue(null),
+      createPreUpdateVolumeSnapshot: vi.fn().mockResolvedValue({ success: true }),
+    });
+    // What install_failed leaves: the app's own files (app.env), the store's data folder not yet copied.
+    await (services.get(AppHelpers) as { generateEnvFile: () => Promise<void> }).generateEnvFile();
+
+    // performBackup false: an app that never ran has nothing to back up, and backup does not prepare the folder.
+    const updated = await new UpdateAppCommand(moduleRef, docker, false, false).execute(appUrn, form);
+    expect(updated.success).toBe(true);
+    await expect(fs.promises.lstat(path.join(appDataDir, 'data'))).rejects.toThrow();
+
+    const result = await new InstallAppCommand(moduleRef, docker).execute(appUrn, form);
+    expect(result.success).toBe(true);
+    const mounted = path.join(appDataDir, 'data', 'config.yml');
+    expect((await fs.promises.lstat(mounted)).isFile()).toBe(true);
+    expect(await fs.promises.readFile(mounted, 'utf8')).toContain('upstreams:');
+    expect((await fs.promises.readFile(path.join(appDataDir, 'data', 'secrets.env'), 'utf8')).trim()).toBe('API_KEY=s3cret');
   });
 });
