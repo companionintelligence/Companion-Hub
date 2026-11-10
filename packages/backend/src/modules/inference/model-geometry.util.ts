@@ -116,8 +116,17 @@ export interface ContextCost {
    */
   kvMbPerToken: number;
   weightMb: number | null;
-  /** `catalog`: the catalog's measured `kvMbPerToken` (see `context-cost.util`), for an engine that cannot say. */
-  source: 'geometry' | 'calibrated' | 'catalog';
+  /**
+   * `catalog`: the catalog's measured `kvMbPerToken` (see `context-cost.util`), for an engine that cannot say.
+   * `gguf`: computed from the model file's header (`catalog/kv-geometry.generated.ts`), where nothing was measured.
+   */
+  source: 'geometry' | 'calibrated' | 'catalog' | 'gguf';
+  /**
+   * MB of KV cache that does not grow with the window, per sequence: a `gguf` cost's sliding-window
+   * layers, which llama.cpp sizes to their window plus one batch. Charged once on top of the per-token
+   * cost (`estimateLoadedFootprintMb`); absent means none.
+   */
+  fixedKvMb?: number;
   /**
    * `general.architecture` from `/api/show` when the geometry was readable: Ollama runs some
    * families on one slot whatever `OLLAMA_NUM_PARALLEL` says, and this is how that is recognised.

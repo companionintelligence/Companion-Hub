@@ -7,6 +7,8 @@ import type {
   ModelPurpose,
   TierRecommendation,
 } from '@ci-hub/common/types';
+import { FIXED_RUNNER_OVERHEAD_MB } from '../model-geometry.util';
+import { GGUF_KV_GEOMETRY } from './kv-geometry.generated';
 
 // ─── LLM catalog (TOON) ──────────────────────────────────────────────────────
 // The LLM catalog is authored as a TOON table (https://toonformat.dev) — one compact, pipe-delimited
@@ -970,4 +972,21 @@ function withMeasuredKv(model: CuratedModel): CuratedModel {
   };
 }
 
-export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...lemonadeLlms, ...vllmLlms, ...omlxLlms, ...extraModels].map(withMeasuredKv);
+/**
+ * A Lemonade row whose footprint was not measured is charged its files plus the runner's fixed overhead
+ * (`kv-geometry.generated.ts`, read from Hugging Face), not the TOON's download size plus 10 %. Qwen 3.8
+ * 27B's files are 17,630 MiB, which with the 768 MB overhead is 18,398 against the 18,473 measured; the
+ * 10 % rule put the same-size Qwen 3.5 27B at 20,838, and with its context that left it 16k on a 24 GB
+ * card that holds 32k. The KV cost from the same table is applied where the cost is probed
+ * (`probeContextCost`), not here, so a measured `kvMbPerToken` stays distinguishable from a computed one.
+ */
+function withFileFootprint(model: CuratedModel): CuratedModel {
+  if (model.backend !== 'lemonade' || model.runtime.footprintMeasured) return model;
+  const fileBytes = GGUF_KV_GEOMETRY[model.id]?.fileBytes;
+  if (!fileBytes || fileBytes <= 0) return model;
+  return { ...model, runtime: { ...model.runtime, memoryFootprintMb: Math.ceil(fileBytes / 1024 ** 2 + FIXED_RUNNER_OVERHEAD_MB) } };
+}
+
+export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...lemonadeLlms, ...vllmLlms, ...omlxLlms, ...extraModels]
+  .map(withMeasuredKv)
+  .map(withFileFootprint);

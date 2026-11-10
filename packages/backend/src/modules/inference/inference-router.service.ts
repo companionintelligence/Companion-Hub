@@ -1490,6 +1490,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       sizing: {
         modelFootprintMb: catalogFootprint,
         kvMbPerToken: cost?.kvMbPerToken ?? null,
+        fixedKvMb: cost?.fixedKvMb ?? null,
         weightMb: cost?.weightMb ?? null,
         visionReserveMb: visionReserveMbFor(curated),
         kvSlots: kvSequencesFor(target.backend, cost, slots),
@@ -1504,6 +1505,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     const sizing: ModelMemoryInput = {
       modelFootprintMb: catalogFootprint,
       kvMbPerToken: cost?.kvMbPerToken == null ? null : cost.kvMbPerToken * kvScale,
+      fixedKvMb: cost?.fixedKvMb == null ? null : cost.fixedKvMb * kvScale,
       weightMb: cost?.weightMb ?? null,
       visionReserveMb: visionReserveMbFor(curated),
       kvSlots: kvSequencesFor(target.backend, cost, slots),
@@ -1515,6 +1517,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       servedLocally: true,
       effectiveInferenceMemoryMb: ceilingMb,
       kvMbPerToken: sizing.kvMbPerToken,
+      fixedKvMb: sizing.fixedKvMb,
       weightMb: sizing.weightMb,
       kvSlots: sizing.kvSlots,
       sighting,
@@ -1631,6 +1634,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     const base: ModelMemoryInput = {
       modelFootprintMb: curated.runtime.memoryFootprintMb || 0,
       kvMbPerToken: cost?.kvMbPerToken ?? null,
+      fixedKvMb: cost?.fixedKvMb ?? null,
       weightMb: cost?.weightMb ?? null,
       visionReserveMb: visionReserveMbFor(curated),
       kvSlots: kvSequencesFor(curated.backend, cost, this.statedSlots(curated.backend, backend)),
@@ -1647,12 +1651,14 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     const sizing: ModelMemoryInput = {
       ...base,
       kvMbPerToken: base.kvMbPerToken != null && kvCacheType === 'q8_0' ? base.kvMbPerToken * KV_CACHE_SCALE.q8_0 : base.kvMbPerToken,
+      fixedKvMb: base.fixedKvMb != null && kvCacheType === 'q8_0' ? base.fixedKvMb * KV_CACHE_SCALE.q8_0 : base.fixedKvMb,
     };
     const handout = handoutContextLength({
       model: curated,
       servedLocally: true,
       effectiveInferenceMemoryMb: ceilingMb,
       kvMbPerToken: sizing.kvMbPerToken,
+      fixedKvMb: sizing.fixedKvMb,
       weightMb: sizing.weightMb,
       kvSlots: sizing.kvSlots,
       sighting,
@@ -1665,7 +1671,8 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     return {
       window,
       kvCacheType,
-      basis: cost?.kvMbPerToken == null ? 'estimated' : 'measured',
+      // Computed from the file rather than seen loaded: the cache is exact, the catalog's weights figure may not be.
+      basis: cost?.kvMbPerToken == null || (cost.source === 'gguf' && !curated.runtime.footprintMeasured) ? 'estimated' : 'measured',
       kvCacheMeasured: curated.runtime.kvCacheType === 'q8_0',
       floor: floor ? { ...floor, met: window !== null && window >= floor.minContextLength } : null,
     };

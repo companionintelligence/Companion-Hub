@@ -4,6 +4,7 @@ import type { InferenceBackend } from './backends/backend.interface';
 import type { FootprintSighting } from './context-length.util';
 import type { ContextCost } from './model-geometry.util';
 import { KV_CACHE_SCALE, type KvCacheChoice } from './backends/lemonade-kv-cache.util';
+import { GGUF_KV_GEOMETRY } from './catalog/kv-geometry.generated';
 
 /**
  * What a token of context costs `model` on `backend`, from the best source there is: the engine's
@@ -32,7 +33,10 @@ export async function probeContextCost(backend: InferenceBackend, model: Curated
   const cost = await probeEngineAndCatalog(backend, model);
   if (!cost) return null;
   const scale = kvCacheType === undefined ? kvCacheScaleOf(backend, model) : kvCacheType === 'f16' ? 1 : KV_CACHE_SCALE[kvCacheType];
-  const scaled = scale < 1 ? { ...cost, kvMbPerToken: cost.kvMbPerToken * scale } : cost;
+  const scaled =
+    scale < 1
+      ? { ...cost, kvMbPerToken: cost.kvMbPerToken * scale, ...(cost.fixedKvMb !== undefined && { fixedKvMb: cost.fixedKvMb * scale }) }
+      : cost;
   return model.runtime.footprintMeasured ? { ...scaled, weightMb: null } : scaled;
 }
 
@@ -47,11 +51,40 @@ function kvCacheScaleOf(backend: InferenceBackend, model: CuratedModel): number 
   return typeof scale === 'number' && Number.isFinite(scale) && scale > 0 && scale < 1 ? scale : 1;
 }
 
+/** Tokens llama.cpp keeps in a sliding-window layer's cache beyond the window: one batch (`n_ubatch`, 512 by default). */
+const SLIDING_CACHE_BATCH_TOKENS = 512;
+
+/**
+ * The cost computed from the model file's header (`catalog/kv-geometry.generated.ts`), for a Lemonade
+ * model with no measured `kvMbPerToken`. Exact for the cache llama.cpp allocates — Qwen 3.8 27B: 0.0664 computed,
+ * 0.0667 measured — where the context ladder's fallback charged every model 0.25 MB a token, so Qwen 3.5
+ * 27B (16 of 64 layers cached, 0.0625) was offered 8k on a card that holds it at 32k.
+ */
+export function ggufContextCost(model: Pick<CuratedModel, 'id'>): Pick<ContextCost, 'kvMbPerToken' | 'fixedKvMb' | 'architecture'> | null {
+  const geometry = GGUF_KV_GEOMETRY[model.id];
+  if (!geometry || !(geometry.kvBytesPerToken > 0)) return null;
+  const MIB = 1024 ** 2;
+  const sliding = (geometry.slidingKvBytesPerToken ?? 0) * ((geometry.slidingWindow ?? 0) + SLIDING_CACHE_BATCH_TOKENS);
+  return {
+    kvMbPerToken: geometry.kvBytesPerToken / MIB,
+    ...(sliding > 0 && geometry.slidingWindow ? { fixedKvMb: sliding / MIB } : {}),
+    architecture: geometry.architecture,
+  };
+}
+
 async function probeEngineAndCatalog(backend: InferenceBackend, model: CuratedModel): Promise<ContextCost | null> {
   const measured = await Promise.resolve(backend.contextCostForModel?.(model.backendModelId) ?? null).catch(() => null);
   const catalogKv = model.runtime.kvMbPerToken;
   if (typeof catalogKv !== 'number' || !Number.isFinite(catalogKv) || catalogKv <= 0) {
-    return measured;
+    // Lemonade only: llama.cpp there runs flash attention on one slot, and grows by about the cache. Ollama
+    // grows several times faster than its cache and reports its own geometry (see gen-kv-geometry.ts).
+    const gguf = model.backend === 'lemonade' ? ggufContextCost(model) : null;
+    if (!gguf) return measured;
+    // The engine's own figure wins when it is the smaller (a sighting is ground truth); it carries no
+    // fixed part, because Ollama's geometry counts sliding layers at the full window.
+    if (measured && measured.kvMbPerToken <= gguf.kvMbPerToken) return measured;
+    const weightMb = measured ? measured.weightMb : await Promise.resolve(backend.weightsOnDiskMb?.(model.backendModelId) ?? null).catch(() => null);
+    return { ...gguf, weightMb, source: 'gguf' };
   }
   if (measured) {
     return catalogKv < measured.kvMbPerToken ? { ...measured, kvMbPerToken: catalogKv, source: 'catalog' } : measured;
@@ -119,6 +152,8 @@ export function kvSequencesFor(backendType: InferenceBackendType, cost: ContextC
 /** What the handouts read to size a model this node serves; see {@link probeLocalSizing}. */
 export interface LocalContextSizing {
   kvMbPerToken: number | null;
+  /** `ContextCost.fixedKvMb`: sliding-window cache that does not grow with the window. */
+  fixedKvMb: number | null;
   weightMb: number | null;
   kvSlots: number;
   sighting: FootprintSighting | null;
@@ -153,6 +188,7 @@ export async function probeLocalSizing(input: {
   const statedSlots = backend.engineCapabilities?.()?.slots ?? (backendType === 'ollama' ? input.statedOllamaSlots : null);
   return {
     kvMbPerToken: cost?.kvMbPerToken ?? null,
+    fixedKvMb: cost?.fixedKvMb ?? null,
     weightMb: cost?.weightMb ?? null,
     kvSlots: kvSequencesFor(backendType, cost, statedSlots),
     sighting: sighting ?? null,

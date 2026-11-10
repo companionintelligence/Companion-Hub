@@ -356,6 +356,7 @@ export class InferenceEnvResolver {
         effectiveInferenceMemoryMb: ceilingMb,
         minContextLength: requirements.minContextLength,
         kvMbPerToken: sizing?.kvMbPerToken ?? null,
+        fixedKvMb: sizing?.fixedKvMb ?? null,
         weightMb: sizing?.weightMb ?? null,
         kvSlots: sizing?.kvSlots ?? null,
         sighting: sizing?.sighting ?? null,

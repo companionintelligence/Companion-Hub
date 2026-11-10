@@ -193,6 +193,15 @@ describe('recommendContextLength', () => {
 });
 
 describe('estimateLoadedFootprintMb', () => {
+  it('charges a sliding-window cache once, for every slot, and leaves it to a sighting that already holds it', () => {
+    const base = { modelFootprintMb: 6_000, kvMbPerToken: 0.015625, numCtx: 65_536 };
+    const without = estimateLoadedFootprintMb(base);
+    expect(estimateLoadedFootprintMb({ ...base, fixedKvMb: 40 })).toBe(without + 40);
+    expect(estimateLoadedFootprintMb({ ...base, fixedKvMb: 40, kvSlots: 2 }) - estimateLoadedFootprintMb({ ...base, kvSlots: 2 })).toBe(80);
+    const sighting = { footprintMb: 7_000, contextLength: 65_536 };
+    expect(estimateLoadedFootprintMb({ ...base, fixedKvMb: 40, sighting })).toBe(estimateLoadedFootprintMb({ ...base, sighting }));
+  });
+
   it('charges the ladder its own per-token assumption, so every rung it picks fits by its own arithmetic', () => {
     // The ladder hands 8192 tokens to 2048 MB of free memory, 16384 to 4096, and so on.
     expect(LADDER_KV_MB_PER_TOKEN * 8192).toBe(2048);

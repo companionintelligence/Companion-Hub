@@ -59,6 +59,12 @@ import type { ModelPullerService } from '../model-puller.service';
 import { ModelRegistryService } from '../model-registry.service';
 import { ModelResidencyService } from '../model-residency.service';
 
+// These scenarios pin the floor and eviction arithmetic to the context ladder, which a Lemonade model
+// with no measured cost used to fall back to. The header-derived cost (`catalog/kv-geometry.generated.ts`)
+// makes most of them fit trivially, so it is off here unless a test puts a row in.
+const ggufTable = vi.hoisted(() => ({}) as Record<string, unknown>);
+vi.mock('../catalog/kv-geometry.generated', () => ({ GGUF_KV_GEOMETRY: ggufTable }));
+
 const MiB = 1024 * 1024;
 
 /** `/api/show` `model_info` for gemma4:e4b, as the fleet's Ollama 0.34.0 returns it. */
@@ -741,6 +747,38 @@ describe('the load window on the fleet', () => {
         });
         const embedder = registry.getCuratedModel('nomic-embed-text-v1-5-lemonade') as CuratedModel;
         await expect(router.contextPlanFor(embedder, BETA_1)).resolves.toBeNull();
+      });
+
+      // The case that started it: with no measured cost, Qwen 3.5 27B was charged the ladder's 0.25 MB a
+      // token and offered 8k on this card. Its file says 16 of 64 layers keep a cache, 0.0625 MB a token.
+      it('plans an unmeasured Lemonade model from its file header: Qwen 3.5 27B gets 32k at 16-bit, 64k at 8-bit', async () => {
+        const { GGUF_KV_GEOMETRY } = await vi.importActual<typeof import('../catalog/kv-geometry.generated')>('../catalog/kv-geometry.generated');
+        ggufTable['qwen3-5-27b-lemonade'] = GGUF_KV_GEOMETRY['qwen3-5-27b-lemonade'];
+        try {
+          // The registry was built from the stubbed table, so the file-based footprint the catalog gives it is put back here.
+          const row = GGUF_KV_GEOMETRY['qwen3-5-27b-lemonade'];
+          const model = () => {
+            const m = registry().getCuratedModel('qwen3-5-27b-lemonade') as CuratedModel;
+            return { ...m, runtime: { ...m.runtime, memoryFootprintMb: Math.ceil((row?.fileBytes ?? 0) / 1024 ** 2 + 768) } };
+          };
+          let registry: () => { getCuratedModel(id: string): unknown };
+          {
+            const w = world({ profile: BETA_1, lemonade: new FakeLemonade({ offersQ8: false }) });
+            registry = () => w.registry;
+            await expect(w.router.contextPlanFor(model(), BETA_1)).resolves.toMatchObject({ window: 32_768, kvCacheType: 'f16', basis: 'estimated' });
+          }
+          {
+            const w = world({ profile: BETA_1, lemonade: new FakeLemonade({ offersQ8: true }), installedApps: ['ci-hermes'] });
+            registry = () => w.registry;
+            await expect(w.router.contextPlanFor(model(), BETA_1)).resolves.toMatchObject({
+              window: 65_536,
+              kvCacheType: 'q8_0',
+              floor: { minContextLength: 64_000, met: true },
+            });
+          }
+        } finally {
+          delete ggufTable['qwen3-5-27b-lemonade'];
+        }
       });
 
       it('marks nothing when the 16-bit retry fails too, and gives both reasons', async () => {

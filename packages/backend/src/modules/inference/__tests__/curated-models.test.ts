@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { LEMONADE_REGISTRATIONS } from '../backends/lemonade.backend';
 import { CURATED_MODELS } from '../catalog/curated-models';
+import { GGUF_KV_GEOMETRY } from '../catalog/kv-geometry.generated';
 
 /**
  * The LLM catalog is authored as a pipe-delimited TOON table and decoded at module load. These tests
@@ -65,18 +66,30 @@ describe('curated-models (TOON catalog)', () => {
     expect(llms.filter((m) => m.backend === 'vllm').every((m) => !m.requirements.supportedPlatforms?.includes('darwin'))).toBe(true);
   });
 
-  it('leaves every row without a ramGb column on the historical diskMb x 1.1 footprint', () => {
+  it('leaves every row without a ramGb column on the historical diskMb x 1.1 footprint, or a Lemonade row on its files', () => {
     // Regression guard for the optional `ramGb` column: only a row that states a measured figure
     // may leave the derived numbers, so adding one must not shift any other row.
     const measured = CURATED_MODELS.filter((m) => m.runtime.footprintMeasured).map((m) => m.id);
     expect(measured.sort()).toEqual(['gemma4-26b', 'gemma4-31b', 'gemma4-e4b', 'qwen3-8-27b-lemonade']);
     for (const m of CURATED_MODELS.filter((m) => m.modality === 'llm' && !m.runtime.footprintMeasured)) {
       expect(m.runtime, `${m.id} runtime`).not.toHaveProperty('footprintMeasured');
-      expect(m.runtime.memoryFootprintMb, `${m.id} footprint`).toBe(Math.round(m.requirements.diskMb * 1.1));
+      const fileBytes = m.backend === 'lemonade' ? GGUF_KV_GEOMETRY[m.id]?.fileBytes : undefined;
+      expect(m.runtime.memoryFootprintMb, `${m.id} footprint`).toBe(
+        fileBytes ? Math.ceil(fileBytes / 1024 ** 2 + 768) : Math.round(m.requirements.diskMb * 1.1),
+      );
       expect(m.requirements.minVramMb, `${m.id} minVram`).toBe(m.requirements.diskMb);
       expect(m.requirements.recommendedVramMb, `${m.id} recVram`).toBe(Math.round(m.requirements.diskMb * 1.1 + 1024));
       expect(m.requirements.minRamMb, `${m.id} minRam`).toBe(Math.round(m.requirements.diskMb * 1.15));
     }
+  });
+
+  // The 10 % rule put the same-size Qwen 3.5 27B 2.4 GB above Qwen 3.8 27B's measured 18,473 MB.
+  it("charges an unmeasured Lemonade row its files plus the runner's overhead", () => {
+    const footprint = (id: string) => CURATED_MODELS.find((m) => m.id === id)?.runtime.memoryFootprintMb;
+    expect(footprint('qwen3-5-27b-lemonade')).toBe(18_458);
+    expect(footprint('qwen3-8-27b-lemonade')).toBe(18_473); // measured: left alone
+    const ollama = CURATED_MODELS.find((m) => m.id === 'qwen3-5-27b');
+    expect(footprint('qwen3-5-27b')).toBe(Math.round((ollama?.requirements.diskMb ?? 0) * 1.1)); // Ollama: unchanged
   });
 
   it('gives every model a real, pullable backend tag and sane derived requirements', () => {
