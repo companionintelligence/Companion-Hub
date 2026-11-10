@@ -51,14 +51,15 @@ case "$1" in
     mv "$STUB_DIR/hub-env.new" "$STUB_DIR/hub-env"
     exit 0 ;;
   inspect)
+    absent() { echo "Error: No such object: $1" >&2; exit 1; }
     if [ "$2" != -f ]; then
       [ "$2" = ci-hub ] && [ -z "\${STUB_NO_HUB:-}" ] && exit 0
-      exit 1
+      absent "$2"
     fi
     case "$3" in
-      *Config.Env*) [ "$4" = ci-hub ] && [ -z "\${STUB_NO_HUB:-}" ] && hub_env && exit 0; exit 1 ;;
-      *Config.User*) [ "$4" = ci-hub ] && printf '%s\\n' "\${STUB_HUB_USER:-}"; exit 0 ;;
-      *State.Running*) [ "$4" = ci-hub-queue ] && echo true && exit 0; exit 1 ;;
+      *Config.Env*) [ "$4" = ci-hub ] && [ -z "\${STUB_NO_HUB:-}" ] && hub_env && exit 0; absent "$4" ;;
+      *Config.User*) [ "$4" = ci-hub ] && printf '%s\\n' "\${STUB_HUB_USER:-}" && exit 0; absent "$4" ;;
+      *State.Running*) [ "$4" = ci-hub-queue ] && echo true && exit 0; absent "$4" ;;
       *Health*) if [ -e "$STUB_DIR/broker-down" ]; then echo starting; else echo healthy; fi; exit 0 ;;
     esac ;;
   exec)
@@ -73,6 +74,26 @@ case "$1" in
   restart) exit 0 ;;
 esac
 exit 0
+`;
+
+/**
+ * Stands in for `timeout` on PATH, so the wrapper's timeouts are deterministic and never hang, on any
+ * machine. It logs every command it runs. A command matching the glob STUB_HANG exits 124 without
+ * running, as a real timeout would, after STUB_HANG_SKIP earlier matches have run normally.
+ */
+const STUB_TIMEOUT = `#!/usr/bin/env bash
+shift
+printf '%s\\n' "$*" >> "$STUB_DIR/timeout.log"
+if [ -n "\${STUB_HANG:-}" ]; then
+  # shellcheck disable=SC2254
+  case "$*" in
+    $STUB_HANG)
+      seen=$(cat "$STUB_DIR/hang-count" 2>/dev/null || echo 0)
+      echo $((seen + 1)) > "$STUB_DIR/hang-count"
+      [ "$seen" -ge "\${STUB_HANG_SKIP:-0}" ] && exit 124 ;;
+  esac
+fi
+exec "$@"
 `;
 
 const SCRIPT = [
@@ -134,6 +155,7 @@ beforeEach(() => {
   const bin = path.join(dir, 'bin');
   mkdirSync(bin);
   writeFileSync(path.join(bin, 'docker'), STUB_DOCKER, { mode: 0o755 });
+  writeFileSync(path.join(bin, 'timeout'), STUB_TIMEOUT, { mode: 0o755 });
   writeFileSync(path.join(dir, 'broker'), 'admin');
   envFile = path.join(dir, 'hub.env');
 });
@@ -582,6 +604,134 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
     expect(result.status, result.stdout).toBe(0);
     expect(result.stdout).toContain('accepts the broker password');
     expect(argvLog()).not.toContain('change_password');
+  });
+
+  describe('a docker call that times out is a visible failure, never a wrong answer', () => {
+    const output = (result: ReturnType<typeof run>) => `${result.stdout}${result.stderr}`;
+
+    it('stops when the Hub probe times out, and changes neither the broker nor the env file', () => {
+      const body = 'JWT_SECRET=jwt\nRABBITMQ_PASSWORD=admin\n';
+      writeFileSync(envFile, body, { mode: 0o600 });
+
+      const result = run({ STUB_HANG: 'docker inspect ci-hub' });
+
+      expect(result.status).not.toBe(0);
+      expect(output(result)).toContain('ERROR: could not check for the Hub container ci-hub (timed out');
+      expect(readFileSync(envFile, 'utf-8')).toBe(body);
+      expect(broker()).toBe('admin');
+      expect(argvLog()).not.toContain('rabbitmqctl');
+    });
+
+    it('stops when the Hub probe times out in the broker check, instead of falling back to the env file', () => {
+      writeFileSync(envFile, 'RABBITMQ_PASSWORD=already-strong\n', { mode: 0o600 });
+
+      // The first probe (prepare) is skipped: the file is strong. The broker check's probe hangs.
+      const result = run({ STUB_HANG: 'docker inspect ci-hub' });
+
+      expect(result.status).not.toBe(0);
+      expect(output(result)).toContain('could not check for the Hub container ci-hub');
+      expect(argvLog()).not.toContain('rabbitmqctl');
+    });
+
+    it("stops when reading the Hub's environment times out", () => {
+      writeFileSync(envFile, 'RABBITMQ_PASSWORD=already-strong\n', { mode: 0o600 });
+
+      const result = run({ STUB_HANG: 'docker inspect -f {{range .Config.Env}}* ci-hub' });
+
+      expect(result.status).not.toBe(0);
+      expect(output(result)).toContain("ERROR: could not read the Hub's broker password from ci-hub");
+      expect(argvLog()).not.toContain('rabbitmqctl');
+    });
+
+    it('warns when the Hub has no RABBITMQ_PASSWORD in its environment', () => {
+      writeFileSync(envFile, 'RABBITMQ_PASSWORD=already-strong\n', { mode: 0o600 });
+      writeFileSync(path.join(dir, 'hub-env'), 'PATH=/usr/bin\n');
+      // Skip the stand-in `up`, which would give the Hub the file's password.
+      const script = SCRIPT.replace('docker compose-up-sim "$1"', ':');
+
+      const result = spawnSync('bash', ['-c', script, 'bash', envFile], { encoding: 'utf-8', env: baseEnv({}, '') });
+
+      expect(output(result)).toContain('WARNING: the Hub container ci-hub has no RABBITMQ_PASSWORD');
+    });
+
+    it('stops when the broker probe times out, rather than saying there is no broker', () => {
+      writeFileSync(envFile, 'RABBITMQ_PASSWORD=already-strong\n', { mode: 0o600 });
+
+      const result = run({ STUB_HANG: 'docker inspect -f {{.State.Running}} ci-hub-queue' });
+
+      expect(result.status).not.toBe(0);
+      expect(output(result)).toContain('ERROR: the broker could not be checked');
+      expect(output(result)).not.toContain('no running broker container');
+    });
+
+    it.each([
+      ['CI_HUB_CONTAINER_UID', 'docker inspect -f {{range .Config.Env}}* ci-hub'],
+      ['Config.User', 'docker inspect -f {{.Config.User}} ci-hub'],
+    ])('fails the rewrite, and keeps the file and its mode, when the pin probe (%s) times out', (_probe, hang) => {
+      const body = 'JWT_SECRET=jwt\nRABBITMQ_PASSWORD=admin\n';
+      writeFileSync(envFile, body);
+      chmodSync(envFile, 0o644);
+      // The exported password means prepare reads no Hub environment before the pin probe.
+      const result = run({ STUB_HANG: hang, RABBITMQ_PASSWORD: 'exported-strong' });
+
+      expect(result.status).not.toBe(0);
+      expect(output(result)).toContain('could not tell whether the Hub is pinned');
+      expect(readFileSync(envFile, 'utf-8')).toBe(body);
+      expect(mode()).toBe(0o644);
+      expect(leftovers()).toEqual([]);
+    });
+
+    it('reports a restart that times out, after the OK line', () => {
+      writeFileSync(envFile, 'RABBITMQ_PASSWORD=admin\n', { mode: 0o600 });
+
+      const result = run({ STUB_HANG: 'docker restart ci-hub' });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stdout).toContain('restarting ci-hub');
+      expect(result.stderr).toContain('ERROR: docker restart ci-hub failed or timed out');
+    });
+
+    it('reports a restart that times out on the rewrite-only path too', () => {
+      writeFileSync(envFile, 'RABBITMQ_PASSWORD=admin\n', { mode: 0o600 });
+      writeFileSync(path.join(dir, 'hub-env'), 'RABBITMQ_PASSWORD=already-strong\n');
+      writeFileSync(path.join(dir, 'broker'), 'already-strong');
+
+      const result = run({ STUB_HANG: 'docker restart ci-hub' });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stdout).toContain('so it reads the rewritten');
+      expect(result.stderr).toContain('ERROR: docker restart ci-hub failed or timed out');
+    });
+
+    it('warns that a change could not be confirmed when the check after change_password times out', () => {
+      writeFileSync(envFile, 'RABBITMQ_PASSWORD=already-strong\n', { mode: 0o600 });
+
+      const result = run({ STUB_HANG: 'docker exec -i ci-hub-queue rabbitmqctl authenticate_user companion', STUB_HANG_SKIP: '1' });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stdout).toContain('WARNING: changed the broker password');
+      expect(result.stdout).toContain('could not be confirmed');
+      expect(result.stdout).not.toContain('changing it failed');
+      expect(restarts()).toBe(0);
+    });
+
+    it('sends every docker call the helper makes through the timeout wrapper', () => {
+      // A path through every docker call: Hub probe, its password, the pin probes, the broker probe
+      // and health, authenticate, change, re-check, restart.
+      writeFileSync(envFile, 'RABBITMQ_PASSWORD=admin\n', { mode: 0o600 });
+
+      const result = run({ STUB_HUB_PASSWORD: 'admin' });
+
+      expect(result.status, result.stdout).toBe(0);
+      const helperDockerCalls = argvLog()
+        .split('\n')
+        .filter((line) => line && !line.startsWith('compose-up-sim'));
+      const wrapped = readFileSync(path.join(dir, 'timeout.log'), 'utf-8')
+        .split('\n')
+        .filter((line) => line.startsWith('docker '));
+      expect(helperDockerCalls.length).toBeGreaterThanOrEqual(10);
+      expect(wrapped.map((line) => line.slice('docker '.length))).toEqual(helperDockerCalls);
+    });
   });
 
   it('stops the update when there is no env file and no exported password', () => {
