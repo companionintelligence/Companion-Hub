@@ -1067,6 +1067,30 @@ describe('AiSettingsContainer', () => {
     await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ model: 'o1', embeddingModel: 'nomic' })));
   });
 
+  it("stops keeping an embedder an earlier Save wrote as the chat model under Ollama's :latest name", async () => {
+    const nomic = { ...llm('nomic', 'ollama'), backendModelId: 'nomic-embed-text', modality: 'embedding', displayName: 'Nomic Embed Text' };
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1', 'nomic'], [llm('o1', 'ollama'), nomic]));
+    fetchInferencePreferences.mockResolvedValue({
+      preferredBackend: 'ollama',
+      preferredModel: 'nomic-embed-text:latest',
+      preferredEmbeddingModel: 'nomic',
+    });
+    fetchInferenceRuntimeModels.mockResolvedValue({
+      backend: 'ollama',
+      discoveryUnavailable: false,
+      models: [{ id: 'nomic-embed-text:latest', name: 'nomic-embed-text:latest', state: 'available', resident: false }],
+    });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('load-model-nomic-embed-text:latest')).toBeInTheDocument());
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ model: 'o1', embeddingModel: 'nomic' })));
+  });
+
   it('warns that an emptying save unpins every pinned model', async () => {
     fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1'], [llm('o1', 'ollama')]));
     fetchInferenceTrackedModels.mockResolvedValue([pinnedTracked('o1')] as never);
