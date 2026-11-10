@@ -830,6 +830,10 @@ pub fn run() {
                 env_path: env_path.clone(),
             });
 
+            // Inside Docker Desktop the Hub can't see the computer's memory and disk, only the
+            // figures the start probe wrote. Keep those current while the app runs.
+            hub_manager::spawn_host_load_refresher(data_dir.clone());
+
             if stack_dev_mode_enabled() {
                 // Stack was started externally (e.g. `cihub up dev`); still refresh host
                 // metrics so the dashboard shows physical disk/RAM, not the Docker VM.
@@ -837,6 +841,7 @@ pub fn run() {
                 if let Some(stack_data_dir) = hub_manager::host_data_dir_from_env_path(&env_path) {
                     if stack_data_dir != data_dir {
                         hub_manager::refresh_host_hardware_probe_cache(&stack_data_dir);
+                        hub_manager::spawn_host_load_refresher(stack_data_dir.clone());
                         let _ = hub_manager::append_desktop_log_for(
                             &data_dir,
                             "hw.probe",
