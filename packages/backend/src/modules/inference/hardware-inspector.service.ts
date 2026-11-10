@@ -9,7 +9,7 @@ import {
   hostGpuProcessesFileSchema,
   samplesFromHostGpuProcessesFile,
 } from '@/modules/inference/gpu-process-sampler.service';
-import type { HardwareProfile, HardwareTier } from '@ci-hub/common/types';
+import { gpuRuntimeReady, type HardwareProfile, type HardwareTier } from '@ci-hub/common/types';
 import si from 'systeminformation';
 import os from 'node:os';
 import { exec } from 'node:child_process';
@@ -603,35 +603,6 @@ export class HardwareInspectorService {
   }
 
   /**
-   * Whether inference can actually reach this GPU.
-   *
-   * `runtimeAvailable` is the CONTAINER's view: `/dev/kfd` + `/dev/dri` visible to the Hub
-   * process. On a Linux host the Hub container is started without device passthrough, so that
-   * is false on every AMD box — while Ollama, which is what runs the models, sits on the host
-   * (or in its own container with the nodes bind-mounted) and uses the card fine. The host
-   * probe (`/data/state/hardware/rocm.json`, `source: host-dev-kfd`) records exactly that.
-   * Measured 2026-09-17 on an RX 7900 XTX: `runtimeAvailable=false`, `hostRocmKfdAvailable=true`,
-   * tier computed as `cpu-only`, so the 27B the operator had pinned was rejected as "not
-   * runnable" and every app was handed a 4B model. The tier must follow the host probe.
-   *
-   * NVIDIA has the same split. The container's view is `docker info`'s runtime list, and a fleet
-   * node without nvidia-container-toolkit reports `runtimeAvailable=false` — while the host's
-   * driver runs the card for the engine that actually serves models. Measured 2026-09-21 on
-   * beta-nas (RTX A1000 8 GB, driver 595, no `nvidia` runtime): the host wrote `nvidia.json`
-   * (name + 8188 MB) and a fresh `gpu_processes.json` showing the host's llama-server and
-   * vLLM holding VRAM, yet the tier was `cpu-only` and every app got the CPU catalog, next to
-   * beta-red (RTX 3080, runtime installed) on `medium`. `hostNvidiaAvailable` is that host
-   * proof; `runtimeAvailable` is left false so the router and the setup card still say the
-   * container has no CUDA.
-   */
-  private gpuRuntimeReady(gpu: HardwareProfile['gpu']): boolean {
-    if (gpu.runtimeAvailable) return true;
-    if (gpu.vendor === 'amd') return gpu.hostRocmKfdAvailable === true;
-    if (gpu.vendor === 'nvidia') return gpu.hostNvidiaAvailable === true;
-    return false;
-  }
-
-  /**
    * Whether the host GPU-process timer file names an NVIDIA writer — `cihub fleet update
    * --gpu-probe` installs `cihub-gpu-processes.sh`, which only writes when `nvidia-smi`
    * answered on the host. A stale or foreign-schema file counts for nothing, same as it does
@@ -648,7 +619,8 @@ export class HardwareInspectorService {
   }
 
   computeTier(gpu: HardwareProfile['gpu'], ram: HardwareProfile['ram']): HardwareTier {
-    if (gpu.available && this.gpuRuntimeReady(gpu)) {
+    // Host-aware on purpose; `gpuRuntimeReady` (common) carries the measurements behind that.
+    if (gpu.available && gpuRuntimeReady(gpu)) {
       // Unified memory: what the GPU can address, which an AMD APU's driver states (see
       // detectAmdApuMemoryFromSysfs) and which is all of RAM on Apple Silicon.
       const effectiveVram = gpu.unifiedMemory ? gpu.vramMb || ram.totalMb : gpu.vramMb;

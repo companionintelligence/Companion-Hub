@@ -152,6 +152,10 @@ Hub does not download weights for oMLX or vLLM. Whatever the server reports on `
 
 The 401 and 503 refusals, and a single-node Hub's 502s, are OpenAI-shaped — `{ "error": { "message", "type" } }`, the 401s with a `code` as well — so an editor shows `error.message` verbatim. A pooled Hub writes its 502s as `{ "error": "<message>" }`, a plain string: the pooled rows below quote that string, and a client that reads only `error.message` shows a bare 502 for them.
 
+Through the public address a 502, 503 or 504 from an engine or the pool arrives as 500, because Cloudflare replaces the body of those three statuses with its own `error code: 502`. A client retries a 500 the same way. The key-store 503 in the table below keeps its status and reads as Cloudflare's text, because the Hub writes it before that rule runs.
+
+A reply through the tunnel also leaves out what only makes sense on the Hub's own network: `localBackends`, the engines' addresses and the reason a pool candidate failed. To see those, send the same request from the Hub's own network or tailnet. On a pooled Hub, `cihub pool log` names the node and the upstream status. The `X-Hub-Pool-Served-By` header still names the node that answered, on the public address too.
+
 | Response | Meaning | Fix |
 |---|---|---|
 | 401 `code: "missing_api_key"` | The request arrived from outside the appliance network with no `Authorization` header, or one that is not exactly `Bearer <key>` | Configure the key; check that the client sends it as a bearer token and not as a query parameter or a custom header |

@@ -670,6 +670,30 @@ describe('HubPoolPeerService', () => {
       expect(repo.listByStatuses).toHaveBeenCalledWith(['connected', 'unreachable']);
     });
 
+    it('still probes a switched-off peer but warns only about peers in use', async () => {
+      const logger = mock<LoggerService>();
+      (service as unknown as { logger: LoggerService }).logger = logger;
+      // Through the poll, not `refreshOnePeer`: the poll is what decides a switched-off peer is still probed.
+      const poll = (service as unknown as { refreshPeerHealth: () => Promise<void> }).refreshPeerHealth.bind(service);
+      vi.mocked(global.fetch).mockRejectedValue(new Error('fetch failed'));
+
+      repo.listByStatuses.mockResolvedValue([
+        mockPeer({ status: 'unreachable', consecutiveFailures: 18966, enabled: false, presentTokenEncrypted: 'ENC:token' }),
+      ]);
+      await poll();
+
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining('capabilities probe'));
+
+      repo.listByStatuses.mockResolvedValue([
+        mockPeer({ status: 'unreachable', consecutiveFailures: 4, enabled: true, presentTokenEncrypted: 'ENC:token' }),
+      ]);
+      await poll();
+
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('capabilities probe'));
+    });
+
     it('drives a peer to unreachable and back to connected once it answers again', async () => {
       const capabilities = { hardwareTier: 'high', backends: [], updatedAt: new Date().toISOString() };
       const peer = mockPeer({ status: 'connected', consecutiveFailures: 2, presentTokenEncrypted: 'ENC:token' });
@@ -832,6 +856,23 @@ describe('HubPoolPeerService', () => {
       expect((await service.getPoolStatus()).peers[0]?.probeFailure).toBeNull();
     });
 
+    it.each([
+      ['identity-mismatch', 'identity_changed'],
+      [undefined, 'unauthorized'],
+    ])('keeps warning when a switched-off peer refuses this Hub (%s)', async (header, kind) => {
+      const logger = mock<LoggerService>();
+      (service as unknown as { logger: LoggerService }).logger = logger;
+      const peer = stalePeer({ enabled: false, status: 'unreachable', consecutiveFailures: 3 });
+      repo.listAll.mockResolvedValue([peer]);
+      vi.mocked(global.fetch).mockResolvedValue(refusal(header));
+
+      await refresh(peer);
+
+      expect((await service.getPoolStatus()).peers[0]?.probeFailure?.kind).toBe(kind);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('cihub pool unpair beta-max.tailxyz.ts.net'));
+      expect(logger.debug).not.toHaveBeenCalledWith(expect.stringContaining('capabilities probe'));
+    });
+
     it('warns when a PIN pairing request is swallowed by the stale row it is meant to replace', async () => {
       const logger = mock<LoggerService>();
       (service as unknown as { logger: LoggerService }).logger = logger;
@@ -953,6 +994,77 @@ describe('HubPoolPeerService', () => {
       // polling peer can only count the work it forwarded itself.
       expect(capabilities.inFlightRequests).toBe(2);
       expect(capabilities.backends).toEqual([{ type: 'ollama', healthy: true, modelsLoaded: ['llama3.2:3b'] }]);
+    });
+
+    it('advertises a model the Hub has tracked once, under the id its engine knows it by', async () => {
+      const row = {
+        object: 'model',
+        created: 0,
+        owned_by: 'local:ollama',
+        state: 'loaded',
+        backend: 'ollama',
+        modality: ['text'],
+        local: true,
+      } as const;
+      inferenceRouter.listModels.mockResolvedValue([
+        { ...row, id: 'gemma3-270m', backend_model_id: 'gemma3:270m' },
+        { ...row, id: 'gemma3:270m' },
+        // `:latest` is the same model to Ollama, so these two are one as well.
+        { ...row, id: 'nomic-embed-text', backend_model_id: 'nomic-embed-text' },
+        { ...row, id: 'nomic-embed-text:latest' },
+        // The engine doesn't list this one, so the catalog id is all there is to advertise.
+        { ...row, id: 'qwen3-5-9b', backend_model_id: 'qwen3.5:9b', state: 'pulled' },
+      ]);
+
+      const capabilities = await service.getOwnCapabilities();
+
+      expect(capabilities.backends).toEqual([
+        { type: 'ollama', healthy: true, modelsLoaded: ['gemma3:270m', 'nomic-embed-text:latest', 'qwen3-5-9b'] },
+      ]);
+    });
+
+    it("treats Lemonade's user. namespace as the same model when it advertises a tracked one", async () => {
+      inferenceRouter.getStatus.mockResolvedValue({
+        ...ownStatus,
+        backends: [{ ...ownStatus.backends[0], type: 'lemonade' }],
+      });
+      const row = {
+        object: 'model',
+        created: 0,
+        owned_by: 'local:lemonade',
+        state: 'loaded',
+        backend: 'lemonade',
+        modality: ['text'],
+        local: true,
+      } as const;
+      inferenceRouter.listModels.mockResolvedValue([
+        { ...row, id: 'nomic-embed-text-v1-5-lemonade', backend_model_id: 'nomic-embed-text-v1.5-GGUF' },
+        { ...row, id: 'user.nomic-embed-text-v1.5-GGUF' },
+      ]);
+
+      const capabilities = await service.getOwnCapabilities();
+
+      expect(capabilities.backends).toEqual([{ type: 'lemonade', healthy: true, modelsLoaded: ['user.nomic-embed-text-v1.5-GGUF'] }]);
+    });
+
+    it('keeps a model when both of its spellings are tracked rows', async () => {
+      const row = {
+        object: 'model',
+        created: 0,
+        owned_by: 'local:ollama',
+        state: 'loaded',
+        backend: 'ollama',
+        modality: ['text'],
+        local: true,
+      } as const;
+      inferenceRouter.listModels.mockResolvedValue([
+        { ...row, id: 'embedder', backend_model_id: 'embedder' },
+        { ...row, id: 'embedder:latest', backend_model_id: 'embedder:latest' },
+      ]);
+
+      const capabilities = await service.getOwnCapabilities();
+
+      expect(capabilities.backends[0]?.modelsLoaded).toEqual(['embedder', 'embedder:latest']);
     });
 
     it('does not advertise a model the local engine has been unable to serve', async () => {

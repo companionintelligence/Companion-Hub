@@ -2,10 +2,11 @@ import { deleteAppStoreMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
+import { invalidateStoreCatalogQueries } from '@/lib/invalidate-store-catalog-queries';
 import type { AppStore } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
 import { AlertTriangle } from 'lucide-react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 
@@ -16,15 +17,18 @@ type Props = {
 export const DeleteAppStoreDialog = ({ appStore }: Props) => {
   const { t } = useTranslation();
   const deleteAppStoreDisclosure = useDisclosure();
+  const queryClient = useQueryClient();
 
   const deleteAppStore = useMutation({
     ...deleteAppStoreMutation(),
     onError: (e: TranslatableError) => {
       toast.error(t(e.message, e.intlParams));
     },
-    onSuccess: () => {
-      toast.success(t('APP_STORE_DELETE_SUCCESS'));
+    onSuccess: async () => {
+      // Close before the refetch because it removes this row and this dialog with it.
       deleteAppStoreDisclosure.close();
+      await invalidateStoreCatalogQueries(queryClient);
+      toast.success(t('APP_STORE_DELETE_SUCCESS'));
     },
   });
 

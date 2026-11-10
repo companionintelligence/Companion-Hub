@@ -153,7 +153,7 @@ describe('AuthController rate limiting', () => {
 
   describe('POST /auth/verify-totp', () => {
     it('stops answering a client that keeps getting the code wrong', async () => {
-      authService.verifyTotp.mockRejectedValue(new TranslatableError('AUTH_ERROR_TOTP_INVALID_CODE'));
+      authService.verifyTotp.mockRejectedValue(new TranslatableError('AUTH_ERROR_TOTP_INVALID_CODE', {}, HttpStatus.BAD_REQUEST));
 
       for (let i = 0; i < 10; i++) {
         await expect(controller.verifyTotp({ totpSessionId: 's', totpCode: '000000' } as never, res(), req('203.0.113.9'))).rejects.toThrow(

@@ -5,7 +5,7 @@ import { LocalContainers, LocalModels } from '@/modules/system/panels/local-reso
 import { NetworkModels } from '@/modules/system/panels/network-resources';
 import { PoolActivity } from '@/modules/system/panels/pool-activity';
 import { emptyRoutingBucket } from '@/modules/system/pool-node-series';
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { describe, expect, it } from 'vitest';
 
@@ -113,6 +113,36 @@ describe('column drops', () => {
         state={READY}
       />,
     );
+  });
+
+  it("calls this Hub by its label in the routing feed, never by the log's key", () => {
+    const { container } = render(
+      <PoolActivity
+        entries={[
+          { at: new Date().toISOString(), direction: 'outbound', model: 'gemma3:1b', node: 'local', backend: 'ollama', outcome: 'served' },
+          {
+            at: new Date().toISOString(),
+            direction: 'outbound',
+            model: 'gemma3:1b',
+            node: 'hub-b.tailnet.ts.net',
+            backend: 'ollama',
+            outcome: 'served',
+            failedOverFrom: ['local'],
+            attempts: [{ node: 'local', backend: 'ollama', status: 500, reason: 'HTTP 500' }],
+          },
+        ]}
+        buckets={[{ ...emptyRoutingBucket(Date.now()), served: 2 }]}
+        state={READY}
+      />,
+    );
+
+    expect(screen.getAllByText('This Hub').length).toBeGreaterThan(0);
+    expect(screen.queryByText('local')).toBeNull();
+    expect(container.querySelector('[title*="local"]')).toBeNull();
+    // The hover that lists the nodes passed over.
+    expect(container.querySelector('[title="Tried first: This Hub (HTTP 500)"]')).not.toBeNull();
+    // The peer keeps the short name it had.
+    expect(screen.getAllByText('hub-b').length).toBeGreaterThan(0);
   });
 
   it('keeps the routing feed aligned at every width', () => {

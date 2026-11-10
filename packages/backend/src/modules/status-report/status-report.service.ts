@@ -5,7 +5,7 @@ import { Injectable } from '@nestjs/common';
 import { DATA_DIR } from '@/common/constants';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { LoggerService } from '@/core/logger/logger.service';
-import type { InferenceStatus } from '@ci-hub/common/types';
+import { gpuRuntimeReady, type InferenceStatus } from '@ci-hub/common/types';
 import { AppsReadService } from '../apps/apps-read.service';
 import { HardwareInspectorService } from '../inference/hardware-inspector.service';
 import { HubPoolIdentityService } from '../hub-pool/hub-pool-identity.service';
@@ -167,8 +167,13 @@ export class StatusReportService {
             vendor: profile.gpu.vendor ?? null,
             model: profile.gpu.model ?? null,
             vramMb: profile.gpu.vramMb ?? null,
-            // A card that is present with a broken driver is a finding, not an absence.
-            driverWorking: profile.gpu.runtimeAvailable !== false,
+            // A card that is present with a broken driver is a finding, not an absence —
+            // but judged by the host as well as the container. `runtimeAvailable` alone is
+            // the Hub container's view, false on every Linux AMD box (no device passthrough),
+            // and reading it here called the driver dead on machines whose host was serving
+            // models on the card at that moment.
+            driverWorking: gpuRuntimeReady(profile.gpu),
+            visibleToHubContainer: profile.gpu.runtimeAvailable === true,
           }
         : null,
       hardwareTier: profile?.tier ?? null,
