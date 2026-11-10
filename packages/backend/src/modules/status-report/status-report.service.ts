@@ -172,7 +172,10 @@ export class StatusReportService {
             // the Hub container's view, false on every Linux AMD box (no device passthrough),
             // and reading it here called the driver dead on machines whose host was serving
             // models on the card at that moment.
-            driverWorking: gpuRuntimeReady(profile.gpu),
+            // Nothing checks an Intel driver. There is no host probe for one, and for an Intel
+            // card `runtimeAvailable` is the ROCm `/dev/kfd` test, so `gpuRuntimeReady` is false
+            // on every Intel machine. `null` keeps a working card from reading as broken.
+            driverWorking: profile.gpu.vendor === 'intel' ? null : gpuRuntimeReady(profile.gpu),
             visibleToHubContainer: profile.gpu.runtimeAvailable === true,
           }
         : null,

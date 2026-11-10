@@ -107,9 +107,12 @@ function renderSystem(report: HubStatusReport): string[] {
     const vram = system.gpu.vramMb === null ? UNKNOWN : `${(system.gpu.vramMb / 1024).toFixed(1)} GiB VRAM`;
     // Three states, not two: a Linux AMD box normally has the host driving the card while the
     // Hub container cannot see it. That is the expected layout, so it is noted, not bolded.
+    // A driver nothing checked (`null`) gets no note at all: there is no finding to report.
     let driver = '';
-    if (!system.gpu.driverWorking) driver = ' — **driver not responding**';
-    else if (!system.gpu.visibleToHubContainer) driver = ' (driven by the host; not visible inside the Hub container)';
+    if (system.gpu.driverWorking === false) driver = ' — **driver not responding**';
+    else if (system.gpu.driverWorking === true && !system.gpu.visibleToHubContainer) {
+      driver = ' (driven by the host; not visible inside the Hub container)';
+    }
     lines.push(`| GPU | ${cell(system.gpu.vendor)} ${cell(system.gpu.model)}, ${vram}${driver} |`);
   } else {
     lines.push('| GPU | none detected |');
