@@ -44,6 +44,7 @@ import { RegistryModule } from './utils/registry/registry.module';
 import { SystemUpdateModule } from './modules/system-update/system-update.module';
 import { McpModule } from './modules/mcp/mcp.module';
 import { McpDisabledModule } from './modules/mcp/mcp-disabled.module';
+import { isMcpEnabled } from './modules/mcp/mcp-enabled';
 import { ApiKeyModule } from './modules/api-keys/api-key.module';
 import { MemoryConnectModule } from './modules/memory-connect/memory-connect.module';
 import { AgentNotifyModule } from './modules/agent-notify/agent-notify.module';
@@ -117,11 +118,11 @@ if (hasFrontendBundle) {
 if (process.env.NODE_ENV !== 'production') {
   imports.push(DebugModule);
 }
-if (process.env.MCP_ENABLED === 'false') {
+if (isMcpEnabled(process.env)) {
+  imports.push(McpModule);
+} else {
   // Answers /api/mcp-admin so Settings > MCP can say "Disabled" instead of failing to load.
   imports.push(McpDisabledModule);
-} else {
-  imports.push(McpModule);
 }
 
 @Module({
