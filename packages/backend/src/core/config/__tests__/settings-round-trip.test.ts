@@ -61,7 +61,6 @@ const ONE_OF_EVERY_KEY: Required<PersistedSettings> = {
   sslPort: 8443,
   timeZone: 'Europe/Berlin',
   experimental_insecureCookie: true,
-  themeBase: 'slate',
   themeColor: 'red',
   ciHubApiKey: 'portal-device-key',
   ciHubMoveKey: 'portal-move-key',

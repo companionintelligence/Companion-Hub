@@ -604,7 +604,6 @@
   "SETTINGS_GENERAL_APPS_REPO_HINT": "Adres URL do repozytorium aplikacji.",
   "SETTINGS_GENERAL_APP_DATA_PATH": "Ścieżka danych aplikacji",
   "SETTINGS_GENERAL_APP_DATA_PATH_HINT": "Miejsce, w którym dane aplikacji będą przechowywane.",
-  "SETTINGS_GENERAL_BASE_THEME": "Motyw podstawowy",
   "SETTINGS_GENERAL_DOMAIN": "Nazwa domeny",
   "SETTINGS_GENERAL_DOMAIN_HINT": "Udostępnij swój panel na niestandardowej domenie. Upewnij się, że masz rekordy A wskazujące na adres IP serwera.",
   "SETTINGS_GENERAL_DOWNLOAD_CERTIFICATE": "Pobierz certyfikat",

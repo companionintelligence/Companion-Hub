@@ -306,5 +306,4 @@ export const HUB_STACK_REGISTRY_REPO = 'ci-hub';
 export const HUB_STACK_IMAGE_REPO = 'ghcr.io/companionintelligence/ci-hub';
 
 // Theming
-export const DEFAULT_THEME_BASE = 'gray';
 export const DEFAULT_THEME_COLOR = 'blue';

@@ -27,7 +27,6 @@ const newHubSettings: SettingsFormValues = {
   appDataPath: '/app-data',
   forwardAuthUrl: 'http://ci-hub:3000/api/auth/traefik',
   logLevel: 'info',
-  themeBase: 'gray',
 };
 
 const localDomainField = () => screen.getByLabelText(/^local domain/i);
@@ -50,7 +49,7 @@ it('lets a keyboard user focus a setting hint', () => {
   expect(hint).toHaveFocus();
 });
 
-// The theme and every setting below it apply to the whole Hub, an owner's or admin's to change.
+// Every setting but the language applies to the whole Hub, an owner's or admin's to change.
 it("shows a member only their own language, and nothing that changes the Hub's settings", () => {
   render(<UserSettingsForm initialValues={newHubSettings} onSubmit={vi.fn()} manageHub={false} />);
 
@@ -59,6 +58,15 @@ it("shows a member only their own language, and nothing that changes the Hub's s
   expect(screen.queryByText('General settings')).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Update settings' })).not.toBeInTheDocument();
   expect(screen.getAllByRole('combobox')).toHaveLength(1);
+});
+
+// The Base theme palettes left with the old CSS framework, so the box saved a choice that changed nothing.
+it('offers no Base theme, only Language, in the User settings card', () => {
+  render(<UserSettingsForm initialValues={newHubSettings} onSubmit={vi.fn()} />);
+
+  const card = screen.getByText('User settings').closest('.rounded-lg');
+  expect(card).toContainElement(screen.getByRole('combobox', { name: /language/i }));
+  expect(screen.getAllByRole('combobox').filter((box) => card?.contains(box))).toHaveLength(1);
 });
 
 /** The Timezone box. Its label is not tied to it, so find it by its name. */
