@@ -13,7 +13,7 @@ export const ErrorPage = ({ error, onReset }: ErrorPageProps) => {
   const userMessage = formatApiError(error, t);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+    <div className="flex min-h-dvh items-center justify-center bg-background px-4">
       <div className="w-full max-w-md text-center">
         <h1 className="text-xl font-medium text-foreground mb-2">{t('ERROR_PAGE_TITLE')}</h1>
         <p role="alert" className="text-sm text-muted-foreground mb-4">

@@ -159,7 +159,7 @@ _stage_wait_http() { # url, label
 }
 
 # ── the marketplace checkout ─────────────────────────────────────────────────
-# e2e/start-backend.sh symlinks $CI_MARKETPLACE_DIR/apps into the Hub's store.
+# e2e/start-backend.sh copies $CI_MARKETPLACE_DIR/apps into the Hub's store.
 # Without it app-details, install-dialog and the installed-app tiles in hub-home
 # have no app info to render — four empty screens, discovered afterwards. It is
 # also where the mock portal serves running-app's Immich install bundle from.
@@ -199,7 +199,7 @@ _stage_marketplace() {
   fi
   [ -n "$src" ] || {
     echo "stage: no CI-Marketplace clone found above $root (and CI_MARKETPLACE_DIR is unset)." >&2
-    echo "       e2e/start-backend.sh symlinks its apps/ into the Hub's store; without it" >&2
+    echo "       e2e/start-backend.sh copies its apps/ into the Hub's store; without it" >&2
     echo "       app-details, install-dialog and hub-home's tiles render empty." >&2
     return 1
   }

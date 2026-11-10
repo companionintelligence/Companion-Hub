@@ -19,7 +19,7 @@ export const AuthLayout = ({ children, wide = false }: AuthLayoutProps) => {
     <div
       className="flex flex-col items-center overflow-y-auto bg-background"
       style={{
-        height: 'calc(100vh - var(--titlebar-height, 0px))',
+        height: 'var(--app-height)',
         paddingTop: 'calc(var(--titlebar-height, 0px) + max(2rem, var(--safe-area-top, 0px)))',
         paddingBottom: 'max(2rem, var(--safe-area-bottom, 0px))',
         paddingLeft: 'max(1rem, env(safe-area-inset-left, 0px))',

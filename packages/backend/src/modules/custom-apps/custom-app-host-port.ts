@@ -4,13 +4,32 @@ import type { AppsRepository } from '@/modules/apps/apps.repository';
 import type { PortManagerService } from '@/modules/network/port-manager.service';
 
 /**
- * A port written as a number or as the digits the create form submits, with stray whitespace allowed.
+ * A port written as a number or as digits (a config saved by an older form, the JSON editor, the API), with stray whitespace allowed.
  * Anything else (an env reference, a range, a value outside 1 to 65535) is not a plain port.
  */
 export function parsePort(value: unknown): number | undefined {
   const raw = typeof value === 'string' ? value.trim() : value;
   const port = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\d{1,5}$/.test(raw) ? Number(raw) : Number.NaN;
   return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : undefined;
+}
+
+/**
+ * Which end of 1 to 65535 a port is past, written as a number, as digits or as a range. The schema only ranges
+ * real numbers, so `"70000"` passed and Docker refused it at start, and the MCP tools reach the service with no
+ * schema at all. Other text, such as an env reference, stays out of here.
+ */
+export function portRangeRefusal(value: unknown): 'MIN' | 'MAX' | undefined {
+  const text = typeof value === 'string' ? value.trim() : undefined;
+  const range = text?.match(/^(\d+)-(\d+)$/);
+  if (range) {
+    return portRangeRefusal(Number(range[1])) ?? portRangeRefusal(Number(range[2]));
+  }
+  const port = text !== undefined && /^-?\d+$/.test(text) ? Number(text) : value;
+  if (typeof port !== 'number') {
+    return undefined;
+  }
+  if (port < 1) return 'MIN';
+  return port > 65535 ? 'MAX' : undefined;
 }
 
 export type MappedHostPort = { hostPort: number; protocol: 'tcp' | 'udp' };

@@ -167,7 +167,11 @@ describe('AppRuntimeMonitorService', () => {
   it.each([
     ['a down tunnel', { available: false, reason: 'CLOUDFLARE', errorCode: 'CF_TUNNEL_NOT_FOUND' }],
     ['a 503 through the tunnel', { available: false, reason: 'CLOUDFLARE', errorCode: 'CF_UPSTREAM_ERROR', httpStatus: 503 }],
-  ])('does not call a busy app unresponsive when its public route answered with %s', async (_label, verdict) => {
+    [
+      'a Tailscale refusal, which is decided without probing the app',
+      { available: false, reason: 'TAILSCALE_REFUSED', errorCode: 'TAILSCALE_SERVE_REFUSED' },
+    ],
+  ])('does not call a busy app unresponsive for %s', async (_label, verdict) => {
     appsRepository.getAppByUrn.mockResolvedValue({
       id: 1,
       appName: 'test-app',

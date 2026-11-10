@@ -43,7 +43,7 @@ function renderRail(
       verdict={{ kind: 'clear', faults: [], unavailable: 0 }}
       pool={undefined}
       poolState={READY}
-      reach={{ connected: 1, unreachable: 0, reachableModels: 2, exclusiveModels: 1, peerInFlight: 0 }}
+      reach={{ connected: 1, unreachable: 0, probeFailures: 0, reachableModels: 2, exclusiveModels: 1, peerInFlight: 0 }}
       localNode={undefined}
       localLabel="This Hub"
       workloads={2}

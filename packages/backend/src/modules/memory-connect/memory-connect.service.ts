@@ -11,6 +11,7 @@ import type { AppStatus } from '@/core/database/drizzle/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppLifecycleService, type HeldApp } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
+import type { PublicDnsFailureReason } from '@/modules/cloudflare/cloudflare-client.service';
 import { TunnelHealthService } from '@/modules/cloudflare/tunnel-health.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { AsyncMutex } from '@/utils/mutex/async-mutex';
@@ -18,7 +19,7 @@ import { INSTALL_GLOBAL_HUB_USER_ID, type MemoryConnectionRow, type MemoryConnec
 import { MemoryConnectionService, normalizeHubUserId } from './memory-connection.service';
 import { MemoryExchangeClient } from './memory-exchange.client';
 import { isMemoryProviderApp } from './memory-provider.predicate';
-import { MemoryProviderResolver, type MemoryProviderRuntimeStatus } from './memory-provider.resolver';
+import { type MemoryProviderRuntimeInfo, MemoryProviderResolver, type MemoryProviderRuntimeStatus } from './memory-provider.resolver';
 import { PendingConnectStore } from './pending-connect.store';
 
 /** Must remain below CI-Server's CONNECT_KEY_TTL_DAYS so apps rotate before their credentials expire. */
@@ -78,6 +79,9 @@ function isAnotherPersons(row: Pick<MemoryConnectionRow, 'hubUserId'>, hubUserId
   return !isInstallGlobal(row) && !isSameHubUser(row.hubUserId, hubUserId);
 }
 
+/** Stands in for a failed provider lookup, which withholds launchers instead of failing the independent state poll. */
+const PROVIDER_INFO_UNKNOWN: MemoryProviderRuntimeInfo = { status: 'absent', localOnly: false };
+
 /** Where a callback lands when the connect failed after another person's connection was revoked. */
 const PREVIOUS_CONNECTION_REMOVED_REDIRECT = '/?memoryConnect=previous_removed';
 
@@ -102,7 +106,9 @@ export type ConnectBlockedReason =
   /** The Hub's public origin is down and this caller cannot reach the LAN route either. */
   | 'hub_unreachable'
   /** ci-memory only has a LAN address and this caller is off-network. */
-  | 'provider_local_only';
+  | 'provider_local_only'
+  /** The Portal refused ci-memory a public address, so its consent page has no address to reach. */
+  | 'memory_address_refused';
 
 /** Launcher availability is caller-scoped because a LAN route is not reachable from every browser. */
 export interface ConnectLaunchers {
@@ -611,8 +617,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     const [ownState, active, providerInfo] = await Promise.all([
       this.connections.getState(appUrn, hubUserId),
       hubUserId ? this.connections.getActiveConnection(appUrn) : Promise.resolve(undefined),
-      // A transient provider lookup failure withholds launchers instead of failing the independent state poll.
-      this.resolver.getProviderRuntimeInfo().catch(() => ({ status: 'absent' as const, localOnly: false })),
+      this.resolver.getProviderRuntimeInfo().catch(() => PROVIDER_INFO_UNKNOWN),
     ]);
 
     // A gate that knows someone else connected the app can say so rather than ask again.
@@ -624,6 +629,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       appUrn,
       providerStatus: providerInfo.status,
       providerLocalOnly: providerInfo.localOnly,
+      providerAddressRefusal: providerInfo.publicAddressRefusal,
       origin,
     });
 
@@ -652,7 +658,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     // Read-only for other people's connections, as in getStatus. A provider row that is still
     // installing must not read as ready.
     const [providerInfo, row, active] = await Promise.all([
-      this.resolver.getProviderRuntimeInfo().catch(() => ({ status: 'absent' as const, localOnly: false })),
+      this.resolver.getProviderRuntimeInfo().catch(() => PROVIDER_INFO_UNKNOWN),
       this.connections.getRow(appUrn, hubUserId),
       this.connections.getActiveConnection(appUrn),
     ]);
@@ -701,6 +707,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       appUrn,
       providerStatus,
       providerLocalOnly: providerInfo.localOnly,
+      providerAddressRefusal: providerInfo.publicAddressRefusal,
       origin,
     });
 
@@ -921,6 +928,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     providerStatus: MemoryProviderRuntimeStatus;
     origin?: RequestOriginContext;
     providerLocalOnly?: boolean;
+    providerAddressRefusal?: PublicDnsFailureReason;
   }): Promise<ConnectLaunchers> {
     const blocked = (reason: ConnectBlockedReason): ConnectLaunchers => ({
       connectUrl: null,
@@ -933,6 +941,13 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return blocked(
         input.providerStatus === 'absent' ? 'memory_absent' : input.providerStatus === 'starting' ? 'memory_starting' : 'memory_offline',
       );
+    }
+
+    // ci-memory's consent page is on its public address, so with none the flow ends on a browser error. A zone
+    // refusal is left to the probe in startConnect: Cloudflare refusing the Portal's token on a zone leaves records
+    // already published in place and this poll can't tell those from a name that never existed.
+    if (input.providerAddressRefusal && input.providerAddressRefusal !== 'zone_unreachable') {
+      return blocked('memory_address_refused');
     }
 
     // Block only confirmed remote callers; an ambiguous rewritten host may belong to a valid LAN visitor.

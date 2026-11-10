@@ -2,6 +2,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
+import { resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import { InstallPipelineTracker } from './install-pipeline.tracker';
 import { pLimit } from '@/common/helpers/file-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -14,6 +15,8 @@ import { hasUpdateAvailable } from '@ci-hub/common/validation';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { PortAllocationRepository } from '../network/port-allocation.repository';
 import { LifecycleJobService } from '../app-lifecycle/lifecycle-job.service';
+import { RegistrationService } from '../registration/registration.service';
+import { guestPublicUrl } from './app-public-routing.helpers';
 import { AppFilesManager } from './app-files-manager';
 import { AppsRepository } from './apps.repository';
 
@@ -240,7 +243,53 @@ export class AppsReadService {
     const apps = await this.appsRepository.getGuestDashboardApps();
     this.logger.debug(`Got ${apps.length} guest dashboard apps`);
 
-    return this.populateAppInfo(apps);
+    const populated = await this.populateAppInfo(apps);
+    // This route takes no sign-in and a public hostname names the organization and the device, so the
+    // setting is asked here too: while the dashboard is off, no visitor is handed one.
+    const hub = this.configurationService.getConfig().userSettings.guestDashboard ? await this.guestRoutingNames() : null;
+    const refused = await this.publicAddressRefusals();
+
+    return populated.map((entry) => ({
+      ...entry,
+      publicUrl: hub ? guestPublicUrl(entry.app, entry.info, hub, refused(createAppUrn(entry.app.appName, entry.app.appStoreSlug))) : null,
+    }));
+  }
+
+  /** Whether the last answered sync refused an app its platform hostname: that name has no DNS record, so a guest must not be sent there. */
+  private async publicAddressRefusals(): Promise<(appUrn: AppUrn) => boolean> {
+    try {
+      // Imported here as in AppsService: a static import closes a require cycle.
+      const { ExposureSyncService } = await import('../app-lifecycle/exposure-sync.service');
+      const exposureSync = this.moduleRef?.get(ExposureSyncService, { strict: false });
+
+      return (appUrn) => Boolean(exposureSync?.publicDnsRefusalFor(appUrn));
+    } catch (error) {
+      this.logger.debug('Could not read the public address refusals for the guest dashboard:', error);
+      return () => false;
+    }
+  }
+
+  /**
+   * What a public hostname is built from, or `null` when this Hub publishes none: the tunnel sync skips a
+   * Hub with no tunnel. A guest still gets the page when this can't be read, without the public addresses.
+   */
+  private async guestRoutingNames() {
+    let registration: Awaited<ReturnType<RegistrationService['getDeviceRegistrationInfo']>> | null | undefined;
+    try {
+      registration = await this.moduleRef?.get(RegistrationService, { strict: false }).getDeviceRegistrationInfo();
+    } catch (error) {
+      this.logger.debug('Could not read the device registration for the guest dashboard:', error);
+    }
+
+    if (!registration?.tunnelId) {
+      return null;
+    }
+
+    return {
+      orgSlug: registration.slug,
+      hubSubdomain: registration.hubSubdomain,
+      domain: resolveHubPublicDomainRoot(this.configurationService.getConfig()),
+    };
   }
 
   public async getApp(appUrn: AppUrn) {

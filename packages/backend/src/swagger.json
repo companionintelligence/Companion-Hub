@@ -7318,9 +7318,6 @@
           "themeColor": {
             "type": "string"
           },
-          "themeBase": {
-            "type": "string"
-          },
           "localDomain": {
             "type": "string"
           },
@@ -7346,7 +7343,6 @@
           "allowAutoThemes",
           "allowErrorMonitoring",
           "themeColor",
-          "themeBase",
           "localDomain",
           "domain",
           "sslPort"
@@ -7502,9 +7498,6 @@
               },
               "experimental_insecureCookie": {
                 "type": "boolean"
-              },
-              "themeBase": {
-                "type": "string"
               },
               "themeColor": {
                 "type": "string"
@@ -8018,9 +8011,6 @@
           "timeZone": {},
           "experimental_insecureCookie": {
             "type": "boolean"
-          },
-          "themeBase": {
-            "type": "string"
           },
           "themeColor": {
             "type": "string"
@@ -10652,6 +10642,10 @@
                     "ignoredVersion": {
                       "nullable": true,
                       "type": "number"
+                    },
+                    "publicUrl": {
+                      "nullable": true,
+                      "type": "string"
                     }
                   },
                   "required": [
@@ -15342,15 +15336,11 @@
                           "value": {
                             "anyOf": [
                               {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "minLength": 1
-                                  },
-                                  {
-                                    "type": "number"
-                                  }
-                                ]
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "number"
                               },
                               {
                                 "type": "boolean"
@@ -15929,15 +15919,11 @@
                                 "value": {
                                   "anyOf": [
                                     {
-                                      "anyOf": [
-                                        {
-                                          "type": "string",
-                                          "minLength": 1
-                                        },
-                                        {
-                                          "type": "number"
-                                        }
-                                      ]
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "type": "number"
                                     },
                                     {
                                       "type": "boolean"
@@ -16565,15 +16551,11 @@
                           "value": {
                             "anyOf": [
                               {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "minLength": 1
-                                  },
-                                  {
-                                    "type": "number"
-                                  }
-                                ]
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "number"
                               },
                               {
                                 "type": "boolean"
@@ -17152,15 +17134,11 @@
                                 "value": {
                                   "anyOf": [
                                     {
-                                      "anyOf": [
-                                        {
-                                          "type": "string",
-                                          "minLength": 1
-                                        },
-                                        {
-                                          "type": "number"
-                                        }
-                                      ]
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "type": "number"
                                     },
                                     {
                                       "type": "boolean"

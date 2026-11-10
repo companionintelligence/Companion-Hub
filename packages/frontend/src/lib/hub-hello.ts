@@ -1,4 +1,4 @@
-import { type StackUpdatePending, readStackUpdatePending, resolveStackUpdate } from './desktop-stack-session';
+import { type StackUpdatePending, keepStackUpdateOutcome, readStackUpdatePending, resolveStackUpdate } from './desktop-stack-session';
 
 /**
  * What to do with a `hub_hello` — the first message on every app SSE stream, carrying the
@@ -110,10 +110,13 @@ export function applyHubHello(
 
   switch (decision.kind) {
     case 'update_completed': {
-      resolveStackUpdate({ state: 'completed', version: decision.version });
+      const outcome = { state: 'completed', version: decision.version } as const;
+      resolveStackUpdate(outcome);
       effects.invalidateVersion();
       const bundle = normalizeVersion(context.bundleVersion);
       if (context.sameOriginBundle && bundle !== decision.version && claimReloadForVersion(decision.version)) {
+        // A panel on screen heard it and cleared the kept copy, but that panel is about to go.
+        keepStackUpdateOutcome(outcome);
         effects.reload();
       }
       break;

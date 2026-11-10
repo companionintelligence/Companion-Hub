@@ -5,6 +5,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { DOCKERODE } from '../docker/constants';
 import { DockerReadFacade } from '../docker/docker-read.facade';
+import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsRepository } from '../apps/apps.repository';
 import { InstallPipelineTracker } from '../apps/install-pipeline.tracker';
 import type { AppStatus } from '@/core/database/drizzle/types';
@@ -21,6 +22,15 @@ import { AppOperationRegistry, operationStaleAfterMs } from './app-operation-reg
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 
 const LONG_RUNNING_TRANSITIONAL_STATES: AppStatus[] = ['installing', 'updating'];
+
+interface DockerAppStatus {
+  running: number;
+  exitZero: number;
+  total: number;
+  startedJustNow: boolean;
+  /** The compose services of the containers that exited with an error. */
+  failedServices: string[];
+}
 
 /**
  * Docker's `Status` for a container that started under a minute ago. A service that crashes every few
@@ -74,6 +84,7 @@ export class AppStatusSyncService {
     @Optional() private readonly networkDiagnostics?: NetworkDiagnosticsService,
     @Optional() private readonly dockerReadFacade?: DockerReadFacade,
     @Optional() private readonly statusReportService?: StatusReportService,
+    @Optional() private readonly appFilesManager?: AppFilesManager,
   ) {
     if (this.configuration.get('userSettings').eventsTimeout > 5) {
       const eventsTimeout = this.configuration.get('userSettings').eventsTimeout;
@@ -121,6 +132,15 @@ export class AppStatusSyncService {
     });
   }
 
+  /** How many of an app's containers that exited with an error are one-shots, which don't make the app stopped. */
+  private async failedOneShotCount(appUrn: AppUrn, { failedServices }: Pick<DockerAppStatus, 'failedServices'>): Promise<number> {
+    if (failedServices.length === 0) {
+      return 0;
+    }
+    const oneShots = await this.appFilesManager?.getOneShotServiceNames(appUrn);
+    return failedServices.filter((service) => oneShots?.has(service)).length;
+  }
+
   async syncAllAppStatuses() {
     try {
       this.logger.debug('Starting app status sync');
@@ -128,14 +148,14 @@ export class AppStatusSyncService {
       const apps = await this.appRepository.getApps();
       const containers = await listContainersMatchingAnyLabelSets(this.docker, managedAppLabelSets());
 
-      const dockerStatusMap = new Map<string, { running: number; exitZero: number; total: number; startedJustNow: boolean }>();
+      const dockerStatusMap = new Map<string, DockerAppStatus>();
 
       for (const container of containers) {
         const appUrn = appUrnFromLabels(container.Labels);
         if (!appUrn) continue;
 
         if (!dockerStatusMap.has(appUrn)) {
-          dockerStatusMap.set(appUrn, { running: 0, exitZero: 0, total: 0, startedJustNow: false });
+          dockerStatusMap.set(appUrn, { running: 0, exitZero: 0, total: 0, startedJustNow: false, failedServices: [] });
         }
 
         const status = dockerStatusMap.get(appUrn);
@@ -145,7 +165,10 @@ export class AppStatusSyncService {
             status.running++;
             status.startedJustNow ||= STARTED_UNDER_A_MINUTE_AGO.test(container.Status);
           }
-          if (container.State === 'exited' && /Exited \(0\)/.test(container.Status)) status.exitZero++;
+          if (container.State === 'exited') {
+            if (/Exited \(0\)/.test(container.Status)) status.exitZero++;
+            else status.failedServices.push(container.Labels?.['com.docker.compose.service'] ?? '');
+          }
         }
       }
 
@@ -249,7 +272,10 @@ export class AppStatusSyncService {
           // not uninstalled. Keep "missing" for install verification / SSE uninstall
           // events — never as the durable status of an installed app.
           newStatus = 'stopped';
-        } else if (dockerStatus.running > 0 && dockerStatus.running + dockerStatus.exitZero === dockerStatus.total) {
+        } else if (
+          dockerStatus.running > 0 &&
+          dockerStatus.running + dockerStatus.exitZero + (await this.failedOneShotCount(appUrn, dockerStatus)) === dockerStatus.total
+        ) {
           // An app that failed to come up gets back to `running` by itself once its containers do, but
           // one look at a crash loop can land between two crashes. It waits for the next sync then.
           if ((app.status === 'install_failed' || app.status === 'stopped') && dockerStatus.startedJustNow) {
@@ -258,7 +284,8 @@ export class AppStatusSyncService {
           }
           // A clean exit counts only beside a running container: that is a one-shot init service
           // that finished. Every container exited 0 is an app stopped with `docker stop`, such as
-          // by the desktop's Stop Hub.
+          // by the desktop's Stop Hub. A one-shot that exited with an error counts here too: the app is
+          // running and the page shows Needs attention for that container.
           newStatus = 'running';
         } else if (app.status === 'install_failed') {
           // Containers left by a failed install, crash-looping or stuck in `Created`, do not make it a

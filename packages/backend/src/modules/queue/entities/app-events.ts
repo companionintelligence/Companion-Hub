@@ -28,6 +28,9 @@ const queueAppFormSchema = z
     // Start only: let compose recreate just the services whose resolved definition changed. Set by
     // the Hub boot (`AppLifecycleService.restartRunningApps`) and the start after an update.
     onlyRecreateChanged: z.boolean().optional(),
+    // Start and Restart only: take the containers down if the app does not come up. Set when a person
+    // or a key asked for it (`AppLifecycleCommand.stopAppThatDidNotComeUp`), not for the Hub's own.
+    stopIfNotUp: z.boolean().optional(),
     cpuLimit: optionalCpuLimitSchema,
     memoryLimit: optionalMemoryLimitSchema,
     // Explicit fields for public domain selection — previously passed through catchall as unknown.
