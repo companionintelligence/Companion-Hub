@@ -46,7 +46,6 @@ const settingsSchema = z.object({
   appsRepoUrl: z.string().optional(),
   localDomain: z.string().optional(),
   guestDashboard: z.boolean().optional(),
-  allowAutoThemes: z.boolean().optional(),
   allowErrorMonitoring: z.boolean().optional(),
   defaultAppCpuLimit: z.string().optional(),
   timeZone: z.string().optional(),
@@ -73,7 +72,6 @@ export type SettingsFormValues = {
   appsRepoUrl?: string;
   localDomain?: string;
   guestDashboard?: boolean;
-  allowAutoThemes?: boolean;
   allowErrorMonitoring?: boolean;
   defaultAppCpuLimit?: string;
   timeZone?: string;
@@ -335,28 +333,6 @@ export const UserSettingsForm = (props: IProps) => {
                 placeholder="1.0"
               />
               <span className="text-sm text-muted-foreground">{t('SETTINGS_GENERAL_DEFAULT_APP_CPU_LIMIT_HINT')}</span>
-            </div>
-            <div className="mb-3">
-              <Controller
-                control={control}
-                name="allowAutoThemes"
-                defaultValue={false}
-                render={({ field: { onChange, value, ref, ...rest } }) => (
-                  <Switch
-                    className="mb-3"
-                    ref={ref}
-                    checked={value}
-                    onCheckedChange={onChange}
-                    {...rest}
-                    label={
-                      <>
-                        {t('SETTINGS_GENERAL_ALLOW_AUTO_THEMES')}
-                        <SettingsHint className="allow-auto-themes-hint" hint={t('SETTINGS_GENERAL_ALLOW_AUTO_THEMES_HINT')} />
-                      </>
-                    }
-                  />
-                )}
-              />
             </div>
             <div className="mb-3">
               <Controller

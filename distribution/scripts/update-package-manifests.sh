@@ -103,10 +103,14 @@ cat >"$SCOOP" <<JSON
   },
   "uninstaller": {
     "script": [
-      "# IMPORTANT: Scoop runs this uninstaller during \`scoop update\` as well as \`scoop uninstall\`,",
-      "# and it gives the script no way to tell the two apart. So this script must only remove",
-      "# recreatable resources (containers + networks) and must NOT touch persistent data — otherwise",
-      "# every \`scoop update companion-hub\` would wipe the user's database and app state.",
+      "# Scoop runs this uninstaller for both \`scoop uninstall\` and \`scoop update\`. An update must not stop",
+      "# running apps, so the container cleanup below is skipped during an update. Scoop's update script is on",
+      "# the call stack in that case, so the check looks for it. The cleanup only removes recreatable resources",
+      "# (containers + networks) and never touches persistent data, so a plain uninstall stays safe.",
+      "if (@(Get-PSCallStack | Where-Object { \$_.ScriptName -like '*scoop-update*' }).Count -gt 0) {",
+      "  Write-Host 'Companion Hub: keeping its containers during a Scoop update.'",
+      "  return",
+      "}",
       "if (Get-Command docker -ErrorAction SilentlyContinue) {",
       "  # Windows PowerShell 5.1 drops double quotes inside a docker template, so the label name is a Go raw string in backticks.",
       "  \$managedProjects = @(",

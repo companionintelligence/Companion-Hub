@@ -6,7 +6,7 @@ import { DashboardLayout } from '@/components/layouts/dashboard/layout';
 const { appContext, registration } = vi.hoisted(() => ({
   appContext: {
     user: { hasCompletedOnboarding: true },
-    userSettings: { ciHubDeviceSlug: 'hub-device', allowAutoThemes: false },
+    userSettings: { ciHubDeviceSlug: 'hub-device' },
     isLoading: false,
     loadFailed: false,
   },

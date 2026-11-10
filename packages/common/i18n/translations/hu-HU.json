@@ -595,8 +595,6 @@
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_MODAL_TITLE": "Engedélyezze a haladó beállításokat?",
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_SUBTITLE": "Haladó beállítások, amelyeket csak akkor használjon, ha tudja, mit csinál.",
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_TITLE": "Haladó beállítások",
-  "SETTINGS_GENERAL_ALLOW_AUTO_THEMES": "Automatikus témák engedélyezése",
-  "SETTINGS_GENERAL_ALLOW_AUTO_THEMES_HINT": "Legyen meglepve a témákkal, amelyek az évszaknak megfelelően automatikusan változnak.",
   "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING": "Anonim hibafigyelés engedélyezése",
   "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING_HINT": "A hibakövetés a hibák nyomon követésére és a Companion Hub fejlesztésére szolgál. Tartsa ezt az opciót engedélyezve, hogy segítsen nekünk a Companion Hub fejlesztésében.",
   "SETTINGS_GENERAL_APPS_REPO": "Alkalmazás-tárház URL címe",

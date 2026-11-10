@@ -26,8 +26,7 @@ const HUB_ORIGIN = resolve(dirname(fileURLToPath(import.meta.url)), '../hub-bran
 const HUB_MAP = {
   'public/logo.svg': 'logos/mark-small.svg', // header icon (32 px) and QR centre: under 48 px, so the small mark
   'public/hub-mark.svg': 'logos/mark.svg', // the full mark where it is shown large: the mobile connect screen
-  'public/hub.png': 'icons/png/mark-512.png', // getLogo()
-  'public/hub-christmas.png': 'icons/png/mark-512.png', // getLogo() seasonal slot; the old file was the plain mark too
+  'public/hub.png': 'icons/png/mark-512.png', // the sign-in page logo
   'public/icons/favicon.svg': 'logos/mark-small.svg',
   'public/icons/favicon.ico': 'icons/png/favicon.ico',
   'public/icons/favicon-96x96.png': 'icons/png/favicon-96.png',

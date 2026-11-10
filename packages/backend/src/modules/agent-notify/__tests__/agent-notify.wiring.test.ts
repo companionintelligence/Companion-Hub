@@ -47,7 +47,6 @@ const HUB_ENV: Record<string, string> = {
   DEMO_MODE: 'false',
   GUEST_DASHBOARD: 'false',
   ALLOW_ERROR_MONITORING: 'false',
-  ALLOW_AUTO_THEMES: 'false',
   PERSIST_TRAEFIK_CONFIG: 'false',
   TZ: 'UTC',
   ADVANCED_SETTINGS: 'false',

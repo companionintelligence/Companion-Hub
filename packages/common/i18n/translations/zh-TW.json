@@ -593,8 +593,6 @@
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_MODAL_TITLE": "Enable advanced settings?",
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_SUBTITLE": "Advanced settings used only if you know what you are doing.",
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_TITLE": "Advanced settings",
-  "SETTINGS_GENERAL_ALLOW_AUTO_THEMES": "允許自動主題",
-  "SETTINGS_GENERAL_ALLOW_AUTO_THEMES_HINT": "主題將會隨著年度的時間變化",
   "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING": "允許匿名錯誤監控",
   "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING_HINT": "Error monitoring is used to track errors and improve Companion Hub. Keep this option enabled to help us improve Companion Hub.",
   "SETTINGS_GENERAL_APPS_REPO": "應用程式 repo URL",

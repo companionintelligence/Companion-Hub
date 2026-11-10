@@ -2,7 +2,14 @@ import { getEnabledAppStoresOptions } from '@/api-client/@tanstack/react-query.g
 import { CATALOG_PAGE_SIZE } from '@/lib/catalog-page-size';
 import { searchAppsInfiniteOptions } from '@/lib/marketplace-search-query';
 import { getInstalledAppUrnsOptions } from '@/lib/installed-app-urns-query';
-import { applyStoreBrowseParams, buildStoreIndexPath, isStoreIndexPath, parseStoreBrowseParams, storeParamToWrite } from '@/lib/store-browse-params';
+import {
+  applyStoreBrowseParams,
+  buildStoreIndexPath,
+  isStoreIndexPath,
+  parseStoreBrowseParams,
+  shouldLeaveFeaturedForSearch,
+  storeParamToWrite,
+} from '@/lib/store-browse-params';
 import { invalidateStoreCatalogQueries } from '@/lib/invalidate-store-catalog-queries';
 import { pullAppStores } from '@/api-client/sdk.gen';
 import { EmptyPage } from '@/components/empty-page/empty-page';
@@ -80,19 +87,20 @@ export default () => {
     }
 
     const parsed = parseStoreBrowseParams(searchParams);
+    const query = parsed.q ?? '';
 
-    setSearchImmediate(parsed.q ?? '');
+    setSearchImmediate(query);
 
-    if (parsed.category !== undefined) {
-      hasInitializedDefaultCategory.current = true;
-      setCategory(parsed.category);
+    // With no category and no search term the address doesn't ask for a view, so once one is open it stays.
+    if (parsed.category === undefined && !query && hasInitializedDefaultCategory.current) {
       return;
     }
 
-    if (!hasInitializedDefaultCategory.current) {
-      hasInitializedDefaultCategory.current = true;
-      setCategory(DEFAULT_STORE_CATEGORY);
-    }
+    hasInitializedDefaultCategory.current = true;
+
+    // Featured never runs a search, so an address carrying one opens the full catalog instead.
+    const nextCategory = parsed.category ?? (query ? undefined : DEFAULT_STORE_CATEGORY);
+    setCategory(shouldLeaveFeaturedForSearch(nextCategory, query) ? undefined : nextCategory);
   }, [ownsAddress, searchParams, setCategory, setSearchImmediate]);
 
   const { data: appStores } = useQuery({
@@ -115,6 +123,8 @@ export default () => {
         });
 
         if (next.toString() === prev.toString()) {
+          // The address isn't changing, so no read will come along to clear a flag set by an earlier write.
+          isWritingBrowseUrl.current = false;
           return prev;
         }
 

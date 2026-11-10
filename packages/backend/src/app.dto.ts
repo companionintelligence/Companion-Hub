@@ -138,7 +138,6 @@ const poolPinsSchema = z.array(poolPinSchema).max(MAX_POOL_PINS);
 
 export const settingsSchema = z.object({
   advancedSettings: z.boolean(),
-  allowAutoThemes: z.boolean(),
   allowErrorMonitoring: z.boolean(),
   appDataPath: z.string().trim(),
   appsRepoUrl: z.string().url().optional(),
@@ -407,7 +406,6 @@ const versionSchema = z.object({
  */
 const APP_CONTEXT_SETTINGS = {
   advancedSettings: true,
-  allowAutoThemes: true,
   allowErrorMonitoring: true,
   appDataPath: true,
   appsRepoUrl: true,
@@ -551,7 +549,6 @@ const userContextDto = z.object({
   isConfigured: z.boolean(),
   isGuestDashboardEnabled: z.boolean(),
   isPasswordResetDisabled: z.boolean(),
-  allowAutoThemes: z.boolean(),
   allowErrorMonitoring: z.boolean(),
   themeColor: z.string(),
   localDomain: z.string(),
