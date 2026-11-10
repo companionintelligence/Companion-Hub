@@ -1,5 +1,7 @@
-import { isIPv6 } from 'node:net';
+import { isIP, isIPv6 } from 'node:net';
 import { TranslatableError } from '@/common/error/translatable-error';
+import { normalizeIpLiteral } from '@/common/helpers/ip-address';
+import { isThisHostAddress } from '@/common/helpers/this-host-address';
 import { HttpStatus, Injectable } from '@nestjs/common';
 
 /**
@@ -35,6 +37,28 @@ const SCOPES = {
 
 export type AuthRateScope = keyof typeof SCOPES;
 
+/** The parts of an incoming request the limiter reads. */
+export interface AuthClientRequest {
+  ip?: string;
+  socket?: { remoteAddress?: string };
+  headers?: Record<string, string | string[] | undefined>;
+}
+
+const TUNNEL_POOL = 'tunnel';
+
+/** Marks a shared pool's key in the table. A client's key is a scope and an address, so it never contains this. */
+const POOL_KEY_PART = ':pool:';
+
+/**
+ * How many clients' worth of a scope everyone named by `CF-Connecting-IP` shares between them.
+ *
+ * The header is only as honest as whoever sent it (see {@link AuthRateLimiter.admitRequest}), and a
+ * caller on the machine can write it. This keeps a limit on that caller that does not depend on the
+ * header: inventing addresses buys at most this many clients' budgets, in place of an unlimited number.
+ * One stranger with one address uses 1/10th of it and cannot reach it.
+ */
+const TUNNEL_POOL_FACTOR = 10;
+
 /** Bound on tracked addresses, so a client rotating through IPv6 space cannot grow the table without limit. */
 const MAX_TRACKED_KEYS = 10_000;
 
@@ -48,9 +72,12 @@ const MAX_TRACKED_KEYS = 10_000;
  * person keeps the same one from whichever address they are on.
  *
  * The address is whatever Express resolved through the Hub's trusted-proxy configuration, so it is
- * the real client behind Traefik and the tunnel, not the proxy's own. Where a caller reaches the Hub
- * through a hop the Hub does not vouch for (a Docker Desktop port mapping, an operator's own proxy
- * without `HUB_TRUST_PROXY`), every caller shares the proxy's address and therefore one budget.
+ * the real client behind Traefik, not the proxy's own. The Hub's own public hostname does NOT come
+ * through Traefik: Portal points that tunnel route at the published port, so it arrives from a
+ * Docker bridge gateway like `localhost` does, and {@link admitRequest} names the visitor from
+ * Cloudflare's header instead. Where a caller reaches the Hub through a hop the Hub does not vouch
+ * for (a Docker Desktop port mapping, an operator's own proxy without `HUB_TRUST_PROXY`), every
+ * caller shares the proxy's address and therefore one budget.
  */
 @Injectable()
 export class AuthRateLimiter {
@@ -60,26 +87,72 @@ export class AuthRateLimiter {
   public now: () => number = Date.now;
 
   /**
+   * {@link admit} for an incoming request, keyed on who sent it.
+   *
+   * A request that arrives from the host's bridge gateway and carries `CF-Connecting-IP` is limited
+   * as the address in that header, so a stranger on the public address spends their own budget and
+   * not the budget of `localhost`, the owner's, or the next visitor's. Cloudflare sets that header
+   * itself and refuses a visitor's own copy (error 1000), which is why this one and no other: a
+   * visitor's `X-Forwarded-For` entries and `True-Client-IP` arrive at the Hub intact.
+   *
+   * ⚠ Only for this limiter, and only from the gateway (or loopback, see `isThisHostAddress`). From
+   * anywhere else the header is ignored, or anyone on the LAN could name themselves after someone
+   * else. From the gateway a caller on the machine can still write it (an app container that dials
+   * the host arrives from there too), so it chooses which tunnel visitor's budget it spends but not
+   * how much: {@link TUNNEL_POOL_FACTOR} caps the total. Those budgets are held apart from the ones
+   * direct peers are counted under, so naming a LAN address or the gateway spends nothing of that
+   * client's own. Never feed this into `req.ip` or a guard: it is good enough to say whose turn it
+   * is, not who someone is.
+   */
+  public admitRequest(scope: AuthRateScope, request: AuthClientRequest): () => void {
+    const visitor = this.tunnelVisitor(request);
+
+    return visitor ? this.admit(scope, `${TUNNEL_POOL}:${addressKey(visitor)}`, TUNNEL_POOL) : this.admit(scope, authClientKey(request));
+  }
+
+  /** The address in `CF-Connecting-IP` when {@link admitRequest} should believe it, otherwise `undefined`. */
+  private tunnelVisitor(request: AuthClientRequest): string | undefined {
+    // The socket's peer and not `req.ip`, which `HUB_TRUST_PROXY` lets a header rewrite.
+    if (!isThisHostAddress(request.socket?.remoteAddress)) {
+      return undefined;
+    }
+
+    const header = request.headers?.['cf-connecting-ip'];
+    // Normalized so the key is the address alone: `isIP` also accepts a zone suffix of any length.
+    const address = typeof header === 'string' ? normalizeIpLiteral(header) : null;
+
+    return address && isIP(address) ? address : undefined;
+  }
+
+  /**
    * Throw 429 if `clientKey` has used up `scope`; otherwise reserve a slot for this request.
    *
    * @returns a function that gives the slot back, for a request that turned out not to be a guess. It
    * gives back only this request's own slot: a success does not wipe the failures of other requests
    * from the same address, or one correct login would reset the budget for guessing at the others.
    * It does nothing in an `attempts` scope.
+   *
+   * @param sharedPool a second budget this request also counts against, {@link TUNNEL_POOL_FACTOR}
+   * times the size of the first and held under this name.
    */
-  public admit(scope: AuthRateScope, clientKey: string): () => void {
+  public admit(scope: AuthRateScope, clientKey: string, sharedPool?: string): () => void {
     const { mode, limit, windowMs } = SCOPES[scope];
-    const key = `${scope}:${clientKey}`;
-    const recent = this.recent(key, windowMs);
+    const budgets: Array<{ key: string; limit: number }> = [{ key: `${scope}:${clientKey}`, limit }];
 
-    if (recent.length >= limit) {
-      const oldest = recent[0] ?? this.now();
-      const retryAfter = Math.max(1, Math.ceil((oldest + windowMs - this.now()) / 1000));
-      throw new TranslatableError('AUTH_ERROR_RATE_LIMITED', { retryAfter: String(retryAfter) }, HttpStatus.TOO_MANY_REQUESTS);
+    if (sharedPool) {
+      budgets.push({ key: `${scope}${POOL_KEY_PART}${sharedPool}`, limit: limit * TUNNEL_POOL_FACTOR });
+    }
+
+    // Every budget is checked before any is spent, so being refused by the pool costs the client nothing.
+    for (const budget of budgets) {
+      this.refuseIfSpent(budget.key, budget.limit, windowMs);
     }
 
     const at = this.now();
-    this.record(key, recent, at);
+
+    for (const { key } of budgets) {
+      this.record(key, this.recent(key, windowMs), at);
+    }
 
     if (mode !== 'failures') {
       return () => undefined;
@@ -91,9 +164,22 @@ export class AuthRateLimiter {
     return () => {
       if (!refunded) {
         refunded = true;
-        this.refund(key, at);
+
+        for (const { key } of budgets) {
+          this.refund(key, at);
+        }
       }
     };
+  }
+
+  private refuseIfSpent(key: string, limit: number, windowMs: number): void {
+    const recent = this.recent(key, windowMs);
+
+    if (recent.length >= limit) {
+      const oldest = recent[0] ?? this.now();
+      const retryAfter = Math.max(1, Math.ceil((oldest + windowMs - this.now()) / 1000));
+      throw new TranslatableError('AUTH_ERROR_RATE_LIMITED', { retryAfter: String(retryAfter) }, HttpStatus.TOO_MANY_REQUESTS);
+    }
   }
 
   /** Whether `clientKey` has used up `scope`, so its next request would be refused. */
@@ -166,14 +252,15 @@ export class AuthRateLimiter {
       }
     }
 
-    // Everything is live and the table is still over the cap: drop the oldest entries first. Account
-    // budgets stay: there is one per person on this Hub, so they cannot grow the table and the budget
-    // that ignores the address must not be emptied by traffic from other addresses.
+    // Everything is live and the table is still over the cap: drop the oldest entries first. Never a
+    // shared pool: there is one per scope, and it is usually the oldest, so dropping it would refill it.
+    // Account budgets stay too: there is one per person on this Hub, so they cannot grow the table and
+    // the budget that ignores the address must not be emptied by traffic from other addresses.
     for (const key of this.hits.keys()) {
       if (this.hits.size <= MAX_TRACKED_KEYS) {
         break;
       }
-      if (!key.startsWith('accountRecheck:')) {
+      if (!key.includes(POOL_KEY_PART) && !key.startsWith('accountRecheck:')) {
         this.hits.delete(key);
       }
     }
@@ -181,13 +268,19 @@ export class AuthRateLimiter {
 }
 
 /**
- * The key an address is limited under: the address itself, except that an IPv6 client is limited as
- * its whole /64. A host is routinely given a /64 (that is what a home connection or a cloud VM gets),
- * so keying on the full address would hand anyone with one billions of fresh budgets. An IPv4-mapped
- * IPv6 address is the IPv4 address it wraps.
+ * The key a request's own address is limited under: see {@link addressKey}.
  */
-export function authClientKey(request: { ip?: string; socket?: { remoteAddress?: string } }): string {
-  const address = request.ip ?? request.socket?.remoteAddress ?? 'unknown';
+export function authClientKey(request: AuthClientRequest): string {
+  return addressKey(request.ip ?? request.socket?.remoteAddress ?? 'unknown');
+}
+
+/**
+ * The address itself, except that an IPv6 client is limited as its whole /64. A host is routinely
+ * given a /64 (that is what a home connection or a cloud VM gets), so keying on the full address
+ * would hand anyone with one billions of fresh budgets. An IPv4-mapped IPv6 address is the IPv4
+ * address it wraps.
+ */
+function addressKey(address: string): string {
   const unwrapped = address.replace(/^::ffff:/i, '');
 
   return ipv6Prefix64(unwrapped) ?? unwrapped;
