@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { KV_CACHE_SCALE, LEMONADE_KV_CACHE_FLAGS, lemonadeSavesOptionsWithoutLoading, withKvCacheFlags } from '../backends/lemonade-kv-cache.util';
+import {
+  KV_CACHE_SCALE,
+  LEMONADE_KV_CACHE_FLAGS,
+  lemonadeSavesOptionsWithoutLoading,
+  savedKvCacheType,
+  withKvCacheFlags,
+  withoutKvCacheFlags,
+} from '../backends/lemonade-kv-cache.util';
 
 describe('withKvCacheFlags', () => {
   const Q8 = LEMONADE_KV_CACHE_FLAGS.q8_0;
@@ -25,6 +32,30 @@ describe('withKvCacheFlags', () => {
   it('is idempotent, so saving it on every load changes nothing after the first', () => {
     const once = withKvCacheFlags('--parallel 1', 'q8_0');
     expect(withKvCacheFlags(once, 'q8_0')).toBe(once);
+  });
+});
+
+describe('withoutKvCacheFlags', () => {
+  it('takes the cache and flash-attention flags out and keeps every other flag as written', () => {
+    const saved = `--temp 1.0 --chat-template-kwargs '{"preserve_thinking":true}' --parallel 1`;
+    expect(withoutKvCacheFlags(`${saved} ${LEMONADE_KV_CACHE_FLAGS.q8_0}`)).toBe(saved);
+    expect(withoutKvCacheFlags(LEMONADE_KV_CACHE_FLAGS.q8_0)).toBe('');
+    expect(withoutKvCacheFlags(undefined)).toBe('');
+  });
+});
+
+describe('savedKvCacheType', () => {
+  it('reads the quantized V cache a saved flag string sets, in either spelling', () => {
+    expect(savedKvCacheType(`--parallel 1 ${LEMONADE_KV_CACHE_FLAGS.q8_0}`)).toBe('q8_0');
+    expect(savedKvCacheType('-ctv q8_0')).toBe('q8_0');
+    expect(savedKvCacheType('--cache-type-v=q8_0')).toBe('q8_0');
+  });
+
+  it('is null for the 16-bit default, a K-only setting, or nothing saved', () => {
+    expect(savedKvCacheType('--parallel 1')).toBeNull();
+    expect(savedKvCacheType('--cache-type-k q8_0')).toBeNull();
+    expect(savedKvCacheType('--cache-type-v f16')).toBeNull();
+    expect(savedKvCacheType(null)).toBeNull();
   });
 });
 

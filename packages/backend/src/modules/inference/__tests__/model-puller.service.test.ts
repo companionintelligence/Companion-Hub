@@ -284,7 +284,7 @@ describe('ModelPullerService.evaluatePull', () => {
     expect(result.alreadyInstalled).toBe(true);
   });
 
-  it("passes a text model's measured KV cache type to the engine, which decides whether it can set it", async () => {
+  it("passes the cache the router's plan sized the window for, and nothing when the plan names none", async () => {
     const quantized = {
       ...curated,
       id: 'qwen3-8-27b-lemonade',
@@ -296,9 +296,12 @@ describe('ModelPullerService.evaluatePull', () => {
     modelRegistry.getCuratedModel.mockReturnValue(quantized);
     lemonadeBackend.engineModelId.mockImplementation((id) => id);
 
-    await service.loadModel('qwen3-8-27b-lemonade', { contextLength: 65_536 });
+    await service.loadModel('qwen3-8-27b-lemonade', { contextLength: 65_536, kvCacheType: 'q8_0' });
+    expect(lemonadeBackend.loadModel).toHaveBeenLastCalledWith('Qwen3.8-27B-GGUF', { embedding: false, contextLength: 65_536, kvCacheType: 'q8_0' });
 
-    expect(lemonadeBackend.loadModel).toHaveBeenCalledWith('Qwen3.8-27B-GGUF', { embedding: false, contextLength: 65_536, kvCacheType: 'q8_0' });
+    // The catalog row alone decides nothing: that is the plan's to say.
+    await service.loadModel('qwen3-8-27b-lemonade', { contextLength: 32_768 });
+    expect(lemonadeBackend.loadModel).toHaveBeenLastCalledWith('Qwen3.8-27B-GGUF', { embedding: false, contextLength: 32_768 });
   });
 
   it('loads and unloads under the name the engine knows the model by', async () => {

@@ -3,6 +3,7 @@ import { clampOllamaSlots } from '@/common/helpers/inference-ollama-slots';
 import type { InferenceBackend } from './backends/backend.interface';
 import type { FootprintSighting } from './context-length.util';
 import type { ContextCost } from './model-geometry.util';
+import { KV_CACHE_SCALE, type KvCacheChoice } from './backends/lemonade-kv-cache.util';
 
 /**
  * What a token of context costs `model` on `backend`, from the best source there is: the engine's
@@ -18,18 +19,19 @@ import type { ContextCost } from './model-geometry.util';
  * its weights, encoders and runtime hold 4,046-4,357 MiB, so the file would put back the refusal the
  * measurement fixed.
  *
- * Both sources are 16-bit figures. An engine that will run the model with the quantized cache its row
- * names (`runtime.kvCacheType`) says how much less that costs (`InferenceBackend.kvCacheScale`), and
- * the per-token cost is scaled by it, so the load window and every app handout size the cache the
- * engine really allocates: 65536 tokens of Qwen 3.8 27B on a 24 GiB card instead of 32768.
+ * Both sources are 16-bit figures. `kvCacheType` asks for the cost with a given cache: `f16` is the base
+ * the load planner decides from, `q8_0` scales it by 34/64. Absent, the cost is the cache the engine
+ * has set for the model now (`InferenceBackend.kvCacheScale`), which is what app handouts must size: a
+ * Lemonade model the planner saved with q8_0 holds 65536 tokens of Qwen 3.8 27B on a 24 GiB card where
+ * 16-bit holds 32768, and Hermes is told so.
  *
  * Only meaningful for a model this node serves; a peer's engine cannot be asked from here.
  * Never throws: a probe that fails costs only the measurement.
  */
-export async function probeContextCost(backend: InferenceBackend, model: CuratedModel): Promise<ContextCost | null> {
+export async function probeContextCost(backend: InferenceBackend, model: CuratedModel, kvCacheType?: KvCacheChoice): Promise<ContextCost | null> {
   const cost = await probeEngineAndCatalog(backend, model);
   if (!cost) return null;
-  const scale = kvCacheScaleOf(backend, model);
+  const scale = kvCacheType === undefined ? kvCacheScaleOf(backend, model) : kvCacheType === 'f16' ? 1 : KV_CACHE_SCALE[kvCacheType];
   const scaled = scale < 1 ? { ...cost, kvMbPerToken: cost.kvMbPerToken * scale } : cost;
   return model.runtime.footprintMeasured ? { ...scaled, weightMb: null } : scaled;
 }

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { KvCacheChoice } from './backends/lemonade-kv-cache.util';
 import { LoggerService } from '@/core/logger/logger.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import type { CuratedModel, HardwareProfile, HardwareTier, PullProgress } from '@ci-hub/common/types';
@@ -426,7 +427,7 @@ export class ModelPullerService {
    * inference router should go through `InferenceRouterService.loadTrackedModel`, which makes room
    * and sizes the window first; this only talks to the engine.
    */
-  async loadModel(catalogId: string, options?: { contextLength?: number; provisionalWindow?: boolean }): Promise<void> {
+  async loadModel(catalogId: string, options?: { contextLength?: number; provisionalWindow?: boolean; kvCacheType?: KvCacheChoice }): Promise<void> {
     const curated = this.modelRegistry.getCuratedModel(catalogId);
     if (!curated) {
       throw new Error(`Model ${catalogId} not found in catalog`);
@@ -451,9 +452,8 @@ export class ModelPullerService {
         contextLength: options?.contextLength,
         ...(options?.provisionalWindow ? { provisionalWindow: true } : {}),
         ...(onCpu && { device: 'cpu' }),
-        // The cache the window was sized for (context-cost.util scales by kvCacheScale): the engine
-        // decides whether it can set it, by the same rule it answered the sizing with.
-        ...(!embedding && curated.runtime.kvCacheType && { kvCacheType: curated.runtime.kvCacheType }),
+        // The cache the router's plan sized the window for (planLoad); absent leaves the model's own.
+        ...(!embedding && options?.kvCacheType && { kvCacheType: options.kvCacheType }),
       });
       this.modelRegistry.updateModelState(catalogId, 'loaded');
       this.modelRegistry.markHubLoaded(catalogId);

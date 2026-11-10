@@ -15,6 +15,9 @@ import type { CuratedModel } from '@ci-hub/common/types';
 
 type KvCacheType = NonNullable<CuratedModel['runtime']['kvCacheType']>;
 
+/** The cache a load runs with: the 16-bit default, or a quantized type. */
+export type KvCacheChoice = 'f16' | KvCacheType;
+
 /** llama-server flags for each cache type. A quantized V cache needs flash attention, so it is forced on. */
 export const LEMONADE_KV_CACHE_FLAGS: Record<KvCacheType, string> = {
   q8_0: '-fa on --cache-type-k q8_0 --cache-type-v q8_0',
@@ -60,6 +63,34 @@ function tokenize(args: string): string[] {
  * absent when the model has none saved.
  */
 export function withKvCacheFlags(args: unknown, type: KvCacheType): string {
+  const kept = withoutOwnedFlags(args);
+  return [...kept, LEMONADE_KV_CACHE_FLAGS[type]].join(' ');
+}
+
+/**
+ * `args` with any flash-attention and cache-type flags taken out and every other flag kept as
+ * written: what a model goes back to for the 16-bit cache. Empty when nothing else was saved.
+ */
+export function withoutKvCacheFlags(args: unknown): string {
+  return withoutOwnedFlags(args).join(' ');
+}
+
+/**
+ * The quantized cache type a saved `llamacpp_args` sets — what Lemonade runs the model with on its
+ * next load, whoever saved it — or null for the 16-bit default.
+ */
+export function savedKvCacheType(args: unknown): KvCacheType | null {
+  const tokens = typeof args === 'string' ? tokenize(args) : [];
+  for (let i = 0; i < tokens.length; i++) {
+    const [name, inlineValue] = (tokens[i] as string).split('=', 2) as [string, string | undefined];
+    if (name !== '-ctv' && name !== '--cache-type-v') continue;
+    const value = (inlineValue ?? tokens[i + 1] ?? '').toLowerCase();
+    if (value === 'q8_0') return 'q8_0';
+  }
+  return null;
+}
+
+function withoutOwnedFlags(args: unknown): string[] {
   const tokens = typeof args === 'string' ? tokenize(args) : [];
   const kept: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
@@ -75,7 +106,22 @@ export function withKvCacheFlags(args: unknown, type: KvCacheType): string {
       name === '-fa' || name === '--flash-attn' ? next !== undefined && FLASH_ATTN_VALUES.has(next.toLowerCase()) : next !== undefined;
     if (takesValue) i++;
   }
-  return [...kept, LEMONADE_KV_CACHE_FLAGS[type]].join(' ');
+  return kept;
+}
+
+/**
+ * A load with a quantized KV cache failed, and its flags were taken back out of the model's saved
+ * options. The router re-plans at 16-bit and loads once more; only when that succeeds was the cache
+ * the cause, and the model is marked unable to use it (`InferenceBackend.markKvCacheUnsupported`).
+ */
+export class KvCacheLoadError extends Error {
+  constructor(
+    readonly kvCacheType: KvCacheChoice,
+    readonly loadError: unknown,
+  ) {
+    super(`Loading with a ${kvCacheType} KV cache failed: ${loadError instanceof Error ? loadError.message : String(loadError)}`);
+    this.name = 'KvCacheLoadError';
+  }
 }
 
 /**
