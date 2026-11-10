@@ -338,7 +338,9 @@ export class InferenceEnvResolver {
             })
           : null,
         askOllama ? this.ollamaBackend.residentContextLength(chatCurated.backendModelId) : null,
-        chatServedLocally ? Promise.resolve(backend.servedContextLength?.(chatCurated.backendModelId) ?? null).catch(() => null) : null,
+        // Asked for the id the app is handed: a host-managed engine may serve a model the catalog row
+        // does not name (the runtime fallback above, or a --served-model-name alias).
+        chatServedLocally ? Promise.resolve(backend.servedContextLength?.(chatModel) ?? null).catch(() => null) : null,
         // Not counting what the model itself holds now, or a resident model is sized against itself.
         // Asked of the model's own engine: a pool model served here need not be on the active one.
         chatServedLocally ? handoutCeilingMb(this.memoryManager, profile, chatCurated) : modelMemoryCeilingMb(profile),
