@@ -96,8 +96,11 @@ rabbitmq_password_docker_says_absent() {
 # Empty when docker says none of them exists. When docker cannot answer (a timeout, or any error that
 # is not "No such ..."), prints an ERROR and fails: "could not check" is never read as "absent".
 rabbitmq_password_hub_container() {
-  local name rc
-  for name in "$1" ci-hub ci-os-hub; do
+  local name rc names=()
+  # $1 first, unless it is one of the two names probed anyway, so each name is probed (and named) once.
+  case "$1" in "" | ci-hub | ci-os-hub) ;; *) names+=("$1") ;; esac
+  names+=(ci-hub ci-os-hub)
+  for name in "${names[@]}"; do
     rc=0
     rabbitmq_password_docker_capture container inspect "$name" || rc=$?
     if [ "$rc" = 0 ]; then
@@ -109,7 +112,9 @@ rabbitmq_password_hub_container() {
       return 1
     fi
   done
-  echo "   NOTE: no Hub container (${1:+$1, }ci-hub, ci-os-hub) exists" >&2
+  local listed
+  listed="$(printf '%s, ' "${names[@]}")"
+  echo "   NOTE: no Hub container (${listed%, }) exists" >&2
 }
 
 # The value of $2 in the environment compose gave the container $1, from `docker inspect`. Empty when

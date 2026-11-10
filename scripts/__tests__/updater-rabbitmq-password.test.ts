@@ -33,7 +33,8 @@ const IS_ROOT = process.getuid?.() === 0;
  * Missing-container output is Docker CLI 29.9.3's (measured 2026-11-09): an untyped `docker inspect
  * NAME` prints "[]" on stdout (without -f) and "error: no such object: NAME" on stderr; a typed
  * `docker container inspect NAME` prints "Error response from daemon: No such container: NAME" on
- * stderr. Both exit 1. STUB_OLD_DOCKER gives the older untyped form, "Error: No such object: NAME".
+ * stderr. Both exit 1. STUB_OLD_DOCKER gives the older untyped form, "Error: No such object: NAME",
+ * and STUB_LOWER_TYPED a lowercase typed one, "error response from daemon: no such container: NAME".
  * STUB_DOCKER_ERROR (stderr text, exit 1, empty stdout) answers every inspect whose argv matches the
  * glob STUB_DOCKER_ERROR_ON, as a daemon that is down would.
  *
@@ -69,7 +70,8 @@ case "$1" in
     queue="\${STUB_QUEUE:-ci-hub-queue}"
     absent() {
       [ "$2" = untyped-no-format ] && echo '[]'
-      if [ -n "$typed" ]; then echo "Error response from daemon: No such container: $1" >&2
+      if [ -n "$typed" ] && [ -n "\${STUB_LOWER_TYPED:-}" ]; then echo "error response from daemon: no such container: $1" >&2
+      elif [ -n "$typed" ]; then echo "Error response from daemon: No such container: $1" >&2
       elif [ -n "\${STUB_OLD_DOCKER:-}" ]; then echo "Error: No such object: $1" >&2
       else echo "error: no such object: $1" >&2; fi
       exit 1
@@ -638,6 +640,7 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
     it.each([
       ['Docker 29', {}],
       ['older Docker', { STUB_OLD_DOCKER: '1' }],
+      ['a lowercase typed answer', { STUB_LOWER_TYPED: '1' }],
     ])('with no Hub container (%s), carries on and says so, with no ERROR', (_docker, env) => {
       writeFileSync(envFile, 'JWT_SECRET=jwt\nRABBITMQ_PASSWORD=admin\n', { mode: 0o600 });
       // The prepare step only: with no Hub there is no password to move the broker onto.
@@ -645,7 +648,7 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
 
       const result = spawnSync('bash', ['-c', prepareOnly, 'bash', envFile], { encoding: 'utf-8', env: baseEnv({ STUB_NO_HUB: '1', ...env }, '') });
 
-      expect(output(result)).toContain('NOTE: no Hub container (ci-hub, ci-hub, ci-os-hub) exists');
+      expect(output(result)).toContain('NOTE: no Hub container (ci-hub, ci-os-hub) exists');
       expect(output(result)).not.toContain('ERROR');
       expect(output(result)).not.toContain('could not check');
       // No Hub password to reuse and none exported, so the file gets a password of its own.
@@ -653,6 +656,7 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
       expect(result.stdout).toContain('CONTINUED');
       expect(result.stdout).toContain('wrote a new random password');
       expect(passwordLines()).toHaveLength(1);
+      expect(passwordLines()[0]).toMatch(/^RABBITMQ_PASSWORD=[0-9a-f]{64}$/);
     });
 
     it('finds the broker of a ci-os-hub layout, where ci-hub-queue does not exist', () => {
@@ -699,6 +703,27 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
       expect(readFileSync(envFile, 'utf-8')).toBe(body);
       expect(broker()).toBe('admin');
       expect(argvLog()).not.toContain('rabbitmqctl');
+    });
+  });
+
+  describe('rabbitmq_password_docker_says_absent', () => {
+    const saysAbsent = (stderr: string) =>
+      spawnSync('bash', ['-c', `. ${JSON.stringify(HELPER)}\nrabbitmq_password_docker_says_absent "$1"`, 'bash', stderr]).status === 0;
+
+    it.each([
+      'error: no such object: X',
+      'Error response from daemon: No such container: X',
+      'Error: No such object: X',
+      'error response from daemon: no such container: X',
+    ])('reads %j as absent', (stderr) => {
+      expect(saysAbsent(stderr)).toBe(true);
+    });
+
+    it.each([
+      'dial unix /var/run/docker.sock: connect: no such file or directory',
+      'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?',
+    ])('reads %j as could-not-check, not absent', (stderr) => {
+      expect(saysAbsent(stderr)).toBe(false);
     });
   });
 
@@ -850,6 +875,10 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
         .split('\n')
         .filter((line) => line.startsWith('docker '));
       expect(helperDockerCalls.length).toBeGreaterThanOrEqual(10);
+      // Every inspect is typed: an untyped one answers a missing container differently (see the stub).
+      const inspects = helperDockerCalls.filter((line) => / inspect /.test(` ${line} `));
+      expect(inspects.some((line) => line.includes('.State.Health'))).toBe(true);
+      for (const line of inspects) expect(line).toMatch(/^container inspect /);
       expect(wrapped.map((line) => line.slice('docker '.length))).toEqual(helperDockerCalls);
     });
   });
