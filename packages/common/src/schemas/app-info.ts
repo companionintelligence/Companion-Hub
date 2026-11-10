@@ -936,17 +936,20 @@ export type AppInfoInput = z.input<typeof appInfoObjectSchema>;
 export type AppInfo = z.output<typeof appInfoObjectSchema>;
 export type FormField = z.output<typeof formFieldSchema>;
 
-export const frontmatterSchema = z
-  .object({
-    name: appInfoObjectSchema.shape.name.optional(),
-    short_desc: appInfoObjectSchema.shape.short_desc.optional(),
-    description: appInfoObjectSchema.shape.description.optional(),
-    source: appInfoObjectSchema.shape.source.optional(),
-    website: appInfoObjectSchema.shape.website.optional(),
-    author: appInfoObjectSchema.shape.author.optional(),
-    categories: appInfoObjectSchema.shape.categories.optional().default(['development']),
-    version: appInfoObjectSchema.shape.version.optional(),
-    port: appInfoObjectSchema.shape.port.optional(),
-    supported_architectures: appInfoObjectSchema.shape.supported_architectures.optional().default(['amd64', 'arm64']),
-  })
-  .optional();
+/**
+ * What a custom app's note can change in its `config.json`. A key the note leaves out has to stay out of
+ * the result or saving the note overwrites the app's value, so no field here may have a default. Reusing
+ * `appInfoObjectSchema.shape.x.optional()` for a field that has one brings that default along.
+ */
+export const frontmatterSchema = z.object({
+  name: appInfoObjectSchema.shape.name.optional(),
+  short_desc: appInfoObjectSchema.shape.short_desc.optional(),
+  description: z.string().optional(),
+  source: appInfoObjectSchema.shape.source.optional(),
+  website: appInfoObjectSchema.shape.website.optional(),
+  author: appInfoObjectSchema.shape.author.optional(),
+  categories: z.enum(APP_CATEGORIES).array().optional(),
+  version: z.string().optional(),
+  port: appInfoObjectSchema.shape.port.optional(),
+  supported_architectures: z.enum(ARCHITECTURES).array().optional(),
+});
