@@ -1,6 +1,7 @@
 import { AppCommandDeadline, appEventsQueueTimeoutMs } from '@/common/helpers/app-command-deadline';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
+import { resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import messages from '@ci-hub/common/i18n/translations/en.json';
 import type { AppServiceFailure, HostPortMove, SSE } from '@ci-hub/common/schemas';
 import { isPortExposeApp, manifestDefaultsEdgeAuthOn, servedOpenPort } from '@ci-hub/common/schemas';
@@ -3249,7 +3250,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
     // The row as it was published: the sync judged it by its stored form, not its columns.
-    const routingChanged = didPublicRoutingIdentityChange(publicRoutingSnapshotOf(app as AppPublicRoutingSnapshot), parsedForm, appName, appStoreId);
+    const routingChanged = didPublicRoutingIdentityChange(
+      publicRoutingSnapshotOf(app as AppPublicRoutingSnapshot),
+      parsedForm,
+      appName,
+      appStoreId,
+      resolveHubPublicDomainRoot(this.config.getConfig()),
+    );
 
     if (!changed?.pendingRestart) {
       await this.appRepository.updateAppById(app.id, { pendingRestart: settingsChanged });

@@ -124,19 +124,6 @@ export class SystemController {
   }
 
   @UseGuards(AuthGuard)
-  @Get('/certificate')
-  async downloadLocalCertificate(@Res() res: Response) {
-    const cert = await this.systemService.getLocalCertificate();
-
-    res.set({
-      'Content-Type': 'application/x-pem-file',
-      'Content-Disposition': 'attachment; filename=cert.pem',
-    });
-
-    return res.send(cert);
-  }
-
-  @UseGuards(AuthGuard)
   @Get('/detect-services')
   async detectServices() {
     return this.systemService.detectDockerServices();

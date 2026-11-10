@@ -74,14 +74,14 @@ The publisher is additive. `publish-package-managers.sh` copies the files under 
 
 ```bash
 # For a file URL, e.g. the macOS Intel DMG:
-curl -sL https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_x64.dmg | sha256sum
+curl -sL https://github.com/companionintelligence/Companion-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_x64.dmg | sha256sum
 
 # Or download first, then hash:
-curl -LO https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_x64.dmg
+curl -LO https://github.com/companionintelligence/Companion-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_x64.dmg
 sha256sum Companion.Hub_0.2.4_x64.dmg
 
 # For Nix (requires base64-encoded sha256):
-nix-prefetch-url https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_amd64.AppImage
+nix-prefetch-url https://github.com/companionintelligence/Companion-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_amd64.AppImage
 ```
 
 #### Assets requiring SHA256
@@ -192,7 +192,7 @@ program.
 **On Linux the uninstall is a full purge, not a `remove`.** Cleanup deletes Hub-related state
 in user config/cache/data directories **and the Hub Docker data volumes** (`ci_hub_pgdata`,
 `ci_hub_app_data`, `hub_tailscale_state`), that is the database and all app data. This is
-intentional ([#566](https://github.com/companionintelligence/CI-Hub/issues/566)); there is
+intentional ([#566](https://github.com/companionintelligence/Companion-Hub/issues/566)); there is
 no `remove`-vs-`purge` distinction and no confirmation prompt. Users must back up before
 uninstalling.
 
@@ -219,7 +219,7 @@ every other file alone. The Homebrew cask's `zap` trashes those same files by na
 removes the folder only when empty. Plain `brew uninstall` (without `--zap`) and dragging
 the app to the Trash run no cleanup at all.
 
-**Installed marketplace apps are torn down too** ([#745](https://github.com/companionintelligence/CI-Hub/issues/745)).
+**Installed marketplace apps are torn down too** ([#745](https://github.com/companionintelligence/Companion-Hub/issues/745)).
 Each app Hub installs runs as its own Compose project (`<app>_<store>`) rather than as part
 of the Hub stack, so the uninstallers discover them via the `ci-os-hub.managed=true` label
 that Hub stamps on every managed app container (store-agnostic) and remove each app's
@@ -259,10 +259,10 @@ All installers should register the `cihub://` URL scheme. The app bundle ID is `
 All release assets are downloaded from:
 
 ```
-https://github.com/companionintelligence/CI-Hub/releases/download/v{version}/
+https://github.com/companionintelligence/Companion-Hub/releases/download/v{version}/
 ```
 
-See the [releases page](https://github.com/companionintelligence/CI-Hub/releases) for the full list of artifacts per release.
+See the [releases page](https://github.com/companionintelligence/Companion-Hub/releases) for the full list of artifacts per release.
 
 ---
 

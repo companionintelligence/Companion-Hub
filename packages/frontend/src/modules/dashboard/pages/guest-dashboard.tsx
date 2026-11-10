@@ -61,7 +61,7 @@ const Tile = ({ data, sslPort, publicDomain }: { data: GuestAppsDto['installed']
 
 export const GuestDashboard = () => {
   const { t } = useTranslation();
-  const { sslPort, domain } = useUserContext();
+  const { sslPort, domain, refreshUserContext } = useUserContext();
 
   const {
     data: appsData,
@@ -119,6 +119,9 @@ export const GuestDashboard = () => {
               type="button"
               variant="outline"
               onClick={() => {
+                // This tab may still think the dashboard is on while both lists answer 403.
+                // A fresh user context sends the visitor to sign-in, which refetching the lists never would.
+                void refreshUserContext();
                 void refetchApps();
                 void refetchLinks();
               }}
