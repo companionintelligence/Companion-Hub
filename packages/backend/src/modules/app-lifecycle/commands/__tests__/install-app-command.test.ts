@@ -763,12 +763,15 @@ describe('InstallAppCommand — pull policy', () => {
   });
 
   describe('removing the data of a cancelled install', () => {
-    const cancelDuringComposeUp = async (deadline?: AppCommandDeadline) => {
+    const cancelDuringComposeUp = async (deadline?: AppCommandDeadline, fails: (args: string) => boolean = () => false) => {
       const ac = new AbortController();
       dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
         if (args.includes('up --detach')) {
           ac.abort();
           throw new DOMException('Aborted', 'AbortError');
+        }
+        if (fails(args)) {
+          throw new Error(`docker compose ${args} exited with status 1`);
         }
       });
       return (await command.execute(appUrn, {}, { signal: ac.signal, setPhase: vi.fn(), deadline })) as Record<string, unknown>;
@@ -857,6 +860,41 @@ describe('InstallAppCommand — pull policy', () => {
       expect(result.warningCode).toBe('APP_INSTALL_CANCELLED_PARTIAL_REMNANT');
       expect(result.warningDetail).toBeUndefined();
       expect(result.message).toContain('app folder');
+    });
+
+    it('does not claim a clean-up when compose down fails, and still removes the folder and data', async () => {
+      const result = await cancelDuringComposeUp(undefined, (args) => args.startsWith('down'));
+
+      expect(result).toMatchObject({ cancelled: true, warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT' });
+      expect(result.warningDetail).toBeUndefined();
+      expect(result.message).toContain('its containers or volumes could not be fully removed');
+      expect(result.message).not.toContain('cleaned up');
+      expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
+      expect(appFilesManager.deleteAppDataDirDetailed).toHaveBeenCalledWith(appUrn);
+    });
+
+    it('names the app data with the containers when the data cannot go either', async () => {
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+      dockerService.removeAppDataDirAsRoot.mockResolvedValue(false);
+
+      const result = await cancelDuringComposeUp(undefined, (args) => args.startsWith('down'));
+
+      expect(result).toMatchObject({
+        cancelled: true,
+        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/store/test-app',
+      });
+      expect(result.message).toContain('its app data and containers or volumes could not be fully removed');
+    });
+
+    it('names all three when the app folder cannot go either', async () => {
+      appFilesManager.deleteAppFolder.mockResolvedValue(false);
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+      dockerService.removeAppDataDirAsRoot.mockResolvedValue(false);
+
+      const result = await cancelDuringComposeUp(undefined, (args) => args.startsWith('down'));
+
+      expect(result.message).toContain('its app folder, app data and containers or volumes could not be fully removed');
     });
   });
 
@@ -976,7 +1014,7 @@ describe('InstallAppCommand — pull policy', () => {
       expect(teardown).toEqual(['rm --force --stop -v', 'down --remove-orphans --rmi local']);
     });
 
-    it('still takes the install down when clearing the anonymous volumes fails', async () => {
+    it('still takes the install down when clearing the anonymous volumes fails, and says so', async () => {
       appVolumes.hasProjectVolumes.mockResolvedValue(true);
       dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
         composeArgs.push(args);
@@ -985,9 +1023,46 @@ describe('InstallAppCommand — pull policy', () => {
         }
       });
 
-      await cancelDuringThePull();
+      const result = await cancelDuringThePull();
 
       expect(composeDown()).toEqual(['down --remove-orphans --rmi local']);
+      expect(result).toMatchObject({ cancelled: true, warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT' });
+      expect(result.message).toContain('containers or volumes');
+      expect(result.message).not.toContain('cleaned up');
+    });
+
+    it('warns and does not claim a clean-up when compose down fails over data from before the install', async () => {
+      appFilesManager.hasAppData.mockResolvedValue(true);
+      dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
+        composeArgs.push(args);
+        if (args.startsWith('down')) {
+          throw new Error('compose down failed');
+        }
+      });
+
+      const result = await cancelDuringThePull();
+
+      expect(result).toMatchObject({ cancelled: true, warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT' });
+      expect(result.message).toContain('containers or volumes');
+      expect(result.message).toContain('left in place');
+      expect(result.message).not.toContain('cleaned up');
+      expect(appFilesManager.deleteAppDataDirDetailed).not.toHaveBeenCalled();
+    });
+
+    it('warns when compose down fails over named volumes from before the install', async () => {
+      appVolumes.hasProjectVolumes.mockResolvedValue(true);
+      dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
+        composeArgs.push(args);
+        if (args.startsWith('down')) {
+          throw new Error('compose down failed');
+        }
+      });
+
+      const result = await cancelDuringThePull();
+
+      expect(composeDown()).toEqual(['down --remove-orphans --rmi local']);
+      expect(result).toMatchObject({ cancelled: true, warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT' });
+      expect(result.message).not.toContain('cleaned up');
     });
 
     it('stops waiting for a Docker engine that does not answer and keeps the volumes', async () => {

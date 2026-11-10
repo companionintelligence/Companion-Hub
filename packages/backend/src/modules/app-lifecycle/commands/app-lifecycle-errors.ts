@@ -103,7 +103,7 @@ export type AppCommandFailureResult = {
   cancelled?: boolean;
   /** Resting status a before-PONR cancel reverted to (e.g. 'stopped'); unused by install. */
   cancelledStatus?: string;
-  /** A cancelled install that left files behind: `APP_INSTALL_CANCELLED_PARTIAL_REMNANT`. */
+  /** A cancelled install that left files, containers or volumes behind: `APP_INSTALL_CANCELLED_PARTIAL_REMNANT`. */
   warningCode?: string;
   /** Where the files left behind are on the host, for the page's manual `rm` command. */
   warningDetail?: string;
