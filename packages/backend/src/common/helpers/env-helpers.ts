@@ -239,10 +239,10 @@ export function resolveHubDomain(sources: {
  * production. Production requires an explicit value; an explicit `admin` remains
  * compatible but returns a migration warning.
  *
- * The `admin` escape hatch stays until the migrations that replace it have shipped
- * (Companion-Hub#884): a Hub released before them updates itself through a compose that
- * still falls back to `admin`, so refusing it here would crash-loop unattended nodes.
- * Removing the hatch, and failing closed on `admin`, is a follow-up.
+ * The `admin` escape hatch stays until every update path, including the in-app updater,
+ * replaces `admin` (Companion-Hub#884): a Hub released before that updates itself through a
+ * compose that still falls back to `admin`, so refusing it here would crash-loop unattended
+ * nodes. Removing the hatch, and failing closed on `admin`, is a follow-up.
  */
 export function resolveRabbitmqPassword(envMap: Map<string, string>): { password: string; warning?: string } {
   const isProduction = process.env.NODE_ENV === 'production';

@@ -13,6 +13,9 @@ HUB_CONTAINER="${HUB_CONTAINER_NAME:-ci-hub}"
 ENV_FILE_PATH=".env"
 HUB_PORT="${API_PORT:-5002}"
 HEALTH_TIMEOUT=120
+# How long the broker gets to come up after `up`: the start_period of ci-hub-queue's healthcheck in
+# docker-compose.prod.yml.
+BROKER_START_TIMEOUT=180
 SKIP_BACKUP="${SKIP_BACKUP:-false}"
 
 # shellcheck source=scripts/updater/rabbitmq-password.sh
@@ -153,10 +156,6 @@ for file in "${COMPOSE_FILES[@]}"; do
   echo "   OK: $file"
 done
 
-# Broker password (Companion-Hub#884): give the env file a RABBITMQ_PASSWORD other than admin before
-# compose reads it. See rabbitmq-password.sh.
-rabbitmq_password_prepare "$ENV_FILE_PATH" "$HUB_CONTAINER"
-
 # Check named volume exists (app data)
 if docker volume inspect ci_hub_app_data > /dev/null 2>&1; then
   echo "   OK: ci_hub_app_data volume exists"
@@ -191,6 +190,15 @@ else
   echo "2. Skipping backup (--skip-backup)"
 fi
 
+# ── Broker password ─────────────────────────────
+#
+# Companion-Hub#884: give the env file a RABBITMQ_PASSWORD other than admin before compose reads it.
+# After the backup, so the backup holds the file as it was before this update. See rabbitmq-password.sh.
+
+echo ""
+echo "2b. Checking the broker password..."
+rabbitmq_password_prepare "$ENV_FILE_PATH" "$HUB_CONTAINER"
+
 # ── Stop managed apps gracefully ────────────────
 
 echo ""
@@ -219,7 +227,7 @@ echo "5. Restarting services..."
 docker compose "${COMPOSE_ARGS[@]}" up -d --remove-orphans
 
 # Check the broker accepts the env file's password, on every run. See rabbitmq-password.sh.
-rabbitmq_password_check_broker "$ENV_FILE_PATH" "$HUB_CONTAINER" "$HEALTH_TIMEOUT"
+rabbitmq_password_check_broker "$ENV_FILE_PATH" "$HUB_CONTAINER" "$BROKER_START_TIMEOUT"
 
 # ── Wait for health ─────────────────────────────
 

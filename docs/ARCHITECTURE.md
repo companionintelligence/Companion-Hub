@@ -857,7 +857,7 @@ See [`e2e/README.md`](../e2e/README.md) for full lane documentation.
 | `RABBITMQ_HOST` | `ci-hub-queue` | RabbitMQ hostname |
 | `RABBITMQ_PORT` | `5672` | RabbitMQ port |
 | `RABBITMQ_USERNAME` | `companion` | Queue user |
-| `RABBITMQ_PASSWORD` | none in production; `admin` in development | Queue password. The prod compose requires it from the env file ([#884](https://github.com/companionintelligence/Companion-Hub/issues/884)). In production the Hub still starts on `admin` but logs a loud warning; that escape hatch stays until the migrations that replace `admin` have shipped, and removing it is a follow-up. |
+| `RABBITMQ_PASSWORD` | none in production; `admin` in development | Queue password. The prod compose requires it from the env file ([#884](https://github.com/companionintelligence/Companion-Hub/issues/884)). In production the Hub still starts on `admin` but logs a loud warning; that escape hatch stays until every update path, including the in-app updater, replaces `admin`, and removing it is a follow-up. |
 
 ### Networking
 
