@@ -5,6 +5,7 @@ import { parseEnvFile } from '../env-file.js';
 import { hostPathFromDockerPath, resolveRootFolderHost } from './paths.js';
 import { CI_CLOUD_DEFAULT, LOCAL_DEV_BACKEND_PORT, LOCAL_DEV_FRONTEND_PORT, type HubEnv } from './cli-types.js';
 import { bold } from './cli-ui.js';
+import type { HubContext } from './hub-context.js';
 
 const PACKAGE_JSON_URL = new URL('../../package.json', import.meta.url);
 
@@ -277,12 +278,14 @@ export function buildEnvOverrides(envFileName: string) {
   return overrides;
 }
 
-export function renderConfigLines(env: HubEnv) {
-  const envFileName = getEnvFileOrExit(env);
-  const fileVars = parseEnvFile(envFileName);
-  const rootFolder = resolveRootFolderHost(envFileName);
-  const composeProfiles = mergeComposeProfilesFromEnvFile(envFileName);
-  const mcpEnabled = (process.env.MCP_ENABLED || fileVars.MCP_ENABLED || 'true') !== 'false';
+export function renderConfigLines({ env, envFile, dataDir }: Pick<HubContext, 'env' | 'envFile' | 'dataDir'>) {
+  const fileVars = parseEnvFile(envFile);
+  const rootFolder = dataDir ?? resolveRootFolderHost(envFile);
+  const composeProfiles = mergeComposeProfilesFromEnvFile(envFile);
+  // An installed Hub takes these from its env file alone (compose's `env_file` and the /data/.env
+  // mount), so a value exported in this shell is not the Hub's and must not be printed as if it were.
+  const shellVars: NodeJS.ProcessEnv = dataDir ? {} : process.env;
+  const mcpEnabled = (shellVars.MCP_ENABLED || fileVars.MCP_ENABLED || 'true') !== 'false';
   // Deliberately no `mcp api key` line. Nothing derives MCP_API_KEY any more (env-helpers deletes it
   // rather than minting one) and McpAuthGuard has no env fallback, so the variable authenticates
   // nothing. An appliance upgraded from an older build can still have the dead value sitting in its
@@ -290,9 +293,9 @@ export function renderConfigLines(env: HubEnv) {
   // they did not. The real keys live in the hashed store: `cihub api-key list`.
   return [
     `${bold('environment')}      ${env}`,
-    `${bold('env file')}         ${envFileName}`,
+    `${bold('env file')}         ${envFile}`,
     `${bold('root folder')}      ${rootFolder}`,
-    `${bold('cloud url')}        ${process.env.CI_CLOUD_URL || fileVars.CI_CLOUD_URL || CI_CLOUD_DEFAULT}`,
+    `${bold('cloud url')}        ${shellVars.CI_CLOUD_URL || fileVars.CI_CLOUD_URL || CI_CLOUD_DEFAULT}`,
     `${bold('compose profiles')} ${composeProfiles || '(none)'}`,
     `${bold('mcp enabled')}      ${mcpEnabled}`,
   ];

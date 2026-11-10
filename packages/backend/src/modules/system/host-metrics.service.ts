@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { withTimeout } from '@/common/helpers/with-timeout';
 import type {
   HostMetricsContainerSection,
   HostMetricsDisplayLoad,
@@ -15,16 +16,22 @@ const HOST_METRICS_PATH = '/data/state/hardware/host_metrics.json';
 const LEGACY_HOST_SYSTEM_PATH = '/data/state/hardware/host_system.json';
 const VM_WEDGE_RATIO = 1.25;
 /**
- * A Linux host probe is written once, before the containers start. RAM is read live from
- * meminfo; disk is not. Stat the filesystem at most this often and store the sample back
- * into the probe so the dashboard, model budget, and the next boot all see the same number.
- * macOS and Windows probes stay untouched: inside Docker Desktop the container disk is the
- * VM, not the host.
+ * A Linux host probe is written once, before the containers start, so its RAM and disk
+ * figures are from then. On Linux this process sees the host itself, so every read replaces
+ * them: RAM from meminfo, disk from a stat at most this often.
+ * macOS and Windows probes stay untouched: inside Docker Desktop the container is the VM,
+ * not the host. A Linux probe stays untouched too when meminfo shows it is looking at a VM.
  */
-const LINUX_DISK_REFRESH_MS = 4 * 60 * 60 * 1000;
+const LINUX_DISK_LIVE_MS = 60 * 1000;
+/** `si.fsSize` has no deadline of its own. A `df` stuck on a dead mount never returns. */
+const DISK_STAT_TIMEOUT_MS = 10 * 1000;
+/** How often a live disk figure is written back into the probe file for the next reader of it. */
+const LINUX_DISK_STORE_MS = 4 * 60 * 60 * 1000;
 const OS_RESERVE_MB = 4096;
 const MIN_DOCKER_RAM_MB = 8192;
 const HOST_RAM_FRACTION = 0.75;
+
+type HostDiskFields = Pick<HostMetricsHostSection, 'diskTotalGb' | 'diskUsedGb' | 'diskMount'>;
 
 interface LegacyMacHostProbe {
   platform?: string;
@@ -40,8 +47,10 @@ interface LegacyMacHostProbe {
 
 @Injectable()
 export class HostMetricsService {
-  /** Last Linux disk sample kept in memory so a failed write does not stat on every poll. */
-  private linuxDiskMemo: { at: number; probe: HostMetricsProbeFile } | null = null;
+  /** Last Linux disk stat, so each read of the probe does not run a stat of its own. A promise, so overlapping reads share one. */
+  private linuxDiskMemo: { at: number; disk: Promise<HostDiskFields | null> } | null = null;
+  /** When this process last tried to store the disk sample, so a failing write is not retried on every poll. */
+  private linuxDiskStoreTriedAt: number | null = null;
 
   constructor(
     private readonly logger: LoggerService,
@@ -151,7 +160,7 @@ export class HostMetricsService {
   private async loadHostProbe(): Promise<HostMetricsProbeFile | null> {
     const metrics = await this.readProbeFile(HOST_METRICS_PATH);
     if (metrics) {
-      const current = await this.refreshLinuxDiskIfDue(metrics);
+      const current = await this.withLiveLinuxFigures(metrics);
       return {
         ...current,
         host: await this.enrichHostDisk(current.host, current.platform),
@@ -161,36 +170,37 @@ export class HostMetricsService {
     return this.readLegacyMacProbe();
   }
 
-  /**
-   * Replace a Linux probe's disk fields from a live stat when the stored sample is older
-   * than four hours. One `fsSize` call, then the same JSON the boot probe already uses.
-   */
-  private async refreshLinuxDiskIfDue(probe: HostMetricsProbeFile): Promise<HostMetricsProbeFile> {
+  /** A Linux probe with the host's memory and disk as they are now. A figure with no reading keeps its stored value. */
+  private async withLiveLinuxFigures(probe: HostMetricsProbeFile): Promise<HostMetricsProbeFile> {
     if (probe.platform !== 'linux') {
       return probe;
     }
-
-    const now = Date.now();
-    if (this.linuxDiskMemo && now - this.linuxDiskMemo.at < LINUX_DISK_REFRESH_MS) {
-      return this.linuxDiskMemo.probe;
-    }
-
-    const probedAtMs = Date.parse(probe.probedAt);
-    const sampleIsFresh = Number.isFinite(probedAtMs) && now - probedAtMs < LINUX_DISK_REFRESH_MS && probe.host.diskTotalGb > 0;
-    if (sampleIsFresh) {
-      this.linuxDiskMemo = { at: probedAtMs, probe };
+    const { totalMb, availableMb } = await this.readLiveMemory();
+    // A much smaller meminfo is a VM's, as with Docker Desktop on Linux: its memory and disk say nothing about the probed host.
+    if (this.detectVmWedge(probe, { totalRamMb: totalMb })) {
       return probe;
     }
+    // The total comes from the same reading. The probe's can predate a memory change because a Docker restart doesn't rerun it.
+    const withMemory = totalMb > 0 ? { ...probe, host: { ...probe.host, totalRamMb: totalMb, availableRamMb: availableMb } } : probe;
+    return this.withLiveLinuxDisk(withMemory);
+  }
 
-    const live = await this.readLiveDisk(probe.host.diskMount);
+  /** A Linux probe with the disk as it is now, written back to the file when the stored sample is over four hours old. */
+  private async withLiveLinuxDisk(probe: HostMetricsProbeFile): Promise<HostMetricsProbeFile> {
+    const now = Date.now();
+    // Math.abs so a clock stepped backwards doesn't hold the old reading until it catches up.
+    if (!this.linuxDiskMemo || Math.abs(now - this.linuxDiskMemo.at) >= LINUX_DISK_LIVE_MS) {
+      const previous = this.linuxDiskMemo?.disk;
+      // A failed stat keeps the last good sample: the probe's is from boot, so the tile would jump back for a minute.
+      this.linuxDiskMemo = { at: now, disk: this.readLiveDisk(probe.host.diskMount).then(async (disk) => disk ?? (await previous) ?? null) };
+    }
+    const live = await this.linuxDiskMemo.disk;
     if (!live) {
-      this.linuxDiskMemo = { at: now, probe };
       return probe;
     }
 
     const next: HostMetricsProbeFile = {
       ...probe,
-      probedAt: new Date(now).toISOString(),
       host: {
         ...probe.host,
         diskTotalGb: live.diskTotalGb,
@@ -198,17 +208,25 @@ export class HostMetricsService {
         diskMount: live.diskMount || probe.host.diskMount,
       },
     };
-    const wrote = await this.filesystem.writeJsonFile(HOST_METRICS_PATH, next);
+
+    const probedAtMs = Date.parse(probe.probedAt);
+    const stored = Number.isFinite(probedAtMs) && now - probedAtMs < LINUX_DISK_STORE_MS && probe.host.diskTotalGb > 0;
+    const triedRecently = this.linuxDiskStoreTriedAt !== null && now - this.linuxDiskStoreTriedAt < LINUX_DISK_STORE_MS;
+    if (stored || triedRecently) {
+      return next;
+    }
+
+    this.linuxDiskStoreTriedAt = now;
+    const wrote = await this.filesystem.writeJsonFile(HOST_METRICS_PATH, { ...next, probedAt: new Date(now).toISOString() });
     if (wrote) {
       this.logger.info(`Refreshed Linux disk sample: ${live.diskUsedGb}/${live.diskTotalGb} GB on ${next.host.diskMount}`);
     } else {
-      this.logger.warn('Could not store the refreshed Linux disk sample; this process will keep it until the next check');
+      this.logger.warn('Could not store the refreshed Linux disk sample; the probe file keeps the older one');
     }
-    this.linuxDiskMemo = { at: now, probe: next };
     return next;
   }
 
-  private async readLiveDisk(mount: string): Promise<{ diskTotalGb: number; diskUsedGb: number; diskMount: string } | null> {
+  private async readLiveDisk(mount: string): Promise<HostDiskFields | null> {
     const entries = await this.listFilesystems();
     const wanted = mount || '/';
     const match = entries.find((entry) => entry.mount === wanted) ?? entries.find((entry) => entry.mount === '/') ?? entries[0];
@@ -233,7 +251,7 @@ export class HostMetricsService {
    */
   private async listFilesystems(): Promise<Awaited<ReturnType<typeof si.fsSize>>> {
     try {
-      const result = await si.fsSize();
+      const result = await withTimeout(si.fsSize(), DISK_STAT_TIMEOUT_MS, `Filesystem stat timed out after ${DISK_STAT_TIMEOUT_MS} ms`);
       if (Array.isArray(result)) {
         return result;
       }
@@ -315,7 +333,7 @@ export class HostMetricsService {
     return host;
   }
 
-  private async readLegacyMacDiskFields(): Promise<Pick<HostMetricsHostSection, 'diskTotalGb' | 'diskUsedGb' | 'diskMount'> | null> {
+  private async readLegacyMacDiskFields(): Promise<HostDiskFields | null> {
     try {
       const raw = await this.filesystem.readTextFile(LEGACY_HOST_SYSTEM_PATH);
       if (!raw) return null;
@@ -331,7 +349,7 @@ export class HostMetricsService {
     }
   }
 
-  private async readProbeDiskFields(filePath: string): Promise<Pick<HostMetricsHostSection, 'diskTotalGb' | 'diskUsedGb' | 'diskMount'> | null> {
+  private async readProbeDiskFields(filePath: string): Promise<HostDiskFields | null> {
     try {
       const raw = await this.filesystem.readTextFile(filePath);
       if (!raw) return null;
@@ -348,20 +366,14 @@ export class HostMetricsService {
     }
   }
 
-  private async readContainerMetrics(): Promise<
-    HostMetricsContainerSection & {
-      memoryTotalGb: number;
-      memoryUsedGb: number;
-      memoryPercentUsed: number;
-      diskTotalGb: number;
-      diskUsedGb: number;
-    }
-  > {
+  private async readLiveMemory(): Promise<{ totalMb: number; availableMb: number }> {
     const memResult = { totalMb: 0, availableMb: 0 };
     const memInfo = await this.filesystem.readTextFile('/host/proc/meminfo');
-    if (memInfo) {
+    // With no MemAvailable line the file can't say what is free, so it is no reading. A line that says 0 is one.
+    const availableKb = memInfo?.match(/MemAvailable:\s+(\d+)/)?.[1];
+    if (memInfo && availableKb !== undefined) {
       memResult.totalMb = Math.floor(Number(memInfo.match(/MemTotal:\s+(\d+)/)?.[1] ?? 0) / 1024);
-      memResult.availableMb = Math.floor(Number(memInfo.match(/MemAvailable:\s+(\d+)/)?.[1] ?? 0) / 1024);
+      memResult.availableMb = Math.floor(Number(availableKb) / 1024);
     }
 
     if (!memResult.totalMb) {
@@ -373,7 +385,19 @@ export class HostMetricsService {
         this.logger.error(`Unable to read container memory info: ${error}`);
       }
     }
+    return memResult;
+  }
 
+  private async readContainerMetrics(): Promise<
+    HostMetricsContainerSection & {
+      memoryTotalGb: number;
+      memoryUsedGb: number;
+      memoryPercentUsed: number;
+      diskTotalGb: number;
+      diskUsedGb: number;
+    }
+  > {
+    const memResult = await this.readLiveMemory();
     const [disk0] = await this.listFilesystems();
     const diskTotalGb = disk0 ? Math.round(disk0.size / 1024 / 1024 / 1024) : 0;
     const diskFreeGb = disk0 ? Math.round(disk0.available / 1024 / 1024 / 1024) : 0;

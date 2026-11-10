@@ -1,13 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  DEFAULT_PORTAL_URL,
-  listHubDevices,
-  persistPortalUrl,
-  readPersistedPortalUrl,
-  readStoredPortalAuth,
-  signInToPortal,
-  writePortalAuth,
-} from './portal-client';
+import { DEFAULT_PORTAL_URL, listHubDevices, persistPortalUrl, readPersistedPortalUrl, readStoredPortalAuth, writePortalAuth } from './portal-client';
 
 const httpFetch = vi.fn();
 vi.mock('@tauri-apps/plugin-http', () => ({
@@ -25,42 +17,6 @@ beforeEach(() => {
   httpFetch.mockReset();
   localStorage.clear();
   sessionStorage.clear();
-});
-
-describe('signInToPortal', () => {
-  it('posts email/password to the Portal and returns the session token', async () => {
-    httpFetch.mockResolvedValue(json({ token: 'sess-123' }));
-    const auth = await signInToPortal('you@example.com', 'pw');
-
-    expect(auth.token).toBe('sess-123');
-    const [url, init] = httpFetch.mock.calls[0] ?? [];
-    expect(url).toBe(`${DEFAULT_PORTAL_URL}/api/auth/sign-in/email`);
-    expect(init.method).toBe('POST');
-    expect(JSON.parse(init.body)).toEqual({ email: 'you@example.com', password: 'pw' });
-  });
-
-  it('falls back to session.token and the auth cookie', async () => {
-    httpFetch.mockResolvedValue(json({ session: { token: 'nested' } }, { headers: { 'set-cookie': 'ci_session=abc; Path=/; HttpOnly' } }));
-    const auth = await signInToPortal('a@b.c', 'pw');
-    expect(auth.token).toBe('nested');
-    expect(auth.cookie).toContain('ci_session=abc');
-  });
-
-  it('honors a custom portal URL', async () => {
-    httpFetch.mockResolvedValue(json({ token: 't' }));
-    await signInToPortal('a@b.c', 'pw', 'https://staging.example.com/');
-    expect(httpFetch.mock.calls[0]?.[0]).toBe('https://staging.example.com/api/auth/sign-in/email');
-  });
-
-  it('throws the Portal error message on failure', async () => {
-    httpFetch.mockResolvedValue(json({ message: 'Invalid credentials' }, { status: 401 }));
-    await expect(signInToPortal('a@b.c', 'bad')).rejects.toThrow('Invalid credentials');
-  });
-
-  it('throws when no token and no cookie are returned', async () => {
-    httpFetch.mockResolvedValue(json({ user: { id: 1 } }));
-    await expect(signInToPortal('a@b.c', 'pw')).rejects.toThrow(/no session/i);
-  });
 });
 
 describe('listHubDevices', () => {
@@ -164,9 +120,22 @@ describe('persisted Portal URL and auth', () => {
     expect(readPersistedPortalUrl()).toBe('https://hub.example.test');
   });
 
-  it('does not restore the internal dev cloud host as the Companion URL', () => {
+  it('does not restore an internal dev cloud host left by an older build', () => {
     localStorage.setItem('ci-hub.portalUrl', 'https://hub.companionintelligence.com');
     expect(readPersistedPortalUrl()).toBe('https://hub.ci.computer');
+  });
+
+  it('keeps an internal host the person saved', () => {
+    localStorage.setItem('ci-hub.portalUrl', 'https://hub.ci.computer');
+    persistPortalUrl('https://hub.companionintelligence.com');
+
+    expect(readPersistedPortalUrl()).toBe('https://hub.companionintelligence.com');
+    expect(localStorage.getItem('ci-hub.portalUrl')).toBeNull();
+  });
+
+  it('still honours a non-internal host saved by an older build', () => {
+    localStorage.setItem('ci-hub.portalUrl', 'https://other.example.com/');
+    expect(readPersistedPortalUrl()).toBe('https://other.example.com');
   });
 
   it('round-trips Portal auth used by Advanced → /connect', () => {

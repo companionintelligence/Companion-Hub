@@ -3,17 +3,23 @@ import { useSSE } from '@/lib/hooks/use-sse';
 import { applyHubHello } from '@/lib/hub-hello';
 import { usesSameOriginHubApi } from '@/lib/hub-runtime-mode';
 import { appServiceFailureText } from '@/modules/app/helpers/app-service-failure';
-import { cachedAppName, handleAppSseEvent, type AppSsePayload } from '@/modules/app/helpers/app-sse-cache';
+import { cachedAppName, handleAppSseEvent, invalidateAppRecords, type AppSsePayload } from '@/modules/app/helpers/app-sse-cache';
 import { extractAppUrn } from '@/utils/app-helpers';
 import type { AppServiceFailure } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { useQueryClient } from '@tanstack/react-query';
-import type { PropsWithChildren } from 'react';
+import { type PropsWithChildren, useRef } from 'react';
 import { toast } from 'sonner';
 import { Trans, useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router';
 
 const logsPageHref = '/settings?tab=logs';
+
+/** The machine can't run this app. No log of an app that never started will say more, so the toast names it. */
+const HOST_CAPABILITY_ERROR_KEYS: Record<string, string> = {
+  kvm_missing: 'APP_ERROR_KVM_MISSING',
+  kata_runtime_missing: 'APP_ERROR_KATA_RUNTIME_MISSING',
+};
 
 /**
  * Map Companion Portal's public-DNS failure class onto the message the user sees. An
@@ -45,6 +51,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const greetedBefore = useRef(false);
 
   // Shows an error toast whose "see logs" text links to the Settings logs tab.
   const showLogsErrorToast = (i18nKey: string, appName: string) => {
@@ -75,6 +82,14 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     }
   };
 
+  const showHostCapabilityToast = (errorCode: string | undefined): boolean => {
+    const key = errorCode ? HOST_CAPABILITY_ERROR_KEYS[errorCode] : undefined;
+    if (key) {
+      toast.error(t(key));
+    }
+    return Boolean(key);
+  };
+
   // The service's name comes from the app's compose file, so it stays plain text: `Trans` would read tags in it.
   const showServiceFailureToast = (i18nKey: string, appName: string, failure: AppServiceFailure) => {
     toast.error(t(i18nKey, { id: appName, reason: appServiceFailureText(t, failure) }), { duration: 10000 });
@@ -91,6 +106,11 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
       // In dev the bundle is Vite's and the version never matches the API's, so a same-origin
       // reload is a production-only concern.
       if (event === 'hub_hello') {
+        // Any greeting after the first means the stream dropped and came back, most often a Hub restart.
+        if (greetedBefore.current) {
+          invalidateAppRecords(queryClient);
+        }
+        greetedBefore.current = true;
         applyHubHello(
           payload.version,
           {
@@ -176,6 +196,9 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
             toast.error(t('APP_ERROR_NETWORK_OVERLAP_TOAST', { id: appName }));
             break;
           }
+          if (showHostCapabilityToast(errorCode)) {
+            break;
+          }
           if (serviceFailure) {
             showServiceFailureToast('APP_ERROR_APP_FAILED_TO_INSTALL_BECAUSE', appName, serviceFailure);
             break;
@@ -191,6 +214,9 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
         case 'start_error':
           if (errorCode === 'network_overlap') {
             toast.error(t('APP_ERROR_NETWORK_OVERLAP_TOAST', { id: appName }));
+            break;
+          }
+          if (showHostCapabilityToast(errorCode)) {
             break;
           }
           if (serviceFailure) {
@@ -260,6 +286,9 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           showSuccessOrPortMoved('APP_RESTART_SUCCESS', appName, movedHostPort);
           break;
         case 'restart_error':
+          if (showHostCapabilityToast(errorCode)) {
+            break;
+          }
           if (serviceFailure) {
             showServiceFailureToast('APP_ERROR_APP_FAILED_TO_RESTART_BECAUSE', appName, serviceFailure);
             break;

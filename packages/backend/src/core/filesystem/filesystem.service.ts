@@ -7,45 +7,151 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { z } from 'zod';
 
+/** A path the check has approved. */
+interface CheckedPath {
+  /** The path as the caller wrote it, made absolute. */
+  written: string;
+  /** Where it really is: every link on the way followed, so nothing is left to redirect it. */
+  real: string;
+  /** Added to the open flags, so a link that appears at the last moment fails the open. */
+  noFollow: number;
+}
+
+/**
+ * One allowed folder and how far a link inside it may lead.
+ *
+ * `areaDepth` says how many levels below `dir` make up one area. A link has to stay inside the
+ * area it starts in: one app's data, or one of the Hub's folders in its data folder. `null` means
+ * links are not followed for the check at all, for folders no app or store can put a link in, where
+ * the path as written is the answer.
+ */
+interface AllowedRoot {
+  dir: string;
+  areaDepth: number | null;
+}
+
 @Injectable()
 export class FilesystemService {
   constructor(private readonly logger: LoggerService) {}
 
-  public getSafeFilePath(filePath: string): string {
-    // Define allowed directories as absolute paths
-    const allowedDirs = [path.resolve(APP_DIR), path.resolve(APP_DATA_DIR), path.resolve(DATA_DIR), os.tmpdir()];
+  private allowedRoots(): AllowedRoot[] {
+    const roots: AllowedRoot[] = [
+      // Each app's data is its own: `<APP_DATA_DIR>/<store>/<app>`.
+      { dir: path.resolve(APP_DATA_DIR), areaDepth: 2 },
+      // `apps`, `repos`, `state`, `backups` and the rest. One of those can itself be a link or a mount.
+      { dir: path.resolve(DATA_DIR), areaDepth: 1 },
+      { dir: path.resolve(os.tmpdir()), areaDepth: 0 },
+      // The Hub's own install, including `assets` when a build links them in.
+      { dir: path.resolve(APP_DIR), areaDepth: null },
+    ];
+
     // /host/proc is Linux-only (Docker host /proc mount)
     if (process.platform !== 'win32') {
-      allowedDirs.push(path.resolve('/host/proc/'));
-      allowedDirs.push(path.resolve('/dev/kfd'));
-      allowedDirs.push(path.resolve('/dev/dri'));
+      roots.push({ dir: path.resolve('/host/proc/'), areaDepth: null });
+      roots.push({ dir: path.resolve('/dev/kfd'), areaDepth: null });
+      roots.push({ dir: path.resolve('/dev/dri'), areaDepth: null });
       // amdgpu publishes each card's real VRAM total under sysfs, readable from the Hub
       // container without device passthrough (HardwareInspectorService.detectAmdCardsFromSysfs).
-      allowedDirs.push(path.resolve('/sys/class/drm'));
+      // Every entry here is a kernel link into /sys/devices, outside this folder by design.
+      roots.push({ dir: path.resolve('/sys/class/drm'), areaDepth: null });
     }
 
-    // Resolve container `/data/...` paths to DATA_DIR when running outside Docker.
-    const resolvedPath = resolveContainerDataPath(filePath);
+    return roots;
+  }
 
-    for (const dir of allowedDirs) {
-      const rel = path.relative(dir, resolvedPath);
-      // On Windows, path.relative across drive letters returns an absolute path (e.g. "D:\...")
-      // which doesn't start with ".." but is clearly not contained. Check that the relative path
-      // is not absolute and doesn't escape with "..".
-      if (path.isAbsolute(rel) || rel.startsWith('..')) {
-        continue;
+  /** `candidate` is `dir` or below it, by the text of the path alone. */
+  private isSameOrInside(dir: string, candidate: string): boolean {
+    const relative = path.relative(dir, candidate);
+
+    return !relative || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
+  }
+
+  /**
+   * Where `target` really is, with every link on the way followed. What does not exist yet (a file or
+   * folder about to be created) is kept as written, below the real location of its nearest parent that
+   * does. A link whose target is gone is an error rather than a missing file, because creating a file
+   * at that path would create it wherever the link points. A loop is an error too.
+   */
+  private async realLocation(target: string): Promise<string> {
+    try {
+      return await fs.promises.realpath(target);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+        throw error;
       }
 
-      return resolvedPath;
+      const isLink = await fs.promises.lstat(target).then(
+        (stats) => stats.isSymbolicLink(),
+        () => false,
+      );
+      const parent = path.dirname(target);
+
+      if (isLink || parent === target) {
+        throw error;
+      }
+
+      return path.join(await this.realLocation(parent), path.basename(target));
+    }
+  }
+
+  /**
+   * Decides whether `filePath` may be used and where it really is.
+   *
+   * The path as written has to be inside an allowed folder. Where it really is, after every link
+   * on the way, has to stay inside the same area of that folder (see {@link AllowedRoot}). Both ends
+   * are resolved, so a data folder that is itself a link or a mount (`/var` on macOS) still matches.
+   * Any error while resolving refuses, with the original error so callers still see EACCES.
+   *
+   * `followLastLink: false` is for what acts on a directory entry itself (lstat, unlink, rm): only the
+   * parent is resolved, so a link that leads out or nowhere can still be seen and removed.
+   */
+  private async checkPath(filePath: string, { followLastLink = true }: { followLastLink?: boolean } = {}): Promise<CheckedPath> {
+    // Resolve container `/data/...` paths to DATA_DIR when running outside Docker.
+    const written = resolveContainerDataPath(filePath);
+    const root = this.allowedRoots()
+      .filter(({ dir }) => this.isSameOrInside(dir, written))
+      .sort((a, b) => b.dir.length - a.dir.length)[0];
+
+    if (!root) {
+      this.logger.error(`File path "${filePath}" is not allowed. Resolved: "${written}"`);
+      throw new Error('File path is not allowed');
     }
 
-    this.logger.error(`File path "${filePath}" is not allowed. Resolved: "${resolvedPath}"`);
-    throw new Error('File path is not allowed');
+    if (root.areaDepth === null) {
+      return { written, real: written, noFollow: 0 };
+    }
+
+    const segments = path.relative(root.dir, written).split(path.sep).filter(Boolean);
+    const area = segments.length >= root.areaDepth ? path.join(root.dir, ...segments.slice(0, root.areaDepth)) : root.dir;
+    const real = followLastLink
+      ? await this.realLocation(written)
+      : path.join(await this.realLocation(path.dirname(written)), path.basename(written));
+
+    // Acting on the entry at the top of an area means acting in the folder above it.
+    if (followLastLink || written !== area) {
+      const realArea = await this.realLocation(area);
+      const location = followLastLink ? real : path.dirname(real);
+
+      if (!this.isSameOrInside(realArea, location)) {
+        this.logger.error(`File path "${filePath}" leads outside ${area}. Resolved: "${real}"`);
+        throw new Error('File path is not allowed');
+      }
+    }
+
+    return { written, real, noFollow: fs.constants.O_NOFOLLOW ?? 0 };
+  }
+
+  /** The real location of an allowed path. See {@link checkPath}. Throws when it is not allowed. */
+  public async getSafeFilePath(filePath: string, options?: { followLastLink?: boolean }): Promise<string> {
+    return (await this.checkPath(filePath, options)).real;
   }
 
   async readJsonFile<T extends object>(filePath: string, schema?: z.ZodType<T>): Promise<T | null> {
     try {
-      const fileContent = await fs.promises.readFile(this.getSafeFilePath(filePath), 'utf8');
+      const { real, noFollow } = await this.checkPath(filePath);
+      const fileContent = await fs.promises.readFile(real, { encoding: 'utf8', flag: fs.constants.O_RDONLY | noFollow });
       const parsedContent = JSON.parse(fileContent);
 
       if (schema) {
@@ -66,7 +172,9 @@ export class FilesystemService {
 
   async readTextFile(filePath: string): Promise<string | null> {
     try {
-      return await fs.promises.readFile(this.getSafeFilePath(filePath), 'utf8');
+      const { real, noFollow } = await this.checkPath(filePath);
+
+      return await fs.promises.readFile(real, { encoding: 'utf8', flag: fs.constants.O_RDONLY | noFollow });
     } catch (error) {
       this.logger.debug(`Error reading file ${filePath}:`, error);
       return null;
@@ -75,7 +183,9 @@ export class FilesystemService {
 
   async readBinaryFile(filePath: string): Promise<Buffer | null> {
     try {
-      return await fs.promises.readFile(this.getSafeFilePath(filePath));
+      const { real, noFollow } = await this.checkPath(filePath);
+
+      return await fs.promises.readFile(real, { flag: fs.constants.O_RDONLY | noFollow });
     } catch (error) {
       this.logger.debug(`Error reading file ${filePath}:`, error);
       return null;
@@ -84,7 +194,9 @@ export class FilesystemService {
 
   async writeJsonFile<T>(filePath: string, data: T): Promise<boolean> {
     try {
-      await fs.promises.writeFile(this.getSafeFilePath(filePath), `${JSON.stringify(data, null, 2)}${EOL}`, 'utf8');
+      const { real, noFollow } = await this.checkPath(filePath);
+
+      await fs.promises.writeFile(real, `${JSON.stringify(data, null, 2)}${EOL}`, { encoding: 'utf8', flag: this.writeFlags(noFollow) });
       return true;
     } catch (error) {
       this.logger.error(`Error writing file ${filePath}:`, error);
@@ -94,8 +206,10 @@ export class FilesystemService {
 
   async writeTextFile(filePath: string, content: string): Promise<boolean> {
     try {
-      await fs.promises.mkdir(this.getSafeFilePath(path.dirname(filePath)), { recursive: true });
-      await fs.promises.writeFile(this.getSafeFilePath(filePath), `${content}${EOL}`, 'utf8');
+      await fs.promises.mkdir(await this.getSafeFilePath(path.dirname(filePath)), { recursive: true });
+      const { real, noFollow } = await this.checkPath(filePath);
+
+      await fs.promises.writeFile(real, `${content}${EOL}`, { encoding: 'utf8', flag: this.writeFlags(noFollow) });
       return true;
     } catch (error) {
       this.logger.error(`Error writing file ${filePath}:`, error);
@@ -110,14 +224,14 @@ export class FilesystemService {
    */
   async createFileIfMissing(filePath: string, content: string, mode: number): Promise<'created' | 'exists' | 'failed'> {
     try {
-      await fs.promises.mkdir(this.getSafeFilePath(path.dirname(filePath)), { recursive: true });
+      await fs.promises.mkdir(await this.getSafeFilePath(path.dirname(filePath)), { recursive: true });
     } catch (error) {
       // Never `exists`: mkdir says EEXIST when the parent is a file. Nothing is at filePath then.
       this.logger.error(`Error creating the directory for ${filePath}:`, error);
       return 'failed';
     }
     try {
-      await fs.promises.writeFile(this.getSafeFilePath(filePath), content, { flag: 'wx', mode });
+      await fs.promises.writeFile(await this.getSafeFilePath(filePath), content, { flag: 'wx', mode });
       return 'created';
     } catch (error) {
       if ((error as NodeJS.ErrnoException | undefined)?.code === 'EEXIST') {
@@ -130,8 +244,10 @@ export class FilesystemService {
 
   async writeBinaryFile(filePath: string, data: Buffer): Promise<boolean> {
     try {
-      await fs.promises.mkdir(this.getSafeFilePath(path.dirname(filePath)), { recursive: true });
-      await fs.promises.writeFile(this.getSafeFilePath(filePath), data);
+      await fs.promises.mkdir(await this.getSafeFilePath(path.dirname(filePath)), { recursive: true });
+      const { real, noFollow } = await this.checkPath(filePath);
+
+      await fs.promises.writeFile(real, data, { flag: this.writeFlags(noFollow) });
       return true;
     } catch (error) {
       this.logger.error(`Error writing binary file ${filePath}:`, error);
@@ -140,20 +256,24 @@ export class FilesystemService {
   }
 
   async pathExists(filePath: string): Promise<boolean> {
-    return fs.promises
-      .access(this.getSafeFilePath(filePath))
+    return this.checkPath(filePath)
+      .then(({ real }) => fs.promises.access(real))
       .then(() => true)
       .catch(() => false);
   }
 
   async copyFile(src: string, dest: string): Promise<boolean> {
     try {
-      await fs.promises.copyFile(this.getSafeFilePath(src), this.getSafeFilePath(dest));
+      await fs.promises.copyFile(await this.getSafeFilePath(src), await this.getSafeFilePath(dest));
       return true;
     } catch (error) {
       this.logger.error(`Error copying file from ${src} to ${dest}:`, error);
       return false;
     }
+  }
+
+  private writeFlags(noFollow: number): number {
+    return fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | noFollow;
   }
 
   /**
@@ -162,7 +282,7 @@ export class FilesystemService {
    */
   async restrictToOwner(filePath: string): Promise<boolean> {
     try {
-      await fs.promises.chmod(this.getSafeFilePath(filePath), 0o600);
+      await fs.promises.chmod(await this.getSafeFilePath(filePath), 0o600);
       return true;
     } catch (error) {
       this.logger.error(`Error restricting ${filePath} to its owner:`, error);
@@ -170,11 +290,22 @@ export class FilesystemService {
     }
   }
 
+  /** Marks a file executable (mode 0755). Returns `false`, logged, when the mode cannot be set. */
+  async makeExecutable(filePath: string): Promise<boolean> {
+    try {
+      await fs.promises.chmod(await this.getSafeFilePath(filePath), 0o755);
+      return true;
+    } catch (error) {
+      this.logger.error(`Error making ${filePath} executable:`, error);
+      return false;
+    }
+  }
+
   async createDirectory(dirPath: string): Promise<boolean> {
     try {
       // Always validate the path for safety
-      const safePath = this.getSafeFilePath(dirPath);
-      await fs.promises.mkdir(safePath, { recursive: true });
+      const { real } = await this.checkPath(dirPath);
+      await fs.promises.mkdir(real, { recursive: true });
       return true;
     } catch (error) {
       this.logger.error(`Error creating directory ${dirPath}:`, error);
@@ -187,10 +318,10 @@ export class FilesystemService {
       // Create directories in parallel for better performance
       const createPromises = dirPaths.map(async (dirPath, index) => {
         try {
-          const safePath = this.getSafeFilePath(dirPath);
-          this.logger.debug(`Creating directory ${index + 1}/${dirPaths.length}: ${safePath}`);
-          await fs.promises.mkdir(safePath, { recursive: true });
-          this.logger.debug(`Successfully created directory: ${safePath}`);
+          const { real } = await this.checkPath(dirPath);
+          this.logger.debug(`Creating directory ${index + 1}/${dirPaths.length}: ${real}`);
+          await fs.promises.mkdir(real, { recursive: true });
+          this.logger.debug(`Successfully created directory: ${real}`);
           return true;
         } catch (error) {
           this.logger.error(`Failed to create directory ${dirPath}:`, error);
@@ -234,7 +365,10 @@ export class FilesystemService {
 
   private async tryCopyDirectory(src: string, dest: string, options: fs.CopyOptions) {
     try {
-      await fs.promises.cp(this.getSafeFilePath(src), this.getSafeFilePath(dest), { recursive: true, ...options });
+      // As written, because a caller's `filter` compares against the folder it named. `cp` copies links as links.
+      const [{ written: from }, { written: to }] = await Promise.all([this.checkPath(src), this.checkPath(dest)]);
+
+      await fs.promises.cp(from, to, { recursive: true, ...options });
       return { copied: true, permissionDenied: false, error: undefined };
     } catch (error) {
       const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -265,8 +399,9 @@ export class FilesystemService {
     let seen = 0;
 
     try {
-      queue.push(this.getSafeFilePath(dirPath));
-    } catch {
+      queue.push((await this.checkPath(dirPath)).written);
+    } catch (error) {
+      this.noteUnreachable(dirPath, error, found);
       return found;
     }
 
@@ -322,8 +457,9 @@ export class FilesystemService {
     let seen = 0;
 
     try {
-      queue.push(this.getSafeFilePath(dirPath));
-    } catch {
+      queue.push((await this.checkPath(dirPath)).written);
+    } catch (error) {
+      this.noteUnreachable(dirPath, error, found);
       return found;
     }
 
@@ -360,6 +496,13 @@ export class FilesystemService {
     return found;
   }
 
+  /** A refused path carries no code and is nothing to look at. One that could not be resolved cannot be listed either. */
+  private noteUnreachable(dirPath: string, error: unknown, found: string[]): void {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+
+    if (code && code !== 'ENOENT') found.push(dirPath);
+  }
+
   async removeDirectory(dirPath: string): Promise<boolean> {
     const { removed, error } = await this.tryRemoveDirectory(dirPath);
     if (!removed) this.logger.error(`Error removing directory ${dirPath}:`, error);
@@ -386,7 +529,12 @@ export class FilesystemService {
 
   private async tryRemoveDirectory(dirPath: string) {
     try {
-      await fs.promises.rm(this.getSafeFilePath(dirPath), { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      await fs.promises.rm(await this.getSafeFilePath(dirPath, { followLastLink: false }), {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 100,
+      });
       return { removed: true, permissionDenied: false, error: undefined };
     } catch (error) {
       const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -396,7 +544,7 @@ export class FilesystemService {
 
   async removeFile(filePath: string): Promise<boolean> {
     try {
-      await fs.promises.unlink(this.getSafeFilePath(filePath));
+      await fs.promises.unlink(await this.getSafeFilePath(filePath, { followLastLink: false }));
       return true;
     } catch (error) {
       this.logger.error(`Error removing file ${filePath}:`, error);
@@ -406,7 +554,7 @@ export class FilesystemService {
 
   async listFiles(dirPath: string): Promise<string[]> {
     try {
-      return await fs.promises.readdir(this.getSafeFilePath(dirPath));
+      return await fs.promises.readdir(await this.getSafeFilePath(dirPath));
     } catch (error) {
       this.logger.error(`Error listing files in ${dirPath}:`, error);
       return [];
@@ -419,7 +567,7 @@ export class FilesystemService {
    */
   async isDirectory(dirPath: string): Promise<boolean> {
     try {
-      return (await fs.promises.lstat(this.getSafeFilePath(dirPath))).isDirectory();
+      return (await fs.promises.lstat(await this.getSafeFilePath(dirPath, { followLastLink: false }))).isDirectory();
     } catch {
       return false;
     }
@@ -434,7 +582,7 @@ export class FilesystemService {
    */
   async isFile(filePath: string): Promise<boolean> {
     try {
-      return (await fs.promises.lstat(this.getSafeFilePath(filePath))).isFile();
+      return (await fs.promises.lstat(await this.getSafeFilePath(filePath, { followLastLink: false }))).isFile();
     } catch {
       return false;
     }
@@ -449,19 +597,16 @@ export class FilesystemService {
    * repo controls every link in its tree. This resolves all of them (`realpath`) and requires the
    * result to stay under the resolved root, so no link anywhere on the way can lead out.
    *
-   * Returns a boolean and never the resolved path: the caller keeps using the path it already has,
-   * which `getSafeFilePath` has fenced lexically, instead of a real path that a symlinked data
-   * directory (a mount, `/var` on macOS) could place outside that fence.
+   * Narrower than `getSafeFilePath`, which keeps a path inside its whole area. This is for a caller
+   * that has one folder in mind, such as the app folder of a cloned repo. Both are resolved, so a data
+   * directory that is itself a link or a mount (`/var` on macOS) still matches.
    */
   async isWithin(targetPath: string, rootDir: string, kind: 'file' | 'directory' = 'file'): Promise<boolean> {
     try {
-      const [realTarget, realRoot] = await Promise.all([
-        fs.promises.realpath(this.getSafeFilePath(targetPath)),
-        fs.promises.realpath(this.getSafeFilePath(rootDir)),
-      ]);
-      const relative = path.relative(realRoot, realTarget);
+      const [{ real: checkedTarget }, { real: checkedRoot }] = await Promise.all([this.checkPath(targetPath), this.checkPath(rootDir)]);
+      const [realTarget, realRoot] = await Promise.all([fs.promises.realpath(checkedTarget), fs.promises.realpath(checkedRoot)]);
 
-      if (!relative || path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)) {
+      if (realTarget === realRoot || !this.isSameOrInside(realRoot, realTarget)) {
         return false;
       }
 
@@ -483,21 +628,19 @@ export class FilesystemService {
   }
 
   async getStats(filePath: string) {
-    return await fs.promises.stat(this.getSafeFilePath(filePath));
+    return await fs.promises.stat(await this.getSafeFilePath(filePath));
   }
 
   /**
    * Stat a path WITHOUT following a symlink.
    *
    * ⚠ USE THIS WHEN THE ANSWER DECIDES WHETHER TO DESCEND OR TO REPORT. `stat`
-   * follows links, so a walk built on it reports the TARGET's kind: a symlink to
-   * `/` looks like an ordinary directory and the walk recurses into it. The
-   * containment `getSafeFilePath` provides is on the path it was handed, and the
-   * path it was handed is inside the app's own directory — the escape happens
-   * afterwards, in the kernel.
+   * follows links, so a walk built on it reports the TARGET's kind and walks where
+   * the link leads. This one looks at the entry itself. Only its parent has to
+   * resolve inside the allowed area.
    */
   async getLinkStats(filePath: string) {
-    return await fs.promises.lstat(this.getSafeFilePath(filePath));
+    return await fs.promises.lstat(await this.getSafeFilePath(filePath, { followLastLink: false }));
   }
 
   /**
@@ -505,8 +648,17 @@ export class FilesystemService {
    * Prefer this over `readBinaryFile` for anything large enough to matter (media, archives) so the
    * whole payload never has to sit in the appliance's heap.
    */
-  public createReadStream(filePath: string, options?: { start?: number; end?: number }): fs.ReadStream {
-    return fs.createReadStream(this.getSafeFilePath(filePath), options);
+  public async createReadStream(filePath: string, options?: { start?: number; end?: number }): Promise<fs.ReadStream> {
+    const { real, noFollow } = await this.checkPath(filePath);
+    const handle = await fs.promises.open(real, fs.constants.O_RDONLY | noFollow);
+
+    try {
+      return handle.createReadStream(options);
+    } catch (error) {
+      // A range it refuses throws here, before there is a stream to close the file.
+      await handle.close();
+      throw error;
+    }
   }
 
   async getFileEtag(filePath: string): Promise<string | null> {

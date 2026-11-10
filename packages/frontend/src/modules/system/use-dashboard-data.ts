@@ -662,6 +662,8 @@ export interface PoolReach {
   connected: number;
   /** Unreachable peers the operator has not disabled — a disabled peer counts as disabled, whatever its socket says. */
   unreachable: number;
+  /** Peers with a failed probe in their current run, leaving out the ones the operator has disabled. */
+  probeFailures: number;
   reachableModels: number;
   /** Models no local backend holds — the only number that says what pooling actually buys this node. */
   exclusiveModels: number;
@@ -758,6 +760,8 @@ export function poolReach(peers: PoolPeerSummary[], local: PoolNodeSummary | und
     // the operator took out of routing is not reach this Hub has lost. Counting it here made the
     // rail say "1 unreachable" beside a drawing and legend that showed it disabled.
     unreachable: peers.filter((peer) => peer.status === 'unreachable' && peer.enabled !== false).length,
+    // Same rule, same reason: a peer that is switched off and also down is not a fault on this Hub.
+    probeFailures: peers.filter((peer) => (peer.consecutiveFailures ?? 0) > 0 && peer.enabled !== false).length,
     reachableModels: reachable.size,
     exclusiveModels: [...reachable].filter((model) => !localModels.has(model)).length,
     // No peer reporting the counter is "unknown", not "idle" — the panel must render a dash.

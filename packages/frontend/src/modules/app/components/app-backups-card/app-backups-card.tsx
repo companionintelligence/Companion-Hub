@@ -24,6 +24,9 @@ import { useAppStatus } from '../../helpers/use-app-status';
 
 const PAGE_SIZE = 10;
 
+/** Leaving one of these is the card's cue to fetch its list again. Only a backup or an update with its backup on writes a new file. */
+const LIST_CHANGING_STATUSES: ReadonlySet<AppStatus> = new Set(['backing_up', 'restoring', 'updating']);
+
 /** Statuses in which touching the app's files would race a lifecycle operation that is already doing so. */
 const BUSY_STATUSES: ReadonlySet<AppStatus> = new Set([
   'installing',
@@ -82,14 +85,14 @@ export const AppBackupsCard = ({ appUrn, appName, status }: AppBackupsCardProps)
     [queryClient, appUrn],
   );
 
-  // A backup or restore runs in the background and reports over SSE, which updates the app's status. Its
-  // end is the moment the list has changed, so that is when to look again.
+  // A backup, restore or update (which makes a backup when asked to) runs in the background and reports over
+  // SSE, which updates the app's status. Its end is the moment the list has changed, so that is when to look again.
   const previousStatus = useRef(status);
   useEffect(() => {
-    const wasWorking = previousStatus.current === 'backing_up' || previousStatus.current === 'restoring';
+    const wasWorking = LIST_CHANGING_STATUSES.has(previousStatus.current);
     previousStatus.current = status;
 
-    if (wasWorking && status !== 'backing_up' && status !== 'restoring') {
+    if (wasWorking && !LIST_CHANGING_STATUSES.has(status)) {
       void refreshList();
     }
   }, [status, refreshList]);

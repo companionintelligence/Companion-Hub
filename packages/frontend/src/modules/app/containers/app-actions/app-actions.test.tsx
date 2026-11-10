@@ -13,6 +13,8 @@ const hoisted = vi.hoisted(() => ({
   // Options of the START mutation specifically (tagged via startAppMutation below),
   // so its onError can be driven without depending on useMutation call order.
   startOpts: undefined as undefined | Record<string, (arg?: unknown) => void>,
+  ignoreOpts: undefined as undefined | Record<string, (...args: unknown[]) => void>,
+  unignoreOpts: undefined as undefined | Record<string, (...args: unknown[]) => void>,
   invalidateAppQueries: vi.fn(),
   navigate: vi.fn(),
   // null => web client (no Tauri); a function => running inside the desktop app.
@@ -87,6 +89,12 @@ vi.mock('@tanstack/react-query', () => ({
     if (opts?.__kind === 'start') {
       hoisted.startOpts = opts as Record<string, (arg?: unknown) => void>;
     }
+    if (opts?.__kind === 'ignore') {
+      hoisted.ignoreOpts = opts as Record<string, (...args: unknown[]) => void>;
+    }
+    if (opts?.__kind === 'unignore') {
+      hoisted.unignoreOpts = opts as Record<string, (...args: unknown[]) => void>;
+    }
     return {
       mutate: vi.fn(),
       isPending: false,
@@ -99,10 +107,10 @@ vi.mock('@tanstack/react-query', () => ({
 }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
-  ignoreAppVersionMutation: () => ({}),
-  // Tagged so the useMutation mock above can pick this one out of several.
+  // Tagged so the useMutation mock above can pick each one out of several.
+  ignoreAppVersionMutation: () => ({ __kind: 'ignore' }),
   startAppMutation: () => ({ __kind: 'start' }),
-  unignoreAppVersionMutation: () => ({}),
+  unignoreAppVersionMutation: () => ({ __kind: 'unignore' }),
 }));
 
 // AppActions consumes exactly one VALUE from this module; everything else it imports is
@@ -320,6 +328,8 @@ describe('AppActions', () => {
     hoisted.openPath.mockReset();
     hoisted.openExternal.mockReset();
     hoisted.startOpts = undefined;
+    hoisted.ignoreOpts = undefined;
+    hoisted.unignoreOpts = undefined;
     hoisted.invalidateAppQueries.mockReset();
     // Reset EVERY hoisted spy: mockReturnValue is sticky for the whole file, and vitest
     // is not configured with clearMocks/mockReset, so a leftover value silently leaks
@@ -916,6 +926,19 @@ describe('AppActions', () => {
       renderOffer({ latestVersion: 9, latestDockerVersion: '2026.11.2' }, 9);
       expect(shown()).toEqual([UPDATE, UNIGNORE]);
     });
+
+    // The icons above come from the app query and nothing else would make it fetch again. The URN is
+    // the one the request went out for, since the page may have moved to another app by the time it lands.
+    it.each([
+      ['ignore', () => hoisted.ignoreOpts],
+      ['unignore', () => hoisted.unignoreOpts],
+    ])('asks for the app again once the %s has gone through', (_name, opts) => {
+      renderOffer({ latestVersion: 9, latestDockerVersion: '2026.10.28' });
+
+      opts()?.onSuccess?.(undefined, { path: { urn: 'other-app:community' } });
+
+      expect(hoisted.invalidateAppQueries).toHaveBeenCalledWith(hoisted.queryClient, 'other-app:community');
+    });
   });
 
   describe('the actions a person may use', () => {
@@ -1135,6 +1158,51 @@ describe('AppActions', () => {
       expect(screen.getByRole('button', { name: 'APP_ACTION_OPEN_ANYWAY' })).toBeInTheDocument();
       // The status pill carries the explanation now; duplicating it here is noise.
       expect(screen.queryByText('APP_ACTION_ERROR_DNS_NOT_FOUND')).not.toBeInTheDocument();
+    });
+
+    // No DNS record exists for an address the Portal refused, so the link could only end on a browser error (#2271).
+    it('offers no "Open anyway" for an address the Portal refused, and still says why', () => {
+      renderExposed(
+        makeAvailability({
+          state: 'unreachable',
+          statusMessage: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+          publicAddressRefusal: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+          withinGracePeriod: false,
+          appUrl: 'https://app.example.com',
+        }),
+      );
+
+      expect(screen.queryByRole('button', { name: 'APP_ACTION_OPEN_ANYWAY' })).not.toBeInTheDocument();
+      expect(screen.getByText('APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED')).toBeInTheDocument();
+    });
+
+    it('offers no "Open anyway" for a refused address once probing has stopped either', () => {
+      renderExposed(
+        makeAvailability({
+          state: 'unreachable',
+          statusMessage: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+          publicAddressRefusal: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+          withinGracePeriod: false,
+          pollingStopped: true,
+          appUrl: 'https://app.example.com',
+        }),
+      );
+
+      expect(screen.getByTestId('action-common_retry')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'APP_ACTION_OPEN_ANYWAY' })).not.toBeInTheDocument();
+    });
+
+    // Retry clears the verdict while the next probe runs, and the refusal has to outlast that.
+    it('offers no "Open anyway" for a refused address while Retry waits for the next verdict', () => {
+      renderExposed(
+        makeAvailability({
+          state: 'checking',
+          publicAddressRefusal: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+          appUrl: 'https://app.example.com',
+        }),
+      );
+
+      expect(screen.queryByRole('button', { name: 'APP_ACTION_OPEN_ANYWAY' })).not.toBeInTheDocument();
     });
 
     it('offers Resolve with the reason once the grace window has passed', () => {

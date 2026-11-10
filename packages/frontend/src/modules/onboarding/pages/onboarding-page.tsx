@@ -90,7 +90,7 @@ function Shell({ children }: { children: React.ReactNode }) {
   const { t } = useTranslation();
 
   return (
-    <div className="flex flex-col items-center overflow-y-auto px-4 py-8" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
+    <div className="flex flex-col items-center overflow-y-auto px-4 py-8" style={{ height: 'var(--app-height)' }}>
       <div className="w-full max-w-[82.94rem]">
         <div className="mb-8 mt-[10vh] flex flex-col items-center text-center sm:mb-10">
           <div
@@ -255,7 +255,7 @@ function OnboardingWizard() {
   // The default payload says "not onboarded"; do not paint step one on it.
   if (isAppLoading) {
     return (
-      <div className="flex items-center justify-center bg-background" style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}>
+      <div className="flex items-center justify-center bg-background" style={{ minHeight: 'var(--app-height)' }}>
         <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" />
       </div>
     );
@@ -438,7 +438,7 @@ export default function OnboardingPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex items-center justify-center bg-background" style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}>
+        <div className="flex items-center justify-center bg-background" style={{ minHeight: 'var(--app-height)' }}>
           <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" />
         </div>
       }

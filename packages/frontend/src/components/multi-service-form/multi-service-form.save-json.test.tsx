@@ -214,6 +214,28 @@ describe('MultiServiceForm Save JSON', () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it('names the rule when Save all finds a variable with no value', async () => {
+    const onSubmit = vi.fn();
+    render(<MultiServiceForm onSubmit={onSubmit} />);
+
+    act(() => {
+      useMultiServiceStore.getState().setServices([
+        {
+          _id: 'web-id',
+          name: 'web',
+          image: 'alpine:3.20',
+          isMain: true,
+          internalPort: 80,
+          environment: [{ key: 'FOO', value: undefined as never }],
+        },
+      ]);
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save all' }));
+
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith('Service web: Environment value is required'));
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('says the JSON is invalid instead of throwing on an emptied editor', async () => {
     const onSubmit = vi.fn();
     render(<MultiServiceForm onSubmit={onSubmit} />);
