@@ -226,6 +226,14 @@ describe('portRangeRefusal', () => {
     expect(portRangeRefusal(value)).toBe(refusal);
   });
 
+  it.each(['abc', '80.5', ' 80 ', '8010-8000', 80.5, '${APP_PORT', '$1PORT'])('refuses %j as not a port', (value) => {
+    expect(portRangeRefusal(value)).toBe('INVALID');
+  });
+
+  it.each(['$APP_PORT', '${APP_PORT:-8080}'])('leaves the env reference %j alone', (value) => {
+    expect(portRangeRefusal(value)).toBeUndefined();
+  });
+
   it.each(['80', '65535', '1', '${APP_PORT}', '8000-8010', '', undefined, null, 80, 65535, true])('leaves %j alone', (value) => {
     expect(portRangeRefusal(value)).toBeUndefined();
   });

@@ -292,6 +292,7 @@
   "CUSTOM_APP_ERROR_INVALID_URN": "Invalid app identifier",
   "CUSTOM_APP_ERROR_NOT_FOUND": "Custom app not found",
   "CUSTOM_APP_ERROR_CONFIG_NOT_FOUND": "Custom app configuration not found",
+  "CUSTOM_APP_ERROR_FRONTMATTER_INVALID": "Notes frontmatter has an invalid value for {{key}}",
   "CUSTOM_APP_ERROR_IMAGE_REQUIRED": "Image is required",
   "CUSTOM_APP_ERROR_NOT_CUSTOM": "Only custom apps can have their logo updated",
   "CUSTOM_APP_ERROR_UPLOAD_FAILED": "Failed to upload custom app logo",

@@ -97,6 +97,29 @@ describe('CustomAppService', () => {
       expect(filesystem.writeTextFile).not.toHaveBeenCalled();
     });
 
+    it.each(['abc', '80.5', ' 80 '])('refuses a new app whose port is %j, which is not a port, before writing anything', async (port) => {
+      appsRepository.getAppByUrn.mockResolvedValue(undefined as any);
+
+      await expect(service.createCustomApp({ name: 'Port Text', config: composeWithPort(port) } as any)).rejects.toThrow(
+        'CUSTOM_APP_ERROR_INTERNAL_PORT_INVALID',
+      );
+
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
+    it('refuses an edit that maps a backwards range', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+      const config = {
+        ...composeWithPort(80),
+        services: [{ name: 'web', image: 'nginx', isMain: true, internalPort: 80, addPorts: [{ hostPort: '8010-8000', containerPort: 80 }] }],
+      };
+
+      await expect(service.updateCustomApp('myapp:_user' as any, config)).rejects.toThrow('CUSTOM_APP_ERROR_HOST_PORT_INVALID');
+
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+
     it('refuses it in an override too', async () => {
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
       const config = { ...composeWithPort(80), overrides: [{ services: [{ name: 'web', internalPort: '99999' }] }] };
@@ -447,9 +470,12 @@ describe('CustomAppService', () => {
     it.each([
       ['a number', 8080, 8080],
       ['digits as text', '8080', 8080],
-      ['a string with stray whitespace', ' 3000 ', 3000],
     ])('takes %s', async (_name, input, expected) => {
       await expect(portWrittenFor(input)).resolves.toBe(expected);
+    });
+
+    it('refuses a string with stray whitespace, which Docker does not read as a port at start', async () => {
+      await expect(portWrittenFor(' 3000 ')).rejects.toThrow('CUSTOM_APP_ERROR_INTERNAL_PORT_INVALID');
     });
 
     it.each([
@@ -523,17 +549,34 @@ describe('CustomAppService', () => {
     it('refuses a note for an app with no config.json and writes nothing', async () => {
       filesystem.readJsonFile.mockResolvedValue(null);
 
-      await expect(service.updateAppMetadata(CUSTOM, '# Hello')).rejects.toThrow('Failed to read app info');
+      const refusal = service.updateAppMetadata(CUSTOM, '---\ncategories:\n  - not-a-category\n---\n');
+
+      await expect(refusal).rejects.toThrow('CUSTOM_APP_ERROR_NOT_FOUND');
+      await expect(refusal).rejects.toMatchObject({ status: 404 });
 
       expect(filesystem.writeJsonFile).not.toHaveBeenCalled();
       expect(filesystem.writeTextFile).not.toHaveBeenCalled();
     });
 
-    it('refuses a note with frontmatter that is not valid and writes nothing', async () => {
-      await expect(service.updateAppMetadata(CUSTOM, '---\ncategories:\n  - not-a-category\n---\n')).rejects.toThrow('Invalid frontmatter');
+    it('refuses a note with frontmatter that is not valid with a 400 naming the key, and writes nothing', async () => {
+      const refusal = service.updateAppMetadata(CUSTOM, '---\ncategories:\n  - not-a-category\n---\n');
+
+      await expect(refusal).rejects.toMatchObject({
+        status: 400,
+        response: { message: 'CUSTOM_APP_ERROR_FRONTMATTER_INVALID', intlParams: { key: 'categories.0' } },
+      });
 
       expect(filesystem.writeJsonFile).not.toHaveBeenCalled();
       expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it('saves a note that opens with a horizontal rule as text and leaves config.json alone', async () => {
+      const note = '---\nCheck backups weekly.\n---\nThe rest of the note';
+
+      await expect(service.updateAppMetadata(CUSTOM, note)).resolves.toBeUndefined();
+
+      expect(filesystem.writeJsonFile).not.toHaveBeenCalled();
+      expect(filesystem.writeTextFile).toHaveBeenCalledWith('/data/apps/_user/myapp/metadata/description.md', note);
     });
   });
 
