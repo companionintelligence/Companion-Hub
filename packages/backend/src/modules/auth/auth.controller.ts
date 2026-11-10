@@ -89,6 +89,12 @@ import {
   VerifyTotpBody,
 } from './dto/auth.dto';
 import { HUB_FAVICON_LINK_TAG, HUB_FAVICON_PNG } from './hub-favicon';
+import {
+  buildBrowserHandoffConfirmHtml,
+  describeBrowserHandoffTarget,
+  isSameOriginFormPost,
+  setBrowserHandoffConfirmHeaders,
+} from './browser-handoff-confirm';
 import { ApiBody, ApiExcludeEndpoint, ApiResponse } from '@nestjs/swagger';
 import {
   buildPortalDesktopDeepLink,
@@ -133,9 +139,13 @@ import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate
 const BROWSER_HANDOFF_TTL_SECONDS = 60;
 /** Long enough to explain a late or repeated arrival of a ticket, short enough to keep the store small. */
 const BROWSER_HANDOFF_ISSUED_TTL_SECONDS = 10 * 60;
+/** How long, from the mint, a ticket stays usable once its confirmation page is shown. */
+const BROWSER_HANDOFF_CONFIRM_WINDOW_SECONDS = 5 * 60;
 /** Where every refused handoff lands; the dashboard turns the marker into a toast. */
 const BROWSER_HANDOFF_FAILED_REDIRECT = '/?handoff=failed';
 const browserHandoffIssuedKey = (ticket: string) => `browser_handoff_issued:${ticket}`;
+/** A handoff redirect: 303 after the confirmation POST, so the browser follows it with a GET. */
+const browserHandoffRedirect = (req: Request, res: Response, url: string) => (req.method === 'POST' ? res.redirect(303, url) : res.redirect(url));
 
 /** What the Hub remembers about a browser-handoff ticket it minted, so a refusal of it can say why. */
 interface BrowserHandoffIssued {
@@ -989,7 +999,14 @@ export class AuthController {
 
   /**
    * The single-use ticket acts as the credential for a delegated browser session, so missing or stale tickets fail without setting a cookie.
-   * Only fresh user-initiated navigation may consume it, preventing login CSRF from page-initiated requests.
+   *
+   * A fresh user-initiated navigation (`Sec-Fetch-Site: none`, or no Fetch Metadata) redeems it at
+   * once. Anything else is answered with a confirmation page instead of a session: Chrome on Android
+   * marks EVERY link another app opens `cross-site`, so the Hub's Android app always arrives that
+   * way, and refusing it outright made Connect Memory and Open fail there every time. The page shows
+   * whom the browser would be signed in as and only redeems the ticket on a same-origin POST from
+   * itself, so a site that lures someone into opening a ticket (login CSRF) still cannot complete
+   * it: it can neither submit the form for them nor frame the page to take the click.
    *
    * Every refusal lands on `/?handoff=failed`, so the dashboard can say the browser was not signed in
    * instead of the click looking like it did nothing. Only a refusal of a ticket this Hub really issued
@@ -998,42 +1015,70 @@ export class AuthController {
    */
   @Get('/browser-handoff')
   async consumeBrowserHandoff(@Query('ticket') ticket: string | undefined, @Req() req: Request, @Res() res: Response) {
+    const { issued, refuse } = this.browserHandoffContext(ticket, req, res);
+    if (!ticket) {
+      return refuse('no ticket');
+    }
+
     const fetchSite = req.get('sec-fetch-site');
+    if (fetchSite !== undefined && fetchSite !== 'none') {
+      return this.renderBrowserHandoffConfirmation(ticket, issued, res, refuse, fetchSite);
+    }
+
+    return this.redeemBrowserHandoff(ticket, issued, req, res, refuse);
+  }
+
+  /** The confirmation page's Continue. Redeems only for a POST from that page on this Hub's own origin. */
+  @Post('/browser-handoff/confirm')
+  async confirmBrowserHandoff(@Body('ticket') rawTicket: unknown, @Req() req: Request, @Res() res: Response) {
+    const ticket = typeof rawTicket === 'string' && rawTicket ? rawTicket : undefined;
+    const { issued, refuse } = this.browserHandoffContext(ticket, req, res);
+    if (!ticket) {
+      return refuse('confirmation without a ticket');
+    }
+
+    const hub = await this.resolvePublicHub();
+    if (!hub) {
+      return refuse('no public Hub origin');
+    }
+    if (!isSameOriginFormPost(req, hub.origin)) {
+      return refuse(`confirmation not posted from this Hub's own page (origin=${req.get('origin') ?? 'absent'})`);
+    }
+
+    return this.redeemBrowserHandoff(ticket, issued, req, res, refuse);
+  }
+
+  /** The issued record for a ticket, and the one way a handoff route refuses (logged only for a real ticket). */
+  private browserHandoffContext(ticket: string | undefined, req: Request, res: Response) {
     const issued = ticket ? this.readBrowserHandoffIssued(ticket) : null;
     const refuse = (reason: string) => {
       if (issued) {
         const age = Math.round((Date.now() - issued.mintedAt) / 1000);
         const used = issued.usedAt === undefined ? '' : `, used ${Math.round((Date.now() - issued.usedAt) / 1000)}s ago`;
         this.logger.warn(
-          `[BrowserHandoff] refused a ticket minted ${age}s ago${used}: ${reason} (sec-fetch-site=${fetchSite ?? 'absent'}, ua=${(req.get('user-agent') ?? 'absent').slice(0, 160)})`,
+          `[BrowserHandoff] refused a ticket minted ${age}s ago${used}: ${reason} (sec-fetch-site=${req.get('sec-fetch-site') ?? 'absent'}, ua=${(req.get('user-agent') ?? 'absent').slice(0, 160)})`,
         );
       }
-      return res.redirect(BROWSER_HANDOFF_FAILED_REDIRECT);
+      return browserHandoffRedirect(req, res, BROWSER_HANDOFF_FAILED_REDIRECT);
     };
+    return { issued, refuse };
+  }
 
-    // Checked before the ticket is read, so a lured page-initiated request can neither use nor burn it.
-    if (fetchSite !== undefined && fetchSite !== 'none') {
-      return refuse('not a fresh user-initiated navigation');
-    }
-
-    if (!ticket) {
-      return refuse('no ticket');
-    }
-
-    const cacheKey = `browser_handoff:${ticket}`;
-    const cached = this.cache.get(cacheKey);
+  /**
+   * Reads and checks a ticket WITHOUT spending it. `hit` says whether a ticket was stored at all,
+   * which the redeem path needs to burn even a ticket whose record then fails a check.
+   */
+  private async inspectBrowserHandoffTicket(
+    ticket: string,
+    issued: BrowserHandoffIssued | null,
+  ): Promise<{ hit: true; cached: string; next: string; userId: number } | { hit: boolean; reason: string }> {
+    const cached = this.cache.get(`browser_handoff:${ticket}`);
     if (!cached) {
       // No store write on a miss: this endpoint is unauthenticated.
-      return refuse(issued?.usedAt === undefined ? `not found and never used (tickets last ${BROWSER_HANDOFF_TTL_SECONDS}s)` : 'already used');
-    }
-    this.cache.del(cacheKey); // single-use — burn the real hit before acting on it.
-    if (issued) {
-      // A second arrival of this ticket can then say it was already used, and when.
-      this.cache.set(
-        browserHandoffIssuedKey(ticket),
-        JSON.stringify({ ...issued, usedAt: Date.now() } satisfies BrowserHandoffIssued),
-        BROWSER_HANDOFF_ISSUED_TTL_SECONDS,
-      );
+      return {
+        hit: false,
+        reason: issued?.usedAt === undefined ? `not found and never used (tickets last ${BROWSER_HANDOFF_TTL_SECONDS}s)` : 'already used',
+      };
     }
 
     let sessionId: string;
@@ -1043,30 +1088,93 @@ export class AuthController {
       sessionId = parsed.sessionId;
       next = parsed.next;
     } catch {
-      return refuse('unreadable ticket record');
+      return { hit: true, reason: 'unreadable ticket record' };
     }
 
     // Revalidate in case registration changed after the ticket was minted.
     const hub = await this.resolvePublicHub();
     if (!sessionId || !next || !hub) {
-      return refuse(hub ? 'incomplete ticket record' : 'no public Hub origin');
+      return { hit: true, reason: hub ? 'incomplete ticket record' : 'no public Hub origin' };
     }
     if (!this.isSafeHandoffNext(next, hub.origin, hub.orgSlug)) {
-      return refuse('target no longer allowed');
+      return { hit: true, reason: 'target no longer allowed' };
     }
 
-    // Give the browser its own session because browser rotation deletes the replaced ID and would log out the desktop (#944).
-    // Independent session lifecycles prevent the two contexts from invalidating each other.
+    // Do not plant (or offer) a session that died during the ticket window.
     const userId = this.sessionManager.resolveSessionUserId(sessionId);
     if (userId === null) {
-      // Do not plant a session that died during the ticket window.
-      return refuse('the minting session has ended');
+      return { hit: true, reason: 'the minting session has ended' };
     }
+
+    return { hit: true, cached, next, userId };
+  }
+
+  /** Shows whom the browser would be signed in as. Spends nothing and plants nothing. */
+  private async renderBrowserHandoffConfirmation(
+    ticket: string,
+    issued: BrowserHandoffIssued | null,
+    res: Response,
+    refuse: (reason: string) => void,
+    fetchSite: string,
+  ) {
+    const found = await this.inspectBrowserHandoffTicket(ticket, issued);
+    if (!('cached' in found)) {
+      return refuse(found.reason);
+    }
+
+    const user = await this.userRepository.getUserDtoById(found.userId);
+    if (!user || user.accessStatus === 'revoked') {
+      return refuse('the minting person may no longer sign in');
+    }
+
+    // Time to read the page and press Continue, counted from the mint so reloading cannot keep a
+    // ticket alive. A ticket with no issued record keeps its normal lifetime.
+    if (issued) {
+      const remaining = Math.ceil((issued.mintedAt + BROWSER_HANDOFF_CONFIRM_WINDOW_SECONDS * 1000 - Date.now()) / 1000);
+      if (remaining > BROWSER_HANDOFF_TTL_SECONDS) {
+        this.cache.set(`browser_handoff:${ticket}`, found.cached, remaining);
+      }
+      this.logger.info(
+        `[BrowserHandoff] asked to confirm a ticket minted ${Math.round((Date.now() - issued.mintedAt) / 1000)}s ago (sec-fetch-site=${fetchSite})`,
+      );
+    }
+
+    res.status(200);
+    setBrowserHandoffConfirmHeaders(res);
+    res.send(buildBrowserHandoffConfirmHtml({ ticket, username: user.username, target: describeBrowserHandoffTarget(found.next) }));
+  }
+
+  /** Spends the ticket and plants a browser session for its person, then continues to its target. */
+  private async redeemBrowserHandoff(
+    ticket: string,
+    issued: BrowserHandoffIssued | null,
+    req: Request,
+    res: Response,
+    refuse: (reason: string) => void,
+  ) {
+    const found = await this.inspectBrowserHandoffTicket(ticket, issued);
+    if (found.hit) {
+      this.cache.del(`browser_handoff:${ticket}`); // single-use — burn the real hit before acting on it.
+      if (issued) {
+        // A second arrival of this ticket can then say it was already used, and when.
+        this.cache.set(
+          browserHandoffIssuedKey(ticket),
+          JSON.stringify({ ...issued, usedAt: Date.now() } satisfies BrowserHandoffIssued),
+          BROWSER_HANDOFF_ISSUED_TTL_SECONDS,
+        );
+      }
+    }
+    if (!('cached' in found)) {
+      return refuse(found.reason);
+    }
+    const { next, userId } = found;
 
     if (issued) {
       this.logger.info(`[BrowserHandoff] redeemed a ticket minted ${Math.round((Date.now() - issued.mintedAt) / 1000)}s ago`);
     }
 
+    // Give the browser its own session because browser rotation deletes the replaced ID and would log out the desktop (#944).
+    // Independent session lifecycles prevent the two contexts from invalidating each other.
     // Reuse a live same-user session to avoid leaving week-long sessions behind.
     // `touchSession` rejects rotation-grace IDs and extends a session that must survive the round trip.
     const existingSessionId = req.cookies[SESSION_COOKIE_NAME];
@@ -1078,12 +1186,12 @@ export class AuthController {
     if (reusableSessionId && this.sessionManager.touchSession(reusableSessionId)) {
       // Reissue the cookie because extending only server expiry can still let the browser cookie die mid-flow (#944).
       await this.setSessionCookie(res, reusableSessionId, req);
-      return res.redirect(next);
+      return browserHandoffRedirect(req, res, next);
     }
 
     const browserSessionId = await this.sessionManager.createSession(userId);
     await this.setSessionCookie(res, browserSessionId, req);
-    return res.redirect(next);
+    return browserHandoffRedirect(req, res, next);
   }
 
   /** Desktop login returns through its deep link, while browser login returns to the initiating Hub origin. */

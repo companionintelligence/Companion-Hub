@@ -1832,6 +1832,20 @@
         ]
       }
     },
+    "/api/auth/browser-handoff/confirm": {
+      "post": {
+        "operationId": "confirmBrowserHandoff",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/api/auth/portal/start": {
       "get": {
         "operationId": "startPortalLogin",

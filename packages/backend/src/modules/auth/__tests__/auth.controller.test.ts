@@ -3691,18 +3691,31 @@ describe('AuthController', () => {
       // A spoofed multi-valued header (duplicate Sec-Fetch-Site joined by the runtime)
       // must not slip past the `=== 'none'` allow-list.
       'none, cross-site',
-    ])('consume rejects a %s navigation without touching the ticket or setting a cookie', async (fetchSite) => {
+    ])('consume answers a %s navigation with a confirmation page, spending nothing and planting no cookie', async (fetchSite) => {
+      mockHubOrigin();
+      const next = `${hubOrigin}/api/memory-connect/start?app=urn:store:ci-hermes`;
+      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sess-1', next }));
+      sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+      userRepository.getUserDtoById.mockResolvedValue({ id: 7, username: 'op@example.com', accessStatus: 'active' } as never);
       const req = { cookies: {}, get: vi.fn((h: string) => (h === 'sec-fetch-site' ? fetchSite : undefined)), headers: {} } as unknown as Request;
-      const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
+      const res = { cookie: vi.fn(), redirect: vi.fn(), status: vi.fn(), setHeader: vi.fn(), send: vi.fn() } as unknown as Response;
 
       await authController.consumeBrowserHandoff('ticket-abc', req, res);
 
-      // Login-CSRF guard fires before the ticket is read, so a lured victim never
-      // gets the attacker's session and the ticket is left intact.
-      expect(cache.get).not.toHaveBeenCalledWith('browser_handoff:ticket-abc');
+      // Login-CSRF guard: a lured, page-initiated request gets a page that asks, never a session,
+      // and the ticket is neither spent nor redeemed.
       expect(cache.del).not.toHaveBeenCalled();
       expect(res.cookie).not.toHaveBeenCalled();
-      expect(res.redirect).toHaveBeenCalledWith('/?handoff=failed');
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+      expect(res.redirect).not.toHaveBeenCalled();
+      const html = vi.mocked(res.send).mock.calls[0]?.[0] as string;
+      expect(html).toContain('Continue in this browser?');
+      expect(html).toContain('<strong>op@example.com</strong> and connect an app to CI Memory');
+      expect(html).toContain('<form method="post" action="/api/auth/browser-handoff/confirm">');
+      expect(html).toContain('name="ticket" value="ticket-abc"');
+      // The page must not be framed by the site that lured someone to it, or that site could take the click.
+      expect(res.setHeader).toHaveBeenCalledWith('Content-Security-Policy', expect.stringContaining("frame-ancestors 'none'"));
+      expect(res.setHeader).toHaveBeenCalledWith('X-Frame-Options', 'DENY');
     });
 
     it('consume redirects home for a missing/expired/replayed ticket without setting a cookie or writing', async () => {
@@ -3757,18 +3770,44 @@ describe('AuthController', () => {
         expect(cache.set).toHaveBeenCalledWith(expect.stringMatching(/^browser_handoff_issued:/), expect.stringContaining('"mintedAt"'), 600);
       });
 
-      it('logs a real ticket refused as not a fresh navigation, naming the header, and leaves the ticket alone', async () => {
-        cacheWith({ [issuedKey('ticket-abc')]: { mintedAt: Date.now() - 3000 }, 'browser_handoff:ticket-abc': { sessionId: 'sess-1', next } });
+      it('logs a cross-site arrival of a spent ticket instead of offering to confirm it', async () => {
+        cacheWith({ [issuedKey('ticket-abc')]: { mintedAt: Date.now() - 3000, usedAt: Date.now() - 1000 } });
         const res = response();
 
         await authController.consumeBrowserHandoff('ticket-abc', navigation('cross-site'), res);
 
-        expect(cache.get).not.toHaveBeenCalledWith('browser_handoff:ticket-abc');
-        expect(cache.del).not.toHaveBeenCalled();
         expect(res.redirect).toHaveBeenCalledWith('/?handoff=failed');
         expect(logger.warn).toHaveBeenCalledWith(
-          expect.stringMatching(/minted 3s ago: not a fresh user-initiated navigation \(sec-fetch-site=cross-site, ua=Mozilla/),
+          expect.stringMatching(/minted 3s ago, used 1s ago: already used \(sec-fetch-site=cross-site, ua=Mozilla/),
         );
+      });
+
+      it('gives a confirmation page five minutes from the mint, and no more on a reload', async () => {
+        mockHubOrigin();
+        cacheWith({ [issuedKey('ticket-abc')]: { mintedAt: Date.now() - 10_000 }, 'browser_handoff:ticket-abc': { sessionId: 'sess-1', next } });
+        sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+        userRepository.getUserDtoById.mockResolvedValue({ id: 7, username: 'op@example.com', accessStatus: 'active' } as never);
+        const res = { ...response(), status: vi.fn(), setHeader: vi.fn(), send: vi.fn() } as unknown as Response;
+
+        await authController.consumeBrowserHandoff('ticket-abc', navigation('cross-site'), res);
+
+        const [, , ttl] = cache.set.mock.calls.find(([key]) => key === 'browser_handoff:ticket-abc') ?? [];
+        expect(ttl).toBeGreaterThanOrEqual(289);
+        expect(ttl).toBeLessThanOrEqual(290);
+        expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('asked to confirm a ticket minted 10s ago (sec-fetch-site=cross-site)'));
+      });
+
+      it('will not offer to sign a browser in as a person whose access was revoked', async () => {
+        mockHubOrigin();
+        cacheWith({ [issuedKey('ticket-abc')]: { mintedAt: Date.now() - 1000 }, 'browser_handoff:ticket-abc': { sessionId: 'sess-1', next } });
+        sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+        userRepository.getUserDtoById.mockResolvedValue({ id: 7, username: 'op@example.com', accessStatus: 'revoked' } as never);
+        const res = { ...response(), status: vi.fn(), setHeader: vi.fn(), send: vi.fn() } as unknown as Response;
+
+        await authController.consumeBrowserHandoff('ticket-abc', navigation('cross-site'), res);
+
+        expect(res.send).not.toHaveBeenCalled();
+        expect(res.redirect).toHaveBeenCalledWith('/?handoff=failed');
       });
 
       it('logs a second arrival of a ticket as already used, and when', async () => {
@@ -3832,6 +3871,66 @@ describe('AuthController', () => {
         expect(cache.set).toHaveBeenCalledWith(issuedKey('ticket-abc'), expect.stringContaining('"usedAt"'), 600);
         expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('redeemed a ticket minted 2s ago'));
         expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('[BrowserHandoff]'));
+      });
+    });
+
+    describe("the confirmation page's Continue", () => {
+      const next = `${hubOrigin}/api/memory-connect/start?app=urn:store:ci-hermes`;
+      const post = (headers: Record<string, string>) =>
+        ({ method: 'POST', cookies: {}, get: vi.fn((h: string) => headers[h.toLowerCase()]), headers: {} }) as unknown as Request;
+      const response = () => ({ cookie: vi.fn(), redirect: vi.fn() }) as unknown as Response;
+      const liveTicket = () => {
+        mockHubOrigin();
+        config.get.mockReturnValue({ experimental: { insecureCookie: true } } as never);
+        cache.get.mockImplementation(((key: string) =>
+          key === 'browser_handoff:ticket-abc' ? JSON.stringify({ sessionId: 'sess-1', next }) : undefined) as never);
+        sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+        sessionManager.createSession.mockResolvedValue('browser-sess');
+      };
+
+      it('redeems on a same-origin POST from the page, then continues with a 303', async () => {
+        liveTicket();
+        const res = response();
+
+        await authController.confirmBrowserHandoff('ticket-abc', post({ 'sec-fetch-site': 'same-origin', origin: hubOrigin }), res);
+
+        expect(cache.del).toHaveBeenCalledWith('browser_handoff:ticket-abc');
+        expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'browser-sess', expect.objectContaining({ httpOnly: true }));
+        expect(res.redirect).toHaveBeenCalledWith(303, next);
+      });
+
+      it('accepts a browser without Fetch Metadata when its Origin is this Hub', async () => {
+        liveTicket();
+        const res = response();
+
+        await authController.confirmBrowserHandoff('ticket-abc', post({ origin: hubOrigin }), res);
+
+        expect(res.redirect).toHaveBeenCalledWith(303, next);
+      });
+
+      it.each([
+        ['a cross-site POST', { 'sec-fetch-site': 'cross-site', origin: 'https://evil.example' }],
+        ['a same-site POST from an app host', { 'sec-fetch-site': 'same-site', origin: 'https://ci-hermes-core-2-myorg.companionintelligence.com' }],
+        ['a same-origin claim with another Origin', { 'sec-fetch-site': 'same-origin', origin: 'https://evil.example' }],
+        ['no Fetch Metadata and a foreign Origin', { origin: 'https://evil.example' }],
+        ['no Fetch Metadata and no Origin', {}],
+      ])('refuses %s without spending the ticket or planting a session', async (_label, headers) => {
+        liveTicket();
+        const res = response();
+
+        await authController.confirmBrowserHandoff('ticket-abc', post(headers), res);
+
+        expect(cache.del).not.toHaveBeenCalled();
+        expect(res.cookie).not.toHaveBeenCalled();
+        expect(res.redirect).toHaveBeenCalledWith(303, '/?handoff=failed');
+      });
+
+      it('refuses a POST without a ticket', async () => {
+        const res = response();
+
+        await authController.confirmBrowserHandoff(undefined, post({ 'sec-fetch-site': 'same-origin', origin: hubOrigin }), res);
+
+        expect(res.redirect).toHaveBeenCalledWith(303, '/?handoff=failed');
       });
     });
   });

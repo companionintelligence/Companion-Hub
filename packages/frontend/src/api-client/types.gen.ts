@@ -3625,6 +3625,17 @@ export type ConsumeBrowserHandoffResponses = {
     200: unknown;
 };
 
+export type ConfirmBrowserHandoffData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/browser-handoff/confirm';
+};
+
+export type ConfirmBrowserHandoffResponses = {
+    201: unknown;
+};
+
 export type StartPortalLoginData = {
     body?: never;
     path?: never;
