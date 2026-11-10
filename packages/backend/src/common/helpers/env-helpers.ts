@@ -235,22 +235,28 @@ export function resolveHubDomain(sources: {
 }
 
 /**
- * Resolves the RabbitMQ password without using the development default in production.
- * Production requires an explicit value other than `admin`, a credential every install
- * would share. The prod compose requires the value from the env file, and the desktop app
- * and `cihub up` replace an `admin` there, so a Hub only meets it when someone set it
- * (Companion-Hub#884).
+ * Resolves the RabbitMQ password without silently using the development default in
+ * production. Production requires an explicit value; an explicit `admin` remains
+ * compatible but returns a migration warning.
+ *
+ * The `admin` escape hatch stays until the migrations that replace it have shipped
+ * (Companion-Hub#884): a Hub released before them updates itself through a compose that
+ * still falls back to `admin`, so refusing it here would crash-loop unattended nodes.
+ * Removing the hatch, and failing closed on `admin`, is a follow-up.
  */
-export function resolveRabbitmqPassword(envMap: Map<string, string>): { password: string } {
+export function resolveRabbitmqPassword(envMap: Map<string, string>): { password: string; warning?: string } {
   const isProduction = process.env.NODE_ENV === 'production';
   const explicit = resolve('RABBITMQ_PASSWORD', { envMap, fallback: '' });
 
   if (explicit) {
     if (isProduction && explicit === DEFAULT_RABBITMQ_PASSWORD) {
-      throw new Error(
-        "RABBITMQ_PASSWORD is set to the weak default 'admin' in production. Set a strong, unique RABBITMQ_PASSWORD " +
-          '(and match RABBITMQ_DEFAULT_PASS on the broker) — the default is a known credential.',
-      );
+      return {
+        password: explicit,
+        warning:
+          "RABBITMQ_PASSWORD is set to the weak default 'admin' in production. Set a strong, unique RABBITMQ_PASSWORD " +
+          '(and match RABBITMQ_DEFAULT_PASS on the broker) — the default is a known credential. `cihub up`, `cihub pool update` ' +
+          'and the desktop app replace it; a later release will refuse to start on it.',
+      };
     }
     return { password: explicit };
   }
@@ -912,7 +918,11 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   }
   envMap.set('RABBITMQ_HOST', rabbitmqHost);
   envMap.set('RABBITMQ_USERNAME', resolve('RABBITMQ_USERNAME', { envMap, fallback: DEFAULT_RABBITMQ_USERNAME }));
-  envMap.set('RABBITMQ_PASSWORD', resolveRabbitmqPassword(envMap).password);
+  const rabbitmqPassword = resolveRabbitmqPassword(envMap);
+  if (rabbitmqPassword.warning) {
+    logger.warn(rabbitmqPassword.warning);
+  }
+  envMap.set('RABBITMQ_PASSWORD', rabbitmqPassword.password);
 
   envMap.set('DEMO_MODE', resolve('DEMO_MODE', { envMap, settingsVal: boolStr(settingsData.demoMode), fallback: DEFAULT_DEMO_MODE }));
   envMap.set(

@@ -477,8 +477,8 @@ describe('SystemUpdateService', () => {
       expect(vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1]).toBe(PINNED_ENV);
     });
 
-    // Companion-Hub#884: the new image refuses `admin` in production. An env file with no broker
-    // password recreated the Hub through the older compose's `:-admin` fallback, and it crash-looped.
+    // Companion-Hub#884: an env file with no broker password recreated the Hub through the older
+    // compose's `:-admin` fallback, moving a Hub that ran on a strong password back onto `admin`.
     it.each([
       ['no broker password', PINNED_ENV],
       ['the shared default', `${PINNED_ENV}RABBITMQ_PASSWORD=admin\n`],

@@ -160,8 +160,8 @@ export function buildPoolUpdateComposeArgs(
 /**
  * The env files whose RABBITMQ_PASSWORD `pool update` makes sure of before compose reads them.
  *
- * The prod compose requires the password from the env file, and the Hub refuses `admin` in
- * production (Companion-Hub#884). A checkout node whose env file was copied from `.env.example`
+ * The prod compose requires the password from the env file, and `admin` is a credential every
+ * install shared (Companion-Hub#884). A checkout node whose env file was copied from `.env.example`
  * has no RABBITMQ_PASSWORD, so after the fast-forward to dev its compose would stop at
  * "RABBITMQ_PASSWORD must be set". These are the files compose is handed (the running stack's own
  * when it records them, otherwise this context's), plus both appliance env files, which the CLI

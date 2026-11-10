@@ -234,30 +234,6 @@ describe('uninstall cleanup supports both Hub identity generations', () => {
   });
 });
 
-/*
- * Companion-Hub#884: the Hub refuses RABBITMQ_PASSWORD=admin in production, so the headless updater
- * has to give the env file a password of its own before compose reads it, and check the broker took it.
- */
-describe('headless updater broker password', () => {
-  const at = (marker: string) => {
-    const index = updaterScript.indexOf(marker);
-    expect(index, `marker not found in update.sh: ${marker}`).toBeGreaterThanOrEqual(0);
-    return index;
-  };
-
-  it('writes RABBITMQ_PASSWORD to the env file before the first compose call', () => {
-    expect(at("printf 'RABBITMQ_PASSWORD=%s\\n'")).toBeLessThan(at('docker compose "${COMPOSE_ARGS[@]}" pull'));
-  });
-
-  it('replaces a missing or admin value, and nothing else', () => {
-    expect(updaterScript).toContain('if [ -z "$CURRENT_RABBITMQ_PASSWORD" ] || [ "$CURRENT_RABBITMQ_PASSWORD" = "admin" ]; then');
-  });
-
-  it('checks the broker accepts the written password after the recreate', () => {
-    expect(at('rabbitmqctl authenticate_user companion "$RABBITMQ_PASSWORD_VALUE"')).toBeGreaterThan(at('up -d --remove-orphans'));
-  });
-});
-
 describe('Hub service rename upgrade compatibility', () => {
   it('removes renamed service orphans during headless updates', () => {
     expect(updaterScript).toContain('up -d --remove-orphans');

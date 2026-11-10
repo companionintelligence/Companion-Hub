@@ -301,7 +301,7 @@ describe('seedApplianceInstall', () => {
 });
 
 /*
- * The prod compose no longer falls back to `admin` and the Hub refuses it in production
+ * The prod compose no longer falls back to `admin`, a credential every install shared
  * (Companion-Hub#884), so `cihub up` replaces a missing or `admin` broker password in an existing
  * install's env files before compose reads them, as the desktop app does (runtime_env.rs).
  */

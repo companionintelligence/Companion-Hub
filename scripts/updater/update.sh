@@ -15,6 +15,9 @@ HUB_PORT="${API_PORT:-5002}"
 HEALTH_TIMEOUT=120
 SKIP_BACKUP="${SKIP_BACKUP:-false}"
 
+# shellcheck source=scripts/updater/rabbitmq-password.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rabbitmq-password.sh"
+
 while [ -n "${1-}" ]; do
   case "$1" in
   --version)
@@ -150,42 +153,9 @@ for file in "${COMPOSE_FILES[@]}"; do
   echo "   OK: $file"
 done
 
-# Broker password (Companion-Hub#884). The Hub refuses RABBITMQ_PASSWORD=admin in production, and the
-# prod compose either falls back to admin (older copies) or stops at "RABBITMQ_PASSWORD must be set"
-# (newer ones) when the env file names none. Give the env file a password of its own before compose
-# reads it: the one the running Hub already uses when it has a strong one (the broker accepts it), or
-# else a random one. A new value changes the broker's RABBITMQ_DEFAULT_PASS, so the `up` below
-# recreates the broker, and step 5 checks the broker accepts it.
-RABBITMQ_PASSWORD_WRITTEN=""
-env_file_rabbitmq_password() {
-  grep -E '^RABBITMQ_PASSWORD=' "$ENV_FILE_PATH" | tail -n 1 | cut -d= -f2- | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/" || true
-}
-if [ -f "$ENV_FILE_PATH" ]; then
-  CURRENT_RABBITMQ_PASSWORD="$(env_file_rabbitmq_password)"
-  if [ -z "$CURRENT_RABBITMQ_PASSWORD" ] || [ "$CURRENT_RABBITMQ_PASSWORD" = "admin" ]; then
-    NEW_RABBITMQ_PASSWORD=""
-    for name in "$HUB_CONTAINER" ci-hub ci-os-hub; do
-      NEW_RABBITMQ_PASSWORD="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null | grep -E '^RABBITMQ_PASSWORD=' | tail -n 1 | cut -d= -f2- || true)"
-      [ -n "$NEW_RABBITMQ_PASSWORD" ] && break
-    done
-    if [ -z "$NEW_RABBITMQ_PASSWORD" ] || [ "$NEW_RABBITMQ_PASSWORD" = "admin" ]; then
-      NEW_RABBITMQ_PASSWORD="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
-    fi
-    TMP_ENV="$(mktemp "${ENV_FILE_PATH}.XXXXXX")"
-    grep -vE '^RABBITMQ_PASSWORD=' "$ENV_FILE_PATH" > "$TMP_ENV" || true
-    printf 'RABBITMQ_PASSWORD=%s\n' "$NEW_RABBITMQ_PASSWORD" >> "$TMP_ENV"
-    chmod "$(stat -c '%a' "$ENV_FILE_PATH" 2>/dev/null || stat -f '%Lp' "$ENV_FILE_PATH")" "$TMP_ENV"
-    mv "$TMP_ENV" "$ENV_FILE_PATH"
-    RABBITMQ_PASSWORD_WRITTEN="yes"
-    echo "   OK: RABBITMQ_PASSWORD was missing or the shared default 'admin' in ${ENV_FILE_PATH}; wrote one of its own"
-  else
-    echo "   OK: RABBITMQ_PASSWORD is set in ${ENV_FILE_PATH}"
-  fi
-elif [ -z "${RABBITMQ_PASSWORD:-}" ] || [ "${RABBITMQ_PASSWORD}" = "admin" ]; then
-  echo "ERROR: ${ENV_FILE_PATH} does not exist and RABBITMQ_PASSWORD is not exported, so the Hub would start"
-  echo "       without a broker password of its own and refuse to boot. Set RABBITMQ_PASSWORD in the env file."
-  exit 1
-fi
+# Broker password (Companion-Hub#884): give the env file a RABBITMQ_PASSWORD other than admin before
+# compose reads it. See rabbitmq-password.sh.
+rabbitmq_password_prepare "$ENV_FILE_PATH" "$HUB_CONTAINER"
 
 # Check named volume exists (app data)
 if docker volume inspect ci_hub_app_data > /dev/null 2>&1; then
@@ -248,39 +218,8 @@ echo ""
 echo "5. Restarting services..."
 docker compose "${COMPOSE_ARGS[@]}" up -d --remove-orphans
 
-# The broker applies RABBITMQ_DEFAULT_PASS only to a node database it creates, and a recreated
-# broker container gets a new hostname and so a new node database. Check it took the password this
-# script wrote; if it did not, change the password in place and restart the Hub onto it.
-if [ -n "$RABBITMQ_PASSWORD_WRITTEN" ]; then
-  RABBITMQ_PASSWORD_VALUE="$(env_file_rabbitmq_password)"
-  QUEUE_CONTAINER=""
-  for name in ci-hub-queue ci-os-hub-queue; do
-    if [ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null || true)" = "true" ]; then
-      QUEUE_CONTAINER="$name"
-      break
-    fi
-  done
-  if [ -z "$QUEUE_CONTAINER" ]; then
-    echo "   WARNING: no running broker container (ci-hub-queue) to check RABBITMQ_PASSWORD against"
-  else
-    WAITED=0
-    until docker exec "$QUEUE_CONTAINER" rabbitmq-diagnostics -q check_running > /dev/null 2>&1 || [ $WAITED -ge $HEALTH_TIMEOUT ]; do
-      sleep 2
-      WAITED=$((WAITED + 2))
-    done
-    if docker exec "$QUEUE_CONTAINER" rabbitmqctl authenticate_user companion "$RABBITMQ_PASSWORD_VALUE" > /dev/null 2>&1; then
-      echo "   OK: ${QUEUE_CONTAINER} accepts the RABBITMQ_PASSWORD in ${ENV_FILE_PATH}"
-    elif docker exec "$QUEUE_CONTAINER" rabbitmqctl change_password companion "$RABBITMQ_PASSWORD_VALUE" > /dev/null 2>&1 \
-      && docker exec "$QUEUE_CONTAINER" rabbitmqctl authenticate_user companion "$RABBITMQ_PASSWORD_VALUE" > /dev/null 2>&1; then
-      echo "   OK: changed the broker password in ${QUEUE_CONTAINER} to match ${ENV_FILE_PATH}; restarting ${HUB_CONTAINER}"
-      docker restart "$HUB_CONTAINER" > /dev/null
-    else
-      echo "ERROR: ${QUEUE_CONTAINER} does not accept the RABBITMQ_PASSWORD in ${ENV_FILE_PATH}, and changing it failed."
-      echo "       Run: docker compose ${COMPOSE_ARGS[*]} up -d --force-recreate ci-hub-queue"
-      exit 1
-    fi
-  fi
-fi
+# Check the broker accepts the env file's password, on every run. See rabbitmq-password.sh.
+rabbitmq_password_check_broker "$ENV_FILE_PATH" "$HUB_CONTAINER" "$HEALTH_TIMEOUT"
 
 # ── Wait for health ─────────────────────────────
 

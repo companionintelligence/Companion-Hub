@@ -631,7 +631,7 @@ async function runPoolUpdateCommand(ctx: HubContext, requestedEnv: HubEnv): Prom
     );
   }
   // Before anything reads the compose model: the prod compose requires RABBITMQ_PASSWORD from the env
-  // file, and the image this pulls refuses `admin` in production (Companion-Hub#884). A replaced value
+  // file, and `admin` is a credential every install shared (Companion-Hub#884). A replaced value
   // changes the broker's RABBITMQ_DEFAULT_PASS, so the `up` below recreates the broker, and the sync
   // after it confirms the broker takes the new password.
   const rabbitmqReplaced = ensureStrongRabbitmqPassword(

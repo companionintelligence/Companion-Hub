@@ -722,14 +722,14 @@ export function renderApplianceEnvContent(input: {
   ].join('\n');
 }
 
-/** The broker password every install shared until Companion-Hub#884; the Hub refuses it in production. */
+/** The broker password every install shared until Companion-Hub#884; the Hub warns on it in production. */
 const WEAK_RABBITMQ_PASSWORD = 'admin';
 
 /**
  * Give an existing install's env files a broker password of their own before compose reads them.
  *
- * The prod compose requires RABBITMQ_PASSWORD from the env file and the Hub refuses `admin` in
- * production, so a file that has no value or still has `admin` is given one: the strong value another
+ * The prod compose requires RABBITMQ_PASSWORD from the env file and `admin` is a credential every
+ * install shared, so a file that has no value or still has `admin` is given one: the strong value another
  * of these files already has, so the two stay the same, or else 32 random bytes in hex, as the seed
  * and the desktop app (runtime_env.rs) generate. A strong value is never replaced, and a file that is
  * not there is not created. The broker is changed to match afterwards by sync-rabbitmq-password.

@@ -368,10 +368,10 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     let lines = content.split('\n');
     lines = this.upsertEnvLine(lines, 'CI_HUB_IMAGE', imageLine);
     lines = this.upsertEnvLine(lines, 'CI_HUB_VERSION', targetVersion);
-    // From Companion-Hub#884 the Hub refuses the broker password `admin` in production, and the prod
-    // compose either falls back to `admin` (older copies) or refuses to start (newer ones) when the env
-    // file names none. This Hub booted, so in production it runs with a password other than `admin`,
-    // and the broker accepts it. Writing that value here is what lets the recreated Hub boot on it.
+    // Companion-Hub#884: the prod compose either falls back to the shared `admin` (older copies) or
+    // refuses to start (newer ones) when the env file names no broker password. When this Hub runs with
+    // a password other than `admin`, the broker accepts it, so writing it here keeps the recreated Hub
+    // on it. A Hub that runs on `admin` writes nothing: `admin` is never written to the file.
     const fileRabbitmqPassword = readEnvFileValue(content, 'RABBITMQ_PASSWORD');
     const runningRabbitmqPassword = process.env.RABBITMQ_PASSWORD;
     if (
