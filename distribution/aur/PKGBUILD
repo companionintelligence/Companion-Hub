@@ -7,7 +7,7 @@ pkgver=0.2.4
 pkgrel=1
 pkgdesc="AI-powered companion intelligence hub"
 arch=('x86_64' 'aarch64')
-url="https://github.com/companionintelligence/CI-Hub"
+url="https://github.com/companionintelligence/Companion-Hub"
 license=('custom:CI-Commercial-1.0')
 depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'glibc')
 provides=('companion-hub')
@@ -15,9 +15,9 @@ conflicts=('companion-hub')
 options=('!strip')
 install=companion-hub-bin.install
 
-source_x86_64=("https://github.com/companionintelligence/CI-Hub/releases/download/v${pkgver}/Companion.Hub_${pkgver}_amd64.deb")
-source_aarch64=("https://github.com/companionintelligence/CI-Hub/releases/download/v${pkgver}/Companion.Hub_${pkgver}_arm64.deb")
-source=("license.md::https://raw.githubusercontent.com/companionintelligence/CI-Hub/v${pkgver}/license.md")
+source_x86_64=("https://github.com/companionintelligence/Companion-Hub/releases/download/v${pkgver}/Companion.Hub_${pkgver}_amd64.deb")
+source_aarch64=("https://github.com/companionintelligence/Companion-Hub/releases/download/v${pkgver}/Companion.Hub_${pkgver}_arm64.deb")
+source=("license.md::https://raw.githubusercontent.com/companionintelligence/Companion-Hub/v${pkgver}/license.md")
 
 sha256sums_x86_64=('SKIP')
 sha256sums_aarch64=('SKIP')

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { HUB_INGRESS_HOST_PORTS } from '@/common/constants';
 import { createZodDto } from '@/common/zod-dto';
-import { dynamicComposeSchema } from '@ci-hub/common/schemas';
+import { customAppComposeSchema } from '@ci-hub/common/schemas';
 import { HUB_ACTIONS } from '@/core/portal/hub-actions';
 
 // Free-form display name shared by the custom-app and port-expose create
@@ -19,7 +19,7 @@ const displayNameSchema = z
 
 const createCustomAppSchema = z.object({
   name: displayNameSchema,
-  config: dynamicComposeSchema,
+  config: customAppComposeSchema,
 });
 
 const createPortExposeAppSchema = z.object({
@@ -65,7 +65,7 @@ const createCustomAppResponseSchema = z.object({
 export class CreateCustomAppResponseDto extends createZodDto(createCustomAppResponseSchema) {}
 
 const updateCustomAppSchema = z.object({
-  config: dynamicComposeSchema,
+  config: customAppComposeSchema,
 });
 
 export class UpdateCustomAppDto extends createZodDto(updateCustomAppSchema) {}

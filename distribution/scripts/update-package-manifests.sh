@@ -3,7 +3,7 @@
 # Usage: ./distribution/scripts/update-package-manifests.sh v0.2.28
 set -euo pipefail
 
-REPO="${CI_HUB_RELEASE_REPO:-companionintelligence/CI-Hub}"
+REPO="${CI_HUB_RELEASE_REPO:-companionintelligence/Companion-Hub}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DIST="$ROOT/distribution"
 VERSION="${1:-}"
@@ -45,12 +45,12 @@ cask "companion-hub" do
   version "${TAG}"
 
   on_intel do
-    url "https://github.com/companionintelligence/CI-Hub/releases/download/v#{version}/Companion.Hub_#{version}_x64.dmg"
+    url "https://github.com/companionintelligence/Companion-Hub/releases/download/v#{version}/Companion.Hub_#{version}_x64.dmg"
     sha256 "${SHA_X64_DMG}"
   end
 
   on_arm do
-    url "https://github.com/companionintelligence/CI-Hub/releases/download/v#{version}/Companion.Hub_#{version}_aarch64.dmg"
+    url "https://github.com/companionintelligence/Companion-Hub/releases/download/v#{version}/Companion.Hub_#{version}_aarch64.dmg"
     sha256 "${SHA_AARCH64_DMG}"
   end
 
@@ -96,7 +96,7 @@ cat >"$SCOOP" <<JSON
   "description": "Self-hosted app platform and local AI hub from Companion Intelligence",
   "homepage": "https://ci.computer/hub",
   "license": "CI-Commercial-1.0",
-  "url": "https://github.com/companionintelligence/CI-Hub/releases/download/v${TAG}/Companion.Hub_${TAG}_x64-setup.exe",
+  "url": "https://github.com/companionintelligence/Companion-Hub/releases/download/v${TAG}/Companion.Hub_${TAG}_x64-setup.exe",
   "hash": "${SHA_X64_SETUP}",
   "installer": {
     "script": "& \"\$dir\\\\Companion.Hub_\${version}_x64-setup.exe\" /S"
@@ -138,10 +138,10 @@ cat >"$SCOOP" <<JSON
   },
   "shortcuts": [["Companion Hub\\\\Companion Hub.exe", "Companion Hub"]],
   "checkver": {
-    "github": "https://github.com/companionintelligence/CI-Hub"
+    "github": "https://github.com/companionintelligence/Companion-Hub"
   },
   "autoupdate": {
-    "url": "https://github.com/companionintelligence/CI-Hub/releases/download/v\$version/Companion.Hub_\$version_x64-setup.exe"
+    "url": "https://github.com/companionintelligence/Companion-Hub/releases/download/v\$version/Companion.Hub_\$version_x64-setup.exe"
   }
 }
 JSON
