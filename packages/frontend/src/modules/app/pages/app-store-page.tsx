@@ -173,7 +173,6 @@ export default () => {
     alternatives: alternativesData,
     isLoading: isAlternativesDataLoading,
     isError: isAlternativesDataError,
-    alternativesError: alternativesDataError,
     refetchAlternatives,
   } = usePortalCatalog({}, { enableConfig: false, enableListings: false, enableAlternatives: isAlternativesView || Boolean(search.trim()) });
 
@@ -417,8 +416,7 @@ export default () => {
           )}
           {isAlternativesDataError && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-              {t('APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS')}
-              {alternativesDataError instanceof Error ? `: ${alternativesDataError.message}` : ''}.{' '}
+              {t('APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS')}{' '}
               <button type="button" className="underline font-medium" onClick={() => refetchAlternatives()}>
                 {t('COMMON_RETRY')}
               </button>

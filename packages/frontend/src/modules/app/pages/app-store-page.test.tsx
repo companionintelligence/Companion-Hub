@@ -1,6 +1,9 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MemoryRouter } from 'react-router';
+import en from '@ci-hub/common/i18n/translations/en.json';
+import enUS from '@ci-hub/common/i18n/translations/en-US.json';
+import es from '@ci-hub/common/i18n/translations/es-ES.json';
 
 const { mockStoreState, mockSearchAppsInfiniteOptions } = vi.hoisted(() => ({
   mockStoreState: {
@@ -100,7 +103,6 @@ const mockUsePortalCatalog = vi.hoisted(() =>
     alternatives: {},
     isLoading: false,
     isError: false,
-    alternativesError: undefined,
     refetchAlternatives: vi.fn(),
   })),
 );
@@ -191,7 +193,6 @@ describe('AppStorePage — multi-store UX', () => {
       alternatives: {},
       isLoading: false,
       isError: false,
-      alternativesError: undefined,
       refetchAlternatives: vi.fn(),
     });
   });
@@ -334,7 +335,6 @@ describe('AppStorePage — multi-store UX', () => {
       },
       isLoading: false,
       isError: false,
-      alternativesError: undefined,
       refetchAlternatives: vi.fn(),
     });
 
@@ -366,7 +366,6 @@ describe('AppStorePage — multi-store UX', () => {
       },
       isLoading: false,
       isError: false,
-      alternativesError: undefined,
       refetchAlternatives: vi.fn(),
     });
 
@@ -568,6 +567,34 @@ describe('AppStorePage — multi-store UX', () => {
 
     expect(mockStoreState.setSearchImmediate).toHaveBeenCalledWith('ollama');
     expect(mockStoreState.setCategory).toHaveBeenCalledWith('ai');
+  });
+
+  it('shows only the sentence and Retry when the alternatives fail to load', () => {
+    setupQueries();
+    mockStoreState.category = '__alternatives__';
+    mockUsePortalCatalog.mockReturnValue({
+      alternatives: {},
+      isLoading: false,
+      isError: true,
+      refetchAlternatives: vi.fn(),
+    });
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    const banner = screen.getByText(/APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS/);
+    expect(banner).toHaveTextContent(/^APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS COMMON_RETRY$/);
+  });
+
+  it.each([
+    ['en', en.APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS],
+    ['en-US', enUS.APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS],
+    ['es-ES', es.APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS],
+  ])('ends the alternatives error with a full stop in %s, since Retry follows it directly', (_language, message) => {
+    expect(message).toMatch(/\.$/);
   });
 
   // The dashboard layout keeps the old page mounted through its exit animation, so it sees the next page's address.

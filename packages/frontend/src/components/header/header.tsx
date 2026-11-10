@@ -1,5 +1,5 @@
 import { Link, NavLink, useLocation, useNavigate } from 'react-router';
-import { LogOut, Home, Settings, Store, Menu, LogIn, Sun, Moon, Activity, Loader2 } from 'lucide-react';
+import { LogOut, Home, Settings, Store, Menu, LogIn, Sun, Moon, Monitor, Activity, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useTranslation } from 'react-i18next';
 import { Button, buttonVariants } from '@/components/ui/Button';
@@ -286,6 +286,7 @@ function MobileAppMenu({
                   {t('THEME_DARK')}
                 </button>
                 <button type="button" role="menuitem" className={menuItemClass} onClick={() => setTheme('system')}>
+                  <Monitor className="mr-2 size-4" />
                   {t('COMMON_SYSTEM')}
                 </button>
                 <div className="my-1 h-px bg-muted" />
