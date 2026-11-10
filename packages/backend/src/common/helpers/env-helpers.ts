@@ -238,6 +238,11 @@ export function resolveHubDomain(sources: {
  * Resolves the RabbitMQ password without silently using the development default in
  * production. Production requires an explicit value; an explicit `admin` remains
  * compatible but returns a migration warning.
+ *
+ * The `admin` escape hatch stays until every update path, including the in-app updater,
+ * replaces `admin` (Companion-Hub#884): a Hub released before that updates itself through a
+ * compose that still falls back to `admin`, so refusing it here would crash-loop unattended
+ * nodes. Removing the hatch, and failing closed on `admin`, is a follow-up.
  */
 export function resolveRabbitmqPassword(envMap: Map<string, string>): { password: string; warning?: string } {
   const isProduction = process.env.NODE_ENV === 'production';
@@ -249,7 +254,8 @@ export function resolveRabbitmqPassword(envMap: Map<string, string>): { password
         password: explicit,
         warning:
           "RABBITMQ_PASSWORD is set to the weak default 'admin' in production. Set a strong, unique RABBITMQ_PASSWORD " +
-          '(and match RABBITMQ_DEFAULT_PASS on the broker) — the default is a known credential.',
+          '(and match RABBITMQ_DEFAULT_PASS on the broker) — the default is a known credential. `cihub up`, `cihub pool update` ' +
+          'and the desktop app replace it; a later release will refuse to start on it.',
       };
     }
     return { password: explicit };
