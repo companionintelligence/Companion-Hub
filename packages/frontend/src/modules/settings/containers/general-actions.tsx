@@ -36,6 +36,7 @@ import {
   type DesktopUpdateOutcome,
   type DesktopUpdateProgress,
   fetchHostListenerStatus,
+  type HostListenerStatus,
   getDesktopRestartState,
   getInstalledDesktopVersion,
   installDesktopUpdate,
@@ -89,6 +90,15 @@ const SHELL_INSTALL_PHASE_KEYS: Record<string, string> = {
 };
 
 /**
+ * A `cihub` install has no desktop app, so the card says that instead of offering one. Unknown keeps the card.
+ * The desktop window is the app itself, whatever the Hub can see of it. A Hub that says its desktop app
+ * updates it has one, even when it can't read the app's token.
+ */
+function hubHasNoDesktopApp(listener: HostListenerStatus | null | undefined, desktopWindow: boolean, desktopAppUpdatesHub: boolean): boolean {
+  return !desktopWindow && !desktopAppUpdatesHub && listener?.desktopApp === false;
+}
+
+/**
  * `manageHub`: whether this person may change the whole Hub (`useHubAccess`). A member doesn't see the
  * Hub update, auto-updates, app store repository, setup wizard or factory reset; the desktop app's own
  * update and the phone app's Hub switch act on this device, so they stay.
@@ -126,7 +136,10 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   const [shellRestart, setShellRestart] = useState<DesktopRestartState | null>(null);
   const [restartingShell, setRestartingShell] = useState(false);
   const [shellInstall, setShellInstall] = useState<ShellInstallState>({ state: 'idle' });
-  const [hostListenerReachable, setHostListenerReachable] = useState<boolean | null>(null);
+  // `undefined` until the Hub answers, so the Desktop app card doesn't offer a download and then take
+  // it back on a Hub without one. `null` when it couldn't say.
+  const [hostListener, setHostListener] = useState<HostListenerStatus | null | undefined>(undefined);
+  const hostListenerReachable = hostListener?.reachable ?? null;
   // The app context offers a stack update whenever the registry has a newer tag. Only the Hub knows
   // whether it will take it (a Windows desktop install, a node whose compose env file isn't the one
   // it mounts). Without its answer the button ends in "Update failed".
@@ -144,6 +157,7 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   // The desktop app's own window, where this page can ask the app to install its update. `isTauri()`
   // is true in the phone app too, which only reaches a Hub over the network, like a browser.
   const desktopWindow = desktop && !isTauriMobileSync();
+  const noDesktopApp = hubHasNoDesktopApp(hostListener, desktopWindow, stackBlock.desktopApp);
 
   const getUpdateMessage = useCallback(
     (result: UpdateActionResult) =>
@@ -239,9 +253,9 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   }, [desktop]);
 
   const refreshHostListenerStatus = useCallback(async () => {
-    const reachable = await fetchHostListenerStatus();
-    setHostListenerReachable(reachable);
-    return reachable;
+    const status = await fetchHostListenerStatus();
+    // A Hub that doesn't answer this time, say mid-restart, hasn't taken back what it said before.
+    setHostListener((previous) => status ?? previous ?? null);
   }, []);
 
   useEffect(() => {
@@ -258,8 +272,10 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
             : t('SETTINGS_ACTIONS_UPDATE_NOT_CONFIRMED', { version: outcome.version }),
         );
         void refreshAppContext();
+        // Asked while the Hub was restarting, it couldn't say whether it has a desktop app.
+        void refreshHostListenerStatus();
       }),
-    [refreshAppContext, t],
+    [refreshAppContext, refreshHostListenerStatus, t],
   );
 
   const handleStopWaiting = useCallback(() => {
@@ -340,7 +356,11 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
     setUpdating(true);
     setStackMessage(null);
     try {
-      const stackResult = await performStackUpdate(version.latest);
+      // The button shows before the Hub has said whether it has a desktop app.
+      const listener = hostListener === undefined ? await fetchHostListenerStatus() : hostListener;
+      const stackResult = await performStackUpdate(version.latest, {
+        noDesktopApp: hubHasNoDesktopApp(listener, desktopWindow, stackBlock.desktopApp),
+      });
       if (stackResult.ok) {
         markStackUpdatePending(version.current);
         clearHubSteadySession();
@@ -353,7 +373,7 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
       setStackMessage(t('SETTINGS_ACTIONS_UPDATE_REQUEST_FAILED'));
       setUpdating(false);
     }
-  }, [getUpdateMessage, t, version.latest, version.current]);
+  }, [desktopWindow, getUpdateMessage, hostListener, stackBlock.desktopApp, t, version.latest, version.current]);
 
   const handleShellUpdate = useCallback(async () => {
     setUpdatingShell(true);
@@ -746,97 +766,112 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
         </Card>
       )}
 
-      <Card data-testid="desktop-shell-update-card">
-        <CardHeader>
-          <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_SHELL_UPDATE_TITLE')}</CardTitle>
-          <CardDescription>
-            {installedShellVersion
-              ? t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE_WITH_VERSION', { version: installedShellVersion })
-              : t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE')}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {/* The Hub can't reach the listener of any desktop app up to 0.2.77, running or not, so in the
-              desktop window it is no sign the app is down. A browser can say where to update instead.
-              It says so when the listener answers too: a browser's update leaves the app out unless
-              only the app can update this Hub (#2316). */}
-          {!desktopWindow && (hostListenerReachable === false || (hostListenerReachable === true && !browserUpdateUsesDesktopApp)) ? (
-            <p className="text-sm text-muted-foreground mb-4" data-testid="host-listener-unavailable">
+      {noDesktopApp ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_SHELL_UPDATE_TITLE')}</CardTitle>
+            {/* A member has neither the Hub stack card nor a reason to update from this page. */}
+            <CardDescription data-testid="desktop-app-cli-install-note">
               <Trans
-                i18nKey="SETTINGS_ACTIONS_HOST_LISTENER_UNAVAILABLE"
+                i18nKey={manageHub ? 'SETTINGS_ACTIONS_SHELL_CLI_INSTALL_HOW_TO_UPDATE' : 'SETTINGS_ACTIONS_SHELL_CLI_INSTALL'}
                 components={{ code: <code className="rounded bg-muted px-1 font-mono text-xs" /> }}
               />
-            </p>
-          ) : null}
-          {hostListenerReachable === true && (desktopWindow || browserUpdateUsesDesktopApp) ? (
-            <p className="text-sm text-muted-foreground mb-4" data-testid="host-listener-ready">
-              {t('SETTINGS_ACTIONS_HOST_LISTENER_READY')}
-            </p>
-          ) : null}
-          {shellRestart?.restartRequired ? (
-            <div data-testid="desktop-restart-required">
-              <p className="text-sm mb-2">
-                {shellRestart.installedVersion
-                  ? t('SETTINGS_ACTIONS_SHELL_RESTART_REQUIRED', { installed: shellRestart.installedVersion, running: shellRestart.runningVersion })
-                  : t('SETTINGS_ACTIONS_SHELL_RESTART_REQUIRED_UNKNOWN_VERSION', { running: shellRestart.runningVersion })}
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      ) : desktopWindow || hostListener !== undefined ? (
+        <Card data-testid="desktop-shell-update-card">
+          <CardHeader>
+            <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_SHELL_UPDATE_TITLE')}</CardTitle>
+            <CardDescription>
+              {installedShellVersion
+                ? t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE_WITH_VERSION', { version: installedShellVersion })
+                : t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE')}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {/* The Hub can't reach the listener of any desktop app up to 0.2.77, running or not, so in the
+                desktop window it is no sign the app is down. A browser can say where to update instead.
+                It says so when the listener answers too: a browser's update leaves the app out unless
+                only the app can update this Hub (#2316). */}
+            {!desktopWindow && (hostListenerReachable === false || (hostListenerReachable === true && !browserUpdateUsesDesktopApp)) ? (
+              <p className="text-sm text-muted-foreground mb-4" data-testid="host-listener-unavailable">
+                <Trans
+                  i18nKey="SETTINGS_ACTIONS_HOST_LISTENER_UNAVAILABLE"
+                  components={{ code: <code className="rounded bg-muted px-1 font-mono text-xs" /> }}
+                />
               </p>
-              <p className="text-sm text-muted-foreground mb-3">{t('SETTINGS_ACTIONS_SHELL_RESTART_HUB_NOTE')}</p>
-              <Button onClick={handleShellRestart} disabled={restartingShell} data-testid="desktop-restart-btn">
-                {restartingShell ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                    {t('SETTINGS_ACTIONS_SHELL_RESTARTING')}
-                  </>
-                ) : (
-                  t('SETTINGS_ACTIONS_SHELL_RESTART_BUTTON')
-                )}
-              </Button>
-            </div>
-          ) : shellUpdate?.downloadUrl && desktopWindow && shellUpdate.updateAvailable ? (
-            renderShellInstall(shellUpdate)
-          ) : shellUpdate?.downloadUrl ? (
-            <>
-              {shellVersion && !shellUpdate.updateAvailable ? (
-                <p className="text-sm text-muted-foreground mb-3">{t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE')}</p>
-              ) : null}
-              <Button onClick={handleShellUpdate} disabled={updatingShell} data-testid="hub-shell-update-btn">
-                {updatingShell ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                    {t('SETTINGS_ACTIONS_CHECKING')}
-                  </>
-                ) : (
-                  t('SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_VERSION', { version: shellUpdate.latestVersion })
-                )}
-              </Button>
-              {shellMessage ? <p className="mt-3 text-sm text-muted-foreground">{shellMessage}</p> : null}
-              {renderManualUpdateInstructions()}
-            </>
-          ) : desktopWindow && shellUpdate?.updateAvailable ? (
-            // A newer version with no installer in the format this computer installs, as on a distro
-            // the desktop app can't place. Another format would install a second copy or not at all,
-            // so the card sends people to the download page instead.
-            <div data-testid="desktop-update-no-installer">
-              <p className="text-sm mb-3">{t('SETTINGS_ACTIONS_SHELL_UPDATE_NO_INSTALLER', { version: shellUpdate.latestVersion })}</p>
-              <Button
-                variant="outline"
-                onClick={() => void openDesktopDownloadPage(shellUpdate.latestVersion)}
-                data-testid="desktop-download-page-btn"
-              >
-                {t('SETTINGS_ACTIONS_SHELL_OPEN_DOWNLOAD_PAGE')}
-              </Button>
-            </div>
-          ) : (
-            // No installer to offer here, so the up-to-date line can't say there is one to download. Only
-            // a check that answered can call the app up to date: none has while it runs or after it failed.
-            <p className="text-sm text-muted-foreground">
-              {shellVersion && shellUpdate && !shellUpdate.updateAvailable
-                ? t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE_NO_DOWNLOAD')
-                : t('SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL')}
-            </p>
-          )}
-        </CardContent>
-      </Card>
+            ) : null}
+            {hostListenerReachable === true && (desktopWindow || browserUpdateUsesDesktopApp) ? (
+              <p className="text-sm text-muted-foreground mb-4" data-testid="host-listener-ready">
+                {t('SETTINGS_ACTIONS_HOST_LISTENER_READY')}
+              </p>
+            ) : null}
+            {shellRestart?.restartRequired ? (
+              <div data-testid="desktop-restart-required">
+                <p className="text-sm mb-2">
+                  {shellRestart.installedVersion
+                    ? t('SETTINGS_ACTIONS_SHELL_RESTART_REQUIRED', { installed: shellRestart.installedVersion, running: shellRestart.runningVersion })
+                    : t('SETTINGS_ACTIONS_SHELL_RESTART_REQUIRED_UNKNOWN_VERSION', { running: shellRestart.runningVersion })}
+                </p>
+                <p className="text-sm text-muted-foreground mb-3">{t('SETTINGS_ACTIONS_SHELL_RESTART_HUB_NOTE')}</p>
+                <Button onClick={handleShellRestart} disabled={restartingShell} data-testid="desktop-restart-btn">
+                  {restartingShell ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                      {t('SETTINGS_ACTIONS_SHELL_RESTARTING')}
+                    </>
+                  ) : (
+                    t('SETTINGS_ACTIONS_SHELL_RESTART_BUTTON')
+                  )}
+                </Button>
+              </div>
+            ) : shellUpdate?.downloadUrl && desktopWindow && shellUpdate.updateAvailable ? (
+              renderShellInstall(shellUpdate)
+            ) : shellUpdate?.downloadUrl ? (
+              <>
+                {shellVersion && !shellUpdate.updateAvailable ? (
+                  <p className="text-sm text-muted-foreground mb-3">{t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE')}</p>
+                ) : null}
+                <Button onClick={handleShellUpdate} disabled={updatingShell} data-testid="hub-shell-update-btn">
+                  {updatingShell ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                      {t('SETTINGS_ACTIONS_CHECKING')}
+                    </>
+                  ) : (
+                    t('SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_VERSION', { version: shellUpdate.latestVersion })
+                  )}
+                </Button>
+                {shellMessage ? <p className="mt-3 text-sm text-muted-foreground">{shellMessage}</p> : null}
+                {renderManualUpdateInstructions()}
+              </>
+            ) : desktopWindow && shellUpdate?.updateAvailable ? (
+              // A newer version with no installer in the format this computer installs, as on a distro
+              // the desktop app can't place. Another format would install a second copy or not at all,
+              // so the card sends people to the download page instead.
+              <div data-testid="desktop-update-no-installer">
+                <p className="text-sm mb-3">{t('SETTINGS_ACTIONS_SHELL_UPDATE_NO_INSTALLER', { version: shellUpdate.latestVersion })}</p>
+                <Button
+                  variant="outline"
+                  onClick={() => void openDesktopDownloadPage(shellUpdate.latestVersion)}
+                  data-testid="desktop-download-page-btn"
+                >
+                  {t('SETTINGS_ACTIONS_SHELL_OPEN_DOWNLOAD_PAGE')}
+                </Button>
+              </div>
+            ) : (
+              // No installer to offer here, so the up-to-date line can't say there is one to download. Only
+              // a check that answered can call the app up to date: none has while it runs or after it failed.
+              <p className="text-sm text-muted-foreground">
+                {shellVersion && shellUpdate && !shellUpdate.updateAvailable
+                  ? t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE_NO_DOWNLOAD')
+                  : t('SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL')}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {manageHub && (
         <>
