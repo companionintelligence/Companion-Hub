@@ -179,6 +179,25 @@ export type ModelState = 'available' | 'pulling' | 'pulled' | 'loading' | 'loade
 
 export type TierRecommendation = 'recommended' | 'available' | 'not-recommended';
 
+/**
+ * What the Hub would load a text model at on this node's empty card, for the model picker: the window,
+ * the KV cache it would use for it, and whether that meets the context floors of the installed apps
+ * it could serve. From the same arithmetic as the load itself (`InferenceRouterService.contextPlanFor`),
+ * so the picker cannot promise a window the load will not give.
+ */
+export interface ModelContextPlan {
+  /** Tokens. Null when not even the smallest window (4096) fits an empty card here. */
+  window: number | null;
+  /** `q8_0` only when the 16-bit cache cannot reach an installed app's floor and the engine offers it. */
+  kvCacheType: 'f16' | 'q8_0';
+  /** `measured`: the per-token cost is measured (catalog or engine). `estimated`: a fixed assumption stood in. */
+  basis: 'measured' | 'estimated';
+  /** The model's catalog row was measured running with q8_0 (`runtime.kvCacheType`). */
+  kvCacheMeasured: boolean;
+  /** The largest floor among installed apps this model could serve, and whether `window` reaches it; null when none has one. */
+  floor: { minContextLength: number; apps: string[]; met: boolean } | null;
+}
+
 export interface CuratedModel {
   id: string;
   backend: InferenceBackendType;

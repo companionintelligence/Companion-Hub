@@ -707,6 +707,42 @@ describe('the load window on the fleet', () => {
         expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('loading it again with the 16-bit KV cache'));
       });
 
+      // The model picker reads this, so it must say what the load above does.
+      it('tells the picker what the 27B gets here: 65536 with a q8_0 cache, measured, meeting Hermes floor', async () => {
+        const lemonade = new FakeLemonade({ offersQ8: true });
+        const { router, registry } = world({ profile: BETA_1, lemonade, installedApps: ['ci-hermes'] });
+        const model = registry.getCuratedModel('qwen3-8-27b-lemonade') as CuratedModel;
+
+        await expect(router.contextPlanFor(model, BETA_1)).resolves.toEqual({
+          window: 65_536,
+          kvCacheType: 'q8_0',
+          basis: 'measured',
+          kvCacheMeasured: true,
+          floor: { minContextLength: 64_000, apps: ['ci-hermes'], met: true },
+        });
+      });
+
+      it('tells the picker plainly when a model cannot meet the floor here', async () => {
+        const lemonade = new FakeLemonade({ offersQ8: false });
+        const { router, registry } = world({ profile: BETA_1, lemonade, installedApps: ['ci-hermes'] });
+        const plan = await router.contextPlanFor(registry.getCuratedModel('qwen3-8-27b-lemonade') as CuratedModel, BETA_1);
+
+        expect(plan).toMatchObject({ kvCacheType: 'f16', floor: { minContextLength: 64_000, met: false } });
+        expect(plan?.window).toBeLessThan(64_000);
+      });
+
+      it('keeps a model that reaches the floor at 16-bit in the picker too, and plans nothing for an embedder', async () => {
+        const lemonade = new FakeLemonade({ offersQ8: true });
+        const { router, registry } = world({ profile: BETA_1, lemonade, installedApps: ['ci-hermes'] });
+
+        await expect(router.contextPlanFor(registry.getCuratedModel('gemma4-e4b-lemonade') as CuratedModel, BETA_1)).resolves.toMatchObject({
+          kvCacheType: 'f16',
+          floor: { met: true },
+        });
+        const embedder = registry.getCuratedModel('nomic-embed-text-v1-5-lemonade') as CuratedModel;
+        await expect(router.contextPlanFor(embedder, BETA_1)).resolves.toBeNull();
+      });
+
       it('marks nothing when the 16-bit retry fails too, and gives both reasons', async () => {
         const lemonade = new FakeLemonade({ offersQ8: true, failsQ8: true, failsAll: true });
         const { router } = world({ profile: BETA_1, lemonade, installedApps: ['ci-hermes'] });

@@ -79,6 +79,7 @@ export type {
   ModelState,
   TierRecommendation,
   CuratedModel,
+  ModelContextPlan,
   TrackedModel,
   CloudProviderType,
   CloudProviderConfig,

@@ -11,6 +11,7 @@ import type {
   InferenceModelInfo,
   InferenceStatus,
   TrackedModel,
+  ModelContextPlan,
 } from '@ci-hub/common/types';
 import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import { inventoryListsModel, sameModelId } from '@/common/helpers/hub-pool';
@@ -1605,6 +1606,68 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       ...(unmeasured ? { unmeasured } : {}),
       ...(provisionalWindow ? { provisionalWindow: true as const } : {}),
       ...(kvCacheType ? { kvCacheType } : {}),
+    };
+  }
+
+  /**
+   * What a load of `curated` would get on this node's EMPTY card, for the model picker: the window, the
+   * KV cache it would use, and the installed apps' floor it could serve. The same steps as
+   * {@link planLoad} — 16-bit cost first, {@link chooseKvCacheType}, the handout, the floor, the largest
+   * window that fits — against the card's ceiling rather than what is free now, so it answers "what
+   * does this model get here", not "what would it get this second". Null for anything but a text model
+   * on a local engine this node runs (Ollama, Lemonade).
+   */
+  async contextPlanFor(curated: CuratedModel, profile: HardwareProfile): Promise<ModelContextPlan | null> {
+    if (curated.modality !== 'llm' || (curated.backend !== 'ollama' && curated.backend !== 'lemonade')) return null;
+    const backend = this.backends.get(curated.backend);
+    const [cost, sighting, ceilingMb, floor] = await Promise.all([
+      probeContextCost(backend, curated, curated.backend === 'lemonade' ? 'f16' : undefined),
+      this.memoryManager.footprintSighting(profile, curated.backend, curated.backendModelId),
+      this.memoryManager.modelCeilingMb(profile, curated.backend, curated.backendModelId),
+      this.installedAppFloor(curated),
+    ]);
+    const localCap = this.localContextCap();
+    const modelWindow = curated.runtime.contextWindow > 0 ? Math.floor(curated.runtime.contextWindow) : null;
+    const base: ModelMemoryInput = {
+      modelFootprintMb: curated.runtime.memoryFootprintMb || 0,
+      kvMbPerToken: cost?.kvMbPerToken ?? null,
+      weightMb: cost?.weightMb ?? null,
+      visionReserveMb: visionReserveMbFor(curated),
+      kvSlots: kvSequencesFor(curated.backend, cost, this.statedSlots(curated.backend, backend)),
+      sighting,
+    };
+    const kvCacheType =
+      this.chooseKvCacheType(backend, curated, {
+        floor,
+        ceilingMb,
+        fallback: false,
+        sizing: base,
+        windowCap: Math.min(modelWindow ?? Number.POSITIVE_INFINITY, localCap ?? Number.POSITIVE_INFINITY),
+      }) ?? 'f16';
+    const sizing: ModelMemoryInput = {
+      ...base,
+      kvMbPerToken: base.kvMbPerToken != null && kvCacheType === 'q8_0' ? base.kvMbPerToken * KV_CACHE_SCALE.q8_0 : base.kvMbPerToken,
+    };
+    const handout = handoutContextLength({
+      model: curated,
+      servedLocally: true,
+      effectiveInferenceMemoryMb: ceilingMb,
+      kvMbPerToken: sizing.kvMbPerToken,
+      weightMb: sizing.weightMb,
+      kvSlots: sizing.kvSlots,
+      sighting,
+      maxContextLength: localCap,
+    });
+    let wanted = floor ? Math.max(handout, floor.minContextLength) : handout;
+    if (modelWindow !== null) wanted = Math.min(wanted, modelWindow);
+    if (localCap !== null) wanted = Math.min(wanted, localCap);
+    const window = largestFittingWindow({ ...sizing, from: wanted, budgetMb: ceilingMb });
+    return {
+      window,
+      kvCacheType,
+      basis: cost?.kvMbPerToken == null ? 'estimated' : 'measured',
+      kvCacheMeasured: curated.runtime.kvCacheType === 'q8_0',
+      floor: floor ? { ...floor, met: window !== null && window >= floor.minContextLength } : null,
     };
   }
 
