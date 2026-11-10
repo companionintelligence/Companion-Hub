@@ -65,6 +65,18 @@ function isLeftFailing({ state, health, restartCount }: AppContainerLook): boole
 }
 
 /**
+ * The setup steps a failed `compose up` stopped at. A service that waits for a one-shot through
+ * `service_completed_successfully` stays `created` when the one-shot exits with an error, while services
+ * that started before it keep running. Without a `created` container the error exit is not what failed the `up`.
+ */
+function failedSetupSteps(containers: AppContainerLook[]): AppContainerLook[] {
+  if (!containers.some(({ state }) => state === 'created')) {
+    return [];
+  }
+  return containers.filter(({ state, exitCode }) => state === 'exited' && (exitCode ?? 0) !== 0);
+}
+
+/**
  * Base class the ten lifecycle commands extend.
  *
  * The bodies of these members live in sibling modules so each can be read and tested on its own;
@@ -234,9 +246,10 @@ export class AppLifecycleCommand {
   /**
    * A dependency that does not get healthy fails the `up` ("dependency failed to start"). Compose leaves it
    * crash-looping or running with its health check failing and Docker keeps it alive either way, so the app goes
-   * down as after a failed check. The container's log goes with it, so its end is kept in the Hub's log first.
-   * An `up` that failed with no container failing, as a pull usually does, leaves the app as it is.
-   * Returns whether the app was taken down.
+   * down as after a failed check. So does a setup step that failed (see {@link failedSetupSteps}): the services
+   * that started before it would otherwise run on behind Stopped. The container's log goes with it, so its end is
+   * kept in the Hub's log first. An `up` that failed with no container failing, as a pull usually does, leaves the
+   * app as it is. Returns whether the app was taken down.
    */
   private async stopAppLeftFailing(appUrn: AppUrn): Promise<boolean> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
@@ -245,7 +258,8 @@ export class AppLifecycleCommand {
       logger.warn(`Could not look for failing containers of ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
       return [];
     });
-    const failing = containers.filter(isLeftFailing);
+    const setupSteps = failedSetupSteps(containers);
+    const failing = containers.filter((container) => isLeftFailing(container) || setupSteps.includes(container));
     if (failing.length === 0) {
       return false;
     }

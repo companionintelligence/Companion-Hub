@@ -258,7 +258,9 @@ still bring the app back. A Start or Restart a person or a key asked for runs
 stay. The crashed container's `docker logs` go with it. The whole app goes down, also when only
 one of its services failed, unless that service is a one-shot. The same happens when
 `compose up` itself fails and leaves a container
-restarting or unhealthy, as a dependency that never gets healthy does. The toast names the service
+restarting or unhealthy, as a dependency that never gets healthy does, or a one-shot that a
+service waits on to finish exited with an error and left that service `Created`. Without that,
+the services that started before the one-shot would keep running behind `stopped`. The toast names the service
 and the exit code. The app page adds the log line that best says why, also after a reload, because the Hub
 keeps the reason on the lifecycle job. That read takes what reading the app's logs takes, so a
 member who may only see a custom app doesn't get it. The toast's event goes to every signed-in

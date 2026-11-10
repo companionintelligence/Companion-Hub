@@ -9,7 +9,7 @@ import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
-import { APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN } from '@/modules/docker/managed-app-containers';
+import { APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN, type AppContainerLook } from '@/modules/docker/managed-app-containers';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { AppsRepository } from '@/modules/apps/apps.repository';
@@ -333,6 +333,54 @@ describe('RestartAppCommand — pull policy', () => {
 
       expect(result.success).toBe(false);
       expect(composeCommands()).toEqual(['down', 'up', 'down']);
+    });
+
+    describe('when a setup step the app waits on to finish failed', () => {
+      const look = (service: string, over: Partial<AppContainerLook>): AppContainerLook => ({
+        id: service,
+        service,
+        containerName: `test-app-${service}-1`,
+        state: 'running',
+        exitCode: 0,
+        restartCount: 0,
+        startedAtMs: null,
+        health: null,
+        ...over,
+      });
+
+      beforeEach(() => {
+        dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+          if (args.startsWith('up')) throw new Error('service "migrate" didn\'t complete successfully: exit 1');
+        });
+        dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue([
+          look('db', { health: 'healthy' }),
+          look('migrate', { state: 'exited', exitCode: 1 }),
+          look('web', { state: 'created' }),
+        ]);
+      });
+
+      it('takes the app down when someone asked for the restart', async () => {
+        const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(result.success).toBe(false);
+        expect(result.message).toContain("didn't complete successfully");
+        expect(composeCommands()).toEqual(['down', 'up', 'down']);
+      });
+
+      it('leaves the containers to Docker when the Hub restarted the app itself', async () => {
+        const result = await command.execute(appUrn, {});
+
+        expect(result.success).toBe(false);
+        expect(composeCommands()).toEqual(['down', 'up']);
+      });
+
+      it('takes nothing down after a failed pull, which leaves no containers', async () => {
+        dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue([]);
+
+        await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(composeCommands()).toEqual(['down', 'up']);
+      });
     });
   });
 
