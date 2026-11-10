@@ -10,7 +10,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { AppLifecycleCommand } from './command';
 import { handOverKeptImages, sortImagesByOtherApps } from './pull-app-images';
-import { removeAppDataWithPrivilegedFallback } from './remove-app-data';
+import { describeLeftovers, removeAppDataWithPrivilegedFallback } from './remove-app-data';
 
 export class UninstallAppCommand extends AppLifecycleCommand {
   constructor(
@@ -132,10 +132,7 @@ export class UninstallAppCommand extends AppLifecycleCommand {
       // couldn't remove it), report success WITHOUT claiming a clean removal and carry
       // the host path so the user can be shown a manual cleanup command (#907).
       if (!folderRemoved || !dataRemoved) {
-        const leftovers: string[] = [];
-        if (!folderRemoved) leftovers.push('app folder');
-        if (!dataRemoved) leftovers.push('app data');
-        const leftover = leftovers.join(' and ');
+        const leftover = describeLeftovers(folderRemoved, dataRemoved);
 
         logger.warn(
           `App ${appUrn} uninstalled, but its ${leftover} could not be fully removed; a disk remnant may remain${dataRemnantHostPath ? ` at ${dataRemnantHostPath}` : ''} (see the filesystem error above — often a container-created root-owned path).`,

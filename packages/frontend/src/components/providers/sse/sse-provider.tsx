@@ -129,9 +129,9 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
   };
 
   // Files an uninstall or a cancelled install could not remove. With their host path, gives the command to delete them.
-  const showRemnantWarning = (i18nKey: string, appName: string, hostPath: string | undefined) => {
+  const showRemnantWarning = (keys: { plain: string; manual: string }, appName: string, hostPath: string | undefined) => {
     if (!hostPath) {
-      toast.warning(t(i18nKey, { id: appName }), { duration: 8000 });
+      toast.warning(t(keys.plain, { id: appName }), { duration: 8000 });
       return;
     }
     // Single-quote the path (escaping any embedded quote) and add `--`: an operator-configured root
@@ -139,11 +139,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     // an option on paste.
     const command = `sudo rm -rf -- '${hostPath.replace(/'/g, "'\\''")}'`;
     toast.warning(
-      <Trans
-        i18nKey={`${i18nKey}_MANUAL`}
-        values={{ id: appName, command }}
-        components={{ cmd: <code className="font-mono text-xs break-all" /> }}
-      />,
+      <Trans i18nKey={keys.manual} values={{ id: appName, command }} components={{ cmd: <code className="font-mono text-xs break-all" /> }} />,
       { duration: 20000 },
     );
   };
@@ -239,7 +235,11 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           break;
         case 'install_cancelled':
           if (warningCode === 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT') {
-            showRemnantWarning('APP_INSTALL_CANCELLED_PARTIAL_REMNANT', appName, warningDetail);
+            showRemnantWarning(
+              { plain: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT', manual: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT_MANUAL' },
+              appName,
+              warningDetail,
+            );
           } else {
             toast.success(t('APP_INSTALL_CANCELLED', { id: appName }));
           }
@@ -270,7 +270,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           // code's VALUE (like errorCode above): a future, unrecognized warningCode
           // must fall through to the plain success toast, not mislabel itself.
           if (warningCode === 'APP_UNINSTALL_PARTIAL_REMNANT') {
-            showRemnantWarning('APP_UNINSTALL_PARTIAL_REMNANT', appName, warningDetail);
+            showRemnantWarning({ plain: 'APP_UNINSTALL_PARTIAL_REMNANT', manual: 'APP_UNINSTALL_PARTIAL_REMNANT_MANUAL' }, appName, warningDetail);
           } else {
             toast.success(t('APP_UNINSTALL_SUCCESS', { id: appName }));
           }

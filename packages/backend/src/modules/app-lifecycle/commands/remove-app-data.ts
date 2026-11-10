@@ -4,6 +4,11 @@ import type { AppFilesManager } from '@/modules/apps/app-files-manager';
 import type { DockerService } from '@/modules/docker/docker.service';
 import type { AppUrn } from '@ci-hub/common/types';
 
+/** What an uninstall or a cancelled install left on disk, for its log line and message: "app folder and app data". */
+export function describeLeftovers(folderRemoved: boolean, dataRemoved: boolean): string {
+  return [folderRemoved ? null : 'app folder', dataRemoved ? null : 'app data'].filter(Boolean).join(' and ');
+}
+
 /**
  * Remove an app's data folder for good, as an uninstall or a cancelled install does. The Hub cannot
  * delete what a container wrote as another user (MinIO's `.minio.sys`, a MariaDB data folder), so a

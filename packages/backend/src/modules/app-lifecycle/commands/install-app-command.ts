@@ -23,7 +23,7 @@ import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { AppLifecycleError, type AppCommandResult } from './app-lifecycle-errors';
 import { hostPortMoveOf } from './main-host-port';
 import { pullAppImagesRecorded, uniqueServiceImages } from './pull-app-images';
-import { removeAppDataWithPrivilegedFallback } from './remove-app-data';
+import { describeLeftovers, removeAppDataWithPrivilegedFallback } from './remove-app-data';
 import { isAbortError, throwIfAborted } from '@/common/abort';
 import { type AppSecurityGrants, type HostPortMove, parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
@@ -681,7 +681,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
     }
 
     if (!folderRemoved || !data.removed) {
-      const leftover = [folderRemoved ? null : 'app folder', data.removed ? null : 'app data'].filter(Boolean).join(' and ');
+      const leftover = describeLeftovers(folderRemoved, data.removed);
       logger.warn(
         `[install-cancel] the ${leftover} of ${appUrn} could not be fully removed; a disk remnant may remain${data.hostPath ? ` at ${data.hostPath}` : ''}`,
       );

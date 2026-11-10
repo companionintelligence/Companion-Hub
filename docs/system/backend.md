@@ -338,7 +338,7 @@ What cancelling an install (`AppLifecycleService.cancelOperation`) does depends 
   install added and leaves what was there when it began: a data folder that already held files, or
   that the Hub couldn't read, stays as it is (with whatever this install wrote into it). When the app
   already had a named volume, `compose down` drops `-v`, so every named volume stays (one this
-  install created beside it too), and `compose rm -v` clears only the anonymous volumes of this
+  install created beside it too) and `compose rm -v` clears only the anonymous volumes of this
   install's containers. A volume named as compose names them counts without compose's labels, since
   `down -v` goes by name. A check that fails or takes over 15 seconds counts as data being there. A
   data folder that was empty or missing when the install began is removed in full: files a container
