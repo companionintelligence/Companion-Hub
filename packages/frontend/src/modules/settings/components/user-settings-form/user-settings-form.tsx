@@ -133,10 +133,6 @@ export const UserSettingsForm = (props: IProps) => {
       errors.localDomain = t('SETTINGS_GENERAL_INVALID_DOMAIN');
     }
 
-    if (values.appsRepoUrl && !validator.isURL(values.appsRepoUrl)) {
-      errors.appsRepoUrl = t('SETTINGS_GENERAL_INVALID_URL');
-    }
-
     // Check only an Internal IP the person changed. The Hub reports INTERNAL_IP as it was set, which need not
     // be an IPv4 address (it can be empty, `::` or a name), and a value it already had must not block a save.
     if (trimmed(values.internalIp) !== trimmed(initialValues?.internalIp) && !isIpv4(trimmed(values.internalIp))) {

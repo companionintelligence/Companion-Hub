@@ -130,6 +130,19 @@ describe('UserSettingsForm Local domain check', () => {
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ guestDashboard: true, localDomain: 'lan' }));
   });
 
+  // CI-Hub#2380: the Apps repo URL field is not on the page, so a stored value the URL check refuses
+  // stopped every save with no message anywhere.
+  it('does not block a save on a stored Apps repo URL the page does not show', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={{ ...newHubSettings, appsRepoUrl: 'http://ci-marketplace:8080/repo' }} onSubmit={onSubmit} />);
+
+    await userEvent.click(screen.getByRole('switch', { name: 'Enable guest dashboard' }));
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ guestDashboard: true }));
+  });
+
   it('still rejects a typed Local domain that is not a domain name', async () => {
     const onSubmit = vi.fn();
     render(<UserSettingsForm initialValues={{ ...newHubSettings, advancedSettings: true, localDomain: 'ci.lan' }} onSubmit={onSubmit} />);
