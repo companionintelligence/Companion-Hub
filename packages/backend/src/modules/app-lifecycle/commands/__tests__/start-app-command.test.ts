@@ -297,6 +297,31 @@ describe('StartAppCommand — pull policy', () => {
     expect(dockerService.composeApp).not.toHaveBeenCalled();
   });
 
+  // CI-Hub#2376: the refusal touches no container, so a start sent to an app that is up leaves it up.
+  it('reports a host-device refusal as rolled back, since no container was touched', async () => {
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest', devices: ['/dev/dri:/dev/dri', '/dev/kfd:/dev/kfd'] }],
+      overrides: [],
+    } as any);
+    vi.mocked(isRocmKfdPassthroughAvailable).mockResolvedValueOnce(false);
+
+    const result = await command.execute('comfyui:store' as AppUrn, {});
+
+    expect(result).toMatchObject({ success: false, errorCode: 'rocm_kfd_missing', rolledBack: true });
+  });
+
+  it('does not report a failed compose up as rolled back', async () => {
+    dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+      composeArgs.push(args);
+      if (args.startsWith('up')) throw new Error('compose up failed');
+    });
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(result).not.toHaveProperty('rolledBack');
+  });
+
   it('SHOULD start normally when the required host device is available', async () => {
     vi.mocked(parseComposeJson).mockReturnValue({
       services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest', devices: ['/dev/dri:/dev/dri', '/dev/kfd:/dev/kfd'] }],

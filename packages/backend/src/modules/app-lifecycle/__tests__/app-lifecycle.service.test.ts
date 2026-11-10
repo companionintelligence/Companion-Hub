@@ -9869,4 +9869,60 @@ describe('AppLifecycleService', () => {
       });
     });
   });
+
+  // CI-Hub#2376: a restart the host-device check refused left the container running and the row on `stopped`.
+  describe('a start or restart refused before it touched the containers', () => {
+    const appUrn = createAppUrn('ci-hermes', 'ci-marketplace');
+    const flushMicrotasks = () => new Promise<void>((r) => setTimeout(r, 0));
+    const givenApp = (status: string) => appsRepository.getAppByUrn.mockResolvedValue({ id: 7, name: 'ci-hermes', status, config: {} } as any);
+    const refusal = { success: false, message: 'KVM is not available on this machine', errorCode: 'kvm_missing' };
+
+    it.each([
+      { command: 'restartApp', event: 'restart_error' },
+      { command: 'startApp', event: 'start_error' },
+    ] as const)('$command settles a running app back on running', async ({ command, event }) => {
+      givenApp('running');
+      appEventsQueue.publish.mockResolvedValue({ ...refusal, rolledBack: true } as any);
+
+      await service[command]({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'running' });
+      expect(sseService.emit).toHaveBeenLastCalledWith('app', expect.objectContaining({ event, appStatus: 'running', errorCode: 'kvm_missing' }));
+    });
+
+    it.each([
+      { command: 'restartAppAndWait', event: 'restart_error' },
+      { command: 'startAppAndWait', event: 'start_error' },
+    ] as const)('$command reports failure and settles a running app back on running', async ({ command, event }) => {
+      givenApp('running');
+      appEventsQueue.publish.mockResolvedValue({ ...refusal, rolledBack: true } as any);
+
+      await expect(service[command]({ appUrn })).resolves.toBe(false);
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'running' });
+      expect(sseService.emit).toHaveBeenLastCalledWith('app', expect.objectContaining({ event, appStatus: 'running', errorCode: 'kvm_missing' }));
+    });
+
+    it('a restart that failed after taking the app down still settles on stopped', async () => {
+      givenApp('running');
+      appEventsQueue.publish.mockResolvedValue(refusal as any);
+
+      await service.restartApp({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'stopped' });
+    });
+
+    // As for a command the queue never took: a transitional status belongs to an operation now superseded.
+    it('does not put back a transitional status', async () => {
+      givenApp('starting');
+      appEventsQueue.publish.mockResolvedValue({ ...refusal, rolledBack: true } as any);
+
+      await service.restartApp({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'stopped' });
+    });
+  });
 });

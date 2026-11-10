@@ -215,6 +215,34 @@ describe('RestartAppCommand — pull policy', () => {
     expect(dockerService.composeApp).not.toHaveBeenCalled();
   });
 
+  // CI-Hub#2376: the refusal comes before `down`, so the containers keep running. Reported as a plain
+  // failure, the service settled the row on `stopped` and the page offered Start for a running app.
+  it('reports a host-device refusal as rolled back, since the app was never taken down', async () => {
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest', devices: ['/dev/dri:/dev/dri', '/dev/kfd:/dev/kfd'] }],
+      overrides: [],
+    } as any);
+    vi.mocked(isRocmKfdPassthroughAvailable).mockResolvedValueOnce(false);
+
+    const result = await command.execute('comfyui:store' as AppUrn, {});
+
+    expect(result).toMatchObject({ success: false, errorCode: 'rocm_kfd_missing', rolledBack: true });
+    expect(composeArgs).not.toContain('down --remove-orphans');
+  });
+
+  it('does not report a failed compose up as rolled back, since the app was taken down first', async () => {
+    dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+      composeArgs.push(args);
+      if (args.startsWith('up')) throw new Error('compose up failed');
+    });
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(composeArgs).toContain('down --remove-orphans');
+    expect(result).not.toHaveProperty('rolledBack');
+  });
+
   // The queued restart also carries the Hub's own restarts: a credential rotation, a saved config, an
   // inference change. Refused here, on a cached 402, a rotation strands the app on the credentials
   // it just revoked, and the failure settles the app as `stopped` while its containers keep running.
