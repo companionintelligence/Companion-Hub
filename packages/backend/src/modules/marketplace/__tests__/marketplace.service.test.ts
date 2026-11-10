@@ -102,6 +102,36 @@ describe('MarketplaceService', () => {
     vi.clearAllMocks();
   });
 
+  describe('whenInitialized', () => {
+    const settled = async (promise: Promise<void>) => {
+      let done = false;
+      void promise.then(() => {
+        done = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return done;
+    };
+
+    it('stays pending until the first initialize has loaded the stores', async () => {
+      const ready = service.whenInitialized();
+      expect(await settled(ready)).toBe(false);
+
+      await service.initialize();
+
+      expect(await settled(ready)).toBe(true);
+    });
+
+    // A Hub that can't read the table must not leave every lifecycle command waiting forever.
+    it('settles when the first initialize fails', async () => {
+      const ready = service.whenInitialized();
+      appStoreService.getAllAppStores.mockRejectedValueOnce(new Error('database away'));
+
+      await expect(service.initialize()).rejects.toThrow('database away');
+
+      expect(await settled(ready)).toBe(true);
+    });
+  });
+
   describe('initialize', () => {
     it('should initialize stores without blocking catalog sync', async () => {
       await service.initialize();

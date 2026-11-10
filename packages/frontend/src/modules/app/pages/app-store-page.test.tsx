@@ -19,15 +19,21 @@ const { mockStoreState, mockSearchAppsInfiniteOptions } = vi.hoisted(() => ({
 const mockNavigate = vi.fn();
 const mockSetSearchParams = vi.fn();
 let capturedSearchParams = new URLSearchParams();
+let capturedPathname = '/store';
 
 vi.mock('react-router', async () => {
   const actual = await vi.importActual<typeof import('react-router')>('react-router');
   return {
     ...actual,
     useParams: vi.fn(() => ({})),
+    useLocation: () => ({ pathname: capturedPathname, search: '', hash: '', state: null, key: 'default' }),
     useNavigate: () => mockNavigate,
     useSearchParams: vi.fn(() => [capturedSearchParams, mockSetSearchParams]),
-    Navigate: vi.fn(({ to }: { to: string }) => <div data-testid="navigate-to">{to}</div>),
+    Navigate: vi.fn(({ to, replace }: { to: string; replace?: boolean }) => (
+      <div data-testid="navigate-to" data-replace={String(Boolean(replace))}>
+        {to}
+      </div>
+    )),
     Link: vi.fn(({ to, children, ...rest }: { to: string; children: React.ReactNode }) => (
       <a href={to} {...rest}>
         {children}
@@ -140,6 +146,7 @@ const mockUseParams = vi.mocked(useParams);
 
 const STORE_A = { slug: 'ci-apps', name: 'CI Apps', enabled: true, url: '', hash: '', branch: 'main' };
 const STORE_B = { slug: 'community', name: 'Community', enabled: true, url: '', hash: '', branch: 'main' };
+const STORE_MARKETPLACE = { slug: 'ci-marketplace', name: 'CI Marketplace', enabled: true, url: '', hash: '', branch: 'main' };
 
 const OWNER_ACTIONS = ['view', 'start', 'stop', 'restart', 'install', 'update', 'uninstall', 'reset', 'backup', 'restore', 'configure'];
 /** What `GET /api/custom-apps/access` answers: an organization owner or admin unless a test says otherwise. */
@@ -175,6 +182,7 @@ describe('AppStorePage — multi-store UX', () => {
     manageHub = true;
     mockUseParams.mockReturnValue({});
     capturedSearchParams = new URLSearchParams();
+    capturedPathname = '/store';
     mockStoreState.category = undefined;
     mockStoreState.storeId = 'ci-apps';
     mockStoreState.search = '';
@@ -284,6 +292,7 @@ describe('AppStorePage — multi-store UX', () => {
 
   it('redirects /store/:storeId to /store?store=<storeId>', () => {
     setupQueries();
+    capturedPathname = '/store/community';
     mockUseParams.mockReturnValue({ storeId: 'community' });
 
     render(
@@ -293,6 +302,23 @@ describe('AppStorePage — multi-store UX', () => {
     );
 
     expect(screen.getByTestId('navigate-to')).toHaveTextContent('/store?store=community');
+    // A redirect that stayed in the history would send Back straight here again.
+    expect(screen.getByTestId('navigate-to')).toHaveAttribute('data-replace', 'true');
+    expect(mockSetSearchParams).not.toHaveBeenCalled();
+  });
+
+  it('keeps a store name with reserved characters as one query value in the redirect', () => {
+    setupQueries();
+    capturedPathname = '/store/a%26category%3Dai';
+    mockUseParams.mockReturnValue({ storeId: 'a&category=ai' });
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId('navigate-to')).toHaveTextContent('/store?store=a%26category%3Dai');
   });
 
   it('shows matching alternatives in catalog search for a proprietary name', () => {
@@ -395,7 +421,11 @@ describe('AppStorePage — multi-store UX', () => {
       </MemoryRouter>,
     );
 
-    expect(mockSetSearchParams).toHaveBeenCalled();
+    const clearing = mockSetSearchParams.mock.calls.find(([updater]) => !updater(new URLSearchParams('store=nonexistent')).has('store'));
+
+    expect(clearing).toBeDefined();
+    // A pushed entry would keep the bad address in the history. Back would land on it and be sent forward again.
+    expect(clearing?.[1]).toEqual({ replace: true });
   });
 
   it('uses the shared store search value for the app query and syncs the mobile input from it', () => {
@@ -537,6 +567,42 @@ describe('AppStorePage — multi-store UX', () => {
 
     expect(mockStoreState.setSearchImmediate).toHaveBeenCalledWith('ollama');
     expect(mockStoreState.setCategory).toHaveBeenCalledWith('ai');
+  });
+
+  // The dashboard layout keeps the old page mounted through its exit animation, so it sees the next page's address.
+  it("leaves the next page's address alone while it animates out", () => {
+    capturedPathname = '/home';
+    // With no ?store= on the address and the marketplace listed, the store sync would fall back to the marketplace.
+    setupQueries([STORE_MARKETPLACE, STORE_B]);
+    mockStoreState.category = 'featured';
+    mockStoreState.storeId = 'community';
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockSetSearchParams).not.toHaveBeenCalled();
+    expect(mockStoreState.setSearchImmediate).not.toHaveBeenCalled();
+    expect(mockStoreState.setCategory).not.toHaveBeenCalled();
+    expect(mockStoreState.setStoreId).not.toHaveBeenCalled();
+  });
+
+  it('ignores a store switch clicked while it animates out', () => {
+    capturedPathname = '/home';
+    setupQueries();
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByText('Community'));
+
+    expect(mockStoreState.setStoreId).not.toHaveBeenCalled();
+    expect(mockSetSearchParams).not.toHaveBeenCalled();
   });
 
   it('writes browse params to the URL when search and category are set', () => {

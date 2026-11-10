@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   NETWORK_OVERLAP_CODE,
   NETWORK_OVERLAP_USER_MESSAGE,
+  KVM_MISSING_CODE,
   ROCM_KFD_MISSING_CODE,
   createNetworkOverlapError,
   translateDockerNetworkOverlapError,
+  translateKvmInstallMessage,
   translateRocmKfdInstallMessage,
 } from '../app-lifecycle-errors';
 
@@ -22,6 +24,21 @@ describe('app-lifecycle-errors network overlap', () => {
 
     expect(translated?.errorCode).toBe(NETWORK_OVERLAP_CODE);
     expect(translated?.errorDetail).toContain('10.128.10.0/24');
+  });
+});
+
+describe('translateKvmInstallMessage', () => {
+  it('translates a Kata failure that names KVM', () => {
+    const translated = translateKvmInstallMessage('kata-runtime: Could not access KVM kernel module: No such file or directory');
+
+    expect(translated?.errorCode).toBe(KVM_MISSING_CODE);
+  });
+
+  it.each([
+    ['a Kata runtime registered with a binary that is not installed', 'fork/exec /var/lib/docker/runtimes/kata: no such file or directory'],
+    ['a missing file of an app with kata in its name', 'bind source path does not exist: /data/apps/kata-test/config: no such file or directory'],
+  ])('leaves %s alone', (_case, message) => {
+    expect(translateKvmInstallMessage(message)).toBeNull();
   });
 });
 

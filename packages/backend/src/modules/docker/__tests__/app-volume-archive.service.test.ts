@@ -70,6 +70,42 @@ describe('AppVolumeArchiveService', () => {
     });
   });
 
+  describe('hasProjectVolumes', () => {
+    const volumesOnTheEngine = (...volumes: Array<{ Name: string; Labels: Record<string, string> | null }>) =>
+      docker.listVolumes.mockResolvedValue({ Volumes: volumes, Warnings: [] } as never);
+
+    it('finds a volume compose made for the project', async () => {
+      await expect(service.hasProjectVolumes(appUrn)).resolves.toBe(true);
+    });
+
+    it('finds a volume named as compose names them that has no labels, which compose down -v deletes too', async () => {
+      volumesOnTheEngine({ Name: database, Labels: null });
+
+      await expect(service.hasProjectVolumes(appUrn)).resolves.toBe(true);
+    });
+
+    it('finds a volume with a name of its own that compose labelled for the project', async () => {
+      volumesOnTheEngine({ Name: 'shared-db', Labels: composeLabels });
+
+      await expect(service.hasProjectVolumes(appUrn)).resolves.toBe(true);
+    });
+
+    it("ignores other apps' volumes and anonymous ones", async () => {
+      volumesOnTheEngine(
+        { Name: 'nextcloud_ci-marketplace_db', Labels: { 'com.docker.compose.project': 'nextcloud_ci-marketplace' } },
+        { Name: '2846fb8f95b3a276', Labels: { 'com.docker.volume.anonymous': '' } },
+      );
+
+      await expect(service.hasProjectVolumes(appUrn)).resolves.toBe(false);
+    });
+
+    it('is false for an engine with no volumes', async () => {
+      docker.listVolumes.mockResolvedValue({ Volumes: null, Warnings: [] } as never);
+
+      await expect(service.hasProjectVolumes(appUrn)).resolves.toBe(false);
+    });
+  });
+
   it("copies a volume into a file through a read-only, offline container of the Hub's own image", async () => {
     dockerRuns(([, stdout]) => fs.writeSync(stdout as number, 'volume as tar'));
 

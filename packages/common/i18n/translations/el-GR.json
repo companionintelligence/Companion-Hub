@@ -602,7 +602,6 @@
   "SETTINGS_GENERAL_APPS_REPO_HINT": "Διεύθυνση URL για το αποθετήριο εφαρμογών.",
   "SETTINGS_GENERAL_APP_DATA_PATH": "Path δεδομένων εφαρμογής",
   "SETTINGS_GENERAL_APP_DATA_PATH_HINT": "Η τοποθεσία στην οποία αποθηκεύονται δεδομένα εφαρμογών.",
-  "SETTINGS_GENERAL_BASE_THEME": "Base theme",
   "SETTINGS_GENERAL_DOMAIN": "Όνομα domain",
   "SETTINGS_GENERAL_DOMAIN_HINT": "Εκθέστε τον πίνακα ελέγχου σας σε ένα προσαρμοσμένο domain. Βεβαιωθείτε ότι έχετε ένα DNS record που δείχνει στη διεύθυνση IP του διακομιστή.",
   "SETTINGS_GENERAL_DOWNLOAD_CERTIFICATE": "Λήψη πιστοποιητικού",

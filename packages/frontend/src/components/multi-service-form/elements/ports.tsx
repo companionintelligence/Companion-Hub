@@ -10,6 +10,7 @@ import clsx from 'clsx';
 import { Controller, useFieldArray, type Control, type FieldErrors, type UseFormRegister } from 'react-hook-form';
 import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import { useTranslation } from 'react-i18next';
+import { plainPortAsNumber } from './plain-port-as-number';
 
 type Props = {
   control: Control<z.infer<typeof dynamicComposeSchema>>;
@@ -52,7 +53,7 @@ export const PortsConfig = ({ errors, serviceIndex, control, register }: Props) 
               <TableRow key={field.id}>
                 <TableCell scope="row" className="w-30">
                   <Input
-                    {...register(`services.${serviceIndex}.addPorts.${index}.hostPort`)}
+                    {...register(`services.${serviceIndex}.addPorts.${index}.hostPort`, { setValueAs: plainPortAsNumber })}
                     error={t(errors?.services?.[serviceIndex]?.addPorts?.[index]?.hostPort?.message as string)}
                     placeholder="9091"
                     className="table-row-input"
@@ -60,7 +61,7 @@ export const PortsConfig = ({ errors, serviceIndex, control, register }: Props) 
                 </TableCell>
                 <TableCell className="w-30">
                   <Input
-                    {...register(`services.${serviceIndex}.addPorts.${index}.containerPort`)}
+                    {...register(`services.${serviceIndex}.addPorts.${index}.containerPort`, { setValueAs: plainPortAsNumber })}
                     error={t(errors?.services?.[serviceIndex]?.addPorts?.[index]?.containerPort?.message as string)}
                     placeholder="9091"
                     className="table-row-input"

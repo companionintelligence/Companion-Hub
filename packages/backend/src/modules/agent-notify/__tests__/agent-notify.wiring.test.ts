@@ -50,7 +50,6 @@ const HUB_ENV: Record<string, string> = {
   PERSIST_TRAEFIK_CONFIG: 'false',
   TZ: 'UTC',
   ADVANCED_SETTINGS: 'false',
-  THEME_BASE: 'gray',
   THEME_COLOR: 'blue',
   EXPERIMENTAL_INSECURE_COOKIE: 'false',
   ROOT_FOLDER_HOST: '/opt/ci-hub',

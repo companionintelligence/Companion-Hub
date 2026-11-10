@@ -54,7 +54,6 @@ ROOT_FOLDER_HOST=${PWD}/.internal-e2e
 JWT_SECRET=e2e-cross-domain-jwt-secret
 LOCAL_DOMAIN=ci.lan
 TZ=UTC
-THEME_BASE=gray
 THEME_COLOR=blue
 ALLOW_ERROR_MONITORING=false
 PERSIST_TRAEFIK_CONFIG=false

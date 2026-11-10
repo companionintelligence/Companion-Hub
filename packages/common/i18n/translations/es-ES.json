@@ -1163,7 +1163,6 @@
   "SETTINGS_GENERAL_APPS_REPO_HINT": "URL al repositorio de aplicaciones.",
   "SETTINGS_GENERAL_APP_DATA_PATH": "Ruta de datos de la aplicación",
   "SETTINGS_GENERAL_APP_DATA_PATH_HINT": "La ubicación donde se almacenan los datos de la aplicación.",
-  "SETTINGS_GENERAL_BASE_THEME": "Tema base",
   "SETTINGS_GENERAL_COPY": "Copiar",
   "SETTINGS_GENERAL_COPY_FAILED": "No se pudo copiar al portapapeles",
   "SETTINGS_GENERAL_DOMAIN_HINT": "Expone tu panel de control a un dominio personalizado. Asegúrate de tener registros A que apunten a la dirección IP del servidor.",

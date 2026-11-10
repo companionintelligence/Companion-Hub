@@ -15,7 +15,7 @@
   --mcf-brand-grad: linear-gradient(135deg, #0b6e74 0%, #079d99 100%);
   --mcf-on-accent: #fff;
   color-scheme: dark;
-  min-height: calc(100vh - var(--titlebar-height, 0px));
+  min-height: var(--app-height);
   display: grid;
   place-items: center;
   background: var(--mcf-bg);

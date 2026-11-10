@@ -1,3 +1,4 @@
+import { syncTauriWindowBackground } from '@/lib/tauri-window-theme';
 import { Titlebar } from './components/titlebar/titlebar';
 import { HubStatus } from './components/hub-status/hub-status';
 import { useUpdateChecker } from './hooks/use-update-checker';
@@ -508,6 +509,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (isMobileClient()) setMobileUi(true);
   }, []);
+  // Adopting the mobile classes replaces the whole <html> class list, which can change
+  // the background the page shows. Repaint the Android system-bar strips to match.
+  useEffect(() => {
+    if (mobileUi) void syncTauriWindowBackground();
+  }, [mobileUi]);
 
   useEffect(() => installScrollbarHover(), []);
 
@@ -663,7 +669,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <html lang={documentLang} className={mobileUi ? 'ci-mobile' : undefined}>
+    <html lang={documentLang} className={mobileUi ? (/android/i.test(navigator.userAgent) ? 'ci-mobile ci-android' : 'ci-mobile') : undefined}>
       <head>
         <title>{documentTitle}</title>
         <meta charSet="UTF-8" />

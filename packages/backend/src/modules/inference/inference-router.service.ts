@@ -506,6 +506,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       const curated = this.modelRegistry.getCuratedModel(tracked.catalogId);
       models.push({
         id: tracked.catalogId,
+        backend_model_id: tracked.backendModelId,
         object: 'model',
         created: now,
         owned_by: `local:${tracked.backend}`,

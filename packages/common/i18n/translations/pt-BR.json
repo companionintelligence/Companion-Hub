@@ -601,7 +601,6 @@
   "SETTINGS_GENERAL_APPS_REPO_HINT": "URL para o repositório de aplicativos.",
   "SETTINGS_GENERAL_APP_DATA_PATH": "Caminho dos dados do aplicativo",
   "SETTINGS_GENERAL_APP_DATA_PATH_HINT": "O local onde os dados do app são armazenados.",
-  "SETTINGS_GENERAL_BASE_THEME": "Tema base",
   "SETTINGS_GENERAL_DOMAIN": "Nome do domínio",
   "SETTINGS_GENERAL_DOMAIN_HINT": "Exponha o seu painel para um domínio personalizado. Certifique-se de que você tem um registro apontando para o endereço IP do servidor.",
   "SETTINGS_GENERAL_DOWNLOAD_CERTIFICATE": "Baixar certificados",

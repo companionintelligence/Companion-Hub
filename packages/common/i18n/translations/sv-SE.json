@@ -602,7 +602,6 @@
   "SETTINGS_GENERAL_APPS_REPO_HINT": "URL till app-arkivet.",
   "SETTINGS_GENERAL_APP_DATA_PATH": "Appdata sökväg",
   "SETTINGS_GENERAL_APP_DATA_PATH_HINT": "Platsen där appdata lagras.",
-  "SETTINGS_GENERAL_BASE_THEME": "Bastema",
   "SETTINGS_GENERAL_DOMAIN": "Domännamn",
   "SETTINGS_GENERAL_DOMAIN_HINT": "Expose your dashboard to a custom domain. Make sure you have A records pointing to the server's IP address.",
   "SETTINGS_GENERAL_DOWNLOAD_CERTIFICATE": "Ladda ner certifikat",

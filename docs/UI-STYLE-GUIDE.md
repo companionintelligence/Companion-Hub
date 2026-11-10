@@ -42,7 +42,6 @@ also packaged as a Tauri 2 desktop app.
 | UI primitives                   | `packages/frontend/src/components/ui/`                                                               |
 | Button                          | `packages/frontend/src/components/ui/Button/Button.tsx`                                              |
 | Theme provider                  | `packages/frontend/src/components/providers/theme/theme-provider.tsx`                                |
-| Theme-base selector             | `packages/frontend/src/modules/settings/components/theme-base-selector/`                             |
 | Font load                       | `packages/frontend/src/root.tsx` (Google Fonts `links`)                                              |
 
 ### Conformance to canon
@@ -58,8 +57,6 @@ also packaged as a Tauri 2 desktop app.
 - **Extra Button variants:** `success` (green-600), `warning` (yellow-500), `info` (blue-500).
   These use raw Tailwind palette colors, not tokens. Acceptable as Hub semantics; **prefer
   token-based status colors** if these ever move toward canon.
-- **Theme bases:** five selectable neutral palettes (`slate`, `gray`, `zinc`, `neutral`, `stone`)
-  via `document.body.dataset.bsThemeBase`. Hub-specific personalization; not part of canon.
 - **Ambient background:** static radial teal gradient on `body` (light + dark) in `globals.css`.
 - **Custom scrollbars** and `.no-scrollbar` utility in `globals.css`.
 - **Default theme:** Hub follows the canonical default (`system`).

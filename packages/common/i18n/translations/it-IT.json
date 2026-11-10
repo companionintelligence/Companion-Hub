@@ -602,7 +602,6 @@
   "SETTINGS_GENERAL_APPS_REPO_HINT": "URL del registro delle apps.",
   "SETTINGS_GENERAL_APP_DATA_PATH": "Percorso dati dell'app",
   "SETTINGS_GENERAL_APP_DATA_PATH_HINT": "La posizione in cui vengono memorizzati i dati dell'app.",
-  "SETTINGS_GENERAL_BASE_THEME": "Tema di base",
   "SETTINGS_GENERAL_DOMAIN": "Nome dominio",
   "SETTINGS_GENERAL_DOMAIN_HINT": "Esporre la dashboard a un dominio personalizzato. Assicurati di avere un record di tipo A che punta all'indirizzo IP del server.",
   "SETTINGS_GENERAL_DOWNLOAD_CERTIFICATE": "Scarica certificato",

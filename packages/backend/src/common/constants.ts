@@ -137,6 +137,56 @@ export function hubAppNetworkNames(env: NodeJS.ProcessEnv = process.env): string
   return primary === LEGACY_NETWORK_NAME ? [primary] : [primary, LEGACY_NETWORK_NAME];
 }
 
+/**
+ * The ONLY keys an app's env may inherit from the Hub's own `.env`.
+ *
+ * `generateEnvFile` starts from the Hub's `/data/.env` — the file that also
+ * holds the Hub's Postgres and RabbitMQ passwords, its JWT secret, its Portal
+ * device key and whatever else the operator or installer put there — and
+ * writes the result to `app.env`, which is `env_file` for every service of the
+ * app. It used to copy that file whole and strip a short denylist, so each new
+ * Hub secret reached every installed app by default (the broker password did,
+ * and with it the ability to drive the Hub's lifecycle queue). This is the
+ * allowlist that replaces it: an app inherits these and nothing else. Every
+ * other value the Hub wants an app to have — its identity, its keys, its
+ * inference and Memory credentials — is set explicitly further down, from the
+ * Hub's own state, not inherited.
+ *
+ * Two groups:
+ *
+ * - Hub identity a manifest may reference (`DOMAIN`, `ROOT_FOLDER_HOST`,
+ *   `LOCAL_DOMAIN` are in the marketplace's `HUB_PROVIDED_VARS` contract;
+ *   `TZ` is used by dozens of manifests) and the values this function itself
+ *   reads back from the seeded map (`CI_HUB_APP_DATA_PATH`, `LOCAL_DOMAIN`).
+ * - Operator pins: the Hub honours a value the operator set in its `.env` for
+ *   these instead of its own default (`setUnlessOperatorSet`, the maps-key
+ *   gate). They stay operator-overridable, which is the documented behaviour.
+ *
+ * An app-specific pass-through — the Memory `url_env`/`token_env` names a
+ * manifest declares, which an operator may pin the same way — is added per app
+ * by {@link appInheritableHubEnvKeys}. Add a key here only if an app must read
+ * it from the Hub's `.env` specifically; if the Hub knows the value, set it.
+ */
+export const HUB_ENV_KEYS_INHERITED_BY_APPS: ReadonlySet<string> = new Set([
+  'DOMAIN',
+  'LOCAL_DOMAIN',
+  'ROOT_FOLDER_HOST',
+  'CI_HUB_APP_DATA_PATH',
+  'INTERNAL_IP',
+  'ARCHITECTURE',
+  'TZ',
+  'LOG_LEVEL',
+  'NODE_ENV',
+  'CI_HUB_VERSION',
+  'DEMO_MODE',
+  'CI_CLOUD_URL',
+  'PORTAL_OIDC_ENABLED',
+  'PORTAL_OIDC_ISSUER',
+  'PORTAL_OIDC_JWKS_URI',
+  'GOOGLE_MAPS_KEY',
+  'GEOCODING_API_KEY',
+]);
+
 export function isHubApplianceContainerName(name: string): boolean {
   const n = name.replace(/^\//, '');
   return n === DEFAULT_HUB_CONTAINER_NAME || n === LEGACY_HUB_CONTAINER_NAME;
@@ -255,5 +305,4 @@ export const HUB_STACK_REGISTRY_REPO = 'ci-hub';
 export const HUB_STACK_IMAGE_REPO = 'ghcr.io/companionintelligence/ci-hub';
 
 // Theming
-export const DEFAULT_THEME_BASE = 'gray';
 export const DEFAULT_THEME_COLOR = 'blue';

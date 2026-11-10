@@ -20,7 +20,6 @@ export type UserContextDto = {
     isPasswordResetDisabled: boolean;
     allowErrorMonitoring: boolean;
     themeColor: string;
-    themeBase: string;
     localDomain: string;
     domain: string;
     sslPort: number;
@@ -64,7 +63,6 @@ export type AppContextDto = {
         sslPort: number;
         timeZone: string;
         experimental_insecureCookie?: boolean;
-        themeBase?: string;
         themeColor?: string;
         ciHubOrganizationId?: string;
         ciHubOrganizationSlug?: string;
@@ -170,7 +168,6 @@ export type UserSettingsBody = {
     sslPort?: number;
     timeZone?: unknown;
     experimental_insecureCookie?: boolean;
-    themeBase?: string;
     themeColor?: string;
     ciHubOrganizationId?: string;
     ciHubOrganizationSlug?: string;
@@ -802,6 +799,7 @@ export type GuestAppsDto = {
             customDomain?: string;
             pendingRestart: boolean;
             ignoredVersion: number;
+            publicUrl?: string;
         };
         info: {
             id: string;

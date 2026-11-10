@@ -728,7 +728,6 @@ const APPLIANCE_ENV: Record<string, string> = {
   TZ: 'UTC',
   ROOT_FOLDER_HOST: '/host',
   ADVANCED_SETTINGS: 'false',
-  THEME_BASE: 'gray',
   THEME_COLOR: 'blue',
   EXPERIMENTAL_INSECURE_COOKIE: 'false',
 };
