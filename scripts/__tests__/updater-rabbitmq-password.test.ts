@@ -39,7 +39,9 @@ const IS_ROOT = process.getuid?.() === 0;
  * glob STUB_DOCKER_ERROR_ON, as a daemon that is down would.
  *
  * The stub's Hub container is STUB_HUB, `ci-hub` by default (absent with STUB_NO_HUB), and its broker
- * STUB_QUEUE, `ci-hub-queue` by default. Its environment starts as
+ * STUB_QUEUE, `ci-hub-queue` by default. When the folder $STUB_DIR/hubs exists it lists the Hub
+ * containers instead, running or stopped alike (docker inspect sees both): one file per container,
+ * named after it and holding its environment. Its environment starts as
  * STUB_HUB_PASSWORD and STUB_HUB_UID, and `compose-up-sim` stands in for update.sh's `up`: it gives the
  * Hub the password compose would (STUB_UP_PASSWORD when a test needs compose's exact parsing, else an
  * exported RABBITMQ_PASSWORD, else the env file's plain line).
@@ -55,6 +57,7 @@ hub_env() {
 case "$1" in
   compose-up-sim)
     [ -n "\${STUB_NO_HUB:-}\${STUB_NO_UP:-}" ] && exit 0
+    [ -d "$STUB_DIR/hubs" ] && exit 0
     pw="\${STUB_UP_PASSWORD:-\${RABBITMQ_PASSWORD:-$(grep '^RABBITMQ_PASSWORD=' "$2" | tail -n 1 | cut -d= -f2-)}}"
     { printf 'RABBITMQ_PASSWORD=%s\\n' "$pw"; [ -n "\${STUB_HUB_UID:-}" ] && printf 'CI_HUB_CONTAINER_UID=%s\\n' "$STUB_HUB_UID"; } > "$STUB_DIR/hub-env.new"
     mv "$STUB_DIR/hub-env.new" "$STUB_DIR/hub-env"
@@ -68,6 +71,18 @@ case "$1" in
     fi
     hub="\${STUB_HUB:-ci-hub}"
     queue="\${STUB_QUEUE:-ci-hub-queue}"
+    if [ -d "$STUB_DIR/hubs" ]; then
+      name="\${4:-$2}"
+      [ "$2" = -f ] || name="$2"
+      if [ -f "$STUB_DIR/hubs/$name" ]; then
+        [ "$2" != -f ] && exit 0
+        case "$3" in
+          *Config.Env*) cat "$STUB_DIR/hubs/$name"; exit 0 ;;
+          *Config.User*) echo; exit 0 ;;
+        esac
+      fi
+      hub="(none)"
+    fi
     absent() {
       [ "$2" = untyped-no-format ] && echo '[]'
       if [ -n "$typed" ] && [ -n "\${STUB_LOWER_TYPED:-}" ]; then echo "error response from daemon: no such container: $1" >&2
@@ -703,6 +718,90 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
       expect(readFileSync(envFile, 'utf-8')).toBe(body);
       expect(broker()).toBe('admin');
       expect(argvLog()).not.toContain('rabbitmqctl');
+    });
+  });
+
+  describe('Hub probe order: the name update.sh passes, then ci-hub, then ci-os-hub', () => {
+    /** Hub containers by name, each with the broker password compose gave it. */
+    function hubs(passwords: Record<string, string>) {
+      mkdirSync(path.join(dir, 'hubs'));
+      for (const [name, password] of Object.entries(passwords)) {
+        writeFileSync(path.join(dir, 'hubs', name), `RABBITMQ_PASSWORD=${password}\nPATH=/usr/bin\n`);
+      }
+    }
+    const checkBroker = (hubArg: string) =>
+      spawnSync(
+        'bash',
+        [
+          '-c',
+          `set -o errexit -o nounset -o pipefail\n. ${JSON.stringify(HELPER)}\nrabbitmq_password_check_broker "$1" "$2" 4`,
+          'bash',
+          envFile,
+          hubArg,
+        ],
+        { encoding: 'utf-8', env: baseEnv({}, '') },
+      );
+    const restartsOf = (name: string) => argvLog().match(new RegExp(`^restart ${name}$`, 'gm'))?.length ?? 0;
+
+    beforeEach(() => {
+      writeFileSync(envFile, 'RABBITMQ_PASSWORD=os-password\n', { mode: 0o600 });
+    });
+
+    it('picks the running ci-os-hub it is given over a stopped ci-hub that holds another password', () => {
+      hubs({ 'ci-os-hub': 'os-password', 'ci-hub': 'stale-password' });
+
+      const result = checkBroker('ci-os-hub');
+
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+      expect(broker()).toBe('os-password');
+      expect(result.stdout).toContain('to the one ci-os-hub uses; restarting ci-os-hub');
+      expect(restartsOf('ci-os-hub')).toBe(1);
+      expect(restartsOf('ci-hub')).toBe(0);
+    });
+
+    it('picks ci-hub when it is given ci-hub and both exist', () => {
+      hubs({ 'ci-os-hub': 'os-password', 'ci-hub': 'hub-password' });
+
+      const result = checkBroker('ci-hub');
+
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+      expect(broker()).toBe('hub-password');
+      expect(restartsOf('ci-hub')).toBe(1);
+      expect(restartsOf('ci-os-hub')).toBe(0);
+    });
+
+    it('with no name given, tries ci-hub first', () => {
+      hubs({ 'ci-os-hub': 'os-password', 'ci-hub': 'hub-password' });
+
+      const result = checkBroker('');
+
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+      expect(broker()).toBe('hub-password');
+      expect(restartsOf('ci-hub')).toBe(1);
+    });
+
+    it('with no name given and no ci-hub, falls through to ci-os-hub', () => {
+      hubs({ 'ci-os-hub': 'os-password' });
+
+      const result = checkBroker('');
+
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+      expect(broker()).toBe('os-password');
+      expect(restartsOf('ci-os-hub')).toBe(1);
+      expect(argvLog()).toMatch(/^container inspect ci-hub$/m);
+    });
+
+    it('names each Hub container once when none exists, whichever name it is given', () => {
+      mkdirSync(path.join(dir, 'hubs'));
+      const run = (hubArg: string) =>
+        spawnSync('bash', ['-c', `. ${JSON.stringify(HELPER)}\nrabbitmq_password_hub_container "$1"`, 'bash', hubArg], {
+          encoding: 'utf-8',
+          env: baseEnv({}, ''),
+        }).stderr;
+
+      expect(run('ci-os-hub')).toContain('no Hub container (ci-os-hub, ci-hub) exists');
+      expect(run('ci-hub')).toContain('no Hub container (ci-hub, ci-os-hub) exists');
+      expect(run('')).toContain('no Hub container (ci-hub, ci-os-hub) exists');
     });
   });
 

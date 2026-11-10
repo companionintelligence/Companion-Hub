@@ -97,9 +97,13 @@ rabbitmq_password_docker_says_absent() {
 # is not "No such ..."), prints an ERROR and fails: "could not check" is never read as "absent".
 rabbitmq_password_hub_container() {
   local name rc names=()
-  # $1 first, unless it is one of the two names probed anyway, so each name is probed (and named) once.
-  case "$1" in "" | ci-hub | ci-os-hub) ;; *) names+=("$1") ;; esac
-  names+=(ci-hub ci-os-hub)
+  # $1 first, always: update.sh passes the running Hub, and a stopped ci-hub left beside a running
+  # ci-os-hub must not be picked ahead of it. Later duplicates of $1 are dropped, so each name is
+  # probed (and named) once.
+  if [ -n "$1" ]; then names+=("$1"); fi
+  for name in ci-hub ci-os-hub; do
+    [ "$name" = "$1" ] || names+=("$name")
+  done
   for name in "${names[@]}"; do
     rc=0
     rabbitmq_password_docker_capture container inspect "$name" || rc=$?
