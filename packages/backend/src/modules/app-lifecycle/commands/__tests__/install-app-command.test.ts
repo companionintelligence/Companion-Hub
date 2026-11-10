@@ -6,6 +6,7 @@ import type { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
+import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { SSEService } from '@/core/sse/sse.service';
@@ -247,6 +248,82 @@ describe('InstallAppCommand — pull policy', () => {
     const created = appFilesManager.createVolumeHostDirs.mock.invocationCallOrder[0] as number;
     // The sweep that follows is what opens the new folders up for the app's own user.
     expect(appFilesManager.setAppDataDirPermissions.mock.invocationCallOrder.some((order) => order > created)).toBe(true);
+  });
+
+  describe('OpenClaw start scripts', () => {
+    const openclaw = 'openclaw:store' as AppUrn;
+    let filesystem: ReturnType<typeof mock<FilesystemService>>;
+
+    beforeEach(() => {
+      filesystem = mock<FilesystemService>();
+      filesystem.createDirectory.mockResolvedValue(true);
+      filesystem.writeTextFile.mockResolvedValue(true);
+      filesystem.makeExecutable.mockResolvedValue(true);
+      appFilesManager.getAppPaths.mockReturnValue({ appDataDir: '/tmp/app-data/store/openclaw', appInstalledDir: '/tmp/apps/store/openclaw' });
+      const moduleRef = (command as any).moduleRef;
+      const resolve = moduleRef.get.getMockImplementation();
+      moduleRef.get.mockImplementation((token: unknown) => (token === FilesystemService ? filesystem : resolve(token)));
+      vi.mocked(fs.promises.writeFile).mockClear();
+      vi.mocked(fs.promises.chmod).mockClear();
+    });
+
+    it('copies a shipped regular file through the filesystem service', async () => {
+      filesystem.isFile.mockResolvedValue(true);
+      filesystem.copyFile.mockResolvedValue(true);
+
+      await command.execute(openclaw, {});
+
+      expect(filesystem.copyFile).toHaveBeenCalledWith(
+        '/tmp/apps/store/openclaw/data/ci-wrapper.sh',
+        '/tmp/app-data/store/openclaw/data/ci-wrapper.sh',
+      );
+      expect(filesystem.makeExecutable).toHaveBeenCalledWith('/tmp/app-data/store/openclaw/data/ci-wrapper.sh');
+      expect(fs.promises.writeFile).not.toHaveBeenCalledWith(expect.stringContaining('ci-wrapper.sh'), expect.anything(), expect.anything());
+      expect(fs.promises.chmod).not.toHaveBeenCalledWith(expect.stringContaining('ci-wrapper.sh'), expect.anything());
+    });
+
+    it('writes the built-in script through the filesystem service when nothing shipped is a regular file', async () => {
+      filesystem.isFile.mockResolvedValue(false);
+
+      await command.execute(openclaw, {});
+
+      expect(filesystem.copyFile).not.toHaveBeenCalled();
+      expect(filesystem.writeTextFile).toHaveBeenCalledWith(
+        '/tmp/app-data/store/openclaw/data/ci-wrapper.sh',
+        expect.stringContaining('ci-entrypoint.sh'),
+      );
+      expect(filesystem.makeExecutable).toHaveBeenCalledWith('/tmp/app-data/store/openclaw/data/ci-entrypoint.sh');
+      expect(fs.promises.writeFile).not.toHaveBeenCalledWith(expect.stringContaining('ci-wrapper.sh'), expect.anything(), expect.anything());
+    });
+
+    it('fails the install when the scripts folder cannot be created', async () => {
+      filesystem.createDirectory.mockResolvedValue(false);
+
+      const result = await command.execute(openclaw, {});
+
+      expect(result.success).toBe(false);
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it('fails the install when the built-in script cannot be written', async () => {
+      filesystem.isFile.mockResolvedValue(false);
+      filesystem.writeTextFile.mockResolvedValue(false);
+
+      const result = await command.execute(openclaw, {});
+
+      expect(result.success).toBe(false);
+      expect(filesystem.makeExecutable).not.toHaveBeenCalled();
+    });
+
+    it('fails the install when a restored script cannot be made executable', async () => {
+      filesystem.isFile.mockResolvedValue(true);
+      filesystem.copyFile.mockResolvedValue(true);
+      filesystem.makeExecutable.mockResolvedValue(false);
+
+      const result = await command.execute(openclaw, {});
+
+      expect(result.success).toBe(false);
+    });
   });
 
   it('MUST omit --pull flag entirely when force_pull is false', async () => {
