@@ -35,7 +35,6 @@ import { AdvancedDrawers } from './ai-setup/advanced-drawers';
 import { CloudProviderCard } from './ai-setup/cloud-provider-card';
 import { SystemOverview } from './ai-setup/system-overview';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
-import { backendDisplayName } from '@/lib/inference/backend-names';
 import { useLiveSession } from '@/lib/inference/live-session';
 import { LiveSessionNotice } from './ai-setup/live-session-notice';
 import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
@@ -570,7 +569,6 @@ export const AiSetupStep = ({
       profile.availableModels.filter((m) => selectedModels.includes(m.id)),
       installedCatalogIds,
       profile.resourceEstimate.availableDiskMb,
-      backendDisplayName(selectedBackend),
     );
     if (budget.overDisk) {
       installBlocked = true;
@@ -868,7 +866,6 @@ export const AiSetupStep = ({
           <ResourceSummaryBar
             selectedModels={selectedModels}
             installedCatalogIds={installedCatalogIds}
-            backend={selectedBackend}
             availableStorageMb={availableDiskMb}
             totalMemoryMb={inferenceMemory.totalMb}
             availableMemoryMb={inferenceMemory.freeMb}

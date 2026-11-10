@@ -1065,7 +1065,6 @@ export const AiSettingsContainer = () => {
           <ResourceSummaryBar
             selectedModels={selectedModels}
             installedCatalogIds={installedCatalogIds}
-            backend={selectedBackend}
             availableStorageMb={availableStorageMb}
             totalMemoryMb={inferenceMemory.totalMb}
             availableMemoryMb={inferenceMemory.freeMb}
