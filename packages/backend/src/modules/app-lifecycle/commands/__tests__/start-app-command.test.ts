@@ -723,6 +723,74 @@ describe('StartAppCommand — pull policy', () => {
         expect(composeArgs.at(-1)).toBe('down --remove-orphans');
       });
 
+      describe('when a setup step the app waits on to finish failed', () => {
+        const setupStepFailed = new Error('service "migrate" didn\'t complete successfully: exit 1');
+        const look = (service: string, over: Partial<AppContainerLook>): AppContainerLook => ({
+          ...dbLook({})[0],
+          id: service,
+          service,
+          containerName: `test-app-${service}-1`,
+          ...over,
+        });
+        const setupStepLeft = [
+          look('db', { health: 'healthy' }),
+          look('migrate', { state: 'exited', exitCode: 1 }),
+          look('web', { state: 'created', exitCode: 0 }),
+        ];
+
+        beforeEach(() => {
+          dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+            composeArgs.push(args);
+            if (args.startsWith('up')) throw setupStepFailed;
+          });
+        });
+
+        it('takes the app down, so the database that started does not run on behind Stopped', async () => {
+          dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue(setupStepLeft);
+
+          const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+          expect(result.success).toBe(false);
+          expect(result.message).toContain("didn't complete successfully");
+          expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans');
+        });
+
+        it('keeps the end of the failed setup step log before the container goes', async () => {
+          dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue(setupStepLeft);
+
+          await command.execute(appUrn, { stopIfNotUp: true });
+
+          expect(dockerReadFacade.describeAppCameUpFailure).toHaveBeenCalledWith(
+            expect.objectContaining({ containers: [expect.objectContaining({ service: 'migrate', exitCode: 1 })] }),
+          );
+        });
+
+        it('leaves the containers to Docker for the Hub own start', async () => {
+          dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue(setupStepLeft);
+
+          const result = await command.execute(appUrn, {});
+
+          expect(result.success).toBe(false);
+          expect(dockerService.composeApp).not.toHaveBeenCalledWith(appUrn, 'down --remove-orphans');
+        });
+
+        it('takes nothing down after a failed pull, which leaves no containers', async () => {
+          dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue([]);
+
+          await command.execute(appUrn, { stopIfNotUp: true });
+
+          expect(dockerService.composeApp).not.toHaveBeenCalledWith(appUrn, 'down --remove-orphans');
+        });
+
+        it('takes nothing down for a one-shot that failed when nothing waits on it', async () => {
+          dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue([look('db', {}), look('migrate', { state: 'exited', exitCode: 1 })]);
+
+          await command.execute(appUrn, { stopIfNotUp: true });
+
+          expect(dockerService.composeApp).not.toHaveBeenCalledWith(appUrn, 'down --remove-orphans');
+        });
+      });
+
       it('keeps the end of the failing container log before the container goes', async () => {
         const order: string[] = [];
         dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue(restartingDb);
