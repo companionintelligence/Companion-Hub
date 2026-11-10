@@ -278,6 +278,128 @@ describe('useAppUrlAvailability', () => {
     await waitFor(() => expect(result.current.state).toBe('unreachable'));
     expect(result.current.statusMessage).toBe('APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED');
     expect(result.current.resolvable).toBe(false);
+    expect(result.current.publicAddressRefusal).toBe('APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED');
+  });
+
+  it.each([
+    ['PUBLIC_ADDRESS_DUPLICATE_SUBDOMAIN'],
+    ['PUBLIC_ADDRESS_CONFLICT'],
+    ['PUBLIC_ADDRESS_ZONE_UNAVAILABLE'],
+    ['PUBLIC_ADDRESS_INVALID_SUBDOMAIN'],
+  ])('marks the address refused and gives its own copy for %s', async (errorCode) => {
+    probe({ available: false, stage: 'error', errorCode, appUrl: 'https://app.example.com', resolvable: false });
+
+    const { result } = renderHook(() => useAppUrlAvailability(EXPOSED), { wrapper: wrapper() });
+
+    await waitFor(() => expect(result.current.state).toBe('unreachable'));
+    expect(result.current.statusMessage).toBe(`APP_ACTION_ERROR_${errorCode}`);
+    expect(result.current.publicAddressRefusal).toBe(`APP_ACTION_ERROR_${errorCode}`);
+  });
+
+  it('does not call a record that is still coming up refused', async () => {
+    probe({ available: false, stage: 'propagating', errorCode: 'DNS_NOT_FOUND', appUrl: 'https://app.example.com', resolvable: true });
+
+    const { result } = renderHook(() => useAppUrlAvailability(EXPOSED), { wrapper: wrapper() });
+
+    await waitFor(() => expect(result.current.state).toBe('propagating'));
+    expect(result.current.publicAddressRefusal).toBeNull();
+  });
+
+  describe('holding a refusal through Retry', () => {
+    const REFUSED = {
+      available: false,
+      stage: 'error',
+      errorCode: 'PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+      appUrl: 'https://app.example.com',
+      resolvable: false,
+    } as const;
+    const QUOTA_COPY = 'APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED';
+
+    /** A probe the test answers by hand, so the moment between Retry and the next verdict can be read. */
+    function pendingProbe() {
+      let answer: (result: AppUrlProbeResult) => void = () => {};
+      h.get.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            answer = (result) => resolve({ data: result });
+          }),
+      );
+      return (result: AppUrlProbeResult) => answer(result);
+    }
+
+    it('keeps the refusal while the next probe is out, with no verdict to read', async () => {
+      probe(REFUSED);
+      const { result } = renderHook(() => useAppUrlAvailability(EXPOSED), { wrapper: wrapper() });
+      await waitFor(() => expect(result.current.publicAddressRefusal).toBe(QUOTA_COPY));
+
+      const answer = pendingProbe();
+      act(() => result.current.reset());
+
+      await waitFor(() => expect(result.current.state).toBe('checking'));
+      expect(result.current.publicAddressRefusal).toBe(QUOTA_COPY);
+
+      act(() => answer(REFUSED));
+      await waitFor(() => expect(result.current.state).toBe('unreachable'));
+      expect(result.current.publicAddressRefusal).toBe(QUOTA_COPY);
+    });
+
+    it('still names the refusal when probing gives up after Retry with no verdict', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      probe(REFUSED);
+      const { result } = renderHook(() => useAppUrlAvailability(EXPOSED), { wrapper: wrapper() });
+      await waitFor(() => expect(result.current.publicAddressRefusal).toBe(QUOTA_COPY));
+
+      h.get.mockRejectedValue(new Error('network down'));
+      act(() => result.current.reset());
+      await waitFor(() => expect(result.current.state).toBe('checking'));
+
+      await act(async () => {
+        vi.advanceTimersByTime(5 * 60_000 + 1_000);
+      });
+
+      expect(result.current.state).toBe('unreachable');
+      expect(result.current.statusMessage).toBe(QUOTA_COPY);
+    });
+
+    it('drops the refusal as soon as a verdict no longer carries one', async () => {
+      probe(REFUSED);
+      const { result } = renderHook(() => useAppUrlAvailability(EXPOSED), { wrapper: wrapper() });
+      await waitFor(() => expect(result.current.publicAddressRefusal).toBe(QUOTA_COPY));
+
+      probe({ available: false, stage: 'propagating', errorCode: 'DNS_NOT_FOUND', appUrl: 'https://app.example.com', resolvable: true });
+      act(() => result.current.reset());
+
+      await waitFor(() => expect(result.current.state).toBe('propagating'));
+      expect(result.current.publicAddressRefusal).toBeNull();
+    });
+
+    it("does not carry one app's refusal to the next app", async () => {
+      probe(REFUSED);
+      const { result, rerender } = renderHook((props: { appUrn: string }) => useAppUrlAvailability({ ...EXPOSED, appUrn: props.appUrn }), {
+        wrapper: wrapper(),
+        initialProps: { appUrn: URN },
+      });
+      await waitFor(() => expect(result.current.publicAddressRefusal).toBe(QUOTA_COPY));
+
+      pendingProbe();
+      rerender({ appUrn: 'other-app:community' });
+
+      expect(result.current.publicAddressRefusal).toBeNull();
+    });
+
+    it('forgets the refusal once the app stops', async () => {
+      probe(REFUSED);
+      const { result, rerender } = renderHook((props: { status: 'running' | 'stopped' }) => useAppUrlAvailability({ ...EXPOSED, ...props }), {
+        wrapper: wrapper(),
+        initialProps: { status: 'running' as 'running' | 'stopped' },
+      });
+      await waitFor(() => expect(result.current.publicAddressRefusal).toBe(QUOTA_COPY));
+
+      rerender({ status: 'stopped' });
+
+      await waitFor(() => expect(result.current.state).toBe('idle'));
+      expect(result.current.publicAddressRefusal).toBeNull();
+    });
   });
 
   it('keeps the last resolved URL when a later probe returns none', async () => {

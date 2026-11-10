@@ -37,6 +37,8 @@ export interface AppUrlAvailability {
   localUrl: string | null;
   /** Already-translated explanation ("DNS propagating..."); null when ready/idle. */
   statusMessage: string | null;
+  /** Why the Portal refused this app a public address, already translated. `appUrl` will not resolve however long the page waits. */
+  publicAddressRefusal: string | null;
   /** The backend believes a `resolve` attempt could fix this. */
   resolvable: boolean;
   /** Early window in which a not-yet-available route is expected, not a fault. */
@@ -62,6 +64,18 @@ const MAX_POLL_MS = 5 * 60_000;
 const RESOLVE_RECHECK_DELAY_MS = 3_000;
 
 /**
+ * The Portal refused the app a public address for a reason that stands until someone acts: not
+ * propagation and no retry fixes it, so the copy says what the person can change (#2312, #2271).
+ */
+const REFUSED_PUBLIC_ADDRESS_MESSAGE_KEYS: Record<string, string> = {
+  PUBLIC_ADDRESS_QUOTA_EXCEEDED: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+  PUBLIC_ADDRESS_DUPLICATE_SUBDOMAIN: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_DUPLICATE_SUBDOMAIN',
+  PUBLIC_ADDRESS_CONFLICT: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_CONFLICT',
+  PUBLIC_ADDRESS_ZONE_UNAVAILABLE: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_ZONE_UNAVAILABLE',
+  PUBLIC_ADDRESS_INVALID_SUBDOMAIN: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_INVALID_SUBDOMAIN',
+};
+
+/**
  * Map `UNKNOWN` so raw Node exceptions never reach users through the backend detail fallback.
  * Keep these keys aligned with `checkAppAvailability`.
  */
@@ -79,9 +93,7 @@ const PROBE_MESSAGE_KEYS: Record<string, string> = {
   NO_DEVICE_REGISTRATION: 'APP_ACTION_ERROR_NO_DEVICE_REGISTRATION',
   // Without this the user saw the backend's raw English detail string.
   TAILSCALE_NOT_READY: 'APP_ACTION_ERROR_TAILSCALE_NOT_READY',
-  // The Portal refused the app a public address because the plan is full: not propagation, and no
-  // retry fixes it, so the copy says what the person can change (#2312).
-  PUBLIC_ADDRESS_QUOTA_EXCEEDED: 'APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+  ...REFUSED_PUBLIC_ADDRESS_MESSAGE_KEYS,
   UNKNOWN: 'APP_ACTION_APPLICATION_ERROR',
 };
 
@@ -159,6 +171,25 @@ function useLastKnownUrl(value: string | undefined, resetKey: string): string | 
   }
 
   return ref.current.key === resetKey ? ref.current.url : null;
+}
+
+/**
+ * The message key of the refusal in the latest verdict.
+ * Retry clears the verdict while the next probe runs, so the refusal is held until a verdict says otherwise.
+ * Without that, the dead link and "Enabled" come back for as long as the probe takes.
+ */
+function useHeldRefusalKey(probe: AppUrlProbeResult | null, enabled: boolean, resetKey: string): string | null {
+  const ref = useRef<{ key: string; messageKey: string | null }>({ key: resetKey, messageKey: null });
+
+  if (ref.current.key !== resetKey || !enabled) {
+    ref.current = { key: resetKey, messageKey: null };
+  }
+
+  if (enabled && probe) {
+    ref.current = { key: resetKey, messageKey: (probe.errorCode && REFUSED_PUBLIC_ADDRESS_MESSAGE_KEYS[probe.errorCode]) || null };
+  }
+
+  return ref.current.messageKey;
 }
 
 /**
@@ -246,6 +277,7 @@ export function useAppUrlAvailability(input: {
   // Both latches reset per app.
   const lastKnownAppUrl = useLastKnownUrl(probe?.appUrl, appUrn);
   const lastKnownLocalUrl = useLastKnownUrl(probe?.localUrl, appUrn);
+  const refusalKey = useHeldRefusalKey(probe, enabled, appUrn);
 
   // A failed Hub request says nothing about the app, so keep the UI neutral until another probe decides.
   // Deduplicate failures because repeated polling would otherwise flood the console.
@@ -316,7 +348,8 @@ export function useAppUrlAvailability(input: {
   });
 
   // Prefer localized error copy, but always provide a fallback for the status tooltip.
-  const messageKey = resolveProbeMessageKey(probe?.errorCode);
+  // The held refusal covers the case where probing gave up after Retry without getting another verdict.
+  const messageKey = resolveProbeMessageKey(probe?.errorCode) ?? refusalKey;
   const genericMessageKey = state === 'propagating' ? 'APP_STATUS_RUNNING_PROPAGATING_DETAIL' : 'APP_ACTION_APPLICATION_ERROR';
   const statusMessage =
     state === 'propagating' || state === 'unreachable' ? (messageKey ? t(messageKey) : probe?.detail) || t(genericMessageKey) : null;
@@ -327,6 +360,7 @@ export function useAppUrlAvailability(input: {
     appUrl: probe?.errorCode === 'TAILSCALE_SERVE_REFUSED' ? null : (probe?.appUrl ?? lastKnownAppUrl),
     localUrl: probe?.localUrl ?? lastKnownLocalUrl,
     statusMessage,
+    publicAddressRefusal: refusalKey ? t(refusalKey) : null,
     resolvable: Boolean(probe?.resolvable),
     withinGracePeriod: !graceElapsed && !pollingStopped,
     pollingStopped,
@@ -345,6 +379,7 @@ export const IDLE_APP_URL_AVAILABILITY: AppUrlAvailability = {
   appUrl: null,
   localUrl: null,
   statusMessage: null,
+  publicAddressRefusal: null,
   resolvable: false,
   withinGracePeriod: false,
   pollingStopped: false,

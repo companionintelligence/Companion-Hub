@@ -552,6 +552,7 @@ export const AppActions = ({
     appUrl,
     localUrl,
     statusMessage,
+    publicAddressRefusal,
     withinGracePeriod,
     pollingStopped,
     resolvable,
@@ -597,11 +598,13 @@ export const AppActions = ({
 
     // Escape hatch offered alongside every not-yet-available state: the probe
     // can be wrong (or merely pessimistic), so never trap the user behind it.
-    const openAnywayLink = appUrl ? (
-      <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
-        {t('APP_ACTION_OPEN_ANYWAY')}
-      </button>
-    ) : null;
+    // Except for an address the Portal refused: no record exists, so it could only end on a browser error.
+    const openAnywayLink =
+      appUrl && !publicAddressRefusal ? (
+        <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
+          {t('APP_ACTION_OPEN_ANYWAY')}
+        </button>
+      ) : null;
 
     // A real alternative route, not just an escape hatch. When the public route
     // is unreachable but the app publishes a LAN port, it is very likely serving

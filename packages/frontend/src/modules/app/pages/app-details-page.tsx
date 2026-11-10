@@ -379,7 +379,7 @@ export default () => {
         isLoading={appMedia.isLoading}
       />
 
-      <AppAccessPoints app={app} info={info} />
+      <AppAccessPoints app={app} info={info} publicAddressRefusal={urlAvailability.publicAddressRefusal} />
 
       <AppReadinessChecksCard readiness={runtimeHealth.data?.readiness} />
 

@@ -516,14 +516,44 @@ describe('AppsService.checkAppAvailability', () => {
     expect(result.appUrl).toContain('https://');
   });
 
-  it('cloudflare mode → any other refusal keeps the probe verdict', async () => {
+  // The other refusals that stand until someone acts never propagate either (#2271).
+  it.each([
+    ['duplicate_subdomain', 'PUBLIC_ADDRESS_DUPLICATE_SUBDOMAIN'],
+    ['conflict', 'PUBLIC_ADDRESS_CONFLICT'],
+    ['zone_unreachable', 'PUBLIC_ADDRESS_ZONE_UNAVAILABLE'],
+    ['invalid_subdomain', 'PUBLIC_ADDRESS_INVALID_SUBDOMAIN'],
+  ] as const)('cloudflare mode → names a %s refusal instead of DNS propagating', async (refusal, errorCode) => {
     ctx.mockApp.exposureMode = 'cloudflare';
     vi.mocked(resolveAtZoneNameservers).mockResolvedValue({ kind: 'nxdomain' });
-    ctx.exposureSync.publicDnsRefusalFor.mockReturnValue('duplicate_subdomain');
+    ctx.exposureSync.publicDnsRefusalFor.mockReturnValue(refusal);
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result).toMatchObject({ available: false, stage: 'error', errorCode, resolvable: false });
+    expect(result.reason).not.toBe('NETWORK_ERROR');
+  });
+
+  it('cloudflare mode → a refusal that passes on its own keeps the probe verdict', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    vi.mocked(resolveAtZoneNameservers).mockResolvedValue({ kind: 'nxdomain' });
+    ctx.exposureSync.publicDnsRefusalFor.mockReturnValue('api_error');
 
     const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
 
     expect(result).toMatchObject({ errorCode: 'DNS_NOT_FOUND', stage: 'propagating' });
+  });
+
+  // The Portal refused the platform hostname, and the probe asked about the custom one.
+  it('cloudflare mode → a refusal does not explain a custom hostname that has no record yet', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    Object.assign(ctx.mockApp, { customDomain: 'app.customer.example' });
+    vi.mocked(resolveAtZoneNameservers).mockResolvedValue({ kind: 'nxdomain' });
+    ctx.exposureSync.publicDnsRefusalFor.mockReturnValue('conflict');
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(ctx.exposureSync.publicDnsRefusalFor).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ errorCode: 'DNS_NOT_FOUND', stage: 'propagating', appUrl: 'https://app.customer.example' });
   });
 
   // The name resolves and the tunnel answered, so the refusal doesn't explain it. Its code keeps the
