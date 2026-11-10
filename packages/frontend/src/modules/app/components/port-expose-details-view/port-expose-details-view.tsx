@@ -15,7 +15,7 @@ import { AppAccessPoints, buildAppAccessPoints, buildTailscaleServedPortSet } fr
 import { AppHeaderStat } from '@/modules/app/components/app-header-stat/app-header-stat';
 import { UninstallDialog } from '@/modules/app/components/dialogs/uninstall-dialog/uninstall-dialog';
 import { PortExposeSettingsDialog } from '@/modules/app/components/port-expose-settings-dialog/port-expose-settings-dialog';
-import { portExposeOpenTo } from '@/modules/app/helpers/port-expose-open-to';
+import { PORT_EXPOSE_OPEN_TO_COPY, portExposeOpenTo } from '@/modules/app/helpers/port-expose-open-to';
 import type { AppDetails, AppInfo } from '@/types/app.types';
 import '../../containers/app-actions/app-actions.css';
 
@@ -122,7 +122,7 @@ export const PortExposeDetailsView = ({ app, info }: Props) => {
                     value={
                       <span className="inline-flex items-center gap-1.5">
                         <LockOpen className="size-3.5 shrink-0 text-warning" aria-hidden />
-                        {t(openTo === 'anyone' ? 'PORT_EXPOSE_OPEN_TO_ANYONE' : 'PORT_EXPOSE_OPEN_TO_TAILNET')}
+                        {t(PORT_EXPOSE_OPEN_TO_COPY[openTo].label)}
                       </span>
                     }
                     label={t('PORT_EXPOSE_NO_HUB_SIGN_IN')}

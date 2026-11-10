@@ -7,7 +7,8 @@ import { Tooltip } from 'react-tooltip';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { client } from '@/api-client/client.gen';
-import { getAppQueryKey, getDomainsOptions } from '@/api-client/@tanstack/react-query.gen';
+import { getAppQueryKey, getDomainsOptions, getInstalledAppsQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import type { UpdatePortExposeAppDto } from '@/api-client/types.gen';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input/Input';
@@ -31,8 +32,6 @@ type FormValues = {
   localSubdomain?: string;
   publicDomain?: string;
 };
-
-type PortExposeUpdateBody = { port: number; exposureMode: ExposureMode; localSubdomain?: string; publicDomain?: string };
 
 const EMPTY_AVAILABLE_DOMAINS: AvailableDomain[] = [];
 
@@ -159,10 +158,10 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
   });
 
   // A move onto Public web waiting on the person to agree that anyone with the address can open the port.
-  const [publicPortBody, setPublicPortBody] = useState<PortExposeUpdateBody | null>(null);
+  const [publicPortBody, setPublicPortBody] = useState<UpdatePortExposeAppDto | null>(null);
 
   const updatePortExpose = useMutation({
-    mutationFn: async (body: PortExposeUpdateBody) => {
+    mutationFn: async (body: UpdatePortExposeAppDto) => {
       const { error } = await client.patch({
         url: `/api/custom-apps/port-expose/${info.urn}`,
         body,
@@ -173,6 +172,8 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
       }
     },
     onSuccess: async () => {
+      // Home's tile says who can open the port, and the PATCH sends no event that would refresh it.
+      void queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
       await queryClient.invalidateQueries({ queryKey: getAppQueryKey({ path: { urn: info.urn } }) });
       toast.success(t('PORT_EXPOSE_SETTINGS_SUCCESS'));
       onClose();
@@ -245,14 +246,15 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
       }
     }
 
-    const body: PortExposeUpdateBody = {
+    const body: UpdatePortExposeAppDto = {
       port,
       exposureMode,
       localSubdomain: exposureMode === 'cloudflare' ? sanitizeAppSubdomain(values.localSubdomain || defaultAppSubdomain) : undefined,
       publicDomain: exposureMode === 'cloudflare' ? publicDomain : undefined,
     };
 
-    // Asked as on Expose a port, when the port moves onto Public web. One already there was asked then.
+    // Asked as on Expose a port, when the port moves onto Public web. A port already there stays where
+    // it is, and its page and tile say it is open.
     if (exposureMode === 'cloudflare' && app.exposureMode !== 'cloudflare') {
       setPublicPortBody(body);
       return;

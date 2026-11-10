@@ -9,6 +9,7 @@ import { Link } from 'react-router';
 import { Tooltip } from 'react-tooltip';
 import { client } from '@/api-client/client.gen';
 import { getDomainsOptions } from '@/api-client/@tanstack/react-query.gen';
+import type { CreatePortExposeAppDto } from '@/api-client/types.gen';
 import { Input } from '@/components/ui/Input/Input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -34,8 +35,6 @@ type FormValues = {
   localSubdomain?: string;
   publicDomain?: string;
 };
-
-type PortExposeBody = { name: string; port: number; exposureMode: ExposureMode; localSubdomain?: string; publicDomain?: string };
 
 const EMPTY_AVAILABLE_DOMAINS: AvailableDomain[] = [];
 
@@ -144,10 +143,10 @@ export default function PortExposeCreatePage() {
   });
 
   // A Public web port waiting on the person to agree that anyone with the address can open it.
-  const [publicPortBody, setPublicPortBody] = useState<PortExposeBody | null>(null);
+  const [publicPortBody, setPublicPortBody] = useState<CreatePortExposeAppDto | null>(null);
 
   const createPortExpose = useMutation({
-    mutationFn: async (body: PortExposeBody) => {
+    mutationFn: async (body: CreatePortExposeAppDto) => {
       const { data, error } = await client.post({
         url: '/api/custom-apps/port-expose',
         body,
@@ -250,7 +249,7 @@ export default function PortExposeCreatePage() {
       }
     }
 
-    const body: PortExposeBody = {
+    const body: CreatePortExposeAppDto = {
       name: displayName,
       port,
       exposureMode,

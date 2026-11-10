@@ -1,5 +1,6 @@
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 interface Props {
@@ -19,6 +20,12 @@ interface Props {
  */
 export const PublicPortConfirmDialog = ({ isOpen, port, onConfirm, onCancel }: Props) => {
   const { t } = useTranslation();
+  // The last port asked about. The parent clears `port` as it closes the dialog, and the title would
+  // read "Open port  to anyone?" for the length of the fade-out.
+  const [shownPort, setShownPort] = useState(port);
+  if (port !== null && port !== shownPort) {
+    setShownPort(port);
+  }
 
   return (
     <Dialog
@@ -31,7 +38,7 @@ export const PublicPortConfirmDialog = ({ isOpen, port, onConfirm, onCancel }: P
     >
       <DialogContent type="warning" size="sm" data-testid="public-port-confirm">
         <DialogHeader>
-          <DialogTitle>{t('PORT_EXPOSE_PUBLIC_CONFIRM_TITLE', { port: port ?? '' })}</DialogTitle>
+          <DialogTitle>{t('PORT_EXPOSE_PUBLIC_CONFIRM_TITLE', { port: shownPort ?? '' })}</DialogTitle>
         </DialogHeader>
         <DialogDescription className="space-y-2">
           <p>{t('PORT_EXPOSE_PUBLIC_CONFIRM_DESCRIPTION')}</p>

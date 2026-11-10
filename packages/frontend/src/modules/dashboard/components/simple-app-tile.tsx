@@ -4,7 +4,7 @@ import { restartCanApply } from '@/lib/cloudflare-api';
 import { InstallRetryButton } from '@/modules/app/components/install-retry-button/install-retry-button';
 import { Loader2, LockOpen, PowerOff, RotateCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { PortExposeOpenTo } from '@/modules/app/helpers/port-expose-open-to';
+import { PORT_EXPOSE_OPEN_TO_COPY, type PortExposeOpenTo } from '@/modules/app/helpers/port-expose-open-to';
 import type { AppStatus } from '@/types/app.types';
 
 const STOPPED_STATUSES: AppStatus[] = ['stopped', 'missing'];
@@ -60,9 +60,7 @@ export const SimpleAppTile = ({
    * A badge that asks for pointless work is how the last one came to be ignored.
    */
   const showPendingRestart = Boolean(pendingRestart) && restartCanApply(status);
-  const openLabel = openWithoutSignIn
-    ? t(openWithoutSignIn === 'anyone' ? 'PORT_EXPOSE_OPEN_TO_ANYONE_NO_SIGN_IN' : 'PORT_EXPOSE_OPEN_TO_TAILNET_NO_SIGN_IN')
-    : '';
+  const openLabel = openWithoutSignIn ? t(PORT_EXPOSE_OPEN_TO_COPY[openWithoutSignIn].tileLabel) : '';
   const pendingRestartLabel = showPendingRestart
     ? customDomainAwaitingRestart
       ? t('MY_APPS_PENDING_RESTART_CUSTOM_DOMAIN', { domain: customDomainAwaitingRestart })

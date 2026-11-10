@@ -7,7 +7,7 @@ import { getServeStatusOptions } from '@/api-client/@tanstack/react-query.gen';
 import { tailscaleStatusOptions } from '@/lib/api-routes/named-status-routes';
 import { openExternal } from '@/lib/helpers/open-external';
 import { cn } from '@/lib/utils';
-import type { PortExposeOpenTo } from '@/modules/app/helpers/port-expose-open-to';
+import { PORT_EXPOSE_OPEN_TO_COPY, type PortExposeOpenTo } from '@/modules/app/helpers/port-expose-open-to';
 import type { AppDetails, AppInfo } from '@/types/app.types';
 import { hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
 import { buildPublicWebIdentity, normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
@@ -390,12 +390,6 @@ interface Props {
   openWithoutSignIn?: PortExposeOpenTo | null;
 }
 
-/** The address that reaches an exposed port with no Hub sign-in, for each kind of open port. */
-const OPEN_WITHOUT_SIGN_IN = {
-  anyone: { key: 'public', note: 'PORT_EXPOSE_OPEN_TO_ANYONE_DETAIL' },
-  tailnet: { key: 'vpn', note: 'PORT_EXPOSE_OPEN_TO_TAILNET_DETAIL' },
-} as const satisfies Record<PortExposeOpenTo, { key: AppAccessPoint['key']; note: string }>;
-
 export const AppAccessPoints = ({ app, info, publicAddressRefusal = null, openWithoutSignIn = null }: Props) => {
   const { t } = useTranslation();
   const { userSettings, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn, tailscaleHttpsEnabled } = useAppContext();
@@ -493,8 +487,8 @@ export const AppAccessPoints = ({ app, info, publicAddressRefusal = null, openWi
             }
             const qrRefusalId = `${idBase}-${entry.key}-qr-refusal`;
             const openNote =
-              openWithoutSignIn && isActive && OPEN_WITHOUT_SIGN_IN[openWithoutSignIn].key === entry.key
-                ? OPEN_WITHOUT_SIGN_IN[openWithoutSignIn].note
+              openWithoutSignIn && isActive && PORT_EXPOSE_OPEN_TO_COPY[openWithoutSignIn].accessPoint === entry.key
+                ? PORT_EXPOSE_OPEN_TO_COPY[openWithoutSignIn].detail
                 : null;
 
             return (

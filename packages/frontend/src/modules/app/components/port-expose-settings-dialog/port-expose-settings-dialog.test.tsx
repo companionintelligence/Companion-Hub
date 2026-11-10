@@ -48,6 +48,7 @@ const saved = vi.fn();
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getDomainsOptions: () => ({ queryKey: ['getDomains'] }),
   getAppQueryKey: () => ['getApp'],
+  getInstalledAppsQueryKey: () => ['getInstalledApps'],
 }));
 
 vi.mock('@/api-client/client.gen', () => ({ client: { patch: vi.fn() } }));
@@ -180,6 +181,20 @@ describe('PortExposeSettingsDialog', () => {
       expect(saved).not.toHaveBeenCalled();
       expect(onClose).not.toHaveBeenCalled();
       expect(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' })).toHaveClass('bg-primary');
+    });
+
+    it('closes only the question on Escape', async () => {
+      const onClose = vi.fn();
+      renderDialog({ exposureMode: 'local' }, onClose);
+
+      moveToWeb();
+      await save();
+      fireEvent.keyDown(within(publicPortQuestion()).getByRole('button', { name: 'COMMON_CANCEL' }), { key: 'Escape' });
+
+      await waitFor(() => expect(screen.queryByTestId('public-port-confirm')).not.toBeInTheDocument());
+      expect(saved).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'COMMON_SAVE' })).toBeInTheDocument();
     });
 
     it('saves the move once the person agrees', async () => {
