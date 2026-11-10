@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils';
 import type { AppDetails, AppInfo } from '@/types/app.types';
 import { hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
 import { buildPublicWebIdentity, normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
-import { publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm } from '@ci-hub/common/types';
+import { publishesHostPort, publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm, storedHostPortForm } from '@ci-hub/common/types';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, Copy, ExternalLink, Globe, Lock, MonitorSmartphone, QrCode as QrCodeIcon } from 'lucide-react';
 import { useId, useMemo, useState } from 'react';
@@ -169,11 +169,16 @@ export function isTailscalePortPublished(port: number | null | undefined, served
 }
 
 export function hasDirectLocalAccess(
-  record: { exposureMode?: string | null; exposedLocal?: boolean; openPort?: boolean },
+  record: { config?: unknown; exposureMode?: string | null; exposedLocal?: boolean; openPort?: boolean },
   options: { hasHostPort: boolean; dynamicConfig: boolean },
 ): boolean {
   if (!options.hasHostPort) return false;
 
+  // Compose binds the host port from the stored install form, so a record that carries it is judged by compose's rule.
+  const form = storedHostPortForm(record);
+  if (form) return publishesHostPort(form);
+
+  // A guest's record carries no form, and its row's `exposedLocal` is true for any exposable app installed without exposure settings.
   const mode = record.exposureMode;
   // Tailscale-only installs may skip publishing a host port unless explicitly requested.
   if (mode === 'tailscale') return Boolean(record.openPort);
