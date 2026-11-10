@@ -182,7 +182,8 @@ describe('McpSettingsContainer', () => {
     expect(screen.queryByTestId('mcp-installed-error')).toBeNull();
   });
 
-  // CI-Hub#2380: with MCP_ENABLED=false the Hub answers the status with `enabled: false` and no server.
+  // CI-Hub#2380: with MCP_ENABLED=false the Hub answers the status with `enabled: false`. The body here
+  // leaves out `server` on purpose: once `enabled` is false this screen reads nothing else.
   it('shows Disabled and the setup hint when MCP is off', async () => {
     mockApiFetch.mockImplementation((url: string) => {
       if (url === '/api/mcp-admin/status') {

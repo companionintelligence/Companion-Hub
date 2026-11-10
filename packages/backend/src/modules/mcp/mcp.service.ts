@@ -1,6 +1,7 @@
 import { Injectable, Optional, type OnApplicationBootstrap } from '@nestjs/common';
 import type { Implementation, ServerCapabilities } from '@modelcontextprotocol/sdk/types.js';
 import { LoggerService } from '@/core/logger/logger.service';
+import { HUB_MCP_SERVER_INFO } from './mcp-protocol';
 import { McpToolRegistry } from './mcp-tool-registry.service';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 
@@ -26,7 +27,7 @@ export class McpService implements OnApplicationBootstrap {
 
   /** Server identity advertised in the MCP `initialize` handshake. */
   getServerInfo(): Implementation {
-    return { name: 'ci-hub', version: '1.0.0' };
+    return { ...HUB_MCP_SERVER_INFO };
   }
 
   /** Capabilities advertised at handshake. The Hub exposes tools only (no resources/prompts). */
