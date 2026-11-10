@@ -1057,7 +1057,7 @@
   "SETTINGS_APPSTORES_SUBTITLE": "Add or remove app stores",
   "SETTINGS_APPSTORES_WARNING": "Make sure you trust the appstores you add!",
   "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING": "Allow anonymous error monitoring",
-  "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING_HINT": "Error monitoring is used to track errors and improve Companion Hub. Keep this option enabled to help us improve Companion Hub.",
+  "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING_HINT": "Off unless you turn it on. When on, anonymous crash reports, performance data and masked session recordings go to the Companion Hub team to help us fix bugs.",
   "SETTINGS_GENERAL_APPS_REPO": "Apps repo URL",
   "SETTINGS_GENERAL_APPS_REPO_HINT": "URL to the apps repository.",
   "SETTINGS_GENERAL_GUEST_DASHBOARD": "Enable guest dashboard",
