@@ -8,6 +8,7 @@ import {
   customAppComposeSchema,
   customAppComposeFormSchema,
   collectServiceSecurityViolations,
+  saveViolationsFor,
   TRUSTED_APP_SECURITY_ALLOWLIST,
 } from '../dynamic-compose.js';
 import { parseInstalledComposeJson } from '../utils/convert-legacy-schema.js';
@@ -1700,6 +1701,43 @@ describe('customAppComposeSchema (what saving a custom app accepts)', () => {
   it('reports privileged once, as the schema already did', () => {
     const { error } = customAppComposeSchema.safeParse(compose({ privileged: true }));
     expect(error?.issues.map((issue) => issue.message)).toEqual(['CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED']);
+  });
+
+  it('reports a denied host path once', () => {
+    const { error } = customAppComposeSchema.safeParse(compose({ volumes: [{ hostPath: '/etc', containerPath: '/x' }] }));
+    expect(error?.issues).toEqual([
+      expect.objectContaining({ message: 'CUSTOM_APP_ERROR_HOST_PATH_DENIED', path: ['services', 0, 'volumes', 0, 'hostPath'] }),
+    ]);
+  });
+
+  it('reports an invalid volume name once', () => {
+    const { error } = customAppComposeSchema.safeParse(compose({ volumes: [{ volumeName: '/var/run/docker.sock', containerPath: '/x' }] }));
+    expect(error?.issues).toEqual([
+      expect.objectContaining({ message: 'CUSTOM_APP_ERROR_VOLUME_NAME_INVALID', path: ['services', 0, 'volumes', 0, 'volumeName'] }),
+    ]);
+  });
+
+  it.each([
+    ['a denied host path', { hostPath: '/etc', containerPath: '/x' }, 'CUSTOM_APP_ERROR_HOST_PATH_DENIED', 'hostPath'],
+    ['an invalid volume name', { volumeName: '/var/run/docker.sock', containerPath: '/x' }, 'CUSTOM_APP_ERROR_VOLUME_NAME_INVALID', 'volumeName'],
+  ])('reports %s in an override once', (_name, volume, message, field) => {
+    const { error } = customAppComposeSchema.safeParse({
+      ...compose({}),
+      overrides: [{ architecture: 'arm64', services: [{ name: 'web', volumes: [volume] }] }],
+    });
+    expect(error?.issues).toEqual([expect.objectContaining({ message, path: ['overrides', 0, 'services', 0, 'volumes', 0, field] })]);
+  });
+
+  it('drops only the reports the schema already made, so a new rule on the same field is still refused', () => {
+    const newRule = { path: ['volumes', 0, 'hostPath'], message: 'CUSTOM_APP_ERROR_SOME_NEW_RULE' };
+    const repeated = { path: ['volumes', 0, 'hostPath'], message: 'CUSTOM_APP_ERROR_HOST_PATH_DENIED' };
+    expect(saveViolationsFor({ volumes: [{ hostPath: '/etc' }] }, [newRule, repeated])).toEqual([newRule]);
+  });
+
+  it('keeps a new rule on privileged, and drops the repeat', () => {
+    const newRule = { path: ['privileged'], message: 'CUSTOM_APP_ERROR_SOME_NEW_RULE' };
+    const repeated = { path: ['privileged'], message: 'CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED' };
+    expect(saveViolationsFor({ privileged: true }, [newRule, repeated])).toEqual([newRule]);
   });
 
   it('still accepts what Start accepts', () => {
