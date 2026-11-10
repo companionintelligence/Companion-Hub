@@ -95,12 +95,20 @@ const ENGINE_UNREACHABLE =
 const embeddingBackendFor = (backend: InferenceBackendType): InferenceBackendType =>
   backend === 'omlx' || backend === 'ollama' ? backend : EMBEDDING_INFERENCE_BACKEND;
 
-/** The catalog model an id names: its catalog id, its engine id, or Lemonade's `user.` spelling of that. */
+/**
+ * The catalog model an id names: its catalog id, its engine id, Lemonade's `user.` spelling of that, or
+ * Ollama's `name:latest` for a model pulled without a tag, which the catalog spells `name`. Taken for an
+ * unknown chat model, `nomic-embed-text:latest` became the chat model the next Save wrote, and a page
+ * that read it back as a stored choice kept writing it.
+ */
 const catalogModelFor = (models: Iterable<CuratedModel>, id: string): CuratedModel | undefined => {
+  const untagged = id.endsWith(':latest') ? id.slice(0, -':latest'.length) : null;
+  let folded: CuratedModel | undefined;
   for (const model of models) {
     if (model.id === id || model.backendModelId === id || `user.${model.backendModelId}` === id) return model;
+    if (!folded && untagged && model.backendModelId === untagged) folded = model;
   }
-  return undefined;
+  return folded;
 };
 
 /**
@@ -623,7 +631,10 @@ export const AiSettingsContainer = () => {
       await loadInferenceModel(engineId, selectedBackend);
       const catalogId = catalogIdForEngineModel(engineId);
       const curated = catalogId ? availableModelById.get(catalogId) : undefined;
-      if (!curated || curated.modality === 'llm') {
+      // An embedder (or any catalog model that does not chat) is only loaded, under whichever name the
+      // engine lists it (see catalogModelFor).
+      const chatModel = !curated || curated.modality === 'llm';
+      if (chatModel) {
         const chatId = catalogId ?? engineId;
         setChosenChatModelId(chatId);
         setSelectedModelIds((prev) => {
@@ -636,7 +647,11 @@ export const AiSettingsContainer = () => {
       }
       await fetchRuntimeModels(selectedBackend);
       await fetchTrackedModels();
-      toast.success(t('AI_SETTINGS_LOADED', { model: curated?.displayName ?? engineId }));
+      toast.success(
+        chatModel
+          ? t('AI_SETTINGS_LOADED', { model: curated?.displayName ?? engineId })
+          : t('AI_SETTINGS_LOADED_NOT_CHAT', { model: curated.displayName }),
+      );
     } catch (e) {
       toast.error(t('AI_SETTINGS_MODEL_LOAD_FAILED', { error: (e as Error).message }));
     } finally {
@@ -1056,7 +1071,6 @@ export const AiSettingsContainer = () => {
           <ResourceSummaryBar
             selectedModels={selectedModels}
             installedCatalogIds={installedCatalogIds}
-            backend={selectedBackend}
             availableStorageMb={availableStorageMb}
             totalMemoryMb={inferenceMemory.totalMb}
             availableMemoryMb={inferenceMemory.freeMb}

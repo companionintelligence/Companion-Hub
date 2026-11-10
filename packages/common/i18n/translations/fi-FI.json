@@ -520,6 +520,8 @@
   "MY_APPS_UPDATE_AVAILABLE": "Update available",
   "NETWORK_ERROR_NO_AVAILABLE_SUBNETS": "No available subnets left",
   "NO": "No",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_one": "{{count}} malli ladattu",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_other": "{{count}} mallia ladattu",
   "RESTORE_APPS_ACTION_INSTALL": "Lisää asennus jonoon",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Jo käynnissä",
   "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Ohitettu. ei vastaavaa app store -listaa",

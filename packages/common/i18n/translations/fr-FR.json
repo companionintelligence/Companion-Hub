@@ -520,6 +520,8 @@
   "MY_APPS_UPDATE_AVAILABLE": "Mise à jour disponible",
   "NETWORK_ERROR_NO_AVAILABLE_SUBNETS": "Aucun sous-réseau disponible",
   "NO": "Non",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_one": "{{count}} modèle téléchargé",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_other": "{{count}} modèles téléchargés",
   "RESTORE_APPS_ACTION_INSTALL": "Mettre l'installation en file d'attente",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Déjà en cours d'exécution",
   "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Ignoré. aucune fiche correspondante dans l'app store",

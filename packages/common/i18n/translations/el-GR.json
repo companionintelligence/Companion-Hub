@@ -520,6 +520,8 @@
   "MY_APPS_UPDATE_AVAILABLE": "Διαθέσιμη ενημέρωση",
   "NETWORK_ERROR_NO_AVAILABLE_SUBNETS": "No available subnets left",
   "NO": "Όχι",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_one": "{{count}} μοντέλο έχει ληφθεί",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_other": "{{count}} μοντέλα έχουν ληφθεί",
   "RESTORE_APPS_ACTION_INSTALL": "Προσθήκη εγκατάστασης στην ουρά",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Εκτελείται ήδη",
   "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Παραλείφθηκε. καμία αντίστοιχη καταχώριση app store",

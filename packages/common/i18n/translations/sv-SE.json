@@ -520,6 +520,8 @@
   "MY_APPS_UPDATE_AVAILABLE": "Ny version tillgänglig",
   "NETWORK_ERROR_NO_AVAILABLE_SUBNETS": "Inga tillgängliga subnät kvar",
   "NO": "Nej",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_one": "{{count}} modell nedladdad",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_other": "{{count}} modeller nedladdade",
   "RESTORE_APPS_ACTION_INSTALL": "Köa installation",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Körs redan",
   "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Hoppades över. ingen matchande app store-post",

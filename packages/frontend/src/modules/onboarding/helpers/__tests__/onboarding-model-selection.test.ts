@@ -2,12 +2,18 @@ import type { CuratedModel } from '@ci-hub/common/types';
 import { describe, expect, it } from 'vitest';
 import { computeSelectionBudget, inferenceMemoryMb, isSelectionWithinBudget } from '../onboarding-model-selection';
 
-const makeModel = (id: string, diskMb: number, memoryFootprintMb: number): CuratedModel =>
+const makeModel = (
+  id: string,
+  diskMb: number,
+  memoryFootprintMb: number,
+  backend: CuratedModel['backend'] = 'ollama',
+  modality: CuratedModel['modality'] = 'llm',
+): CuratedModel =>
   ({
     id,
-    backend: 'ollama',
+    backend,
     backendModelId: id,
-    modality: 'llm',
+    modality,
     purpose: 'general',
     displayName: id,
     description: id,
@@ -25,10 +31,28 @@ describe('computeSelectionBudget', () => {
     expect(result.newMemoryMb).toBe(0);
     expect(result.installedMemoryMb).toBe(20192);
     expect(result.overDisk).toBe(false);
-    expect(result.memoryNote).toContain('already in Ollama');
-    // The note names the engine that was selected, not Ollama regardless.
-    expect(computeSelectionBudget(selected, ['phi-4-mini', 'qwen-coder'], 1024, 'Lemonade').memoryNote).toContain('already in Lemonade');
+    expect(result.memoryNote).toBe('2 selected models are already in Ollama. Nothing new to download.');
+    // The note names the models' engine, not Ollama regardless.
+    const onLemonade = [makeModel('qwen3-4b-lemonade', 2048, 4096, 'lemonade')];
+    expect(computeSelectionBudget(onLemonade, ['qwen3-4b-lemonade'], 1024).memoryNote).toBe(
+      'This model is already in Lemonade. Nothing new to download.',
+    );
     expect(isSelectionWithinBudget(selected, ['phi-4-mini', 'qwen-coder'], 1024)).toBe(true);
+  });
+
+  it("names each model's own engine: with vLLM selected the embedders are Ollama's", () => {
+    // The Hub lists Ollama's installed embedders with vLLM's and oMLX's models, since embeddings stay on Ollama.
+    const nomic = makeModel('nomic-embed-text', 274, 500, 'ollama', 'embedding');
+    const gemma = makeModel('embeddinggemma', 622, 700, 'ollama', 'embedding');
+    const qwen = makeModel('qwen3-8b-vllm', 16000, 18000, 'vllm');
+
+    expect(computeSelectionBudget([nomic], ['nomic-embed-text'], 1024).memoryNote).toBe('This model is already in Ollama. Nothing new to download.');
+    expect(computeSelectionBudget([qwen, nomic], ['qwen3-8b-vllm', 'nomic-embed-text'], 1024).memoryNote).toBe(
+      '2 selected models are already in vLLM and Ollama. Nothing new to download.',
+    );
+    expect(computeSelectionBudget([nomic, gemma], ['nomic-embed-text'], 50000).memoryNote).toBe(
+      'One selected model (500 MB runtime footprint) is already in Ollama and will not be downloaded again.',
+    );
   });
 
   it('judges a selection by disk alone: a model larger than the free inference memory is still installable', () => {

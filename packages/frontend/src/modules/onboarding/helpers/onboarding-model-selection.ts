@@ -1,4 +1,5 @@
 import type { CuratedModel } from '@ci-hub/common/types';
+import { backendDisplayName } from '@/lib/inference/backend-names';
 
 export interface SelectionBudgetResult {
   downloadDiskMb: number;
@@ -21,6 +22,15 @@ function formatSizeMb(mb: number): string {
 }
 
 /**
+ * The engines `models` are in, as the note names them: "Ollama", or "vLLM and Ollama". Each model's
+ * own engine, not the selected one: with vLLM or oMLX selected the embedders the Hub lists are
+ * Ollama's, and the note called Nomic Embed Text "already in vLLM".
+ */
+function engineNames(models: CuratedModel[]): string {
+  return [...new Set(models.map((m) => backendDisplayName(m.backend)))].join(' and ');
+}
+
+/**
  * What a selection costs in DISK, plus the note about models that need no download. Nothing here
  * judges inference memory against the selection: downloading a model touches no GPU, and loading
  * one is the router's job — it fits, evicts or refuses per load (see the Hub's `loadTrackedModel`).
@@ -31,8 +41,6 @@ export function computeSelectionBudget(
   selectedModels: CuratedModel[],
   installedCatalogIds: string[],
   availableDiskMb: number,
-  /** The selected engine, as the notes should name it ("already in Lemonade"). */
-  backendName = 'Ollama',
 ): SelectionBudgetResult {
   const installed = new Set(installedCatalogIds);
   const modelsNeedingDownload = selectedModels.filter((m) => !installed.has(m.id));
@@ -46,17 +54,18 @@ export function computeSelectionBudget(
   const overDisk = downloadDiskMb > availableDiskMb;
 
   let memoryNote: string | undefined;
+  const engines = engineNames(modelsAlreadyInstalled);
   if (modelsAlreadyInstalled.length > 0 && modelsNeedingDownload.length === 0) {
     memoryNote =
       modelsAlreadyInstalled.length === 1
-        ? `This model is already in ${backendName}. Nothing new to download.`
-        : `${modelsAlreadyInstalled.length} selected models are already in ${backendName}. Nothing new to download.`;
+        ? `This model is already in ${engines}. Nothing new to download.`
+        : `${modelsAlreadyInstalled.length} selected models are already in ${engines}. Nothing new to download.`;
   } else if (installedMemoryMb > 0) {
     const installedCount = modelsAlreadyInstalled.length;
     memoryNote =
       installedCount === 1
-        ? `One selected model (${formatSizeMb(installedMemoryMb)} runtime footprint) is already in ${backendName} and will not be downloaded again.`
-        : `${installedCount} selected models (${formatSizeMb(installedMemoryMb)} combined runtime footprint) are already in ${backendName} and will not be downloaded again.`;
+        ? `One selected model (${formatSizeMb(installedMemoryMb)} runtime footprint) is already in ${engines} and will not be downloaded again.`
+        : `${installedCount} selected models (${formatSizeMb(installedMemoryMb)} combined runtime footprint) are already in ${engines} and will not be downloaded again.`;
   }
 
   let diskReason: string | undefined;

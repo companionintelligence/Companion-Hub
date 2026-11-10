@@ -520,6 +520,8 @@
   "MY_APPS_UPDATE_AVAILABLE": "Update available",
   "NETWORK_ERROR_NO_AVAILABLE_SUBNETS": "No available subnets left",
   "NO": "No",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_one": "{{count}} model downloadet",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_other": "{{count}} modeller downloadet",
   "RESTORE_APPS_ACTION_INSTALL": "Sæt installation i kø",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Kører allerede",
   "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Sprunget over. ingen matchende app store-opslag",

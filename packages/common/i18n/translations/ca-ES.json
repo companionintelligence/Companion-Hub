@@ -520,6 +520,8 @@
   "MY_APPS_UPDATE_AVAILABLE": "Actualització disponible",
   "NETWORK_ERROR_NO_AVAILABLE_SUBNETS": "No available subnets left",
   "NO": "No",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_one": "{{count}} model baixat",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_other": "{{count}} models baixats",
   "RESTORE_APPS_ACTION_INSTALL": "Posar a la cua d'instal·lació",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Ja en execució",
   "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Omesa. cap llistat coincident a la botiga d'aplicacions",

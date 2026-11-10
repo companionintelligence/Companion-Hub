@@ -1,13 +1,10 @@
-import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
-import { backendDisplayName } from '@/lib/inference/backend-names';
+import type { CuratedModel } from '@ci-hub/common/types';
 import { computeSelectionBudget } from '../../helpers/onboarding-model-selection';
 import { useTranslation } from 'react-i18next';
 
 interface ResourceSummaryBarProps {
   selectedModels: CuratedModel[];
   installedCatalogIds: string[];
-  /** The selected engine, named in the notes ("already installed in Lemonade"). */
-  backend: InferenceBackendType;
   /** Available disk space in MB — the bar tracks new download size only. */
   availableStorageMb: number;
   /**
@@ -27,14 +24,12 @@ function formatSize(mb: number): string {
 export const ResourceSummaryBar = ({
   selectedModels,
   installedCatalogIds,
-  backend,
   availableStorageMb,
   totalMemoryMb,
   availableMemoryMb,
 }: ResourceSummaryBarProps) => {
   const { t } = useTranslation();
-  const backendName = backendDisplayName(backend);
-  const budget = computeSelectionBudget(selectedModels, installedCatalogIds, availableStorageMb, backendName);
+  const budget = computeSelectionBudget(selectedModels, installedCatalogIds, availableStorageMb);
   const diskPercent = availableStorageMb > 0 ? Math.min(100, Math.round((budget.downloadDiskMb / availableStorageMb) * 100)) : 0;
   const usedMemoryMb = Math.max(0, totalMemoryMb - availableMemoryMb);
   const memoryPercent = totalMemoryMb > 0 ? Math.min(100, Math.round((usedMemoryMb / totalMemoryMb) * 100)) : 0;

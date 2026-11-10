@@ -1028,6 +1028,7 @@ describe('AiSettingsContainer', () => {
     await waitFor(() => expect(screen.getByTestId('load-model-Qwen3-Coder-30B')).toBeInTheDocument());
     await user.click(screen.getByTestId('load-model-Qwen3-Coder-30B'));
     await waitFor(() => expect(loadInferenceModel).toHaveBeenCalledWith('Qwen3-Coder-30B', 'ollama'));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Qwen3-Coder-30B loaded. Save to make it the chat model.'));
 
     await user.click(screen.getByTestId('ai-settings-save-btn'));
     await user.click(screen.getByTestId('ai-settings-confirm-btn'));
@@ -1035,6 +1036,59 @@ describe('AiSettingsContainer', () => {
     await waitFor(() =>
       expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ backend: 'ollama', model: 'Qwen3-Coder-30B' })),
     );
+  });
+
+  // Ollama lists a model pulled without a tag as `name:latest`. Taken for a chat model the catalog
+  // does not know, the embedder became the chat model the next Save wrote.
+  it.each([
+    ['its catalog name', 'nomic-embed-text'],
+    ["Ollama's :latest name", 'nomic-embed-text:latest'],
+  ])('loads an embedder listed under %s without making it the chat model', async (_name, engineId) => {
+    const nomic = { ...llm('nomic', 'ollama'), backendModelId: 'nomic-embed-text', modality: 'embedding', displayName: 'Nomic Embed Text' };
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1', 'nomic'], [llm('o1', 'ollama'), nomic]));
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', preferredModel: 'o1', preferredEmbeddingModel: 'nomic' });
+    fetchInferenceRuntimeModels.mockResolvedValue({
+      backend: 'ollama',
+      discoveryUnavailable: false,
+      models: [{ id: engineId, name: engineId, state: 'available', resident: false }],
+    });
+    loadInferenceModel.mockResolvedValue(undefined);
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId(`load-model-${engineId}`)).toBeInTheDocument());
+    await user.click(screen.getByTestId(`load-model-${engineId}`));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Nomic Embed Text loaded.'));
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ model: 'o1', embeddingModel: 'nomic' })));
+  });
+
+  it("stops keeping an embedder an earlier Save wrote as the chat model under Ollama's :latest name", async () => {
+    const nomic = { ...llm('nomic', 'ollama'), backendModelId: 'nomic-embed-text', modality: 'embedding', displayName: 'Nomic Embed Text' };
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1', 'nomic'], [llm('o1', 'ollama'), nomic]));
+    fetchInferencePreferences.mockResolvedValue({
+      preferredBackend: 'ollama',
+      preferredModel: 'nomic-embed-text:latest',
+      preferredEmbeddingModel: 'nomic',
+    });
+    fetchInferenceRuntimeModels.mockResolvedValue({
+      backend: 'ollama',
+      discoveryUnavailable: false,
+      models: [{ id: 'nomic-embed-text:latest', name: 'nomic-embed-text:latest', state: 'available', resident: false }],
+    });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('load-model-nomic-embed-text:latest')).toBeInTheDocument());
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ model: 'o1', embeddingModel: 'nomic' })));
   });
 
   it('warns that an emptying save unpins every pinned model', async () => {
