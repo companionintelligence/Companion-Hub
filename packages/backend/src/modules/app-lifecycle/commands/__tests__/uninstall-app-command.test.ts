@@ -301,7 +301,7 @@ describe('UninstallAppCommand', () => {
 
     const result = await command.execute(appUrn);
 
-    expect(dockerService.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn);
+    expect(dockerService.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, undefined);
     expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
   });
 
@@ -311,7 +311,7 @@ describe('UninstallAppCommand', () => {
 
     const result = await command.execute(appUrn);
 
-    expect(dockerService.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn);
+    expect(dockerService.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, undefined);
     expect(result).toEqual({
       success: true,
       message: `App ${appUrn} uninstalled, but its app data could not be fully removed and may leave a remnant on disk.`,

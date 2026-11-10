@@ -4,6 +4,7 @@ import { InstallAppCommand, extractComposeImages, mapPullProgressToInstallProgre
 import { withMovedPort } from '../main-host-port';
 import type { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
+import { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
@@ -136,6 +137,7 @@ describe('InstallAppCommand — pull policy', () => {
       imageIdsLocally: vi.fn().mockResolvedValue(new Set()),
       imageTagsLocally: vi.fn().mockResolvedValue([]),
       removeAppImages: vi.fn().mockResolvedValue(undefined),
+      removeAppDataDirAsRoot: vi.fn().mockResolvedValue(true),
     };
 
     const logger = mockDeep<LoggerService>();
@@ -165,6 +167,8 @@ describe('InstallAppCommand — pull policy', () => {
     appFilesManager.writeDockerComposeYml.mockResolvedValue();
     appFilesManager.deleteAppFolder.mockResolvedValue(true);
     appFilesManager.deleteAppDataDir.mockResolvedValue(true);
+    appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: true, permissionDenied: false });
+    appFilesManager.getAppDataHostDir.mockReturnValue('/srv/app-data/store/test-app');
     appFilesManager.hasAppData.mockResolvedValue(false);
 
     appVolumes = mock<AppVolumeArchiveService>();
@@ -758,6 +762,104 @@ describe('InstallAppCommand — pull policy', () => {
     expect(afm.deleteAppFolder).toHaveBeenCalledWith(appUrn);
   });
 
+  describe('removing the data of a cancelled install', () => {
+    const cancelDuringComposeUp = async (deadline?: AppCommandDeadline) => {
+      const ac = new AbortController();
+      dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
+        if (args.includes('up --detach')) {
+          ac.abort();
+          throw new DOMException('Aborted', 'AbortError');
+        }
+      });
+      return (await command.execute(appUrn, {}, { signal: ac.signal, setPhase: vi.fn(), deadline })) as Record<string, unknown>;
+    };
+
+    it('removes it and reports a clean cancel when the Hub can delete it', async () => {
+      const result = await cancelDuringComposeUp();
+
+      expect(result).toMatchObject({ cancelled: true, message: `Install of ${appUrn} was cancelled and cleaned up` });
+      expect(result.warningCode).toBeUndefined();
+      expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
+    });
+
+    it('goes to the root helper for files a container wrote as another user', async () => {
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+
+      const result = await cancelDuringComposeUp();
+
+      expect(dockerService.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, undefined);
+      expect(appFilesManager.deleteAppDataDir).toHaveBeenCalledWith(appUrn);
+      expect(result).toMatchObject({ cancelled: true, message: `Install of ${appUrn} was cancelled and cleaned up` });
+      expect(result.warningCode).toBeUndefined();
+    });
+
+    it('holds the root helper to the time the command has left', async () => {
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+      const deadline = AppCommandDeadline.after(60_000);
+
+      await cancelDuringComposeUp(deadline);
+
+      expect(dockerService.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, deadline);
+    });
+
+    it('does not claim a clean-up when data from before this install is still there', async () => {
+      appFilesManager.hasAppData.mockResolvedValue(true);
+
+      const result = await cancelDuringComposeUp();
+
+      expect(result.message).not.toContain('cleaned up');
+      expect(result.message).toContain('left in place');
+      expect(result.warningCode).toBeUndefined();
+      expect(appFilesManager.deleteAppDataDirDetailed).not.toHaveBeenCalled();
+    });
+
+    it('says what is left and where when even the root helper cannot remove it', async () => {
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+      dockerService.removeAppDataDirAsRoot.mockResolvedValue(false);
+
+      const result = await cancelDuringComposeUp();
+
+      expect(result).toMatchObject({
+        cancelled: true,
+        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/store/test-app',
+      });
+      expect(result.message).not.toContain('cleaned up');
+    });
+
+    it('keeps root away from data that was there before this install and warns about nothing', async () => {
+      appFilesManager.hasAppData.mockResolvedValue(true);
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+
+      const result = await cancelDuringComposeUp();
+
+      expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
+      expect(result.warningCode).toBeUndefined();
+      expect(appFilesManager.deleteAppDataDir).not.toHaveBeenCalled();
+      expect(appFilesManager.deleteAppDataDirDetailed).not.toHaveBeenCalled();
+    });
+
+    it('keeps root away when it cannot tell what was there before this install', async () => {
+      appFilesManager.hasAppData.mockRejectedValue(new Error('EIO'));
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+
+      const result = await cancelDuringComposeUp();
+
+      expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
+      expect(result.warningCode).toBeUndefined();
+    });
+
+    it('warns without a path when the app folder is what could not go', async () => {
+      appFilesManager.deleteAppFolder.mockResolvedValue(false);
+
+      const result = await cancelDuringComposeUp();
+
+      expect(result.warningCode).toBe('APP_INSTALL_CANCELLED_PARTIAL_REMNANT');
+      expect(result.warningDetail).toBeUndefined();
+      expect(result.message).toContain('app folder');
+    });
+  });
+
   it('returns cancelled (before compose up) when the signal is already aborted', async () => {
     const ac = new AbortController();
     ac.abort();
@@ -795,7 +897,7 @@ describe('InstallAppCommand — pull policy', () => {
 
       expect(composeDown()).toEqual(['down --remove-orphans -v --rmi local']);
       expect(composeArgs.filter((args) => args.startsWith('rm '))).toEqual([]);
-      expect(appFilesManager.deleteAppDataDir).toHaveBeenCalledWith(appUrn);
+      expect(appFilesManager.deleteAppDataDirDetailed).toHaveBeenCalledWith(appUrn);
       expect(result.message).toContain('cleaned up');
     });
 
@@ -805,8 +907,11 @@ describe('InstallAppCommand — pull policy', () => {
       const result = await cancelDuringThePull();
 
       expect(appFilesManager.deleteAppDataDir).not.toHaveBeenCalled();
+      expect(appFilesManager.deleteAppDataDirDetailed).not.toHaveBeenCalled();
+      expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
       expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
       expect(composeDown()).toEqual(['down --remove-orphans -v --rmi local']);
+      expect(result.message).toContain('left in place');
       expect(result.message).not.toContain('cleaned up');
     });
 
@@ -816,7 +921,7 @@ describe('InstallAppCommand — pull policy', () => {
       const result = await cancelDuringThePull();
 
       expect(composeDown()).toEqual(['down --remove-orphans --rmi local']);
-      expect(appFilesManager.deleteAppDataDir).toHaveBeenCalledWith(appUrn);
+      expect(appFilesManager.deleteAppDataDirDetailed).toHaveBeenCalledWith(appUrn);
       expect(result.message).not.toContain('cleaned up');
     });
 
@@ -826,6 +931,8 @@ describe('InstallAppCommand — pull policy', () => {
       await cancelDuringThePull();
 
       expect(appFilesManager.deleteAppDataDir).not.toHaveBeenCalled();
+      expect(appFilesManager.deleteAppDataDirDetailed).not.toHaveBeenCalled();
+      expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
     });
 
     it('keeps volumes when the check for earlier volumes fails', async () => {
@@ -834,6 +941,30 @@ describe('InstallAppCommand — pull policy', () => {
       await cancelDuringThePull();
 
       expect(composeDown()).toEqual(['down --remove-orphans --rmi local']);
+    });
+
+    it('says the kept data stayed when the app folder cannot be removed', async () => {
+      appFilesManager.hasAppData.mockResolvedValue(true);
+      appFilesManager.deleteAppFolder.mockResolvedValue(false);
+
+      const result = await cancelDuringThePull();
+
+      expect(result).toMatchObject({ cancelled: true, warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT' });
+      expect((result as any).warningDetail).toBeUndefined();
+      expect(result.message).toContain('left in place');
+      expect(appFilesManager.deleteAppDataDirDetailed).not.toHaveBeenCalled();
+    });
+
+    it('says the kept volumes stayed when the root helper cannot remove a fresh data folder', async () => {
+      appVolumes.hasProjectVolumes.mockResolvedValue(true);
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+      dockerService.removeAppDataDirAsRoot.mockResolvedValue(false);
+
+      const result = await cancelDuringThePull();
+
+      expect(composeDown()).toEqual(['down --remove-orphans --rmi local']);
+      expect(result).toMatchObject({ cancelled: true, warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT' });
+      expect(result.message).toContain('left in place');
     });
 
     it('clears the anonymous volumes of its containers before a down that keeps named ones', async () => {
@@ -898,6 +1029,8 @@ describe('InstallAppCommand — pull policy', () => {
       expect((result as any).cancelled).toBeFalsy();
       expect(composeDown()).toEqual([]);
       expect(appFilesManager.deleteAppDataDir).not.toHaveBeenCalled();
+      expect(appFilesManager.deleteAppDataDirDetailed).not.toHaveBeenCalled();
+      expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
     });
   });
 
@@ -1413,6 +1546,7 @@ describe('InstallAppCommand — plan-based pre-flight', () => {
       imageIdsLocally: vi.fn().mockResolvedValue(new Set()),
       imageTagsLocally: vi.fn().mockResolvedValue([]),
       removeAppImages: vi.fn().mockResolvedValue(undefined),
+      removeAppDataDirAsRoot: vi.fn().mockResolvedValue(true),
     };
 
     const logger = mockDeep<LoggerService>();
@@ -1436,6 +1570,7 @@ describe('InstallAppCommand — plan-based pre-flight', () => {
     appFilesManager.getAppEnv.mockResolvedValue({ content: '', path: '/tmp/.env' });
     appFilesManager.getUserComposeFile.mockResolvedValue({ content: null, path: '/tmp/user-compose.yml' });
     appFilesManager.setAppDataDirPermissions.mockResolvedValue();
+    appFilesManager.hasAppData.mockResolvedValue(false);
     appFilesManager.getInstalledAppInfo.mockResolvedValue({
       id: 'test-app',
       name: 'Test App',

@@ -128,6 +128,22 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     toast.error(t(i18nKey, { id: appName, reason: appServiceFailureText(t, failure) }), { duration: 10000 });
   };
 
+  // Files an uninstall or a cancelled install could not remove. With their host path, gives the command to delete them.
+  const showRemnantWarning = (keys: { plain: string; manual: string }, appName: string, hostPath: string | undefined) => {
+    if (!hostPath) {
+      toast.warning(t(keys.plain, { id: appName }), { duration: 8000 });
+      return;
+    }
+    // Single-quote the path (escaping any embedded quote) and add `--`: an operator-configured root
+    // can contain spaces or shell metacharacters, so an unquoted path could be mis-split or read as
+    // an option on paste.
+    const command = `sudo rm -rf -- '${hostPath.replace(/'/g, "'\\''")}'`;
+    toast.warning(
+      <Trans i18nKey={keys.manual} values={{ id: appName, command }} components={{ cmd: <code className="font-mono text-xs break-all" /> }} />,
+      { duration: 20000 },
+    );
+  };
+
   useSSE({
     topic: 'app',
     onEvent: (data) => {
@@ -218,7 +234,15 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           showLogsErrorToast('APP_ERROR_APP_FAILED_TO_INSTALL_TOAST', appName);
           break;
         case 'install_cancelled':
-          toast.success(t('APP_INSTALL_CANCELLED', { id: appName }));
+          if (warningCode === 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT') {
+            showRemnantWarning(
+              { plain: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT', manual: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT_MANUAL' },
+              appName,
+              warningDetail,
+            );
+          } else {
+            toast.success(t('APP_INSTALL_CANCELLED', { id: appName }));
+          }
           break;
         case 'start_success':
           showSuccessOrPortMoved('APP_START_SUCCESS', appName, movedHostPort);
@@ -246,24 +270,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           // code's VALUE (like errorCode above): a future, unrecognized warningCode
           // must fall through to the plain success toast, not mislabel itself.
           if (warningCode === 'APP_UNINSTALL_PARTIAL_REMNANT') {
-            if (warningDetail) {
-              // Actionable: show the exact host path + command the operator can run.
-              // Single-quote the path (escaping any embedded quote) and add `--`: an
-              // operator-configured root can contain spaces or shell metacharacters, so
-              // an unquoted path could be mis-split or read as an option on paste.
-              const quotedPath = `'${warningDetail.replace(/'/g, "'\\''")}'`;
-              const command = `sudo rm -rf -- ${quotedPath}`;
-              toast.warning(
-                <Trans
-                  i18nKey="APP_UNINSTALL_PARTIAL_REMNANT_MANUAL"
-                  values={{ id: appName, command }}
-                  components={{ cmd: <code className="font-mono text-xs break-all" /> }}
-                />,
-                { duration: 20000 },
-              );
-            } else {
-              toast.warning(t('APP_UNINSTALL_PARTIAL_REMNANT', { id: appName }), { duration: 8000 });
-            }
+            showRemnantWarning({ plain: 'APP_UNINSTALL_PARTIAL_REMNANT', manual: 'APP_UNINSTALL_PARTIAL_REMNANT_MANUAL' }, appName, warningDetail);
           } else {
             toast.success(t('APP_UNINSTALL_SUCCESS', { id: appName }));
           }

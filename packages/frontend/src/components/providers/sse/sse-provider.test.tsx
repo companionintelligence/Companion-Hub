@@ -399,6 +399,48 @@ describe('SSEProvider', () => {
     });
   });
 
+  it('warns with the cleanup command when a cancelled install could not remove its data', () => {
+    const getOnEvent = renderProvider();
+
+    act(() => {
+      getOnEvent()?.({
+        event: 'install_cancelled',
+        appUrn: 'excalidraw:community',
+        appStatus: 'missing',
+        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/community/excalidraw',
+      });
+    });
+
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+    expect(mockToastWarning).toHaveBeenCalledTimes(1);
+    const [message] = mockToastWarning.mock.calls[0] as [ReactNode];
+
+    render(<MemoryRouter>{message}</MemoryRouter>);
+    expect(screen.getByText("sudo rm -rf -- '/srv/app-data/community/excalidraw'")).toBeInTheDocument();
+  });
+
+  it('warns without a command when a cancelled install has no path to give', () => {
+    const getOnEvent = renderProvider();
+
+    act(() => {
+      getOnEvent()?.({
+        event: 'install_cancelled',
+        appUrn: 'excalidraw:community',
+        appStatus: 'missing',
+        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT',
+      });
+    });
+
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+    expect(mockToastWarning).toHaveBeenCalledWith(
+      'Cancelled installing excalidraw, but some of its files could not be removed and may remain on disk.',
+      {
+        duration: 8000,
+      },
+    );
+  });
+
   it('shows the plain success toast when uninstall_success has no warningCode', () => {
     const getOnEvent = renderProvider();
 

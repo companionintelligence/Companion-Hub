@@ -8924,6 +8924,29 @@ describe('AppLifecycleService', () => {
       expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_success' }));
     });
 
+    it('passes on what a cancelled install could not remove, for the page to say', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      const execute = vi.fn().mockResolvedValue({
+        success: false,
+        cancelled: true,
+        message: 'cancelled, some left',
+        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/store/app',
+      });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+
+      await service.invokeCommand(data, vi.fn());
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'install_cancelled',
+          warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT',
+          warningDetail: '/srv/app-data/store/app',
+        }),
+      );
+    });
+
     it('finalizes a FAILED install worker-side so a post-RPC-timeout failure is not stranded in installing', async () => {
       operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
       const execute = vi.fn().mockResolvedValue({ success: false, message: 'pull failed', errorCode: 'x' });
