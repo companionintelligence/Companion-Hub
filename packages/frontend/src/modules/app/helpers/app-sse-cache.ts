@@ -5,6 +5,7 @@ import {
   appContextQueryKey,
   getCustomDomainsQueryKey,
   getServeStatusQueryKey,
+  getUpdatesAvailableQueryKey,
 } from '@/api-client/@tanstack/react-query.gen';
 import { tailscaleStatusQueryKey } from '@/lib/api-routes/named-status-routes';
 import { PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY } from '@/lib/cloudflare-api';
@@ -157,6 +158,11 @@ export function invalidateAppRecords(queryClient: QueryClient) {
   void queryClient.invalidateQueries({ queryKey: [{ _id: 'getApp' }] });
   // A listing read that failed while the Hub was away holds the page on "not found" with its record query off.
   void queryClient.invalidateQueries({ queryKey: ['app-listing'], predicate: (query) => query.state.status === 'error' });
+}
+
+/** Refetch the update count behind the badge and Home's "Update all". */
+export function invalidateUpdatesAvailable(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: getUpdatesAvailableQueryKey() });
 }
 
 /**
@@ -352,6 +358,14 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
     queryClient.setQueryData(['app-install-error', urn], null);
     updateInstallationProgress(urn, null);
     clearUninstalledAppCaches(queryClient, appUrn);
+    invalidateAppQueries(queryClient, appUrn);
+    return;
+  }
+
+  // The app's ignored update was set or cleared, here or in another tab or through the MCP tool. Its
+  // buttons and the update count behind Home's "Update all" both change (#2376).
+  if (event === 'ignored_version_changed') {
+    invalidateUpdatesAvailable(queryClient);
     invalidateAppQueries(queryClient, appUrn);
     return;
   }

@@ -278,6 +278,18 @@ describe('SSEService app stream', () => {
       expect(JSON.parse(second.data as string)).toEqual(step('verifying'));
     });
 
+    // CI-Hub#2376: ignoring the next version during an update changes no step of it.
+    it('still gets it after an ignored_version_changed event for the app', async () => {
+      service.emit('app', step('verifying'));
+      service.emit('app', { event: 'ignored_version_changed', appUrn });
+
+      const pending = collect(2);
+      service.emit('app', { event: 'install_queue', active: null, queued: [] });
+      const [, second] = await pending;
+
+      expect(JSON.parse(second.data as string)).toEqual(step('verifying'));
+    });
+
     it('stops getting it once the update was cancelled', async () => {
       service.emit('app', step('verifying'));
       service.emit('app', { event: 'update_cancelled', appUrn, appStatus: 'running' });

@@ -41,6 +41,8 @@ export class AppsReadService {
   private static readonly UPDATES_AVAILABLE_TTL_MS = 60_000;
   private updatesAvailableCache: { count: number; at: number } | null = null;
   private updatesAvailableInFlight: Promise<number> | null = null;
+  /** Bumped by every invalidation, so a count read before it is not cached after it. */
+  private updatesAvailableGeneration = 0;
 
   constructor(
     private readonly appsRepository: AppsRepository,
@@ -164,15 +166,21 @@ export class AppsReadService {
     if (this.updatesAvailableInFlight) {
       return this.updatesAvailableInFlight;
     }
-    this.updatesAvailableInFlight = this.countUpdatesAvailable()
+    const generation = this.updatesAvailableGeneration;
+    const inFlight = this.countUpdatesAvailable()
       .then((count) => {
-        this.updatesAvailableCache = { count, at: Date.now() };
+        if (generation === this.updatesAvailableGeneration) {
+          this.updatesAvailableCache = { count, at: Date.now() };
+        }
         return count;
       })
       .finally(() => {
-        this.updatesAvailableInFlight = null;
+        if (this.updatesAvailableInFlight === inFlight) {
+          this.updatesAvailableInFlight = null;
+        }
       });
-    return this.updatesAvailableInFlight;
+    this.updatesAvailableInFlight = inFlight;
+    return inFlight;
   }
 
   /**
@@ -187,8 +195,11 @@ export class AppsReadService {
     return this.updatesAvailableCache?.count ?? 0;
   }
 
+  /** A walk already under way may have read the old state, so the next caller starts a new one. */
   public invalidateUpdatesAvailableCache() {
     this.updatesAvailableCache = null;
+    this.updatesAvailableInFlight = null;
+    this.updatesAvailableGeneration += 1;
   }
 
   /** Active install (Docker pipeline) and apps waiting in the install queue. */

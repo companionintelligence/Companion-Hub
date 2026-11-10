@@ -16,6 +16,7 @@ const hoisted = vi.hoisted(() => ({
   ignoreOpts: undefined as undefined | Record<string, (...args: unknown[]) => void>,
   unignoreOpts: undefined as undefined | Record<string, (...args: unknown[]) => void>,
   invalidateAppQueries: vi.fn(),
+  invalidateUpdatesAvailable: vi.fn(),
   navigate: vi.fn(),
   // null => web client (no Tauri); a function => running inside the desktop app.
   tauriInvoke: null as null | (() => unknown),
@@ -120,6 +121,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 // normal assertion. Mock just what is used, matching the sibling dialog tests.
 vi.mock('@/modules/app/helpers/app-sse-cache', () => ({
   invalidateAppQueries: (...args: unknown[]) => hoisted.invalidateAppQueries(...args),
+  invalidateUpdatesAvailable: (...args: unknown[]) => hoisted.invalidateUpdatesAvailable(...args),
 }));
 
 vi.mock('@/api-client/client.gen', () => ({
@@ -171,6 +173,8 @@ vi.mock('react-i18next', () => {
   const copy: Record<string, string> = {
     APP_INSTALL_PORTAL_ORGANIZATION_REQUIRED: 'Translated refusal',
     PORTAL_REQUEST_FAILED: 'CI Account request failed ({{status}}) for {{path}}.',
+    APP_ACTION_GRANT_DENIED: 'Translated grant denial',
+    APP_ERROR_APP_NOT_FOUND: 'Translated app not found',
   };
 
   return {
@@ -331,6 +335,7 @@ describe('AppActions', () => {
     hoisted.ignoreOpts = undefined;
     hoisted.unignoreOpts = undefined;
     hoisted.invalidateAppQueries.mockReset();
+    hoisted.invalidateUpdatesAvailable.mockReset();
     // Reset EVERY hoisted spy: mockReturnValue is sticky for the whole file, and vitest
     // is not configured with clearMocks/mockReset, so a leftover value silently leaks
     // into whichever test runs next and makes assertions depend on declaration order.
@@ -938,6 +943,41 @@ describe('AppActions', () => {
       opts()?.onSuccess?.(undefined, { path: { urn: 'other-app:community' } });
 
       expect(hoisted.invalidateAppQueries).toHaveBeenCalledWith(hoisted.queryClient, 'other-app:community');
+    });
+
+    // CI-Hub#2376: an ignored update stayed in Home's "Update all" until a reload.
+    it.each([
+      ['ignore', () => hoisted.ignoreOpts],
+      ['unignore', () => hoisted.unignoreOpts],
+    ])('asks for the update count again once the %s has gone through', (_name, opts) => {
+      renderOffer({ latestVersion: 9, latestDockerVersion: '2026.10.28' });
+
+      opts()?.onSuccess?.(undefined, { path: { urn: 'other-app:community' } });
+
+      expect(hoisted.invalidateUpdatesAvailable).toHaveBeenCalledWith(hoisted.queryClient);
+    });
+
+    // CI-Hub#2376: a refused ignore showed APP_ACTION_GRANT_DENIED, a missing app APP_ERROR_APP_NOT_FOUND.
+    it.each([
+      ['ignore', () => hoisted.ignoreOpts, 'APP_ACTION_GRANT_DENIED', 'Translated grant denial'],
+      ['unignore', () => hoisted.unignoreOpts, 'APP_ERROR_APP_NOT_FOUND', 'Translated app not found'],
+    ])('says why a refused %s failed in words, not as its key', (_name, opts, key, words) => {
+      renderOffer({ latestVersion: 9, latestDockerVersion: '2026.10.28' });
+
+      opts()?.onError?.({ message: key, intlParams: {} });
+
+      expect(hoisted.toastError).toHaveBeenCalledWith(words);
+    });
+
+    // CI-Hub#2376: an app at the counter it once ignored has no update, so there is nothing to un-ignore.
+    it('offers nothing once the app has reached the counter it ignored', () => {
+      renderOffer({ latestVersion: 8, latestDockerVersion: '2026.10.28' }, 8);
+      expect(shown()).toEqual([]);
+    });
+
+    it('still offers a newer version, and no un-ignore, once the app has reached the counter it ignored', () => {
+      renderOffer({ latestVersion: 8, latestDockerVersion: '2026.11.2' }, 8);
+      expect(shown()).toEqual([UPDATE]);
     });
   });
 

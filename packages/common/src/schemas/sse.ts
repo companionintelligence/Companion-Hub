@@ -113,6 +113,9 @@ const appScopedEventSchema = z.object({
     // Sent to the next page to connect when no page was connected for the outcome that moved the app
     // off a host port. Carries `movedHostPort` and no status, since that outcome may be long past.
     'host_port_moved',
+    // The app's ignored update version was set or cleared. Carries no status: the update count and the
+    // app's update buttons changed, so the client refetches them.
+    'ignored_version_changed',
   ]),
   appUrn: appUrnSchema,
   appStatus: appStatusSchema.optional(),
