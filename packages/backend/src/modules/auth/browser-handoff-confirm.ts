@@ -13,7 +13,9 @@ export function isSameOriginFormPost(req: Request, hubOrigin: string): boolean {
   const site = req.get('sec-fetch-site');
   const origin = req.get('origin');
   if (site !== undefined) {
-    return site === 'same-origin' && (origin === undefined || origin === hubOrigin);
+    // `null` is what Chrome sends as the Origin of a same-origin form post from a page whose
+    // referrer policy hides its origin; the Fetch Metadata already says it came from this Hub.
+    return site === 'same-origin' && (origin === undefined || origin === 'null' || origin === hubOrigin);
   }
   return origin === hubOrigin;
 }
@@ -39,7 +41,8 @@ export function setBrowserHandoffConfirmHeaders(res: Response): void {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Referrer-Policy', 'no-referrer');
+  // `same-origin`, not `no-referrer`: the latter makes Chrome send `Origin: null` on the Continue POST.
+  res.setHeader('Referrer-Policy', 'same-origin');
   res.setHeader(
     'Content-Security-Policy',
     "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",

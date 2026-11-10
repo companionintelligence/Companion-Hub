@@ -3899,6 +3899,15 @@ describe('AuthController', () => {
         expect(res.redirect).toHaveBeenCalledWith(303, next);
       });
 
+      it('accepts the null Origin Chrome sends for a same-origin post when the page hides its referrer', async () => {
+        liveTicket();
+        const res = response();
+
+        await authController.confirmBrowserHandoff('ticket-abc', post({ 'sec-fetch-site': 'same-origin', origin: 'null' }), res);
+
+        expect(res.redirect).toHaveBeenCalledWith(303, next);
+      });
+
       it('accepts a browser without Fetch Metadata when its Origin is this Hub', async () => {
         liveTicket();
         const res = response();
@@ -3914,6 +3923,8 @@ describe('AuthController', () => {
         ['a same-origin claim with another Origin', { 'sec-fetch-site': 'same-origin', origin: 'https://evil.example' }],
         ['no Fetch Metadata and a foreign Origin', { origin: 'https://evil.example' }],
         ['no Fetch Metadata and no Origin', {}],
+        ['no Fetch Metadata and a null Origin', { origin: 'null' }],
+        ['a cross-site POST with a null Origin', { 'sec-fetch-site': 'cross-site', origin: 'null' }],
       ])('refuses %s without spending the ticket or planting a session', async (_label, headers) => {
         liveTicket();
         const res = response();
