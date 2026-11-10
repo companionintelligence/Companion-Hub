@@ -57,51 +57,72 @@ rabbitmq_password_file_stat() {
   stat -c '%u %g %a' "$1" 2>/dev/null || stat -f '%u %g %Lp' "$1"
 }
 
-# Why a docker call failed, from its exit status $1 and its output $2: a timeout from the wrapper
-# (exit 124), or docker's own first line.
+# Run docker through the wrapper, keeping its stdout and stderr apart: RABBITMQ_PASSWORD_OUT gets
+# stdout, RABBITMQ_PASSWORD_ERR stderr, and the exit status is docker's (124 for a timeout). Absence
+# and causes are read from stderr only: on Docker 29 an inspect of a missing container still prints
+# "[]" on stdout.
+rabbitmq_password_docker_capture() {
+  local err_file rc=0
+  err_file="$(mktemp "${TMPDIR:-/tmp}/rabbitmq-password-docker.XXXXXX")" || return 1
+  RABBITMQ_PASSWORD_OUT="$(rabbitmq_password_docker "$@" 2> "$err_file")" || rc=$?
+  RABBITMQ_PASSWORD_ERR="$(cat "$err_file")"
+  rm -f "$err_file"
+  return "$rc"
+}
+
+# Why a docker call failed, from its exit status $1 and its stderr $2: a timeout from the wrapper
+# (exit 124), or docker's own first line of stderr.
 rabbitmq_password_docker_cause() {
   if [ "$1" = 124 ]; then
     printf 'timed out after %ss' "$RABBITMQ_PASSWORD_DOCKER_TIMEOUT"
   else
-    printf 'docker exited %s: %s' "$1" "$(printf '%s\n' "$2" | head -n 1)"
+    printf 'docker exited %s: %s' "$1" "$(printf '%s\n' "${2:-no message}" | head -n 1)"
   fi
 }
 
-# Is the docker output $1 docker saying the container does not exist?
+# Is the docker stderr $1 docker saying the container does not exist? Case-insensitive, and only
+# "no such object" (an untyped inspect: "error: no such object: NAME" on Docker 29, "Error: No such
+# object: NAME" before it) or "no such container" (a typed one: "Error response from daemon: No such
+# container: NAME"). Not "no such" alone: a dial to a missing socket says "no such file or directory",
+# and that is docker not answering, not a container that is not there.
 rabbitmq_password_docker_says_absent() {
-  case "$1" in *"No such"*) return 0 ;; *) return 1 ;; esac
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    *"no such object"* | *"no such container"*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # The first of the Hub container names that exists: $1, then ci-hub, then ci-os-hub, on stdout.
 # Empty when docker says none of them exists. When docker cannot answer (a timeout, or any error that
 # is not "No such ..."), prints an ERROR and fails: "could not check" is never read as "absent".
 rabbitmq_password_hub_container() {
-  local name out rc
+  local name rc
   for name in "$1" ci-hub ci-os-hub; do
     rc=0
-    out="$(rabbitmq_password_docker inspect "$name" 2>&1)" || rc=$?
+    rabbitmq_password_docker_capture container inspect "$name" || rc=$?
     if [ "$rc" = 0 ]; then
       printf '%s' "$name"
       return 0
     fi
-    if ! rabbitmq_password_docker_says_absent "$out"; then
-      echo "ERROR: could not check for the Hub container ${name} ($(rabbitmq_password_docker_cause "$rc" "$out"))." >&2
+    if ! rabbitmq_password_docker_says_absent "$RABBITMQ_PASSWORD_ERR"; then
+      echo "ERROR: could not check for the Hub container ${name} ($(rabbitmq_password_docker_cause "$rc" "$RABBITMQ_PASSWORD_ERR"))." >&2
       return 1
     fi
   done
+  echo "   NOTE: no Hub container (${1:+$1, }ci-hub, ci-os-hub) exists" >&2
 }
 
 # The value of $2 in the environment compose gave the container $1, from `docker inspect`. Empty when
 # the environment has no $2; a docker failure or timeout prints an ERROR and fails.
 rabbitmq_password_container_env() {
-  local out rc=0
-  out="$(rabbitmq_password_docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$1" 2>&1)" || rc=$?
+  local rc=0
+  rabbitmq_password_docker_capture container inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$1" || rc=$?
   if [ "$rc" != 0 ]; then
-    echo "ERROR: could not read the environment of $1 ($(rabbitmq_password_docker_cause "$rc" "$out"))." >&2
+    echo "ERROR: could not read the environment of $1 ($(rabbitmq_password_docker_cause "$rc" "$RABBITMQ_PASSWORD_ERR"))." >&2
     return 1
   fi
   # Only the parsing may find nothing.
-  printf '%s\n' "$out" | grep -E "^$2=" | tail -n 1 | cut -d= -f2- || true
+  printf '%s\n' "$RABBITMQ_PASSWORD_OUT" | grep -E "^$2=" | tail -n 1 | cut -d= -f2- || true
 }
 
 # The RABBITMQ_PASSWORD a running Hub container was created with. A docker failure prints an ERROR and
@@ -120,13 +141,13 @@ rabbitmq_password_of_container() {
 
 # The Config.User of the container $1. A docker failure or timeout prints an ERROR and fails.
 rabbitmq_password_container_user() {
-  local out rc=0
-  out="$(rabbitmq_password_docker inspect -f '{{.Config.User}}' "$1" 2>&1)" || rc=$?
+  local rc=0
+  rabbitmq_password_docker_capture container inspect -f '{{.Config.User}}' "$1" || rc=$?
   if [ "$rc" != 0 ]; then
-    echo "ERROR: could not read the user of $1 ($(rabbitmq_password_docker_cause "$rc" "$out"))." >&2
+    echo "ERROR: could not read the user of $1 ($(rabbitmq_password_docker_cause "$rc" "$RABBITMQ_PASSWORD_ERR"))." >&2
     return 1
   fi
-  printf '%s' "$out"
+  printf '%s' "$RABBITMQ_PASSWORD_OUT"
 }
 
 # Is $1 a uid that pins the Hub to a non-root user other than the file owner $2?
@@ -292,7 +313,7 @@ rabbitmq_password_ctl() {
 rabbitmq_password_wait_for_broker() {
   local queue="$1" timeout="$2" started=$SECONDS status
   while :; do
-    status="$(rabbitmq_password_docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$queue" 2>/dev/null || true)"
+    status="$(rabbitmq_password_docker container inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$queue" 2>/dev/null || true)"
     case "$status" in healthy | none) return 0 ;; esac
     if [ $((SECONDS - started)) -ge "$timeout" ]; then return 1; fi
     sleep 2
@@ -307,7 +328,7 @@ rabbitmq_password_wait_for_broker() {
 # and the Hub's bind mount keeps the old one), restarts the Hub.
 # $1 env file, $2 Hub container, $3 seconds to wait for the broker to come up.
 rabbitmq_password_check_broker() {
-  local env_file="$1" timeout="$3" hub password="" queue="" name out rc restarted=""
+  local env_file="$1" timeout="$3" hub password="" queue="" name rc restarted=""
   hub="$(rabbitmq_password_hub_container "$2")" || return 1
   if [ -n "$hub" ]; then
     password="$(rabbitmq_password_of_container "$hub")" || return 1
@@ -318,13 +339,13 @@ rabbitmq_password_check_broker() {
   fi
   for name in ci-hub-queue ci-os-hub-queue; do
     rc=0
-    out="$(rabbitmq_password_docker inspect -f '{{.State.Running}}' "$name" 2>&1)" || rc=$?
-    if [ "$rc" = 0 ] && [ "$out" = true ]; then
+    rabbitmq_password_docker_capture container inspect -f '{{.State.Running}}' "$name" || rc=$?
+    if [ "$rc" = 0 ] && [ "$RABBITMQ_PASSWORD_OUT" = true ]; then
       queue="$name"
       break
     fi
-    if [ "$rc" != 0 ] && ! rabbitmq_password_docker_says_absent "$out"; then
-      echo "ERROR: the broker could not be checked: docker inspect ${name} failed ($(rabbitmq_password_docker_cause "$rc" "$out"))."
+    if [ "$rc" != 0 ] && ! rabbitmq_password_docker_says_absent "$RABBITMQ_PASSWORD_ERR"; then
+      echo "ERROR: the broker could not be checked: docker container inspect ${name} failed ($(rabbitmq_password_docker_cause "$rc" "$RABBITMQ_PASSWORD_ERR"))."
       return 1
     fi
   done

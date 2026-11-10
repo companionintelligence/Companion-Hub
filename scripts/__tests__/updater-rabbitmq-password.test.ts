@@ -30,7 +30,15 @@ const REAL_GREP = spawnSync('sh', ['-c', 'command -v grep'], { encoding: 'utf-8'
 const IS_ROOT = process.getuid?.() === 0;
 
 /**
- * The stub's Hub container is `ci-hub` (absent with STUB_NO_HUB). Its environment starts as
+ * Missing-container output is Docker CLI 29.9.3's (measured 2026-11-09): an untyped `docker inspect
+ * NAME` prints "[]" on stdout (without -f) and "error: no such object: NAME" on stderr; a typed
+ * `docker container inspect NAME` prints "Error response from daemon: No such container: NAME" on
+ * stderr. Both exit 1. STUB_OLD_DOCKER gives the older untyped form, "Error: No such object: NAME".
+ * STUB_DOCKER_ERROR (stderr text, exit 1, empty stdout) answers every inspect whose argv matches the
+ * glob STUB_DOCKER_ERROR_ON, as a daemon that is down would.
+ *
+ * The stub's Hub container is STUB_HUB, `ci-hub` by default (absent with STUB_NO_HUB), and its broker
+ * STUB_QUEUE, `ci-hub-queue` by default. Its environment starts as
  * STUB_HUB_PASSWORD and STUB_HUB_UID, and `compose-up-sim` stands in for update.sh's `up`: it gives the
  * Hub the password compose would (STUB_UP_PASSWORD when a test needs compose's exact parsing, else an
  * exported RABBITMQ_PASSWORD, else the env file's plain line).
@@ -45,22 +53,37 @@ hub_env() {
 }
 case "$1" in
   compose-up-sim)
-    [ -n "\${STUB_NO_HUB:-}" ] && exit 0
+    [ -n "\${STUB_NO_HUB:-}\${STUB_NO_UP:-}" ] && exit 0
     pw="\${STUB_UP_PASSWORD:-\${RABBITMQ_PASSWORD:-$(grep '^RABBITMQ_PASSWORD=' "$2" | tail -n 1 | cut -d= -f2-)}}"
     { printf 'RABBITMQ_PASSWORD=%s\\n' "$pw"; [ -n "\${STUB_HUB_UID:-}" ] && printf 'CI_HUB_CONTAINER_UID=%s\\n' "$STUB_HUB_UID"; } > "$STUB_DIR/hub-env.new"
     mv "$STUB_DIR/hub-env.new" "$STUB_DIR/hub-env"
     exit 0 ;;
-  inspect)
-    absent() { echo "Error: No such object: $1" >&2; exit 1; }
+  inspect | container)
+    typed=""
+    if [ "$1" = container ]; then typed=1; shift; fi
+    if [ -n "\${STUB_DOCKER_ERROR:-}" ]; then
+      # shellcheck disable=SC2254
+      case "$*" in $STUB_DOCKER_ERROR_ON) printf '%s\\n' "$STUB_DOCKER_ERROR" >&2; exit 1 ;; esac
+    fi
+    hub="\${STUB_HUB:-ci-hub}"
+    queue="\${STUB_QUEUE:-ci-hub-queue}"
+    absent() {
+      [ "$2" = untyped-no-format ] && echo '[]'
+      if [ -n "$typed" ]; then echo "Error response from daemon: No such container: $1" >&2
+      elif [ -n "\${STUB_OLD_DOCKER:-}" ]; then echo "Error: No such object: $1" >&2
+      else echo "error: no such object: $1" >&2; fi
+      exit 1
+    }
     if [ "$2" != -f ]; then
-      [ "$2" = ci-hub ] && [ -z "\${STUB_NO_HUB:-}" ] && exit 0
-      absent "$2"
+      [ "$2" = "$hub" ] && [ -z "\${STUB_NO_HUB:-}" ] && exit 0
+      [ "$2" = "$queue" ] && exit 0
+      absent "$2" untyped-no-format
     fi
     case "$3" in
-      *Config.Env*) [ "$4" = ci-hub ] && [ -z "\${STUB_NO_HUB:-}" ] && hub_env && exit 0; absent "$4" ;;
-      *Config.User*) [ "$4" = ci-hub ] && printf '%s\\n' "\${STUB_HUB_USER:-}" && exit 0; absent "$4" ;;
-      *State.Running*) [ "$4" = ci-hub-queue ] && echo true && exit 0; absent "$4" ;;
-      *Health*) if [ -e "$STUB_DIR/broker-down" ]; then echo starting; else echo healthy; fi; exit 0 ;;
+      *Config.Env*) [ "$4" = "$hub" ] && [ -z "\${STUB_NO_HUB:-}" ] && hub_env && exit 0; absent "$4" ;;
+      *Config.User*) [ "$4" = "$hub" ] && [ -z "\${STUB_NO_HUB:-}" ] && printf '%s\\n' "\${STUB_HUB_USER:-}" && exit 0; absent "$4" ;;
+      *State.Running*) [ "$4" = "$queue" ] && echo true && exit 0; absent "$4" ;;
+      *Health*) [ "$4" = "$queue" ] || absent "$4"; if [ -e "$STUB_DIR/broker-down" ]; then echo starting; else echo healthy; fi; exit 0 ;;
     esac ;;
   exec)
     if [ "$2" = -i ]; then
@@ -606,6 +629,79 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
     expect(argvLog()).not.toContain('change_password');
   });
 
+  describe("reads docker's own words for a missing container, from stderr only", () => {
+    const output = (result: ReturnType<typeof run>) => `${result.stdout}${result.stderr}`;
+    const DAEMON_DOWN = 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?';
+    const DIAL_ERROR =
+      'failed to connect to the docker API at unix:///var/run/docker.sock: dial unix /var/run/docker.sock: connect: no such file or directory';
+
+    it.each([
+      ['Docker 29', {}],
+      ['older Docker', { STUB_OLD_DOCKER: '1' }],
+    ])('with no Hub container (%s), carries on and says so, with no ERROR', (_docker, env) => {
+      writeFileSync(envFile, 'JWT_SECRET=jwt\nRABBITMQ_PASSWORD=admin\n', { mode: 0o600 });
+      // The prepare step only: with no Hub there is no password to move the broker onto.
+      const prepareOnly = `set -o errexit -o nounset -o pipefail\n. ${JSON.stringify(HELPER)}\nrabbitmq_password_prepare "$1" ci-hub\necho CONTINUED`;
+
+      const result = spawnSync('bash', ['-c', prepareOnly, 'bash', envFile], { encoding: 'utf-8', env: baseEnv({ STUB_NO_HUB: '1', ...env }, '') });
+
+      expect(output(result)).toContain('NOTE: no Hub container (ci-hub, ci-hub, ci-os-hub) exists');
+      expect(output(result)).not.toContain('ERROR');
+      expect(output(result)).not.toContain('could not check');
+      // No Hub password to reuse and none exported, so the file gets a password of its own.
+      expect(result.status, output(result)).toBe(0);
+      expect(result.stdout).toContain('CONTINUED');
+      expect(result.stdout).toContain('wrote a new random password');
+      expect(passwordLines()).toHaveLength(1);
+    });
+
+    it('finds the broker of a ci-os-hub layout, where ci-hub-queue does not exist', () => {
+      writeFileSync(envFile, 'RABBITMQ_PASSWORD=os-strong\n', { mode: 0o600 });
+      writeFileSync(path.join(dir, 'broker'), 'os-strong');
+
+      const result = run({ STUB_HUB: 'ci-os-hub', STUB_QUEUE: 'ci-os-hub-queue', STUB_HUB_PASSWORD: 'os-strong', STUB_NO_UP: '1' });
+
+      expect(result.status, output(result)).toBe(0);
+      expect(result.stdout).toContain('OK: ci-os-hub-queue accepts the broker password the Hub uses');
+      expect(output(result)).not.toContain('ERROR');
+    });
+
+    it.each([
+      ['the daemon is down', DAEMON_DOWN],
+      ['the socket dial fails with "no such file or directory"', DIAL_ERROR],
+    ])('stops on the Hub probe when %s, naming the cause, and changes nothing', (_case, message) => {
+      const body = 'JWT_SECRET=jwt\nRABBITMQ_PASSWORD=admin\n';
+      writeFileSync(envFile, body, { mode: 0o600 });
+
+      const result = run({ STUB_DOCKER_ERROR: message, STUB_DOCKER_ERROR_ON: 'inspect ci-hub' });
+
+      expect(result.status).toBe(1);
+      expect(output(result)).toContain(`ERROR: could not check for the Hub container ci-hub (docker exited 1: ${message})`);
+      expect(readFileSync(envFile, 'utf-8')).toBe(body);
+      expect(broker()).toBe('admin');
+      expect(argvLog()).not.toContain('rabbitmqctl');
+    });
+
+    it.each([
+      ['the daemon is down', DAEMON_DOWN],
+      ['the socket dial fails with "no such file or directory"', DIAL_ERROR],
+    ])('stops on the broker probe when %s, naming the cause, and changes nothing', (_case, message) => {
+      const body = 'RABBITMQ_PASSWORD=already-strong\n';
+      writeFileSync(envFile, body, { mode: 0o600 });
+
+      const result = run({ STUB_DOCKER_ERROR: message, STUB_DOCKER_ERROR_ON: 'inspect -f {{.State.Running}} ci-hub-queue' });
+
+      expect(result.status).toBe(1);
+      expect(output(result)).toContain(
+        `ERROR: the broker could not be checked: docker container inspect ci-hub-queue failed (docker exited 1: ${message})`,
+      );
+      expect(output(result)).not.toContain('no running broker container');
+      expect(readFileSync(envFile, 'utf-8')).toBe(body);
+      expect(broker()).toBe('admin');
+      expect(argvLog()).not.toContain('rabbitmqctl');
+    });
+  });
+
   describe('a docker call that times out is a visible failure, never a wrong answer', () => {
     const output = (result: ReturnType<typeof run>) => `${result.stdout}${result.stderr}`;
 
@@ -613,7 +709,7 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
       const body = 'JWT_SECRET=jwt\nRABBITMQ_PASSWORD=admin\n';
       writeFileSync(envFile, body, { mode: 0o600 });
 
-      const result = run({ STUB_HANG: 'docker inspect ci-hub' });
+      const result = run({ STUB_HANG: 'docker container inspect ci-hub' });
 
       expect(result.status).not.toBe(0);
       expect(output(result)).toContain('ERROR: could not check for the Hub container ci-hub (timed out');
@@ -626,7 +722,7 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
       writeFileSync(envFile, 'RABBITMQ_PASSWORD=already-strong\n', { mode: 0o600 });
 
       // The first probe (prepare) is skipped: the file is strong. The broker check's probe hangs.
-      const result = run({ STUB_HANG: 'docker inspect ci-hub' });
+      const result = run({ STUB_HANG: 'docker container inspect ci-hub' });
 
       expect(result.status).not.toBe(0);
       expect(output(result)).toContain('could not check for the Hub container ci-hub');
@@ -636,7 +732,7 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
     it("stops when reading the Hub's environment times out", () => {
       writeFileSync(envFile, 'RABBITMQ_PASSWORD=already-strong\n', { mode: 0o600 });
 
-      const result = run({ STUB_HANG: 'docker inspect -f {{range .Config.Env}}* ci-hub' });
+      const result = run({ STUB_HANG: 'docker container inspect -f {{range .Config.Env}}* ci-hub' });
 
       expect(result.status).not.toBe(0);
       expect(output(result)).toContain("ERROR: could not read the Hub's broker password from ci-hub");
@@ -649,15 +745,18 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
       // Skip the stand-in `up`, which would give the Hub the file's password.
       const script = SCRIPT.replace('docker compose-up-sim "$1"', ':');
 
-      const result = spawnSync('bash', ['-c', script, 'bash', envFile], { encoding: 'utf-8', env: baseEnv({}, '') });
+      const result = spawnSync('bash', ['-c', `${script}\necho CONTINUED`, 'bash', envFile], { encoding: 'utf-8', env: baseEnv({}, '') });
 
       expect(output(result)).toContain('WARNING: the Hub container ci-hub has no RABBITMQ_PASSWORD');
+      expect(result.status, output(result)).toBe(0);
+      expect(result.stdout).toContain('CONTINUED');
+      expect(output(result)).not.toContain('ERROR');
     });
 
     it('stops when the broker probe times out, rather than saying there is no broker', () => {
       writeFileSync(envFile, 'RABBITMQ_PASSWORD=already-strong\n', { mode: 0o600 });
 
-      const result = run({ STUB_HANG: 'docker inspect -f {{.State.Running}} ci-hub-queue' });
+      const result = run({ STUB_HANG: 'docker container inspect -f {{.State.Running}} ci-hub-queue' });
 
       expect(result.status).not.toBe(0);
       expect(output(result)).toContain('ERROR: the broker could not be checked');
@@ -665,8 +764,8 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
     });
 
     it.each([
-      ['CI_HUB_CONTAINER_UID', 'docker inspect -f {{range .Config.Env}}* ci-hub'],
-      ['Config.User', 'docker inspect -f {{.Config.User}} ci-hub'],
+      ['CI_HUB_CONTAINER_UID', 'docker container inspect -f {{range .Config.Env}}* ci-hub'],
+      ['Config.User', 'docker container inspect -f {{.Config.User}} ci-hub'],
     ])('fails the rewrite, and keeps the file and its mode, when the pin probe (%s) times out', (_probe, hang) => {
       const body = 'JWT_SECRET=jwt\nRABBITMQ_PASSWORD=admin\n';
       writeFileSync(envFile, body);
@@ -713,6 +812,27 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
       expect(result.stdout).toContain('could not be confirmed');
       expect(result.stdout).not.toContain('changing it failed');
       expect(restarts()).toBe(0);
+    });
+
+    it('reports a timed-out change_password as unconfirmed, not as a failed change', () => {
+      writeFileSync(envFile, 'RABBITMQ_PASSWORD=already-strong\n', { mode: 0o600 });
+
+      const result = run({ STUB_HANG: 'docker exec -i ci-hub-queue rabbitmqctl change_password companion' });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stdout).toContain('WARNING: rabbitmqctl change_password in ci-hub-queue timed out');
+      expect(result.stdout).not.toContain('changing it failed');
+      expect(restarts()).toBe(0);
+    });
+
+    it('stops when the first authenticate_user times out, without trying to change the password', () => {
+      writeFileSync(envFile, 'RABBITMQ_PASSWORD=already-strong\n', { mode: 0o600 });
+
+      const result = run({ STUB_HANG: 'docker exec -i ci-hub-queue rabbitmqctl authenticate_user companion' });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stdout).toContain('ERROR: the broker could not be checked: rabbitmqctl authenticate_user in ci-hub-queue timed out');
+      expect(argvLog()).not.toContain('change_password');
     });
 
     it('sends every docker call the helper makes through the timeout wrapper', () => {
