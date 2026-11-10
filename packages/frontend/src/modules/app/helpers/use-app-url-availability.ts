@@ -74,6 +74,8 @@ const PROBE_MESSAGE_KEYS: Record<string, string> = {
   DNS_NOT_FOUND: 'APP_ACTION_ERROR_DNS_NOT_FOUND',
   CONNECTION_REFUSED: 'APP_ACTION_ERROR_CONNECTION_REFUSED',
   CONNECTION_TIMEOUT: 'COMMON_CONNECTION_TIMED_OUT',
+  // tailscaled refuses the Hub's Serve changes, so the page must not read as a broken app (#2273).
+  TAILSCALE_SERVE_REFUSED: 'APP_ACTION_ERROR_TAILSCALE_SERVE_REFUSED',
   NO_DEVICE_REGISTRATION: 'APP_ACTION_ERROR_NO_DEVICE_REGISTRATION',
   // Without this the user saw the backend's raw English detail string.
   TAILSCALE_NOT_READY: 'APP_ACTION_ERROR_TAILSCALE_NOT_READY',
@@ -321,7 +323,8 @@ export function useAppUrlAvailability(input: {
 
   return {
     state,
-    appUrl: probe?.appUrl ?? lastKnownAppUrl,
+    // Nothing serves this address during a refusal, so an earlier verdict's URL can't bring back "Open anyway".
+    appUrl: probe?.errorCode === 'TAILSCALE_SERVE_REFUSED' ? null : (probe?.appUrl ?? lastKnownAppUrl),
     localUrl: probe?.localUrl ?? lastKnownLocalUrl,
     statusMessage,
     resolvable: Boolean(probe?.resolvable),

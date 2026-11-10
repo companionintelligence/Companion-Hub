@@ -72,6 +72,21 @@ function isDnsMiss(error: unknown): boolean {
   return message.includes('ENOTFOUND') || message.includes('getaddrinfo') || message.includes('ENODATA') || message.includes('EAI_AGAIN');
 }
 
+/**
+ * Whether tailscaled is refusing the Hub's Serve changes and this app's port is not already served.
+ * Asked first, because the probe of an unpublished port reads as a broken app: refused, or a TLS error
+ * when the port is plain HTTP on the host (#2273). A port served before the refusal still works, under
+ * this node's name only: a tailnet rename leaves the old listener in place and it doesn't answer the new name.
+ */
+async function isRefusedByTailscale(tailscaleService: TailscaleService, appPort: number | null, nodeFqdn: string): Promise<boolean> {
+  if (!tailscaleService.getServePermission().denied) {
+    return false;
+  }
+  const selfHost = nodeFqdn.toLowerCase();
+  const { entries } = await tailscaleService.getServeStatus();
+  return !entries.some((entry) => entry.listenPort === appPort && entry.host === selfHost);
+}
+
 function dnsNotFoundResult(exposureMode: string, appUrl: string): AppAvailabilityResult {
   return {
     available: false,
@@ -514,6 +529,18 @@ export class AppsService {
         };
       }
 
+      if (tailscaleStatus?.nodeFqdn && (await isRefusedByTailscale(tailscaleService, appPort, tailscaleStatus.nodeFqdn))) {
+        return {
+          available: false,
+          appUrl: undefined,
+          stage: 'error',
+          reason: 'TAILSCALE_REFUSED',
+          errorCode: 'TAILSCALE_SERVE_REFUSED',
+          detail: 'Tailscale refused this change. Open Settings > Network to fix it.',
+          resolvable: false,
+        };
+      }
+
       appUrl = vpnUrl;
     } else {
       const cloudflareClient = this.moduleRef.get(CloudflareClientService, { strict: false });
@@ -637,6 +664,8 @@ export class AppsService {
 
     const exposureMode = app.exposureMode || 'local';
     const actions: string[] = [];
+    const failures: string[] = [];
+    const restartFailure = (e: unknown) => `Failed to restart container: ${e instanceof Error ? e.message : String(e)}`;
 
     try {
       // For Cloudflare errors: re-sync state with Companion Portal
@@ -677,8 +706,40 @@ export class AppsService {
         }
       }
 
-      // For Tailscale errors: re-add serve entry
-      if (exposureMode === 'tailscale' && (check.errorCode === 'CONNECTION_REFUSED' || check.errorCode === 'PROXY_UPSTREAM_ERROR')) {
+      const tailscaleRepair =
+        exposureMode === 'tailscale' && (check.errorCode === 'CONNECTION_REFUSED' || check.errorCode === 'PROXY_UPSTREAM_ERROR');
+
+      // For upstream/proxy errors: restart the app container
+      if (check.errorCode === 'PROXY_UPSTREAM_ERROR' || check.errorCode === 'CONNECTION_REFUSED' || check.errorCode === 'CF_ORIGIN_DOWN') {
+        const { DockerService } = await import('../docker/docker.service');
+        const dockerService = this.moduleRef.get(DockerService, { strict: false });
+        if (dockerService) {
+          // Compose names containers `<project>-<service>-1`, so the app's name is never one of them.
+          try {
+            // tailscaled answers for a down app on a port it publishes, so over the Private VPN a refusal
+            // means the port isn't published. Restarting a running app can't change that.
+            const containers = await dockerService.getRoutedContainerNames(appUrn, { downOnly: tailscaleRepair });
+            if (containers.length === 0 && !tailscaleRepair) {
+              failures.push(`Failed to restart container: no container found for ${app.appName}`);
+            }
+            for (const container of containers) {
+              // Stopping at a failure would leave a sibling cut off by its routed container's restart.
+              try {
+                await dockerService.restartContainer(container);
+                actions.push(`Restarted container: ${container}`);
+              } catch (e) {
+                failures.push(restartFailure(e));
+              }
+            }
+          } catch (e) {
+            failures.push(restartFailure(e));
+          }
+        }
+      }
+
+      // For Tailscale errors: re-add serve entry. After the restart, because the sync skips an app
+      // with no running container and would leave it unpublished until its next pass.
+      if (tailscaleRepair) {
         const { AppLifecycleService } = await import('../app-lifecycle/app-lifecycle.service');
         const lifecycleService = this.moduleRef.get(AppLifecycleService, { strict: false });
         if (lifecycleService) {
@@ -687,29 +748,21 @@ export class AppsService {
         }
       }
 
-      // For upstream/proxy errors: restart the app container
-      if (check.errorCode === 'PROXY_UPSTREAM_ERROR' || check.errorCode === 'CONNECTION_REFUSED' || check.errorCode === 'CF_ORIGIN_DOWN') {
-        const { DockerService } = await import('../docker/docker.service');
-        const dockerService = this.moduleRef.get(DockerService, { strict: false });
-        if (dockerService) {
-          const appName = app.appName;
-          try {
-            await dockerService.restartContainer(appName);
-            actions.push(`Restarted container: ${appName}`);
-          } catch (e) {
-            actions.push(`Failed to restart container: ${e instanceof Error ? e.message : String(e)}`);
-          }
-        }
+      const attempted = [...actions, ...failures].join('; ');
+
+      if (!attempted) {
+        return { success: false, action: 'none', detail: 'No resolution actions available for this error.' };
       }
 
+      // A repair that only failed changed nothing, so the page must not report it as done and recheck.
       if (actions.length === 0) {
-        return { success: false, action: 'none', detail: 'No resolution actions available for this error.' };
+        return { success: false, action: attempted, detail: attempted };
       }
 
       return {
         success: true,
-        action: actions.join('; '),
-        detail: `Attempted: ${actions.join('; ')}. The app may take a moment to become available.`,
+        action: attempted,
+        detail: `Attempted: ${attempted}. The app may take a moment to become available.`,
       };
     } catch (e) {
       return {

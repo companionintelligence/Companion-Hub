@@ -48,6 +48,7 @@ describe('resolveProbeMessageKey', () => {
     expect(resolveProbeMessageKey('DNS_NOT_FOUND')).toBe('APP_ACTION_ERROR_DNS_NOT_FOUND');
     expect(resolveProbeMessageKey('CF_TUNNEL_NOT_FOUND')).toBe('APP_ACTION_ERROR_CF_TUNNEL_NOT_FOUND');
     expect(resolveProbeMessageKey('PUBLIC_ADDRESS_QUOTA_EXCEEDED')).toBe('APP_ACTION_ERROR_PUBLIC_ADDRESS_QUOTA_EXCEEDED');
+    expect(resolveProbeMessageKey('TAILSCALE_SERVE_REFUSED')).toBe('APP_ACTION_ERROR_TAILSCALE_SERVE_REFUSED');
   });
 
   it('returns null for unknown or absent codes so the caller can fall back to the raw detail', () => {
@@ -293,6 +294,22 @@ describe('useAppUrlAvailability', () => {
 
     await waitFor(() => expect(result.current.state).not.toBe('propagating'));
     expect(result.current.appUrl).toBe('https://app.example.com');
+  });
+
+  // Nothing serves the address during a refusal, so "Open anyway" must not come back from an earlier verdict (#2273).
+  it('drops the last resolved URL when Tailscale refuses the app', async () => {
+    probe({ available: false, stage: 'error', errorCode: 'CONNECTION_REFUSED', appUrl: 'https://app.example.com', resolvable: true });
+
+    const { result } = renderHook(() => useAppUrlAvailability(EXPOSED), { wrapper: wrapper() });
+
+    await waitFor(() => expect(result.current.appUrl).toBe('https://app.example.com'));
+
+    probe({ available: false, stage: 'error', errorCode: 'TAILSCALE_SERVE_REFUSED', resolvable: false });
+    act(() => result.current.reset());
+
+    await waitFor(() => expect(result.current.statusMessage).toBe('APP_ACTION_ERROR_TAILSCALE_SERVE_REFUSED'));
+    expect(result.current.appUrl).toBeNull();
+    expect(result.current.resolvable).toBe(false);
   });
 
   it('re-arms the grace window when the target app changes', async () => {
