@@ -130,7 +130,7 @@ fn portal_environment_for_url(url: &str) -> &'static str {
 /// The user's error-reporting choice, read from the Hub's `settings.json`.
 ///
 /// `Unset` = no preference recorded yet (fresh install / key absent), which
-/// under the opt-out posture means enabled. `Unreadable` = we tried and failed,
+/// under the opt-in default means disabled. `Unreadable` = we tried and failed,
 /// which means disabled — reporting against a decision we could not read is the
 /// worse failure.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -213,10 +213,8 @@ fn current_user_consent(now: Instant) -> UserConsent {
 /// who turns the switch off in Settings stop desktop reporting without
 /// restarting the app.
 fn reporting_allowed() -> bool {
-    matches!(
-        current_user_consent(Instant::now()),
-        UserConsent::Granted | UserConsent::Unset
-    )
+    // Opt-in: only an explicit grant reports. No choice yet (`Unset`) reports nothing.
+    matches!(current_user_consent(Instant::now()), UserConsent::Granted)
 }
 
 /// Env-level kill switches, honoured identically across the fleet. Static for
@@ -686,8 +684,9 @@ mod tests {
     }
 
     #[test]
-    fn absent_settings_or_key_takes_the_opt_out_default() {
-        // Fresh appliance: no file at all.
+    fn absent_settings_or_key_is_no_choice_and_reports_nothing() {
+        // Fresh appliance: no file at all. `Unset` is read here and `reporting_allowed`
+        // treats it as off.
         let (_dir, path) = settings_fixture(None);
         assert_eq!(read_user_consent_from(&path), UserConsent::Unset);
 

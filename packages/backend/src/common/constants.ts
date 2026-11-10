@@ -259,7 +259,8 @@ export const DEFAULT_PUBLIC_DOMAIN = isProductionEnvironmentDefault() ? DEFAULT_
 export const DEFAULT_DEMO_MODE = 'false';
 export const DEFAULT_DISABLE_PASSWORD_RESET = 'true';
 export const DEFAULT_GUEST_DASHBOARD = 'false';
-export const DEFAULT_ALLOW_ERROR_MONITORING = 'true';
+// Opt-in: error monitoring stays off until the user turns it on.
+export const DEFAULT_ALLOW_ERROR_MONITORING = 'false';
 export const DEFAULT_PERSIST_TRAEFIK_CONFIG = 'false';
 export const DEFAULT_QUEUE_TIMEOUT_IN_MINUTES = '5';
 /** Minimum RPC/status grace for app install while large images pull (e.g. OpenClaw ~1GB). */

@@ -2,15 +2,17 @@
 
 > What Companion Hub reports, to whom, and how to stop it.
 
-Hub can report crashes to [Sentry](https://sentry.io). Nothing else leaves the
-appliance: there is no product analytics, no usage metering, and no PostHog or
-Amplitude. The `cihub` CLI reports nothing at all.
+Hub can report crashes, performance data and masked session recordings to
+[Sentry](https://sentry.io). Nothing else leaves the appliance: there is no
+product analytics, no usage metering, and no PostHog or Amplitude. The `cihub`
+CLI reports nothing at all.
 
-**It is on by default in distributed builds.** The DSN is compiled into the
-published image and the desktop bundle, so a self-hosted Hub reports crashes
-until an operator turns it off. That is a deliberate trade — a crash nobody sees
-is a crash nobody fixes — but it is your machine, and the switches below are the
-whole story.
+**It is off until you turn it on.** The DSN is compiled into the published image
+and the desktop bundle, but a Hub sends nothing until someone turns on
+**Allow anonymous error monitoring** in Settings → General. A fresh appliance has
+made no choice, so it reports nothing. Session recordings are also masked: text
+is hidden and images and media are blocked. The switches below are the whole
+story, and the environment switches win over the in-product one.
 
 ## Turning it off
 
@@ -22,7 +24,7 @@ without a restart.
 | --- | --- | --- |
 | `CI_LOCAL_ONLY=true` | hub `.env` | Nothing leaves this machine, for any reason |
 | `CI_TELEMETRY=off` | hub `.env` | No error reporting; other local features unaffected |
-| **Allow anonymous error monitoring** | Settings → General | The in-product switch (`allowErrorMonitoring` in `state/settings.json`) |
+| **Allow anonymous error monitoring** | Settings → General | The in-product switch, off until you turn it on (`allowErrorMonitoring` in `state/settings.json`) |
 | no DSN configured | build | Nothing to send to |
 
 The env vars override the UI switch, so a box owner's decision cannot be undone

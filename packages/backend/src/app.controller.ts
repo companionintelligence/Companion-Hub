@@ -74,7 +74,7 @@ export class AppController {
       isConfigured: false,
       isGuestDashboardEnabled: false,
       isPasswordResetDisabled: true,
-      allowErrorMonitoring: true,
+      allowErrorMonitoring: false,
       themeColor: 'blue',
       localDomain: configuredLocalDomain,
       domain: configuredDomain,
