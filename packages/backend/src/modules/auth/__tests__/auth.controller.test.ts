@@ -3710,7 +3710,9 @@ describe('AuthController', () => {
       expect(res.redirect).not.toHaveBeenCalled();
       const html = vi.mocked(res.send).mock.calls[0]?.[0] as string;
       expect(html).toContain('Continue in this browser?');
-      expect(html).toContain('<strong>op@example.com</strong> and connect an app to CI Memory');
+      // Kept out of Cloudflare's email obfuscation, which would turn it into a dead "[email protected]" link.
+      expect(html).toContain('<strong><!--email_off-->op@example.com<!--/email_off--></strong> and connect an app to CI Memory');
+      expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store, no-transform');
       expect(html).toContain('<form id="handoff-confirm" method="post" action="/api/auth/browser-handoff/confirm">');
       expect(html).toContain('data-busy="Connecting…"');
       expect(html).toContain('name="ticket" value="ticket-abc"');

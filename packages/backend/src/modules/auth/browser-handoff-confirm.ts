@@ -87,7 +87,11 @@ const BROWSER_HANDOFF_CONFIRM_SCRIPT_HASH = `'sha256-${crypto.createHash('sha256
  */
 export function setBrowserHandoffConfirmHeaders(res: Response): void {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store');
+  // `no-transform`: the Hub's public origin sits behind Cloudflare, whose Email Address
+  // Obfuscation rewrites the username (an email) into a "[email protected]" link that needs a
+  // Cloudflare script this CSP blocks; the link then lands on Cloudflare's own block page.
+  // Cloudflare skips that rewrite for no-transform responses (the body also marks it email_off).
+  res.setHeader('Cache-Control', 'no-store, no-transform');
   res.setHeader('X-Frame-Options', 'DENY');
   // `same-origin`, not `no-referrer`: the latter makes Chrome send `Origin: null` on the Continue POST.
   res.setHeader('Referrer-Policy', 'same-origin');
@@ -210,7 +214,7 @@ form { margin: 0; }
 <body>
 <main class="card">
 <h1>Continue in this browser?</h1>
-<p>The Companion Hub app opened this page to sign this browser in as <strong>${username}</strong> and ${target}.</p>
+<p>The Companion Hub app opened this page to sign this browser in as <strong><!--email_off-->${username}<!--/email_off--></strong> and ${target}.</p>
 <form id="handoff-confirm" method="post" action="${BROWSER_HANDOFF_CONFIRM_PATH}">
 <input type="hidden" name="ticket" value="${ticket}">
 <button class="btn" type="submit" data-busy="${busyLabel}"><span class="spin" aria-hidden="true"></span><span class="label">Continue</span></button>
