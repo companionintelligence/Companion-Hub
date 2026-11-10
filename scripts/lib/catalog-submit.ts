@@ -140,10 +140,22 @@ export function rewriteComposeImages(
   return { compose: { ...compose, services }, images };
 }
 
+/** Parses a JSON file that may be absent; a parse failure lands in `errors`, naming the file, instead of throwing. */
+function readJsonFile(filePath: string, label: string, errors: string[]): unknown {
+  if (!existsSync(filePath)) return undefined;
+  try {
+    return JSON.parse(readFileSync(filePath, 'utf8'));
+  } catch (error) {
+    errors.push(`${label} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
+}
+
 export function validateSubmitDir(dir: string): {
   config: Record<string, unknown>;
-  compose: { services?: ComposeService[] };
+  compose: { schemaVersion?: unknown; services?: ComposeService[] };
   missing: string[];
+  errors: string[];
 } {
   const configPath = join(dir, 'config.json');
   const composePath = join(dir, 'docker-compose.json');
@@ -151,16 +163,20 @@ export function validateSubmitDir(dir: string): {
   const logoPng = join(dir, 'metadata', 'logo.png');
   const logoJpg = join(dir, 'metadata', 'logo.jpg');
   const missing: string[] = [];
+  const errors: string[] = [];
 
   if (!existsSync(configPath)) missing.push('config.json');
   if (!existsSync(composePath)) missing.push('docker-compose.json');
   if (!existsSync(descriptionPath)) missing.push('metadata/description.md');
   if (!existsSync(logoPng) && !existsSync(logoJpg)) missing.push('metadata/logo.png or metadata/logo.jpg');
 
-  const config = existsSync(configPath) ? (JSON.parse(readFileSync(configPath, 'utf8')) as Record<string, unknown>) : {};
-  const compose = existsSync(composePath) ? (JSON.parse(readFileSync(composePath, 'utf8')) as { services?: ComposeService[] }) : {};
+  const rawConfig = readJsonFile(configPath, 'config.json', errors);
+  const configIsObject = typeof rawConfig === 'object' && rawConfig !== null && !Array.isArray(rawConfig);
+  if (rawConfig !== undefined && !configIsObject) errors.push('config.json must be a JSON object');
+  const config = configIsObject ? (rawConfig as Record<string, unknown>) : {};
+  const compose = (readJsonFile(composePath, 'docker-compose.json', errors) ?? {}) as { schemaVersion?: unknown; services?: ComposeService[] };
 
-  return { config, compose, missing };
+  return { config, compose, missing, errors };
 }
 
 export function loginFilePath(home = process.env.HOME || process.env.USERPROFILE || tmpdir()): string {
@@ -399,9 +415,12 @@ const DENIED_HOST_PATHS = [
 const ALWAYS_ALLOWED_HOST_PATHS = new Set(['/etc/localtime', '/etc/timezone']);
 
 export async function prepareSubmitPlan(dir: string, orgSlug: string, registryHost: string) {
-  const { config, compose, missing } = validateSubmitDir(dir);
+  const { config, compose, missing, errors } = validateSubmitDir(dir);
   if (missing.length > 0) {
     return { ok: false as const, error: `Missing ${missing.join(', ')}` };
+  }
+  if (errors.length > 0) {
+    return { ok: false as const, error: errors.join('; ') };
   }
   const bundleId = typeof config.id === 'string' ? config.id : '';
   if (!isValidBundleId(bundleId)) {
@@ -416,13 +435,27 @@ export async function prepareSubmitPlan(dir: string, orgSlug: string, registryHo
   if (!Array.isArray(compose?.services) || compose.services.length === 0) {
     return { ok: false as const, error: "docker-compose.json has no services. 'services' must be a list with at least one service." };
   }
-  for (const service of compose.services) {
-    const sName = service.name ?? 'service';
+  // rewriteComposeImages names each extra service's registry repo after it, so a repeated name would
+  // push two images to one repo and lose the first.
+  const serviceNames = new Set<string>();
+  for (const [index, service] of compose.services.entries()) {
+    if (typeof service !== 'object' || service === null || Array.isArray(service)) {
+      return { ok: false as const, error: `docker-compose.json services[${index}] is not an object` };
+    }
+    if (typeof service.name !== 'string') {
+      return { ok: false as const, error: `docker-compose.json services[${index}] has no name. Every service needs a string 'name'.` };
+    }
+    if (serviceNames.has(service.name)) {
+      return { ok: false as const, error: `Two services are named '${service.name}'; service names must be unique` };
+    }
+    serviceNames.add(service.name);
+    const sName = service.name;
     const img = typeof service.image === 'string' ? service.image.trim() : '';
     if (!img) {
       return { ok: false as const, error: `Service '${sName}' has an empty image property` };
     }
-    if (/^<[^>]+>$/.test(img) || img === '<image>') {
+    // `<` and `>` are never legal in an image reference, so any `<...>` is a template placeholder left in.
+    if (/<[^>]*>/.test(img)) {
       return {
         ok: false as const,
         error: `Service '${sName}' contains placeholder image '${img}'. Set your container image in docker-compose.json before submitting.`,
@@ -430,7 +463,7 @@ export async function prepareSubmitPlan(dir: string, orgSlug: string, registryHo
     }
     if (typeof (service as Record<string, unknown>).internalPort === 'string') {
       const portStr = String((service as Record<string, unknown>).internalPort).trim();
-      if (/^<[^>]+>$/.test(portStr)) {
+      if (/<[^>]*>/.test(portStr)) {
         return {
           ok: false as const,
           error: `Service '${sName}' contains placeholder internalPort '${portStr}'. Set a valid port number in docker-compose.json.`,
@@ -470,6 +503,11 @@ export async function prepareSubmitPlan(dir: string, orgSlug: string, registryHo
         }
       }
     }
+  }
+
+  // The Hub's parseComposeJson refuses a compose without it, so the app would pass here and never install.
+  if (compose.schemaVersion !== 2) {
+    return { ok: false as const, error: 'docker-compose.json must declare "schemaVersion": 2 (the Hub refuses a compose without it)' };
   }
 
   const warnings: string[] = [];

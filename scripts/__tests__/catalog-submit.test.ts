@@ -46,6 +46,7 @@ function fixtureDir() {
   writeFileSync(
     join(dir, 'docker-compose.json'),
     JSON.stringify({
+      schemaVersion: 2,
       services: [
         { name: 'web', image: 'photos:local', isMain: true },
         { name: 'db', image: 'postgres:16' },
@@ -144,6 +145,102 @@ describe('submit directory', () => {
     if (!plan.ok) {
       expect(plan.error).toContain('contains placeholder image');
     }
+  });
+
+  it('rejects a placeholder inside an image reference, not only a whole-value one', async () => {
+    const dir = fixtureDir();
+    writeFileSync(
+      join(dir, 'docker-compose.json'),
+      JSON.stringify({ schemaVersion: 2, services: [{ name: 'web', image: 'ghcr.io/acme/<image>:latest', isMain: true }] }),
+    );
+
+    const plan = await prepareSubmitPlan(dir, 'acme', 'hub.ci.computer');
+
+    expect(plan).toMatchObject({ ok: false, error: expect.stringContaining('placeholder image') });
+  });
+
+  it('rejects a placeholder inside an internalPort', async () => {
+    const dir = fixtureDir();
+    writeFileSync(
+      join(dir, 'docker-compose.json'),
+      JSON.stringify({ schemaVersion: 2, services: [{ name: 'web', image: 'photos:local', isMain: true, internalPort: '80<port>' }] }),
+    );
+
+    const plan = await prepareSubmitPlan(dir, 'acme', 'hub.ci.computer');
+
+    expect(plan).toMatchObject({ ok: false, error: expect.stringContaining('placeholder internalPort') });
+  });
+
+  it.each([
+    [
+      'beside a main service',
+      [
+        { name: 'web', image: 'photos:local', isMain: true },
+        { name: 'api', image: 'api-one:1' },
+        { name: 'api', image: 'api-two:1' },
+      ],
+    ],
+    [
+      'on their own',
+      [
+        { name: 'api', image: 'api-one:1' },
+        { name: 'api', image: 'api-two:1' },
+      ],
+    ],
+  ])('rejects two services with the same name %s', async (_label, services) => {
+    const dir = fixtureDir();
+    writeFileSync(join(dir, 'docker-compose.json'), JSON.stringify({ schemaVersion: 2, services }));
+
+    const plan = await prepareSubmitPlan(dir, 'acme', 'hub.ci.computer');
+
+    expect(plan).toMatchObject({ ok: false, error: expect.stringContaining('unique') });
+  });
+
+  it('rejects a service entry that is not an object, naming its index', async () => {
+    const dir = fixtureDir();
+    writeFileSync(join(dir, 'docker-compose.json'), JSON.stringify({ schemaVersion: 2, services: [null] }));
+
+    await expect(prepareSubmitPlan(dir, 'acme', 'hub.ci.computer')).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('services[0]'),
+    });
+  });
+
+  it('rejects a service without a name', async () => {
+    const dir = fixtureDir();
+    writeFileSync(join(dir, 'docker-compose.json'), JSON.stringify({ schemaVersion: 2, services: [{ image: 'photos:local' }] }));
+
+    const plan = await prepareSubmitPlan(dir, 'acme', 'hub.ci.computer');
+
+    expect(plan).toMatchObject({ ok: false, error: expect.stringContaining('services[0]') });
+  });
+
+  it('rejects a config.json that is not a JSON object', async () => {
+    const dir = fixtureDir();
+    writeFileSync(join(dir, 'config.json'), 'null');
+
+    await expect(prepareSubmitPlan(dir, 'acme', 'hub.ci.computer')).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('config.json'),
+    });
+  });
+
+  it.each(['config.json', 'docker-compose.json'])('reports malformed JSON in %s instead of throwing', async (file) => {
+    const dir = fixtureDir();
+    writeFileSync(join(dir, file), '{ "id": ');
+
+    const result = prepareSubmitPlan(dir, 'acme', 'hub.ci.computer');
+
+    await expect(result).resolves.toMatchObject({ ok: false, error: expect.stringContaining(`${file} is not valid JSON`) });
+  });
+
+  it('rejects a compose without schemaVersion 2, which the Hub refuses to install', async () => {
+    const dir = fixtureDir();
+    writeFileSync(join(dir, 'docker-compose.json'), JSON.stringify({ services: [{ name: 'web', image: 'photos:local', isMain: true }] }));
+
+    const plan = await prepareSubmitPlan(dir, 'acme', 'hub.ci.computer');
+
+    expect(plan).toMatchObject({ ok: false, error: expect.stringContaining('schemaVersion') });
   });
 
   it('rejects sensitive host mounts without host_access grant', async () => {
