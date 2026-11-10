@@ -543,7 +543,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
         sighting: sizing?.sighting ?? null,
         maxContextLength,
       });
-      // Never above the one window Lemonade serves this model at to every caller.
+      // Never above the one window Lemonade or vLLM serves this model at to every caller.
       const served = capHandoutAtServedWindow({
         appSlug: slug,
         engineId: chatModelId,

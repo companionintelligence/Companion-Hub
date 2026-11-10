@@ -1,6 +1,7 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import axios from 'axios';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { InferenceEnvResolver } from '../inference-env-resolver';
@@ -570,6 +571,27 @@ describe('InferenceEnvResolver', () => {
       expect(env.CI_OLLAMA_EMBED_HOST).toBeUndefined();
       expect(env.CI_EMBEDDING_BASE_URL).toBeUndefined();
       expect(env.CI_EMBEDDING_MODEL).toBeUndefined();
+    });
+
+    // vLLM serves a model at the one window it was started with (`--max-model-len`) and refuses a
+    // request above it with a 400. The handout was sized from memory alone and promised more.
+    it('hands an app no more than the max_model_len vLLM serves the model at', async () => {
+      const realVllm = new VllmBackend(mock<LoggerService>(), config);
+      const get = vi.spyOn(axios, 'get').mockResolvedValue({
+        data: { object: 'list', data: [{ id: 'Qwen/Qwen3-8B', owned_by: 'vllm', max_model_len: 8192 }] },
+      });
+      vllmBackend.servedContextLength.mockImplementation((id) => realVllm.servedContextLength(id));
+
+      try {
+        const env = await service.resolve();
+
+        // Sized from the 24576 MB budget alone this would be 65536.
+        expect(env.CI_LLM_NUM_CTX).toBe('8192');
+        expect(vllmBackend.servedContextLength).toHaveBeenCalledWith('Qwen/Qwen3-8B');
+        expect(get).toHaveBeenCalledWith(expect.stringContaining('/v1/models'), expect.any(Object));
+      } finally {
+        get.mockRestore();
+      }
     });
   });
 
