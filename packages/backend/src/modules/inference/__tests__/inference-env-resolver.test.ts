@@ -593,6 +593,27 @@ describe('InferenceEnvResolver', () => {
         get.mockRestore();
       }
     });
+
+    // An operator's own `vllm serve` of a model the catalog has no row for: the app is handed that model,
+    // so the window to respect is the one vLLM serves it at, not the catalog row's.
+    it('caps an app at the window vLLM serves the model it is handed, when that is not the catalog model', async () => {
+      vllmBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['meta-llama/Llama-3.1-8B-Instruct'] });
+      const realVllm = new VllmBackend(mock<LoggerService>(), config);
+      const get = vi.spyOn(axios, 'get').mockResolvedValue({
+        data: { object: 'list', data: [{ id: 'meta-llama/Llama-3.1-8B-Instruct', owned_by: 'vllm', max_model_len: 8192 }] },
+      });
+      vllmBackend.servedContextLength.mockImplementation((id) => realVllm.servedContextLength(id));
+
+      try {
+        const env = await service.resolve();
+
+        expect(env.CI_CHAT_MODEL).toBe('meta-llama/Llama-3.1-8B-Instruct');
+        expect(env.CI_LLM_NUM_CTX).toBe('8192');
+        expect(vllmBackend.servedContextLength).toHaveBeenCalledWith('meta-llama/Llama-3.1-8B-Instruct');
+      } finally {
+        get.mockRestore();
+      }
+    });
   });
 
   describe('Lemonade backend embeddings: host and model always name the same engine', () => {

@@ -1395,6 +1395,10 @@ export type GetConfigDiffDto = {
     new: string;
 };
 
+export type GuestVisibilityBodyDto = {
+    visible: boolean;
+};
+
 export type AppRuntimeHealthDto = {
     appUrn: string;
     appName: string;
@@ -4119,6 +4123,19 @@ export type UnignoreAppVersionData = {
 };
 
 export type UnignoreAppVersionResponses = {
+    200: unknown;
+};
+
+export type SetGuestVisibilityData = {
+    body: GuestVisibilityBodyDto;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/apps/{urn}/guest-visibility';
+};
+
+export type SetGuestVisibilityResponses = {
     200: unknown;
 };
 

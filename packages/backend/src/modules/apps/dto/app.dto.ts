@@ -230,3 +230,10 @@ export class GetRandomPortDto extends createZodDto(getRandomPortSchema) {}
 export class GetConfigDiffDto extends createZodDto(getConfigDiffSchema) {}
 export class GetComposeDiffDto extends createZodDto(getComposeDiff) {}
 export class AppDataListingDto extends createZodDto(appDataListingSchema) {}
+
+/** Shows or hides one installed app on the guest dashboard, without touching its settings or restarting it. */
+const guestVisibilityBodySchema = z.object({
+  visible: z.boolean(),
+});
+
+export class GuestVisibilityBodyDto extends createZodDto(guestVisibilityBodySchema) {}

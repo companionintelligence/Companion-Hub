@@ -182,6 +182,23 @@ describe('CustomAppService', () => {
       await expect(service.updateCustomApp('myapp:_user' as any, config)).resolves.toBeUndefined();
     });
 
+    // Saving only rewrites the compose file; a running app keeps its old containers until it restarts.
+    it('marks a running app as needing a restart', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 7, status: 'running' } as any);
+
+      await service.updateCustomApp('myapp:_user' as any, composeWithPort(80));
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { pendingRestart: true });
+    });
+
+    it('leaves a stopped app alone, since its next start reads the new file', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 7, status: 'stopped' } as any);
+
+      await service.updateCustomApp('myapp:_user' as any, composeWithPort(80));
+
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
     it('does not throw on a malformed config, which only an MCP call can send', async () => {
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
 

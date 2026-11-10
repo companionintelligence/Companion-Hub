@@ -19,6 +19,7 @@ import { AppBackupsCard } from '../components/app-backups-card/app-backups-card'
 import { AppAccessPoints } from '../components/app-access-points/app-access-points';
 import { AppHeaderStat, versionLabel } from '../components/app-header-stat/app-header-stat';
 import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';
+import { CustomAppRestartNotice } from '../components/custom-app-restart-notice/custom-app-restart-notice';
 import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
 import { useAppUrlAvailability } from '../helpers/use-app-url-availability';
 import { useCustomAppAccess } from '../helpers/use-custom-app-access';
@@ -100,6 +101,7 @@ export const CustomAppDetailsPageContent = ({ appId, info, app, metadata, failur
     <div className="page-scroller-edge-0 relative h-full overflow-y-auto" data-page-scroller="custom-app">
       <div className="mx-auto max-w-6xl space-y-4 px-0 pb-20 sm:space-y-8">
         <AppRuntimeDegradedBanner runtimeHealth={runtimeHealth.data} />
+        <CustomAppRestartNotice info={info} app={app} canRestart={access.may('restart')} />
         <Card data-testid="app-details" className="overflow-hidden border-border/60 bg-card/80 shadow-sm">
           <CardContent className="space-y-4 p-3 sm:space-y-6 sm:p-6">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-6">

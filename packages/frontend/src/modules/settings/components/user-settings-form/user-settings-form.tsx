@@ -45,7 +45,6 @@ const isIpv4 = (value: string) => z.ipv4().safeParse(value).success;
 const settingsSchema = z.object({
   appsRepoUrl: z.string().optional(),
   localDomain: z.string().optional(),
-  guestDashboard: z.boolean().optional(),
   allowErrorMonitoring: z.boolean().optional(),
   defaultAppCpuLimit: z.string().optional(),
   timeZone: z.string().optional(),
@@ -71,7 +70,6 @@ const settingsSchema = z.object({
 export type SettingsFormValues = {
   appsRepoUrl?: string;
   localDomain?: string;
-  guestDashboard?: boolean;
   allowErrorMonitoring?: boolean;
   defaultAppCpuLimit?: string;
   timeZone?: string;
@@ -270,28 +268,7 @@ export const UserSettingsForm = (props: IProps) => {
         </CardHeader>
         <CardContent>
           <form className="flex flex-col mt-2" onSubmit={handleSubmit(validate)}>
-            <div className="mb-3">
-              <Controller
-                control={control}
-                name="guestDashboard"
-                defaultValue={false}
-                render={({ field: { onChange, value, ref, ...rest } }) => (
-                  <Switch
-                    className="mb-3"
-                    ref={ref}
-                    checked={value}
-                    onCheckedChange={onChange}
-                    {...rest}
-                    label={
-                      <>
-                        {t('SETTINGS_GENERAL_GUEST_DASHBOARD')}
-                        <SettingsHint className="guest-dashboard-hint" hint={t('SETTINGS_GENERAL_GUEST_DASHBOARD_HINT')} />
-                      </>
-                    }
-                  />
-                )}
-              />
-            </div>
+            {/* The guest dashboard switch moved to its own card below, with the apps and links it shows (#2422). */}
             <div className="mb-3">
               <Controller
                 control={control}

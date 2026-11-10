@@ -471,11 +471,19 @@ export class AppFilesManager {
    * them again the same way. A folder that exists is left as it is, and so is a file a mount names
    * (`data/nginx/nginx.conf`). A path outside the app's data folder is ignored, and a `private: true`
    * one starts at 700 (see {@link setAppDataDirPermissions}).
+   *
+   * Nothing is made at or below the app's own `app.env`. Start, restart, reset and update reach this
+   * through prepareAppComposeDir before generateEnvFile writes that file, so a folder in its place
+   * would fail every compose up of an app that mounts it.
    */
   public async createVolumeHostDirs(appUrn: AppUrn): Promise<void> {
     const { appDataDir } = this.getAppPaths(appUrn);
+    const appEnvPath = path.join(appDataDir, 'app.env');
 
     for (const mount of await this.getAppDataBindMounts(appUrn)) {
+      if (mount.target === appEnvPath || mount.target.startsWith(`${appEnvPath}${path.sep}`)) {
+        continue;
+      }
       // The containment check reads the path as written. A link on the way (a restored backup may hold
       // `data/secrets -> /data/state`) would have the mkdir and the chmod act wherever it points.
       const found = await this.inspectVolumeTarget(appDataDir, mount.target);

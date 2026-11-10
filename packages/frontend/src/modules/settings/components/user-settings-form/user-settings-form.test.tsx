@@ -13,7 +13,6 @@ global.ResizeObserver = class ResizeObserver {
 const newHubSettings: SettingsFormValues = {
   advancedSettings: false,
   localDomain: 'localhost',
-  guestDashboard: false,
   allowErrorMonitoring: true,
   timeZone: 'Etc/GMT',
   domain: 'example.com',
@@ -50,7 +49,7 @@ it('lets a keyboard user focus a setting hint', () => {
   render(<UserSettingsForm initialValues={newHubSettings} onSubmit={vi.fn()} />);
 
   const hint = screen.getByRole('button', {
-    name: 'This will allow non-authenticated users to see a limited dashboard and easily access the running apps on your instance.',
+    name: 'Error monitoring is used to track errors and improve Companion Hub. Keep this option enabled to help us improve Companion Hub.',
   });
   expect(hint).toHaveTextContent('?');
   hint.focus();
@@ -90,17 +89,33 @@ it('offers no Base theme, only Language, in the User settings card', () => {
 /** The Timezone box. Its label is not tied to it, so find it by its name. */
 const timezoneField = () => screen.getAllByRole('combobox').find((box) => box.getAttribute('name') === 'timezone');
 
+// #2422: the guest dashboard switch moved to its own card, which saves it by itself. A General settings
+// save must not carry the value the form opened with, or it would undo a change made in that card.
+describe('UserSettingsForm guest dashboard', () => {
+  it('has no guest dashboard switch and leaves it out of a save', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={{ ...newHubSettings, guestDashboard: true } as SettingsFormValues} onSubmit={onSubmit} />);
+
+    expect(screen.queryByRole('switch', { name: /guest dashboard/i })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('switch', { name: /Allow anonymous error monitoring/ }));
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(expect.not.objectContaining({ guestDashboard: expect.anything() }));
+  });
+});
+
 describe('UserSettingsForm Local domain check', () => {
   it('saves a change on a new Hub, where the read-only Local domain is the localhost the Hub filled in', async () => {
     const onSubmit = vi.fn();
     render(<UserSettingsForm initialValues={newHubSettings} onSubmit={onSubmit} />);
 
     expect(localDomainField()).toHaveAttribute('readonly');
-    await userEvent.click(screen.getByRole('switch', { name: 'Enable guest dashboard' }));
+    await userEvent.click(screen.getByRole('switch', { name: /Allow anonymous error monitoring/ }));
     await submit();
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ guestDashboard: true, localDomain: 'localhost' }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ allowErrorMonitoring: false, localDomain: 'localhost' }));
     expect(screen.queryByText('Invalid domain')).not.toBeInTheDocument();
   });
 
@@ -123,11 +138,11 @@ describe('UserSettingsForm Local domain check', () => {
     const onSubmit = vi.fn();
     render(<UserSettingsForm initialValues={{ ...newHubSettings, localDomain: 'lan' }} onSubmit={onSubmit} />);
 
-    await userEvent.click(screen.getByRole('switch', { name: 'Enable guest dashboard' }));
+    await userEvent.click(screen.getByRole('switch', { name: /Allow anonymous error monitoring/ }));
     await submit();
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ guestDashboard: true, localDomain: 'lan' }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ allowErrorMonitoring: false, localDomain: 'lan' }));
   });
 
   // CI-Hub#2380: the Apps repo URL field is not on the page, so a stored value the URL check refuses
@@ -136,11 +151,11 @@ describe('UserSettingsForm Local domain check', () => {
     const onSubmit = vi.fn();
     render(<UserSettingsForm initialValues={{ ...newHubSettings, appsRepoUrl: 'http://ci-marketplace:8080/repo' }} onSubmit={onSubmit} />);
 
-    await userEvent.click(screen.getByRole('switch', { name: 'Enable guest dashboard' }));
+    await userEvent.click(screen.getByRole('switch', { name: /Allow anonymous error monitoring/ }));
     await submit();
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ guestDashboard: true }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ allowErrorMonitoring: false }));
   });
 
   it('still rejects a typed Local domain that is not a domain name', async () => {
@@ -300,11 +315,11 @@ describe('UserSettingsForm Internal IP check', () => {
     const onSubmit = vi.fn();
     render(<UserSettingsForm initialValues={{ ...newHubSettings, internalIp }} onSubmit={onSubmit} />);
 
-    await userEvent.click(screen.getByRole('switch', { name: 'Enable guest dashboard' }));
+    await userEvent.click(screen.getByRole('switch', { name: /Allow anonymous error monitoring/ }));
     await submit();
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ guestDashboard: true }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ allowErrorMonitoring: false }));
     expect(onSubmit).toHaveBeenCalledWith(expect.not.objectContaining({ internalIp: expect.anything() }));
   });
 

@@ -41,6 +41,7 @@ describe.skipIf(process.platform === 'win32')('prepareAppComposeDir on a custom 
   let scratch: string;
   let appDataRoot: string;
   let moduleRef: ModuleRef;
+  let appFilesManager: InstanceType<typeof AppFilesManager>;
 
   beforeEach(async () => {
     scratch = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'compose-volume-dirs-'));
@@ -61,7 +62,10 @@ describe.skipIf(process.platform === 'win32')('prepareAppComposeDir on a custom 
             image: 'python:3.13-alpine',
             isMain: true,
             internalPort: 8080,
-            volumes: [{ hostPath: '${APP_DATA_DIR}/data', containerPath: '/data' }],
+            volumes: [
+              { hostPath: '${APP_DATA_DIR}/data', containerPath: '/data' },
+              { hostPath: '${APP_DATA_DIR}/app.env', containerPath: '/app/.env', readOnly: true },
+            ],
           },
         ],
       }),
@@ -77,7 +81,7 @@ describe.skipIf(process.platform === 'win32')('prepareAppComposeDir on a custom 
       return undefined;
     }) as never);
 
-    const appFilesManager = new AppFilesManager(configuration, new FilesystemService(logger), logger);
+    appFilesManager = new AppFilesManager(configuration, new FilesystemService(logger), logger);
     const services = new Map<unknown, unknown>([
       [AppFilesManager, appFilesManager],
       [LoggerService, logger],
@@ -114,5 +118,17 @@ describe.skipIf(process.platform === 'win32')('prepareAppComposeDir on a custom 
     const stat = await fs.promises.stat(path.join(appDataRoot, '_user', 'notes', 'data'));
     expect(stat.isDirectory()).toBe(true);
     expect(stat.uid).toBe(process.getuid?.());
+  });
+
+  // Start prepares the folder, then writes app.env. A folder made at app.env first failed every Start.
+  it('leaves app.env for the Hub to write when the app mounts it', async () => {
+    const docker = { pruneContainers: vi.fn().mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 }) } as unknown as Dockerode;
+
+    await prepareAppComposeDir(moduleRef, docker, appUrn, { openPort: true, exposureMode: 'local' } as unknown as AppEventFormInput);
+    await appFilesManager.writeAppEnv(appUrn, 'APP_PORT=8080\n');
+
+    const appEnv = path.join(appDataRoot, '_user', 'notes', 'app.env');
+    expect((await fs.promises.lstat(appEnv)).isFile()).toBe(true);
+    await expect(fs.promises.readFile(appEnv, 'utf8')).resolves.toContain('APP_PORT=8080');
   });
 });

@@ -1070,6 +1070,21 @@ describe('AppActions', () => {
       }
     });
 
+    // #2421: the API and MCP tools could always edit a running custom app; the page hid the button.
+    it('offers Edit configuration on a running custom app, after Reset app as when it is stopped', () => {
+      renderCustom('running', ['view', 'start', 'stop', 'restart', 'install', 'update', 'uninstall', 'reset', 'backup', 'restore', 'configure']);
+
+      const icons = screen.getAllByTestId(/^icon-action-/).map((icon) => icon.getAttribute('data-testid'));
+      expect(icons).toContain('icon-action-custom_app_edit_config');
+      expect(icons.indexOf('icon-action-custom_app_edit_config')).toBe(icons.indexOf('icon-action-app_install_form_reset') + 1);
+    });
+
+    it('keeps Edit configuration from a member, who may not change the app', () => {
+      renderCustom('running', ['view']);
+
+      expect(screen.queryByTestId('icon-action-custom_app_edit_config')).not.toBeInTheDocument();
+    });
+
     // A stopped app had Uninstall in the middle of the bar, before Edit Configuration. It is last, as when the app runs.
     it('puts Uninstall last in the bar of a stopped app', () => {
       renderCustom('stopped', ['view', 'start', 'stop', 'restart', 'install', 'update', 'uninstall', 'reset', 'backup', 'restore', 'configure']);

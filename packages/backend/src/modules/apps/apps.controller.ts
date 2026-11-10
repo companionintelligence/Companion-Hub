@@ -1,7 +1,7 @@
 import { castAppUrn } from '@/common/helpers/app-helpers';
 // The class only, as a ModuleRef token: AppsModule does not import AppLifecycleModule.
 import { AppOperationRegistry, type OperationCommand } from '../app-lifecycle/app-operation-registry';
-import { Controller, Get, Param, Patch, Post, Req, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { ModuleRef } from '@nestjs/core';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
@@ -22,6 +22,7 @@ import {
   GetConfigDiffDto,
   GetRandomPortDto,
   GuestAppsDto,
+  GuestVisibilityBodyDto,
   InstalledAppUrnsDto,
   MyAppsDto,
   UpdatesAvailableDto,
@@ -263,6 +264,15 @@ export class AppsController {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'configure');
     return this.appsService.unignoreAppVersion(appUrn);
+  }
+
+  @Patch(':urn/guest-visibility')
+  @UseGuards(AuthGuard)
+  async setGuestVisibility(@Param('urn') urn: string, @Body() body: GuestVisibilityBodyDto, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    // The same grant as the app's Settings dialog, where this switch also lives.
+    await this.whois.assertSessionAction(req, appUrn, 'configure');
+    return this.appsService.setGuestVisibility(appUrn, body.visible);
   }
 
   /**

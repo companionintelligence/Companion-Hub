@@ -23,6 +23,11 @@ vi.mock('@/context/app-context', () => ({
   useAppContext: () => ({ refreshAppContext: vi.fn(), user: { advancedMode: false } }),
 }));
 
+// Its own test covers it (guest-dashboard-settings.test.tsx); here it would need the whole query client.
+vi.mock('./guest-dashboard-settings', () => ({
+  GuestDashboardSettings: () => <div data-testid="guest-dashboard-settings" />,
+}));
+
 vi.mock('../components/user-settings-form/user-settings-form', () => ({
   UserSettingsForm: ({ loading }: { loading?: boolean }) => (
     <button type="submit" disabled={loading}>
@@ -63,5 +68,14 @@ describe('UserSettingsContainer pending state', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /privacy policy/i }));
     expect(openExternal).toHaveBeenCalledWith('https://ci.computer/privacy-policy');
+  });
+
+  // #2422: the guest dashboard's own card, for someone who may change the Hub's settings.
+  it('shows the guest dashboard card to a manager and not to a member', () => {
+    const { rerender } = render(<UserSettingsContainer manageHub />);
+    expect(screen.getByTestId('guest-dashboard-settings')).toBeInTheDocument();
+
+    rerender(<UserSettingsContainer manageHub={false} />);
+    expect(screen.queryByTestId('guest-dashboard-settings')).not.toBeInTheDocument();
   });
 });

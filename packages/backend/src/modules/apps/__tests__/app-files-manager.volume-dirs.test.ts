@@ -139,6 +139,22 @@ describe('AppFilesManager.createVolumeHostDirs', () => {
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
+  // The Hub writes app.env itself once the folders exist. A folder there made every compose up fail.
+  it('never makes a folder where the app mounts its own app.env', async () => {
+    await writeCompose([
+      { hostPath: '${APP_DATA_DIR}/app.env', containerPath: '/app/.env', readOnly: true },
+      { hostPath: '${APP_DATA_DIR}/app.env/conf', containerPath: '/conf' },
+      { hostPath: '${APP_DATA_DIR}/data', containerPath: '/data' },
+    ]);
+
+    await manager.createVolumeHostDirs(appUrn);
+
+    await expect(fs.promises.lstat(path.join(appDataDir, 'app.env'))).rejects.toThrow();
+    expect((await fs.promises.stat(path.join(appDataDir, 'data'))).isDirectory()).toBe(true);
+    await manager.writeAppEnv(appUrn, 'APP_PORT=8080\n');
+    expect((await fs.promises.lstat(path.join(appDataDir, 'app.env'))).isFile()).toBe(true);
+  });
+
   it('warns about, and makes nothing under, a mount whose path runs through a file', async () => {
     await writeCompose([{ hostPath: '${APP_DATA_DIR}/data/config.yml/sub', containerPath: '/x' }]);
     await fs.promises.mkdir(path.join(appDataDir, 'data'));

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
+import { LATEST_PROTOCOL_VERSION, type Implementation } from '@modelcontextprotocol/sdk/types.js';
 import { HUB_MCP_PROTOCOL_VERSIONS } from './mcp-protocol';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { LifecycleActorFor } from '@/core/portal/lifecycle-actor';
@@ -19,6 +19,21 @@ export interface McpAdminToolInfo {
   destructive: boolean;
   access: 'read' | 'write';
   category: string;
+}
+
+/**
+ * What `GET /api/mcp-admin/status` answers. `McpDisabledController` answers the same shape with MCP
+ * off, because a mobile app built before that stand-in reads every one of these keys from any 200.
+ */
+export interface McpAdminStatus {
+  enabled: boolean;
+  server: Implementation;
+  protocolVersion: string;
+  protocolVersions: string[];
+  toolCount: number;
+  activeSessions: number;
+  activeKeyCount: number;
+  endpoint: string;
 }
 
 /**
@@ -42,7 +57,7 @@ export class McpAdminService {
   ) {}
 
   /** Overall MCP server status for the admin screen. */
-  async getStatus() {
+  async getStatus(): Promise<McpAdminStatus> {
     return {
       // MCP_ENABLED gates the module at import time, so it's read-only here (toggle via `cihub mcp`).
       enabled: process.env.MCP_ENABLED !== 'false',
