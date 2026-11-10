@@ -70,7 +70,7 @@ describe('SimpleAppTile', () => {
   it('reminds that an exposed port on the Private VPN opens for the tailnet with no Hub sign-in', () => {
     render(<SimpleAppTile name="Team Notes" urn="team-notes:_user" status="running" openWithoutSignIn="tailnet" />);
 
-    expect(screen.getByTestId('app-open-without-sign-in')).toHaveTextContent('Open to your tailnet, no Hub sign-in');
+    expect(screen.getByTestId('app-open-without-sign-in')).toHaveTextContent('Open to tailnet, no Hub sign-in');
   });
 
   it('adds no line to any other tile', () => {

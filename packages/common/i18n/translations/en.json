@@ -284,7 +284,7 @@
   "PORT_EXPOSE_OPEN_TO_TAILNET": "Open to your tailnet",
   "PORT_EXPOSE_NO_HUB_SIGN_IN": "No Hub sign-in",
   "PORT_EXPOSE_OPEN_TO_ANYONE_NO_SIGN_IN": "Open to anyone, no Hub sign-in",
-  "PORT_EXPOSE_OPEN_TO_TAILNET_NO_SIGN_IN": "Open to your tailnet, no Hub sign-in",
+  "PORT_EXPOSE_OPEN_TO_TAILNET_NO_SIGN_IN": "Open to tailnet, no Hub sign-in",
   "PORT_EXPOSE_OPEN_TO_ANYONE_DETAIL": "Anyone with this address can open it. The Hub doesn't ask them to sign in.",
   "PORT_EXPOSE_OPEN_TO_TAILNET_DETAIL": "Anyone on your tailnet can open it. The Hub doesn't ask them to sign in.",
   "CUSTOM_APP_CREATE_BUTTON": "Create app",
