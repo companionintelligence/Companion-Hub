@@ -101,6 +101,8 @@ export const McpSettingsContainer = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<McpStatus | null>(null);
+  // MCP_ENABLED=false: the Hub has no MCP server, so there is no server info, catalog or runner to show.
+  const [disabled, setDisabled] = useState(false);
   const [tools, setTools] = useState<McpToolInfo[]>([]);
   const [search, setSearch] = useState('');
   const [accessFilter, setAccessFilter] = useState<ToolAccessFilter>('all');
@@ -166,12 +168,23 @@ export const McpSettingsContainer = () => {
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setDisabled(false);
     try {
       const [statusRes, toolsRes] = await Promise.all([apiFetch('/api/mcp-admin/status'), apiFetch('/api/mcp-admin/tools')]);
+      // A Hub from before CI-Hub#2380 has no /api/mcp-admin at all while MCP is off.
+      if (statusRes.status === 404) {
+        setDisabled(true);
+        return;
+      }
       if (!statusRes.ok || !toolsRes.ok) {
         throw new Error('status');
       }
-      setStatus((await statusRes.json()) as McpStatus);
+      const nextStatus = (await statusRes.json()) as Pick<McpStatus, 'enabled'>;
+      if (!nextStatus.enabled) {
+        setDisabled(true);
+        return;
+      }
+      setStatus(nextStatus as McpStatus);
       setTools(((await toolsRes.json()) as { tools: McpToolInfo[] }).tools);
       await loadInstalledMcpApps();
     } catch {
@@ -273,6 +286,24 @@ export const McpSettingsContainer = () => {
       <div className="space-y-6" data-testid="mcp-settings-loading">
         <LoadingCard icon={Server} title={t('MCP_SETTINGS_SERVER_TITLE')} />
         <LoadingCard icon={Wrench} title={t('MCP_SETTINGS_TOOLS_TITLE')} />
+      </div>
+    );
+  }
+
+  if (disabled) {
+    return (
+      <div className="space-y-6" data-testid="mcp-settings">
+        <Card data-testid="mcp-server-card">
+          <SectionHeader
+            icon={Server}
+            title={t('MCP_SETTINGS_SERVER_TITLE')}
+            description={t('MCP_SETTINGS_DESC')}
+            badge={<StatusBadge connected={false} label={t('MCP_SETTINGS_STATUS_DISABLED')} />}
+          />
+          <CardContent>
+            <p className="text-xs text-muted-foreground">{t('MCP_SETTINGS_STATUS_DISABLED_HINT')}</p>
+          </CardContent>
+        </Card>
       </div>
     );
   }
