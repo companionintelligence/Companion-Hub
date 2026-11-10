@@ -37,7 +37,7 @@ also packaged as a Tauri 2 desktop app.
 | Global tokens & base layer      | `packages/frontend/src/styles/globals.css`                                                           |
 | Tailwind config                 | `packages/frontend/tailwind.config.ts`                                                               |
 | App-shell CSS (tooltip, layout) | `packages/frontend/src/app.css`                                                                      |
-| App grid layout                 | `packages/frontend/src/styles/app-grid.css`                                                          |
+| App grid layout                 | `APP_GRID_STYLE` in `packages/frontend/src/modules/dashboard/components/horizontal-app-list.tsx`     |
 | `cn()` util                     | `packages/frontend/src/lib/utils.ts`                                                                 |
 | UI primitives                   | `packages/frontend/src/components/ui/`                                                               |
 | Button                          | `packages/frontend/src/components/ui/Button/Button.tsx`                                              |

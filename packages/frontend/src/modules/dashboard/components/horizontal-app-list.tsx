@@ -24,7 +24,8 @@ interface HorizontalAppListProps {
 
 const SKELETON_KEYS = Array.from({ length: CATALOG_PAGE_SIZE }, (_, i) => `installed-skeleton-${i}`);
 
-const APP_GRID_STYLE = {
+/** The grid Home lays its app tiles out in; the guest dashboard uses it too. */
+export const APP_GRID_STYLE = {
   gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
   overflowX: 'auto',
   scrollBehavior: 'smooth',
