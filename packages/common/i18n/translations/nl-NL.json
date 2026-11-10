@@ -520,6 +520,8 @@
   "MY_APPS_UPDATE_AVAILABLE": "Update available",
   "NETWORK_ERROR_NO_AVAILABLE_SUBNETS": "No available subnets left",
   "NO": "No",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_one": "{{count}} model gedownload",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_other": "{{count}} modellen gedownload",
   "RESTORE_APPS_ACTION_INSTALL": "Installatie in wachtrij plaatsen",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Draait al",
   "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Overgeslagen. geen overeenkomende app store-vermelding",

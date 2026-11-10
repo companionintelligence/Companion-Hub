@@ -520,6 +520,7 @@
   "MY_APPS_UPDATE_AVAILABLE": "Update available",
   "NETWORK_ERROR_NO_AVAILABLE_SUBNETS": "No available subnets left",
   "NO": "No",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_other": "{{count}} 個のモデルをダウンロード済み",
   "RESTORE_APPS_ACTION_INSTALL": "インストールをキューに追加",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "既に実行中",
   "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "スキップ. 一致する app store のリストがありません",

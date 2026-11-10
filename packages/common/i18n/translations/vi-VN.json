@@ -520,6 +520,7 @@
   "MY_APPS_UPDATE_AVAILABLE": "Đã có bản cập nhật",
   "NETWORK_ERROR_NO_AVAILABLE_SUBNETS": "No available subnets left",
   "NO": "No",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_other": "Đã tải xuống {{count}} mô hình",
   "RESTORE_APPS_ACTION_INSTALL": "Xếp hàng cài đặt",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Đang chạy",
   "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Đã bỏ qua. không có mục app store khớp",

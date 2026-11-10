@@ -520,6 +520,8 @@
   "MY_APPS_UPDATE_AVAILABLE": "Güncelleme mevcut",
   "NETWORK_ERROR_NO_AVAILABLE_SUBNETS": "Kullanılabilir alt ağ kalmadı",
   "NO": "Hayır",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_one": "{{count}} model indirildi",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_other": "{{count}} model indirildi",
   "RESTORE_APPS_ACTION_INSTALL": "Kurulumu kuyruğa al",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Zaten çalışıyor",
   "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Atlandı. eşleşen app store listesi yok",

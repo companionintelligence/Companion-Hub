@@ -520,6 +520,7 @@
   "MY_APPS_UPDATE_AVAILABLE": "Update available",
   "NETWORK_ERROR_NO_AVAILABLE_SUBNETS": "No available subnets left",
   "NO": "No",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_other": "모델 {{count}}개 다운로드됨",
   "RESTORE_APPS_ACTION_INSTALL": "설치 대기열에 추가",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "이미 실행 중",
   "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "건너뜀. 일치하는 app store 목록 없음",

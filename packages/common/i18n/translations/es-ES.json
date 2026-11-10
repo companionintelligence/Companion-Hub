@@ -886,6 +886,8 @@
   "ONBOARDING_COMPANION_APP_UNAVAILABLE": "Aún no disponible en tu tienda de aplicaciones.",
   "ONBOARDING_AI_PROFILE_UNAVAILABLE": "Perfil de IA no disponible",
   "ONBOARDING_AI_SETUP_FAILED": "No se pudo completar la configuración de IA",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_one": "{{count}} modelo descargado",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_other": "{{count}} modelos descargados",
   "ONBOARDING_OLLAMA_RUN_ON_HOST": "Ejecuta esto en el host, no dentro del contenedor:",
   "ONBOARDING_AI_SETUP": "Configuración de IA",
   "ONBOARDING_AI_SETUP_COMPLETE_NO_APPS": "Configuración de IA completada. Ninguna aplicación seleccionada para instalación.",

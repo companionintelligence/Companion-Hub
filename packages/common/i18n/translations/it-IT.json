@@ -520,6 +520,8 @@
   "MY_APPS_UPDATE_AVAILABLE": "Aggiornamento disponibile",
   "NETWORK_ERROR_NO_AVAILABLE_SUBNETS": "Nessuna sottorete disponibile rimanente",
   "NO": "No",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_one": "{{count}} modello scaricato",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_other": "{{count}} modelli scaricati",
   "RESTORE_APPS_ACTION_INSTALL": "Metti in coda l'installazione",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Già in esecuzione",
   "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Saltato. nessuna voce corrispondente nell'app store",

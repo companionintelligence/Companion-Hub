@@ -517,6 +517,7 @@
   "MY_APPS_UPDATE_AVAILABLE": "有可用更新",
   "NETWORK_ERROR_NO_AVAILABLE_SUBNETS": "No available subnets left",
   "NO": "否",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_other": "已下载 {{count}} 个模型",
   "RESTORE_APPS_ACTION_INSTALL": "加入安装队列",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "已在运行",
   "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "已跳过. 没有匹配的 app store 列表",

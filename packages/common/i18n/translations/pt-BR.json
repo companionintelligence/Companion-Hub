@@ -519,6 +519,8 @@
   "MY_APPS_UPDATE_AVAILABLE": "Atualização disponível",
   "NETWORK_ERROR_NO_AVAILABLE_SUBNETS": "Nenhuma sub-rede disponível",
   "NO": "Não",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_one": "{{count}} modelo baixado",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_other": "{{count}} modelos baixados",
   "RESTORE_APPS_ACTION_INSTALL": "Colocar instalação na fila",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Já em execução",
   "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Ignorado. nenhuma listagem correspondente na app store",

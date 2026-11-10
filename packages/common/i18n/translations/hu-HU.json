@@ -520,6 +520,8 @@
   "MY_APPS_UPDATE_AVAILABLE": "Frissítés elérhető",
   "NETWORK_ERROR_NO_AVAILABLE_SUBNETS": "Nincs elérhető alhálózat",
   "NO": "Nem",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_one": "{{count}} modell letöltve",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_other": "{{count}} modell letöltve",
   "RESTORE_APPS_ACTION_INSTALL": "Telepítés sorba állítása",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Már fut",
   "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Kihagyva. nincs egyező app store bejegyzés",
