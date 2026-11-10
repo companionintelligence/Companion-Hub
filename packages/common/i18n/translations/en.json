@@ -2646,6 +2646,7 @@
   "MEMORY_CONNECT_BLOCKED_HUB_NOT_PROVISIONED": "This Hub doesn't have a public address yet, so it can't run the connect flow.",
   "MEMORY_CONNECT_BLOCKED_HUB_UNREACHABLE": "Your Hub's public address isn't reachable right now. Connect from a device on the same network, or try again once it's back.",
   "MEMORY_CONNECT_BLOCKED_PROVIDER_LOCAL_ONLY": "CI Memory is only available on your local network. Connect from a device on the same network.",
+  "MEMORY_CONNECT_BLOCKED_ADDRESS_REFUSED": "CI Memory has no public address, so this app can't connect to it. Open CI Memory's page to see why and what you can change.",
   "ROOT_CONNECTING": "Connecting…",
   "MOBILE_CONNECT_TITLE": "Connect to your Hub",
   "MOBILE_CONNECT_DESC": "Sign in to your Companion Intelligence account to find the Hubs you own.",

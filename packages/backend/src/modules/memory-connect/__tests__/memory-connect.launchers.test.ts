@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { PublicDnsFailureReason } from '@/modules/cloudflare/cloudflare-client.service';
 import { MemoryConnectService } from '../memory-connect.service';
 
 /**
@@ -21,6 +22,7 @@ function makeService(
   options: {
     tunnelHealth?: string;
     providerLocalOnly?: boolean;
+    providerAddressRefusal?: PublicDnsFailureReason;
     providerStatus?: string;
     internalIp?: string;
     hubSubdomain?: string;
@@ -33,6 +35,7 @@ function makeService(
     getProviderRuntimeInfo: vi.fn().mockResolvedValue({
       status: options.providerStatus ?? 'ready',
       localOnly: options.providerLocalOnly ?? false,
+      publicAddressRefusal: options.providerAddressRefusal,
     }),
     getProviderRuntimeStatus: vi.fn().mockResolvedValue(options.providerStatus ?? 'ready'),
     getAppPublicUrl: vi.fn().mockResolvedValue('https://app.example.org'),
@@ -275,6 +278,29 @@ describe('caller locality — the tunnel rewrites Host to the local domain', () 
 
     expect(status.connectable).toBe(true);
     expect(status.connectUrl).toBe(PUBLIC_LAUNCHER);
+    expect(status.reason).toBeNull();
+  });
+
+  // The flow's consent page is on Memory's public address. A refused one has no DNS record, so every caller
+  // would end on a browser error (#2309).
+  it('blocks Connect with a reason when the Portal refused ci-memory its public address', async () => {
+    const { service } = makeService({ providerAddressRefusal: 'subdomain_quota_exceeded' });
+
+    const status = await service.getStatus(APP, { host: 'hub-core2-acme.companionintelligence.com' });
+
+    expect(status.connectable).toBe(false);
+    expect(status.reason).toBe('memory_address_refused');
+    expect(status.connectUrl).toBeNull();
+    expect(status.connectUrlLocal).toBeNull();
+  });
+
+  // Cloudflare refusing the Portal's token on a zone leaves a published record live, so Connect is left to the probe at /start.
+  it('keeps Connect on a zone refusal, which may leave the address serving', async () => {
+    const { service } = makeService({ providerAddressRefusal: 'zone_unreachable' });
+
+    const status = await service.getStatus(APP, { host: 'hub-core2-acme.companionintelligence.com' });
+
+    expect(status.connectable).toBe(true);
     expect(status.reason).toBeNull();
   });
 
