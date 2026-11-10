@@ -28,7 +28,7 @@ export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
 
   return (
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'var(--app-height)' }}>
-      <Header isLoggedIn={isLoggedIn} allowAutoThemes={false} />
+      <Header isLoggedIn={isLoggedIn} />
       <div
         className="dashboard-column flex h-full flex-1 flex-col overflow-y-auto"
         style={{ marginTop: 'var(--header-offset)', paddingTop: '0.5rem', paddingBottom: 'var(--safe-area-bottom)' }}
@@ -40,7 +40,7 @@ export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
 };
 
 export const DashboardLayout = ({ children }: PropsWithChildren) => {
-  const { user, userSettings, isLoading: isAppLoading, loadFailed } = useAppContext();
+  const { user, isLoading: isAppLoading, loadFailed } = useAppContext();
   const location = useLocation();
   const prevPathRef = useRef(location.pathname);
   const mainRef = useRef<HTMLElement>(null);
@@ -114,7 +114,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
 
   return (
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'var(--app-height)' }}>
-      <Header isLoggedIn={isLoggedIn} allowAutoThemes={userSettings.allowAutoThemes} />
+      <Header isLoggedIn={isLoggedIn} />
       <main
         ref={mainRef}
         className="dashboard-column relative flex h-full flex-1 flex-col overflow-x-hidden overflow-y-auto"

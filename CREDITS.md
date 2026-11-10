@@ -95,7 +95,6 @@ The frameworks and libraries that define how this repository is built.
 | <img src="https://github.com/isomorphic-git.png?size=40" width="20" height="20" alt=""> | [`isomorphic-git`](https://isomorphic-git.org/) | MIT | A pure JavaScript reimplementation of git for node and browsers |
 | <img src="https://github.com/panva.png?size=40" width="20" height="20" alt=""> | [`jose`](https://github.com/panva/jose) | MIT | JWA, JWS, JWE, JWT, JWK, JWKS for Node.js, Browser, Cloudflare Workers, Deno, Bun, and other |
 | <img src="https://github.com/auth0.png?size=40" width="20" height="20" alt=""> | [`jsonwebtoken`](https://github.com/auth0/node-jsonwebtoken#readme) | MIT | JSON Web Token implementation (symmetric and asymmetric) |
-| <img src="https://github.com/EastSun5566.png?size=40" width="20" height="20" alt=""> | [`let-it-go`](https://eastsun5566.github.io/let-it-go/) | MIT | ❄️ Let your website snow instantly |
 | <img src="https://github.com/rust-lang.png?size=40" width="20" height="20" alt=""> | [`libc`](https://github.com/rust-lang/libc) | MIT OR Apache-2.0 | Raw FFI bindings to platform libraries like libc. |
 | <img src="https://github.com/rust-lang.png?size=40" width="20" height="20" alt=""> | [`log`](https://github.com/rust-lang/log) | MIT OR Apache-2.0 | A lightweight logging facade for Rust |
 | <img src="https://github.com/Gamote.png?size=40" width="20" height="20" alt=""> | [`lottie-react`](https://lottiereact.com) | MIT | Lottie animations in React: one component for the easy path, the whole engine when you need  |

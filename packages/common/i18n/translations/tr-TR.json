@@ -595,8 +595,6 @@
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_MODAL_TITLE": "Gelişmiş ayarlar etkinleştirilsin mi?",
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_SUBTITLE": "Sadece ne yaptığınızı biliyorsanız kullanılan gelişmiş ayarlar.",
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_TITLE": "Gelişmiş ayarlar",
-  "SETTINGS_GENERAL_ALLOW_AUTO_THEMES": "Otomatik temalara izin ver",
-  "SETTINGS_GENERAL_ALLOW_AUTO_THEMES_HINT": "Yılın zamanına göre otomatik olarak değişen temalarla şaşırın.",
   "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING": "Anonim hata takibine izin ver",
   "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING_HINT": "Hata takibi, hataları izlemek ve Companion Hub'yi iyileştirmek için kullanılır. Companion Hub'yi geliştirmemize yardımcı olmak için bu seçeneği etkin tutun.",
   "SETTINGS_GENERAL_APPS_REPO": "Uygulama deposu URL'si",

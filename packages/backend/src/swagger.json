@@ -7295,9 +7295,6 @@
           "isPasswordResetDisabled": {
             "type": "boolean"
           },
-          "allowAutoThemes": {
-            "type": "boolean"
-          },
           "allowErrorMonitoring": {
             "type": "boolean"
           },
@@ -7326,7 +7323,6 @@
           "isConfigured",
           "isGuestDashboardEnabled",
           "isPasswordResetDisabled",
-          "allowAutoThemes",
           "allowErrorMonitoring",
           "themeColor",
           "localDomain",
@@ -7382,9 +7378,6 @@
             "type": "object",
             "properties": {
               "advancedSettings": {
-                "type": "boolean"
-              },
-              "allowAutoThemes": {
                 "type": "boolean"
               },
               "allowErrorMonitoring": {
@@ -7669,7 +7662,6 @@
             },
             "required": [
               "advancedSettings",
-              "allowAutoThemes",
               "allowErrorMonitoring",
               "appDataPath",
               "demoMode",
@@ -7897,9 +7889,6 @@
         "type": "object",
         "properties": {
           "advancedSettings": {
-            "type": "boolean"
-          },
-          "allowAutoThemes": {
             "type": "boolean"
           },
           "allowErrorMonitoring": {

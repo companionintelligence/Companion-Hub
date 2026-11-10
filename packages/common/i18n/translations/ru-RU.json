@@ -595,8 +595,6 @@
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_MODAL_TITLE": "Включить расширенные настройки?",
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_SUBTITLE": "Изменяйте, только если вы знаете, что делаете.",
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_TITLE": "Расширенные настройки",
-  "SETTINGS_GENERAL_ALLOW_AUTO_THEMES": "Разрешить автоматическую смену тем",
-  "SETTINGS_GENERAL_ALLOW_AUTO_THEMES_HINT": "Будьте удивлены темами, которые меняются автоматически по времени года.",
   "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING": "Разрешить анонимный сбор ошибок",
   "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING_HINT": "Сбор ошибок используется для отслеживания ошибок и улучшения Companion Hub. Включите эту опцию, чтобы помочь нам улучшить Companion Hub.",
   "SETTINGS_GENERAL_APPS_REPO": "URL репозитория приложений",

@@ -96,7 +96,7 @@ describe('settings.json when two saves overlap', () => {
     // The save is the slow write, the reset's (only a new host-local key) the quick one.
     const disk = slowDisk(({ data }) => (String(data).includes('hubLocalKey') ? 5 : 50));
 
-    const save = configuration.setUserSettings({ allowAutoThemes: true });
+    const save = configuration.setUserSettings({ guestDashboard: true });
     await factoryReset.resetSettings();
     await save;
     await disk.idle();

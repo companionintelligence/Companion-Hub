@@ -1,8 +1,6 @@
 import { LanguageSelector } from '@/components/language-selector/language-selector';
 import { Card, CardContent } from '@/components/ui/Card';
-import { useUserContext } from '@/context/user-context';
 import type { Locale } from '@/lib/i18n/locales';
-import { getLogo } from '@/lib/theme/theme';
 import i18next from 'i18next';
 import type { PropsWithChildren } from 'react';
 import { cn } from '@/lib/utils';
@@ -14,7 +12,6 @@ type AuthLayoutProps = PropsWithChildren<{
 export const AuthLayout = ({ children, wide = false }: AuthLayoutProps) => {
   const locale = i18next.language;
 
-  const { allowAutoThemes } = useUserContext();
   return (
     <div
       className="flex flex-col items-center overflow-y-auto bg-background"
@@ -33,7 +30,7 @@ export const AuthLayout = ({ children, wide = false }: AuthLayoutProps) => {
         <div className="mb-6 text-center">
           <img
             alt="Companion Hub logo"
-            src={getLogo(allowAutoThemes)}
+            src="/hub.png"
             height={80}
             width={80}
             className="mx-auto"

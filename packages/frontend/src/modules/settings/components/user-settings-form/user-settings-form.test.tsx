@@ -14,7 +14,6 @@ const newHubSettings: SettingsFormValues = {
   advancedSettings: false,
   localDomain: 'localhost',
   guestDashboard: false,
-  allowAutoThemes: true,
   allowErrorMonitoring: true,
   timeZone: 'Etc/GMT',
   domain: 'example.com',

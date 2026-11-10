@@ -58,7 +58,7 @@ describe('PATCH /api/user-settings — inference preferences', () => {
   });
 
   it('leaves AI apps alone for a write that touches no inference setting', async () => {
-    await controller.updateUserSettings({ themeColor: 'blue', allowAutoThemes: false } as never);
+    await controller.updateUserSettings({ themeColor: 'blue' } as never);
 
     expect(refresh.requestRefresh).not.toHaveBeenCalled();
   });

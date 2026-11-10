@@ -1156,8 +1156,6 @@
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_MODAL_TITLE": "¿Habilitar configuración avanzada?",
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_SUBTITLE": "Configuración avanzada utilizada solo si sabes lo que estás haciendo.",
   "SETTINGS_GENERAL_ADVANCED_SETTINGS_TITLE": "Configuración avanzada",
-  "SETTINGS_GENERAL_ALLOW_AUTO_THEMES": "Permitir temas automáticos",
-  "SETTINGS_GENERAL_ALLOW_AUTO_THEMES_HINT": "Sorpréndete con temas que cambian automáticamente según la época del año.",
   "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING": "Permitir monitoreo anónimo de errores",
   "SETTINGS_GENERAL_ALLOW_ERROR_MONITORING_HINT": "El monitoreo de errores se utiliza para rastrear errores y mejorar Companion Hub. Mantén esta opción habilitada para ayudarnos a mejorar Companion Hub.",
   "SETTINGS_GENERAL_APPS_REPO": "URL del repositorio de aplicaciones",
