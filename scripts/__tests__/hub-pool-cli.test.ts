@@ -25,6 +25,7 @@ import {
   formatPoolProbeLines,
   formatPoolRoutingLogLines,
   formatPoolPinLines,
+  formatPoolUnpinLines,
   formatPoolStatusLines,
   formatPoolTimestamp,
   formatPromptCeilingResultLines,
@@ -910,6 +911,55 @@ describe('hub-pool-cli pins', () => {
 
     expect(text.match(/pinned/g)).toHaveLength(1);
     expect(text).toContain('pinned (this model → peer)');
+  });
+
+  describe('formatPoolUnpinLines', () => {
+    const modelPin = (model: string) => ({
+      scope: 'model' as const,
+      model,
+      targetKind: 'local' as const,
+      mode: 'prefer' as const,
+      nodeFqdn: null,
+      targetAvailable: true,
+    });
+    const poolWide = { scope: 'default' as const, targetKind: 'local' as const, mode: 'prefer' as const, nodeFqdn: null, targetAvailable: true };
+    const COVERS = 'model "nomic-embed-text"';
+
+    it('says the model is back to the ranker when nothing governs it', () => {
+      expect(formatPoolUnpinLines(COVERS, [modelPin('other:1b')], 'nomic-embed-text').join('\n')).toContain('back to the ranker');
+    });
+
+    it.each([
+      ['nomic-embed-text:latest', 'nomic-embed-text'],
+      ['nomic-embed-text', 'nomic-embed-text:latest'],
+    ])('names the pin on %s when it still governs a request for %s', (kept, named) => {
+      const text = formatPoolUnpinLines(`model "${named}"`, [modelPin(kept)], named).join('\n');
+
+      expect(text).not.toContain('back to the ranker');
+      expect(text).toContain(`still follow the pin saved as "${kept}"`);
+      expect(text).toContain(`cihub pool unpin --model ${kept}`);
+    });
+
+    it('keeps the follow-up command on the Hub this unpin went to', () => {
+      const text = formatPoolUnpinLines(COVERS, [modelPin('nomic-embed-text:latest')], 'nomic-embed-text', 'dev').join('\n');
+
+      expect(text).toContain('cihub pool unpin --model nomic-embed-text:latest dev');
+    });
+
+    it('says the pool-wide pin takes over when one is set', () => {
+      const text = formatPoolUnpinLines(COVERS, [poolWide], 'nomic-embed-text').join('\n');
+
+      expect(text).not.toContain('back to the ranker');
+      expect(text).toContain('follows the pool-wide pin');
+    });
+
+    it('does not read a pin on another tag as still governing the model', () => {
+      expect(formatPoolUnpinLines('model "gemma3:1b"', [modelPin('gemma3:270m')], 'gemma3:1b').join('\n')).toContain('back to the ranker');
+    });
+
+    it('keeps the plain message for the pool-wide unpin even with model pins left', () => {
+      expect(formatPoolUnpinLines('every model', [modelPin('gemma3:270m')]).join('\n')).toContain('back to the ranker');
+    });
   });
 
   it('posts an upsert and deletes by query, so a model id with a slash is addressable', async () => {

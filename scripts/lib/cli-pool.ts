@@ -11,6 +11,7 @@ import {
   approvePoolPeer,
   cancelPairingPin,
   deletePoolPin,
+  formatPoolUnpinLines,
   fetchPoolPeers,
   fetchPoolRoutingLog,
   fetchInferencePreferences,
@@ -236,9 +237,9 @@ export function parsePoolArgs(args: string[]): ParsedPoolArgs {
 }
 
 /**
- * Bounded, never normalized: a model id is compared verbatim and case-sensitively against the
- * engine's inventory on the Hub, so lower-casing a pin here would produce one that looks right and
- * silently never matches. Matches `MAX_PINNED_MODEL_LENGTH` on the backend.
+ * Bounded, never normalized: the Hub folds only the implicit `:latest` when it compares a model id
+ * with the engine's inventory and the rest is case-sensitive, so lower-casing a pin here would produce
+ * one that looks right and silently never matches. Matches `MAX_PINNED_MODEL_LENGTH` on the backend.
  */
 function parsePinnedModel(raw: string): string {
   const trimmed = raw.trim();
@@ -904,7 +905,7 @@ async function runPoolPinCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
     printMessageBox(
       `Pin removed  [${env}]`,
       [
-        `Routing for ${covers} is back to the ranker (least-loaded, with the local head start).`,
+        ...formatPoolUnpinLines(covers, pins, parsed.model, env),
         ...(pins.length > 0 ? ['', `${pins.length} other pin(s) remain — see: ${BASE_COMMAND} pool status`] : []),
       ],
       'yellow',

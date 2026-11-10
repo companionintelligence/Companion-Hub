@@ -14,6 +14,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
+import type { InferenceBackendType } from '@ci-hub/common/types';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { LoggerService } from '@/core/logger/logger.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
@@ -45,6 +46,7 @@ import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { TailscaleAdminApiService, type TailscaleDevice } from '@/modules/tailscale/tailscale-admin-api.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
+import { engineModelKey } from '@/modules/inference/model-availability.util';
 import { HubPoolPeerRepository } from './hub-pool-peer.repository';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from './hub-pool-load.service';
 import { HubPoolIdentityService } from './hub-pool-identity.service';
@@ -92,6 +94,23 @@ async function peerRefusalDetail(response: Response): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * The ids to advertise for one backend, one per model.
+ *
+ * A model the Hub has tracked (loaded, pinned or pull-checked) comes out of `listModels` twice: under
+ * its catalog id from the registry and under its engine id from the backend's own inventory. The
+ * engine id is the one kept. It is what requests carry and what routing compares. It is also what this
+ * node advertised before the Hub touched the model, so a load no longer changes the list. Compared
+ * per engine because Lemonade can list a model the Hub registered as `user.<id>`. Only a row the
+ * engine reported can replace a tracked one, so two tracked spellings of one model can't both go.
+ */
+function oneIdPerModel(backend: InferenceBackendType, models: Array<{ id: string; backend_model_id?: string }>): string[] {
+  const listedByEngine = new Set(models.filter((model) => !model.backend_model_id).map((model) => engineModelKey(backend, model.id)));
+  return models
+    .filter((model) => !model.backend_model_id || !listedByEngine.has(engineModelKey(backend, model.backend_model_id)))
+    .map((model) => model.id);
 }
 
 /** Consecutive failed capability probes before a connected peer is marked unreachable (matches the 3-strikes convention in registration.service.ts). */
@@ -1473,7 +1492,10 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
           return {
             type: b.type,
             healthy: b.healthy,
-            modelsLoaded: models.filter((m) => m.backend === b.type && m.local && m.state !== 'available' && !unservable.has(m.id)).map((m) => m.id),
+            modelsLoaded: oneIdPerModel(
+              b.type,
+              models.filter((m) => m.backend === b.type && m.local && m.state !== 'available' && !unservable.has(m.id)),
+            ),
           };
         }),
       };
