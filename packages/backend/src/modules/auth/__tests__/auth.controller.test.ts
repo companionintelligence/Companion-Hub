@@ -3711,7 +3711,8 @@ describe('AuthController', () => {
       const html = vi.mocked(res.send).mock.calls[0]?.[0] as string;
       expect(html).toContain('Continue in this browser?');
       expect(html).toContain('<strong>op@example.com</strong> and connect an app to CI Memory');
-      expect(html).toContain('<form method="post" action="/api/auth/browser-handoff/confirm">');
+      expect(html).toContain('<form id="handoff-confirm" method="post" action="/api/auth/browser-handoff/confirm">');
+      expect(html).toContain('data-busy="Connecting…"');
       expect(html).toContain('name="ticket" value="ticket-abc"');
       // The page must not be framed by the site that lured someone to it, or that site could take the click.
       expect(res.setHeader).toHaveBeenCalledWith('Content-Security-Policy', expect.stringContaining("frame-ancestors 'none'"));

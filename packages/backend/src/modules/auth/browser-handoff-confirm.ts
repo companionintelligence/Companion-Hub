@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import type { Request, Response } from 'express';
 import { HUB_FAVICON_LINK_TAG } from './hub-favicon';
 
@@ -33,9 +34,50 @@ export function describeBrowserHandoffTarget(next: string): string {
   }
 }
 
+/** What Continue says while its submit is under way: a Memory connect, or opening an app. */
+export function browserHandoffBusyLabel(next: string): string {
+  try {
+    return new URL(next).pathname === '/api/memory-connect/start' ? 'Connecting…' : 'Opening…';
+  } catch {
+    return 'Continuing…';
+  }
+}
+
+/**
+ * The page's one script. Continue's submit takes a few seconds (the Hub starts the connect, then
+ * hands over to CI Memory), so the button turns into a disabled "Connecting…" with a spinner: the
+ * page no longer looks dead, and a second tap can't arrive to find the single-use ticket spent.
+ * A page restored from the back/forward cache gets its button back.
+ *
+ * Static on purpose: the label comes from the button's `data-busy`, so this text never varies and
+ * the CSP pins it by hash instead of opening `script-src` up.
+ */
+export const BROWSER_HANDOFF_CONFIRM_SCRIPT = `(function () {
+  var form = document.getElementById('handoff-confirm');
+  var button = form && form.querySelector('button');
+  if (!button) return;
+  var label = button.querySelector('.label');
+  var idle = label.textContent;
+  form.addEventListener('submit', function () {
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    button.classList.add('busy');
+    label.textContent = button.getAttribute('data-busy') || idle;
+  });
+  window.addEventListener('pageshow', function (event) {
+    if (!event.persisted) return;
+    button.disabled = false;
+    button.removeAttribute('aria-busy');
+    button.classList.remove('busy');
+    label.textContent = idle;
+  });
+})();`;
+
+const BROWSER_HANDOFF_CONFIRM_SCRIPT_HASH = `'sha256-${crypto.createHash('sha256').update(BROWSER_HANDOFF_CONFIRM_SCRIPT).digest('base64')}'`;
+
 /**
  * The headers for the confirmation page. It must not be framed (a luring site could otherwise
- * overlay it and take the click) and runs no script.
+ * overlay it and take the click), and runs no script but its own, pinned by hash.
  *
  * NO `form-action`. Chrome enforces it on every redirect after the submit, not just the POST, and
  * Continue's chain ends on another host: confirm → Hub `/api/memory-connect/start` → CI Memory's
@@ -49,7 +91,10 @@ export function setBrowserHandoffConfirmHeaders(res: Response): void {
   res.setHeader('X-Frame-Options', 'DENY');
   // `same-origin`, not `no-referrer`: the latter makes Chrome send `Origin: null` on the Continue POST.
   res.setHeader('Referrer-Policy', 'same-origin');
-  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'");
+  res.setHeader(
+    'Content-Security-Policy',
+    `default-src 'none'; script-src ${BROWSER_HANDOFF_CONFIRM_SCRIPT_HASH}; style-src 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'`,
+  );
 }
 
 const escapeHtml = (value: string) =>
@@ -63,10 +108,11 @@ const escapeHtml = (value: string) =>
  * Self-contained like the desktop handoff page: served before any session exists, so no
  * external CSS, fonts or images; palette matches @companionintelligence/tokens.
  */
-export function buildBrowserHandoffConfirmHtml(input: { ticket: string; username: string; target: string }): string {
+export function buildBrowserHandoffConfirmHtml(input: { ticket: string; username: string; target: string; busyLabel: string }): string {
   const ticket = escapeHtml(input.ticket);
   const username = escapeHtml(input.username);
   const target = escapeHtml(input.target);
+  const busyLabel = escapeHtml(input.busyLabel);
 
   return `<!doctype html>
 <html lang="en">
@@ -137,6 +183,21 @@ form { margin: 0; }
   text-decoration: none;
   cursor: pointer;
 }
+.btn:disabled { cursor: progress; opacity: 0.85; }
+.btn .spin {
+  display: none;
+  width: 14px;
+  height: 14px;
+  margin-right: 8px;
+  vertical-align: -2px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 800ms linear infinite;
+}
+.btn.busy .spin { display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .btn .spin { animation: none; } }
 .btn.secondary {
   margin-top: 10px;
   background: transparent;
@@ -150,13 +211,14 @@ form { margin: 0; }
 <main class="card">
 <h1>Continue in this browser?</h1>
 <p>The Companion Hub app opened this page to sign this browser in as <strong>${username}</strong> and ${target}.</p>
-<form method="post" action="${BROWSER_HANDOFF_CONFIRM_PATH}">
+<form id="handoff-confirm" method="post" action="${BROWSER_HANDOFF_CONFIRM_PATH}">
 <input type="hidden" name="ticket" value="${ticket}">
-<button class="btn" type="submit">Continue</button>
+<button class="btn" type="submit" data-busy="${busyLabel}"><span class="spin" aria-hidden="true"></span><span class="label">Continue</span></button>
 </form>
 <a class="btn secondary" href="/">Cancel</a>
 <p class="hint">If you didn't just do this in the Hub app, press Cancel.</p>
 </main>
+<script>${BROWSER_HANDOFF_CONFIRM_SCRIPT}</script>
 </body>
 </html>`;
 }

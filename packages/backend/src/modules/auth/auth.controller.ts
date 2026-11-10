@@ -90,6 +90,7 @@ import {
 } from './dto/auth.dto';
 import { HUB_FAVICON_LINK_TAG, HUB_FAVICON_PNG } from './hub-favicon';
 import {
+  browserHandoffBusyLabel,
   buildBrowserHandoffConfirmHtml,
   describeBrowserHandoffTarget,
   isSameOriginFormPost,
@@ -1141,7 +1142,14 @@ export class AuthController {
 
     res.status(200);
     setBrowserHandoffConfirmHeaders(res);
-    res.send(buildBrowserHandoffConfirmHtml({ ticket, username: user.username, target: describeBrowserHandoffTarget(found.next) }));
+    res.send(
+      buildBrowserHandoffConfirmHtml({
+        ticket,
+        username: user.username,
+        target: describeBrowserHandoffTarget(found.next),
+        busyLabel: browserHandoffBusyLabel(found.next),
+      }),
+    );
   }
 
   /** Spends the ticket and plants a browser session for its person, then continues to its target. */
