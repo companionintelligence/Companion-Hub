@@ -1,5 +1,6 @@
 import { act, render, screen, userEvent, waitFor, within } from '@/tests/test-utils';
 import { useAppContext } from '@/context/app-context';
+import { useLayoutEffect } from 'react';
 import {
   checkForUpdates,
   type DesktopUpdateCallbacks,
@@ -16,7 +17,7 @@ import {
   type UpdateInfo,
 } from '@/lib/update-service';
 import { factoryReset } from '@/api-client/sdk.gen';
-import { resolveStackUpdate } from '@/lib/desktop-stack-session';
+import { keepStackUpdateOutcome, markStackUpdatePending, readKeptStackUpdateOutcome, resolveStackUpdate } from '@/lib/desktop-stack-session';
 import { TranslatableError } from '@/types/error.types';
 import { sdkFail, sdkOk } from '@/tests/sdk-mock-helpers';
 import { toast } from 'sonner';
@@ -116,6 +117,12 @@ function commandsIn(instructions: HTMLElement): (string | null)[] {
   return Array.from(instructions.querySelectorAll('code'), (code) => code.textContent);
 }
 
+/** A layout effect runs after the commit and before the panel's passive effects subscribe. */
+const HelloBeforeSubscribe = () => {
+  useLayoutEffect(() => resolveStackUpdate({ state: 'completed', version: '4.7.0' }), []);
+  return null;
+};
+
 describe('GeneralActionsContainer', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -126,6 +133,7 @@ describe('GeneralActionsContainer', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    sessionStorage.clear();
 
     mockUseAppContext.mockReturnValue({
       version: {
@@ -1286,11 +1294,54 @@ describe('GeneralActionsContainer', () => {
     expect(await screen.findByTestId('hub-update-status')).toHaveTextContent('Updated. The Hub is running 4.7.0.');
     expect(screen.queryByTestId('hub-check-updates-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('hub-update-stop-waiting')).not.toBeInTheDocument();
+    // On screen, so the next visit has nothing left to repeat.
+    expect(readKeptStackUpdateOutcome()).toBeNull();
 
     await userEvent.click(screen.getByTestId('hub-update-dismiss'));
 
     expect(screen.queryByTestId('hub-update-status')).not.toBeInTheDocument();
     expect(screen.getByTestId('hub-check-updates-btn')).toBeInTheDocument();
+  });
+
+  it('says the update finished when the update ended by reloading the page and says it once', async () => {
+    mockUseAppContext.mockReturnValue({
+      version: { current: '4.7.0', latest: '4.7.0', body: '', releases: [] },
+      refreshAppContext: vi.fn(),
+      userSettings: { ciHubDeviceSlug: 'core' },
+    } as unknown as ReturnType<typeof useAppContext>);
+    keepStackUpdateOutcome({ state: 'completed', version: '4.7.0' });
+
+    const first = render(<GeneralActionsContainer />);
+
+    expect(await screen.findByTestId('hub-update-status')).toHaveTextContent('Updated. The Hub is running 4.7.0.');
+    expect(screen.queryByTestId('hub-update-stop-waiting')).not.toBeInTheDocument();
+    expect(readKeptStackUpdateOutcome()).toBeNull();
+
+    first.unmount();
+    render(<GeneralActionsContainer />);
+
+    expect(await screen.findByTestId('hub-check-updates-btn')).toBeInTheDocument();
+    expect(screen.queryByTestId('hub-update-status')).not.toBeInTheDocument();
+  });
+
+  it('shows an outcome that lands after the first render and before the panel has subscribed', async () => {
+    mockUseAppContext.mockReturnValue({
+      version: { current: '4.7.0', latest: '4.7.0', body: '', releases: [] },
+      refreshAppContext: vi.fn(),
+      userSettings: { ciHubDeviceSlug: 'core' },
+    } as unknown as ReturnType<typeof useAppContext>);
+    markStackUpdatePending('4.6.0');
+
+    render(
+      <>
+        <GeneralActionsContainer />
+        <HelloBeforeSubscribe />
+      </>,
+    );
+
+    expect(await screen.findByTestId('hub-update-status')).toHaveTextContent('Updated. The Hub is running 4.7.0.');
+    expect(screen.queryByTestId('hub-update-stop-waiting')).not.toBeInTheDocument();
+    expect(readKeptStackUpdateOutcome()).toBeNull();
   });
 
   it('asks for this device name before factory reset', async () => {
