@@ -219,6 +219,23 @@ describe('mobile privacy/permission posture', () => {
     'mysticalengine.com',
   ];
 
+  /**
+   * The zones named by the one Hub pattern in `remote.urls`: the entries of its `(?:…)` alternations,
+   * unescaped. That file explains why every zone shares one pattern instead of one entry each.
+   */
+  const remoteHubZones = (urls: string[]) => {
+    const hub = urls.find((url) => url.startsWith('https://(')) ?? '';
+    return [...hub.matchAll(/\(\?:([^()]*)\)/g)].flatMap((match) => (match[1] ?? '').split('|')).map((zone) => zone.replace(/\\\./g, '.'));
+  };
+
+  it('keeps remote.urls to two patterns, because Tauri compiles each one at every launch', () => {
+    const caps = JSON.parse(read('capabilities/default.json')) as { remote: { urls: string[] } };
+
+    // One per zone cost seconds of startup on a phone (24 patterns, each compiled for every allowed command).
+    expect(caps.remote.urls).toHaveLength(2);
+    expect(caps.remote.urls[0]).toBe('http://(localhost|127\\.0\\.0\\.1|lvh\\.me):*');
+  });
+
   it.each(HUB_ZONES)('can reach a Hub published under %s', (zone) => {
     const caps = JSON.parse(read('capabilities/default.json')) as {
       remote: { urls: string[] };
@@ -231,7 +248,7 @@ describe('mobile privacy/permission posture', () => {
     const connectSrc = (csp.match(/connect-src([^;]*)/)?.[1] ?? '').trim().split(/\s+/);
 
     expect(http?.allow?.map((entry) => entry.url)).toContain(`https://*.${zone}/*`);
-    expect(caps.remote.urls).toContain(`https://*.${zone}`);
+    expect(remoteHubZones(caps.remote.urls)).toContain(zone);
     expect(connectSrc).toContain(`https://*.${zone}`);
     expect(connectSrc).toContain(`wss://*.${zone}`);
   });

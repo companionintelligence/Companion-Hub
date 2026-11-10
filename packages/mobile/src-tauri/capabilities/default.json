@@ -1,34 +1,12 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "default",
-  "description": "Default capabilities for the Companion Hub mobile app. remote.urls is required in ios:dev because the webview is http://localhost:5005 (not tauri://); without it event.listen / opener / invoke are denied and Sign in spins forever.",
+  "description": "Default capabilities for the Companion Hub mobile app. remote.urls is required in ios:dev because the webview is http://localhost:5005 (not tauri://); without it event.listen / opener / invoke are denied and Sign in spins forever. It is TWO patterns on purpose, one for the local dev hosts and one for every Hub zone (ci.computer and companionintelligence.com with their apex, every other zone subdomains only; ci0-ci9.pw except ci7): Tauri compiles each pattern into a set of regexes at every app launch, for every allowed command, and the 24 separate patterns this replaced cost seconds of startup on a phone. Adding a zone means adding it to the right alternation here, to http:default and to the CSP connect-src (mobile-store-readiness.test.ts checks all three).",
   "windows": ["main"],
   "remote": {
     "urls": [
-      "http://localhost:*",
-      "http://127.0.0.1:*",
-      "http://lvh.me:*",
-      "https://*.ci.computer",
-      "https://ci.computer",
-      "https://*.companionintelligence.com",
-      "https://companionintelligence.com",
-      "https://*.ci0.pw",
-      "https://*.ci1.pw",
-      "https://*.ci2.pw",
-      "https://*.ci3.pw",
-      "https://*.ci4.pw",
-      "https://*.ci5.pw",
-      "https://*.ci6.pw",
-      "https://*.ci8.pw",
-      "https://*.ci9.pw",
-      "https://*.companionintel.com",
-      "https://*.chimera.engineer",
-      "https://*.chimeracompute.com",
-      "https://*.chimeracomputer.com",
-      "https://*.companionintelligence.io",
-      "https://*.companionintelligence.org",
-      "https://*.lifescope.io",
-      "https://*.mysticalengine.com"
+      "http://(localhost|127\\.0\\.0\\.1|lvh\\.me):*",
+      "https://((?:.*\\.)?(?:ci\\.computer|companionintelligence\\.com)|.*\\.(?:companionintel\\.com|ci0\\.pw|ci1\\.pw|ci2\\.pw|ci3\\.pw|ci4\\.pw|ci5\\.pw|ci6\\.pw|ci8\\.pw|ci9\\.pw|chimera\\.engineer|chimeracompute\\.com|chimeracomputer\\.com|companionintelligence\\.io|companionintelligence\\.org|lifescope\\.io|mysticalengine\\.com))"
     ]
   },
   "permissions": [
