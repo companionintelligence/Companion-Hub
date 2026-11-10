@@ -843,6 +843,27 @@ export class AppsService {
     await this.announceIgnoredVersionChange(appUrn);
   }
 
+  /**
+   * Shows or hides an installed app on the guest dashboard (#2422). Only the column the guest list reads
+   * and the stored form value the Settings dialog opens with change: no env, no routing, no restart, which
+   * is what a save through that dialog would do.
+   */
+  public async setGuestVisibility(appUrn: AppUrn, visible: boolean) {
+    const app = await this.appsRepository.getAppByUrn(appUrn);
+
+    if (!app) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', {}, 404);
+    }
+
+    const config = (app.config ?? {}) as Record<string, unknown>;
+    await this.appsRepository.updateAppById(app.id, {
+      isVisibleOnGuestDashboard: visible,
+      config: { ...config, isVisibleOnGuestDashboard: visible },
+    });
+
+    this.logger.info(`${visible ? 'Showed' : 'Hid'} app ${appUrn} on the guest dashboard`);
+  }
+
   public async unignoreAppVersion(appUrn: AppUrn) {
     const app = await this.appsRepository.getAppByUrn(appUrn);
 

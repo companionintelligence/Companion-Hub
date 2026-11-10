@@ -17,6 +17,7 @@ import { type SettingsFormValues, UserSettingsForm } from '../components/user-se
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Switch } from '@/components/ui/Switch';
 import { SettingsHint } from '../components/settings-hint';
+import { GuestDashboardSettings } from './guest-dashboard-settings';
 
 type Props = {
   initialValues?: SettingsFormValues;
@@ -108,6 +109,9 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname, manage
         publicHubHostname={publicHubHostname}
         manageHub={manageHub}
       />
+
+      {/* The Hub's own setting, like General settings: a member doesn't get to change it. */}
+      {manageHub ? <GuestDashboardSettings /> : null}
 
       <Card data-testid="companion-account-settings">
         <CardHeader>
