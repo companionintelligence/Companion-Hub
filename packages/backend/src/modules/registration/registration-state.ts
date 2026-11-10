@@ -73,7 +73,7 @@ const RE_PAIRING_REASONS: readonly DegradedReason[] = ['tunnel_token_missing', '
  *
  * The frontend's copy of this test (`lib/registration-status.ts`) still checks
  * only `tunnel_token_missing`, because its banner offers a tunnel reconnect
- * that cannot help a rejected key. Until it has its own copy for that reason,
+ * that cannot help a rejected key. Until the pairing form takes that reason too,
  * a `portal_rejected` Hub pairs with `cihub register --code`.
  */
 export function requiresPortalRePairing(phase: ProvisioningPhase, degradedReasons: readonly DegradedReason[]): boolean {

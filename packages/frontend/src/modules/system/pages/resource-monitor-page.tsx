@@ -149,7 +149,7 @@ export default function ResourceMonitorPage() {
     pool: {
       state: poolState,
       unreachablePeers: reach.unreachable,
-      probeFailures: peerRows.filter((peer) => (peer.consecutiveFailures ?? 0) > 0).length,
+      probeFailures: reach.probeFailures,
       stalePins: configWarnings.stalePins,
       envDisabledDirections: configWarnings.envDisabledDirections,
       capabilitiesError: configWarnings.capabilitiesError,

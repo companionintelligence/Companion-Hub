@@ -826,6 +826,22 @@ fn runtime_env_keeps_an_operators_tailscale_serve_opt_out() {
     );
 }
 
+#[test]
+fn runtime_env_keeps_mcp_switched_off() {
+    // `cihub mcp shutdown` writes this and the Hub reads it at boot. A launch that dropped it turned
+    // MCP back on by itself.
+    for value in ["false", "\"false\""] {
+        let (_tempdir, _first, relaunched) = launch_twice_with(&format!("MCP_ENABLED={value}\n"));
+        assert!(
+            relaunched.lines().any(|line| line == "MCP_ENABLED=false"),
+            "{value}: {relaunched}"
+        );
+    }
+
+    let (_tempdir, _first, relaunched) = launch_twice_with("MCP_ENABLED=true\n");
+    assert!(!relaunched.contains("MCP_ENABLED"), "{relaunched}");
+}
+
 // --- DEVICE_ID (Companion-Hub#1953) ---
 
 /// The ID a Windows Hub paired with while `wmic` was still installed: its SMBIOS UUID.

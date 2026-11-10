@@ -400,6 +400,43 @@ describe('HubPoolSection', () => {
     expect(fixtures.updateSettings.mock.calls[0]?.[0]).toMatchObject({ body: { poolLocalAffinity: 20, poolHealthPollSeconds: 30 } });
   });
 
+  it('does not promise that a switched-off peer rejoins by itself', async () => {
+    fixtures.status = baseStatus({
+      peers: [connectedPeer({ status: 'unreachable', enabled: false, consecutiveFailures: 18922, inFlightRequests: 0 })],
+      peerCounts: { total: 1, connected: 0, pending: 0, unreachable: 1 },
+      reason: 'no_peers',
+      routingActive: false,
+    });
+
+    renderSection();
+
+    expect(await screen.findByText('HUB_POOL_STATUS_DISABLED')).toBeTruthy();
+    expect(screen.queryByTestId('hub-pool-unreachable-hint')).toBeNull();
+  });
+
+  it('keeps the re-pair steps on a switched-off peer that refuses this Hub', async () => {
+    fixtures.status = baseStatus({
+      peers: [
+        connectedPeer({
+          status: 'unreachable',
+          enabled: false,
+          consecutiveFailures: 5,
+          inFlightRequests: 0,
+          probeFailure: { kind: 'identity_changed', action: 'Re-pair: (1) here: cihub pool unpair hub-b.example-tailnet.ts.net; ...' },
+        }),
+      ],
+      peerCounts: { total: 1, connected: 0, pending: 0, unreachable: 1 },
+      reason: 'no_peers',
+      routingActive: false,
+    });
+
+    renderSection();
+
+    const hint = await screen.findByTestId('hub-pool-peer-needs-repair-hint');
+    expect(hint.textContent).toContain('cihub pool unpair hub-b.example-tailnet.ts.net');
+    expect(screen.queryByTestId('hub-pool-unreachable-hint')).toBeNull();
+  });
+
   it('tells the operator an unreachable peer heals itself instead of needing an unpair', async () => {
     fixtures.status = baseStatus({
       peers: [connectedPeer({ status: 'unreachable', consecutiveFailures: 3, inFlightRequests: 0 })],
@@ -536,6 +573,50 @@ describe('HubPoolSection', () => {
     const failedOverRow = entries.find((row) => row.getAttribute('data-failedover'));
     expect(failedOverRow?.getAttribute('data-failedover')).toBe('local');
     expect(screen.getByText('HUB_POOL_ROUTING_INBOUND')).toBeTruthy();
+  });
+
+  it("calls this Hub by its label on a routing row, never by the log's key", async () => {
+    const row = (overrides: Json): Json => ({
+      at: '2026-09-05T10:00:00.000Z',
+      direction: 'outbound',
+      path: '/api/chat',
+      model: 'gemma3:270m',
+      node: 'local',
+      peerId: null,
+      backend: 'ollama',
+      candidates: 1,
+      attempt: 1,
+      failedOverFrom: [],
+      outcome: 'served',
+      status: 200,
+      durationMs: 12,
+      ...overrides,
+    });
+    fixtures.routingLog = {
+      entries: [
+        row({}),
+        row({ at: '2026-09-05T10:00:01.000Z', outcome: 'failed', status: 500 }),
+        row({ at: '2026-09-05T10:00:02.000Z', node: 'hub-b' }),
+        row({
+          at: '2026-09-05T10:00:03.000Z',
+          node: 'hub-b',
+          failedOverFrom: ['local'],
+          attempts: [{ node: 'local', backend: 'ollama', status: 500, reason: 'HTTP 500' }],
+        }),
+        row({ at: '2026-09-05T10:00:04.000Z', node: 'hub-b', failedOverFrom: ['local'] }),
+      ],
+      summary: { recorded: 5, capacity: 200, served: 4, failed: 1, failovers: 2, lastAt: '2026-09-05T10:00:04.000Z' },
+    };
+
+    renderSection();
+
+    expect(await screen.findByText('HUB_POOL_ROUTING_LOCAL_SERVED')).toBeTruthy();
+    expect(screen.getByText('HUB_POOL_ROUTING_LOCAL_SENT')).toBeTruthy();
+    // A peer keeps the wording it had.
+    expect(screen.getAllByText('HUB_POOL_ROUTING_OUTBOUND')).toHaveLength(3);
+    // The failover hover, with what each node answered and from a Hub that only names them.
+    expect(i18nCalls).toContainEqual({ key: 'HUB_POOL_ROUTING_FAILOVER', params: { nodes: 'HUB_POOL_LOCAL_NODE_LABEL (HTTP 500)' } });
+    expect(i18nCalls).toContainEqual({ key: 'HUB_POOL_ROUTING_FAILOVER', params: { nodes: 'HUB_POOL_LOCAL_NODE_LABEL' } });
   });
 
   /**

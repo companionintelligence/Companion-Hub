@@ -6,6 +6,8 @@ export const ROCM_KFD_MISSING_CODE = 'rocm_kfd_missing';
 
 export const KVM_MISSING_CODE = 'kvm_missing';
 
+export const KATA_RUNTIME_MISSING_CODE = 'kata_runtime_missing';
+
 export const NETWORK_OVERLAP_CODE = 'network_overlap';
 
 /** A service did not come up after `compose up`, which the Hub read from Docker (`AppLifecycleCommand.appCameUpError`). */
@@ -76,6 +78,16 @@ export function createKvmMissingError(): AppLifecycleError {
   return new AppLifecycleError(KVM_MISSING_USER_MESSAGE, {
     code: KVM_MISSING_CODE,
     detail: KVM_MISSING_DETAIL,
+  });
+}
+
+/** Short user-facing message for apps whose Kata runtime Docker on this machine doesn't have. */
+export const KATA_RUNTIME_MISSING_USER_MESSAGE = "This app needs the Kata container runtime. It isn't set up in Docker on this machine.";
+
+export function createKataRuntimeMissingError(runtime: string): AppLifecycleError {
+  return new AppLifecycleError(KATA_RUNTIME_MISSING_USER_MESSAGE, {
+    code: KATA_RUNTIME_MISSING_CODE,
+    detail: `Docker on this machine has no runtime named "${runtime}". Install Kata Containers and register that runtime with Docker, then start the app again.`,
   });
 }
 
@@ -155,9 +167,8 @@ export function translateKvmInstallMessage(message: string): AppLifecycleError |
   const referencesKvm = normalizedMessage.includes('/dev/kvm');
   const missingDevice = normalizedMessage.includes('error gathering device information') && normalizedMessage.includes('no such file or directory');
   const blockedPath = normalizedMessage.includes('file path') && normalizedMessage.includes('is not allowed');
-  const kataKvmError =
-    (normalizedMessage.includes('kata') || normalizedMessage.includes('confidential')) &&
-    (normalizedMessage.includes('kvm') || normalizedMessage.includes('no such file or directory'));
+  // Has to name KVM. A Kata shim that isn't installed, or a missing file of an app with "kata" in its name, is also "no such file or directory".
+  const kataKvmError = (normalizedMessage.includes('kata') || normalizedMessage.includes('confidential')) && normalizedMessage.includes('kvm');
 
   if ((referencesKvm && (missingDevice || blockedPath)) || kataKvmError) {
     return createKvmMissingError();
