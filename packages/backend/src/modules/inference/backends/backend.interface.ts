@@ -145,9 +145,10 @@ export interface InferenceBackend {
 
   /**
    * The window this engine serves `modelId` at whatever a request asks, for an engine that takes no
-   * window per request: Lemonade's saved `ctx_size`. A handout for such a model is never above it,
-   * since the engine would not serve more. Optional: Ollama loads at the window each request names,
-   * and an engine that cannot say leaves the handout as sized. Null when nothing is saved.
+   * window per request: Lemonade's saved `ctx_size`, vLLM's `max_model_len`. A handout for such a
+   * model is never above it, since the engine would not serve more. Optional: Ollama loads at the
+   * window each request names, and an engine that cannot say leaves the handout as sized. Null when
+   * nothing is saved or stated.
    */
   servedContextLength?(modelId: string): Promise<number | null>;
 
