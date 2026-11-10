@@ -311,6 +311,15 @@ export async function prepareAppComposeDir(
     throw new Error(`Error generating docker-compose.yml file for app ${appUrn}.`);
   }
 
+  // Make the folders the app's volumes point at, as the Hub. Docker otherwise makes a missing one
+  // itself as root, which a service of another uid can't write to and the Hub can't reset or delete.
+  // A custom app is added without an install, and an edit can add a volume (#2198).
+  try {
+    await appFilesManager.createVolumeHostDirs(appUrn);
+  } catch (error) {
+    logger.warn(`Could not create the volume folders of ${appUrn}: ${String(error)}`);
+  }
+
   // Set permissions
   await appFilesManager.setAppDataDirPermissions(appUrn);
 }

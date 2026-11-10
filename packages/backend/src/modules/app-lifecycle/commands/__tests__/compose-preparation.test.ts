@@ -160,6 +160,7 @@ interface Stubs {
     getDockerComposeJson: Stub;
     getAppEnv: Stub;
     writeDockerComposeYml: Stub;
+    createVolumeHostDirs: Stub;
     setAppDataDirPermissions: Stub;
   };
   marketplaceService: { getAppInfoFromAppStoreOrInstalled: Stub; copyAppFromRepoToInstalled: Stub; listedAppUrns: Stub };
@@ -181,6 +182,7 @@ const createHarness = () => {
       getDockerComposeJson: vi.fn().mockResolvedValue({ path: '/data/apps/nextcloud/docker-compose.json', content: composeJsonFixture() }),
       getAppEnv: vi.fn().mockResolvedValue({ path: APP_ENV_PATH, content: APP_ENV_CONTENT }),
       writeDockerComposeYml: vi.fn().mockResolvedValue(undefined),
+      createVolumeHostDirs: vi.fn().mockResolvedValue(undefined),
       setAppDataDirPermissions: vi.fn().mockResolvedValue(undefined),
     },
     marketplaceService: {
@@ -275,6 +277,41 @@ describe('prepareAppComposeDir', () => {
     // chmod must not run against a directory whose compose was never regenerated.
     expect(order).toEqual(['write', 'chmod']);
     expect(lastComposeCall().envFilePath).toBe(APP_ENV_PATH);
+  });
+
+  /*
+   * Docker makes a missing bind-mount folder itself, as root 755, and a Hub running as the host user
+   * can't open that up or delete what the app writes there. Install makes them first, but a custom
+   * app is added without an install and an edit can add a volume, so every start makes them (#2198).
+   */
+  it('makes the volume folders before the permission sweep, on every prepare', async () => {
+    const { stubs, moduleRef, docker } = createHarness();
+    const order: string[] = [];
+    stubs.appFilesManager.writeDockerComposeYml.mockImplementation(async () => {
+      order.push('write');
+    });
+    stubs.appFilesManager.createVolumeHostDirs.mockImplementation(async () => {
+      order.push('mkdir');
+    });
+    stubs.appFilesManager.setAppDataDirPermissions.mockImplementation(async () => {
+      order.push('chmod');
+    });
+
+    await prepareAppComposeDir(moduleRef, docker, 'my-app:_user' as AppUrn, makeForm());
+
+    expect(stubs.appFilesManager.createVolumeHostDirs).toHaveBeenCalledWith('my-app:_user');
+    expect(order).toEqual(['write', 'mkdir', 'chmod']);
+  });
+
+  it('still sweeps permissions when the volume folders cannot be made, and says why', async () => {
+    const { stubs, moduleRef, docker } = createHarness();
+    stubs.appFilesManager.createVolumeHostDirs.mockRejectedValue(new Error('EACCES'));
+
+    await expect(prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm())).resolves.toBeUndefined();
+
+    expect(stubs.appFilesManager.setAppDataDirPermissions).toHaveBeenCalledWith(APP_URN);
+    expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringContaining(`Could not create the volume folders of ${APP_URN}`));
+    expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringContaining('EACCES'));
   });
 
   it('builds for the app it was handed and passes the caller form through untouched', async () => {
