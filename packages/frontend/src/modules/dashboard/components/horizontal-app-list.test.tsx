@@ -106,4 +106,39 @@ describe('HorizontalAppList', () => {
     expect(screen.getAllByTestId('app-tile-skeleton')).toHaveLength(16);
     expect(screen.queryByText('Install your first app')).not.toBeInTheDocument();
   });
+
+  describe('an exposed port with no Hub sign-in in front', () => {
+    const portExpose = (urn: string, name: string, id: number, exposureMode: string): Entry =>
+      ({
+        info: { urn, name, kind: 'port-expose' },
+        app: { id, status: 'running', exposureMode, config: { kind: 'port-expose', exposureMode } },
+      }) as unknown as Entry;
+
+    it('says so on the tile of a port on Public web or the Private VPN, and on no other', () => {
+      renderList([
+        portExpose('dev-server:_user', 'Dev Server', 1, 'cloudflare'),
+        portExpose('team-notes:_user', 'Team Notes', 2, 'tailscale'),
+        portExpose('print-queue:_user', 'Print Queue', 3, 'local'),
+      ]);
+
+      const lines = screen.getAllByTestId('app-open-without-sign-in');
+      expect(lines).toHaveLength(2);
+      expect(screen.getByRole('link', { name: /Dev Server/ })).toContainElement(lines[0] as HTMLElement);
+      expect(lines[0]).toHaveTextContent('PORT_EXPOSE_OPEN_TO_ANYONE_NO_SIGN_IN');
+      expect(screen.getByRole('link', { name: /Team Notes/ })).toContainElement(lines[1] as HTMLElement);
+      expect(lines[1]).toHaveTextContent('PORT_EXPOSE_OPEN_TO_TAILNET_NO_SIGN_IN');
+    });
+
+    it('adds nothing to a store app on Public web with the Hub sign-in on', () => {
+      renderList([
+        {
+          info: { urn: 'actual:ci-marketplace', name: 'Actual' },
+          app: { id: 4, status: 'running', exposureMode: 'cloudflare', config: { exposureMode: 'cloudflare', enableAuth: true } },
+        } as unknown as Entry,
+      ]);
+
+      expect(screen.getByRole('link', { name: /Actual/ })).toBeInTheDocument();
+      expect(screen.queryByTestId('app-open-without-sign-in')).not.toBeInTheDocument();
+    });
+  });
 });

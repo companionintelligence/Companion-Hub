@@ -647,6 +647,77 @@ describe('AppAccessPoints', () => {
     expect(screen.queryByTestId('vpn-access-refused')).not.toBeInTheDocument();
   });
 
+  describe('an exposed port, which has no Hub sign-in in front', () => {
+    const portExposeInfo = {
+      urn: 'dev-server:_user',
+      name: 'Dev Server',
+      kind: 'port-expose',
+      no_gui: false,
+      https: false,
+      port: 3000,
+      dynamic_config: false,
+      exposable: true,
+    } as any;
+    const portExpose = (exposureMode: 'cloudflare' | 'tailscale') =>
+      ({
+        status: 'running',
+        port: 3000,
+        localSubdomain: 'dev-server',
+        exposureMode,
+        exposedLocal: exposureMode === 'cloudflare',
+        openPort: exposureMode === 'cloudflare',
+        config: {
+          kind: 'port-expose',
+          port: 3000,
+          exposureMode,
+          exposedLocal: exposureMode === 'cloudflare',
+          openPort: exposureMode === 'cloudflare',
+        },
+      }) as any;
+
+    it('says under its public address that anyone with it can open it', () => {
+      render(
+        <MemoryRouter>
+          <AppAccessPoints app={portExpose('cloudflare')} info={portExposeInfo} openWithoutSignIn="anyone" />
+        </MemoryRouter>,
+      );
+
+      expect(screen.getByTestId('public-access-open-note')).toHaveTextContent('PORT_EXPOSE_OPEN_TO_ANYONE_DETAIL');
+      expect(screen.queryByTestId('vpn-access-open-note')).not.toBeInTheDocument();
+    });
+
+    it('says under its Private VPN address that anyone on the tailnet can open it', () => {
+      render(
+        <MemoryRouter>
+          <AppAccessPoints app={portExpose('tailscale')} info={portExposeInfo} openWithoutSignIn="tailnet" />
+        </MemoryRouter>,
+      );
+
+      expect(screen.getByTestId('vpn-access-open-note')).toHaveTextContent('PORT_EXPOSE_OPEN_TO_TAILNET_DETAIL');
+      expect(screen.queryByTestId('public-access-open-note')).not.toBeInTheDocument();
+    });
+
+    // A store app's page passes nothing: whether its route asks for the sign-in is its own setting.
+    it('says nothing new on a store app with the Hub sign-in on', () => {
+      render(
+        <MemoryRouter>
+          <AppAccessPoints
+            app={
+              { status: 'running', port: 8138, localSubdomain: 'bitboard', exposureMode: 'cloudflare', exposedLocal: true, enableAuth: true } as any
+            }
+            info={
+              { urn: 'bitboard:community', name: 'Bitboard', no_gui: false, https: false, port: 8138, dynamic_config: true, exposable: true } as any
+            }
+          />
+        </MemoryRouter>,
+      );
+
+      expect(screen.getByText('APP_DETAILS_ACCESS_TITLE')).toBeInTheDocument();
+      expect(screen.queryByTestId('public-access-open-note')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('vpn-access-open-note')).not.toBeInTheDocument();
+    });
+  });
+
   it('shows a failure toast when clipboard copy fails', async () => {
     const writeText = vi.fn().mockRejectedValue(new Error('clipboard unavailable'));
     Object.defineProperty(window.navigator, 'clipboard', {

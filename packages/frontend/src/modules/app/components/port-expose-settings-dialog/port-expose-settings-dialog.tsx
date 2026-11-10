@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
@@ -7,7 +7,8 @@ import { Tooltip } from 'react-tooltip';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { client } from '@/api-client/client.gen';
-import { getAppQueryKey, getDomainsOptions } from '@/api-client/@tanstack/react-query.gen';
+import { getAppQueryKey, getDomainsOptions, getInstalledAppsQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import type { UpdatePortExposeAppDto } from '@/api-client/types.gen';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input/Input';
@@ -17,6 +18,7 @@ import { CloudflareSubdomainField } from '@/modules/app/components/install-form/
 import { domainListNoteFor } from '@/modules/app/components/install-form/domain-list-note';
 import { preselectedPublicDomain, publicDomainToUse } from '@/modules/app/components/install-form/preselected-public-domain';
 import { useDnsAvailability } from '@/modules/app/components/install-form/use-dns-availability';
+import { PublicPortConfirmDialog } from '@/modules/app/components/dialogs/public-port-confirm-dialog/public-port-confirm-dialog';
 import { buildPublicWebIdentity, sanitizeAppSubdomain, selectOfferedDomains } from '@ci-hub/common/types';
 import type { AvailableDomain } from '@ci-hub/common/types';
 import type { AppDetails, AppInfo } from '@/types/app.types';
@@ -155,8 +157,11 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
     t,
   });
 
+  // A move onto Public web waiting on the person to agree that anyone with the address can open the port.
+  const [publicPortBody, setPublicPortBody] = useState<UpdatePortExposeAppDto | null>(null);
+
   const updatePortExpose = useMutation({
-    mutationFn: async (body: { port: number; exposureMode: ExposureMode; localSubdomain?: string; publicDomain?: string }) => {
+    mutationFn: async (body: UpdatePortExposeAppDto) => {
       const { error } = await client.patch({
         url: `/api/custom-apps/port-expose/${info.urn}`,
         body,
@@ -167,6 +172,8 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
       }
     },
     onSuccess: async () => {
+      // Home's tile says who can open the port, and the PATCH sends no event that would refresh it.
+      void queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
       await queryClient.invalidateQueries({ queryKey: getAppQueryKey({ path: { urn: info.urn } }) });
       toast.success(t('PORT_EXPOSE_SETTINGS_SUCCESS'));
       onClose();
@@ -239,16 +246,26 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
       }
     }
 
-    updatePortExpose.mutate({
+    const body: UpdatePortExposeAppDto = {
       port,
       exposureMode,
       localSubdomain: exposureMode === 'cloudflare' ? sanitizeAppSubdomain(values.localSubdomain || defaultAppSubdomain) : undefined,
       publicDomain: exposureMode === 'cloudflare' ? publicDomain : undefined,
-    });
+    };
+
+    // Asked as on Expose a port, when the port moves onto Public web. A port already there stays where
+    // it is, and its page and tile say it is open.
+    if (exposureMode === 'cloudflare' && app.exposureMode !== 'cloudflare') {
+      setPublicPortBody(body);
+      return;
+    }
+
+    updatePortExpose.mutate(body);
   };
 
   const handleClose = () => {
     reset();
+    setPublicPortBody(null);
     onClose();
   };
 
@@ -372,6 +389,19 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
             </Button>
           </DialogFooter>
         </form>
+
+        {/* Inside this dialog's content, so Radix stacks it on top: its Cancel and Escape close only the question. */}
+        <PublicPortConfirmDialog
+          isOpen={publicPortBody !== null}
+          port={publicPortBody?.port ?? null}
+          onConfirm={() => {
+            if (publicPortBody) {
+              updatePortExpose.mutate(publicPortBody);
+            }
+            setPublicPortBody(null);
+          }}
+          onCancel={() => setPublicPortBody(null)}
+        />
       </DialogContent>
     </Dialog>
   );

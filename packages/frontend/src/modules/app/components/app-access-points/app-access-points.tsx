@@ -7,12 +7,13 @@ import { getServeStatusOptions } from '@/api-client/@tanstack/react-query.gen';
 import { tailscaleStatusOptions } from '@/lib/api-routes/named-status-routes';
 import { openExternal } from '@/lib/helpers/open-external';
 import { cn } from '@/lib/utils';
+import { PORT_EXPOSE_OPEN_TO_COPY, type PortExposeOpenTo } from '@/modules/app/helpers/port-expose-open-to';
 import type { AppDetails, AppInfo } from '@/types/app.types';
 import { hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
 import { buildPublicWebIdentity, normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { publishesHostPort, publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm, storedHostPortForm } from '@ci-hub/common/types';
 import { useQuery } from '@tanstack/react-query';
-import { CheckCircle2, Copy, ExternalLink, Globe, Lock, MonitorSmartphone, QrCode as QrCodeIcon } from 'lucide-react';
+import { CheckCircle2, Copy, ExternalLink, Globe, Lock, LockOpen, MonitorSmartphone, QrCode as QrCodeIcon } from 'lucide-react';
 import { useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
@@ -385,9 +386,11 @@ interface Props {
   info: AppInfo;
   /** Why the Portal refused this app a public address, when it did; shown on the Public domain card. */
   publicAddressRefusal?: string | null;
+  /** Set for an exposed port, who can open it with no Hub sign-in in front (`portExposeOpenTo`). Said under that address. */
+  openWithoutSignIn?: PortExposeOpenTo | null;
 }
 
-export const AppAccessPoints = ({ app, info, publicAddressRefusal = null }: Props) => {
+export const AppAccessPoints = ({ app, info, publicAddressRefusal = null, openWithoutSignIn = null }: Props) => {
   const { t } = useTranslation();
   const { userSettings, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn, tailscaleHttpsEnabled } = useAppContext();
   const [qrEntry, setQrEntry] = useState<AppAccessPoint | null>(null);
@@ -483,6 +486,10 @@ export const AppAccessPoints = ({ app, info, publicAddressRefusal = null }: Prop
               qrRefusal = t('APP_DETAILS_ACCESS_QR_LOOPBACK');
             }
             const qrRefusalId = `${idBase}-${entry.key}-qr-refusal`;
+            const openNote =
+              openWithoutSignIn && isActive && PORT_EXPOSE_OPEN_TO_COPY[openWithoutSignIn].accessPoint === entry.key
+                ? PORT_EXPOSE_OPEN_TO_COPY[openWithoutSignIn].detail
+                : null;
 
             return (
               <div key={entry.key} className="min-w-0 rounded-md border border-border/60 bg-muted/20 p-3 sm:p-4">
@@ -528,6 +535,12 @@ export const AppAccessPoints = ({ app, info, publicAddressRefusal = null }: Prop
                       </div>
                     )}
                   </div>
+                  {openNote ? (
+                    <p className="flex items-start gap-1.5 text-xs text-muted-foreground" data-testid={`${entry.key}-access-open-note`}>
+                      <LockOpen className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden />
+                      {t(openNote)}
+                    </p>
+                  ) : null}
                 </div>
 
                 <div className="mt-4 flex gap-2">

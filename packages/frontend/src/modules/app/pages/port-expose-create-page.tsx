@@ -9,6 +9,7 @@ import { Link } from 'react-router';
 import { Tooltip } from 'react-tooltip';
 import { client } from '@/api-client/client.gen';
 import { getDomainsOptions } from '@/api-client/@tanstack/react-query.gen';
+import type { CreatePortExposeAppDto } from '@/api-client/types.gen';
 import { Input } from '@/components/ui/Input/Input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -18,7 +19,8 @@ import { CloudflareSubdomainField } from '@/modules/app/components/install-form/
 import { domainListNoteFor } from '@/modules/app/components/install-form/domain-list-note';
 import { preselectedPublicDomain, publicDomainToUse } from '@/modules/app/components/install-form/preselected-public-domain';
 import { useDnsAvailability } from '@/modules/app/components/install-form/use-dns-availability';
-import { useCallback, useEffect, useMemo } from 'react';
+import { PublicPortConfirmDialog } from '@/modules/app/components/dialogs/public-port-confirm-dialog/public-port-confirm-dialog';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchDnsAvailability } from '@/lib/cloudflare-api';
 import { buildPublicWebIdentity, deriveAppSlug, RESERVED_APP_NAMES, sanitizeAppSubdomain, selectOfferedDomains } from '@ci-hub/common/types';
 import type { AvailableDomain } from '@ci-hub/common/types';
@@ -140,8 +142,11 @@ export default function PortExposeCreatePage() {
     t,
   });
 
+  // A Public web port waiting on the person to agree that anyone with the address can open it.
+  const [publicPortBody, setPublicPortBody] = useState<CreatePortExposeAppDto | null>(null);
+
   const createPortExpose = useMutation({
-    mutationFn: async (body: { name: string; port: number; exposureMode: ExposureMode; localSubdomain?: string; publicDomain?: string }) => {
+    mutationFn: async (body: CreatePortExposeAppDto) => {
       const { data, error } = await client.post({
         url: '/api/custom-apps/port-expose',
         body,
@@ -244,13 +249,21 @@ export default function PortExposeCreatePage() {
       }
     }
 
-    createPortExpose.mutate({
+    const body: CreatePortExposeAppDto = {
       name: displayName,
       port,
       exposureMode,
       localSubdomain: exposureMode === 'cloudflare' ? sanitizeAppSubdomain(values.localSubdomain || slug) : undefined,
       publicDomain: exposureMode === 'cloudflare' ? publicDomain : undefined,
-    });
+    };
+
+    // The Hub puts no sign-in in front of an exposed port, so going on Public web is asked first.
+    if (exposureMode === 'cloudflare') {
+      setPublicPortBody(body);
+      return;
+    }
+
+    createPortExpose.mutate(body);
   };
 
   return (
@@ -401,6 +414,18 @@ export default function PortExposeCreatePage() {
           </CardContent>
         </Card>
       </div>
+
+      <PublicPortConfirmDialog
+        isOpen={publicPortBody !== null}
+        port={publicPortBody?.port ?? null}
+        onConfirm={() => {
+          if (publicPortBody) {
+            createPortExpose.mutate(publicPortBody);
+          }
+          setPublicPortBody(null);
+        }}
+        onCancel={() => setPublicPortBody(null)}
+      />
     </div>
   );
 }
