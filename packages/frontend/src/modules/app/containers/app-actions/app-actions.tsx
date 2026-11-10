@@ -430,8 +430,9 @@ export const AppActions = ({
 
   const ignoreVersionMutation = useMutation({
     ...ignoreAppVersionMutation(),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       toast.success(t('APP_ACTION_IGNORE_VERSION_SUCCESS'));
+      invalidateAppQueries(queryClient, variables.path.urn);
     },
     onError: (e: Error) => {
       toast.error(e.message);
@@ -440,8 +441,9 @@ export const AppActions = ({
 
   const unignoreVersionMutation = useMutation({
     ...unignoreAppVersionMutation(),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       toast.success(t('APP_ACTION_UNIGNORE_VERSION_SUCCESS'));
+      invalidateAppQueries(queryClient, variables.path.urn);
     },
     onError: (e: Error) => {
       toast.error(e.message);
