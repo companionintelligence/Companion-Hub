@@ -75,7 +75,6 @@ const envSchema = z
     NGINX_PORT: z.coerce.number().default(80),
     NGINX_PORT_SSL: z.coerce.number().default(443),
     ADVANCED_SETTINGS: z.string().transform((val) => val.toLowerCase() === 'true'),
-    THEME_BASE: z.string(),
     THEME_COLOR: z.string(),
     MAX_BACKUPS: z.coerce.number().default(0),
     // Experimental flags
@@ -485,7 +484,6 @@ export class ConfigurationService {
         advancedSettings: env.data.ADVANCED_SETTINGS,
         logLevel: env.data.LOG_LEVEL,
         maxBackups: env.data.MAX_BACKUPS,
-        themeBase: env.data.THEME_BASE,
         themeColor: env.data.THEME_COLOR,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,

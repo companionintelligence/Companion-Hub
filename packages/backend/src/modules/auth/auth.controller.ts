@@ -249,6 +249,13 @@ function translatableErrorKey(error: unknown): string {
   return typeof error.message === 'string' ? error.message : '';
 }
 
+/** The errors that mean a password or two-factor code was checked and was not right. */
+function isWrongPasswordOrCode(error: unknown): boolean {
+  const key = translatableErrorKey(error);
+
+  return key === 'AUTH_ERROR_INVALID_PASSWORD' || key === 'AUTH_ERROR_TOTP_INVALID_CODE';
+}
+
 /**
  * The request's `x-api-key`, or null. It is Memory's key: the edge passes it on only to the
  * official Memory install (`isMemoryProviderHost`), and only once Memory has said it is one it
@@ -343,6 +350,56 @@ export class AuthController {
     refund();
 
     return result;
+  }
+
+  /**
+   * Run a step that re-checks a signed-in person's own password or two-factor code, under
+   * {@link AuthRateLimiter}'s `accountRecheck` scope.
+   *
+   * The budget is the account's and one budget covers every route that does such a check, so it does
+   * not change with the address, the session or the route. Only a wrong password or code keeps its
+   * slot. Anything else, such as a correct password with a new password that is too short, was not a
+   * failed check and gives its slot back.
+   */
+  private async accountRechecked<T>(userId: number, req: Request, step: () => Promise<T>): Promise<T> {
+    const clientKey = String(userId);
+    const refund = this.admitAccountRecheck(clientKey, userId, req);
+
+    try {
+      const result = await step();
+      refund();
+
+      return result;
+    } catch (error) {
+      if (!isWrongPasswordOrCode(error)) {
+        refund();
+      } else if (this.rateLimiter.isSpent('accountRecheck', clientKey)) {
+        // Reached by the answer that used up the budget, so someone who stays exactly at the limit without being refused is still reported.
+        this.reportAccountRecheckLimit(clientKey, userId, req);
+      }
+
+      throw error;
+    }
+  }
+
+  private admitAccountRecheck(clientKey: string, userId: number, req: Request): () => void {
+    try {
+      return this.rateLimiter.admit('accountRecheck', clientKey);
+    } catch (error) {
+      this.reportAccountRecheckLimit(clientKey, userId, req);
+
+      throw error;
+    }
+  }
+
+  private reportAccountRecheckLimit(clientKey: string, userId: number, req: Request): void {
+    if (this.rateLimiter.firstNoticeInWindow('accountRecheck', clientKey)) {
+      this.logger.warn('Too many wrong password or two-factor attempts on a signed-in account', {
+        userId,
+        path: req.path,
+        ipAddress: req.ip,
+      });
+    }
   }
 
   private sessionCookieOptions(req: Request) {
@@ -1497,7 +1554,7 @@ export class AuthController {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
     }
 
-    await this.authService.changeUsername({ userId, ...body });
+    await this.accountRechecked(userId, req, () => this.authService.changeUsername({ userId, ...body }));
 
     await this.clearSessionCookie(res, req);
     return res.status(204).send();
@@ -1512,7 +1569,7 @@ export class AuthController {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
     }
 
-    await this.authService.changePassword({ userId, ...body });
+    await this.accountRechecked(userId, req, () => this.authService.changePassword({ userId, ...body }));
 
     await this.clearSessionCookie(res, req);
     return res.status(204).send();
@@ -1528,7 +1585,7 @@ export class AuthController {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
     }
 
-    const res = await this.authService.getTotpUri({ userId, ...body });
+    const res = await this.accountRechecked(userId, req, () => this.authService.getTotpUri({ userId, ...body }));
     return GetTotpUriDto.parse(res, { reportOnly: true });
   }
 
@@ -1541,7 +1598,7 @@ export class AuthController {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
     }
 
-    await this.authService.setupTotp({ userId, totpCode: body.code });
+    await this.accountRechecked(userId, req, () => this.authService.setupTotp({ userId, totpCode: body.code }));
   }
 
   @Patch('/totp/disable')
@@ -1553,7 +1610,7 @@ export class AuthController {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
     }
 
-    await this.authService.disableTotp({ userId, ...body });
+    await this.accountRechecked(userId, req, () => this.authService.disableTotp({ userId, ...body }));
   }
 
   /**

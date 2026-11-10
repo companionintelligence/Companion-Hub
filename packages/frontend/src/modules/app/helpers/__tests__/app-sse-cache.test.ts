@@ -116,7 +116,15 @@ describe('handleAppSseEvent', () => {
       handleAppSseEvent(queryClient as unknown as QueryClient, { event: 'tailscale_serve_permission', denied });
 
       // Settings → Network and every Private VPN access card read the refusal from the Tailscale status.
-      expect(queryClient.invalidateQueries.mock.calls.map(([filters]) => filters.queryKey)).toEqual([['getStatus3'], ['getServeStatus']]);
+      expect(queryClient.invalidateQueries.mock.calls.flatMap(([filters]) => (filters.queryKey ? [filters.queryKey] : []))).toEqual([
+        ['getStatus3'],
+        ['getServeStatus'],
+      ]);
+
+      // The top of an app page has usually stopped polling by the time the refusal ends (#2273).
+      const { predicate } = queryClient.invalidateQueries.mock.calls.find(([filters]) => filters.predicate)?.[0] ?? {};
+      expect(predicate({ queryKey: [{ _id: 'checkAvailability', path: { urn: 'a:b' } }] })).toBe(true);
+      expect(predicate({ queryKey: [{ _id: 'getApp', path: { urn: 'a:b' } }] })).toBe(false);
     }
     expect(queryClient.setQueryData).not.toHaveBeenCalled();
     expect(updateInstallationProgress).not.toHaveBeenCalled();

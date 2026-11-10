@@ -92,6 +92,7 @@ pub(crate) fn ensure_hub_compose_file(compose_path: &Path, data_dir: &Path) -> R
 /// - Preserved value learned at pairing (kept, never re-derived once a Portal has answered): DOMAIN
 /// - Preserved device ID (the one the Hub registered as, else the one in .env, else read from the host): DEVICE_ID
 /// - Preserved operator opt-outs, kept only when set to true: TAILSCALE_SERVE_USER_DISABLED, HUB_ALLOW_FOREIGN_DEVICE_ID
+/// - Preserved operator opt-out, kept only when set to false: MCP_ENABLED
 /// - Derived values (always recomputed from the current binary): INTERNAL_IP, CI_CLOUD_URL, CI_HUB_VERSION, CI_HUB_IMAGE, DOCKER_PLATFORM
 /// - CI_CLOUD_URL follows the desktop-only Portal URL override file when it holds a valid origin; see `portal_url`
 ///

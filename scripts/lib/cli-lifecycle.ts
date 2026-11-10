@@ -25,7 +25,14 @@ import { isApplianceMode, requireRepoRoot } from './cli-repo-context.js';
 import { BASE_COMMAND, type HubEnv, type StartMode } from './cli-types.js';
 import { printMessageBox } from './cli-ui.js';
 import { requireDockerForHubStack } from './docker-versions.js';
-import { buildComposeBaseArgs, ensureApplianceInstall, envOverridesForContext, type HubContext, resolveHubContext } from './hub-context.js';
+import {
+  buildComposeBaseArgs,
+  ensureApplianceInstall,
+  envOverridesForContext,
+  type HubContext,
+  requireRepoOrApplianceContext,
+  resolveHubContext,
+} from './hub-context.js';
 import { applianceEnvFilePaths } from './paths.js';
 
 const POSTGRES_INFRA_SERVICES = ['ci-hub-queue', 'ci-hub-db'] as const;
@@ -273,5 +280,6 @@ export async function setupHub(env: HubEnv) {
 }
 
 export function printConfig(env: HubEnv) {
-  printMessageBox('CI-Hub configuration', renderConfigLines(env), 'cyan');
+  requireRepoOrApplianceContext(`${BASE_COMMAND} config`);
+  printMessageBox('CI-Hub configuration', renderConfigLines(resolveHubContext(env)), 'cyan');
 }
