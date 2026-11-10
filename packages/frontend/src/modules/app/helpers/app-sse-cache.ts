@@ -148,6 +148,18 @@ function runtimeHealthQueryKey(appUrn: string) {
 }
 
 /**
+ * Refetch every app record after the Hub comes back. What a restart changed was announced while no
+ * browser was connected. No app query polls, so an open page kept what it had read before (#2286).
+ */
+export function invalidateAppRecords(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
+  void queryClient.invalidateQueries({ queryKey: getInstalledAppUrnsQueryKey() });
+  void queryClient.invalidateQueries({ queryKey: [{ _id: 'getApp' }] });
+  // A listing read that failed while the Hub was away holds the page on "not found" with its record query off.
+  void queryClient.invalidateQueries({ queryKey: ['app-listing'], predicate: (query) => query.state.status === 'error' });
+}
+
+/**
  * Refetch everything that describes one app. Also the canonical way to unwind an optimistic install
  * write: `onMutate` forces the app to `installing` in several caches at once, and a request that
  * fails before the backend starts work emits no SSE event and none of these queries poll — so

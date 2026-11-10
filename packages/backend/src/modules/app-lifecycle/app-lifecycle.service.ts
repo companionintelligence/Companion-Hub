@@ -809,7 +809,29 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     void action().catch((err) => this.logLifecycleHandlerError(command, appUrn, err));
   }
 
+  /** Answers a command that will not run because its app was already settled. A failed reply is only logged. */
+  private async endSettledCommand(
+    data: z.infer<typeof appEventSchema>,
+    job: LifecycleJob | null,
+    reply: (response: z.output<typeof appEventResultSchema>) => Promise<void>,
+    message: string,
+  ) {
+    if (job) {
+      await this.lifecycleJobService?.cancelJob(job.id, message).catch(() => null);
+    }
+    try {
+      await reply({ success: false, cancelled: true, message });
+    } catch (err) {
+      this.logger.warn(
+        `[lifecycle] could not reply to the settled '${data.command}' for ${data.appUrn}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   async invokeCommand(data: z.infer<typeof appEventSchema>, reply: (response: z.output<typeof appEventResultSchema>) => Promise<void>) {
+    // This consumer registers before bootstrap has loaded the app stores, so a redelivered command waits for them.
+    await this.marketplaceService.whenInitialized();
+
     // Serialize installs so a second "Install" cannot compete with an in-progress image pull.
     let releasePipeline: (() => void) | undefined;
     const isInstall = data.command === 'install';
@@ -846,16 +868,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // row by URN, which may now belong to the newer install, and would fail it.
       if (this.operationRegistry.takeSettledBeforeStart(data.requestId)) {
         this.logger.info(`[lifecycle] '${data.command}' for ${data.appUrn} was cancelled while queued and is already settled; skipping it`);
-        if (job) {
-          await this.lifecycleJobService?.cancelJob(job.id, 'Operation cancelled before it started').catch(() => null);
-        }
-        try {
-          await reply({ success: false, cancelled: true, message: 'Operation cancelled before it started' });
-        } catch (err) {
-          this.logger.warn(
-            `[lifecycle] could not reply to the settled '${data.command}' for ${data.appUrn}: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
+        await this.endSettledCommand(data, job, reply, 'Operation cancelled before it started');
         return;
       }
 
@@ -863,7 +876,26 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // message dequeued after a newer op replaced the entry must NOT wire the newer op's AbortSignal
       // into this command or mutate the newer entry's phase.
       const registered = this.operationRegistry.get(data.appUrn);
-      const entry = registered && registered.requestId === data.requestId ? registered : undefined;
+      let entry = registered && registered.requestId === data.requestId ? registered : undefined;
+
+      // An install redelivered across a restart has no entry. Startup recovery fails every install it
+      // does not see running, which includes one still waiting its turn or delivered late. Running that
+      // one would install an app its page already shows as failed (#2286). A retry puts the row back to
+      // `installing` under its own request, so the row alone cannot tell the old message from the retry.
+      if (isInstall && !entry) {
+        const row = await this.appRepository.getAppByUrn(data.appUrn);
+        // Read after the row: a retry can register during that read.
+        const newer = this.operationRegistry.get(data.appUrn);
+        if (newer || row?.status !== 'installing') {
+          const why = newer ? `request ${newer.requestId} holds the app` : `row is ${row?.status ?? 'gone'}`;
+          this.logger.info(`[lifecycle] redelivered install of ${data.appUrn} is no longer wanted (${why}); skipping it`);
+          await this.endSettledCommand(data, job, reply, 'Install already ended before it could resume');
+          return;
+        }
+        // Registered as a dispatched install is, so Cancel reaches it and other commands wait for it.
+        this.registerDispatchedCommand(data.appUrn, data.requestId, 'install', { takesOverClaim: false });
+        entry = this.operationRegistry.get(data.appUrn);
+      }
 
       // Tier-A: the op was cancelled while queued (before this worker dequeued it). Skip execution
       // entirely and finalize the cancellation. No compose/pull ran, so there is nothing to compensate.
