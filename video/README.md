@@ -187,7 +187,7 @@ no HMR client, no dev overlay, so a rerun on unchanged UI is byte-identical.
 
 Prerequisites: Postgres and RabbitMQ (`e2e/docker-compose.e2e.yml` or the service
 containers in `.github/workflows/e2e.yml`), and a **CI-Marketplace checkout** —
-`e2e/start-backend.sh` symlinks `$CI_MARKETPLACE_DIR/apps` into the Hub's store. Without
+`e2e/start-backend.sh` copies `$CI_MARKETPLACE_DIR/apps` into the Hub's store. Without
 it `app-details`, `install-dialog` and the installed-app tiles in `hub-home` have no app
 info to render, so check for `CI-Marketplace: linked` in the backend log before capturing
 rather than discovering four empty screens afterwards.
@@ -342,12 +342,12 @@ invented and no key string appears in this repo or in any frame.
 
 **The store shots are shot against a recording, not the mock portal.** `/store` opens on the
 *featured* view, proxied from the Portal (`GET /api/store/listings` →
-`portal-client.fetchStoreListings`), **not** from the CI-Marketplace symlink. The mock portal
+`portal-client.fetchStoreListings`), **not** from the CI-Marketplace copy. The mock portal
 answers every query with the same two stub apps. `capture.config.mjs` therefore fulfils
 `/api/store/listings` and `/api/store/alternatives` from `fixtures/portal-store-*.json`,
 which are recordings of the live production Portal (`https://hub.ci.computer/api/store`, a
 public endpoint) — real app names, real descriptions, real counts, stable bytes. Re-record
-with `node video/fixtures/record-portal-store.mjs`. The symlink still matters: it feeds the
+with `node video/fixtures/record-portal-store.mjs`. The copy still matters: it feeds the
 search/category views, the `/store/ci-marketplace/immich` page, and every card icon
 (`/api/marketplace/apps/<urn>/image`).
 

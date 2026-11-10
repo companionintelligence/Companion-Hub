@@ -229,7 +229,7 @@ export class AppStoreFilesManager {
 
     // Copy app folder from repo
     this.logger.info(`Copying app ${appUrn} from repo ${this.storeConfig.slug}`);
-    const copied = await this.filesystem.copyDirectory(appRepoDir, appInstalledDir);
+    const copied = await this.filesystem.copyDirectory(appRepoDir, appInstalledDir, { verbatimSymlinks: true });
 
     if (removed === false || createdApp === false || createdData === false || copied === false) {
       throw new Error(`Could not copy ${appUrn} from repo ${this.storeConfig.slug} into the installed apps folder`);

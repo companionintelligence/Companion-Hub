@@ -82,6 +82,8 @@ const createMockService = () => {
       tailnet: 'example.ts.net',
       supportsServices: true,
     }),
+    getServePermission: vi.fn().mockReturnValue({ denied: false, remedy: null, deniedSince: null }),
+    getServeStatus: vi.fn().mockResolvedValue({ entries: [] }),
   };
   const exposureSync = { publicDnsRefusalFor: vi.fn().mockReturnValue(null) };
   const moduleRefMock = {
@@ -514,14 +516,44 @@ describe('AppsService.checkAppAvailability', () => {
     expect(result.appUrl).toContain('https://');
   });
 
-  it('cloudflare mode → any other refusal keeps the probe verdict', async () => {
+  // The other refusals that stand until someone acts never propagate either (#2271).
+  it.each([
+    ['duplicate_subdomain', 'PUBLIC_ADDRESS_DUPLICATE_SUBDOMAIN'],
+    ['conflict', 'PUBLIC_ADDRESS_CONFLICT'],
+    ['zone_unreachable', 'PUBLIC_ADDRESS_ZONE_UNAVAILABLE'],
+    ['invalid_subdomain', 'PUBLIC_ADDRESS_INVALID_SUBDOMAIN'],
+  ] as const)('cloudflare mode → names a %s refusal instead of DNS propagating', async (refusal, errorCode) => {
     ctx.mockApp.exposureMode = 'cloudflare';
     vi.mocked(resolveAtZoneNameservers).mockResolvedValue({ kind: 'nxdomain' });
-    ctx.exposureSync.publicDnsRefusalFor.mockReturnValue('duplicate_subdomain');
+    ctx.exposureSync.publicDnsRefusalFor.mockReturnValue(refusal);
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result).toMatchObject({ available: false, stage: 'error', errorCode, resolvable: false });
+    expect(result.reason).not.toBe('NETWORK_ERROR');
+  });
+
+  it('cloudflare mode → a refusal that passes on its own keeps the probe verdict', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    vi.mocked(resolveAtZoneNameservers).mockResolvedValue({ kind: 'nxdomain' });
+    ctx.exposureSync.publicDnsRefusalFor.mockReturnValue('api_error');
 
     const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
 
     expect(result).toMatchObject({ errorCode: 'DNS_NOT_FOUND', stage: 'propagating' });
+  });
+
+  // The Portal refused the platform hostname, and the probe asked about the custom one.
+  it('cloudflare mode → a refusal does not explain a custom hostname that has no record yet', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    Object.assign(ctx.mockApp, { customDomain: 'app.customer.example' });
+    vi.mocked(resolveAtZoneNameservers).mockResolvedValue({ kind: 'nxdomain' });
+    ctx.exposureSync.publicDnsRefusalFor.mockReturnValue('conflict');
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(ctx.exposureSync.publicDnsRefusalFor).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ errorCode: 'DNS_NOT_FOUND', stage: 'propagating', appUrl: 'https://app.customer.example' });
   });
 
   // The name resolves and the tunnel answered, so the refusal doesn't explain it. Its code keeps the
@@ -550,6 +582,25 @@ describe('AppsService.checkAppAvailability', () => {
     expect(result).toMatchObject({ available: true, stage: 'ready' });
   });
 
+  it('publicAddressRefusalFor gives the reason the last sync refused the address', async () => {
+    ctx.exposureSync.publicDnsRefusalFor.mockReturnValue('conflict');
+
+    await expect(ctx.service.publicAddressRefusalFor('test-app:test-store' as AppUrn)).resolves.toBe('conflict');
+    expect(ctx.exposureSync.publicDnsRefusalFor).toHaveBeenCalledWith('test-app:test-store');
+  });
+
+  it('publicAddressRefusalFor is null when the last sync refused nothing', async () => {
+    await expect(ctx.service.publicAddressRefusalFor('test-app:test-store' as AppUrn)).resolves.toBeNull();
+  });
+
+  it('publicAddressRefusalFor is null when the exposure sync cannot be resolved', async () => {
+    ctx.moduleRefMock.get.mockImplementation(() => {
+      throw new Error('no provider');
+    });
+
+    await expect(ctx.service.publicAddressRefusalFor('test-app:test-store' as AppUrn)).resolves.toBeNull();
+  });
+
   it('cloudflare mode → DNS ENOTFOUND = DNS_NOT_FOUND, resolvable, includes appUrl', async () => {
     ctx.mockApp.exposureMode = 'cloudflare';
     mockedAxiosGet.mockRejectedValue(new Error('getaddrinfo ENOTFOUND myapp.example.com'));
@@ -561,6 +612,48 @@ describe('AppsService.checkAppAvailability', () => {
     expect(result.resolvable).toBe(true);
     expect(result.appUrl).toBeDefined();
     expect(result.stage).toBe('propagating');
+  });
+
+  // The probe of a port Tailscale never published reads as a broken app and Resolve can't change who
+  // the host's operator is (#2273).
+  it('tailscale mode → names the refusal when tailscaled refuses the Hub and the port is not served', async () => {
+    ctx.mockApp.exposureMode = 'tailscale';
+    ctx.tailscaleService.getServePermission.mockReturnValue({ denied: true, remedy: 'x', deniedSince: '2026-11-09T00:00:00.000Z' });
+    ctx.tailscaleService.getServeStatus.mockResolvedValue({ entries: [{ listenPort: 443 }] });
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result).toMatchObject({
+      available: false,
+      stage: 'error',
+      reason: 'TAILSCALE_REFUSED',
+      errorCode: 'TAILSCALE_SERVE_REFUSED',
+      resolvable: false,
+    });
+    expect(result.appUrl).toBeUndefined();
+    expect(mockedAxiosGet).not.toHaveBeenCalled();
+  });
+
+  it('tailscale mode → still probes a port served before the refusal began', async () => {
+    ctx.mockApp.exposureMode = 'tailscale';
+    ctx.tailscaleService.getServePermission.mockReturnValue({ denied: true, remedy: 'x', deniedSince: '2026-11-09T00:00:00.000Z' });
+    ctx.tailscaleService.getServeStatus.mockResolvedValue({ entries: [{ listenPort: ctx.mockApp.port, host: 'hub-tailscale-1.example.ts.net' }] });
+    mockedAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result.available).toBe(true);
+  });
+
+  it('tailscale mode → names the refusal when the port is only served under the name the node had before', async () => {
+    ctx.mockApp.exposureMode = 'tailscale';
+    ctx.tailscaleService.getServePermission.mockReturnValue({ denied: true, remedy: 'x', deniedSince: '2026-11-09T00:00:00.000Z' });
+    ctx.tailscaleService.getServeStatus.mockResolvedValue({ entries: [{ listenPort: ctx.mockApp.port, host: 'old-name.example.ts.net' }] });
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result).toMatchObject({ errorCode: 'TAILSCALE_SERVE_REFUSED', resolvable: false });
+    expect(mockedAxiosGet).not.toHaveBeenCalled();
   });
 
   it('tailscale mode → uses node MagicDNS hostname with the app vpn port', async () => {

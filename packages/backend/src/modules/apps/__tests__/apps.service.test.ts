@@ -101,6 +101,8 @@ describe('AppsService', () => {
             tailnet: 'example.ts.net',
             supportsServices: true,
           }),
+          getServePermission: vi.fn().mockReturnValue({ denied: false, remedy: null, deniedSince: null }),
+          getServeStatus: vi.fn().mockResolvedValue({ entries: [] }),
         } as any;
       }
       return undefined as any;
@@ -549,14 +551,53 @@ describe('AppsService', () => {
     it('MUST attempt container restart for PROXY_UPSTREAM_ERROR', async () => {
       const mockRestart = vi.fn().mockResolvedValue(undefined);
       moduleRef.get.mockImplementation((() => ({
+        getRoutedContainerNames: vi.fn().mockResolvedValue(['test-app_test-store-web-1']),
         restartContainer: mockRestart,
         syncExposurePublic: vi.fn(),
         getTunnelToken: () => 'token',
       })) as any);
 
       setupForResolve('proxy502');
-      await service.resolveAppAvailability(appUrn);
-      expect(mockRestart).toHaveBeenCalledWith('test-app');
+      const result = await service.resolveAppAvailability(appUrn);
+      expect(mockRestart).toHaveBeenCalledWith('test-app_test-store-web-1');
+      expect(result.detail).toContain('Restarted container: test-app_test-store-web-1');
+    });
+
+    it('MUST say so instead of restarting a guessed name when the app has no routed container', async () => {
+      const mockRestart = vi.fn().mockResolvedValue(undefined);
+      moduleRef.get.mockImplementation((() => ({
+        getRoutedContainerNames: vi.fn().mockResolvedValue([]),
+        restartContainer: mockRestart,
+        syncExposurePublic: vi.fn(),
+        getTunnelToken: () => 'token',
+      })) as any);
+
+      setupForResolve('proxy502');
+      const result = await service.resolveAppAvailability(appUrn);
+      expect(mockRestart).not.toHaveBeenCalled();
+      expect(result.detail).toContain('no container found');
+      expect(result.success).toBe(false);
+    });
+
+    it('MUST go on to the next container when one restart fails', async () => {
+      const mockRestart = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('Failed to restart container test-app_test-store-web-1'))
+        .mockResolvedValue(undefined);
+      moduleRef.get.mockImplementation((() => ({
+        getRoutedContainerNames: vi.fn().mockResolvedValue(['test-app_test-store-web-1', 'test-app_test-store-sidecar-1']),
+        restartContainer: mockRestart,
+        syncExposurePublic: vi.fn(),
+        getTunnelToken: () => 'token',
+      })) as any);
+
+      setupForResolve('proxy502');
+      const result = await service.resolveAppAvailability(appUrn);
+
+      expect(mockRestart).toHaveBeenCalledWith('test-app_test-store-sidecar-1');
+      expect(result.success).toBe(true);
+      expect(result.detail).toContain('Restarted container: test-app_test-store-sidecar-1');
+      expect(result.detail).toContain('Failed to restart container test-app_test-store-web-1');
     });
 
     it('SHOULD call syncExposurePublic for tailscale + CONNECTION_REFUSED', async () => {
@@ -572,6 +613,8 @@ describe('AppsService', () => {
               tailnet: 'example.ts.net',
               supportsServices: true,
             }),
+            getServePermission: vi.fn().mockReturnValue({ denied: false, remedy: null, deniedSince: null }),
+            getServeStatus: vi.fn().mockResolvedValue({ entries: [] }),
           };
         }
         if ((token as { name?: string } | undefined)?.name === 'AppLifecycleService') {
@@ -580,6 +623,7 @@ describe('AppsService', () => {
           };
         }
         return {
+          getRoutedContainerNames: vi.fn().mockResolvedValue(['test-app_test-store-web-1']),
           restartContainer: vi.fn().mockResolvedValue(undefined),
         };
       }) as any);
@@ -587,6 +631,57 @@ describe('AppsService', () => {
       setupForResolve('connrefused', { exposureMode: 'tailscale' });
       await service.resolveAppAvailability(appUrn);
       expect(mockSync).toHaveBeenCalled();
+    });
+
+    describe('tailscale + CONNECTION_REFUSED', () => {
+      function wireTailscaleResolve(downContainers: string[]) {
+        const calls: string[] = [];
+        const getRoutedContainerNames = vi.fn().mockResolvedValue(downContainers);
+        const restartContainer = vi.fn(async (name: string) => {
+          calls.push(`restart:${name}`);
+        });
+        const syncExposurePublic = vi.fn(async () => {
+          calls.push('sync');
+        });
+        moduleRef.get.mockImplementation(((token: unknown) => {
+          if (token === TailscaleService) {
+            return {
+              getStatus: vi
+                .fn()
+                .mockResolvedValue({ installed: true, connected: true, nodeFqdn: 'hub-tailscale-1.example.ts.net', supportsServices: true }),
+              getServePermission: vi.fn().mockReturnValue({ denied: false, remedy: null, deniedSince: null }),
+              getServeStatus: vi.fn().mockResolvedValue({ entries: [] }),
+            };
+          }
+          if ((token as { name?: string } | undefined)?.name === 'AppLifecycleService') {
+            return { syncExposurePublic };
+          }
+          return { getRoutedContainerNames, restartContainer };
+        }) as any);
+        return { calls, getRoutedContainerNames, restartContainer };
+      }
+
+      // A refusal over the Private VPN means tailscaled publishes nothing on the port, whatever the app is doing.
+      it('MUST leave a running app alone and only re-sync', async () => {
+        const { getRoutedContainerNames, restartContainer } = wireTailscaleResolve([]);
+
+        setupForResolve('connrefused', { exposureMode: 'tailscale' });
+        const result = await service.resolveAppAvailability(appUrn);
+
+        expect(getRoutedContainerNames).toHaveBeenCalledWith(appUrn, { downOnly: true });
+        expect(restartContainer).not.toHaveBeenCalled();
+        expect(result.detail).toContain('Re-synced Private VPN publishing');
+        expect(result.detail).not.toContain('no container found');
+      });
+
+      it('MUST restart a stopped container before re-syncing, because the sync skips an app with none running', async () => {
+        const { calls } = wireTailscaleResolve(['test-app_test-store-web-1']);
+
+        setupForResolve('connrefused', { exposureMode: 'tailscale' });
+        await service.resolveAppAvailability(appUrn);
+
+        expect(calls).toEqual(['restart:test-app_test-store-web-1', 'sync']);
+      });
     });
   });
 });

@@ -36,7 +36,6 @@ const backendEnv: Record<string, string> = {
   DEMO_MODE: 'false',
   GUEST_DASHBOARD: 'false',
   TZ: 'UTC',
-  THEME_BASE: 'gray',
   THEME_COLOR: 'blue',
   EXPERIMENTAL_INSECURE_COOKIE: 'true',
   CI_HUB_VERSION: 'e2e',

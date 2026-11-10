@@ -31,7 +31,6 @@ import {
   DEFAULT_ADVANCED_SETTINGS,
   DEFAULT_LOG_LEVEL,
   DEFAULT_EXPERIMENTAL_INSECURE_COOKIE,
-  DEFAULT_THEME_BASE,
   DEFAULT_THEME_COLOR,
   DEFAULT_LOCAL_DOMAIN,
 } from '../constants';
@@ -990,7 +989,6 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     }),
   );
 
-  envMap.set('THEME_BASE', resolve('THEME_BASE', { envMap, settingsVal: settingsData.themeBase, fallback: DEFAULT_THEME_BASE }));
   envMap.set('THEME_COLOR', resolve('THEME_COLOR', { envMap, settingsVal: settingsData.themeColor, fallback: DEFAULT_THEME_COLOR }));
 
   // Prefer mounted data because Docker Compose can retain stale host-shell values.

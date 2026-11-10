@@ -14,6 +14,7 @@ import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import {
   CAPABILITIES_FRESHNESS_POLLS,
   UNKNOWN_PRESSURE,
+  arrivedThroughTunnel,
   clampPromptCeiling,
   effectivePeerPressureBand,
   inventoryListsModel,
@@ -119,6 +120,7 @@ import {
   type OutputVerdict,
   type PoolOutputFault,
 } from './hub-pool-output-check';
+import { foldOllamaTerminalRecords } from './ollama-terminal-record';
 import {
   LOCAL_LISTING_DEADLINE_MS,
   MERGED_LISTING_PATHS,
@@ -385,7 +387,12 @@ function safeJson(value: unknown): string {
   }
 }
 
-export function describeAllCandidatesFailed(model: string, candidates: number, lastError: unknown): string {
+export function describeAllCandidatesFailed(
+  model: string,
+  candidates: number,
+  lastError: unknown,
+  { withCause = true }: { withCause?: boolean } = {},
+): string {
   // `String(someObject)` is "[object Object]", which tells the operator nothing and hides the one
   // field that would have. A rejected value here is not always an Error — a fetch layer can reject
   // with a plain object carrying `code`/`errno` — so serialise those rather than stringifying them.
@@ -409,7 +416,9 @@ export function describeAllCandidatesFailed(model: string, candidates: number, l
       'a node loading weights, reading a long prompt slowly or serving a long queue hits it while remaining healthy.'
     );
   }
-  return `All ${candidates} pool ${plural} for model "${model}" failed${message ? `: ${message}` : '.'}`;
+  // The cause names a node, its address or its pairing state. A reply through the tunnel leaves that out (`withCause: false`).
+  const reason = withCause ? message : '';
+  return `All ${candidates} pool ${plural} for model "${model}" failed${reason ? `: ${reason}` : '.'}`;
 }
 /**
  * Which deadline actually expired, in the terms an operator can act on.
@@ -2830,8 +2839,16 @@ export class PoolProxyService {
       res.setHeader(POOL_REQUEST_ID_HEADER, failed.id);
       // `localBackends` is the container's-eye view of every local engine: the operator reading
       // this on a node that plainly runs the model needs the probed URL and the error, not a
-      // second look at the inventory.
-      res.status(502).json({ error: describeNoCandidates(model, pin, localProbes), localBackends: localProbes });
+      // second look at the inventory. Those URLs and errors stay on the machine's own network: a
+      // reply through the tunnel gets the reason alone, and the routing log's row says only
+      // `no candidate`, so the operator repeats the request from inside to see them.
+      res
+        .status(502)
+        .json(
+          arrivedThroughTunnel(res.req)
+            ? { error: describeNoCandidates(model, pin) }
+            : { error: describeNoCandidates(model, pin, localProbes), localBackends: localProbes },
+        );
       return;
     }
 
@@ -3148,6 +3165,7 @@ export class PoolProxyService {
         let relayCut = false;
         try {
           await this.streamResponse(upstream, res, watch, {
+            path,
             onUsage: (usage) => {
               this.routingLog.attachUsage(row, usage);
               if (meter) meter.timing.usage = usage;
@@ -3257,7 +3275,9 @@ export class PoolProxyService {
         res.setHeader(name, value);
       }
     }
-    this.respondUncommitted(res, 502, { error: describeAllCandidatesFailed(model, candidates.length, lastError) });
+    this.respondUncommitted(res, 502, {
+      error: describeAllCandidatesFailed(model, candidates.length, lastError, { withCause: !arrivedThroughTunnel(res.req) }),
+    });
   }
 
   /**
@@ -3786,6 +3806,7 @@ export class PoolProxyService {
       let relayCut = false;
       try {
         await this.streamResponse(upstream, res, watch, {
+          path,
           onUsage: meter
             ? (usage) => {
                 meter.timing.usage = usage;
@@ -3984,7 +4005,7 @@ export class PoolProxyService {
         }
         this.commitResponse(upstream, res);
         committed = true;
-        await this.streamResponse(upstream, res, watch);
+        await this.streamResponse(upstream, res, watch, { path });
         return;
       } catch (error) {
         this.logger.debug(`[PoolProxy] ${path} via local ${type} failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -4191,7 +4212,7 @@ export class PoolProxyService {
         }
         this.commitResponse(upstream, res, servedByHeaders(candidate, model));
         committed = true;
-        await this.streamResponse(upstream, res, watch);
+        await this.streamResponse(upstream, res, watch, { path });
         return true;
       } catch (error) {
         this.logger.debug(
@@ -4614,8 +4635,9 @@ export class PoolProxyService {
   }
 
   /**
-   * Relay the body to the caller. Everything in `taps` is optional and reads the body on the way past
-   * without changing a byte: `onUsage` and `observer` a token-usage frame and engine timings (see
+   * Relay the body to the caller. Everything in `taps` is optional. `path` names the route, so an
+   * Ollama-native stream can have its closing records folded into one. The rest read the body on the
+   * way past without changing a byte: `onUsage` and `observer` a token-usage frame and engine timings (see
    * `response-usage-tap.ts`), `judge` whether the answer finished and said anything (see
    * `hub-pool-output-check.ts`). `body` replaces the upstream's own when the caller has already read
    * it — a non-streamed completion held to be judged.
@@ -4632,6 +4654,7 @@ export class PoolProxyService {
       observer?: ResponseTapObserver;
       judge?: OutputJudge | null;
       body?: WebReadableStream<Uint8Array>;
+      path?: string;
     } = {},
   ): Promise<void> {
     const source = taps.body ?? (upstream.body as WebReadableStream<Uint8Array> | null);
@@ -4640,6 +4663,11 @@ export class PoolProxyService {
       return;
     }
     let body = source;
+    // The one place the relay rewrites anything: an Ollama-native stream must end with a single
+    // `done` record, and Lemonade sends two. See `ollama-terminal-record.ts`.
+    if (taps.path && outputDialectOf(taps.path) === 'ollama-native' && isStreamedContentType(upstream.headers.get('content-type'))) {
+      body = foldOllamaTerminalRecords(body as unknown as ReadableStream<Uint8Array>) as unknown as WebReadableStream<Uint8Array>;
+    }
     if (taps.onUsage || taps.observer) {
       body = tapResponseUsageWhileStreaming(body, taps.onUsage ?? (() => undefined), taps.observer);
     }

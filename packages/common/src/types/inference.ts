@@ -318,6 +318,8 @@ export interface InferenceModelInfo {
   local: boolean;
   context_window?: number;
   max_tokens?: number;
+  /** The id the engine knows this model by, on a model the Hub tracks. `id` is then its catalog id. */
+  backend_model_id?: string;
 }
 
 export interface InferenceStatus {
