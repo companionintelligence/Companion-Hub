@@ -1,6 +1,7 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { SSEService } from '@/core/sse/sse.service';
+import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { getEffectiveExposureMode } from '@/modules/apps/app-exposure.helpers';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
@@ -80,6 +81,9 @@ type EarlierAppData = { files: boolean; volumes: boolean };
 
 /** Both checks are local calls. A Docker engine or a disk that stops answering must not hold up the install queue. */
 const EARLIER_DATA_CHECK_TIMEOUT_MS = 15_000;
+
+/** A revoke is one local database write. A database that does not answer must not hold up the teardown. */
+const KEY_REVOKE_TIMEOUT_MS = 15_000;
 
 export class InstallAppCommand extends AppLifecycleCommand {
   public async execute(appUrn: AppUrn, form: AppEventFormInput, ctx?: CommandExecutionContext): Promise<AppCommandResult> {
@@ -596,8 +600,8 @@ export class InstallAppCommand extends AppLifecycleCommand {
   }
 
   /**
-   * Best-effort cleanup after an install is cancelled mid-flight: tears down containers, project networks,
-   * port allocations, the agent webhook and the app directory. The app's data and volumes go too unless they
+   * Best-effort cleanup after an install is cancelled mid-flight: revokes the managed key, tears down containers,
+   * project networks, port allocations, the agent webhook and the app directory. The app's data and volumes go too unless they
    * were there before this install. Pulled images are intentionally kept: a re-install is faster and we never
    * force-remove an image another installed app might share. Every step is individually guarded and
    * idempotent; the compose-down runs WITHOUT the (now-aborted) signal so cleanup completes. The DB record
@@ -608,8 +612,8 @@ export class InstallAppCommand extends AppLifecycleCommand {
    * by an uninstall. A later install starts from the same place a completed one would.
    * @param deadline The command's time limit. The root helper keeps to what is left of it.
    * @returns A human-readable summary for the cancellation result. When something could not be removed (the app's
-   * folder, its data, or the containers and volumes a failed Compose teardown left), also the warning the page shows,
-   * with the data's location on the host when the data is what stayed.
+   * folder, its data, or the containers and volumes a failed Compose teardown left, or a managed key that could not be
+   * revoked), also the warning the page shows, with the data's location on the host when the data is what stayed.
    */
   private async compensateInstallCancel(
     appUrn: AppUrn,
@@ -621,6 +625,18 @@ export class InstallAppCommand extends AppLifecycleCommand {
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
 
     logger.info(`[install-cancel] compensating cancelled install for ${appUrn}`);
+
+    // The install issues the app's managed key before the killable phase, so a cancel can find one already issued.
+    // It goes first: the teardown below can fail or run out of time, and a key that outlives the cancel would stay
+    // valid after the app that owns it is gone. Uninstall revokes the same key. A revoke that throws or does not
+    // answer in time is recorded, and the teardown carries on without it.
+    let keyRevoked = true;
+    try {
+      await withTimeout(this.moduleRef.get(ApiKeyService, { strict: false }).revokeManagedByApp(appUrn), KEY_REVOKE_TIMEOUT_MS, 'no answer in time');
+    } catch (err) {
+      keyRevoked = false;
+      logger.warn(`[install-cancel] revoking the managed key of ${appUrn} failed (continuing): ${err}`);
+    }
 
     // Release allocated ports.
     try {
@@ -688,16 +704,28 @@ export class InstallAppCommand extends AppLifecycleCommand {
       });
     }
 
+    // Named in every warning below: data kept from before the install is still there, and a key that could not be
+    // revoked may stay valid whatever else went wrong.
+    const kept = earlier.files || earlier.volumes ? '; data from before this install was left in place' : '';
+    const keyNote = keyRevoked ? '' : '; its managed key could not be revoked and may stay valid';
+
     if (!folderRemoved || !data.removed || teardownFailed) {
       const leftover = describeLeftovers(folderRemoved, data.removed, teardownFailed);
       logger.warn(
         `[install-cancel] the ${leftover} of ${appUrn} could not be fully removed; a remnant may remain${data.hostPath ? ` at ${data.hostPath}` : ''}`,
       );
-      const kept = earlier.files || earlier.volumes ? '; data from before this install was left in place' : '';
       return {
-        message: `Install of ${appUrn} was cancelled, but its ${leftover} could not be fully removed and may leave a remnant behind${kept}`,
-        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT',
+        message: `Install of ${appUrn} was cancelled, but its ${leftover} could not be fully removed and may leave a remnant behind${kept}${keyNote}`,
+        // The page shows one warning. A key that stayed valid gets its own code, so it is not lost behind this one.
+        warningCode: keyRevoked ? 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT' : 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT_KEY_REMAINS',
         ...(data.hostPath ? { warningDetail: data.hostPath } : {}),
+      };
+    }
+
+    if (!keyRevoked) {
+      return {
+        message: `Install of ${appUrn} was cancelled, but its managed key could not be revoked and may stay valid${kept}`,
+        warningCode: 'APP_INSTALL_CANCELLED_KEY_REMAINS',
       };
     }
 
