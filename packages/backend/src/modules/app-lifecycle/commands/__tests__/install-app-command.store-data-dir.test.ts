@@ -37,6 +37,8 @@ const { InstallAppCommand } = await import('../install-app-command');
 const { GenerateAppEnvCommand } = await import('../generate-env-command');
 const { StopAppCommand } = await import('../stop-app-command');
 const { UpdateAppCommand } = await import('../update-app-command');
+const { ResetAppCommand } = await import('../reset-app-command');
+const { prepareAppComposeDir } = await import('../compose-preparation');
 const { DockerService } = await import('@/modules/docker/docker.service');
 
 /*
@@ -68,7 +70,10 @@ describe.skipIf(process.platform === 'win32')('InstallAppCommand on a store app 
           image: 'spx01/blocky:v0.24',
           isMain: true,
           internalPort: 4000,
-          volumes: [{ hostPath: '${APP_DATA_DIR}/data/config.yml', containerPath: '/app/config.yml', readOnly: true }],
+          volumes: [
+            { hostPath: '${APP_DATA_DIR}/data/config.yml', containerPath: '/app/config.yml', readOnly: true },
+            { hostPath: '${APP_DATA_DIR}/data/logs', containerPath: '/logs' },
+          ],
         },
       ],
     };
@@ -218,5 +223,45 @@ describe.skipIf(process.platform === 'win32')('InstallAppCommand on a store app 
     expect((await fs.promises.lstat(mounted)).isFile()).toBe(true);
     expect(await fs.promises.readFile(mounted, 'utf8')).toContain('upstreams:');
     expect((await fs.promises.readFile(path.join(appDataDir, 'data', 'secrets.env'), 'utf8')).trim()).toBe('API_KEY=s3cret');
+  });
+
+  // Every prepare that does not say otherwise: start, restart, reset, network recovery. dispatchStart,
+  // dispatchRestart and reset have no status gate, so they reach an app whose install failed before
+  // the copy, and a start that then fails on its pull used to leave Docker nothing to create.
+  describe('prepareAppComposeDir with the default options', () => {
+    const docker = () => ({ pruneContainers: vi.fn().mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 }) }) as unknown as Dockerode;
+    const form = { openPort: true, exposureMode: 'local' } as unknown as AppEventFormInput;
+
+    it('makes no volume folder while the store data copy is pending', async () => {
+      await fs.promises.mkdir(appDataDir, { recursive: true });
+
+      await prepareAppComposeDir(moduleRef, docker(), appUrn, form);
+
+      await expect(fs.promises.lstat(path.join(appDataDir, 'data'))).rejects.toThrow();
+      await expect(fs.promises.lstat(path.join(appDataDir, 'data', 'config.yml'))).rejects.toThrow();
+    });
+
+    it('makes them once the copy is done, and leaves the mounted file a file', async () => {
+      await fs.promises.mkdir(path.join(appDataDir, 'data'), { recursive: true });
+      await fs.promises.writeFile(path.join(appDataDir, 'data', 'config.yml'), 'upstreams: {}\n');
+
+      await prepareAppComposeDir(moduleRef, docker(), appUrn, form);
+
+      expect((await fs.promises.stat(path.join(appDataDir, 'data', 'logs'))).isDirectory()).toBe(true);
+      expect((await fs.promises.lstat(path.join(appDataDir, 'data', 'config.yml'))).isFile()).toBe(true);
+      expect(await fs.promises.readFile(path.join(appDataDir, 'data', 'config.yml'), 'utf8')).toBe('upstreams: {}\n');
+    });
+  });
+
+  it('a reset of an install_failed app whose down fails leaves no volume folder', async () => {
+    const docker = { pruneContainers: vi.fn().mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 }) } as unknown as Dockerode;
+    const form = { openPort: true, exposureMode: 'local' } as unknown as AppEventFormInput;
+    services.set(DockerService, { composeApp: vi.fn().mockRejectedValue(new Error('Cannot connect to the Docker daemon')) });
+    await fs.promises.mkdir(appDataDir, { recursive: true });
+
+    const reset = await new ResetAppCommand(moduleRef, docker).execute(appUrn, form);
+
+    expect(reset.success).toBe(false);
+    await expect(fs.promises.lstat(path.join(appDataDir, 'data'))).rejects.toThrow();
   });
 });

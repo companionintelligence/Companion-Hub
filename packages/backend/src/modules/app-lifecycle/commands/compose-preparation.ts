@@ -316,8 +316,10 @@ export async function prepareAppComposeDir(
   // A custom app is added without an install, and an edit can add a volume (#2198).
   // Install's first prepare runs before the store's data folder is copied: a folder made there for
   // `data/config.yml` takes the place of the file, and copyDataDir skips an app whose `data/` exists.
-  // Install makes the folders itself once the copy is done.
-  if (options?.createVolumeDirs !== false) {
+  // Install makes the folders itself once the copy is done. Any other prepare while that copy is
+  // pending (a start, restart, reset or update of an app whose install failed before it) skips them
+  // too, as dev did: Docker only made them when it created a container.
+  if (options?.createVolumeDirs !== false && !(await appFilesManager.storeDataCopyPending(appUrn))) {
     try {
       await appFilesManager.createVolumeHostDirs(appUrn);
     } catch (error) {

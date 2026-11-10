@@ -396,6 +396,19 @@ export class AppFilesManager {
     return (await this.filesystem.pathExists(appDataDir)) && (await this.filesystem.listFiles(appDataDir)).length > 0;
   }
 
+  /**
+   * Whether the store's data folder is still to be copied: the installed app ships `data/` and the
+   * app's data folder has none yet. That is an install that has not reached copyDataDir, or one that
+   * failed before it. A volume folder made then (`data/config.yml` as a directory) would take the
+   * place of the store's file, and copyDataDir skips an app whose `data/` exists (#2198).
+   */
+  public async storeDataCopyPending(appUrn: AppUrn): Promise<boolean> {
+    const { appDataDir, appInstalledDir } = this.getAppPaths(appUrn);
+    return (
+      (await this.filesystem.pathExists(path.join(appInstalledDir, 'data'))) && !(await this.filesystem.pathExists(path.join(appDataDir, 'data')))
+    );
+  }
+
   public async createAppDataDir(appUrn: AppUrn) {
     const { appDataDir } = this.getAppPaths(appUrn);
     await this.filesystem.createDirectory(appDataDir);

@@ -161,6 +161,7 @@ interface Stubs {
     getAppEnv: Stub;
     writeDockerComposeYml: Stub;
     createVolumeHostDirs: Stub;
+    storeDataCopyPending: Stub;
     setAppDataDirPermissions: Stub;
   };
   marketplaceService: { getAppInfoFromAppStoreOrInstalled: Stub; copyAppFromRepoToInstalled: Stub; listedAppUrns: Stub };
@@ -183,6 +184,8 @@ const createHarness = () => {
       getAppEnv: vi.fn().mockResolvedValue({ path: APP_ENV_PATH, content: APP_ENV_CONTENT }),
       writeDockerComposeYml: vi.fn().mockResolvedValue(undefined),
       createVolumeHostDirs: vi.fn().mockResolvedValue(undefined),
+      // The store's data folder is already copied: the guard for a pending copy is tested on real files.
+      storeDataCopyPending: vi.fn().mockResolvedValue(false),
       setAppDataDirPermissions: vi.fn().mockResolvedValue(undefined),
     },
     marketplaceService: {
