@@ -4,7 +4,7 @@
 # The prod compose requires RABBITMQ_PASSWORD from the env file (newer copies) or falls back to
 # `admin` (older ones), and the Hub warns on `admin` in production. update.sh gives the env file a
 # password of its own before compose reads it, then checks the broker accepts the password compose
-# hands the Hub.
+# handed the Hub.
 #
 # The password never appears in a process's arguments: `printf` is a shell builtin, and rabbitmqctl
 # reads the password from stdin when the argument is left out (checked against rabbitmq:4-alpine,
@@ -12,16 +12,43 @@
 #
 # Every function returns non-zero on a failure; update.sh runs under errexit, so that stops it.
 
-# The last value of the variable $2 in the env file $1, unquoted. Empty when there is none.
-# Fails when the file cannot be read (grep exit 2), rather than reading as "no value".
+# Seconds any one docker call that talks to the broker may take, where `timeout` exists.
+RABBITMQ_PASSWORD_DOCKER_TIMEOUT=60
+
+# The value of $2 in the env file $1, read the way compose reads it: leading whitespace and a leading
+# `export ` are ignored, spaces may surround `=`, a quoted value ends at its closing quote, and an
+# unquoted value ends before a ` #` comment. The last definition wins. Empty when there is none.
+# Fails when the file cannot be read, rather than reading as "no value".
 rabbitmq_password_env_value() {
-  local lines rc=0
-  lines="$(grep -E "^$2=" "$1")" || rc=$?
-  if [ "$rc" -gt 1 ]; then
+  awk -v key="$2" '
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      sub(/^[ \t]+/, "", line)
+      if (line ~ /^export[ \t]+/) sub(/^export[ \t]+/, "", line)
+      eq = index(line, "=")
+      if (eq == 0) next
+      name = substr(line, 1, eq - 1)
+      sub(/[ \t]+$/, "", name)
+      if (name != key) next
+      value = substr(line, eq + 1)
+      sub(/^[ \t]+/, "", value)
+      first = substr(value, 1, 1)
+      if (first == "\"" || first == "\047") {
+        rest = substr(value, 2)
+        close_at = index(rest, first)
+        value = close_at ? substr(rest, 1, close_at - 1) : rest
+      } else {
+        if (match(value, /[ \t]#/)) value = substr(value, 1, RSTART - 1)
+        sub(/[ \t]+$/, "", value)
+      }
+      found = value
+    }
+    END { printf "%s", found }
+  ' "$1" || {
     echo "ERROR: could not read $1" >&2
     return 1
-  fi
-  printf '%s\n' "$lines" | tail -n 1 | cut -d= -f2- | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/"
+  }
 }
 
 # "uid gid mode" of the file $1 (mode in octal, e.g. 600), on GNU or BSD stat.
@@ -29,21 +56,52 @@ rabbitmq_password_file_stat() {
   stat -c '%u %g %a' "$1" 2>/dev/null || stat -f '%u %g %Lp' "$1"
 }
 
-# The mode the rewritten env file gets, from its owner uid $1, its mode $2 (octal) and the env file $3.
+# The first of the Hub container names that exists: $1, then ci-hub, then ci-os-hub. Empty if none.
+rabbitmq_password_hub_container() {
+  local name
+  for name in "$1" ci-hub ci-os-hub; do
+    if docker inspect "$name" > /dev/null 2>&1; then
+      printf '%s' "$name"
+      return 0
+    fi
+  done
+}
+
+# The value of $2 in the environment compose gave the container $1, from `docker inspect`.
+rabbitmq_password_container_env() {
+  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$1" 2>/dev/null | grep -E "^$2=" | tail -n 1 | cut -d= -f2- || true
+}
+
+# The RABBITMQ_PASSWORD a running Hub container was created with.
+rabbitmq_password_of_container() {
+  rabbitmq_password_container_env "$1" RABBITMQ_PASSWORD
+}
+
+# Is $1 a uid that pins the Hub to a non-root user other than the file owner $2?
+rabbitmq_password_pins_other_uid() {
+  local uid
+  uid="$(printf '%s' "${1%%:*}" | tr -d '[:space:]')"
+  [ -n "$uid" ] && [ "$uid" != 0 ] && [ "$uid" != root ] && [ "$uid" != "$2" ]
+}
+
+# The mode the rewritten env file gets, from its owner uid $1, its mode $2 (octal), the env file $3
+# and the Hub container $4 (empty when none exists).
 #
 # Same rule as restrictEnvFileMode (scripts/env-file.ts): clear the group and other bits, never add
-# any, except when CI_HUB_CONTAINER_UID pins the Hub to a non-root uid other than the file's owner.
-# The Hub then reads the file as that uid through its group or other bits (docker-entrypoint.sh), so
-# the mode stays as it was. The pinned uid comes from the exported environment first, then the env
-# file, as compose reads it.
+# any, except when the Hub is pinned to a non-root uid other than the file's owner. The Hub then reads
+# the file as that uid through its group or other bits (docker-entrypoint.sh), so the mode stays as
+# it was. Either pin keeps the mode: the running Hub's (its CI_HUB_CONTAINER_UID or Config.User), and
+# the one the coming `up` gives it, which compose takes from an exported CI_HUB_CONTAINER_UID first,
+# then from the env file (read as compose reads it).
 rabbitmq_password_target_mode() {
-  local owner="$1" mode="$2" env_file="$3" pinned
-  pinned="${CI_HUB_CONTAINER_UID:-}"
-  if [ -z "$pinned" ]; then
-    pinned="$(rabbitmq_password_env_value "$env_file" CI_HUB_CONTAINER_UID)" || return 1
+  local owner="$1" mode="$2" env_file="$3" hub="$4" next_pin
+  next_pin="${CI_HUB_CONTAINER_UID:-}"
+  if [ -z "$next_pin" ]; then
+    next_pin="$(rabbitmq_password_env_value "$env_file" CI_HUB_CONTAINER_UID)" || return 1
   fi
-  pinned="$(printf '%s' "$pinned" | tr -d '[:space:]')"
-  if [ -n "$pinned" ] && [ "$pinned" != 0 ] && [ "$pinned" != "$owner" ]; then
+  if rabbitmq_password_pins_other_uid "$next_pin" "$owner" \
+    || { [ -n "$hub" ] && rabbitmq_password_pins_other_uid "$(rabbitmq_password_container_env "$hub" CI_HUB_CONTAINER_UID)" "$owner"; } \
+    || { [ -n "$hub" ] && rabbitmq_password_pins_other_uid "$(docker inspect -f '{{.Config.User}}' "$hub" 2>/dev/null || true)" "$owner"; }; then
     printf '%s\n' "$mode"
   else
     printf '%o\n' $((8#$mode & 8#600))
@@ -55,21 +113,25 @@ rabbitmq_password_cleanup_tmp() {
   RABBITMQ_PASSWORD_TMP=""
 }
 
-# Replace RABBITMQ_PASSWORD in the env file $1 with $2, keeping the file's owner and group.
+# Replace RABBITMQ_PASSWORD in the env file $1 with $2, keeping the file's owner and group. $3 is the
+# Hub container (empty when none exists).
 #
 # The new content goes to a temp file beside it, which takes the original owner and group before the
 # rename: run under sudo on a user-owned install, a plain rename would leave the file root:root, which
 # changes the Hub's uid detection and locks the desktop app out of its own file. Nothing replaces the
 # env file until every step has worked, and the traps (set before the temp file exists) remove the
 # temp file if the script stops early.
+#
+# These traps REPLACE any EXIT, INT or TERM trap the caller set, and are cleared (not restored)
+# afterwards. update.sh sets none.
 rabbitmq_password_write() {
-  local env_file="$1" password="$2" owner group mode target_mode rc=0
+  local env_file="$1" password="$2" hub="$3" owner group mode target_mode rc=0
   read -r owner group mode < <(rabbitmq_password_file_stat "$env_file")
   if [ -z "${mode:-}" ]; then
     echo "ERROR: could not read the owner and mode of ${env_file}; it was left as it was."
     return 1
   fi
-  target_mode="$(rabbitmq_password_target_mode "$owner" "$mode" "$env_file")" || return 1
+  target_mode="$(rabbitmq_password_target_mode "$owner" "$mode" "$env_file" "$hub")" || return 1
 
   RABBITMQ_PASSWORD_TMP=""
   trap 'rabbitmq_password_cleanup_tmp' EXIT
@@ -78,7 +140,8 @@ rabbitmq_password_write() {
   RABBITMQ_PASSWORD_TMP="$(mktemp "${env_file}.XXXXXX")"
   chmod 600 "$RABBITMQ_PASSWORD_TMP"
 
-  grep -vE '^RABBITMQ_PASSWORD=' "$env_file" > "$RABBITMQ_PASSWORD_TMP" || rc=$?
+  # Every form compose reads as RABBITMQ_PASSWORD goes, so the line written below is the only one.
+  grep -vE '^[[:space:]]*(export[[:space:]]+)?RABBITMQ_PASSWORD[[:space:]]*=' "$env_file" > "$RABBITMQ_PASSWORD_TMP" || rc=$?
   if [ "$rc" -gt 1 ]; then
     echo "ERROR: could not read ${env_file}; it was left as it was."
     rabbitmq_password_cleanup_tmp
@@ -98,28 +161,21 @@ rabbitmq_password_write() {
   mv -f "$RABBITMQ_PASSWORD_TMP" "$env_file"
   RABBITMQ_PASSWORD_TMP=""
   trap - EXIT INT TERM
-}
-
-# The RABBITMQ_PASSWORD a running Hub container was created with, from `docker inspect`.
-rabbitmq_password_of_container() {
-  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$1" 2>/dev/null | grep -E '^RABBITMQ_PASSWORD=' | tail -n 1 | cut -d= -f2- || true
+  if [ "$target_mode" != "$mode" ]; then
+    echo "   NOTE: ${env_file} mode changed from ${mode} to ${target_mode}"
+  fi
 }
 
 # Before compose reads the env file $1: make sure it has a RABBITMQ_PASSWORD other than `admin`.
 # The value written is, in order: an exported RABBITMQ_PASSWORD (compose prefers it over the env
 # file), the running Hub's own password (the broker already accepts it), or 32 random bytes in hex,
 # skipping `admin` each time. $2 is the Hub container name. Sets RABBITMQ_PASSWORD_WRITTEN=yes on a
-# write. A missing env file with no exported RABBITMQ_PASSWORD, an unreadable one, or a symlink stops
-# the update.
+# write. A missing env file with no exported RABBITMQ_PASSWORD, an unreadable one, or a symlink that
+# would need rewriting stops the update.
 rabbitmq_password_prepare() {
-  local env_file="$1" hub="$2" current candidate="" source="" name
+  local env_file="$1" hub current candidate="" source=""
   RABBITMQ_PASSWORD_WRITTEN=""
-  if [ -L "$env_file" ]; then
-    echo "ERROR: ${env_file} is a symlink. Point update.sh at the file it links to (ENV_FILE), so the"
-    echo "       broker password is written there instead of replacing the link with a copy."
-    return 1
-  fi
-  if [ ! -f "$env_file" ]; then
+  if [ ! -e "$env_file" ]; then
     if [ -z "${RABBITMQ_PASSWORD:-}" ] || [ "${RABBITMQ_PASSWORD}" = "admin" ]; then
       echo "ERROR: ${env_file} does not exist and RABBITMQ_PASSWORD is not exported, so the Hub would start"
       echo "       without a broker password of its own. Set RABBITMQ_PASSWORD in the env file."
@@ -132,14 +188,12 @@ rabbitmq_password_prepare() {
     echo "   OK: RABBITMQ_PASSWORD is set in ${env_file}"
     return 0
   fi
+  hub="$(rabbitmq_password_hub_container "$2")"
   if [ -n "${RABBITMQ_PASSWORD:-}" ] && [ "${RABBITMQ_PASSWORD}" != "admin" ]; then
     candidate="$RABBITMQ_PASSWORD"
     source="the exported RABBITMQ_PASSWORD"
   else
-    for name in "$hub" ci-hub ci-os-hub; do
-      candidate="$(rabbitmq_password_of_container "$name")"
-      [ -n "$candidate" ] && break
-    done
+    [ -n "$hub" ] && candidate="$(rabbitmq_password_of_container "$hub")"
     if [ -n "$candidate" ] && [ "$candidate" != "admin" ]; then
       source="the password the running Hub uses"
     else
@@ -147,58 +201,93 @@ rabbitmq_password_prepare() {
       source="a new random password"
     fi
   fi
-  rabbitmq_password_write "$env_file" "$candidate"
-  # shellcheck disable=SC2034 # read by the caller and by scripts/__tests__/updater-rabbitmq-password.test.ts
+  if [ -L "$env_file" ]; then
+    echo "ERROR: ${env_file} is a symlink, and its RABBITMQ_PASSWORD is missing or 'admin'. Set a"
+    echo "       RABBITMQ_PASSWORD of its own in the file the link points to, then run update.sh again."
+    return 1
+  fi
+  rabbitmq_password_write "$env_file" "$candidate" "$hub"
+  # shellcheck disable=SC2034 # read by rabbitmq_password_check_broker and by the tests
   RABBITMQ_PASSWORD_WRITTEN="yes"
   echo "   OK: RABBITMQ_PASSWORD was missing or the shared default 'admin' in ${env_file}; wrote ${source}"
 }
 
-# rabbitmqctl <verb> companion, with the password on stdin.
-rabbitmq_password_ctl() {
-  printf '%s' "$3" | docker exec -i "$1" rabbitmqctl "$2" companion > /dev/null 2>&1
+# Run a docker command with RABBITMQ_PASSWORD_DOCKER_TIMEOUT, where `timeout` exists.
+rabbitmq_password_docker() {
+  if command -v timeout > /dev/null 2>&1; then
+    timeout "$RABBITMQ_PASSWORD_DOCKER_TIMEOUT" docker "$@"
+  else
+    docker "$@"
+  fi
 }
 
-# After `up`: check the broker accepts the password compose handed the Hub (an exported
-# RABBITMQ_PASSWORD, else the env file's), on every run, so a run interrupted after the write heals
-# on the next one. The broker applies RABBITMQ_DEFAULT_PASS only to a node database it creates; a
-# recreated broker container gets a new hostname and so a new database. When it still refuses the
-# password, change it in place and restart the Hub onto it.
+# rabbitmqctl <verb> companion in the container $1, with the password $3 on stdin.
+rabbitmq_password_ctl() {
+  printf '%s' "$3" | rabbitmq_password_docker exec -i "$1" rabbitmqctl "$2" companion > /dev/null 2>&1
+}
+
+# Wait up to $2 seconds (wall clock) for the broker container $1 to report healthy, reading its
+# health status as sync-rabbitmq-password.ts does rather than exec'ing into a broker that has just
+# started. A container with no healthcheck counts once it runs.
+rabbitmq_password_wait_for_broker() {
+  local queue="$1" timeout="$2" started=$SECONDS status
+  while :; do
+    status="$(rabbitmq_password_docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$queue" 2>/dev/null || true)"
+    case "$status" in healthy | none) return 0 ;; esac
+    if [ $((SECONDS - started)) -ge "$timeout" ]; then return 1; fi
+    sleep 2
+  done
+}
+
+# After `up`: check the broker accepts the password compose gave the running Hub, on every run, so a
+# run interrupted after the write heals on the next one. The value is read from the Hub container
+# itself, never re-derived from the env file, so the broker is only ever changed to a password the
+# Hub holds. With no Hub container, the env file's value (or an exported one) is checked but never
+# set. A changed broker password, or an env file this run replaced (a rename gives it a new inode,
+# and the Hub's bind mount keeps the old one), restarts the Hub.
 # $1 env file, $2 Hub container, $3 seconds to wait for the broker to come up.
 rabbitmq_password_check_broker() {
-  local env_file="$1" hub="$2" timeout="$3" password="" queue="" name waited=0
-  if [ -n "${RABBITMQ_PASSWORD:-}" ]; then
+  local env_file="$1" timeout="$3" hub password="" queue="" name restarted=""
+  hub="$(rabbitmq_password_hub_container "$2")"
+  if [ -n "$hub" ]; then
+    password="$(rabbitmq_password_of_container "$hub")"
+  elif [ -n "${RABBITMQ_PASSWORD:-}" ]; then
     password="$RABBITMQ_PASSWORD"
   elif [ -f "$env_file" ]; then
     password="$(rabbitmq_password_env_value "$env_file" RABBITMQ_PASSWORD)" || return 1
   fi
-  [ -n "$password" ] || return 0
   for name in ci-hub-queue ci-os-hub-queue; do
     if [ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null || true)" = "true" ]; then
       queue="$name"
       break
     fi
   done
-  if [ -z "$queue" ]; then
+  if [ -n "$password" ] && [ -z "$queue" ]; then
     echo "   WARNING: no running broker container (ci-hub-queue) to check RABBITMQ_PASSWORD against"
-    return 0
-  fi
-  until docker exec "$queue" rabbitmq-diagnostics -q check_running > /dev/null 2>&1; do
-    if [ "$waited" -ge "$timeout" ]; then
-      echo "ERROR: broker not ready: ${queue} did not come up within ${timeout}s, so its password could not be checked."
+  elif [ -n "$password" ]; then
+    if ! rabbitmq_password_wait_for_broker "$queue" "$timeout"; then
+      echo "ERROR: broker not ready: ${queue} did not report healthy within ${timeout}s, so its password could not be checked."
       echo "       Check: docker logs ${queue} --tail 50"
       return 1
     fi
-    sleep 2
-    waited=$((waited + 2))
-  done
-  if rabbitmq_password_ctl "$queue" authenticate_user "$password"; then
-    echo "   OK: ${queue} accepts the broker password the Hub uses"
-  elif rabbitmq_password_ctl "$queue" change_password "$password" && rabbitmq_password_ctl "$queue" authenticate_user "$password"; then
-    echo "   OK: changed the broker password in ${queue} to the one the Hub uses; restarting ${hub}"
+    if rabbitmq_password_ctl "$queue" authenticate_user "$password"; then
+      echo "   OK: ${queue} accepts the broker password the Hub uses"
+    elif [ -z "$hub" ]; then
+      echo "ERROR: ${queue} does not accept the broker password in ${env_file}, and there is no Hub container"
+      echo "       to take the right one from, so the broker was left as it was."
+      return 1
+    elif rabbitmq_password_ctl "$queue" change_password "$password" && rabbitmq_password_ctl "$queue" authenticate_user "$password"; then
+      echo "   OK: changed the broker password in ${queue} to the one ${hub} uses; restarting ${hub}"
+      docker restart "$hub" > /dev/null
+      restarted="yes"
+    else
+      echo "ERROR: ${queue} does not accept the broker password the Hub uses, and changing it failed."
+      echo "       Recreate the broker: docker compose ... up -d --force-recreate ci-hub-queue"
+      return 1
+    fi
+  fi
+  if [ "${RABBITMQ_PASSWORD_WRITTEN:-}" = yes ] && [ -n "$hub" ] && [ -z "$restarted" ]; then
+    echo "   OK: restarting ${hub} so it reads the rewritten ${env_file}"
     docker restart "$hub" > /dev/null
-  else
-    echo "ERROR: ${queue} does not accept the broker password the Hub uses, and changing it failed."
-    echo "       Recreate the broker: docker compose ... up -d --force-recreate ci-hub-queue"
-    return 1
   fi
 }

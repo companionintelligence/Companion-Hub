@@ -26,15 +26,40 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const HELPER = path.resolve(import.meta.dirname, '../updater/rabbitmq-password.sh');
 const REAL_CHMOD = spawnSync('sh', ['-c', 'command -v chmod'], { encoding: 'utf-8' }).stdout.trim();
+const REAL_GREP = spawnSync('sh', ['-c', 'command -v grep'], { encoding: 'utf-8' }).stdout.trim();
 const IS_ROOT = process.getuid?.() === 0;
 
+/**
+ * The stub's Hub container is `ci-hub` (absent with STUB_NO_HUB). Its environment starts as
+ * STUB_HUB_PASSWORD and STUB_HUB_UID, and `compose-up-sim` stands in for update.sh's `up`: it gives the
+ * Hub the password compose would (STUB_UP_PASSWORD when a test needs compose's exact parsing, else an
+ * exported RABBITMQ_PASSWORD, else the env file's plain line).
+ */
 const STUB_DOCKER = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$STUB_DIR/argv.log"
+hub_env() {
+  if [ -f "$STUB_DIR/hub-env" ]; then cat "$STUB_DIR/hub-env"; return; fi
+  [ -n "\${STUB_HUB_PASSWORD:-}" ] && printf 'RABBITMQ_PASSWORD=%s\\n' "$STUB_HUB_PASSWORD"
+  [ -n "\${STUB_HUB_UID:-}" ] && printf 'CI_HUB_CONTAINER_UID=%s\\n' "$STUB_HUB_UID"
+  printf 'PATH=/usr/bin\\n'
+}
 case "$1" in
+  compose-up-sim)
+    [ -n "\${STUB_NO_HUB:-}" ] && exit 0
+    pw="\${STUB_UP_PASSWORD:-\${RABBITMQ_PASSWORD:-$(grep '^RABBITMQ_PASSWORD=' "$2" | tail -n 1 | cut -d= -f2-)}}"
+    { printf 'RABBITMQ_PASSWORD=%s\\n' "$pw"; [ -n "\${STUB_HUB_UID:-}" ] && printf 'CI_HUB_CONTAINER_UID=%s\\n' "$STUB_HUB_UID"; } > "$STUB_DIR/hub-env.new"
+    mv "$STUB_DIR/hub-env.new" "$STUB_DIR/hub-env"
+    exit 0 ;;
   inspect)
+    if [ "$2" != -f ]; then
+      [ "$2" = ci-hub ] && [ -z "\${STUB_NO_HUB:-}" ] && exit 0
+      exit 1
+    fi
     case "$3" in
-      *Config.Env*) [ -n "\${STUB_HUB_PASSWORD:-}" ] && printf 'PATH=/usr/bin\\nRABBITMQ_PASSWORD=%s\\n' "$STUB_HUB_PASSWORD"; exit 0 ;;
+      *Config.Env*) [ "$4" = ci-hub ] && [ -z "\${STUB_NO_HUB:-}" ] && hub_env && exit 0; exit 1 ;;
+      *Config.User*) [ "$4" = ci-hub ] && printf '%s\\n' "\${STUB_HUB_USER:-}"; exit 0 ;;
       *State.Running*) [ "$4" = ci-hub-queue ] && echo true && exit 0; exit 1 ;;
+      *Health*) if [ -e "$STUB_DIR/broker-down" ]; then echo starting; else echo healthy; fi; exit 0 ;;
     esac ;;
   exec)
     if [ "$2" = -i ]; then
@@ -44,7 +69,6 @@ case "$1" in
         change_password) printf '%s' "$given" > "$STUB_DIR/broker"; exit 0 ;;
       esac
     fi
-    [ "$3" = rabbitmq-diagnostics ] && [ -e "$STUB_DIR/broker-down" ] && exit 1
     exit 0 ;;
   restart) exit 0 ;;
 esac
@@ -56,6 +80,7 @@ const SCRIPT = [
   `. ${JSON.stringify(HELPER)}`,
   'rabbitmq_password_prepare "$1" ci-hub',
   'echo "WRITTEN=$RABBITMQ_PASSWORD_WRITTEN"',
+  'docker compose-up-sim "$1"',
   'rabbitmq_password_check_broker "$1" ci-hub 4',
 ].join('\n');
 
@@ -88,6 +113,7 @@ const argvLog = () => (existsSync(path.join(dir, 'argv.log')) ? readFileSync(pat
 const broker = () => readFileSync(path.join(dir, 'broker'), 'utf-8');
 const mode = () => statSync(envFile).mode & 0o777;
 const leftovers = () => readdirSync(dir).filter((name) => name.startsWith('hub.env.'));
+const restarts = () => argvLog().match(/^restart ci-hub$/gm)?.length ?? 0;
 
 /**
  * A group the runner is in that a new file in `dir` does not get: Linux gives a new file the creator's
@@ -121,6 +147,7 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
     ['no RABBITMQ_PASSWORD', 'JWT_SECRET=jwt\nDOMAIN=example.com\n'],
     ['RABBITMQ_PASSWORD=admin', 'JWT_SECRET=jwt\nRABBITMQ_PASSWORD=admin\nDOMAIN=example.com\n'],
     ['two RABBITMQ_PASSWORD lines', 'RABBITMQ_PASSWORD=admin\nJWT_SECRET=jwt\nRABBITMQ_PASSWORD=\nDOMAIN=example.com'],
+    ['admin and an inline comment', 'JWT_SECRET=jwt\nRABBITMQ_PASSWORD=admin # shipped default\nDOMAIN=example.com\n'],
   ])('from an env file with %s, writes one random password, and moves the broker onto it', (_case, body) => {
     writeFileSync(envFile, body, { mode: 0o600 });
     chmodSync(envFile, 0o600);
@@ -160,7 +187,8 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
     expect(result.stdout).toContain('wrote the password the running Hub uses');
     expect(result.stdout).not.toContain('random');
     expect(argvLog()).not.toContain('change_password');
-    expect(argvLog()).not.toMatch(/^restart/m);
+    // The broker already matched, but the rename gave the env file a new inode: one restart.
+    expect(restarts()).toBe(1);
     expect(argvLog()).not.toContain('hub-running-password');
   });
 
@@ -324,17 +352,32 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
     expect(leftovers()).toEqual([]);
   });
 
-  it('refuses a symlinked env file instead of replacing the link with a copy', () => {
+  it('refuses to rewrite a symlinked env file, and names the file to fix', () => {
     const target = path.join(dir, 'real.env');
-    writeFileSync(target, 'JWT_SECRET=jwt\n', { mode: 0o600 });
+    writeFileSync(target, 'JWT_SECRET=jwt\nRABBITMQ_PASSWORD=admin\n', { mode: 0o600 });
     symlinkSync(target, envFile);
 
     const result = run();
 
     expect(result.status).not.toBe(0);
     expect(result.stdout).toContain('is a symlink');
+    expect(result.stdout).toContain('in the file the link points to');
+    expect(result.stdout).not.toContain('ENV_FILE');
     expect(lstatSync(envFile).isSymbolicLink()).toBe(true);
-    expect(readFileSync(target, 'utf-8')).toBe('JWT_SECRET=jwt\n');
+    expect(readFileSync(target, 'utf-8')).toBe('JWT_SECRET=jwt\nRABBITMQ_PASSWORD=admin\n');
+  });
+
+  it('lets a symlinked env file that already has a strong password through untouched', () => {
+    const target = path.join(dir, 'real.env');
+    writeFileSync(target, 'RABBITMQ_PASSWORD=already-strong\n', { mode: 0o600 });
+    symlinkSync(target, envFile);
+    writeFileSync(path.join(dir, 'broker'), 'already-strong');
+
+    const result = run();
+
+    expect(result.status, result.stdout).toBe(0);
+    expect(lstatSync(envFile).isSymbolicLink()).toBe(true);
+    expect(readFileSync(target, 'utf-8')).toBe('RABBITMQ_PASSWORD=already-strong\n');
   });
 
   it('says the broker is not ready when it does not come up, rather than that changing it failed', () => {
@@ -347,6 +390,123 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
     expect(result.stdout).toContain('broker not ready');
     expect(result.stdout).not.toContain('changing it failed');
     expect(argvLog()).not.toContain('rabbitmqctl');
+  });
+
+  // Compose drops an inline comment, so the Hub gets `strongpw`. The check must use that, not the raw line.
+  it.each([
+    ['an inline comment', 'RABBITMQ_PASSWORD=strongpw # set by ops\n'],
+    ['a quoted value and a trailing comment', 'RABBITMQ_PASSWORD="strongpw" # q\n'],
+  ])('with %s, checks the broker against the value the Hub got, and changes nothing', (_case, body) => {
+    writeFileSync(envFile, body, { mode: 0o600 });
+    writeFileSync(path.join(dir, 'broker'), 'strongpw');
+
+    const result = run({ STUB_UP_PASSWORD: 'strongpw' });
+
+    expect(result.status, result.stdout).toBe(0);
+    expect(readFileSync(envFile, 'utf-8')).toBe(body);
+    expect(broker()).toBe('strongpw');
+    expect(argvLog()).not.toContain('change_password');
+    expect(restarts()).toBe(0);
+  });
+
+  it.each([
+    ['an inline comment', 'RABBITMQ_PASSWORD=strongpw # set by ops\n'],
+    ['a quoted value and a trailing comment', 'RABBITMQ_PASSWORD="strongpw" # q\n'],
+  ])('with %s, moves a stale broker onto exactly the value the Hub holds', (_case, body) => {
+    writeFileSync(envFile, body, { mode: 0o600 });
+
+    const result = run({ STUB_UP_PASSWORD: 'strongpw' });
+
+    expect(result.status, result.stdout).toBe(0);
+    expect(broker()).toBe('strongpw');
+    expect(restarts()).toBe(1);
+  });
+
+  it('never changes the broker when there is no Hub container to take the password from', () => {
+    writeFileSync(envFile, 'RABBITMQ_PASSWORD=already-strong\n', { mode: 0o600 });
+
+    const result = run({ STUB_NO_HUB: '1' });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain('no Hub container');
+    expect(broker()).toBe('admin');
+    expect(argvLog()).not.toContain('change_password');
+  });
+
+  it('restarts the Hub only when this run rewrote the env file', () => {
+    writeFileSync(envFile, 'RABBITMQ_PASSWORD=already-strong\n', { mode: 0o600 });
+    writeFileSync(path.join(dir, 'broker'), 'already-strong');
+
+    expect(run().status).toBe(0);
+    expect(restarts()).toBe(0);
+
+    writeFileSync(envFile, 'RABBITMQ_PASSWORD=admin\n', { mode: 0o600 });
+    writeFileSync(path.join(dir, 'hub-env'), 'RABBITMQ_PASSWORD=already-strong\n');
+    expect(run().status).toBe(0);
+    expect(passwordLines()).toEqual(['RABBITMQ_PASSWORD=already-strong']);
+    expect(restarts()).toBe(1);
+  });
+
+  // Compose reads all three forms as a pin (measured with `docker compose config`).
+  it.each([
+    ['indented', '  CI_HUB_CONTAINER_UID=4242\n'],
+    ['spaced around =', 'CI_HUB_CONTAINER_UID = 4242\n'],
+    ['exported', 'export CI_HUB_CONTAINER_UID=4242\n'],
+    ['quoted with a comment', 'CI_HUB_CONTAINER_UID="4242" # pinned\n'],
+  ])('reads a %s CI_HUB_CONTAINER_UID in the env file as a pin, and keeps 0644', (_form, line) => {
+    writeFileSync(envFile, `JWT_SECRET=jwt\n${line}`);
+    chmodSync(envFile, 0o644);
+
+    const result = run({ STUB_NO_HUB: '1', RABBITMQ_PASSWORD: '' });
+
+    expect(passwordLines()[0]).toMatch(/^RABBITMQ_PASSWORD=[0-9a-f]{64}$/);
+    expect(mode()).toBe(0o644);
+    expect(result.stdout).not.toContain('mode changed');
+  });
+
+  it.each([
+    ['CI_HUB_CONTAINER_UID', { STUB_HUB_UID: '4242' }],
+    ['Config.User', { STUB_HUB_USER: '4242:4242' }],
+  ])("takes the pin from the running Hub's %s when the env file has none", (_source, env) => {
+    writeFileSync(envFile, 'JWT_SECRET=jwt\n');
+    chmodSync(envFile, 0o644);
+
+    expect(run(env).status).toBe(0);
+
+    expect(mode()).toBe(0o644);
+  });
+
+  it('says when it narrows the env file mode', () => {
+    writeFileSync(envFile, 'JWT_SECRET=jwt\n');
+    chmodSync(envFile, 0o644);
+
+    const result = run();
+
+    expect(result.stdout).toContain('mode changed from 644 to 600');
+  });
+
+  it('replaces every form compose reads as RABBITMQ_PASSWORD, leaving one line', () => {
+    writeFileSync(envFile, 'export RABBITMQ_PASSWORD=admin\n  RABBITMQ_PASSWORD = admin\nJWT_SECRET=jwt\n', { mode: 0o600 });
+
+    expect(run().status).toBe(0);
+
+    const content = readFileSync(envFile, 'utf-8');
+    expect(content.match(/RABBITMQ_PASSWORD/g)).toHaveLength(1);
+    expect(passwordLines()[0]).toMatch(/^RABBITMQ_PASSWORD=[0-9a-f]{64}$/);
+  });
+
+  it('stops, and leaves the file byte for byte, when the rewrite cannot read the env file', () => {
+    const body = 'JWT_SECRET=jwt\nRABBITMQ_PASSWORD=admin\n';
+    writeFileSync(envFile, body, { mode: 0o600 });
+    // Exit 2 (a read error) for the rewrite's `grep -vE` only; every other grep is the real one.
+    const failingGrep = stubBin({ grep: `if [ "$1" = -vE ]; then exit 2; fi\nexec ${REAL_GREP} "$@"` });
+
+    const result = run({}, failingGrep);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain('could not read');
+    expect(readFileSync(envFile, 'utf-8')).toBe(body);
+    expect(leftovers()).toEqual([]);
   });
 
   it('stops the update when there is no env file and no exported password', () => {
