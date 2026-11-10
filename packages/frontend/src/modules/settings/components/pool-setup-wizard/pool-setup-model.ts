@@ -327,7 +327,7 @@ export function peerModelCount(peer: PoolPeer): number {
   return models.size;
 }
 
-/** Distinct models the whole pool can serve, this Hub included. Unreachable peers' cached models are left out. */
+/** Distinct models the whole pool can serve, this Hub included. Unreachable and switched-off peers' models are left out. */
 export function countPoolModels(status: PoolStatus): number {
   return mergePoolModels(status, 'local').length;
 }
