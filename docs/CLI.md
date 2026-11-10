@@ -303,6 +303,8 @@ cihub config [env]                                   # show resolved config valu
 - The seed never reads a CI-Hub checkout under the home directory or an env file left by an earlier install. If it passed over a file, if a desktop package at another release is installed, or if a desktop app is running that will rewrite the pin on its next start, the seed says so in a red box. If nothing uses the desktop app, the box says to quit it and leave it closed, since it only rewrites the env while it runs. Don't remove the `companion-hub` package to get rid of it: its uninstall deletes the Hub `cihub up` just set up, with every app and its data, because both use `~/.local/share/companion-hub`, the `ci_hub_pgdata` volume and the same containers.
 - `status` shows three sections: **Containers** (color-coded ●/✗), **Network** (local URL, Cloudflare tunnel URL from `CF_DOMAIN`/`DOMAIN`, Tailscale VPN IP), and **Models** (installed Ollama models).
 
+- Outside a checkout, `config` reads and `mcp` writes the installed Hub's env files in the data dir. With no install they exit `2`. `models` uses the host's `ollama` command at the address its service listens on when the Hub has no Ollama container, which is the normal case on an installed Hub.
+
 ![Screenshot of cihub status local](./images/cli/status.svg)
 
 ![Screenshots of cihub config, cihub up, and cihub down](./images/cli/lifecycle.svg)
@@ -467,6 +469,8 @@ cihub mcp setup [env]     # set MCP_ENABLED=true
 cihub mcp shutdown [env]  # set MCP_ENABLED=false
 cihub mcp config [env]    # show current MCP settings
 ```
+
+The Hub reads `MCP_ENABLED` when it starts, so `setup` and `shutdown` take effect after `cihub restart`.
 
 ![Screenshots of cihub mcp setup, config, and shutdown](./images/cli/mcp.svg)
 
@@ -1955,7 +1959,7 @@ straight through a broken Docker bridge, and a fleet run that installed on 0 of 
 | `fleet preflight` | Any node would be refused by `install`/`update` — a `block` finding, or a probe that could not run |
 | `pool context-cap` | The Hub's build predates the cap (nothing was written), or the cap read back after the write is not the one requested |
 | `pool slots` | The Hub's build predates the slot count (nothing was written), or the count read back after the write is not the one requested |
-| `models list` / `install` / `rm` | There is no Ollama container to talk to |
+| `models list` / `install` / `rm` | The Hub has no Ollama container and this machine has no `ollama` command |
 | `app status <name>` | That named container is not there |
 | `app inspect <name>` | `docker inspect` could not read the container |
 | `public-web repair` | A repair step failed |
