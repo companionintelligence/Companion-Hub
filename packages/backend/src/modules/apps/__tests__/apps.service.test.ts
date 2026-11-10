@@ -42,6 +42,7 @@ import { ModuleRef } from '@nestjs/core';
 import { CloudflareClientService } from '../../cloudflare/cloudflare-client.service';
 import { TailscaleService } from '../../tailscale/tailscale.service';
 import { LifecycleJobService } from '../../app-lifecycle/lifecycle-job.service';
+import { SSEService } from '@/core/sse/sse.service';
 
 describe('AppsService', () => {
   let service: AppsService;
@@ -682,6 +683,56 @@ describe('AppsService', () => {
 
         expect(calls).toEqual(['restart:test-app_test-store-web-1', 'sync']);
       });
+    });
+  });
+
+  // CI-Hub#2376: an ignore left the update in Home's "Update all" for the cached count's minute, and
+  // another tab, or an ignore through the MCP tool, never heard of it.
+  describe.each([
+    { method: 'ignoreAppVersion', ignoredVersion: 5 },
+    { method: 'unignoreAppVersion', ignoredVersion: null },
+  ] as const)('$method', ({ method, ignoredVersion }) => {
+    const appUrn = 'uptime-kuma:ci-marketplace' as AppUrn;
+    let sseService: MockProxy<SSEService>;
+    let readService: AppsReadService;
+
+    beforeEach(() => {
+      sseService = mock<SSEService>();
+      const others = moduleRef.get.getMockImplementation();
+      moduleRef.get.mockImplementation(((token: unknown, options: unknown) =>
+        token === SSEService ? sseService : others?.(token as never, options as never)) as never);
+      readService = (service as unknown as { appsReadService: AppsReadService }).appsReadService;
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 3, appName: 'uptime-kuma', appStoreSlug: 'ci-marketplace' } as any);
+      marketplaceService.getAppUpdateInfo.mockResolvedValue({ latestVersion: 5 } as any);
+    });
+
+    it('saves the ignored version, drops the cached update count and tells every page', async () => {
+      const count = vi.spyOn(readService, 'countUpdatesAvailable').mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+      await service.getUpdatesAvailableCached();
+
+      await service[method](appUrn);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(3, { ignoredVersion });
+      await expect(service.getUpdatesAvailableCached()).resolves.toBe(0);
+      expect(count).toHaveBeenCalledTimes(2);
+      expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'ignored_version_changed', appUrn });
+    });
+
+    it('announces nothing for an app that is not installed', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(undefined as any);
+
+      await expect(service[method](appUrn)).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
+
+      expect(sseService.emit).not.toHaveBeenCalled();
+    });
+
+    it('still succeeds when the event cannot be sent, since the change is saved', async () => {
+      sseService.emit.mockImplementation(() => {
+        throw new Error('no topic');
+      });
+
+      await expect(service[method](appUrn)).resolves.toBeUndefined();
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(3, { ignoredVersion });
     });
   });
 });

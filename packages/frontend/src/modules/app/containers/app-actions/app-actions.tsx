@@ -44,7 +44,7 @@ import { useInstallationProgress } from '../../helpers/use-installation-progress
 import { useUpdatePhase } from '../../helpers/use-update-phase';
 import { useMemoryConnection } from '../../helpers/use-memory-connection';
 import { useLocation, useNavigate, Link, useSearchParams } from 'react-router';
-import { invalidateAppQueries, type AppInstallErrorCache } from '../../helpers/app-sse-cache';
+import { invalidateAppQueries, invalidateUpdatesAvailable, type AppInstallErrorCache } from '../../helpers/app-sse-cache';
 import { appServiceFailureText } from '../../helpers/app-service-failure';
 import { type AppUrn, servedExposureMode } from '@ci-hub/common/types';
 import type { UpdatePhase } from '@ci-hub/common/schemas';
@@ -399,7 +399,10 @@ export const AppActions = ({
     })();
   }, [app?.status, appSlug, storeId, installDisclosure.open, archSupported, showWrongArchitectureToast]);
 
-  const versionIsIgnored = app?.ignoredVersion === metadata?.latestVersion;
+  // Ignoring is recorded against the counter only, so it can hide nothing but a counter bump.
+  const counterBehind = Number(app?.version ?? 0) < Number(metadata?.latestVersion || 0);
+  // An app that has since reached the version it ignored has no update to un-ignore (#2376).
+  const versionIsIgnored = counterBehind && app?.ignoredVersion === metadata?.latestVersion;
   // The one definition the tile's badge and the update-all sweep use, so a newer version with an
   // unchanged counter can be acted on here too.
   const updateAvailable = hasUpdateAvailable({
@@ -409,8 +412,7 @@ export const AppActions = ({
     installedVersion: info.version,
     latestVersion: metadata?.latestDockerVersion,
   });
-  // Ignoring is recorded against the counter only, so it can hide nothing but a counter bump.
-  const canIgnoreVersion = Number(app?.version ?? 0) < Number(metadata?.latestVersion || 0) && !versionIsIgnored;
+  const canIgnoreVersion = counterBehind && !versionIsIgnored;
 
   const startMutation = useMutation({
     ...startAppMutation(),
@@ -433,9 +435,12 @@ export const AppActions = ({
     onSuccess: (_data, variables) => {
       toast.success(t('APP_ACTION_IGNORE_VERSION_SUCCESS'));
       invalidateAppQueries(queryClient, variables.path.urn);
+      // The count behind Home's "Update all" changed too (#2376).
+      invalidateUpdatesAvailable(queryClient);
     },
-    onError: (e: Error) => {
-      toast.error(e.message);
+    // The error is a translation key, as for Start: shown raw it read APP_ACTION_GRANT_DENIED (#2376).
+    onError: (e: TranslatableError) => {
+      toast.error(t(e.message, e.intlParams));
     },
   });
 
@@ -444,9 +449,12 @@ export const AppActions = ({
     onSuccess: (_data, variables) => {
       toast.success(t('APP_ACTION_UNIGNORE_VERSION_SUCCESS'));
       invalidateAppQueries(queryClient, variables.path.urn);
+      // The count behind Home's "Update all" changed too (#2376).
+      invalidateUpdatesAvailable(queryClient);
     },
-    onError: (e: Error) => {
-      toast.error(e.message);
+    // The error is a translation key, as for Start: shown raw it read APP_ACTION_GRANT_DENIED (#2376).
+    onError: (e: TranslatableError) => {
+      toast.error(t(e.message, e.intlParams));
     },
   });
 

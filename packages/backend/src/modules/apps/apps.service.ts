@@ -23,6 +23,7 @@ import { CloudflareClientService, type PublicDnsFailureReason } from '../cloudfl
 // pulled in dynamically at the one place it is used, as with AppLifecycleService.
 import type { TunnelHealthService as TunnelHealthServiceType } from '../cloudflare/tunnel-health.service';
 import { TailscaleService } from '../tailscale/tailscale.service';
+import type { SSEService as SSEServiceType } from '@/core/sse/sse.service';
 
 /**
  * Verdict of an app-availability probe.
@@ -839,6 +840,7 @@ export class AppsService {
     await this.appsRepository.updateAppById(app.id, { ignoredVersion: latestVersion });
 
     this.logger.info(`Ignored version ${latestVersion} for app ${appUrn}`);
+    await this.announceIgnoredVersionChange(appUrn);
   }
 
   public async unignoreAppVersion(appUrn: AppUrn) {
@@ -851,5 +853,23 @@ export class AppsService {
     await this.appsRepository.updateAppById(app.id, { ignoredVersion: null });
 
     this.logger.info(`Unignored version for app ${appUrn}`);
+    await this.announceIgnoredVersionChange(appUrn);
+  }
+
+  /**
+   * An ignored version changes the update count and the app's update buttons (CI-Hub#2376). The
+   * count is cached for a minute, so it is dropped here, and every open page is told, since an
+   * ignore can come from another tab or the MCP tool.
+   */
+  private async announceIgnoredVersionChange(appUrn: AppUrn) {
+    this.invalidateUpdatesAvailableCache();
+    // Imported dynamically, like AppLifecycleService: SSEService imports docker.service, and a static
+    // import here would close the require cycle through it. Best effort: the change is already saved.
+    try {
+      const { SSEService } = await import('@/core/sse/sse.service');
+      this.moduleRef.get<SSEServiceType>(SSEService, { strict: false }).emit('app', { event: 'ignored_version_changed', appUrn });
+    } catch (e) {
+      this.logger.debug(`Could not announce the ignored version change of ${appUrn}: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 }

@@ -116,6 +116,62 @@ describe('SSEProvider', () => {
     expect(mockToastError).toHaveBeenCalledExactlyOnceWith(message);
   });
 
+  // CI-Hub#2376: only an install named these. A start or restart refused for them said "see logs".
+  describe.each(['install_error', 'start_error', 'restart_error'])('%s refused by a check the Hub can name', (event) => {
+    const renderProvider = () => {
+      let onEvent: ((data: unknown) => void) | undefined;
+      mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+        onEvent = config.onEvent;
+      });
+      render(
+        <QueryClientProvider client={new QueryClient()}>
+          <MemoryRouter>
+            <SSEProvider>
+              <div>child</div>
+            </SSEProvider>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      return (data: Record<string, unknown>) => act(() => onEvent?.({ event, appUrn: 'comfyui:ci-marketplace', ...data }));
+    };
+
+    it('says the app needs ROCm and links to where it is set up', async () => {
+      const send = renderProvider();
+      mockToastError.mockReturnValueOnce('rocm-toast');
+
+      send({ errorCode: 'rocm_kfd_missing', settingsPath: '/settings?tab=ai&section=rocm' });
+
+      expect(mockToastError).toHaveBeenCalledTimes(1);
+      render(<MemoryRouter>{mockToastError.mock.calls[0]?.[0] as ReactNode}</MemoryRouter>);
+      const settingsLink = screen.getByRole('link', { name: 'AI Settings' });
+      expect(settingsLink).toHaveAttribute('href', '/settings?tab=ai&section=rocm');
+      expect(settingsLink.parentElement).toHaveTextContent('comfyui needs AMD ROCm.');
+      expect(screen.queryByRole('link', { name: 'see logs' })).toBeNull();
+
+      await userEvent.click(settingsLink);
+      expect(mockToastDismiss).toHaveBeenCalledWith('rocm-toast');
+    });
+
+    it('falls back to the ROCm settings section when the event names no path', () => {
+      const send = renderProvider();
+
+      send({ errorCode: 'rocm_kfd_missing' });
+
+      render(<MemoryRouter>{mockToastError.mock.calls[0]?.[0] as ReactNode}</MemoryRouter>);
+      expect(screen.getByRole('link', { name: 'AI Settings' })).toHaveAttribute('href', '/settings?tab=ai&section=rocm');
+    });
+
+    it('names a Docker network range conflict', () => {
+      const send = renderProvider();
+
+      send({ errorCode: 'network_overlap' });
+
+      expect(mockToastError).toHaveBeenCalledExactlyOnceWith(
+        'comfyui hit a Docker network range conflict. Retry install or start. Hub will pick a fresh internal network.',
+      );
+    });
+  });
+
   it('links app operation failures to the logs tab via "see logs"', async () => {
     let onEvent: ((data: unknown) => void) | undefined;
     mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {

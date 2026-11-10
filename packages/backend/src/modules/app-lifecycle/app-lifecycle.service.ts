@@ -1368,7 +1368,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       form: this.lifecycleCommandForm(app.config, { skipPull, onlyRecreateChanged, stopIfNotUp }),
     })
       .then(async (raw) => {
-        const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort } = raw as z.output<
+        const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort, rolledBack } = raw as z.output<
           typeof appEventResultSchema
         >;
         if (success) {
@@ -1428,7 +1428,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             serviceFailure,
             movedHostPort,
             failureOutcome: {
-              status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
+              status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped', rolledBack),
               event: 'start_error',
               notifyEvent: 'start_error',
               failurePhase: 'start',
@@ -2429,7 +2429,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const form = this.lifecycleCommandForm(app.config, { skipPull, stopIfNotUp: params.actor.kind !== 'system' });
     this.publishRegistered(appUrn, requestId, { command: 'restart', appUrn, requestId, form })
       .then(async (raw) => {
-        const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort } = raw as z.output<
+        const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort, rolledBack } = raw as z.output<
           typeof appEventResultSchema
         >;
         if (success) {
@@ -2463,7 +2463,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             serviceFailure,
             movedHostPort,
             failureOutcome: {
-              status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
+              status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped', rolledBack),
               event: 'restart_error',
               notifyEvent: 'restart_error',
               failurePhase: 'restart',
@@ -2515,7 +2515,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       requestId,
       form: this.lifecycleCommandForm(app.config, { skipPull, onlyRecreateChanged }),
     });
-    const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort } = raw as z.output<typeof appEventResultSchema>;
+    const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort, rolledBack } = raw as z.output<
+      typeof appEventResultSchema
+    >;
 
     if (success) {
       this.logger.info(`App ${appUrn} started successfully`);
@@ -2571,7 +2573,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       serviceFailure,
       movedHostPort,
       failureOutcome: {
-        status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
+        status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped', rolledBack),
         event: 'start_error',
         notifyEvent: 'start_error',
         failurePhase: 'start',
@@ -2621,7 +2623,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       requestId,
       form: this.lifecycleCommandForm(app.config, { skipPull }),
     });
-    const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort } = raw as z.output<typeof appEventResultSchema>;
+    const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort, rolledBack } = raw as z.output<
+      typeof appEventResultSchema
+    >;
 
     if (success) {
       this.logger.info(`App ${appUrn} restarted successfully`);
@@ -2657,7 +2661,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       serviceFailure,
       movedHostPort,
       failureOutcome: {
-        status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
+        status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped', rolledBack),
         event: 'restart_error',
         notifyEvent: 'restart_error',
         failurePhase: 'restart',
@@ -3717,8 +3721,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * The status a failed start, stop, or restart settles on. A command the queue
    * never took ran no docker action, so the app is still in the status it had
-   * before; any other failure keeps the status that failure implies. The readiness
-   * gate cannot catch every such failure: a connection flagged ready whose
+   * before, as is one the command refused before it touched a container (`rolledBack`:
+   * a host-device check, CI-Hub#2376). Any other failure keeps the status that failure
+   * implies. The readiness gate cannot catch every such failure: a connection flagged ready whose
    * channels are dead (core-14, 2026-09-17) fails the publish with no channel opened.
    *
    * Only `running` and `stopped` are restored. A transitional status belongs to the
@@ -3731,12 +3736,17 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * A failed install stays one when a start sent to it through the API fails too: `stopped` would take
    * away its Retry install and send the next retry through Start, past install's port handling.
    */
-  private statusAfterFailedCommand(errorCode: string | undefined, statusBefore: AppStatus, statusOnFailure: AppStatus): AppStatus {
+  private statusAfterFailedCommand(
+    errorCode: string | undefined,
+    statusBefore: AppStatus,
+    statusOnFailure: AppStatus,
+    rolledBack?: boolean,
+  ): AppStatus {
     if (statusBefore === 'install_failed') {
       return statusBefore;
     }
     const settled = statusBefore === 'running' || statusBefore === 'stopped';
-    return errorCode === QUEUE_UNAVAILABLE_CODE && settled ? statusBefore : statusOnFailure;
+    return (errorCode === QUEUE_UNAVAILABLE_CODE || rolledBack) && settled ? statusBefore : statusOnFailure;
   }
 
   /**

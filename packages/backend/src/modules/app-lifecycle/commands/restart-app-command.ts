@@ -11,7 +11,10 @@ import { AppLifecycleCommand } from './command';
 import { hostPortMoveOf } from './main-host-port';
 
 export class RestartAppCommand extends AppLifecycleCommand {
-  public async execute(appUrn: AppUrn, form: AppEventFormInput): Promise<{ success: boolean; message: string; movedHostPort?: HostPortMove }> {
+  public async execute(
+    appUrn: AppUrn,
+    form: AppEventFormInput,
+  ): Promise<{ success: boolean; message: string; movedHostPort?: HostPortMove; rolledBack?: boolean }> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
@@ -31,9 +34,14 @@ export class RestartAppCommand extends AppLifecycleCommand {
       // can be gone by the time the app is restarted (driver not loaded yet at boot, host
       // reconfigured). Catch that here with friendly guidance instead of letting Docker's
       // raw device-attach error reach the user unclassified.
-      await this.assertRequiredHostDevices(appUrn);
+      try {
+        await this.assertRequiredHostDevices(appUrn);
 
-      await this.ensureAppDir(appUrn, form);
+        await this.ensureAppDir(appUrn, form);
+      } catch (err) {
+        // Refused before `down`: the containers still run, so the app keeps the status it had rather than "stopped".
+        return { ...(await this.handleAppError(err, appUrn, 'restart')), rolledBack: true };
+      }
 
       // Not `form.exposedLocal`, which a Private VPN app leaves off: its routes go through Traefik too.
       const exposedThroughTraefik = getEffectiveExposureMode(form) !== 'local';

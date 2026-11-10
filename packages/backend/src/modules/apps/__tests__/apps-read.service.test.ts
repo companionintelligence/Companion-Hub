@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { AppsReadService } from '../apps-read.service';
 import { AppsRepository } from '../apps.repository';
@@ -132,6 +132,38 @@ describe('AppsReadService.countUpdatesAvailable', () => {
     await expect(service.countUpdatesAvailable()).resolves.toBe(0);
     expect(marketplaceService.getAppUpdateInfo).not.toHaveBeenCalled();
     expect(appFilesManager.getInstalledAppInfo).not.toHaveBeenCalled();
+  });
+
+  // CI-Hub#2376: an ignored update stayed in Home's "Update all" for the cache's minute.
+  describe('the cached count', () => {
+    it('is walked again after an invalidation', async () => {
+      const { service } = build();
+      const count = vi.spyOn(service, 'countUpdatesAvailable').mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+
+      await expect(service.getUpdatesAvailableCached()).resolves.toBe(1);
+      await expect(service.getUpdatesAvailableCached()).resolves.toBe(1);
+      service.invalidateUpdatesAvailableCache();
+
+      await expect(service.getUpdatesAvailableCached()).resolves.toBe(0);
+      expect(count).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not keep a count a walk read before the invalidation', async () => {
+      const { service } = build();
+      let finishStaleWalk: (n: number) => void = () => {};
+      vi.spyOn(service, 'countUpdatesAvailable')
+        .mockImplementationOnce(() => new Promise<number>((resolve) => (finishStaleWalk = resolve)))
+        .mockResolvedValueOnce(0)
+        .mockResolvedValueOnce(5);
+
+      const stale = service.getUpdatesAvailableCached();
+      service.invalidateUpdatesAvailableCache();
+      await expect(service.getUpdatesAvailableCached()).resolves.toBe(0);
+      finishStaleWalk(1);
+      await stale;
+
+      expect(service.peekUpdatesAvailableCached()).toBe(0);
+    });
   });
 });
 

@@ -96,6 +96,33 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     return Boolean(key);
   };
 
+  /**
+   * A refusal the Hub can name: a missing host device or a Docker network clash. Install, start and
+   * restart all run the same checks, so all three say what stopped them instead of "see logs" (#2376).
+   * Returns whether it showed a toast.
+   */
+  const showRefusalToast = (errorCode: string | undefined, appName: string, settingsPath: string | undefined): boolean => {
+    if (errorCode === 'rocm_kfd_missing') {
+      const toastId: string | number = toast.error(
+        <Trans
+          i18nKey="APP_ERROR_ROCM_KFD_MISSING_TOAST"
+          values={{ id: appName }}
+          components={{
+            settingsLink: (
+              <Link to={settingsPath ?? '/settings?tab=ai&section=rocm'} className="font-medium underline" onClick={() => toast.dismiss(toastId)} />
+            ),
+          }}
+        />,
+      );
+      return true;
+    }
+    if (errorCode === 'network_overlap') {
+      toast.error(t('APP_ERROR_NETWORK_OVERLAP_TOAST', { id: appName }));
+      return true;
+    }
+    return showHostCapabilityToast(errorCode);
+  };
+
   // The service's name comes from the app's compose file, so it stays plain text: `Trans` would read tags in it.
   const showServiceFailureToast = (i18nKey: string, appName: string, failure: AppServiceFailure) => {
     toast.error(t(i18nKey, { id: appName, reason: appServiceFailureText(t, failure) }), { duration: 10000 });
@@ -181,29 +208,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           showSuccessOrPortMoved('APP_INSTALL_SUCCESS', appName, movedHostPort);
           break;
         case 'install_error':
-          if (errorCode === 'rocm_kfd_missing') {
-            const toastId: string | number = toast.error(
-              <Trans
-                i18nKey="APP_ERROR_ROCM_KFD_MISSING_TOAST"
-                values={{ id: appName }}
-                components={{
-                  settingsLink: (
-                    <Link
-                      to={settingsPath ?? '/settings?tab=ai&section=rocm'}
-                      className="font-medium underline"
-                      onClick={() => toast.dismiss(toastId)}
-                    />
-                  ),
-                }}
-              />,
-            );
-            break;
-          }
-          if (errorCode === 'network_overlap') {
-            toast.error(t('APP_ERROR_NETWORK_OVERLAP_TOAST', { id: appName }));
-            break;
-          }
-          if (showHostCapabilityToast(errorCode)) {
+          if (showRefusalToast(errorCode, appName, settingsPath)) {
             break;
           }
           if (serviceFailure) {
@@ -219,11 +224,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           showSuccessOrPortMoved('APP_START_SUCCESS', appName, movedHostPort);
           break;
         case 'start_error':
-          if (errorCode === 'network_overlap') {
-            toast.error(t('APP_ERROR_NETWORK_OVERLAP_TOAST', { id: appName }));
-            break;
-          }
-          if (showHostCapabilityToast(errorCode)) {
+          if (showRefusalToast(errorCode, appName, settingsPath)) {
             break;
           }
           if (serviceFailure) {
@@ -293,7 +294,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           showSuccessOrPortMoved('APP_RESTART_SUCCESS', appName, movedHostPort);
           break;
         case 'restart_error':
-          if (showHostCapabilityToast(errorCode)) {
+          if (showRefusalToast(errorCode, appName, settingsPath)) {
             break;
           }
           if (serviceFailure) {
