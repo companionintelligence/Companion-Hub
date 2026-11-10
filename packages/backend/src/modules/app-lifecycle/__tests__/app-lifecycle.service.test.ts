@@ -7300,6 +7300,37 @@ describe('AppLifecycleService', () => {
       expect(syncSpy).toHaveBeenNthCalledWith(2, { skipAutoRestartAppUrns: ['myapp:ci-marketplace'] });
     });
 
+    it("releases nothing when a save names the Hub's own domain for a row that stores none", async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'running',
+        appName: 'myapp',
+        appStoreSlug: 'ci-marketplace',
+        config: { exposureMode: 'cloudflare', localSubdomain: 'sub', port: 8080 },
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        localSubdomain: 'sub',
+        publicDomain: null,
+        port: 8080,
+      } as any);
+      configService.getConfig.mockReturnValue({
+        isProduction: false,
+        userSettings: { domain: 'example.com', localDomain: 'ci.lan' },
+        domain: 'example.com',
+      } as any);
+      vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
+      const syncSpy = vi.spyOn(exposureSyncService, 'triggerCloudflareSync').mockResolvedValue(undefined);
+
+      await service.updateAppConfig({
+        actor: TEST_ACTOR,
+        appUrn,
+        form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'sub', publicDomain: 'example.com', port: 8080 },
+      });
+
+      expect(syncSpy).toHaveBeenCalledTimes(1);
+      expect(syncSpy).toHaveBeenCalledWith({ skipAutoRestartAppUrns: ['myapp:ci-marketplace'] });
+    });
+
     it('judges the saved row by its stored form, as the sync published it', async () => {
       // A legacy Public web install: the row says `local` + `exposed_local`, the form says
       // `exposedLocal`. Saving the same public settings moves no hostname, so nothing is released.

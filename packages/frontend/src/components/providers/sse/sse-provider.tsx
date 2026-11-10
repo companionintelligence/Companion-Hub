@@ -11,7 +11,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { type PropsWithChildren, useRef } from 'react';
 import { toast } from 'sonner';
 import { Trans, useTranslation } from 'react-i18next';
-import { Link, useNavigate } from 'react-router';
+import { Link, matchPath, useLocation, useNavigate } from 'react-router';
 
 const logsPageHref = '/settings?tab=logs';
 
@@ -47,10 +47,16 @@ const PUBLIC_DNS_ERROR_KEYS: Record<string, string> = {
   write_failed: 'APP_ERROR_PUBLIC_DNS_TEMPORARY',
 };
 
+/** Whether this is a custom app's page or its edit page. `/apps/<store>/<app>` is a store app's page, even if a custom app has the store's name. */
+const isCustomAppPage = (pathname: string, appId: string) => matchPath('/apps/:appId/edit?', pathname)?.params.appId === appId;
+
 export const SSEProvider = ({ children }: PropsWithChildren) => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  // `useSSE` keeps the handler from the first render, so where this tab is now has to be read through a ref.
+  const pathname = useRef('');
+  pathname.current = useLocation().pathname;
   const greetedBefore = useRef(false);
 
   // Shows an error toast whose "see logs" text links to the Settings logs tab.
@@ -155,7 +161,8 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
 
       // A cancelled retry of a failed install leaves the app there, failed, so its page stays.
       const appGone = event === 'uninstall_success' || (event === 'install_cancelled' && payload.appStatus !== 'install_failed');
-      if (appStoreId === '_user' && appGone) {
+      // The event reaches every tab and every operator. Only a tab showing the app has lost its page.
+      if (appStoreId === '_user' && appGone && isCustomAppPage(pathname.current, appId)) {
         navigate('/store', { replace: true });
       }
 

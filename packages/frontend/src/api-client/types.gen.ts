@@ -3272,17 +3272,6 @@ export type DownloadHubLogsResponses = {
     200: unknown;
 };
 
-export type DownloadLocalCertificateData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/system/certificate';
-};
-
-export type DownloadLocalCertificateResponses = {
-    200: unknown;
-};
-
 export type DetectServicesData = {
     body?: never;
     path?: never;

@@ -5,9 +5,12 @@ import {
   dynamicComposeSchema as dynamicComposeSchemaZod,
   dynamicComposeObject,
   dynamicComposeFormSchema,
+  customAppComposeSchema,
+  customAppComposeFormSchema,
   collectServiceSecurityViolations,
   TRUSTED_APP_SECURITY_ALLOWLIST,
 } from '../dynamic-compose.js';
+import { parseInstalledComposeJson } from '../utils/convert-legacy-schema.js';
 import type { ZodAny } from 'zod';
 
 type ValidationResult<T> = { success: true; data: T } | { success: false };
@@ -1652,6 +1655,67 @@ describe('dynamicComposeFormSchema', () => {
       overrides: [{ architecture: 'arm64', services: [{ privileged: true }] }],
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe('customAppComposeSchema (what saving a custom app accepts)', () => {
+  const compose = (extra: Record<string, unknown>) => ({
+    schemaVersion: 2,
+    services: [{ name: 'web', image: 'nginx:alpine', internalPort: 80, isMain: true, ...extra }],
+  });
+
+  const refused: [string, Record<string, unknown>, string, (string | number)[]][] = [
+    ['an added capability', { capAdd: ['SYS_ADMIN'] }, 'CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED', ['capAdd', 0]],
+    ['a host device', { devices: ['/dev/mem:/dev/mem'] }, 'CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED', ['devices', 0]],
+    ['seccomp switched off', { securityOpt: ['seccomp=unconfined'] }, 'CUSTOM_APP_ERROR_SECURITY_OPT_NOT_ALLOWED', ['securityOpt', 0]],
+    ["the host's processes", { pid: 'host' }, 'CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED', ['pid']],
+    ["another container's network", { networkMode: 'container:ci-hub' }, 'CUSTOM_APP_ERROR_NETWORK_MODE_HOST_NOT_ALLOWED', ['networkMode']],
+    ['a named network', { networkMode: 'mynet' }, 'CUSTOM_APP_ERROR_NETWORK_MODE_NOT_ALLOWED', ['networkMode']],
+  ];
+
+  it.each(refused)('refuses %s with the words Start would use, on the service that asked', (_name, extra, message, path) => {
+    const { success, error } = customAppComposeSchema.safeParse(compose(extra));
+    expect(success).toBe(false);
+    expect(error?.issues).toEqual([expect.objectContaining({ message, path: ['services', 0, ...path] })]);
+  });
+
+  it('holds the form schema to the same rule', () => {
+    const { schemaVersion: _version, ...form } = compose({ capAdd: ['SYS_ADMIN'] });
+    const { success, error } = customAppComposeFormSchema.safeParse(form);
+    expect(success).toBe(false);
+    expect(error?.issues[0]?.message).toBe('CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED');
+  });
+
+  it('refuses the same settings in an override, which Start applies on that architecture', () => {
+    const { success, error } = customAppComposeSchema.safeParse({
+      ...compose({}),
+      overrides: [{ architecture: 'arm64', services: [{ name: 'web', capAdd: ['SYS_ADMIN'] }] }],
+    });
+    expect(success).toBe(false);
+    expect(error?.issues).toEqual([
+      expect.objectContaining({ message: 'CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED', path: ['overrides', 0, 'services', 0, 'capAdd', 0] }),
+    ]);
+  });
+
+  it('reports privileged once, as the schema already did', () => {
+    const { error } = customAppComposeSchema.safeParse(compose({ privileged: true }));
+    expect(error?.issues.map((issue) => issue.message)).toEqual(['CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED']);
+  });
+
+  it('still accepts what Start accepts', () => {
+    const allowed = compose({
+      capAdd: ['NET_BIND_SERVICE', 'CHOWN'],
+      devices: ['/dev/ttyUSB0:/dev/ttyUSB0', '/dev/dri:/dev/dri'],
+      securityOpt: ['no-new-privileges:true'],
+      networkMode: 'bridge',
+    });
+    expect(customAppComposeSchema.safeParse(allowed).success).toBe(true);
+    expect(customAppComposeSchema.safeParse(compose({ networkMode: 'service:db' })).success).toBe(true);
+  });
+
+  it.each(refused)('still reads an app saved earlier with %s, so it lists and its editor opens', (_name, extra) => {
+    expect(dynamicComposeSchemaZod.safeParse(compose(extra)).success).toBe(true);
+    expect(() => parseInstalledComposeJson(compose(extra))).not.toThrow();
   });
 });
 
