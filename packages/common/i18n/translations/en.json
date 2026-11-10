@@ -2150,6 +2150,7 @@
   "AI_SETTINGS_PINNED_BADGE": "Pinned",
   "AI_SETTINGS_LOAD": "Load",
   "AI_SETTINGS_LOADED": "{{model}} loaded. Save to make it the chat model.",
+  "AI_SETTINGS_LOADED_NOT_CHAT": "{{model}} loaded.",
   "AI_SETTINGS_MODEL_LOAD_FAILED": "Load failed: {{error}}",
   "AI_SETTINGS_UNLOAD": "Unload",
   "AI_SETTINGS_UNLOADED": "{{model}} unloaded. Save to load it again with the current options.",

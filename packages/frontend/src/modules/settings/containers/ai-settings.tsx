@@ -623,7 +623,12 @@ export const AiSettingsContainer = () => {
       await loadInferenceModel(engineId, selectedBackend);
       const catalogId = catalogIdForEngineModel(engineId);
       const curated = catalogId ? availableModelById.get(catalogId) : undefined;
-      if (!curated || curated.modality === 'llm') {
+      // Ollama lists a model pulled without a tag as `name:latest`, which the catalog spells `name`. Known
+      // that way, an embedder (or any model that does not chat) is only loaded. Taken for an unknown chat
+      // model, `nomic-embed-text:latest` became the chat model the next Save wrote.
+      const known = curated ?? catalogModelFor(availableModelById.values(), engineId.replace(/:latest$/, ''));
+      const chatModel = !known || known.modality === 'llm';
+      if (chatModel) {
         const chatId = catalogId ?? engineId;
         setChosenChatModelId(chatId);
         setSelectedModelIds((prev) => {
@@ -636,7 +641,11 @@ export const AiSettingsContainer = () => {
       }
       await fetchRuntimeModels(selectedBackend);
       await fetchTrackedModels();
-      toast.success(t('AI_SETTINGS_LOADED', { model: curated?.displayName ?? engineId }));
+      toast.success(
+        chatModel
+          ? t('AI_SETTINGS_LOADED', { model: curated?.displayName ?? engineId })
+          : t('AI_SETTINGS_LOADED_NOT_CHAT', { model: known.displayName }),
+      );
     } catch (e) {
       toast.error(t('AI_SETTINGS_MODEL_LOAD_FAILED', { error: (e as Error).message }));
     } finally {
