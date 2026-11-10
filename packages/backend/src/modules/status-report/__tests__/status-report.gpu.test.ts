@@ -5,7 +5,7 @@ import type { SystemInspectorService } from '../../system/system-inspector.servi
 import { renderHubStatusMarkdown } from '../status-report.render';
 import { StatusReportService } from '../status-report.service';
 
-/** The GPU line of the report `buildReport` writes for one card. The other sections fail and are skipped. */
+/** The GPU line of the report `buildReport` writes for one card. The other services reject, which costs only their own sections. */
 async function gpuLine(gpu: Partial<HardwareProfile['gpu']>): Promise<string | undefined> {
   const unread = new Proxy({}, { get: () => vi.fn().mockRejectedValue(new Error('not in this test')) });
   const logger = { warn: vi.fn() };

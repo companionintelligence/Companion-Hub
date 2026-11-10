@@ -105,7 +105,7 @@ function renderSystem(report: HubStatusReport): string[] {
 
   if (system.gpu) {
     const vram = system.gpu.vramMb === null ? UNKNOWN : `${(system.gpu.vramMb / 1024).toFixed(1)} GiB VRAM`;
-    // Three states, not two: a Linux AMD box normally has the host driving the card while the
+    // Four states, not two: a Linux AMD box normally has the host driving the card while the
     // Hub container cannot see it. That is the expected layout, so it is noted, not bolded.
     // A driver nothing checked (`null`) gets no note at all: there is no finding to report.
     let driver = '';
