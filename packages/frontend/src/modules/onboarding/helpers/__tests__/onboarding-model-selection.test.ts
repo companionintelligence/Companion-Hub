@@ -2,7 +2,13 @@ import type { CuratedModel } from '@ci-hub/common/types';
 import { describe, expect, it } from 'vitest';
 import { computeSelectionBudget, inferenceMemoryMb, isSelectionWithinBudget } from '../onboarding-model-selection';
 
-const makeModel = (id: string, diskMb: number, memoryFootprintMb: number, backend = 'ollama', modality = 'llm'): CuratedModel =>
+const makeModel = (
+  id: string,
+  diskMb: number,
+  memoryFootprintMb: number,
+  backend: CuratedModel['backend'] = 'ollama',
+  modality: CuratedModel['modality'] = 'llm',
+): CuratedModel =>
   ({
     id,
     backend,
