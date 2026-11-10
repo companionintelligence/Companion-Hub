@@ -208,6 +208,20 @@ describe('hub-pool-cli formatters', () => {
     expect(formatPoolTimestamp('not a date')).toBe('not a date');
   });
 
+  it("reads a Hub timestamp with no zone as UTC, whatever this machine's zone is", () => {
+    try {
+      for (const tz of ['Asia/Karachi', 'America/Los_Angeles', 'UTC']) {
+        vi.stubEnv('TZ', tz);
+        expect(formatPoolTimestamp('2026-11-05 18:14:55.749')).toBe('2026-11-05 18:14:55Z');
+        // A value that names its zone is left as it says.
+        expect(formatPoolTimestamp('2026-11-05T18:14:55.749Z')).toBe('2026-11-05 18:14:55Z');
+        expect(formatPoolTimestamp('2026-11-05 23:14:55+05:00')).toBe('2026-11-05 18:14:55Z');
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("names this Hub in the NODE column instead of the log's key", () => {
     const log: PoolRoutingLogResponse = {
       entries: [

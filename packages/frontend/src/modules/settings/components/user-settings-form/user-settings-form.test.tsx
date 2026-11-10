@@ -57,6 +57,16 @@ it('lets a keyboard user focus a setting hint', () => {
   expect(hint).toHaveFocus();
 });
 
+it('saves the form when Enter is pressed in a field', async () => {
+  const onSubmit = vi.fn();
+  render(<UserSettingsForm initialValues={newHubSettings} onSubmit={onSubmit} />);
+
+  localDomainField().focus();
+  await userEvent.keyboard('{Enter}');
+
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+});
+
 // Every setting but the language applies to the whole Hub, an owner's or admin's to change.
 it("shows a member only their own language, and nothing that changes the Hub's settings", () => {
   render(<UserSettingsForm initialValues={newHubSettings} onSubmit={vi.fn()} manageHub={false} />);

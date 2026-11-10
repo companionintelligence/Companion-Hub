@@ -1,6 +1,8 @@
 import {
   dynamicComposeSchema,
   dynamicComposeFormSchema,
+  customAppComposeSchema,
+  customAppComposeFormSchema,
   serviceSchema,
   MIN_SCHEMA_VERSION,
   CURRENT_SCHEMA_VERSION,
@@ -105,6 +107,8 @@ import { toJsonSchema } from './utils/to-json-schema.js';
 export {
   dynamicComposeSchema,
   dynamicComposeFormSchema,
+  customAppComposeSchema,
+  customAppComposeFormSchema,
   CONFIDENTIAL_CONTAINER_RUNTIMES,
   isConfidentialRuntime,
   parseComposeJson,

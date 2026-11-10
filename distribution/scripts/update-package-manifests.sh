@@ -3,7 +3,7 @@
 # Usage: ./distribution/scripts/update-package-manifests.sh v0.2.28
 set -euo pipefail
 
-REPO="${CI_HUB_RELEASE_REPO:-companionintelligence/CI-Hub}"
+REPO="${CI_HUB_RELEASE_REPO:-companionintelligence/Companion-Hub}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DIST="$ROOT/distribution"
 VERSION="${1:-}"
@@ -45,12 +45,12 @@ cask "companion-hub" do
   version "${TAG}"
 
   on_intel do
-    url "https://github.com/companionintelligence/CI-Hub/releases/download/v#{version}/Companion.Hub_#{version}_x64.dmg"
+    url "https://github.com/companionintelligence/Companion-Hub/releases/download/v#{version}/Companion.Hub_#{version}_x64.dmg"
     sha256 "${SHA_X64_DMG}"
   end
 
   on_arm do
-    url "https://github.com/companionintelligence/CI-Hub/releases/download/v#{version}/Companion.Hub_#{version}_aarch64.dmg"
+    url "https://github.com/companionintelligence/Companion-Hub/releases/download/v#{version}/Companion.Hub_#{version}_aarch64.dmg"
     sha256 "${SHA_AARCH64_DMG}"
   end
 
@@ -96,17 +96,21 @@ cat >"$SCOOP" <<JSON
   "description": "Self-hosted app platform and local AI hub from Companion Intelligence",
   "homepage": "https://ci.computer/hub",
   "license": "CI-Commercial-1.0",
-  "url": "https://github.com/companionintelligence/CI-Hub/releases/download/v${TAG}/Companion.Hub_${TAG}_x64-setup.exe",
+  "url": "https://github.com/companionintelligence/Companion-Hub/releases/download/v${TAG}/Companion.Hub_${TAG}_x64-setup.exe",
   "hash": "${SHA_X64_SETUP}",
   "installer": {
     "script": "& \"\$dir\\\\Companion.Hub_\${version}_x64-setup.exe\" /S"
   },
   "uninstaller": {
     "script": [
-      "# IMPORTANT: Scoop runs this uninstaller during \`scoop update\` as well as \`scoop uninstall\`,",
-      "# and it gives the script no way to tell the two apart. So this script must only remove",
-      "# recreatable resources (containers + networks) and must NOT touch persistent data — otherwise",
-      "# every \`scoop update companion-hub\` would wipe the user's database and app state.",
+      "# Scoop runs this uninstaller for both \`scoop uninstall\` and \`scoop update\`. An update must not stop",
+      "# running apps, so the container cleanup below is skipped during an update. Scoop's update script is on",
+      "# the call stack in that case, so the check looks for it. The cleanup only removes recreatable resources",
+      "# (containers + networks) and never touches persistent data, so a plain uninstall stays safe.",
+      "if (@(Get-PSCallStack | Where-Object { \$_.ScriptName -like '*scoop-update*' }).Count -gt 0) {",
+      "  Write-Host 'Companion Hub: keeping its containers during a Scoop update.'",
+      "  return",
+      "}",
       "if (Get-Command docker -ErrorAction SilentlyContinue) {",
       "  # Windows PowerShell 5.1 drops double quotes inside a docker template, so the label name is a Go raw string in backticks.",
       "  \$managedProjects = @(",
@@ -138,10 +142,10 @@ cat >"$SCOOP" <<JSON
   },
   "shortcuts": [["Companion Hub\\\\Companion Hub.exe", "Companion Hub"]],
   "checkver": {
-    "github": "https://github.com/companionintelligence/CI-Hub"
+    "github": "https://github.com/companionintelligence/Companion-Hub"
   },
   "autoupdate": {
-    "url": "https://github.com/companionintelligence/CI-Hub/releases/download/v\$version/Companion.Hub_\$version_x64-setup.exe"
+    "url": "https://github.com/companionintelligence/Companion-Hub/releases/download/v\$version/Companion.Hub_\$version_x64-setup.exe"
   }
 }
 JSON

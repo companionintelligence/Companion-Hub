@@ -7,7 +7,6 @@ import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import type { Locale } from '@/lib/i18n/locales';
 import { SlidersHorizontal, Sliders, Info, User, Copy } from 'lucide-react';
 import clsx from 'clsx';
-import type React from 'react';
 import { Suspense, lazy, useEffect } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
@@ -194,11 +193,6 @@ export const UserSettingsForm = (props: IProps) => {
     } else {
       showFieldErrors(fieldErrors);
     }
-  };
-
-  const downloadCertificate = (e: React.MouseEvent<HTMLButtonElement>) => {
-    e.preventDefault();
-    window.open('/api/system/certificate');
   };
 
   const localDomainValue = watch('localDomain') ?? '';
@@ -445,9 +439,6 @@ export const UserSettingsForm = (props: IProps) => {
                   {renderFieldCopyButton(publicHubHostname ?? '')}
                 </Input>
               </div>
-              <Button variant="outline" className="mt-2 mb-2" onClick={downloadCertificate}>
-                {t('SETTINGS_GENERAL_DOWNLOAD_CERTIFICATE')}
-              </Button>
             </div>
             {initialValues?.advancedSettings && (
               <div>

@@ -46,10 +46,9 @@ describe('SystemController', () => {
 
   describe('route guards', () => {
     // There is no global APP_GUARD in this app: AuthGuard is applied per-method,
-    // so a route declared between two guarded ones inherits nothing. That is how
-    // GET /api/system/certificate — which serves the appliance's root CA trust
-    // anchor — ended up reachable without a session. Enumerating the prototype
-    // rather than a hand-written list means a newly added route fails here too.
+    // so a route declared between two guarded ones inherits nothing. Enumerating
+    // the prototype rather than a hand-written list means a newly added route
+    // fails here too.
     //
     // Enumerating it *unfiltered* would over-reach the other way: a private helper
     // on the controller is not reachable over HTTP and has nothing to guard, so
@@ -194,25 +193,6 @@ describe('SystemController', () => {
       await controller.downloadHubLogs(res);
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 500, message: 'Failed to start log download stream' }));
-    });
-  });
-
-  describe('downloadLocalCertificate', () => {
-    it('should send certificate as PEM file', async () => {
-      const certContent = '-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----';
-      systemService.getLocalCertificate.mockResolvedValue(certContent);
-
-      const res = {
-        set: vi.fn(),
-        send: vi.fn().mockReturnThis(),
-      } as any;
-
-      await controller.downloadLocalCertificate(res);
-      expect(res.set).toHaveBeenCalledWith({
-        'Content-Type': 'application/x-pem-file',
-        'Content-Disposition': 'attachment; filename=cert.pem',
-      });
-      expect(res.send).toHaveBeenCalledWith(certContent);
     });
   });
 

@@ -179,15 +179,15 @@ export const InstallForm: React.FC<IProps> = ({
   const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;
   const defaultAppSubdomain = info.urn.split(':')[0] ?? info.urn;
   /*
-   * The subdomain this app ROUTES on when the Local Subdomain field is empty —
-   * which is not `defaultAppSubdomain`, the field's placeholder.
+   * The subdomain this app ROUTES on when the Local Subdomain field is empty,
+   * which is not `defaultAppSubdomain`, the name a new public address starts from.
    *
    * ⚠ THE TWO DIFFER, AND ONLY THIS ONE MAY BE COMPARED AGAINST CI-CLOUD.
    * `resolveRoutingSubdomain` on the backend falls back to
    * `<appName>-<appStoreSlug>`, and that is what the bind sends and what comes
-   * back as `boundAppSlug`. The placeholder is the bare app name. Comparing the
-   * placeholder against CI-Cloud's answer makes every app whose `localSubdomain`
-   * is null — an API, MCP or restore install — read as somebody else's: the
+   * back as `boundAppSlug`. `defaultAppSubdomain` is the bare app name. Comparing
+   * it against CI-Cloud's answer makes every app whose `localSubdomain`
+   * is null (an API, MCP or restore install) read as somebody else's: the
    * picker asks the operator to confirm moving the app's own domain away from
    * itself, and drops the hint that says the save will stop serving it.
    */
@@ -220,6 +220,14 @@ export const InstallForm: React.FC<IProps> = ({
   // An app that is not exposable has no mode to keep: whatever its stored form names, a save sends it local.
   const savedExposureMode = isEdit && info.exposable ? servedExposureMode({ config: initialValues }) : undefined;
   const keepsPublished = keepsPublishedDomain(isEdit, savedExposureMode);
+  // What an empty Subdomain field stands for. An app already on the web with no subdomain stored (API,
+  // MCP, restore and older installs) is served on its routing name. Filling the field with the bare app
+  // name showed a different address from the app's page and moved the app on any save (#2272).
+  const fallbackSubdomain = keepsPublished ? sanitizeAppSubdomain(routingAppSubdomain) : defaultAppSubdomain;
+  // Whether a value is that routing name on an app with none stored. A save sends no name for it, so what
+  // stays published is `routingAppSubdomain`. The Portal keeps the underscore in a custom app's `<app>-_user`.
+  const holdsRoutingName = (subdomain?: string) => keepsPublished && !initialValues?.localSubdomain && subdomain === fallbackSubdomain;
+  const subdomainToCheck = (subdomain: string) => (holdsRoutingName(subdomain) ? routingAppSubdomain : subdomain);
 
   const availableDomainsQuery = useQuery(getDomainsOptions());
   const availableDomainsData = availableDomainsQuery.data;
@@ -246,14 +254,14 @@ export const InstallForm: React.FC<IProps> = ({
     if (watchExposureMode !== 'cloudflare' || !orgSlug) return null;
     const hubSubdomain = ciHubDeviceSlug ? `hub-${ciHubDeviceSlug}-${orgSlug}` : undefined;
     return buildPublicWebIdentity({
-      appSubdomain: watchLocalSubdomain || defaultAppSubdomain,
+      appSubdomain: watchLocalSubdomain || fallbackSubdomain,
       hubSubdomain,
       orgSlug,
       // The root only fills out the name while no domain is known; the address built on it is shown
       // and prefilled only once one is (`publicDomain`).
       publicDomainRoot: publicDomain || domain || 'example.com',
     });
-  }, [watchExposureMode, orgSlug, watchLocalSubdomain, defaultAppSubdomain, ciHubDeviceSlug, publicDomain, domain]);
+  }, [watchExposureMode, orgSlug, watchLocalSubdomain, fallbackSubdomain, ciHubDeviceSlug, publicDomain, domain]);
 
   const tailscalePreviewHost = useMemo(() => {
     if (watchExposureMode !== 'tailscale') return '';
@@ -657,7 +665,12 @@ export const InstallForm: React.FC<IProps> = ({
   // settings dialog as edited — its "changes will apply" banner showed on open and Update was never
   // disabled. Derived during render: `dirtyFields` is mutated in place, so an effect keyed on it
   // alone never re-runs.
-  const hasEdits = Object.keys(dirtyFields).some((key) => !isSameFormValue(watchedFormValues[key], initialValues?.[key]));
+  // The routing name is what a field with nothing stored opened on, and a save sends none for it.
+  const hasEdits = Object.keys(dirtyFields).some(
+    (key) =>
+      !(key === 'localSubdomain' && holdsRoutingName(watchedFormValues.localSubdomain)) &&
+      !isSameFormValue(watchedFormValues[key], initialValues?.[key]),
+  );
 
   useEffect(() => {
     onDirtyChange?.(hasEdits);
@@ -681,6 +694,12 @@ export const InstallForm: React.FC<IProps> = ({
     // shares the one condition — seeding some (the exposure mode) while skipping others (port,
     // openPort, enableAuth) would leave a switched-to app wearing half of its predecessor's config.
     const shouldSeed = !isDirty || appChanged;
+
+    // A switch clears the name the previous app left, as it does the domain below. The effect after
+    // this one fills in this app's own.
+    if (appChanged && !initialValues?.localSubdomain) {
+      resetField('localSubdomain');
+    }
 
     if (initialValues && shouldSeed) {
       // `HIDDEN_FIELD_TYPES` fields (currently `type: 'random'`, e.g. an app's auto-generated DB
@@ -785,10 +804,9 @@ export const InstallForm: React.FC<IProps> = ({
   // as exposureMode, openPort, or enableAuth.
   useEffect(() => {
     if (watchExposureMode === 'cloudflare' && info.exposable && info.dynamic_config && !watchLocalSubdomain) {
-      const defaultSubdomain = info.urn.split(':')[0];
-      setValue('localSubdomain', defaultSubdomain);
+      setValue('localSubdomain', fallbackSubdomain);
     }
-  }, [watchExposureMode, info.exposable, info.dynamic_config, info.urn, watchLocalSubdomain, setValue]);
+  }, [watchExposureMode, info.exposable, info.dynamic_config, fallbackSubdomain, watchLocalSubdomain, setValue]);
 
   useEffect(() => {
     if (!suggestedAppBaseUrl) return;
@@ -872,7 +890,7 @@ export const InstallForm: React.FC<IProps> = ({
   const { isCheckingDns, dnsAvailabilityError, domainAvailabilityError } = useDnsAvailability({
     // Only once there is a domain to ask about: none while Companion Portal's list is on its way.
     enabled: info.exposable && isProduction && watchExposureMode === 'cloudflare' && Boolean(publicDomain),
-    subdomain: watchLocalSubdomain || defaultAppSubdomain,
+    subdomain: subdomainToCheck(watchLocalSubdomain || fallbackSubdomain),
     selectedDomain: publicDomain,
     checkDnsAvailability,
     setError,
@@ -1003,7 +1021,7 @@ export const InstallForm: React.FC<IProps> = ({
     const cloudflareSuffix = publicWebPreview
       ? publicWebPreview.hostname
           .slice(0, publicWebPreview.hostname.indexOf('.'))
-          .slice(sanitizeAppSubdomain(watchLocalSubdomain || defaultAppSubdomain).length + 1)
+          .slice(sanitizeAppSubdomain(watchLocalSubdomain || fallbackSubdomain).length + 1)
       : (orgSlug ?? domain);
 
     return (
@@ -1038,7 +1056,7 @@ export const InstallForm: React.FC<IProps> = ({
             loading={loading}
             localSubdomainError={errors.localSubdomain?.message || dnsAvailabilityError || undefined}
             publicDomainError={errors.publicDomain?.message || domainAvailabilityError || undefined}
-            placeholder={defaultAppSubdomain}
+            placeholder={fallbackSubdomain}
             isCheckingDns={isCheckingDns}
             domainListNote={domainListNote}
             onRetryDomainList={() => void availableDomainsQuery.refetch()}
@@ -1166,7 +1184,7 @@ export const InstallForm: React.FC<IProps> = ({
 
     // Set default subdomain if not provided and app is exposable
     if (info.exposable && formValues.exposureMode === 'cloudflare' && !formValues.localSubdomain) {
-      formValues.localSubdomain = info.urn.split(':')[0];
+      formValues.localSubdomain = fallbackSubdomain;
     }
 
     // The domain the form shows. None while Companion Portal's list has not given one: the app then
@@ -1235,7 +1253,7 @@ export const InstallForm: React.FC<IProps> = ({
       }
       // Perform a final DNS check before submission
       try {
-        const response = await checkDnsAvailability(formValues.localSubdomain, formValues.publicDomain);
+        const response = await checkDnsAvailability(subdomainToCheck(formValues.localSubdomain), formValues.publicDomain);
 
         if (response.ok) {
           const data = await response.json();
@@ -1271,11 +1289,15 @@ export const InstallForm: React.FC<IProps> = ({
       return;
     }
 
+    // An app on the Web with no subdomain stored keeps none while the field holds its routing name. The
+    // Portal publishes `<app>-_user` as it is and this name has no underscore, so sending it would move the app.
+    const submitted = holdsRoutingName(formValues.localSubdomain) ? { ...formValues, localSubdomain: undefined } : formValues;
+
     // Client-side "recently used" cache — mirrors community-scripts.org/generator's "Last used"
     // list. Recorded at submission time (not after a backend round-trip), same as its export/copy
     // actions. Secrets are stripped inside recordLastUsedConfig before anything touches storage.
-    setRecentConfigs(recordLastUsedConfig(info.id, formValues, formFields));
-    onSubmit(formValues);
+    setRecentConfigs(recordLastUsedConfig(info.id, submitted, formFields));
+    onSubmit(submitted);
   };
 
   const onInvalid = () => {

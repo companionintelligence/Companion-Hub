@@ -69,7 +69,10 @@ export interface ProxyTrustSnapshot {
  * Hub's port or an app container directly; those reach their target through
  * the host or from a bridge address that is in neither set, so their
  * forwarded headers are ignored and the peer is named as it was before.
- * A narrower answer, never a spoofable one.
+ * A narrower answer, never a spoofable one. The one reader of the visitor's
+ * Cloudflare header on that route is the sign-in rate limit
+ * (`AuthRateLimiter.admitRequest`), which needs a key to count under, not an
+ * identity.
  *
  * Two consumers: `main.ts` hands Express a `trust proxy` function backed by
  * {@link isTrustedProxy}, and `AppHelpers.generateEnvFile` passes

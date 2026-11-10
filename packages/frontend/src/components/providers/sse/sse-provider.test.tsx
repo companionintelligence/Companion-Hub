@@ -1,7 +1,7 @@
 import { render, screen, userEvent } from '@/tests/test-utils';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, type ReactNode } from 'react';
-import { MemoryRouter, useLocation } from 'react-router';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { isStackUpdatePending, markStackUpdatePending, subscribeStackUpdate } from '@/lib/desktop-stack-session';
 import { SSEProvider } from './sse-provider';
@@ -519,14 +519,14 @@ describe('SSEProvider: a cancelled install of a custom app', () => {
   // biome-ignore lint/correctness/noComponentHookFactories: this one-shot test fixture is created once per suite.
   const Where = () => <span data-testid="where">{useLocation().pathname}</span>;
 
-  const renderOnAppPage = () => {
+  const renderOnAppPage = (path = '/apps/my-tool') => {
     let onEvent: ((data: unknown) => void) | undefined;
     mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
       onEvent = config.onEvent;
     });
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <MemoryRouter initialEntries={['/apps/my-tool']}>
+        <MemoryRouter initialEntries={[path]}>
           <SSEProvider>
             <Where />
           </SSEProvider>
@@ -544,6 +544,64 @@ describe('SSEProvider: a cancelled install of a custom app', () => {
     const send = renderOnAppPage();
 
     send({ event: 'install_cancelled', appUrn: 'my-tool:_user', appStatus: 'missing' });
+
+    expect(screen.getByTestId('where')).toHaveTextContent('/store');
+  });
+
+  it.each(['/apps/my-tool', '/apps/my-tool/', '/apps/my-tool/edit'])('leaves %s when that custom app is uninstalled', (path) => {
+    const send = renderOnAppPage(path);
+
+    send({ event: 'uninstall_success', appUrn: 'my-tool:_user', appStatus: 'missing' });
+
+    expect(screen.getByTestId('where')).toHaveTextContent('/store');
+  });
+
+  it.each(['/settings', '/apps/other-tool', '/apps/my-tool-2', '/apps/ci-marketplace/uptime-kuma', '/'])(
+    'stays on %s when an unrelated custom app is removed or its install cancelled',
+    (path) => {
+      const send = renderOnAppPage(path);
+
+      send({ event: 'uninstall_success', appUrn: 'my-tool:_user', appStatus: 'missing' });
+      send({ event: 'install_cancelled', appUrn: 'my-tool:_user', appStatus: 'missing' });
+
+      expect(screen.getByTestId('where').textContent).toBe(path);
+    },
+  );
+
+  it("stays on a store app's page when the removed custom app has that store's name", () => {
+    const send = renderOnAppPage('/apps/ci-marketplace/uptime-kuma');
+
+    send({ event: 'uninstall_success', appUrn: 'ci-marketplace:_user', appStatus: 'missing' });
+
+    expect(screen.getByTestId('where').textContent).toBe('/apps/ci-marketplace/uptime-kuma');
+  });
+
+  it('follows the tab as it moves: the app page is judged when the event arrives', () => {
+    let goTo: (path: string) => void = () => undefined;
+    // biome-ignore lint/correctness/noComponentHookFactories: this one-shot test fixture is created once for this test.
+    const Nav = () => {
+      const navigate = useNavigate();
+      goTo = navigate;
+      return null;
+    };
+    let onEvent: ((data: unknown) => void) | undefined;
+    // The first render's handler, as the real useSSE keeps it.
+    mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+      onEvent ??= config.onEvent;
+    });
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={['/settings']}>
+          <SSEProvider>
+            <Where />
+            <Nav />
+          </SSEProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    act(() => goTo('/apps/my-tool'));
+    act(() => onEvent?.({ event: 'uninstall_success', appUrn: 'my-tool:_user', appStatus: 'missing' }));
 
     expect(screen.getByTestId('where')).toHaveTextContent('/store');
   });

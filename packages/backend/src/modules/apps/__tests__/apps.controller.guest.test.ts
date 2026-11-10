@@ -1,5 +1,5 @@
 /**
- * `GET /api/apps/guest` has no guard: it feeds the guest dashboard to anyone who can reach the
+ * `GET /api/apps/guest` takes no sign-in: while the setting is on it feeds the guest dashboard to anyone who can reach the
  * Hub. The row it serves carries `config` — the install form, with whatever admin passwords and
  * provider keys a manifest asked for — and none of it belongs in a response to an anonymous caller.
  */

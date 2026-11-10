@@ -1222,20 +1222,6 @@
         ]
       }
     },
-    "/api/system/certificate": {
-      "get": {
-        "operationId": "downloadLocalCertificate",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "System"
-        ]
-      }
-    },
     "/api/system/detect-services": {
       "get": {
         "operationId": "detectServices",
