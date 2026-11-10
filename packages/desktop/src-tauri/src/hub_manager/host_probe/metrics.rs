@@ -104,7 +104,8 @@ fn write_host_metrics_probe_file(data_dir: &Path, payload: serde_json::Value, lo
             return;
         }
     };
-    match std::fs::write(&probe_path, serialized) {
+    let _file = lock_host_metrics_file();
+    match write_host_metrics_file(&probe_path, &serialized) {
         Ok(_) => {
             let _ = append_desktop_log_for(
                 data_dir,
@@ -269,7 +270,7 @@ fn parse_processor_count(s: &str) -> u32 {
 
 /// Get available RAM in MB on macOS by parsing vm_stat output.
 #[cfg(target_os = "macos")]
-fn detect_available_ram_mb_macos() -> u64 {
+pub(crate) fn detect_available_ram_mb_macos() -> u64 {
     let output = match Command::new("vm_stat").output() {
         Ok(o) => o,
         Err(_) => return 0,

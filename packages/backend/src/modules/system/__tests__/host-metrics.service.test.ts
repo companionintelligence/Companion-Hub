@@ -423,6 +423,50 @@ describe('HostMetricsService', () => {
       expect(load.memoryUsed).toBe(16);
     });
 
+    // The desktop app rewrites these figures every minute while it runs. Nothing on the Hub's side may hold on to an earlier read.
+    it('shows the figures the desktop app last wrote to a macOS or Windows probe on the next read', async () => {
+      const host = {
+        totalRamMb: 32768,
+        availableRamMb: 16384,
+        cpuCores: 12,
+        cpuModel: 'Apple M2 Pro',
+        diskTotalGb: 494,
+        diskUsedGb: 477,
+        diskMount: '/',
+      };
+      for (const platform of ['darwin', 'win32']) {
+        let probe = hostProbeJson({ platform, host });
+        filesystemService.readTextFile.mockImplementation(async (path: string) => {
+          if (path === '/data/state/hardware/host_metrics.json') return probe;
+          if (path === '/host/proc/meminfo') return 'MemTotal: 8388608\nMemAvailable: 1048576';
+          return null;
+        });
+        expect((await service.getDisplayLoad(5, 8)).percentUsedMemory).toBe(50);
+
+        probe = hostProbeJson({ platform, host: { ...host, availableRamMb: 4096, diskUsedGb: 480 } });
+        const load = await service.getDisplayLoad(5, 8);
+
+        expect(load.memoryUsed).toBe(28);
+        expect(load.percentUsedMemory).toBe(88);
+        expect(load.diskUsed).toBe(480);
+      }
+      expect(filesystemService.writeJsonFile).not.toHaveBeenCalled();
+    });
+
+    it('shows the figures the desktop app last wrote to a Linux probe when meminfo is a VM much smaller than the host', async () => {
+      const vm = 'MemTotal: 8388608\nMemAvailable: 6291456';
+      serveLinuxProbe(linuxProbeFile({ totalRamMb: 65536, availableRamMb: 60000 }), vm);
+      expect((await service.getDisplayLoad(5, 8)).memoryUsed).toBe(5);
+
+      serveLinuxProbe(linuxProbeFile({ totalRamMb: 65536, availableRamMb: 16384, diskUsedGb: 480 }), vm);
+      const load = await service.getDisplayLoad(5, 8);
+
+      expect(load.hasVmWedge).toBe(true);
+      expect(load.memoryUsed).toBe(48);
+      expect(load.percentUsedMemory).toBe(75);
+      expect(load.diskUsed).toBe(480);
+    });
+
     it('shows the live Linux disk inside the four hour window without rewriting the probe', async () => {
       serveLinuxProbe(linuxProbeFile());
 
