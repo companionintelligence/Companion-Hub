@@ -9,6 +9,7 @@ import { systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
 import { CoreServerBanner } from '@/components/core-server-banner/core-server-banner';
 import { shouldShowCoreServerBanner } from '@/components/core-server-banner/core-server-banner-visibility';
 import { useCoreServerBanner } from '@/hooks/use-core-server-banner';
+import { PortalConnectionBanner } from '@/components/portal-connection-banner/portal-connection-banner';
 import { TunnelStatusBanner } from '@/components/tunnel-status-banner/tunnel-status-banner';
 import { shouldSkipIosPageSlide } from '@/lib/ios-webview-guards';
 import { usePageScrollRestoration } from '@/lib/hooks/use-page-scroll-restoration';
@@ -122,6 +123,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
         <div className="mb-1 flex shrink-0 flex-col gap-2 empty:hidden">
           {showCoreServerBanner && <CoreServerBanner onDismiss={dismiss} />}
           <TunnelStatusBanner />
+          <PortalConnectionBanner />
         </div>
         {shouldSkipIosPageSlide() ? (
           <div className="w-full min-h-0 min-w-0 flex-1" data-page-key={pageKey} data-testid="dashboard-page">
