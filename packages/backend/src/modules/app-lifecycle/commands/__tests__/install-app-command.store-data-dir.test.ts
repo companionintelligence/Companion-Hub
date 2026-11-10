@@ -34,6 +34,9 @@ const { FilesystemService } = await import('@/core/filesystem/filesystem.service
 const { AppFilesManager } = await import('@/modules/apps/app-files-manager');
 const { AppStoreFilesManager } = await import('@/modules/app-stores/app-store-files-manager');
 const { InstallAppCommand } = await import('../install-app-command');
+const { GenerateAppEnvCommand } = await import('../generate-env-command');
+const { StopAppCommand } = await import('../stop-app-command');
+const { DockerService } = await import('@/modules/docker/docker.service');
 
 /*
  * A store app that ships `data/config.yml` and mounts `${APP_DATA_DIR}/data/config.yml` (blocky,
@@ -114,6 +117,7 @@ describe.skipIf(process.platform === 'win32')('InstallAppCommand on a store app 
         },
       ],
       [AppVolumeArchiveService, { hasProjectVolumes: vi.fn().mockResolvedValue(false) }],
+      [DockerService, { composeApp: vi.fn().mockResolvedValue(undefined) }],
       [SubnetManagerService, { allocateSubnet: vi.fn().mockResolvedValue('10.128.7.0/24') }],
       [ResourceAllocatorService, { getEffectiveAppDefaults: vi.fn().mockResolvedValue({}) }],
       [
@@ -147,5 +151,34 @@ describe.skipIf(process.platform === 'win32')('InstallAppCommand on a store app 
     expect(await fs.promises.readFile(mounted, 'utf8')).toContain('upstreams:');
     // The template is rendered with the app's secrets (the writer ends the file with its own newline).
     expect((await fs.promises.readFile(path.join(appDataDir, 'data', 'secrets.env'), 'utf8')).trim()).toBe('API_KEY=s3cret');
+  });
+
+  // A failed install leaves the app's files behind with its data folder not yet copied. The Settings
+  // save, memory-connect and a stop can then run generate-env or stop before any retry copies the data.
+  it('generate-env before the copy makes no volume folder, so the copy still lands', async () => {
+    const docker = { pruneContainers: vi.fn().mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 }) } as unknown as Dockerode;
+    const form = { openPort: true, exposureMode: 'local', skipRun: true } as unknown as AppEventFormInput;
+
+    const env = await new GenerateAppEnvCommand(moduleRef, docker).execute(appUrn, form);
+    expect(env.success).toBe(true);
+    await expect(fs.promises.lstat(path.join(appDataDir, 'data'))).rejects.toThrow();
+
+    const result = await new InstallAppCommand(moduleRef, docker).execute(appUrn, form);
+    expect(result.success).toBe(true);
+    expect((await fs.promises.lstat(path.join(appDataDir, 'data', 'config.yml'))).isFile()).toBe(true);
+    expect((await fs.promises.readFile(path.join(appDataDir, 'data', 'secrets.env'), 'utf8')).trim()).toBe('API_KEY=s3cret');
+  });
+
+  it('stop before the copy makes no volume folder', async () => {
+    const docker = { pruneContainers: vi.fn().mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 }) } as unknown as Dockerode;
+    const form = { openPort: true, exposureMode: 'local', skipRun: true } as unknown as AppEventFormInput;
+    // Stop returns early when there is no installed config. A minimal one gets it past that check; the
+    // app is not a port-expose app, so stop goes on to prepare the compose folder.
+    const config = vi.spyOn(AppFilesManager.prototype, 'getInstalledAppInfo').mockResolvedValueOnce({ urn: appUrn } as never);
+
+    const stopped = await new StopAppCommand(moduleRef, docker).execute(appUrn, form);
+    config.mockRestore();
+    expect(stopped.success).toBe(true);
+    await expect(fs.promises.lstat(path.join(appDataDir, 'data'))).rejects.toThrow();
   });
 });

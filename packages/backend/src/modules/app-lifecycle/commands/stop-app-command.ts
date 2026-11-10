@@ -33,7 +33,8 @@ export class StopAppCommand extends AppLifecycleCommand {
 
       logger.info(`Stopping app ${appUrn}`);
 
-      await this.ensureAppDir(appUrn, form);
+      // Stopping never needs volume folders, and making them could block a pending store data copy (#2198).
+      await this.ensureAppDir(appUrn, form, { createVolumeDirs: false });
 
       if (!form.skipEnv) {
         logger.info(`Regenerating app.env file for app ${appUrn}`);
