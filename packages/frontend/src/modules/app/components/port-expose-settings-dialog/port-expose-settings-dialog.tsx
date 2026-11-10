@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
@@ -17,6 +17,7 @@ import { CloudflareSubdomainField } from '@/modules/app/components/install-form/
 import { domainListNoteFor } from '@/modules/app/components/install-form/domain-list-note';
 import { preselectedPublicDomain, publicDomainToUse } from '@/modules/app/components/install-form/preselected-public-domain';
 import { useDnsAvailability } from '@/modules/app/components/install-form/use-dns-availability';
+import { PublicPortConfirmDialog } from '@/modules/app/components/dialogs/public-port-confirm-dialog/public-port-confirm-dialog';
 import { buildPublicWebIdentity, sanitizeAppSubdomain, selectOfferedDomains } from '@ci-hub/common/types';
 import type { AvailableDomain } from '@ci-hub/common/types';
 import type { AppDetails, AppInfo } from '@/types/app.types';
@@ -30,6 +31,8 @@ type FormValues = {
   localSubdomain?: string;
   publicDomain?: string;
 };
+
+type PortExposeUpdateBody = { port: number; exposureMode: ExposureMode; localSubdomain?: string; publicDomain?: string };
 
 const EMPTY_AVAILABLE_DOMAINS: AvailableDomain[] = [];
 
@@ -155,8 +158,11 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
     t,
   });
 
+  // A move onto Public web waiting on the person to agree that anyone with the address can open the port.
+  const [publicPortBody, setPublicPortBody] = useState<PortExposeUpdateBody | null>(null);
+
   const updatePortExpose = useMutation({
-    mutationFn: async (body: { port: number; exposureMode: ExposureMode; localSubdomain?: string; publicDomain?: string }) => {
+    mutationFn: async (body: PortExposeUpdateBody) => {
       const { error } = await client.patch({
         url: `/api/custom-apps/port-expose/${info.urn}`,
         body,
@@ -239,16 +245,25 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
       }
     }
 
-    updatePortExpose.mutate({
+    const body: PortExposeUpdateBody = {
       port,
       exposureMode,
       localSubdomain: exposureMode === 'cloudflare' ? sanitizeAppSubdomain(values.localSubdomain || defaultAppSubdomain) : undefined,
       publicDomain: exposureMode === 'cloudflare' ? publicDomain : undefined,
-    });
+    };
+
+    // Asked as on Expose a port, when the port moves onto Public web. One already there was asked then.
+    if (exposureMode === 'cloudflare' && app.exposureMode !== 'cloudflare') {
+      setPublicPortBody(body);
+      return;
+    }
+
+    updatePortExpose.mutate(body);
   };
 
   const handleClose = () => {
     reset();
+    setPublicPortBody(null);
     onClose();
   };
 
@@ -372,6 +387,19 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
             </Button>
           </DialogFooter>
         </form>
+
+        {/* Inside this dialog's content, so Radix stacks it on top: its Cancel and Escape close only the question. */}
+        <PublicPortConfirmDialog
+          isOpen={publicPortBody !== null}
+          port={publicPortBody?.port ?? null}
+          onConfirm={() => {
+            if (publicPortBody) {
+              updatePortExpose.mutate(publicPortBody);
+            }
+            setPublicPortBody(null);
+          }}
+          onCancel={() => setPublicPortBody(null)}
+        />
       </DialogContent>
     </Dialog>
   );

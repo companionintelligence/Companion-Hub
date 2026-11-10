@@ -61,6 +61,24 @@ describe('SimpleAppTile', () => {
     expect(screen.queryByTestId('app-pending-restart-badge')).not.toBeInTheDocument();
   });
 
+  it('reminds that an exposed port on Public web opens for anyone with no Hub sign-in', () => {
+    render(<SimpleAppTile name="Dev Server" urn="dev-server:_user" status="running" openWithoutSignIn="anyone" />);
+
+    expect(screen.getByTestId('app-open-without-sign-in')).toHaveTextContent('Open to anyone, no Hub sign-in');
+  });
+
+  it('reminds that an exposed port on the Private VPN opens for the tailnet with no Hub sign-in', () => {
+    render(<SimpleAppTile name="Team Notes" urn="team-notes:_user" status="running" openWithoutSignIn="tailnet" />);
+
+    expect(screen.getByTestId('app-open-without-sign-in')).toHaveTextContent('Open to your tailnet, no Hub sign-in');
+  });
+
+  it('adds no line to any other tile', () => {
+    render(<SimpleAppTile name="Demo" urn="demo:ci-marketplace" status="running" />);
+
+    expect(screen.queryByTestId('app-open-without-sign-in')).not.toBeInTheDocument();
+  });
+
   // The remedy is already under way (or the app is being deleted). Asking for a
   // restart mid-restart is the same "pointless work" the stopped case avoids, and
   // listing only the statuses to EXCLUDE is what let these eight through.

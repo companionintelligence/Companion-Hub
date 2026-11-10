@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useAppContext } from '@/context/app-context';
@@ -70,7 +70,7 @@ vi.mock('@/modules/app/components/install-form/use-dns-availability', () => ({
 const lastCheck = () => vi.mocked(useDnsAvailability).mock.lastCall?.[0];
 const field = () => screen.getByTestId('domain-field');
 
-function renderDialog(app: Partial<AppDetails>) {
+function renderDialog(app: Partial<AppDetails>, onClose = vi.fn()) {
   vi.mocked(useAppContext).mockReturnValue({
     userSettings: { ciHubOrganizationSlug: 'hanz-corp', ciHubDeviceSlug: 'hanz', domain: 'ci.computer' },
     cloudflareAvailable: true,
@@ -83,13 +83,22 @@ function renderDialog(app: Partial<AppDetails>) {
         app={{ port: 3000, localSubdomain: 'grafana', ...app } as AppDetails}
         info={{ id: 'grafana', urn: 'grafana:custom', port: 3000 } as unknown as AppInfo}
         isOpen
-        onClose={vi.fn()}
+        onClose={onClose}
       />
     </MemoryRouter>,
   );
 }
 
 const moveToWeb = () => fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' }));
+
+const save = async () => {
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: 'COMMON_SAVE' }));
+  });
+};
+
+/** The question asked before a port goes on Public web, on top of the settings dialog. */
+const publicPortQuestion = () => screen.getByTestId('public-port-confirm');
 
 describe('PortExposeSettingsDialog', () => {
   afterEach(() => {
@@ -140,13 +149,69 @@ describe('PortExposeSettingsDialog', () => {
     renderDialog({ exposureMode: 'local' });
 
     moveToWeb();
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'COMMON_SAVE' }));
-    });
+    await save();
+    fireEvent.click(within(publicPortQuestion()).getByRole('button', { name: 'PORT_EXPOSE_PUBLIC_CONFIRM_SUBMIT' }));
 
     await waitFor(() => expect(saved).toHaveBeenCalledOnce());
     expect(saved.mock.calls[0]?.[0]).toMatchObject({ exposureMode: 'cloudflare', publicDomain: undefined });
     expect(vi.mocked(useDnsAvailability).mock.calls.every(([params]) => params.enabled === false)).toBe(true);
+  });
+
+  describe('moving a port onto Public web, which has no Hub sign-in in front', () => {
+    it('asks first and saves nothing until the question is answered', async () => {
+      renderDialog({ exposureMode: 'local' });
+
+      moveToWeb();
+      await save();
+
+      expect(publicPortQuestion()).toHaveTextContent('PORT_EXPOSE_PUBLIC_CONFIRM_TITLE');
+      expect(saved).not.toHaveBeenCalled();
+    });
+
+    it('saves nothing on Cancel and keeps the settings dialog open on Public web', async () => {
+      const onClose = vi.fn();
+      renderDialog({ exposureMode: 'tailscale' }, onClose);
+
+      moveToWeb();
+      await save();
+      fireEvent.click(within(publicPortQuestion()).getByRole('button', { name: 'COMMON_CANCEL' }));
+
+      await waitFor(() => expect(screen.queryByTestId('public-port-confirm')).not.toBeInTheDocument());
+      expect(saved).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' })).toHaveClass('bg-primary');
+    });
+
+    it('saves the move once the person agrees', async () => {
+      renderDialog({ exposureMode: 'local' });
+
+      moveToWeb();
+      await save();
+      fireEvent.click(within(publicPortQuestion()).getByRole('button', { name: 'PORT_EXPOSE_PUBLIC_CONFIRM_SUBMIT' }));
+
+      await waitFor(() => expect(saved).toHaveBeenCalledOnce());
+      expect(saved).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'cloudflare', port: 3000 }));
+    });
+
+    // Agreed to when it went public; a new port number is no new choice.
+    it('does not ask again for a port already on Public web', async () => {
+      renderDialog({ exposureMode: 'cloudflare', publicDomain: 'ci0.pw' });
+
+      await save();
+
+      await waitFor(() => expect(saved).toHaveBeenCalledOnce());
+      expect(screen.queryByTestId('public-port-confirm')).not.toBeInTheDocument();
+    });
+
+    it('does not ask for a move to This machine only', async () => {
+      renderDialog({ exposureMode: 'cloudflare', publicDomain: 'ci0.pw' });
+
+      fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_LOCAL' }));
+      await save();
+
+      await waitFor(() => expect(saved).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'local' })));
+      expect(screen.queryByTestId('public-port-confirm')).not.toBeInTheDocument();
+    });
   });
 
   it('keeps an app already served on ci.computer there, and lists it', async () => {

@@ -2,13 +2,14 @@ import { SimpleAppTile } from './simple-app-tile';
 import { Link } from 'react-router';
 import { ArrowRight } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
+import { portExposeOpenTo } from '@/modules/app/helpers/port-expose-open-to';
 import type { AppInfo, AppStatus } from '@/types/app.types';
 import { CATALOG_PAGE_SIZE } from '@/lib/catalog-page-size';
 import { useTranslation } from 'react-i18next';
 
 interface InstalledApp {
-  info: Pick<AppInfo, 'urn' | 'name'>;
-  app: { id: number; status: AppStatus; config?: Record<string, unknown>; pendingRestart?: boolean };
+  info: Pick<AppInfo, 'urn' | 'name' | 'kind'>;
+  app: { id: number; status: AppStatus; config?: Record<string, unknown>; pendingRestart?: boolean; exposureMode?: string | null };
 }
 
 interface HorizontalAppListProps {
@@ -104,6 +105,7 @@ export const HorizontalAppList = ({ apps, isLoading = false, customDomainsAwaiti
                 installConfig={app.config}
                 pendingRestart={app.pendingRestart}
                 customDomainAwaitingRestart={customDomainsAwaitingRestart?.[info.urn]}
+                openWithoutSignIn={portExposeOpenTo(app, info)}
               />
             </Link>
           );

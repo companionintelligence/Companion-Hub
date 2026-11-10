@@ -2,8 +2,9 @@ import type React from 'react';
 import { AppLogo } from '@/components/app-logo/app-logo';
 import { restartCanApply } from '@/lib/cloudflare-api';
 import { InstallRetryButton } from '@/modules/app/components/install-retry-button/install-retry-button';
-import { Loader2, PowerOff, RotateCw } from 'lucide-react';
+import { Loader2, LockOpen, PowerOff, RotateCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import type { PortExposeOpenTo } from '@/modules/app/helpers/port-expose-open-to';
 import type { AppStatus } from '@/types/app.types';
 
 const STOPPED_STATUSES: AppStatus[] = ['stopped', 'missing'];
@@ -25,6 +26,8 @@ interface SimpleAppTileProps {
   logoUrl?: string;
   /** Drawn at the end of the row, such as the mark that a link opens another site. */
   trailing?: React.ReactNode;
+  /** An exposed port that has no Hub sign-in in front of it, and who can open it (`portExposeOpenTo`). */
+  openWithoutSignIn?: PortExposeOpenTo | null;
 }
 
 export const SimpleAppTile = ({
@@ -38,6 +41,7 @@ export const SimpleAppTile = ({
   description,
   logoUrl,
   trailing,
+  openWithoutSignIn,
 }: SimpleAppTileProps) => {
   const { t } = useTranslation();
   const isInstallFailed = status === INSTALL_FAILED_STATUS;
@@ -56,6 +60,9 @@ export const SimpleAppTile = ({
    * A badge that asks for pointless work is how the last one came to be ignored.
    */
   const showPendingRestart = Boolean(pendingRestart) && restartCanApply(status);
+  const openLabel = openWithoutSignIn
+    ? t(openWithoutSignIn === 'anyone' ? 'PORT_EXPOSE_OPEN_TO_ANYONE_NO_SIGN_IN' : 'PORT_EXPOSE_OPEN_TO_TAILNET_NO_SIGN_IN')
+    : '';
   const pendingRestartLabel = showPendingRestart
     ? customDomainAwaitingRestart
       ? t('MY_APPS_PENDING_RESTART_CUSTOM_DOMAIN', { domain: customDomainAwaitingRestart })
@@ -107,6 +114,13 @@ export const SimpleAppTile = ({
         {description ? (
           <div className="truncate text-xs text-muted-foreground" title={description}>
             {description}
+          </div>
+        ) : null}
+        {/* A line under the name, not a badge on the logo: those ask for something, and this only reminds. */}
+        {openLabel ? (
+          <div className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground" data-testid="app-open-without-sign-in" title={openLabel}>
+            <LockOpen className="size-3 shrink-0 text-warning" aria-hidden />
+            <span className="truncate">{openLabel}</span>
           </div>
         ) : null}
         {isInstalling && (

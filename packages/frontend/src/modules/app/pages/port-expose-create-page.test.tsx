@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useAppContext } from '@/context/app-context';
@@ -24,7 +24,7 @@ const DOMAINS = {
   domains: [] as Array<{ id: string; domain: string; isDefault: boolean; offered?: boolean }>,
 };
 
-const createMutation = vi.hoisted(() => ({ options: undefined as undefined | { onError?: (error: unknown) => void } }));
+const createMutation = vi.hoisted(() => ({ options: undefined as undefined | { onError?: (error: unknown) => void }, mutate: vi.fn() }));
 
 /** Whether the domain list is still on its first load — which is a fetch too, as in TanStack Query. */
 const DOMAIN_LIST = { isLoading: false };
@@ -39,7 +39,7 @@ vi.mock('@tanstack/react-query', () => ({
   }),
   useMutation: (options: { onError?: (error: unknown) => void }) => {
     createMutation.options = options;
-    return { mutate: vi.fn(), isPending: false };
+    return { mutate: createMutation.mutate, isPending: false };
   },
 }));
 
@@ -57,6 +57,11 @@ vi.mock('@/modules/app/components/install-form/cloudflare-subdomain-field', () =
   CloudflareSubdomainField: () => null,
 }));
 
+// The check the form makes on submit finds every name free, so the tests reach what follows it.
+vi.mock('@/lib/cloudflare-api', () => ({
+  fetchDnsAvailability: vi.fn(async () => ({ ok: true, json: async () => ({ available: true }) })),
+}));
+
 vi.mock('@/modules/app/components/install-form/use-dns-availability', () => ({
   useDnsAvailability: vi.fn(() => ({ isCheckingDns: false, dnsAvailabilityError: undefined, domainAvailabilityError: undefined })),
 }));
@@ -66,11 +71,11 @@ const HUB_DOMAIN = 'companionintelligence.com';
 const checkedDomain = () => vi.mocked(useDnsAvailability).mock.lastCall?.[0].selectedDomain;
 const checkEnabled = () => vi.mocked(useDnsAvailability).mock.lastCall?.[0].enabled;
 
-function renderPage() {
+function renderPage({ tailscaleAvailable = false }: { tailscaleAvailable?: boolean } = {}) {
   vi.mocked(useAppContext).mockReturnValue({
     userSettings: { ciHubOrganizationSlug: 'acme', ciHubDeviceSlug: 'dev', domain: HUB_DOMAIN },
     cloudflareAvailable: true,
-    tailscaleAvailable: false,
+    tailscaleAvailable,
   } as unknown as ReturnType<typeof useAppContext>);
 
   return render(
@@ -138,6 +143,76 @@ describe('PortExposeCreatePage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'PORT_EXPOSE_SUBMIT' }));
 
     expect(await screen.findByText('PORT_EXPOSE_PORT_INVALID')).toBeInTheDocument();
+  });
+
+  describe('asks before a port goes on Public web, which has no Hub sign-in in front', () => {
+    const fillAndSubmit = async () => {
+      fireEvent.change(screen.getByPlaceholderText('CUSTOM_APP_NAME_PLACEHOLDER'), { target: { value: 'Dev Server' } });
+      fireEvent.change(screen.getByPlaceholderText('PORT_EXPOSE_PORT_PLACEHOLDER'), { target: { value: '3000' } });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'PORT_EXPOSE_SUBMIT' }));
+      });
+    };
+
+    it('saves nothing until the question is answered', async () => {
+      renderPage();
+
+      await fillAndSubmit();
+
+      const question = await screen.findByRole('dialog');
+      expect(question).toHaveTextContent('PORT_EXPOSE_PUBLIC_CONFIRM_TITLE');
+      expect(question).toHaveTextContent('PORT_EXPOSE_PUBLIC_CONFIRM_DESCRIPTION');
+      expect(question).toHaveTextContent('PORT_EXPOSE_PUBLIC_CONFIRM_PRIVATE');
+      expect(createMutation.mutate).not.toHaveBeenCalled();
+    });
+
+    // Enter on the open question must not put the port on the internet.
+    it('focuses Cancel when it asks', async () => {
+      renderPage();
+
+      await fillAndSubmit();
+
+      const question = await screen.findByRole('dialog');
+      await waitFor(() => expect(within(question).getByRole('button', { name: 'COMMON_CANCEL' })).toHaveFocus());
+    });
+
+    it('saves nothing on Cancel and leaves the form as it was', async () => {
+      renderPage();
+
+      await fillAndSubmit();
+      const question = await screen.findByRole('dialog');
+      fireEvent.click(within(question).getByRole('button', { name: 'COMMON_CANCEL' }));
+
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(createMutation.mutate).not.toHaveBeenCalled();
+      expect(screen.getByPlaceholderText('CUSTOM_APP_NAME_PLACEHOLDER')).toHaveValue('Dev Server');
+      expect(screen.getByPlaceholderText('PORT_EXPOSE_PORT_PLACEHOLDER')).toHaveValue(3000);
+      expect(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' })).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    it('saves the port on Public web once the person agrees', async () => {
+      renderPage();
+
+      await fillAndSubmit();
+      fireEvent.click(await screen.findByRole('button', { name: 'PORT_EXPOSE_PUBLIC_CONFIRM_SUBMIT' }));
+
+      expect(createMutation.mutate).toHaveBeenCalledOnce();
+      expect(createMutation.mutate).toHaveBeenCalledWith(expect.objectContaining({ name: 'Dev Server', port: 3000, exposureMode: 'cloudflare' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    });
+
+    it.each([
+      ['This machine only', 'APP_INSTALL_FORM_EXPOSURE_LOCAL', 'local'],
+      ['Private VPN', 'COMMON_PRIVATE_VPN', 'tailscale'],
+    ])('saves a port on %s without asking', async (_label, button, exposureMode) => {
+      renderPage({ tailscaleAvailable: true });
+
+      fireEvent.click(screen.getByRole('button', { name: button }));
+      await fillAndSubmit();
+
+      expect(createMutation.mutate).toHaveBeenCalledWith(expect.objectContaining({ exposureMode }));
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
   });
 
   it('puts "nothing is listening on that port" under the port field instead of in a toast', async () => {
