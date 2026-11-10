@@ -211,7 +211,9 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       // Ensure app directory exists before we try to use APP_DATA_DIR
       await emitProgress(30);
-      await this.ensureAppDir(appUrn, form);
+      // Not the volume folders yet: one made for a file a volume mounts (`data/config.yml`) would stop
+      // copyDataDir below from copying the store's data folder. They are made after it (#2198).
+      await this.ensureAppDir(appUrn, form, { createVolumeDirs: false });
 
       // Copy data dir
       await emitProgress(35);

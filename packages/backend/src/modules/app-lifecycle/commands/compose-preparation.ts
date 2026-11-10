@@ -73,7 +73,7 @@ export async function prepareAppComposeDir(
   docker: Dockerode,
   appUrn: AppUrn,
   form: AppEventFormInput,
-  options?: { excludeSubnets?: string[] },
+  options?: { excludeSubnets?: string[]; createVolumeDirs?: boolean },
 ): Promise<void> {
   const appFilesManager = moduleRef.get(AppFilesManager, { strict: false });
   const marketplaceService = moduleRef.get(MarketplaceService, { strict: false });
@@ -309,6 +309,22 @@ export async function prepareAppComposeDir(
 
     logger.error(err);
     throw new Error(`Error generating docker-compose.yml file for app ${appUrn}.`);
+  }
+
+  // Make the folders the app's volumes point at, as the Hub. Docker otherwise makes a missing one
+  // itself as root, which a service of another uid can't write to and the Hub can't reset or delete.
+  // A custom app is added without an install, and an edit can add a volume (#2198).
+  // Install's first prepare runs before the store's data folder is copied: a folder made there for
+  // `data/config.yml` takes the place of the file, and copyDataDir skips an app whose `data/` exists.
+  // Install makes the folders itself once the copy is done. Any other prepare while that copy is
+  // pending (a start, restart, reset or update of an app whose install failed before it) skips them
+  // too, as dev did: Docker only made them when it created a container.
+  if (options?.createVolumeDirs !== false && !(await appFilesManager.storeDataCopyPending(appUrn))) {
+    try {
+      await appFilesManager.createVolumeHostDirs(appUrn);
+    } catch (error) {
+      logger.warn(`Could not create the volume folders of ${appUrn}: ${String(error)}`);
+    }
   }
 
   // Set permissions
