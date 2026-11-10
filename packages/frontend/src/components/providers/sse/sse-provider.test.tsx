@@ -434,7 +434,7 @@ describe('SSEProvider', () => {
 
     expect(mockToastSuccess).not.toHaveBeenCalled();
     expect(mockToastWarning).toHaveBeenCalledWith(
-      'Cancelled installing excalidraw, but some of its files could not be removed and may remain on disk.',
+      'Cancelled installing excalidraw, but some of its files, containers or volumes could not be removed and may remain.',
       {
         duration: 8000,
       },

@@ -4,9 +4,15 @@ import type { AppFilesManager } from '@/modules/apps/app-files-manager';
 import type { DockerService } from '@/modules/docker/docker.service';
 import type { AppUrn } from '@ci-hub/common/types';
 
-/** What an uninstall or a cancelled install left on disk, for its log line and message: "app folder and app data". */
-export function describeLeftovers(folderRemoved: boolean, dataRemoved: boolean): string {
-  return [folderRemoved ? null : 'app folder', dataRemoved ? null : 'app data'].filter(Boolean).join(' and ');
+/**
+ * What an uninstall or a cancelled install left behind, for its log line and message: "app folder and app data".
+ * A cancelled install whose Compose teardown failed may also leave containers or volumes behind.
+ */
+export function describeLeftovers(folderRemoved: boolean, dataRemoved: boolean, teardownFailed = false): string {
+  const parts = [folderRemoved ? null : 'app folder', dataRemoved ? null : 'app data', teardownFailed ? 'containers or volumes' : null].filter(
+    (part): part is string => part !== null,
+  );
+  return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts.join('');
 }
 
 /**

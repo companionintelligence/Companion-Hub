@@ -344,7 +344,9 @@ What cancelling an install (`AppLifecycleService.cancelOperation`) does depends 
   data folder that was empty or missing when the install began goes to the root helper for files a
   container wrote as another user. When anything stays, `install_cancelled` carries
   `APP_INSTALL_CANCELLED_PARTIAL_REMNANT`, with the host path when the data is what stays; a cancel
-  that leaves earlier data says so in its message.
+  that leaves earlier data says so in its message. A failed `compose down`, or the anonymous-volume
+  removal before it, counts as something staying: the cancel carries the same code and does not say it
+  cleaned up. It carries a host path only when the data stays too. Leftover networks are not checked.
 
 ## One lifecycle operation per app
 

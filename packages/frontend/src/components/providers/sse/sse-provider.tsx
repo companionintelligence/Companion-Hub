@@ -128,7 +128,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     toast.error(t(i18nKey, { id: appName, reason: appServiceFailureText(t, failure) }), { duration: 10000 });
   };
 
-  // Files an uninstall or a cancelled install could not remove. With their host path, gives the command to delete them.
+  // What an uninstall or a cancelled install could not remove. With the host path of the files, gives the command to delete them.
   const showRemnantWarning = (keys: { plain: string; manual: string }, appName: string, hostPath: string | undefined) => {
     if (!hostPath) {
       toast.warning(t(keys.plain, { id: appName }), { duration: 8000 });

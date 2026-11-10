@@ -607,8 +607,9 @@ export class InstallAppCommand extends AppLifecycleCommand {
    * anything this install added to it: the Hub cannot tell a file this install wrote from one kept
    * by an uninstall. A later install starts from the same place a completed one would.
    * @param deadline The command's time limit. The root helper keeps to what is left of it.
-   * @returns A human-readable summary for the cancellation result. When the app's folder or data could not be
-   * removed, also the warning the page shows, with where it is on the host.
+   * @returns A human-readable summary for the cancellation result. When something could not be removed (the app's
+   * folder, its data, or the containers and volumes a failed Compose teardown left), also the warning the page shows,
+   * with the data's location on the host when the data is what stayed.
    */
   private async compensateInstallCancel(
     appUrn: AppUrn,
@@ -636,11 +637,16 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
     // Without `-v` below, the anonymous volumes of this install's containers would stay behind with nothing to
     // remove them. `rm -v` takes those and no named ones. It has to run first: `down` removes the containers
-    // that say which volumes are theirs.
+    // that say which volumes are theirs. A failed step can leave containers or volumes behind, so it is recorded
+    // and the cancel does not report a clean-up.
+    let teardownFailed = false;
     if (earlier.volumes) {
-      await dockerService
-        .composeApp(appUrn, 'rm --force --stop -v')
-        .catch((err) => logger.warn(`[install-cancel] removing the containers' anonymous volumes failed for ${appUrn} (continuing): ${err}`));
+      try {
+        await dockerService.composeApp(appUrn, 'rm --force --stop -v');
+      } catch (err) {
+        teardownFailed = true;
+        logger.warn(`[install-cancel] removing the containers' anonymous volumes failed for ${appUrn} (continuing): ${err}`);
+      }
     }
 
     // Tear down whatever was partially created. `--rmi local` only removes locally-built images, so pulled
@@ -649,6 +655,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
     try {
       await dockerService.composeApp(appUrn, earlier.volumes ? 'down --remove-orphans --rmi local' : 'down --remove-orphans -v --rmi local');
     } catch (err) {
+      teardownFailed = true;
       logger.warn(`[install-cancel] compose down failed for ${appUrn} (continuing): ${err}`);
     }
 
@@ -681,14 +688,14 @@ export class InstallAppCommand extends AppLifecycleCommand {
       });
     }
 
-    if (!folderRemoved || !data.removed) {
-      const leftover = describeLeftovers(folderRemoved, data.removed);
+    if (!folderRemoved || !data.removed || teardownFailed) {
+      const leftover = describeLeftovers(folderRemoved, data.removed, teardownFailed);
       logger.warn(
-        `[install-cancel] the ${leftover} of ${appUrn} could not be fully removed; a disk remnant may remain${data.hostPath ? ` at ${data.hostPath}` : ''}`,
+        `[install-cancel] the ${leftover} of ${appUrn} could not be fully removed; a remnant may remain${data.hostPath ? ` at ${data.hostPath}` : ''}`,
       );
       const kept = earlier.files || earlier.volumes ? '; data from before this install was left in place' : '';
       return {
-        message: `Install of ${appUrn} was cancelled, but its ${leftover} could not be fully removed and may leave a remnant on disk${kept}`,
+        message: `Install of ${appUrn} was cancelled, but its ${leftover} could not be fully removed and may leave a remnant behind${kept}`,
         warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT',
         ...(data.hostPath ? { warningDetail: data.hostPath } : {}),
       };
