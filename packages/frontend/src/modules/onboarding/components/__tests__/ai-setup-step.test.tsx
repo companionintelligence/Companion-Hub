@@ -56,6 +56,8 @@ vi.mock('@tanstack/react-query', async (importOriginal) => {
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getStatus3Options: () => ({ queryKey: ['tailscale-status'], queryFn: vi.fn() }),
   getStatus3QueryKey: () => ['tailscale-status'],
+  // ModelContextNote names the apps a context floor is for.
+  getInstalledAppsOptions: () => ({ queryKey: ['installed-apps'], queryFn: vi.fn() }),
 }));
 
 vi.mock('@/lib/hooks/use-tailscale-readiness-sync', () => ({

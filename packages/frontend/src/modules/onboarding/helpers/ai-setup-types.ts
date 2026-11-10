@@ -1,4 +1,12 @@
-import type { CloudProviderType, CuratedModel, HardwareProfile, HardwareTier, InferenceBackendType, MemoryBudget } from '@ci-hub/common/types';
+import type {
+  CloudProviderType,
+  CuratedModel,
+  HardwareProfile,
+  HardwareTier,
+  InferenceBackendType,
+  MemoryBudget,
+  ModelContextPlan,
+} from '@ci-hub/common/types';
 
 /** The Companion agent framework that powers the user's system. */
 export type AgentFramework = 'openclaw' | 'hermes';
@@ -167,6 +175,8 @@ export interface HardwareProfileResponse {
   recommendedModels: CuratedModel[];
   availableModels: CuratedModel[];
   /** Catalog ids already pulled for the active chat backend (+ Ollama embeddings when backend=vllm). */
+  /** What each text model of the engine being set up gets here: window, KV cache, installed apps' floor (`ModelContextNote`). */
+  contextPlans?: Record<string, ModelContextPlan>;
   installedCatalogIds: string[];
   memoryBudget: MemoryBudget;
   backends: {

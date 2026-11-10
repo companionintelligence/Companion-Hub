@@ -36,6 +36,7 @@ import { CloudProviderCard } from '@/modules/onboarding/components/ai-setup/clou
 import { ResourceSummaryBar } from '@/modules/onboarding/components/ai-setup/resource-summary-bar';
 import { inferenceMemoryMb } from '@/modules/onboarding/helpers/onboarding-model-selection';
 import { ModelCard } from '@/modules/onboarding/components/ai-setup/primitives';
+import { ModelContextNote } from '@/modules/onboarding/components/ai-setup/model-context-note';
 import { ModelIcon } from '@/modules/onboarding/components/ai-setup/icons';
 import { modelTags, modelMeta, modelScores } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { OtherModelsSection } from '@/modules/onboarding/components/ai-setup/model-selection-card';
@@ -903,6 +904,7 @@ export const AiSettingsContainer = () => {
                       selected={isSelected}
                       onToggle={() => handleToggleModel(model.id)}
                       meta={modelMeta(model)}
+                      contextNote={<ModelContextNote plan={profile.contextPlans?.[model.id]} />}
                       scores={modelScores(model)}
                       footer={
                         statusBadge || resident ? (

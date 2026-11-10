@@ -1,13 +1,16 @@
 import { cn } from '@/lib/utils';
-import type { CuratedModel, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
+import type { CuratedModel, HardwareTier, InferenceBackendType, ModelContextPlan } from '@ci-hub/common/types';
 import { ChevronRight, HardDrive, MemoryStick } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { CubeModelsIcon, ModelIcon } from './icons';
 import { ARTIFICIAL_ANALYSIS_URL, type LevelColor, LEVEL_TAG, LEVEL_TEXT, resourceColor, scoreColor, TIER_TAG_COLOR, TIER_TAG_LABEL } from './levels';
 import { ModelCard, StepSection } from './primitives';
+import { ModelContextNote } from './model-context-note';
 import { useTranslation } from 'react-i18next';
 
 interface RecommendedModelsProps {
+  /** The profile's `contextPlans`: what each model gets here, shown under its card. */
+  contextPlans?: Record<string, ModelContextPlan>;
   tier: HardwareTier;
   recommendedModels: CuratedModel[];
   availableModels: CuratedModel[];
@@ -94,6 +97,7 @@ export function modelScores(model: CuratedModel): { intelligence?: number } {
 /** Step 2 — Recommended Models. Top catalog models for the detected hardware, as selectable tiles.
  * The collapsible Other Models drawer is rendered via `children` at the bottom of the section. */
 export const RecommendedModels = ({
+  contextPlans,
   tier,
   recommendedModels,
   availableModels,
@@ -142,6 +146,7 @@ export const RecommendedModels = ({
               installed={installed.has(model.id)}
               meta={modelMeta(model, false)}
               metaInline
+              contextNote={<ModelContextNote plan={contextPlans?.[model.id]} />}
               scores={modelScores(model)}
             />
           ))}
