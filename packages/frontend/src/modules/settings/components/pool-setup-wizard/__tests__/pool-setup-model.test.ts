@@ -366,6 +366,20 @@ describe('model counts', () => {
     // llama3.2:3b is local and on p1; qwen3:8b only on p1; 'only-on-d' is cached on an unreachable peer.
     expect(countPoolModels(pool)).toBe(2);
   });
+
+  it("countPoolModels leaves out a switched-off peer's models even while it stays connected", () => {
+    const pool = poolWith([
+      poolPeer({ id: 'p1' }),
+      poolPeer({
+        id: 'p2',
+        nodeFqdn: 'hub-d.example-tailnet.ts.net',
+        enabled: false,
+        lastCapabilities: { hardwareTier: 'server', updatedAt: 'x', backends: [{ type: 'ollama', healthy: true, modelsLoaded: ['only-on-d'] }] },
+      }),
+    ]);
+
+    expect(countPoolModels(pool)).toBe(2);
+  });
 });
 
 describe('unansweredTailnetDevices', () => {

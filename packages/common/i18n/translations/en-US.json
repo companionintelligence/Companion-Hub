@@ -2796,7 +2796,7 @@
   "HUB_POOL_NEVER_SEEN": "Never",
   "HUB_POOL_UNREACHABLE_HINT": "The last {{failures}} health checks failed, so this Hub is skipped when routing. It rejoins the pool by itself on the next successful check — there is no need to unpair it.",
   "HUB_POOL_MODELS_TITLE": "What the pool can serve",
-  "HUB_POOL_MODELS_HELP": "Models reported by every reachable Hub, with the nodes that currently have each one. This is the capacity pooling added to this Hub.",
+  "HUB_POOL_MODELS_HELP": "Models reported by every reachable Hub that isn't disabled here, with the nodes that currently have each one. This is the capacity pooling added to this Hub.",
   "HUB_POOL_MODELS_COUNT": "{{models}} across {{nodes}}",
   "HUB_POOL_MODELS_COUNT_MODELS_one": "{{count}} model",
   "HUB_POOL_MODELS_COUNT_MODELS_other": "{{count}} models",

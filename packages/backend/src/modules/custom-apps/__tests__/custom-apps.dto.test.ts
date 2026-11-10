@@ -104,4 +104,17 @@ describe('custom app DTOs — reserved labels', () => {
 
     expect(new ZodValidationPipe().transform(body, { metatype: UpdateCustomAppDto })).toMatchObject(body);
   });
+
+  // Start refuses these for every custom app, so a save that asks for one stores nothing.
+  it.each([
+    ['an update', UpdateCustomAppDto, {}],
+    ['a create', CreateCustomAppDto, { name: 'My App' }],
+  ])('answers 400 naming a setting the sandbox never allows on %s', (_label, metatype, extra) => {
+    const service = { name: 'web', image: 'nginx:alpine', isMain: true, internalPort: 80, capAdd: ['SYS_ADMIN'] };
+    const response = refusal(metatype, { ...extra, config: { schemaVersion: 2, services: [service] } });
+
+    expect(response.message).toEqual([
+      expect.objectContaining({ message: 'CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED', path: ['config', 'services', 0, 'capAdd', 0] }),
+    ]);
+  });
 });

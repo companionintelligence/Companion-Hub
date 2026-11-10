@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { z } from 'zod';
-import { dynamicComposeFormSchema, type dynamicComposeSchema, type ServiceInput } from '@ci-hub/common/schemas';
+import { customAppComposeFormSchema, type dynamicComposeSchema, type ServiceInput } from '@ci-hub/common/schemas';
 import { toast } from 'sonner';
 import i18next from 'i18next';
 
@@ -96,7 +96,7 @@ export const useMultiServiceStore = create<MultiServiceState>()((set, get) => ({
   setServices: (services: ServiceWithId[]) => set({ services }),
   setOverrides: (overrides: MultiServiceFormData['overrides']) => set({ overrides }),
   validate: (values: z.infer<typeof dynamicComposeSchema>) => {
-    const res = dynamicComposeFormSchema.safeParse(values);
+    const res = customAppComposeFormSchema.safeParse(values);
 
     if (!res.success) {
       set({ error: describeComposeIssue(res.error.issues, values) });
