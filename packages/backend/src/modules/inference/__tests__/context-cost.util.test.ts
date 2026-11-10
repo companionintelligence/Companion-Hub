@@ -4,6 +4,7 @@ import type { InferenceBackend } from '../backends/backend.interface';
 import {
   GEOMETRY_COVERS_EVERY_SLOT_ARCHITECTURES,
   ggufContextCost,
+  OLLAMA_EXTRA_MB_PER_TOKEN,
   kvSequencesFor,
   OLLAMA_SINGLE_SLOT_ARCHITECTURES,
   probeContextCost,
@@ -130,16 +131,42 @@ describe('the cost read from a Lemonade model file header', () => {
     });
   });
 
-  it('applies to Lemonade rows only, and yields to a smaller figure from the engine or a measured row', async () => {
-    const ollamaRow = { ...lemonadeRow('qwen3-5-27b-lemonade'), backend: 'ollama' } as CuratedModel;
-    await expect(probeContextCost({} as InferenceBackend, ollamaRow)).resolves.toBeNull();
-
+  it('yields to a smaller figure calibrated from a load, or to a measured row', async () => {
     const engine = { kvMbPerToken: 0.05, weightMb: 17_000, source: 'calibrated' as const };
     const seen = { contextCostForModel: vi.fn().mockResolvedValue(engine) } as unknown as InferenceBackend;
     await expect(probeContextCost(seen, lemonadeRow('qwen3-5-27b-lemonade'), 'f16')).resolves.toEqual(engine);
 
     const measuredRow = { ...lemonadeRow('qwen3-5-27b-lemonade'), runtime: { kvMbPerToken: 0.07 } } as unknown as CuratedModel;
     await expect(probeContextCost(silent, measuredRow, 'f16')).resolves.toMatchObject({ kvMbPerToken: 0.07, source: 'catalog' });
+  });
+});
+
+// Measured 2026-11-10: Ollama holds 0.001-0.012 MB a token beyond the cache (OLLAMA_EXTRA_MB_PER_TOKEN).
+describe('the cost read from an Ollama model file header', () => {
+  const ollamaRow = (id: string, backendModelId: string) => ({ id, backend: 'ollama', backendModelId, runtime: {} }) as unknown as CuratedModel;
+
+  it('charges a model not yet downloaded its cache plus what Ollama holds beside it', async () => {
+    await expect(probeContextCost({} as InferenceBackend, ollamaRow('qwen3-5-9b', 'qwen3.5:9b'))).resolves.toEqual({
+      kvMbPerToken: 0.03125 + OLLAMA_EXTRA_MB_PER_TOKEN,
+      weightMb: null,
+      source: 'gguf',
+      architecture: 'qwen35',
+    });
+  });
+
+  // Ollama's geometry for gemma4: per-layer head counts dropped, 512-token sliding layers counted in full.
+  it("replaces Ollama's own geometry, which loses per-layer heads and sliding windows, but keeps its weights", async () => {
+    const geometry = { kvMbPerToken: 0.09375, weightMb: 9_163, source: 'geometry' as const, architecture: 'gemma4' };
+    const backend = { contextCostForModel: vi.fn().mockResolvedValue(geometry) } as unknown as InferenceBackend;
+    await expect(probeContextCost(backend, ollamaRow('gemma4-e2b', 'gemma4:e2b'))).resolves.toMatchObject({
+      source: 'gguf',
+      weightMb: 9_163,
+      architecture: 'gemma4',
+    });
+    // Smaller is not enough for Ollama's geometry to win: it has no allowance for the buffers beside the cache.
+    const small = { ...geometry, kvMbPerToken: 0.001 };
+    const smallBackend = { contextCostForModel: vi.fn().mockResolvedValue(small) } as unknown as InferenceBackend;
+    await expect(probeContextCost(smallBackend, ollamaRow('qwen3-5-9b', 'qwen3.5:9b'))).resolves.toMatchObject({ source: 'gguf' });
   });
 });
 

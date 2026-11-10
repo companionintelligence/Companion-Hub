@@ -973,18 +973,32 @@ function withMeasuredKv(model: CuratedModel): CuratedModel {
 }
 
 /**
- * A Lemonade row whose footprint was not measured is charged its files plus the runner's fixed overhead
- * (`kv-geometry.generated.ts`, read from Hugging Face), not the TOON's download size plus 10 %. Qwen 3.8
+ * A Lemonade or Ollama row whose footprint was not measured is charged its files plus the runner's fixed
+ * overhead (`kv-geometry.generated.ts`, from Hugging Face and Ollama's registry), not the TOON's download
+ * size plus 10 % — the same base the sizing charges once the files are on disk (`weightMb` + 768). Its
+ * download size becomes the files' too: five rows were more than 10 % off (gemma4:e2b's tag shrank from
+ * 7,373 to 4,375 MiB). Qwen 3.8
  * 27B's files are 17,630 MiB, which with the 768 MB overhead is 18,398 against the 18,473 measured; the
  * 10 % rule put the same-size Qwen 3.5 27B at 20,838, and with its context that left it 16k on a 24 GB
  * card that holds 32k. The KV cost from the same table is applied where the cost is probed
  * (`probeContextCost`), not here, so a measured `kvMbPerToken` stays distinguishable from a computed one.
  */
 function withFileFootprint(model: CuratedModel): CuratedModel {
-  if (model.backend !== 'lemonade' || model.runtime.footprintMeasured) return model;
+  if (model.backend !== 'lemonade' && model.backend !== 'ollama') return model;
   const fileBytes = GGUF_KV_GEOMETRY[model.id]?.fileBytes;
   if (!fileBytes || fileBytes <= 0) return model;
-  return { ...model, runtime: { ...model.runtime, memoryFootprintMb: Math.ceil(fileBytes / 1024 ** 2 + FIXED_RUNNER_OVERHEAD_MB) } };
+  // A measured footprint stays: only its download size, a fact about the files, is taken from them.
+  if (model.runtime.footprintMeasured) return { ...model, requirements: { ...model.requirements, diskMb: Math.round(fileBytes / 1024 ** 2) } };
+  // The requirements the TOON derives from its download size are derived from the files instead, by the
+  // same expressions (buildLlmModel), so the download gate's weights floor (`weightsFloorMb`, from
+  // `diskMb`) stays at or under the footprint.
+  const diskMb = Math.round(fileBytes / 1024 ** 2);
+  const footprintMb = Math.ceil(fileBytes / 1024 ** 2 + FIXED_RUNNER_OVERHEAD_MB);
+  return {
+    ...model,
+    requirements: { ...model.requirements, diskMb, minVramMb: diskMb, recommendedVramMb: footprintMb + 1024, minRamMb: Math.round(diskMb * 1.15) },
+    runtime: { ...model.runtime, memoryFootprintMb: footprintMb },
+  };
 }
 
 export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...lemonadeLlms, ...vllmLlms, ...omlxLlms, ...extraModels]

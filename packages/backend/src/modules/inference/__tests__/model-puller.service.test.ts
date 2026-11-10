@@ -623,11 +623,12 @@ describe('ModelPullerService download gate on the fleet', () => {
   it('lets beta-red download a row that only its derived footprint objects to, with a warning', async () => {
     const { service } = await pullerOn(10_240, 31_017, 5_550);
 
-    const result = await service.evaluatePull('qwen3-14b');
+    // qwen3-14b was the example until its footprint came from its files (9,615 MB, inside 9,728).
+    const result = await service.evaluatePull('phi4-reasoning-14b');
 
     expect(result.canPull).toBe(true);
     expect(result.reason).toBeUndefined();
-    expect(result.warning).toMatch(/estimates 10475 MB .* more than the 9728 MB of GPU memory .* at least 6675 MB/);
+    expect(result.warning).toMatch(/estimates 11371 MB .* more than the 9728 MB of GPU memory .* at least 6675 MB/);
   });
 
   it('still refuses beta-red a 22.5 GB row such as gemma4-31b', async () => {
@@ -674,12 +675,12 @@ describe('ModelPullerService download gate on the fleet', () => {
   it('queues an app pre-pull that only the derived footprint objects to, and logs the warning', async () => {
     const { service, logger, ollamaBackend } = await pullerOn(10_240, 31_017, 0);
 
-    const result = await service.startPull('qwen3-14b', { bestEffort: true });
+    const result = await service.startPull('phi4-reasoning-14b', { bestEffort: true });
     await new Promise((r) => setTimeout(r, 10));
 
     expect(result.status).toBe('queued');
-    expect(ollamaBackend.pullModel).toHaveBeenCalledWith('qwen3:14b', expect.any(Function));
-    expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/^\[ModelPuller\] qwen3-14b: The catalog estimates 10475 MB/));
+    expect(ollamaBackend.pullModel).toHaveBeenCalledWith('phi4-reasoning:14b', expect.any(Function));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/^\[ModelPuller\] phi4-reasoning-14b: The catalog estimates 11371 MB/));
   });
 
   // The floor may only ever admit more than the catalog footprint did, never refuse a row the

@@ -445,7 +445,10 @@ describe('ModelRegistryService', () => {
             const ids = service.getRecommendedModelsForHardware(tier, profile({ ...hw, tier })).map((m) => m.id);
 
             expect(ids.slice(0, 2)).toEqual(['qwen3-5-4b', 'gemma4-e4b']);
-            expect(ids).not.toContain('gemma4-e2b');
+            // gemma4-e2b is offered too once its footprint is its 4,375 MiB of files plus the runner (5,143 MB,
+            // inside 5,734) — below the default, which is what the 4 GB pin above guards. The load estimate
+            // charges the same 5,143 once it is pulled, so this offer is one the load path will honour.
+            expect(ids.indexOf('gemma4-e2b')).toBeGreaterThan(0);
           },
         );
       });

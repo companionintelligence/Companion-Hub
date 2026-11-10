@@ -2,16 +2,15 @@
  * Generates `kv-geometry.generated.ts`: each catalog text model's KV-cache cost per token, read from
  * the GGUF header of the very file its engine serves, for context sizing where nothing better exists.
  *
- * WHY: a Lemonade model with no measured `kvMbPerToken` was sized by the context ladder's 0.25
- * MB/token — dense-model arithmetic, since Lemonade reports no geometry of its own. Qwen 3.5 27B keeps a per-token cache in 16 of its 64 layers and costs 0.0625 MB/token,
- * so the picker showed it at 8k on a card that holds 32k at 16-bit. The geometry is the same in every
- * quantisation of a model, and sits at the start of the file, so a range request reads it.
+ * WHY: a model with no measured `kvMbPerToken` was sized by the context ladder's 0.25 MB/token —
+ * dense-model arithmetic — wherever the engine could not describe it: every Lemonade row, and an
+ * Ollama row before its download. Qwen 3.5 27B keeps a per-token cache in 16 of its 64 layers and costs
+ * 0.0625 MB/token, so the picker showed it at 8k on a card that holds 32k at 16-bit. Ollama's own
+ * geometry, once downloaded, loses per-layer head counts and counts sliding layers at full size. The
+ * geometry is the same in every quantisation and sits at the start of the file, so a range request
+ * reads it. Ollama's extra growth beside the cache is `OLLAMA_EXTRA_MB_PER_TOKEN`.
  *
- * Lemonade rows only. On Ollama a window costs several times its cache (its working buffers grow with
- * it: qwen3.5:9b 0.16 MB/token between two sightings against 0.031 here), so the cache alone would
- * over-promise there; Ollama reports its own geometry, and the ladder stands in before a download.
- *
- * Usage (needs network: Hugging Face):
+ * Usage (needs network: Hugging Face and registry.ollama.ai):
  *   pnpm exec tsx scripts/catalog/gen-kv-geometry.ts [--lemonade-registry <server_models.json>]
  * The Lemonade registry maps a row's backendModelId to its Hugging Face checkpoint; the default is the
  * file a Lemonade install ships (/usr/share/lemonade-server/resources/server_models.json).
@@ -79,10 +78,31 @@ async function lemonadeGguf(checkpoint: string, mmproj: string | undefined): Pro
   return { url: `https://huggingface.co/${repo}/resolve/main/${wanted.path}`, fileBytes };
 }
 
+/**
+ * An Ollama row's GGUF in Ollama's registry, and its size: every layer of the manifest. `hf.co/<repo>:<quant>` rows are Hugging Face files.
+ */
+async function ollamaGguf(tagged: string): Promise<{ url: string; fileBytes: number }> {
+  if (tagged.startsWith('hf.co/')) return lemonadeGguf(tagged.slice('hf.co/'.length), undefined);
+  const colon = tagged.lastIndexOf(':');
+  const [nameWithNs, tag] = colon > 0 ? [tagged.slice(0, colon), tagged.slice(colon + 1)] : [tagged, 'latest'];
+  const name = nameWithNs.includes('/') ? nameWithNs : `library/${nameWithNs}`;
+  const accept = { Accept: 'application/vnd.docker.distribution.manifest.v2+json' };
+  const manifest = (await getJson(`https://registry.ollama.ai/v2/${name}/manifests/${tag}`, accept)) as {
+    layers?: { mediaType: string; digest: string; size: number }[];
+  };
+  const layers = manifest.layers ?? [];
+  const model = layers.find((l) => l.mediaType === 'application/vnd.ollama.image.model');
+  if (!model) throw new Error(`no model layer for ${tagged}`);
+  // Every layer, as `/api/tags` reports a pulled model's size: the load estimate charges that once it is on
+  // disk, so the catalog charging the same keeps the two from disagreeing (gemma4 adds a projector and a draft).
+  const fileBytes = layers.reduce((sum, l) => sum + l.size, 0);
+  return { url: `https://registry.ollama.ai/v2/${name}/blobs/${model.digest}`, fileBytes };
+}
+
 async function main() {
   const registryPath = argValue('--lemonade-registry') ?? '/usr/share/lemonade-server/resources/server_models.json';
   const registry = JSON.parse(readFileSync(registryPath, 'utf8')) as Record<string, { checkpoint?: string; recipe?: string; mmproj?: string }>;
-  const rows = CURATED_MODELS.filter((m) => m.modality === 'llm' && m.backend === 'lemonade');
+  const rows = CURATED_MODELS.filter((m) => m.modality === 'llm' && (m.backend === 'lemonade' || m.backend === 'ollama'));
 
   const results: Record<string, KvGeometry & { fileBytes: number }> = {};
   const failures: string[] = [];
@@ -92,9 +112,15 @@ async function main() {
       const m = rows[next++];
       if (!m) break;
       try {
-        const entry = registry[m.backendModelId];
-        if (!entry?.checkpoint || entry.recipe !== 'llamacpp') throw new Error(`not a llama.cpp model in this Lemonade's registry`);
-        const { url, fileBytes } = await lemonadeGguf(entry.checkpoint, entry.mmproj);
+        let source: { url: string; fileBytes: number };
+        if (m.backend === 'ollama') {
+          source = await ollamaGguf(m.backendModelId);
+        } else {
+          const entry = registry[m.backendModelId];
+          if (!entry?.checkpoint || entry.recipe !== 'llamacpp') throw new Error(`not a llama.cpp model in this Lemonade's registry`);
+          source = await lemonadeGguf(entry.checkpoint, entry.mmproj);
+        }
+        const { url, fileBytes } = source;
         const geometry = kvGeometryFromGguf((await readHeader(url)) as never);
         if (!geometry) throw new Error('no attention geometry in the header');
         results[m.id] = { ...geometry, fileBytes };
@@ -124,7 +150,7 @@ async function main() {
  * GENERATED by scripts/catalog/gen-kv-geometry.ts on ${new Date().toISOString().slice(0, 10)} — do not hand-edit; re-run it.
  *
  * Each catalog text model's 16-bit KV-cache bytes per token of context, read from the GGUF header of
- * the file Lemonade serves for it (its registry's Hugging Face checkpoint). Lemonade rows only: see the script.
+ * the file its engine serves: Lemonade's registry checkpoint on Hugging Face, or the Ollama registry's model layer.
  * Context sizing uses it where nothing measured exists (\`probeContextCost\` in context-cost.util.ts).
  * It is the cache llama.cpp allocates; the engine's scratch buffers are on top of it. \`fileBytes\` is the
  * files a load maps, which the catalog charges for a row whose footprint was not measured.

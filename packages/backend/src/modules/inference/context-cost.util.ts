@@ -51,12 +51,22 @@ function kvCacheScaleOf(backend: InferenceBackend, model: CuratedModel): number 
   return typeof scale === 'number' && Number.isFinite(scale) && scale > 0 && scale < 1 ? scale : 1;
 }
 
+/**
+ * What Ollama holds per token of context beyond the cache: buffers that grow with the window. Measured
+ * 2026-11-10 on a 7900 XTX (Ollama 0.34.1, ROCm, flash attention on, one slot), card VRAM from 4096 to
+ * 65536 tokens against the cache from each file's header, MB a token: qwen3.8:27b 0.0674 vs 0.0664,
+ * gpt-oss:20b 0.0271 vs 0.0234, gemma4:e4b 0.0196 vs 0.0156, gemma3:1b 0.0081 vs 0.0039, llama3.2:3b
+ * 0.1167 vs 0.1094, qwen3.5:9b 0.0396 vs 0.0313, gemma3:4b 0.0303 vs 0.0195, qwen3:8b 0.1527 vs 0.1406.
+ * The excess is not a multiple of the cache but about constant, 0.001-0.012; this covers all eight.
+ */
+export const OLLAMA_EXTRA_MB_PER_TOKEN = 0.0125;
+
 /** Tokens llama.cpp keeps in a sliding-window layer's cache beyond the window: one batch (`n_ubatch`, 512 by default). */
 const SLIDING_CACHE_BATCH_TOKENS = 512;
 
 /**
- * The cost computed from the model file's header (`catalog/kv-geometry.generated.ts`), for a Lemonade
- * model with no measured `kvMbPerToken`. Exact for the cache llama.cpp allocates — Qwen 3.8 27B: 0.0664 computed,
+ * The cache computed from the model file's header (`catalog/kv-geometry.generated.ts`), for a Lemonade
+ * or Ollama model with no measured `kvMbPerToken` (Ollama adds {@link OLLAMA_EXTRA_MB_PER_TOKEN}). Exact for the cache llama.cpp allocates — Qwen 3.8 27B: 0.0664 computed,
  * 0.0667 measured — where the context ladder's fallback charged every model 0.25 MB a token, so Qwen 3.5
  * 27B (16 of 64 layers cached, 0.0625) was offered 8k on a card that holds it at 32k.
  */
@@ -76,13 +86,17 @@ async function probeEngineAndCatalog(backend: InferenceBackend, model: CuratedMo
   const measured = await Promise.resolve(backend.contextCostForModel?.(model.backendModelId) ?? null).catch(() => null);
   const catalogKv = model.runtime.kvMbPerToken;
   if (typeof catalogKv !== 'number' || !Number.isFinite(catalogKv) || catalogKv <= 0) {
-    // Lemonade only: llama.cpp there runs flash attention on one slot, and grows by about the cache. Ollama
-    // grows several times faster than its cache and reports its own geometry (see gen-kv-geometry.ts).
-    const gguf = model.backend === 'lemonade' ? ggufContextCost(model) : null;
-    if (!gguf) return measured;
-    // The engine's own figure wins when it is the smaller (a sighting is ground truth); it carries no
-    // fixed part, because Ollama's geometry counts sliding layers at the full window.
-    if (measured && measured.kvMbPerToken <= gguf.kvMbPerToken) return measured;
+    const header = model.backend === 'lemonade' || model.backend === 'ollama' ? ggufContextCost(model) : null;
+    if (!header) return measured;
+    const gguf = model.backend === 'ollama' ? { ...header, kvMbPerToken: header.kvMbPerToken + OLLAMA_EXTRA_MB_PER_TOKEN } : header;
+    if (measured) {
+      // A cost calibrated from what the engine was seen holding wins when smaller: it is this model on this
+      // engine. Ollama's own geometry does not: it is the same cache arithmetic with less to go on — it
+      // loses a per-layer head count (gemma4), counts sliding layers at the full window, and has no
+      // allowance for the buffers that grow beside the cache. Lemonade reports no geometry.
+      const engineWins = measured.source === 'calibrated' || model.backend !== 'ollama';
+      if (engineWins && measured.kvMbPerToken <= gguf.kvMbPerToken) return measured;
+    }
     const weightMb = measured ? measured.weightMb : await Promise.resolve(backend.weightsOnDiskMb?.(model.backendModelId) ?? null).catch(() => null);
     return { ...gguf, weightMb, source: 'gguf' };
   }
@@ -145,7 +159,13 @@ export function kvSequencesFor(backendType: InferenceBackendType, cost: ContextC
   if (slots === null || slots <= 1) return 1;
   if (cost?.source === 'calibrated') return 1;
   if (cost?.architecture && OLLAMA_SINGLE_SLOT_ARCHITECTURES.has(cost.architecture)) return 1;
-  if (cost?.source === 'geometry' && cost.architecture && GEOMETRY_COVERS_EVERY_SLOT_ARCHITECTURES.has(cost.architecture)) return 1;
+  if (
+    (cost?.source === 'geometry' || cost?.source === 'gguf') &&
+    cost.architecture &&
+    GEOMETRY_COVERS_EVERY_SLOT_ARCHITECTURES.has(cost.architecture)
+  ) {
+    return 1;
+  }
   return slots;
 }
 
