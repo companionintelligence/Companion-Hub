@@ -312,6 +312,12 @@ fn host_metrics_file_is_replaced_whole_and_leaves_no_temporary_file() {
 #[test]
 fn host_metrics_file_is_written_in_place_where_the_folder_takes_no_new_file() {
     use std::os::unix::fs::PermissionsExt;
+    // Root creates files in a read-only folder anyway, so the rename would run and this would pass
+    // without reaching the in-place write.
+    // SAFETY: geteuid has no preconditions and can't fail.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("host_metrics.json");
     std::fs::write(&path, "{\"old\":true}\n").expect("seed");
@@ -322,6 +328,23 @@ fn host_metrics_file_is_written_in_place_where_the_folder_takes_no_new_file() {
 
     written.expect("write");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"new\":true}\n");
+}
+
+// On Windows a folder in the way reads as PermissionDenied, which is the in-place case.
+#[cfg(unix)]
+#[test]
+fn host_metrics_file_stays_as_it_was_when_the_temporary_file_fails_for_another_reason() {
+    // As on a full disk: writing in place would truncate the file first and could leave it empty.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("host_metrics.json");
+    std::fs::write(&path, "{\"old\":true}\n").expect("seed");
+    let temporary = dir
+        .path()
+        .join(format!(".host_metrics.json.{}.tmp", std::process::id()));
+    std::fs::create_dir(&temporary).expect("a folder where the temporary file goes");
+
+    assert!(write_host_metrics_file(&path, "{\"new\":true}\n").is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"old\":true}\n");
 }
 
 #[test]

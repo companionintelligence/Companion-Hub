@@ -89,7 +89,7 @@ pub(crate) fn detect_macos_primary_disk_gb() -> (u64, u64, String) {
 
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 fn write_host_metrics_probe_file(data_dir: &Path, payload: serde_json::Value, log_tag: &str) {
-    let probe_path = data_dir.join("state/hardware/host_metrics.json");
+    let probe_path = data_dir.join(HOST_METRICS_FILE);
     if let Some(parent) = probe_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }

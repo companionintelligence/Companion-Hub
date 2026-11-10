@@ -10,7 +10,7 @@
 use super::*;
 use std::sync::{MutexGuard, PoisonError};
 
-const HOST_METRICS_FILE: &str = "state/hardware/host_metrics.json";
+pub(crate) const HOST_METRICS_FILE: &str = "state/hardware/host_metrics.json";
 /// How often memory is read.
 const HOST_LOAD_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 /// Disk is read on one refresh in this many. It moves slowly. On macOS reading it runs
@@ -42,17 +42,26 @@ pub(crate) fn lock_host_metrics_file() -> MutexGuard<'static, ()> {
 }
 
 /// Writes `host_metrics.json` through a temporary file and a rename, so the Hub never reads half
-/// of it. When that fails (Windows won't replace a file another process has open, or the folder
-/// takes no new file) it writes in place, as it always did before.
+/// of it. When the folder takes no new file, or the rename fails (Windows won't replace a file
+/// another process has open), it writes in place, as it always did before. Any other failure to
+/// write the temporary file, such as a full disk, leaves the file as it was. Truncating it then
+/// could leave it empty, which the refresher can't mend because it can't parse it.
 pub(crate) fn write_host_metrics_file(path: &Path, contents: &str) -> std::io::Result<()> {
     let temporary = path.with_file_name(format!(".host_metrics.json.{}.tmp", std::process::id()));
-    let replaced =
-        std::fs::write(&temporary, contents).and_then(|()| std::fs::rename(&temporary, path));
-    if replaced.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-        std::fs::write(path, contents)?;
+    match std::fs::write(&temporary, contents) {
+        Ok(()) => {
+            if std::fs::rename(&temporary, path).is_ok() {
+                return Ok(());
+            }
+        }
+        Err(error) if error.kind() != std::io::ErrorKind::PermissionDenied => {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error);
+        }
+        Err(_) => {}
     }
-    Ok(())
+    let _ = std::fs::remove_file(&temporary);
+    std::fs::write(path, contents)
 }
 
 /// Memory and disk as read now. `None` for a figure that couldn't be read or wasn't due.
@@ -62,6 +71,24 @@ pub(crate) struct HostLoadSample {
     pub(crate) memory: Option<(u64, u64)>,
     /// Total and used disk in GB and where it was read.
     pub(crate) disk: Option<(u64, u64, String)>,
+}
+
+/// The probe's `host` when it is one the refresher keeps current on `platform`: schema 1, written
+/// for this OS and with a memory total.
+fn refreshable_host<'a>(
+    probe: &'a serde_json::Value,
+    platform: &str,
+) -> Option<&'a serde_json::Map<String, serde_json::Value>> {
+    if probe.get("schemaVersion").and_then(|value| value.as_u64()) != Some(1)
+        || probe.get("platform").and_then(|value| value.as_str()) != Some(platform)
+    {
+        return None;
+    }
+    let host = probe.get("host")?.as_object()?;
+    host.get("totalRamMb")
+        .and_then(|value| value.as_u64())
+        .filter(|total| *total > 0)?;
+    Some(host)
 }
 
 /// `probe` with `sample` in it and `probedAt` set to `now`. `None` when there is nothing to write:
@@ -74,14 +101,8 @@ pub(crate) fn probe_with_host_load(
     sample: &HostLoadSample,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<serde_json::Value> {
-    if probe.get("schemaVersion").and_then(|value| value.as_u64()) != Some(1)
-        || probe.get("platform").and_then(|value| value.as_str()) != Some(platform)
-    {
-        return None;
-    }
-    let host = probe.get("host")?.as_object()?;
+    let host = refreshable_host(probe, platform)?;
     let stored = |key: &str| host.get(key).and_then(|value| value.as_u64());
-    stored("totalRamMb").filter(|total| *total > 0)?;
     // A write says the figures are from now, so there is none without a memory reading.
     let (total_mb, available_mb) = sample.memory.filter(|(total, _)| *total > 0)?;
     let available_mb = available_mb.min(total_mb);
@@ -124,9 +145,10 @@ pub(crate) fn probe_with_host_load(
 /// when it wrote.
 pub(crate) fn refresh_host_load(data_dir: &Path, with_disk: bool) -> Result<bool, String> {
     let path = data_dir.join(HOST_METRICS_FILE);
-    // Read outside the lock. On macOS a reading runs commands, which a start probe mustn't wait on.
-    let Some(host) = read_probe(&path)?
-        .and_then(|probe| probe.get("host").and_then(|host| host.as_object()).cloned())
+    // Read outside the lock. On macOS a reading runs commands, which a start probe mustn't wait on,
+    // and which aren't worth running for a probe this refresher leaves alone.
+    let Some(host) =
+        read_probe(&path)?.and_then(|probe| refreshable_host(&probe, HOST_PLATFORM).cloned())
     else {
         return Ok(false);
     };
