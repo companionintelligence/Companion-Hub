@@ -15,6 +15,53 @@ function failTimes(limiter: AuthRateLimiter, scope: Parameters<AuthRateLimiter['
 }
 
 describe('AuthRateLimiter', () => {
+  describe('isSpent', () => {
+    it('reads the budget without spending it', () => {
+      const clock = { now: 1_000_000 };
+      const limiter = limiterAt(clock);
+
+      failTimes(limiter, 'accountRecheck', '7', 9);
+      expect(limiter.isSpent('accountRecheck', '7')).toBe(false);
+      expect(limiter.isSpent('accountRecheck', '7')).toBe(false);
+
+      failTimes(limiter, 'accountRecheck', '7', 1);
+      expect(limiter.isSpent('accountRecheck', '7')).toBe(true);
+
+      clock.now += 60_001;
+      expect(limiter.isSpent('accountRecheck', '7')).toBe(false);
+    });
+  });
+
+  describe('firstNoticeInWindow', () => {
+    it('is true once per window for a key', () => {
+      const clock = { now: 1_000_000 };
+      const limiter = limiterAt(clock);
+
+      expect(limiter.firstNoticeInWindow('accountRecheck', '7')).toBe(true);
+      expect(limiter.firstNoticeInWindow('accountRecheck', '7')).toBe(false);
+
+      clock.now += 60_001;
+      expect(limiter.firstNoticeInWindow('accountRecheck', '7')).toBe(true);
+    });
+
+    it('keeps keys and scopes apart', () => {
+      const limiter = limiterAt({ now: 1_000_000 });
+
+      expect(limiter.firstNoticeInWindow('accountRecheck', '7')).toBe(true);
+      expect(limiter.firstNoticeInWindow('accountRecheck', '8')).toBe(true);
+      expect(limiter.firstNoticeInWindow('login', '7')).toBe(true);
+    });
+
+    it('does not spend a slot of the budget it reports on', () => {
+      const limiter = limiterAt({ now: 1_000_000 });
+
+      limiter.firstNoticeInWindow('accountRecheck', '7');
+      failTimes(limiter, 'accountRecheck', '7', 10);
+
+      expect(() => limiter.admit('accountRecheck', '7')).toThrow('AUTH_ERROR_RATE_LIMITED');
+    });
+  });
+
   describe('failure scopes (login, totp, password-reset token)', () => {
     it('lets a client fail up to the limit and refuses the next attempt', () => {
       const limiter = limiterAt({ now: 1_000_000 });
@@ -164,6 +211,18 @@ describe('AuthRateLimiter', () => {
 
     const tracked = (limiter as unknown as { hits: Map<string, number[]> }).hits.size;
     expect(tracked).toBeLessThanOrEqual(10_001);
+  });
+
+  it('keeps an account budget when a flood of addresses fills the table', () => {
+    const limiter = limiterAt({ now: 1_000_000 });
+
+    failTimes(limiter, 'accountRecheck', '7', 10);
+
+    for (let i = 0; i < 12_000; i++) {
+      limiter.admit('login', `2001:db8::${i}`);
+    }
+
+    expect(() => limiter.admit('accountRecheck', '7')).toThrow('AUTH_ERROR_RATE_LIMITED');
   });
 });
 

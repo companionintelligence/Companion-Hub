@@ -32,12 +32,10 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async () => () => {}),
 }));
 
-const signInToPortal = vi.fn();
 const listHubDevices = vi.fn();
 const establishHubSessionFromPortal = vi.fn<(...args: unknown[]) => Promise<{ sessionId: string; redirectPath: string } | null>>(async () => null);
 vi.mock('../portal-client', async (orig) => ({
   ...(await orig<typeof import('../portal-client')>()),
-  signInToPortal: (...a: unknown[]) => signInToPortal(...a),
   listHubDevices: (...a: unknown[]) => listHubDevices(...a),
   establishHubSessionFromPortal: (...a: unknown[]) => establishHubSessionFromPortal(...a),
 }));
@@ -65,7 +63,6 @@ function renderPage() {
 
 beforeEach(() => {
   navigate.mockClear();
-  signInToPortal.mockReset();
   listHubDevices.mockReset();
   establishHubSessionFromPortal.mockReset();
   establishHubSessionFromPortal.mockResolvedValue(null);
@@ -141,13 +138,56 @@ describe('ConnectPage', () => {
     expect(listHubDevices).toHaveBeenCalledWith({ token: 'AT', cookie: null, kind: 'oauth' }, expect.any(String));
   });
 
-  it('resumes email Portal auth stored by Advanced and shows the Hub picker', async () => {
+  it('resumes a stored Portal sign-in after a reload and shows the Hub picker', async () => {
     sessionStorage.setItem('ci-hub.portalAuth', JSON.stringify({ token: 'sess', cookie: null, kind: 'session' }));
     listHubDevices.mockResolvedValue(devices);
     renderPage();
 
     expect(await screen.findByText('Apple Hub')).toBeInTheDocument();
     expect(listHubDevices).toHaveBeenCalledWith({ token: 'sess', cookie: null, kind: 'session' }, expect.any(String));
+  });
+
+  it('a cancelled Log in stays on Log in, even with an earlier Portal sign-in stored', async () => {
+    sessionStorage.setItem('ci-hub.portalAuth', JSON.stringify({ token: 'old', cookie: null, kind: 'oauth' }));
+    listHubDevices.mockResolvedValue(devices);
+    renderPage();
+    await user.click(await screen.findByRole('button', { name: /^back$/i }));
+    listHubDevices.mockClear();
+    loginWithPortalOidc.mockRejectedValue(new OidcCancelledError());
+
+    await user.click(screen.getByTestId('oidc-login-btn'));
+    // Coming back from the browser fires the resume effect.
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    await vi.waitFor(() => expect(loginWithPortalOidc).toHaveBeenCalled());
+    expect(screen.getByTestId('oidc-login-btn')).toBeInTheDocument();
+    expect(listHubDevices).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('ci-hub.portalAuth')).toBeNull();
+  });
+
+  it('Back from the Hub picker forgets the Portal sign-in', async () => {
+    loginWithPortalOidc.mockResolvedValue({ accessToken: 'AT', idToken: null, tokenType: 'Bearer', expiresIn: 3600 });
+    listHubDevices.mockResolvedValue(devices);
+    renderPage();
+    await user.click(screen.getByTestId('oidc-login-btn'));
+    await screen.findByText('Apple Hub');
+    expect(sessionStorage.getItem('ci-hub.portalAuth')).not.toBeNull();
+
+    await user.click(screen.getByRole('button', { name: /^back$/i }));
+
+    expect(screen.getByTestId('oidc-login-btn')).toBeInTheDocument();
+    expect(sessionStorage.getItem('ci-hub.portalAuth')).toBeNull();
+  });
+
+  it('choosing a Hub forgets the Portal sign-in', async () => {
+    loginWithPortalOidc.mockResolvedValue({ accessToken: 'AT', idToken: null, tokenType: 'Bearer', expiresIn: 3600 });
+    listHubDevices.mockResolvedValue(devices);
+    renderPage();
+    await user.click(screen.getByTestId('oidc-login-btn'));
+    await user.click(await screen.findByTestId('hub-row-reg-1'));
+
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith('/login', { replace: true }));
+    expect(sessionStorage.getItem('ci-hub.portalAuth')).toBeNull();
   });
 
   it('OIDC sign-in remembers the Portal email from the id_token', async () => {

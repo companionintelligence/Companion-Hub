@@ -143,6 +143,16 @@ function readListenerTokenFile(tokenPath: string): string | null {
   }
 }
 
+/** Whether anything sits at `tokenPath`, even a file the Hub can't read or use. Doesn't follow a symlink. */
+function listenerTokenFileExists(tokenPath: string): boolean {
+  try {
+    fs.lstatSync(tokenPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** GHCR tags are unprefixed (`0.2.56`). A leading `v` makes the pull 404. */
 function normalizeHubVersionTag(version: string): string {
   const tag = version.trim();
@@ -378,8 +388,13 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     return path.join(logsDir, 'hub-stack-update.log');
   }
 
-  async getHostListenerStatus(): Promise<{ reachable: boolean }> {
-    return { reachable: await this.probeHostListener() };
+  /**
+   * `reachable`: the desktop app answers right now. `desktopApp`: a desktop app runs this Hub at all,
+   * open or closed. Only the desktop app writes the listener token, so a `cihub` install has none. A
+   * token the Hub can't read or use is still there, so it counts.
+   */
+  async getHostListenerStatus(): Promise<{ reachable: boolean; desktopApp: boolean }> {
+    return { reachable: await this.probeHostListener(), desktopApp: this.hostListenerTokenPaths().some(listenerTokenFileExists) };
   }
 
   async probeHostListener(): Promise<boolean> {
@@ -707,12 +722,16 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
    * root, which only a Hub running on the host can see, so that file is the fallback.
    */
   private getHostUpdateListenerToken(): string | null {
-    for (const tokenPath of [path.join(DATA_DIR, 'state', UPDATE_LISTENER_TOKEN_FILENAME), path.join(DATA_DIR, UPDATE_LISTENER_TOKEN_FILENAME)]) {
+    for (const tokenPath of this.hostListenerTokenPaths()) {
       const token = readListenerTokenFile(tokenPath);
       if (token) {
         return token;
       }
     }
     return null;
+  }
+
+  private hostListenerTokenPaths(): string[] {
+    return [path.join(DATA_DIR, 'state', UPDATE_LISTENER_TOKEN_FILENAME), path.join(DATA_DIR, UPDATE_LISTENER_TOKEN_FILENAME)];
   }
 }

@@ -1,5 +1,11 @@
 import { requiresHubLoginOnPublicRoute, servedOpenPort } from '@ci-hub/common/schemas';
-import { publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm } from '@ci-hub/common/types';
+import {
+  buildPublicWebIdentity,
+  normalizeStoredHostname,
+  publishesPublicWebRoute,
+  resolveRoutingSubdomain,
+  storedExposureForm,
+} from '@ci-hub/common/types';
 import type { AppFormHostPortFields } from './app-exposure.helpers';
 
 export type AppPublicRoutingSnapshot = AppFormHostPortFields & {
@@ -26,6 +32,60 @@ export function publishesCloudflarePublicRoute(snapshot: AppFormHostPortFields):
  */
 export function publicRoutingSnapshotOf<T extends AppPublicRoutingSnapshot & { config?: unknown }>(app: T): T {
   return { ...app, ...storedExposureForm(app) };
+}
+
+/**
+ * The address a guest can open an app on from anywhere, or `null` when it has none.
+ *
+ * Worked out here because the guest dashboard cannot: it is signed out, so it has neither the
+ * organization and Hub names the hostname is built from nor the stored install form, which is
+ * withheld from it. Same order as the app page: a custom hostname Companion Portal has wired, then
+ * the name the tunnel sync publishes. An app with its own `exposed` domain keeps the entry the
+ * dashboard already gives it.
+ *
+ * `platformNameRefused` says the last sync refused that published name. A custom hostname has its
+ * own ingress rule and can go on serving through a refusal, so it is still offered.
+ */
+export function guestPublicUrl(
+  app: Parameters<typeof storedExposureForm>[0] & {
+    appName: string;
+    appStoreSlug: string;
+    localSubdomain?: string | null;
+    publicDomain?: string | null;
+    customDomain?: string | null;
+    exposed?: boolean | null;
+    domain?: string | null;
+  },
+  info: { exposable?: boolean },
+  hub: { orgSlug?: string | null; hubSubdomain?: string | null; domain?: string | null },
+  platformNameRefused = false,
+): string | null {
+  // First, so a custom hostname left on the row of an app that moved off Public web is not offered: no tunnel route serves it.
+  if (!info.exposable || !publishesPublicWebRoute(storedExposureForm(app))) {
+    return null;
+  }
+
+  const customDomain = normalizeStoredHostname(app.customDomain);
+  if (customDomain) {
+    return `https://${customDomain}`;
+  }
+
+  if ((app.exposed && app.domain) || platformNameRefused) {
+    return null;
+  }
+
+  // No `hubSubdomain` is not a reason to stop: a registration without one is published as `<app>-<org>`.
+  const publicDomainRoot = app.publicDomain?.trim() || hub.domain?.trim();
+  if (!hub.orgSlug || !publicDomainRoot) {
+    return null;
+  }
+
+  return buildPublicWebIdentity({
+    appSubdomain: resolveRoutingSubdomain(app.localSubdomain, app.appName, app.appStoreSlug),
+    hubSubdomain: hub.hubSubdomain,
+    orgSlug: hub.orgSlug,
+    publicDomainRoot,
+  }).publicUrl;
 }
 
 // Defined in @ci-hub/common so the install form's edit dialog shows what this builder serves.

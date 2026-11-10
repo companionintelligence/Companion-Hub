@@ -307,7 +307,7 @@ function RestoreAppsContent() {
     return (
       <div
         className="flex flex-col items-center overflow-y-auto px-4 py-8"
-        style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}
+        style={{ minHeight: 'var(--app-height)' }}
         data-testid="restore-apps-page"
       >
         <RestoreSummary summary={summary} onLeave={(to) => void leaveForHub(to, summary)} />
@@ -319,7 +319,7 @@ function RestoreAppsContent() {
     return (
       <div
         className="flex flex-col items-center overflow-y-auto px-4 py-8"
-        style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}
+        style={{ minHeight: 'var(--app-height)' }}
         data-testid="restore-apps-page"
       >
         <div className="w-full max-w-2xl space-y-4">
@@ -352,11 +352,7 @@ function RestoreAppsContent() {
   const actionableCount = plan?.items.filter((item) => item.action === 'install' || item.action === 'start' || item.action === 'expose').length ?? 0;
 
   return (
-    <div
-      className="flex flex-col items-center overflow-y-auto px-4 py-8"
-      style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}
-      data-testid="restore-apps-page"
-    >
+    <div className="flex flex-col items-center overflow-y-auto px-4 py-8" style={{ minHeight: 'var(--app-height)' }} data-testid="restore-apps-page">
       <div className="w-full max-w-2xl space-y-4">
         <div>
           <h1 className="text-2xl font-medium text-foreground">{t('RESTORE_APPS_TITLE')}</h1>
@@ -492,7 +488,7 @@ function RestoreAppsGate({ children }: { children: React.ReactNode }) {
 
   if (allowed === null) {
     return (
-      <div className="flex items-center justify-center bg-background" style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}>
+      <div className="flex items-center justify-center bg-background" style={{ minHeight: 'var(--app-height)' }}>
         <div
           className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"
           role="status"
@@ -519,7 +515,7 @@ export default function RestoreAppsPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex items-center justify-center bg-background" style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}>
+        <div className="flex items-center justify-center bg-background" style={{ minHeight: 'var(--app-height)' }}>
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" role="status" />
         </div>
       }

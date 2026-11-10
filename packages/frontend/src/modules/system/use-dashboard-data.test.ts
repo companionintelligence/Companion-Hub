@@ -102,6 +102,19 @@ describe('poolReach', () => {
     expect(reach).toMatchObject({ connected: 0, unreachable: 0 });
   });
 
+  it('counts failed probes only on peers still in use', () => {
+    const reach = poolReach(
+      [
+        withModels('parked', ['a:1b'], { status: 'unreachable', enabled: false, consecutiveFailures: 18966 }),
+        withModels('flaky', ['a:1b'], { consecutiveFailures: 1 }),
+        withModels('steady', ['a:1b'], { consecutiveFailures: 0 }),
+      ],
+      local,
+    );
+
+    expect(reach.probeFailures).toBe(1);
+  });
+
   it("sums this Hub's forwarded counter over every peer that reports it, so it equals the drawing's badges", () => {
     // Our own counter about work we sent there: still ours to read after the peer dropped or was disabled.
     const reach = poolReach(

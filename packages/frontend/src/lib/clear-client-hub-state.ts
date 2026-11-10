@@ -1,4 +1,5 @@
 import { setTauriSessionId } from './api-fetch';
+import { clearKeptStackUpdateOutcome } from './desktop-stack-session';
 import { clearRegistrationCache } from './registration-cache';
 import { clearStoredDriftChoice } from './registration-state-drift';
 
@@ -21,6 +22,7 @@ export type ClearClientHubStateOptions = {
 export function clearClientHubState(options: ClearClientHubStateOptions = {}): void {
   clearRegistrationCache();
   clearStoredDriftChoice();
+  clearKeptStackUpdateOutcome();
   setTauriSessionId(null);
 
   if (!options.keepPortalEmail) {

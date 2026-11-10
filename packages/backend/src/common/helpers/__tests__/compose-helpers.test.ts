@@ -1,7 +1,7 @@
 import type { Architecture } from '@/common/constants';
 import type { ServiceInput } from '@ci-hub/common/schemas';
 import { describe, expect, it } from 'vitest';
-import { mergeArchitectureOverrides } from '../compose-helpers';
+import { mergeArchitectureOverrides, oneShotServiceNames } from '../compose-helpers';
 
 describe('mergeArchitectureOverrides', () => {
   const baseServices: ServiceInput[] = [
@@ -256,5 +256,49 @@ describe('mergeArchitectureOverrides', () => {
 
     const result = mergeArchitectureOverrides(baseServices, overrides, 'amd64');
     expect(result).toEqual(baseServices);
+  });
+});
+
+describe('oneShotServiceNames', () => {
+  it('counts a restart: "no" service that nothing depends on staying up', () => {
+    expect(
+      oneShotServiceNames([
+        { name: 'sync', restart: 'no' },
+        { name: 'web', isMain: true },
+      ]),
+    ).toEqual(new Set(['sync']));
+  });
+
+  it('counts one that a dependent only waits on to finish, whatever else depends on it', () => {
+    const services: ServiceInput[] = [
+      { name: 'migrate', image: 'a', restart: 'no' },
+      { name: 'api', image: 'a', dependsOn: { migrate: { condition: 'service_completed_successfully' } } },
+    ];
+
+    expect(oneShotServiceNames(services)).toEqual(new Set(['migrate']));
+  });
+
+  it('does not count one a dependent needs running or healthy', () => {
+    const services: ServiceInput[] = [
+      { name: 'started', image: 'a', restart: 'no' },
+      { name: 'healthy', image: 'a', restart: 'no' },
+      { name: 'listed', image: 'a', restart: 'no' },
+      {
+        name: 'web',
+        image: 'a',
+        dependsOn: { started: { condition: 'service_started' }, healthy: { condition: 'service_healthy' } },
+      },
+      { name: 'worker', image: 'a', dependsOn: ['listed'] },
+    ];
+
+    expect(oneShotServiceNames(services)).toEqual(new Set());
+  });
+
+  it('never counts the main service', () => {
+    expect(oneShotServiceNames([{ name: 'web', restart: 'no', isMain: true }])).toEqual(new Set());
+  });
+
+  it('does not count a service Docker keeps bringing back', () => {
+    expect(oneShotServiceNames([{ name: 'a', restart: 'unless-stopped' }, { name: 'b', restart: 'on-failure' }, { name: 'c' }])).toEqual(new Set());
   });
 });

@@ -229,19 +229,37 @@ failed install, start and restart then look at them about once a second
   a row. It has 30 s from the first look. A run under way when that ends gets to finish, so
   40 s at most. Docker's retries back off, to one at about 13 s and the next at about 25 s, so a
   service whose database takes longer than that fails the check. The status sync still moves it
-  to `running` once it settles;
+  to `running` once it settles. A Start or Restart a person or a key asked for has 120 s instead
+  of 30 s, because a failure there removes the containers and nothing retries after that;
 - a container exited with an error, or is `dead`;
 - no container is running after 10 s.
 
 A healthy app waits at most 5 s, less when its containers are already up. A boot that
 recreates nothing takes two looks. A one-shot that exited 0 and a container still `Created`
-are fine. A container whose health check says `starting` counts as up after 5 s of running:
+are fine.
+
+A one-shot service that exited with an error is fine too while something else runs. A one-shot is
+a service with `restart: "no"` that isn't the main service and that no other service needs running.
+Only `service_completed_successfully` waits for a service to finish, so a dependent with any other
+`depends_on` condition, or a bare list, means it is expected to keep running. The app page shows
+Needs attention for a failed one-shot and the Hub's log gets its last lines. With nothing else running
+it is the failure. A one-shot that a service waits on to finish fails `compose up` itself as it
+always has and the dependent stays `Created`.
+
+A container whose health check says `starting` counts as up after 5 s of running:
 many apps take minutes to answer and the app page shows that as Initializing. A service that
 first crashes later than 5 s after it starts passes this check. The status sync reports it.
 
-A failed install ends `install_failed` and a failed start or restart ends `stopped`. The
-containers stay up either way, since the others may be useful. The toast names the service and the
-exit code. The app page adds the log line that best says why, also after a reload, because the Hub
+A failed install ends `install_failed` and a failed start or restart ends `stopped`. After an
+install or one of the Hub's own starts and restarts (a boot, Start all, a saved config, the start
+after an update) the containers stay up, since the others may be useful and Docker's retries can
+still bring the app back. A Start or Restart a person or a key asked for runs
+`down --remove-orphans` instead, as Stop does, so `stopped` is true. Named volumes and bind mounts
+stay. The crashed container's `docker logs` go with it. The whole app goes down, also when only
+one of its services failed, unless that service is a one-shot. The same happens when
+`compose up` itself fails and leaves a container
+restarting or unhealthy, as a dependency that never gets healthy does. The toast names the service
+and the exit code. The app page adds the log line that best says why, also after a reload, because the Hub
 keeps the reason on the lifecycle job. That read takes what reading the app's logs takes, so a
 member who may only see a custom app doesn't get it. The toast's event goes to every signed-in
 session, so it carries no log text.
@@ -252,9 +270,11 @@ session, so it carries no log text.
 groups them by app URN, and reconciles each installed app's DB status against
 reality:
 
-- **`running`**: at least one container is running, and every other one is running or exited
-  cleanly (`Exited (0)`), as a one-shot init service does when it finishes.
-- **`stopped`**: no container is running, or one exited with an error (mixed state is logged).
+- **`running`**: at least one container is running and every other one is running, exited
+  cleanly (`Exited (0)`) as a one-shot init service does when it finishes or is a one-shot that
+  exited with an error.
+- **`stopped`**: no container is running, or a service other than a one-shot exited with an error
+  (mixed state is logged).
   An app whose containers were all stopped with `docker stop`, such as by the desktop's
   **Stop Hub**, is `stopped`, and so is an installed app with no containers at all.
 
