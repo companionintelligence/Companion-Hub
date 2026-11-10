@@ -163,7 +163,7 @@ export const PortExposeDetailsView = ({ app, info }: Props) => {
       <Tooltip id="port-expose-actions-tooltip" className="tooltip" positionStrategy="fixed" />
 
       <PortExposeSettingsDialog app={app} info={info} isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      <UninstallDialog info={info} isOpen={removeOpen} onClose={() => setRemoveOpen(false)} />
+      <UninstallDialog info={info} isOpen={removeOpen} onClose={() => setRemoveOpen(false)} portExposePort={app.port ?? info.port ?? null} />
     </div>
   );
 };

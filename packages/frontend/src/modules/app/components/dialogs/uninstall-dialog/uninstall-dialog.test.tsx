@@ -177,4 +177,21 @@ describe('UninstallDialog', () => {
     expect(mockToastError).toHaveBeenCalledTimes(1);
     expect(h.invalidateAppQueries).toHaveBeenCalledWith(expect.anything(), 'ci-memory:ci-marketplace');
   });
+
+  // A port expose installs nothing and has no data or backups, yet its dialog offered to delete them.
+  it('removes a port expose in its own words, without a data switch', async () => {
+    const user = userEvent.setup();
+    const portExpose = { id: 'home-assistant', name: 'Home Assistant', urn: 'home-assistant:_user' } as never;
+    render(<UninstallDialog info={portExpose} isOpen onClose={vi.fn()} portExposePort={8123} />);
+
+    expect(screen.getByRole('dialog', { name: 'Remove Home Assistant?' })).toBeInTheDocument();
+    expect(screen.getByTestId('port-expose-remove-description')).toHaveTextContent(
+      'The Hub stops publishing port 8123. Whatever listens on that port keeps running on this machine.',
+    );
+    expect(screen.queryByText(DATA_LOST)).not.toBeInTheDocument();
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Remove' }));
+    expect(h.mutate).toHaveBeenCalledWith({ path: { urn: 'home-assistant:_user' }, body: { deleteAllData: true, force: false } });
+  });
 });

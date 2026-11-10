@@ -1,5 +1,6 @@
 {
   "APP_ACTION_OPEN": "Open",
+  "APP_ACTION_UNINSTALL": "Uninstall",
   "APP_ACTION_OPEN_DATA_FOLDER": "Open data folder",
   "APP_ACTION_COPY_DATA_FOLDER_PATH": "Copy data folder path",
   "APP_ACTION_DATA_FOLDER_PATH_COPIED": "Data folder path copied",
@@ -534,6 +535,8 @@
   "APP_UNINSTALL_FORM_RESET_KEEPS_BACKUPS": "To start over and keep the backups, use Reset app instead.",
   "APP_UNINSTALL_FORM_SUBMIT": "Uninstall",
   "APP_UNINSTALL_FORM_TITLE": "Uninstall {{name}}?",
+  "PORT_EXPOSE_REMOVE_TITLE": "Remove {{name}}?",
+  "PORT_EXPOSE_REMOVE_DESCRIPTION": "The Hub stops publishing port {{port}}. Whatever listens on that port keeps running on this machine.",
   "APP_UNINSTALL_MEMORY_PROVIDER_WARNING": "{{count}} installed app(s) are still connected to CI Memory:",
   "APP_UNINSTALL_MEMORY_PROVIDER_UNKNOWN": "Couldn't check which apps are connected to CI Memory. Proceed only if you're sure.",
   "APP_UNINSTALL_MEMORY_PROVIDER_CONSEQUENCE": "Proceeding disconnects and restarts them, and deleting data permanently erases all shared memories.",
