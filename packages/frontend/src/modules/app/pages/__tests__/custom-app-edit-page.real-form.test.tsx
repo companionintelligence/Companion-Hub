@@ -37,6 +37,8 @@ vi.mock('@tanstack/react-query', () => ({
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getAppComposeDiffOptions: () => ({ queryKey: ['compose-diff'] }),
   getAppComposeDiffQueryKey: () => ['compose-diff'],
+  // The page reads the app's display name for its title.
+  getAppOptions: () => ({ queryKey: ['app'] }),
   updateCustomAppMutation: () => ({}),
 }));
 
@@ -115,7 +117,7 @@ describe('custom app edit with the real form', () => {
     expect(screen.getByDisplayValue('5')).toBeInTheDocument();
     expect(screen.getByDisplayValue('false')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save all' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await vi.waitFor(() => expect(mutateAsync).toHaveBeenCalled());
     expect(mutateAsync).toHaveBeenCalledWith(

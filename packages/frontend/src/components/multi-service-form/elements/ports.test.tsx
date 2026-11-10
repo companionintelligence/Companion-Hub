@@ -5,6 +5,16 @@ import { useForm } from 'react-hook-form';
 import { describe, expect, it, vi } from 'vitest';
 import { PortsConfig } from './ports';
 
+// The TCP and UDP switches are Radix controls, which measure themselves. jsdom has no ResizeObserver.
+vi.stubGlobal(
+  'ResizeObserver',
+  class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  },
+);
+
 type Mapping = { hostPort: number | string; containerPort: number | string };
 
 const Harness = ({ onValid, saved = { hostPort: 9091, containerPort: 9091 } }: { onValid: (data: unknown) => void; saved?: Mapping }) => {

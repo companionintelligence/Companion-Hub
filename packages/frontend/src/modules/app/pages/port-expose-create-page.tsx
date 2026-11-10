@@ -159,6 +159,12 @@ export default function PortExposeCreatePage() {
       navigate(`/apps/${data?.appName ?? deriveAppSlug(variables.name)}`);
     },
     onError: (error: TranslatableError) => {
+      // Nothing listening is about the port the person typed, so it goes under that field like the
+      // form's other port errors rather than into a toast.
+      if (error.message === 'PORT_EXPOSE_PORT_UNREACHABLE') {
+        setError('port', { message: t(error.message, { ...error.intlParams }) });
+        return;
+      }
       toast.error(t(error.message || 'PORT_EXPOSE_CREATE_ERROR', { ...error.intlParams }));
     },
   });
@@ -249,49 +255,58 @@ export default function PortExposeCreatePage() {
 
   return (
     <div className="page-scroller-edge-0 relative h-full overflow-y-auto" data-page-scroller="port-expose">
-      <div className="mx-auto max-w-3xl pb-8">
-        <Card>
+      {/* The same frame as Create a custom app and the app page it opens: one width, a header card with
+          the title and what the page does, then the fields. */}
+      <div className="mx-auto max-w-6xl pb-20">
+        <Card className="overflow-hidden border-border/60 bg-card/80 shadow-sm">
           <CardHeader>
-            <CardTitle>{t('PORT_EXPOSE_TITLE')}</CardTitle>
-            <p className="text-sm text-muted-foreground">{t('PORT_EXPOSE_DESCRIPTION')}</p>
+            <CardTitle className="text-2xl font-medium tracking-tight">{t('PORT_EXPOSE_TITLE')}</CardTitle>
+            <p className="max-w-3xl text-sm text-muted-foreground">{t('PORT_EXPOSE_DESCRIPTION')}</p>
           </CardHeader>
           <CardContent>
-            <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-              <Input
-                label={
-                  <>
-                    {t('CUSTOM_APP_NAME_LABEL')} <span className="text-destructive">*</span>
-                  </>
-                }
-                {...register('name')}
-                aria-describedby="port-expose-name-help"
-                error={errors.name?.message}
-                placeholder={t('CUSTOM_APP_NAME_PLACEHOLDER')}
-                disabled={createPortExpose.isPending}
-              />
-              <p id="port-expose-name-help" className="text-xs text-muted-foreground -mt-2">
-                {t('CUSTOM_APP_NAME_HELP')}
-                {watchName && derivedSlug ? ` ${t('CUSTOM_APP_NAME_DERIVED', { slug: derivedSlug })}` : ''}
-              </p>
+            {/* noValidate: the browser's own bubble for a port under 1024 stood in for the inline error onSubmit gives. */}
+            <form onSubmit={handleSubmit(onSubmit)} noValidate className="space-y-4">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div>
+                  <Input
+                    label={
+                      <>
+                        {t('CUSTOM_APP_NAME_LABEL')} <span className="text-destructive">*</span>
+                      </>
+                    }
+                    {...register('name')}
+                    aria-describedby="port-expose-name-help"
+                    error={errors.name?.message}
+                    placeholder={t('CUSTOM_APP_NAME_PLACEHOLDER')}
+                    disabled={createPortExpose.isPending}
+                  />
+                  <p id="port-expose-name-help" className="mt-1 text-xs text-muted-foreground">
+                    {t('CUSTOM_APP_NAME_HELP')}
+                    {watchName && derivedSlug ? ` ${t('CUSTOM_APP_NAME_DERIVED', { slug: derivedSlug })}` : ''}
+                  </p>
+                </div>
 
-              <Input
-                label={
-                  <>
-                    {t('COMMON_PORT')} <span className="text-destructive">*</span>
-                  </>
-                }
-                type="number"
-                min={1024}
-                max={65535}
-                {...register('port')}
-                aria-describedby="port-expose-port-help"
-                error={errors.port?.message}
-                placeholder={t('PORT_EXPOSE_PORT_PLACEHOLDER')}
-                disabled={createPortExpose.isPending}
-              />
-              <p id="port-expose-port-help" className="text-xs text-muted-foreground -mt-2">
-                {t('PORT_EXPOSE_PORT_HELP')}
-              </p>
+                <div>
+                  <Input
+                    label={
+                      <>
+                        {t('COMMON_PORT')} <span className="text-destructive">*</span>
+                      </>
+                    }
+                    type="number"
+                    min={1024}
+                    max={65535}
+                    {...register('port')}
+                    aria-describedby="port-expose-port-help"
+                    error={errors.port?.message}
+                    placeholder={t('PORT_EXPOSE_PORT_PLACEHOLDER')}
+                    disabled={createPortExpose.isPending}
+                  />
+                  <p id="port-expose-port-help" className="mt-1 text-xs text-muted-foreground">
+                    {t('PORT_EXPOSE_PORT_HELP')}
+                  </p>
+                </div>
+              </div>
 
               <div>
                 <span id="port-expose-exposure-mode-label" className="block text-sm font-medium mb-1">
@@ -373,12 +388,13 @@ export default function PortExposeCreatePage() {
                 />
               ) : null}
 
-              <div className="flex flex-wrap gap-2 pt-2">
+              {/* Cancel, then the action, on the right: the order the Hub's dialogs and the custom app form use. */}
+              <div className="-mx-6 -mb-6 mt-2 flex flex-wrap items-center justify-end gap-2 border-t border-border px-6 py-3">
+                <Button type="button" variant="ghost" onClick={() => navigate('/store')} disabled={createPortExpose.isPending}>
+                  {t('COMMON_CANCEL')}
+                </Button>
                 <Button type="submit" loading={createPortExpose.isPending}>
                   {t('PORT_EXPOSE_SUBMIT')}
-                </Button>
-                <Button type="button" variant="outline" onClick={() => navigate('/store')} disabled={createPortExpose.isPending}>
-                  {t('COMMON_CANCEL')}
                 </Button>
               </div>
             </form>

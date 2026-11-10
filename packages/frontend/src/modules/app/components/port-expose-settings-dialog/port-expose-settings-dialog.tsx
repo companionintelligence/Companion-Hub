@@ -172,6 +172,11 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
       onClose();
     },
     onError: (error: TranslatableError) => {
+      // As on Expose a port: nothing listening is about the port typed here, so it goes under that field.
+      if (error.message === 'PORT_EXPOSE_PORT_UNREACHABLE') {
+        setError('port', { message: t(error.message, { ...error.intlParams }) });
+        return;
+      }
       toast.error(t(error.message || 'PORT_EXPOSE_UPDATE_ERROR', { ...error.intlParams }));
     },
   });
@@ -256,11 +261,13 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
         }
       }}
     >
-      <DialogContent className="max-h-[85vh] flex flex-col">
+      {/* The width of the app Settings dialog, so the three exposure choices fit on one line as they do there. */}
+      <DialogContent className="sm:max-w-2xl max-h-[calc(100dvh-2rem)] flex flex-col">
         <DialogHeader>
-          <DialogTitle>{t('PORT_EXPOSE_SETTINGS_TITLE')}</DialogTitle>
+          <DialogTitle>{t('PORT_EXPOSE_SETTINGS_TITLE', { name: info.name })}</DialogTitle>
         </DialogHeader>
-        <form onSubmit={handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
+        {/* noValidate: onSubmit names a port out of range under the field, as on Expose a port, instead of the browser's own bubble. */}
+        <form onSubmit={handleSubmit(onSubmit)} noValidate className="flex min-h-0 flex-1 flex-col">
           <div className="flex-1 space-y-4 overflow-y-auto pr-1">
             <Input
               label={

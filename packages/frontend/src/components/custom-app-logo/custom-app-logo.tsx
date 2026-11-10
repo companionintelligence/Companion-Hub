@@ -10,12 +10,16 @@ import { toast } from 'sonner';
 export const CustomAppLogo: React.FC<{
   urn?: string;
   url?: string;
-  size?: number;
+  /** Pixels, or a CSS length such as `100%` to fill a box the caller sizes. */
+  size?: number | string;
   className?: string;
   alt?: string;
+  /** The name the placeholder takes its letter from while the app has no image. */
+  name?: string;
+  shape?: 'squircle' | 'rounded';
   onImageUpload?: (file: File) => void;
   isUploading?: boolean;
-}> = ({ urn, url, size = 80, className = '', alt = '', onImageUpload, isUploading = false }) => {
+}> = ({ urn, url, size = 80, className = '', alt = '', name, shape, onImageUpload, isUploading = false }) => {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -56,8 +60,8 @@ export const CustomAppLogo: React.FC<{
   };
 
   return (
-    <div className={clsx('custom-app-logo-container', className)} style={{ width: size, height: size }}>
-      <AppLogo urn={urn} url={url} size={size} alt={alt} />
+    <div className={clsx('custom-app-logo-container', { 'is-rounded': shape === 'rounded' }, className)} style={{ width: size, height: size }}>
+      <AppLogo urn={urn} url={url} size={size} alt={alt} name={name} shape={shape} />
       {onImageUpload && (
         <>
           <button
@@ -68,7 +72,7 @@ export const CustomAppLogo: React.FC<{
             disabled={isUploading}
           >
             <div className="custom-app-logo-overlay-content">
-              <Upload size={size / 3} className="custom-app-logo-icon" />
+              <Upload size={typeof size === 'number' ? size / 3 : 32} className="custom-app-logo-icon" />
               <span className="custom-app-logo-text">{isUploading ? t('CUSTOM_APP_UPLOADING') : t('CUSTOM_APP_UPLOAD_IMAGE')}</span>
             </div>
           </button>

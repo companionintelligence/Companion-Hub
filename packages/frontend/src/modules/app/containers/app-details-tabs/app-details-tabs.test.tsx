@@ -179,3 +179,35 @@ describe('AppDetailsTabs: who may edit custom app notes', () => {
     expect(screen.queryByRole('button', { name: 'COMMON_EDIT' })).not.toBeInTheDocument();
   });
 });
+
+// A custom app's manifest holds placeholders for the store's facts ("User", "Utilities", an empty source
+// link, both architectures), and the column showed them as if they were true.
+describe('AppDetailsTabs: information about an app made on this Hub', () => {
+  it('shows when it was made, when it changed and its version, and none of the store rows', () => {
+    render(
+      <AppDetailsTabs
+        info={makeInfo({ urn: 'my-compose:_user', created_at: Date.UTC(2026, 10, 10), updated_at: Date.UTC(2026, 10, 10) })}
+        metadata={defaultMetadata}
+      />,
+    );
+
+    expect(screen.getByTestId('app-created-date')).toBeInTheDocument();
+    expect(screen.getByText('COMMON_UPDATED')).toBeInTheDocument();
+    expect(screen.getByText('COMMON_VERSION')).toBeInTheDocument();
+    for (const storeRow of ['APP_DETAILS_PROVIDER', 'APP_DETAILS_CATEGORIES_TITLE', 'COMMON_SOURCE_CODE', 'APP_DETAILS_DOWNLOAD_SIZE']) {
+      expect(screen.queryByText(storeRow)).not.toBeInTheDocument();
+    }
+    expect(screen.queryByTestId('app-architectures')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('app-privacy-card')).not.toBeInTheDocument();
+  });
+
+  it('keeps every row for a store app', () => {
+    render(<AppDetailsTabs info={makeInfo()} metadata={defaultMetadata} />);
+
+    for (const storeRow of ['APP_DETAILS_PROVIDER', 'APP_DETAILS_CATEGORIES_TITLE', 'COMMON_SOURCE_CODE', 'APP_DETAILS_DOWNLOAD_SIZE']) {
+      expect(screen.getByText(storeRow)).toBeInTheDocument();
+    }
+    expect(screen.getByTestId('app-privacy-card')).toBeInTheDocument();
+    expect(screen.queryByTestId('app-created-date')).not.toBeInTheDocument();
+  });
+});

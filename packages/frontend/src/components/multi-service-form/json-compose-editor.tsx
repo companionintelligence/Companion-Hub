@@ -7,6 +7,8 @@ import CodeMirror from '@uiw/react-codemirror';
 import { json } from '@codemirror/lang-json';
 import { copilot } from '@uiw/codemirror-theme-copilot';
 import { useTranslation } from 'react-i18next';
+import { AlertCircle } from 'lucide-react';
+import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 
 const schema = toJsonSchema(dynamicComposeFormSchema);
 
@@ -93,7 +95,22 @@ export const JsonComposeEditor = ({ onChange }: Props) => {
           onChange={(e) => validateInput(e)}
           theme={copilot}
         />
-        {error && <pre className="whitespace-pre-wrap m-2">{error}</pre>}
+        {/* The validator's report, in the Hub's error alert rather than bare text under the editor. Its emoji go. */}
+        {error && (
+          <Alert variant="danger" className="m-3" data-testid="json-compose-editor-error">
+            <AlertIcon>
+              <AlertCircle strokeWidth={2} />
+            </AlertIcon>
+            <div className="min-w-0">
+              <AlertHeading>{t('MULTI_SERVICE_JSON_ERROR_TITLE')}</AlertHeading>
+              <AlertDescription>
+                <pre className="mt-1 overflow-x-auto whitespace-pre-wrap font-mono text-xs">
+                  {error.replace(/\p{Extended_Pictographic}\uFE0F?\s?/gu, '')}
+                </pre>
+              </AlertDescription>
+            </div>
+          </Alert>
+        )}
       </div>
     </div>
   );

@@ -1,11 +1,11 @@
-import { Checkbox } from '@/components/ui/Checkbox/Checkbox';
+import { Switch } from '@/components/ui/Switch';
 import './elements.css';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table';
 import type { dynamicComposeSchema } from '@ci-hub/common/schemas';
 import type { z } from 'zod';
-import { X } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import { Controller, useFieldArray, type Control, type FieldErrors, type UseFormRegister } from 'react-hook-form';
 import { HintMarker } from '@/components/ui/field-hint/field-hint';
@@ -32,7 +32,8 @@ export const VolumesConfig = ({ errors, serviceIndex, control, register }: Props
           <div>
             {t('MULTI_SERVICE_VOLUMES_TITLE')} <HintMarker anchorClass="my-volumes" hint={t('MULTI_SERVICE_VOLUMES_TITLE_TOOLTIP')} />
           </div>
-          <Button type="button" onClick={() => append({ containerPath: '/', hostPath: '/' })} size="sm">
+          <Button type="button" onClick={() => append({ containerPath: '/', hostPath: '/' })} size="sm" variant="outline" className="gap-1.5">
+            <Plus className="size-4" aria-hidden="true" />
             {t('MULTI_SERVICE_VOLUMES_ADD_VOLUME')}
           </Button>
         </div>
@@ -71,7 +72,9 @@ export const VolumesConfig = ({ errors, serviceIndex, control, register }: Props
                     control={control}
                     name={`services.${serviceIndex}.volumes.${index}.readOnly`}
                     defaultValue={false}
-                    render={({ field: { value, onChange } }) => <Checkbox className="mb-0" checked={value || false} onCheckedChange={onChange} />}
+                    render={({ field: { value, onChange } }) => (
+                      <Switch aria-label={t('MULTI_SERVICE_VOLUMES_READ_ONLY')} checked={value || false} onCheckedChange={onChange} />
+                    )}
                   />
                 </TableCell>
                 <TableCell className="w-10">
@@ -79,7 +82,9 @@ export const VolumesConfig = ({ errors, serviceIndex, control, register }: Props
                     control={control}
                     name={`services.${serviceIndex}.volumes.${index}.shared`}
                     defaultValue={false}
-                    render={({ field: { value, onChange } }) => <Checkbox className="mb-0" checked={value || false} onCheckedChange={onChange} />}
+                    render={({ field: { value, onChange } }) => (
+                      <Switch aria-label={t('MULTI_SERVICE_VOLUMES_SHARED')} checked={value || false} onCheckedChange={onChange} />
+                    )}
                   />
                 </TableCell>
                 <TableCell className="w-10">
@@ -87,12 +92,14 @@ export const VolumesConfig = ({ errors, serviceIndex, control, register }: Props
                     control={control}
                     name={`services.${serviceIndex}.volumes.${index}.private`}
                     defaultValue={false}
-                    render={({ field: { value, onChange } }) => <Checkbox className="mb-0" checked={value || false} onCheckedChange={onChange} />}
+                    render={({ field: { value, onChange } }) => (
+                      <Switch aria-label={t('MULTI_SERVICE_VOLUMES_PRIVATE')} checked={value || false} onCheckedChange={onChange} />
+                    )}
                   />
                 </TableCell>
                 <TableCell className="w-1">
-                  <Button type="button" size="sm" onClick={() => remove(index)} className="btn-action">
-                    <X className="" size={16} />
+                  <Button type="button" variant="ghost" size="icon" aria-label={t('COMMON_REMOVE')} onClick={() => remove(index)}>
+                    <Trash2 className="size-4 text-destructive" aria-hidden="true" />
                   </Button>
                 </TableCell>
               </TableRow>

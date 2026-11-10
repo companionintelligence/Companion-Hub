@@ -29,6 +29,7 @@ import { McpAccessCard } from '../components/mcp-access-card/mcp-access-card';
 import { MemoryStatusBadge } from '../components/memory-status-badge/memory-status-badge';
 import { useAppUrlAvailability } from '../helpers/use-app-url-availability';
 import { useInstallRequestPending, withInstallRequest } from '../helpers/install-request';
+import { AppHeaderStat, versionLabel } from '../components/app-header-stat/app-header-stat';
 
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   const { storeId } = params;
@@ -41,7 +42,6 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
 }
 
 /** `v2026.11.2` for a numbered release; a tag such as `latest`, or one already starting with `v`, reads as it is. */
-const versionLabel = (version: string) => (/^\d/.test(version) ? `v${version}` : version);
 
 const INFORMATION_ROWS = ['provider', 'categories', 'updated', 'version', 'source', 'size'];
 
@@ -323,13 +323,7 @@ export default () => {
                     </span>
                   ) : null}
                   {headerStats.map((stat) => (
-                    <div
-                      key={stat.key}
-                      className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-muted/30 px-2.5 py-1 sm:px-3 sm:py-1.5"
-                    >
-                      <span className="text-foreground">{stat.value}</span>
-                      <span className="text-xs text-muted-foreground">{stat.label}</span>
-                    </div>
+                    <AppHeaderStat key={stat.key} value={stat.value} label={stat.label} />
                   ))}
                 </div>
 
