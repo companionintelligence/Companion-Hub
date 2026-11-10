@@ -133,7 +133,7 @@ export default () => {
 
   if (isLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center p-5">
+      <div className="flex min-h-dvh items-center justify-center p-5">
         <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-muted-foreground" />
       </div>
     );

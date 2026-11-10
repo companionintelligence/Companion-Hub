@@ -38,17 +38,33 @@
   --safe-area-top: env(safe-area-inset-top, 0px);
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
   --header-offset: calc(3.5rem + var(--titlebar-height, 0px) + var(--safe-area-top, 0px));
+  /*
+   * Height of the app shell. Not `100vh`: in a phone browser that is the height with
+   * the address bar hidden, so a shell sized by it runs past the bottom of the screen
+   * while the bar is showing, and with `body { overflow: hidden }` the cut-off part can
+   * never be scrolled into view. `100dvh` is the area actually visible.
+   */
+  --app-height: calc(100vh - var(--titlebar-height, 0px));
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 9px;
   --radius: 0.375rem;
 }
 
+@supports (height: 100dvh) {
+  :root {
+    --app-height: calc(100dvh - var(--titlebar-height, 0px));
+  }
+}
+
 /*
- * Tauri WKWebView is edge-to-edge (`enableEdgeToEdge`) but often reports
- * safe-area-inset-top as 0. Dynamic Island / notch is ~59px; home indicator ~34px.
+ * Tauri WKWebView is edge-to-edge but often reports safe-area-inset-top as 0.
+ * Dynamic Island / notch is ~59px; home indicator ~34px.
+ *
+ * Not on Android: the app pads its WebView by the real system bars there
+ * (SystemBars.kt), so a floor would pad a second time.
  */
-html.ci-mobile {
+html.ci-mobile:not(.ci-android) {
   --safe-area-top: max(env(safe-area-inset-top, 0px), 59px);
   --safe-area-bottom: max(env(safe-area-inset-bottom, 0px), 34px);
 }
