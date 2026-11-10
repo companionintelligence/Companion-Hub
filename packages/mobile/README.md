@@ -362,14 +362,12 @@ http://www.java.com"* if `JAVA_HOME` is not exported in that shell.
 
 `gen/apple/` is checked in, and **`Info.plist` is not regenerated from
 `project.yml` during `tauri ios build`** — the committed plist is what ships.
-Editing only `project.yml` changes nothing about the build. Change both, or edit
-the plist directly:
+Editing only `project.yml` changes nothing about the build. Don't hand-edit one
+file alone. Run the stamp script, which writes `project.yml`, the committed plist
+and Tauri's `bundle.iOS.bundleVersion` together:
 
 ```bash
-plutil -replace CFBundleVersion -string 42 \
-  src-tauri/gen/apple/ci-os-hub-mobile_iOS/Info.plist
+IOS_BUILD_NUMBER=42 node scripts/set-ios-version.mjs
 ```
 
-This matters for release automation: the stamp script must update both
-`project.yml` and the committed plist (as well as Tauri's bundle version). See
-[`STORE-READINESS.md`](./STORE-READINESS.md).
+See [`STORE-READINESS.md`](./STORE-READINESS.md).

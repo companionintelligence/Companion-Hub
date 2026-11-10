@@ -40,6 +40,10 @@
       "mobile": [
         {
           "scheme": ["cihub"]
+        },
+        {
+          "scheme": ["https"],
+          "host": "hub.ci.computer"
         }
       ],
       "desktop": {
