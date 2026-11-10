@@ -919,7 +919,7 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
               <CardDescription>{t('SETTINGS_WIZARD_SUBTITLE')}</CardDescription>
             </CardHeader>
             <CardContent>
-              <Button onClick={handleRestartWizard} disabled={demoMode || restartingWizard} data-testid="restart-wizard-btn">
+              <Button variant="outline" onClick={handleRestartWizard} disabled={demoMode || restartingWizard} data-testid="restart-wizard-btn">
                 {restartingWizard ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin mr-2" />

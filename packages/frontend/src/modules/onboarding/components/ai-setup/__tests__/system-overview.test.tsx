@@ -262,4 +262,22 @@ describe('SystemOverview: whether the NVIDIA driver answers', () => {
 
     expect(screen.getByTestId('nvidia-runtime-warning')).toHaveTextContent('Close and reopen');
   });
+
+  // The three distribution blocks pushed everything else on Settings > AI below the fold. They fold away
+  // as the ROCm card's manual steps do, and the notice is guidance (role="note"), not an alert.
+  it('keeps the toolkit commands folded until asked for', () => {
+    setNavigatorPlatform('Mozilla/5.0 (X11; Linux x86_64)', 'Linux x86_64');
+    render(<SystemOverview hardware={makeHardware()} tier="high" onRescan={async () => {}} />);
+
+    const notice = screen.getByTestId('nvidia-runtime-warning');
+    expect(notice).toHaveAttribute('role', 'note');
+    expect(notice).toHaveTextContent("Apps in containers can't use the GPU yet");
+    expect(notice).not.toHaveTextContent('nvidia-container-toolkit');
+
+    fireEvent.click(screen.getByTestId('nvidia-manual-toggle'));
+
+    expect(notice).toHaveTextContent('sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit');
+    expect(notice).toHaveTextContent('sudo nvidia-ctk runtime configure --runtime=docker');
+    expect(screen.getByTestId('nvidia-manual-toggle')).toHaveAttribute('aria-expanded', 'true');
+  });
 });
