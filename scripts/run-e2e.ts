@@ -162,6 +162,8 @@ async function main() {
       SERVER_PORT: backendPort,
       POSTGRES_PORT: dbPort,
       POSTGRES_PASSWORD: 'postgres',
+      // The e2e compose's broker password (e2e/docker-compose.e2e.yml), not the shared `admin` (Companion-Hub#884).
+      RABBITMQ_PASSWORD: 'e2e-rabbitmq',
       NODE_ENV: 'test',
     };
 

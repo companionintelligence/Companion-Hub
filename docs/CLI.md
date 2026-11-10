@@ -292,6 +292,7 @@ cihub config [env]                                   # show resolved config valu
 - `--detached` runs the stack in the background (equivalent to `docker compose up -d`). Outside a CI-Hub checkout (the `cihub` a desktop install or a standalone binary puts on PATH), `up`, `restart` and `recreate` run detached unless you pass `--attached`. In a checkout they pick the mode `up` would: `dev` runs detached, other environments stay attached unless you pass `--detached`. In 0.3.6 and earlier, `restart` and `recreate` stayed attached in both places, `restart dev` in a checkout included. Attached, the command stays on `docker compose up`. Ctrl+C or a signal to it then makes Compose stop the containers, `cloudflared` included.
 - Outside a checkout, `up` and `restart` leave the keys the desktop app writes in the data dir's env file alone (`DOCKER_GID`, `CI_HUB_CONTAINER_UID`, `CI_HUB_CONTAINER_GID`) and add only the ones that are missing. That is a file the desktop app wrote, whose header reads `# Derived (recomputed every launch from the current binary)`. In a file `cihub up` seeded on a headless node no app recomputes anything, so `cihub` refreshes the keys it computes itself: `DOCKER_GID` from the host's docker group plus the `0` uid and gid it pins under Docker Desktop. Both env files there hold `JWT_SECRET`, `POSTGRES_PASSWORD` and `RABBITMQ_PASSWORD`. `cihub` restricts them to `0600` before it starts the stack. It leaves the mode alone when `CI_HUB_CONTAINER_UID` pins the Hub to a non-root uid other than the file's owner, since the Hub then reads the file as that uid.
 - Before it starts the stack, `cihub up` checks the Docker versions the stack file needs. If Docker Compose is older than 2.33, which can't read the file, it stops and names the version it found. If Docker Engine is older than 28, which ignores the file's network priority, it warns that the Hub, Traefik, and the Tailscale helper may use the wrong network for internet and host traffic, and starts anyway. If it can't read a version, it says so and starts anyway. `restart` and `recreate` run the same check when they start the stack again. `cihub up local` (source dev) isn't checked.
+- The prod compose requires `RABBITMQ_PASSWORD` from the env file, and the Hub refuses `admin` in production ([#884](https://github.com/companionintelligence/Companion-Hub/issues/884)). So every `cihub up` except `cihub up local` rewrites `RABBITMQ_PASSWORD` in the env files when it is missing, empty or `admin`: outside a checkout in both of the data dir's env files, in a checkout in `.env.<env>`. It writes the strong value one of those files already has, or else 64 random hex characters, and leaves a strong value alone. The broker is then changed to match before the Hub starts. `cihub pool update` does the same before it pulls; see [`cihub pool update`](#cihub-pool-update).
 - After a reset (no `~/.local/share/companion-hub` seed), `cihub up prod` prompts interactively for a database password and writes a fresh install. Set `POSTGRES_PASSWORD` (or `CIHUB_POSTGRES_PASSWORD`) to skip the prompt.
 - The fresh install pins `CI_HUB_IMAGE` from exactly one of these, in order, and prints which:
   1. `CI_HUB_IMAGE` in the environment.
@@ -919,6 +920,14 @@ different branch, no checkout at all — is left untouched and reported, never r
 behalf. After the pull and redeploy it polls `/api/health` for up to ~20s, then reads `poolProtocol`
 off `/api/inference/pool/identify` so you know at a glance whether the redeploy landed and whether this
 build has Hub Pool at all.
+
+Before it pulls, it rewrites `RABBITMQ_PASSWORD` in the env files compose reads (both data-dir env
+files on a packaged install) when the value is missing, empty or `admin`, as `cihub up` does. The prod
+compose requires the value and the Hub refuses `admin` in production
+([#884](https://github.com/companionintelligence/Companion-Hub/issues/884)), so a checkout whose env
+file came from `.env.example` would otherwise stop at `RABBITMQ_PASSWORD must be set` after the
+fast-forward. The new value changes the broker's `RABBITMQ_DEFAULT_PASS`, so the redeploy recreates the
+broker, and the command then checks the broker accepts it (`scripts/sync-rabbitmq-password.ts`).
 
 #### Which image it deploys
 

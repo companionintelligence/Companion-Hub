@@ -64,13 +64,15 @@ The updater recreates the Hub the way compose created it, not the way a standard
 
 1. It reads the running container's `com.docker.compose.*` labels: project, service (`ci-hub`, or `ci-os-hub` on older compose files), working directory, compose files, and env file. A label that names a path inside the Hub container, such as `/data/.env`, is translated to the host path through the container's bind mounts.
 1. It pulls the target image. If the pull fails, nothing else happens.
-1. It writes `CI_HUB_IMAGE` and `CI_HUB_VERSION` to the env file.
+1. It writes `CI_HUB_IMAGE` and `CI_HUB_VERSION` to the env file. When that file has no `RABBITMQ_PASSWORD`, or `admin`, it also writes the broker password the running Hub uses, which the broker already accepts. The recreated Hub refuses `admin` in production ([#884](https://github.com/companionintelligence/Companion-Hub/issues/884)), and the compose that created it falls back to `admin`, or refuses to start, when the env file names none. Only a Hub that has this change does this write; see the note below.
 1. It starts a short-lived updater container named `<hub container>-stack-updater`. The container binds each host path at the same path, so the compose client reads the same files the Docker daemon mounts. Compose runs with only the env file, the target image, and absolute `ENV_FILE` and `COMPOSE_FILE_HOST` values; the Hub's own process environment does not reach it.
 1. The updater container checks that the env file is readable and that compose resolves the Hub service to the target image. Then it runs `docker compose up -d --no-deps --force-recreate --no-build <service>`. It does not recreate the queue or database and does not remove orphans.
 
 The updater container runs compose through the image's own `/usr/local/bin/docker-compose`, and only falls back to `docker compose` in an image without that binary. `docker compose` inside the image depends on a `cli-plugins` symlink under the Hub's Docker config directory, which was missing on 5 of 14 fleet Hubs on 2026-09-17.
 
 If any step in the updater container fails, it starts every container of the project that was running when it began. If the Hub container is not on the target image, it restores the previous env file.
+
+The broker-password write runs in the Hub that starts the update, so a Hub released before #884 does not do it. Such a Hub, updating to a release with #884, recreates the new Hub from an env file with no `RABBITMQ_PASSWORD`. The older compose then passes `admin`, the new Hub refuses it at boot and restarts in a loop, and the updater does not notice because `compose up` itself succeeded. Before that update, run `cihub up` or `cihub pool update` on the node, or open the desktop app, any of which gives the env file and the broker a password of their own.
 
 The updater refuses with HTTP 409, and leaves the env file as it was, when it cannot reproduce the stack:
 

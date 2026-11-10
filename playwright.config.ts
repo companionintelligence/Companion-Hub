@@ -28,7 +28,8 @@ const backendEnv: Record<string, string> = {
   RABBITMQ_HOST: process.env.RABBITMQ_HOST || 'localhost',
   RABBITMQ_PORT: process.env.RABBITMQ_PORT || '5672',
   RABBITMQ_USERNAME: process.env.RABBITMQ_USERNAME || 'companion',
-  RABBITMQ_PASSWORD: process.env.RABBITMQ_PASSWORD || 'admin',
+  // The broker in e2e/docker-compose.e2e.yml runs with this password, not the shared `admin` (Companion-Hub#884).
+  RABBITMQ_PASSWORD: process.env.RABBITMQ_PASSWORD || 'e2e-rabbitmq',
   JWT_SECRET: process.env.JWT_SECRET || 'e2e-test-secret',
   CI_CLOUD_URL: process.env.CI_CLOUD_URL || `http://localhost:${USE_REAL_PORTAL ? PORTAL_PORT : MOCK_PORTAL_PORT}`,
   DOMAIN: process.env.DOMAIN || 'ci.computer',

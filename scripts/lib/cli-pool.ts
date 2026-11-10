@@ -50,7 +50,10 @@ import { decideImagePinWrite, HUB_IMAGE_VAR, readDeclaredHubImage, resolveCompos
 import { readHubApiKeySource, resolveHubApiBase } from '../public-web-cli.js';
 import { resolveEnvFromArgs, usageAndExit } from './cli-args.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
-import { run, runCapture } from './cli-proc.js';
+import { run, runCapture, runScript } from './cli-proc.js';
+import { applianceEnvFilePaths } from './paths.js';
+import { ensureStrongRabbitmqPassword } from './seed-appliance.js';
+import { syncRabbitmqPasswordFromEnv } from '../sync-rabbitmq-password.js';
 import {
   buildPoolUpdateComposeArgs,
   composeFilesForPoolUpdate,
@@ -58,6 +61,7 @@ import {
   describeImageChange,
   describeImageSource,
   gatherGitUpdateFacts,
+  poolUpdateRabbitmqEnvFiles,
   resolvePoolUpdateImage,
 } from './cli-pool-update.js';
 import { BASE_COMMAND, type HubEnv } from './cli-types.js';
@@ -626,6 +630,24 @@ async function runPoolUpdateCommand(ctx: HubContext, requestedEnv: HubEnv): Prom
       ),
     );
   }
+  // Before anything reads the compose model: the prod compose requires RABBITMQ_PASSWORD from the env
+  // file, and the image this pulls refuses `admin` in production (Companion-Hub#884). A replaced value
+  // changes the broker's RABBITMQ_DEFAULT_PASS, so the `up` below recreates the broker, and the sync
+  // after it confirms the broker takes the new password.
+  const rabbitmqReplaced = ensureStrongRabbitmqPassword(
+    poolUpdateRabbitmqEnvFiles({
+      identity,
+      envFile: ctx.envFile,
+      applianceEnvFiles: ctx.appliance && ctx.dataDir ? applianceEnvFilePaths(ctx.dataDir) : [],
+    }),
+  );
+  if (rabbitmqReplaced) {
+    lines.push(
+      cliWarn(
+        `RABBITMQ_PASSWORD was missing or the shared default 'admin' in ${pinTarget.path}; wrote one of its own, and the broker is changed to match`,
+      ),
+    );
+  }
   const { pullArgs, upArgs } = buildPoolUpdateComposeArgs(ctx.envFile, files, identity);
   printMessageBox(`Hub Pool update  [${ctx.env}]`, [...lines, '', 'Pulling the published image, then redeploying...'], 'cyan');
   // CI_HUB_IMAGE is exported even without the overlay. On an appliance the seeded compose carries
@@ -641,6 +663,9 @@ async function runPoolUpdateCommand(ctx: HubContext, requestedEnv: HubEnv): Prom
   }
   run('docker', pullArgs, envOverrides, ctx.cwd);
   run('docker', upArgs, envOverrides, ctx.cwd);
+  if (rabbitmqReplaced) {
+    await runScript('scripts/sync-rabbitmq-password.ts', () => syncRabbitmqPasswordFromEnv(pinTarget.path), envOverrides, ctx.cwd);
+  }
 
   // The env file may not carry API_PORT at all on an appliance install (the compose service
   // `environment:` block sets it) — read it off the container that just started, same precedence

@@ -477,6 +477,48 @@ describe('SystemUpdateService', () => {
       expect(vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1]).toBe(PINNED_ENV);
     });
 
+    // Companion-Hub#884: the new image refuses `admin` in production. An env file with no broker
+    // password recreated the Hub through the older compose's `:-admin` fallback, and it crash-looped.
+    it.each([
+      ['no broker password', PINNED_ENV],
+      ['the shared default', `${PINNED_ENV}RABBITMQ_PASSWORD=admin\n`],
+    ])('writes the broker password this Hub runs with to an env file that has %s', async (_case, envContent) => {
+      vi.stubEnv('RABBITMQ_PASSWORD', 'running-broker-password');
+      insideHubContainer(envContent);
+      const calls = await installDocker(core6Appliance(RELEASE_PIN));
+
+      await service.performUpdate('0.2.71');
+
+      const written = vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1] as string;
+      expect(written).toMatch(/^RABBITMQ_PASSWORD=running-broker-password$/m);
+      expect(written).not.toMatch(/^RABBITMQ_PASSWORD=admin$/m);
+      // The value travels in the env file, never in the helper's argv.
+      const runArgs = calls.find((call) => call[1][0] === 'run')?.[1] ?? [];
+      expect(runArgs.join(' ')).not.toContain('running-broker-password');
+    });
+
+    it('keeps a strong broker password the env file already has', async () => {
+      vi.stubEnv('RABBITMQ_PASSWORD', 'running-broker-password');
+      insideHubContainer(`${PINNED_ENV}RABBITMQ_PASSWORD=file-broker-password\n`);
+      await installDocker(core6Appliance(RELEASE_PIN));
+
+      await service.performUpdate('0.2.71');
+
+      const written = vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1] as string;
+      expect(written).toMatch(/^RABBITMQ_PASSWORD=file-broker-password$/m);
+      expect(written).not.toContain('running-broker-password');
+    });
+
+    it('never writes the shared default from a Hub that runs on it', async () => {
+      vi.stubEnv('RABBITMQ_PASSWORD', 'admin');
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+
+      await service.performUpdate('0.2.71');
+
+      expect(vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1]).not.toContain('RABBITMQ_PASSWORD');
+    });
+
     it('leaves the env file alone when the pull fails', async () => {
       insideHubContainer(PINNED_ENV);
       await installDocker(core6Appliance(RELEASE_PIN), { failing: 'pull' });

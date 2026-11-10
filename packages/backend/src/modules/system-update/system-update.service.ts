@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common';
 import {
   DATA_DIR,
+  DEFAULT_RABBITMQ_PASSWORD,
   HUB_STACK_IMAGE_REPO,
   HUB_STACK_REGISTRY_REPO,
   UPDATE_LISTENER_HOST_FILENAME,
@@ -367,6 +368,20 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     let lines = content.split('\n');
     lines = this.upsertEnvLine(lines, 'CI_HUB_IMAGE', imageLine);
     lines = this.upsertEnvLine(lines, 'CI_HUB_VERSION', targetVersion);
+    // From Companion-Hub#884 the Hub refuses the broker password `admin` in production, and the prod
+    // compose either falls back to `admin` (older copies) or refuses to start (newer ones) when the env
+    // file names none. This Hub booted, so in production it runs with a password other than `admin`,
+    // and the broker accepts it. Writing that value here is what lets the recreated Hub boot on it.
+    const fileRabbitmqPassword = readEnvFileValue(content, 'RABBITMQ_PASSWORD');
+    const runningRabbitmqPassword = process.env.RABBITMQ_PASSWORD;
+    if (
+      (!fileRabbitmqPassword || fileRabbitmqPassword === DEFAULT_RABBITMQ_PASSWORD) &&
+      runningRabbitmqPassword &&
+      runningRabbitmqPassword !== DEFAULT_RABBITMQ_PASSWORD
+    ) {
+      lines = this.upsertEnvLine(lines, 'RABBITMQ_PASSWORD', runningRabbitmqPassword);
+      this.logger.info(`Wrote the broker password this Hub runs with to ${envFile}, which had none or the shared default`);
+    }
     fs.writeFileSync(envFile, lines.join('\n'));
     this.logger.info(`Pinned stack update in ${envFile}: CI_HUB_IMAGE=${imageLine}, CI_HUB_VERSION=${targetVersion}`);
     return content;
