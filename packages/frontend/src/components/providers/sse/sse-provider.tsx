@@ -3,17 +3,23 @@ import { useSSE } from '@/lib/hooks/use-sse';
 import { applyHubHello } from '@/lib/hub-hello';
 import { usesSameOriginHubApi } from '@/lib/hub-runtime-mode';
 import { appServiceFailureText } from '@/modules/app/helpers/app-service-failure';
-import { cachedAppName, handleAppSseEvent, type AppSsePayload } from '@/modules/app/helpers/app-sse-cache';
+import { cachedAppName, handleAppSseEvent, invalidateAppRecords, type AppSsePayload } from '@/modules/app/helpers/app-sse-cache';
 import { extractAppUrn } from '@/utils/app-helpers';
 import type { AppServiceFailure } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { useQueryClient } from '@tanstack/react-query';
-import type { PropsWithChildren } from 'react';
+import { type PropsWithChildren, useRef } from 'react';
 import { toast } from 'sonner';
 import { Trans, useTranslation } from 'react-i18next';
-import { Link, useNavigate } from 'react-router';
+import { Link, matchPath, useLocation, useNavigate } from 'react-router';
 
 const logsPageHref = '/settings?tab=logs';
+
+/** The machine can't run this app. No log of an app that never started will say more, so the toast names it. */
+const HOST_CAPABILITY_ERROR_KEYS: Record<string, string> = {
+  kvm_missing: 'APP_ERROR_KVM_MISSING',
+  kata_runtime_missing: 'APP_ERROR_KATA_RUNTIME_MISSING',
+};
 
 /**
  * Map Companion Portal's public-DNS failure class onto the message the user sees. An
@@ -41,10 +47,17 @@ const PUBLIC_DNS_ERROR_KEYS: Record<string, string> = {
   write_failed: 'APP_ERROR_PUBLIC_DNS_TEMPORARY',
 };
 
+/** Whether this is a custom app's page or its edit page. `/apps/<store>/<app>` is a store app's page, even if a custom app has the store's name. */
+const isCustomAppPage = (pathname: string, appId: string) => matchPath('/apps/:appId/edit?', pathname)?.params.appId === appId;
+
 export const SSEProvider = ({ children }: PropsWithChildren) => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  // `useSSE` keeps the handler from the first render, so where this tab is now has to be read through a ref.
+  const pathname = useRef('');
+  pathname.current = useLocation().pathname;
+  const greetedBefore = useRef(false);
 
   // Shows an error toast whose "see logs" text links to the Settings logs tab.
   const showLogsErrorToast = (i18nKey: string, appName: string) => {
@@ -73,6 +86,41 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     } else {
       toast.success(t(successKey, { id: appName }));
     }
+  };
+
+  const showHostCapabilityToast = (errorCode: string | undefined): boolean => {
+    const key = errorCode ? HOST_CAPABILITY_ERROR_KEYS[errorCode] : undefined;
+    if (key) {
+      toast.error(t(key));
+    }
+    return Boolean(key);
+  };
+
+  /**
+   * A refusal the Hub can name: a missing host device or a Docker network clash. Install, start and
+   * restart all run the same checks, so all three say what stopped them instead of "see logs" (#2376).
+   * Returns whether it showed a toast.
+   */
+  const showRefusalToast = (errorCode: string | undefined, appName: string, settingsPath: string | undefined): boolean => {
+    if (errorCode === 'rocm_kfd_missing') {
+      const toastId: string | number = toast.error(
+        <Trans
+          i18nKey="APP_ERROR_ROCM_KFD_MISSING_TOAST"
+          values={{ id: appName }}
+          components={{
+            settingsLink: (
+              <Link to={settingsPath ?? '/settings?tab=ai&section=rocm'} className="font-medium underline" onClick={() => toast.dismiss(toastId)} />
+            ),
+          }}
+        />,
+      );
+      return true;
+    }
+    if (errorCode === 'network_overlap') {
+      toast.error(t('APP_ERROR_NETWORK_OVERLAP_TOAST', { id: appName }));
+      return true;
+    }
+    return showHostCapabilityToast(errorCode);
   };
 
   // The service's name comes from the app's compose file, so it stays plain text: `Trans` would read tags in it.
@@ -111,6 +159,11 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
       // In dev the bundle is Vite's and the version never matches the API's, so a same-origin
       // reload is a production-only concern.
       if (event === 'hub_hello') {
+        // Any greeting after the first means the stream dropped and came back, most often a Hub restart.
+        if (greetedBefore.current) {
+          invalidateAppRecords(queryClient);
+        }
+        greetedBefore.current = true;
         applyHubHello(
           payload.version,
           {
@@ -155,7 +208,8 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
 
       // A cancelled retry of a failed install leaves the app there, failed, so its page stays.
       const appGone = event === 'uninstall_success' || (event === 'install_cancelled' && payload.appStatus !== 'install_failed');
-      if (appStoreId === '_user' && appGone) {
+      // The event reaches every tab and every operator. Only a tab showing the app has lost its page.
+      if (appStoreId === '_user' && appGone && isCustomAppPage(pathname.current, appId)) {
         navigate('/store', { replace: true });
       }
 
@@ -174,26 +228,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           showSuccessOrPortMoved('APP_INSTALL_SUCCESS', appName, movedHostPort);
           break;
         case 'install_error':
-          if (errorCode === 'rocm_kfd_missing') {
-            const toastId: string | number = toast.error(
-              <Trans
-                i18nKey="APP_ERROR_ROCM_KFD_MISSING_TOAST"
-                values={{ id: appName }}
-                components={{
-                  settingsLink: (
-                    <Link
-                      to={settingsPath ?? '/settings?tab=ai&section=rocm'}
-                      className="font-medium underline"
-                      onClick={() => toast.dismiss(toastId)}
-                    />
-                  ),
-                }}
-              />,
-            );
-            break;
-          }
-          if (errorCode === 'network_overlap') {
-            toast.error(t('APP_ERROR_NETWORK_OVERLAP_TOAST', { id: appName }));
+          if (showRefusalToast(errorCode, appName, settingsPath)) {
             break;
           }
           if (serviceFailure) {
@@ -213,8 +248,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           showSuccessOrPortMoved('APP_START_SUCCESS', appName, movedHostPort);
           break;
         case 'start_error':
-          if (errorCode === 'network_overlap') {
-            toast.error(t('APP_ERROR_NETWORK_OVERLAP_TOAST', { id: appName }));
+          if (showRefusalToast(errorCode, appName, settingsPath)) {
             break;
           }
           if (serviceFailure) {
@@ -267,6 +301,9 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           showSuccessOrPortMoved('APP_RESTART_SUCCESS', appName, movedHostPort);
           break;
         case 'restart_error':
+          if (showRefusalToast(errorCode, appName, settingsPath)) {
+            break;
+          }
           if (serviceFailure) {
             showServiceFailureToast('APP_ERROR_APP_FAILED_TO_RESTART_BECAUSE', appName, serviceFailure);
             break;

@@ -1,0 +1,267 @@
+import os from 'node:os';
+import path from 'node:path';
+import type { ModuleRef } from '@nestjs/core';
+import type Dockerode from 'dockerode';
+import { mock } from 'vitest-mock-extended';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { LoggerService } from '@/core/logger/logger.service';
+import { AppsRepository } from '@/modules/apps/apps.repository';
+import { AppHelpers } from '@/modules/apps/app.helpers';
+import { AppVolumeArchiveService } from '@/modules/docker/app-volume-archive.service';
+import { EnvUtils } from '@/modules/env/env.utils';
+import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
+import { ResourceAllocatorService } from '@/modules/system/resource-allocator.service';
+import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
+import type { AppUrn } from '@ci-hub/common/types';
+
+// Real files: the bug is what lands on disk, and in which order.
+vi.unmock('node:fs');
+vi.unmock('fs');
+
+// The builder is tested on its own; here only the files on disk matter.
+vi.mock('@/modules/docker/builders/compose.builder', () => ({
+  DockerComposeBuilder: class {
+    async getDockerCompose() {
+      return 'services: {}\n';
+    }
+  },
+}));
+
+const fs = (await import('node:fs')).default;
+const { FilesystemService } = await import('@/core/filesystem/filesystem.service');
+const { AppFilesManager } = await import('@/modules/apps/app-files-manager');
+const { AppStoreFilesManager } = await import('@/modules/app-stores/app-store-files-manager');
+const { InstallAppCommand } = await import('../install-app-command');
+const { GenerateAppEnvCommand } = await import('../generate-env-command');
+const { StopAppCommand } = await import('../stop-app-command');
+const { UpdateAppCommand } = await import('../update-app-command');
+const { ResetAppCommand } = await import('../reset-app-command');
+const { prepareAppComposeDir } = await import('../compose-preparation');
+const { DockerService } = await import('@/modules/docker/docker.service');
+
+/*
+ * A store app that ships `data/config.yml` and mounts `${APP_DATA_DIR}/data/config.yml` (blocky,
+ * caddy's Caddyfile, mosquitto's dynsec-setup.sh). Install prepares the compose folder before it
+ * copies the store's data folder. If that early prepare made the volume folders, `data/config.yml`
+ * became a directory, and copyDataDir, which skips an app whose `data/` exists, copied nothing:
+ * not the file, not the templates rendered with the app's secrets (#2198).
+ */
+describe.skipIf(process.platform === 'win32')('InstallAppCommand on a store app that ships a data folder', () => {
+  const appUrn = 'blocky:ci' as AppUrn;
+  let scratch: string;
+  let appDataDir: string;
+  let installed: string;
+  let moduleRef: ModuleRef;
+  let services: Map<unknown, unknown>;
+
+  beforeEach(async () => {
+    scratch = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'install-store-data-dir-'));
+    const dataDir = path.join(scratch, 'data');
+    const appDataRoot = path.join(scratch, 'app-data');
+    appDataDir = path.join(appDataRoot, 'ci', 'blocky');
+
+    const compose = {
+      schemaVersion: 2,
+      services: [
+        {
+          name: 'blocky',
+          image: 'spx01/blocky:v0.24',
+          isMain: true,
+          internalPort: 4000,
+          volumes: [
+            { hostPath: '${APP_DATA_DIR}/data/config.yml', containerPath: '/app/config.yml', readOnly: true },
+            { hostPath: '${APP_DATA_DIR}/data/logs', containerPath: '/logs' },
+          ],
+        },
+      ],
+    };
+
+    // What copyAppFromRepoToInstalled leaves: the store's definition, with its data folder.
+    installed = path.join(dataDir, 'apps', 'ci', 'blocky');
+    await fs.promises.mkdir(path.join(installed, 'data'), { recursive: true });
+    await fs.promises.writeFile(path.join(installed, 'docker-compose.json'), JSON.stringify(compose));
+    await fs.promises.writeFile(path.join(installed, 'data', 'config.yml'), 'upstreams:\n  groups:\n    default: [1.1.1.1]\n');
+    await fs.promises.writeFile(path.join(installed, 'data', 'secrets.env.template'), 'API_KEY={{BLOCKY_API_KEY}}\n');
+
+    const logger = mock<LoggerService>();
+    const configuration = mock<ConfigurationService>();
+    const directories = { dataDir, appDataDir: appDataRoot };
+    configuration.getConfig.mockReturnValue({ directories, domain: 'hub.example', localDomain: 'hub.lan', userSettings: {} } as never);
+    configuration.get.mockImplementation(((key: string) => {
+      if (key === 'architecture') return 'amd64';
+      if (key === 'directories') return directories;
+      return undefined;
+    }) as never);
+
+    const filesystem = new FilesystemService(logger);
+    const appFilesManager = new AppFilesManager(configuration, filesystem, logger);
+    // The real copy, as the store does it.
+    const storeFiles = new AppStoreFilesManager(configuration, filesystem, logger, { slug: 'ci' } as never);
+
+    services = new Map<unknown, unknown>([
+      [AppFilesManager, appFilesManager],
+      [LoggerService, logger],
+      [ConfigurationService, configuration],
+      [EnvUtils, new EnvUtils()],
+      [
+        AppHelpers,
+        {
+          generateEnvFile: vi.fn(async () => {
+            await fs.promises.mkdir(appDataDir, { recursive: true });
+            await fs.promises.writeFile(path.join(appDataDir, 'app.env'), `APP_DATA_DIR=${appDataDir}\nBLOCKY_API_KEY=s3cret\n`);
+          }),
+        },
+      ],
+      [
+        MarketplaceService,
+        {
+          getDockerComposeJson: vi.fn().mockResolvedValue({ content: compose }),
+          copyAppFromRepoToInstalled: vi.fn(),
+          copyDataDir: (urn: AppUrn, envMap: Map<string, string>) => storeFiles.copyDataDir(urn, envMap),
+          getAppInfoFromAppStoreOrInstalled: vi.fn().mockResolvedValue(null),
+          listedAppUrns: vi.fn().mockResolvedValue([]),
+        },
+      ],
+      [AppVolumeArchiveService, { hasProjectVolumes: vi.fn().mockResolvedValue(false) }],
+      [DockerService, { composeApp: vi.fn().mockResolvedValue(undefined) }],
+      [SubnetManagerService, { allocateSubnet: vi.fn().mockResolvedValue('10.128.7.0/24') }],
+      [ResourceAllocatorService, { getEffectiveAppDefaults: vi.fn().mockResolvedValue({}) }],
+      [
+        AppsRepository,
+        {
+          getApps: vi.fn().mockResolvedValue([]),
+          getAppCustomDomain: vi.fn().mockResolvedValue(null),
+          getAppByUrn: vi.fn().mockResolvedValue(null),
+        },
+      ],
+    ]);
+    // Anything else install looks up (ports, SSE, entitlements, the plan recheck) is optional to it.
+    moduleRef = { get: (token: unknown) => services.get(token) } as unknown as ModuleRef;
+  });
+
+  afterEach(async () => {
+    await fs.promises.rm(scratch, { recursive: true, force: true });
+  });
+
+  it('copies the file a volume mounts, and does not make a folder in its place', async () => {
+    const docker = { pruneContainers: vi.fn().mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 }) } as unknown as Dockerode;
+    const command = new InstallAppCommand(moduleRef, docker);
+
+    const result = await command.execute(appUrn, { openPort: true, exposureMode: 'local', skipRun: true } as unknown as AppEventFormInput);
+
+    expect(result.success).toBe(true);
+    const mounted = path.join(appDataDir, 'data', 'config.yml');
+    const stat = await fs.promises.lstat(mounted);
+    expect(stat.isDirectory()).toBe(false);
+    expect(stat.isFile()).toBe(true);
+    expect(await fs.promises.readFile(mounted, 'utf8')).toContain('upstreams:');
+    // The template is rendered with the app's secrets (the writer ends the file with its own newline).
+    expect((await fs.promises.readFile(path.join(appDataDir, 'data', 'secrets.env'), 'utf8')).trim()).toBe('API_KEY=s3cret');
+  });
+
+  // A failed install leaves the app's files behind with its data folder not yet copied. The Settings
+  // save, memory-connect and a stop can then run generate-env or stop before any retry copies the data.
+  it('generate-env before the copy makes no volume folder, so the copy still lands', async () => {
+    const docker = { pruneContainers: vi.fn().mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 }) } as unknown as Dockerode;
+    const form = { openPort: true, exposureMode: 'local', skipRun: true } as unknown as AppEventFormInput;
+
+    const env = await new GenerateAppEnvCommand(moduleRef, docker).execute(appUrn, form);
+    expect(env.success).toBe(true);
+    await expect(fs.promises.lstat(path.join(appDataDir, 'data'))).rejects.toThrow();
+
+    const result = await new InstallAppCommand(moduleRef, docker).execute(appUrn, form);
+    expect(result.success).toBe(true);
+    expect((await fs.promises.lstat(path.join(appDataDir, 'data', 'config.yml'))).isFile()).toBe(true);
+    expect((await fs.promises.readFile(path.join(appDataDir, 'data', 'secrets.env'), 'utf8')).trim()).toBe('API_KEY=s3cret');
+  });
+
+  it('stop before the copy makes no volume folder', async () => {
+    const docker = { pruneContainers: vi.fn().mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 }) } as unknown as Dockerode;
+    const form = { openPort: true, exposureMode: 'local', skipRun: true } as unknown as AppEventFormInput;
+    // Stop returns early when there is no installed config. A minimal one gets it past that check; the
+    // app is not a port-expose app, so stop goes on to prepare the compose folder.
+    const config = vi.spyOn(AppFilesManager.prototype, 'getInstalledAppInfo').mockResolvedValueOnce({ urn: appUrn } as never);
+
+    const stopped = await new StopAppCommand(moduleRef, docker).execute(appUrn, form);
+    config.mockRestore();
+    expect(stopped.success).toBe(true);
+    await expect(fs.promises.lstat(path.join(appDataDir, 'data'))).rejects.toThrow();
+  });
+
+  // dispatchUpdate has no status gate: "Update all", the API and MCP can update an app whose install
+  // failed before the copy. It was not running, so the factory builds the command with wasRunning false.
+  it('an update of an install_failed app makes no volume folder, so the retried install still copies the data', async () => {
+    const docker = { pruneContainers: vi.fn().mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 }) } as unknown as Dockerode;
+    const form = { openPort: true, exposureMode: 'local', skipRun: true } as unknown as AppEventFormInput;
+
+    // The update replaces the installed files with the store's: keep a copy to put back as the repo would.
+    const repo = path.join(scratch, 'repo-blocky');
+    await fs.promises.cp(installed, repo, { recursive: true });
+    const marketplace = services.get(MarketplaceService) as { copyAppFromRepoToInstalled: ReturnType<typeof vi.fn> };
+    marketplace.copyAppFromRepoToInstalled.mockImplementation(async () => {
+      await fs.promises.cp(repo, installed, { recursive: true });
+    });
+    services.set(DockerService, {
+      composeApp: vi.fn().mockResolvedValue(undefined),
+      pullImages: vi.fn().mockResolvedValue(undefined),
+      imageIdLocally: vi.fn().mockResolvedValue(null),
+      createPreUpdateVolumeSnapshot: vi.fn().mockResolvedValue({ success: true }),
+    });
+    // What install_failed leaves: the app's own files (app.env), the store's data folder not yet copied.
+    await (services.get(AppHelpers) as { generateEnvFile: () => Promise<void> }).generateEnvFile();
+
+    // performBackup false: an app that never ran has nothing to back up, and backup does not prepare the folder.
+    const updated = await new UpdateAppCommand(moduleRef, docker, false, false).execute(appUrn, form);
+    expect(updated.success).toBe(true);
+    await expect(fs.promises.lstat(path.join(appDataDir, 'data'))).rejects.toThrow();
+
+    const result = await new InstallAppCommand(moduleRef, docker).execute(appUrn, form);
+    expect(result.success).toBe(true);
+    const mounted = path.join(appDataDir, 'data', 'config.yml');
+    expect((await fs.promises.lstat(mounted)).isFile()).toBe(true);
+    expect(await fs.promises.readFile(mounted, 'utf8')).toContain('upstreams:');
+    expect((await fs.promises.readFile(path.join(appDataDir, 'data', 'secrets.env'), 'utf8')).trim()).toBe('API_KEY=s3cret');
+  });
+
+  // Every prepare that does not say otherwise: start, restart, reset, network recovery. dispatchStart,
+  // dispatchRestart and reset have no status gate, so they reach an app whose install failed before
+  // the copy, and a start that then fails on its pull used to leave Docker nothing to create.
+  describe('prepareAppComposeDir with the default options', () => {
+    const docker = () => ({ pruneContainers: vi.fn().mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 }) }) as unknown as Dockerode;
+    const form = { openPort: true, exposureMode: 'local' } as unknown as AppEventFormInput;
+
+    it('makes no volume folder while the store data copy is pending', async () => {
+      await fs.promises.mkdir(appDataDir, { recursive: true });
+
+      await prepareAppComposeDir(moduleRef, docker(), appUrn, form);
+
+      await expect(fs.promises.lstat(path.join(appDataDir, 'data'))).rejects.toThrow();
+      await expect(fs.promises.lstat(path.join(appDataDir, 'data', 'config.yml'))).rejects.toThrow();
+    });
+
+    it('makes them once the copy is done, and leaves the mounted file a file', async () => {
+      await fs.promises.mkdir(path.join(appDataDir, 'data'), { recursive: true });
+      await fs.promises.writeFile(path.join(appDataDir, 'data', 'config.yml'), 'upstreams: {}\n');
+
+      await prepareAppComposeDir(moduleRef, docker(), appUrn, form);
+
+      expect((await fs.promises.stat(path.join(appDataDir, 'data', 'logs'))).isDirectory()).toBe(true);
+      expect((await fs.promises.lstat(path.join(appDataDir, 'data', 'config.yml'))).isFile()).toBe(true);
+      expect(await fs.promises.readFile(path.join(appDataDir, 'data', 'config.yml'), 'utf8')).toBe('upstreams: {}\n');
+    });
+  });
+
+  it('a reset of an install_failed app whose down fails leaves no volume folder', async () => {
+    const docker = { pruneContainers: vi.fn().mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 }) } as unknown as Dockerode;
+    const form = { openPort: true, exposureMode: 'local' } as unknown as AppEventFormInput;
+    services.set(DockerService, { composeApp: vi.fn().mockRejectedValue(new Error('Cannot connect to the Docker daemon')) });
+    await fs.promises.mkdir(appDataDir, { recursive: true });
+
+    const reset = await new ResetAppCommand(moduleRef, docker).execute(appUrn, form);
+
+    expect(reset.success).toBe(false);
+    await expect(fs.promises.lstat(path.join(appDataDir, 'data'))).rejects.toThrow();
+  });
+});

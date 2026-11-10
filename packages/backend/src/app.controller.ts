@@ -74,10 +74,8 @@ export class AppController {
       isConfigured: false,
       isGuestDashboardEnabled: false,
       isPasswordResetDisabled: true,
-      allowAutoThemes: true,
       allowErrorMonitoring: true,
       themeColor: 'blue',
-      themeBase: 'gray',
       localDomain: configuredLocalDomain,
       domain: configuredDomain,
       sslPort: 443,
@@ -100,7 +98,7 @@ export class AppController {
         userSettings = {};
       }
 
-      const { guestDashboard, disablePasswordReset, allowAutoThemes, themeColor, themeBase, allowErrorMonitoring } = userSettings || {};
+      const { guestDashboard, disablePasswordReset, themeColor, allowErrorMonitoring } = userSettings || {};
 
       // Ensure required fields have defaults (prefer resolved config over hardcoded fallbacks)
       const localDomain = resolveHubLocalDomainRoot({ localDomain: configuredLocalDomain, userSettings });
@@ -125,10 +123,8 @@ export class AppController {
         isConfigured: Boolean(operator),
         isGuestDashboardEnabled: guestDashboard ?? defaults.isGuestDashboardEnabled,
         isPasswordResetDisabled: disablePasswordReset ?? defaults.isPasswordResetDisabled,
-        allowAutoThemes: allowAutoThemes ?? defaults.allowAutoThemes,
         allowErrorMonitoring: allowErrorMonitoring ?? defaults.allowErrorMonitoring,
         themeColor: themeColor || defaults.themeColor,
-        themeBase: themeBase || defaults.themeBase,
         version,
         localDomain,
         domain,
@@ -171,10 +167,8 @@ export class AppController {
         isConfigured: false,
         isGuestDashboardEnabled: defaultSettings?.guestDashboard ?? defaults.isGuestDashboardEnabled,
         isPasswordResetDisabled: defaultSettings?.disablePasswordReset ?? defaults.isPasswordResetDisabled,
-        allowAutoThemes: defaultSettings?.allowAutoThemes ?? defaults.allowAutoThemes,
         allowErrorMonitoring: defaultSettings?.allowErrorMonitoring ?? defaults.allowErrorMonitoring,
         themeColor: defaultSettings?.themeColor || defaults.themeColor,
-        themeBase: defaultSettings?.themeBase || defaults.themeBase,
         version: {
           current: currentVersion,
           latest: currentVersion,

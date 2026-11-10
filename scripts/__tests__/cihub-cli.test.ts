@@ -61,6 +61,7 @@ import { hostPathFromDockerPath } from '../lib/paths';
 const poolApi = {
   fetchPoolStatus: vi.fn(),
   fetchPoolPeers: vi.fn(),
+  fetchPoolRoutingLog: vi.fn(),
   setPoolEnabledSetting: vi.fn(),
   setPoolRequireSignedPeers: vi.fn(),
   setPoolPeerEnabled: vi.fn(),
@@ -77,6 +78,7 @@ vi.mock('../hub-pool-cli', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../hub-pool-cli')>()),
   fetchPoolStatus: (...args: unknown[]) => poolApi.fetchPoolStatus(...args),
   fetchPoolPeers: (...args: unknown[]) => poolApi.fetchPoolPeers(...args),
+  fetchPoolRoutingLog: (...args: unknown[]) => poolApi.fetchPoolRoutingLog(...args),
   setPoolEnabledSetting: (...args: unknown[]) => poolApi.setPoolEnabledSetting(...args),
   setPoolRequireSignedPeers: (...args: unknown[]) => poolApi.setPoolRequireSignedPeers(...args),
   setPoolPeerEnabled: (...args: unknown[]) => poolApi.setPoolPeerEnabled(...args),
@@ -1464,6 +1466,7 @@ describe('runPoolCommand', () => {
     poolApiKey = 'device-key';
     poolApi.fetchPoolStatus.mockReset();
     poolApi.fetchPoolPeers.mockReset();
+    poolApi.fetchPoolRoutingLog.mockReset();
     poolApi.setPoolEnabledSetting.mockReset();
     poolApi.setPoolRequireSignedPeers.mockReset();
     poolApi.setPoolPeerEnabled.mockReset();
@@ -1566,6 +1569,48 @@ describe('runPoolCommand', () => {
       runPoolDoctorSection.mockReset().mockResolvedValue(section({ issueCount: 3, failureCount: 0 }));
       await runPoolCommand(['doctor']);
       expect(process.exitCode).toBeUndefined();
+    });
+  });
+
+  describe('pool log', () => {
+    const log = {
+      entries: [
+        {
+          at: '2026-09-05T10:00:01.000Z',
+          direction: 'outbound',
+          path: '/api/chat',
+          model: 'gemma3:270m',
+          node: 'local',
+          peerId: null,
+          backend: 'ollama',
+          candidates: 1,
+          attempt: 1,
+          failedOverFrom: [],
+          outcome: 'served',
+          status: 200,
+          durationMs: 33,
+        },
+      ],
+      summary: { recorded: 1, capacity: 200, served: 1, failed: 0, failovers: 0, lastAt: '2026-09-05T10:00:01.000Z' },
+    };
+
+    it('names this Hub from pool status', async () => {
+      poolApi.fetchPoolRoutingLog.mockResolvedValue(log);
+      poolApi.fetchPoolStatus.mockResolvedValue({ localNode: { nodeFqdn: 'hub-a.example-tailnet.ts.net' } });
+
+      await runPoolCommand(['log']);
+
+      expect(boxText()).toContain('hub-a.example-tailnet.ts.net');
+    });
+
+    it('still prints the log when pool status fails', async () => {
+      poolApi.fetchPoolRoutingLog.mockResolvedValue(log);
+      poolApi.fetchPoolStatus.mockRejectedValue(new Error('Hub API /inference/pool/status failed (500): boom'));
+
+      await runPoolCommand(['log']);
+
+      expect(boxText()).toContain('this Hub');
+      expect(exitSpy).not.toHaveBeenCalled();
     });
   });
 

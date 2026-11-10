@@ -5,9 +5,13 @@ import {
   dynamicComposeSchema as dynamicComposeSchemaZod,
   dynamicComposeObject,
   dynamicComposeFormSchema,
+  customAppComposeSchema,
+  customAppComposeFormSchema,
   collectServiceSecurityViolations,
+  saveViolationsFor,
   TRUSTED_APP_SECURITY_ALLOWLIST,
 } from '../dynamic-compose.js';
+import { parseInstalledComposeJson } from '../utils/convert-legacy-schema.js';
 import type { ZodAny } from 'zod';
 
 type ValidationResult<T> = { success: true; data: T } | { success: false };
@@ -1652,5 +1656,129 @@ describe('dynamicComposeFormSchema', () => {
       overrides: [{ architecture: 'arm64', services: [{ privileged: true }] }],
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe('customAppComposeSchema (what saving a custom app accepts)', () => {
+  const compose = (extra: Record<string, unknown>) => ({
+    schemaVersion: 2,
+    services: [{ name: 'web', image: 'nginx:alpine', internalPort: 80, isMain: true, ...extra }],
+  });
+
+  const refused: [string, Record<string, unknown>, string, (string | number)[]][] = [
+    ['an added capability', { capAdd: ['SYS_ADMIN'] }, 'CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED', ['capAdd', 0]],
+    ['a host device', { devices: ['/dev/mem:/dev/mem'] }, 'CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED', ['devices', 0]],
+    ['seccomp switched off', { securityOpt: ['seccomp=unconfined'] }, 'CUSTOM_APP_ERROR_SECURITY_OPT_NOT_ALLOWED', ['securityOpt', 0]],
+    ["the host's processes", { pid: 'host' }, 'CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED', ['pid']],
+    ["another container's network", { networkMode: 'container:ci-hub' }, 'CUSTOM_APP_ERROR_NETWORK_MODE_HOST_NOT_ALLOWED', ['networkMode']],
+    ['a named network', { networkMode: 'mynet' }, 'CUSTOM_APP_ERROR_NETWORK_MODE_NOT_ALLOWED', ['networkMode']],
+  ];
+
+  it.each(refused)('refuses %s with the words Start would use, on the service that asked', (_name, extra, message, path) => {
+    const { success, error } = customAppComposeSchema.safeParse(compose(extra));
+    expect(success).toBe(false);
+    expect(error?.issues).toEqual([expect.objectContaining({ message, path: ['services', 0, ...path] })]);
+  });
+
+  it('holds the form schema to the same rule', () => {
+    const { schemaVersion: _version, ...form } = compose({ capAdd: ['SYS_ADMIN'] });
+    const { success, error } = customAppComposeFormSchema.safeParse(form);
+    expect(success).toBe(false);
+    expect(error?.issues[0]?.message).toBe('CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED');
+  });
+
+  it('refuses the same settings in an override, which Start applies on that architecture', () => {
+    const { success, error } = customAppComposeSchema.safeParse({
+      ...compose({}),
+      overrides: [{ architecture: 'arm64', services: [{ name: 'web', capAdd: ['SYS_ADMIN'] }] }],
+    });
+    expect(success).toBe(false);
+    expect(error?.issues).toEqual([
+      expect.objectContaining({ message: 'CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED', path: ['overrides', 0, 'services', 0, 'capAdd', 0] }),
+    ]);
+  });
+
+  it('reports privileged once, as the schema already did', () => {
+    const { error } = customAppComposeSchema.safeParse(compose({ privileged: true }));
+    expect(error?.issues.map((issue) => issue.message)).toEqual(['CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED']);
+  });
+
+  it('reports a denied host path once', () => {
+    const { error } = customAppComposeSchema.safeParse(compose({ volumes: [{ hostPath: '/etc', containerPath: '/x' }] }));
+    expect(error?.issues).toEqual([
+      expect.objectContaining({ message: 'CUSTOM_APP_ERROR_HOST_PATH_DENIED', path: ['services', 0, 'volumes', 0, 'hostPath'] }),
+    ]);
+  });
+
+  it('reports an invalid volume name once', () => {
+    const { error } = customAppComposeSchema.safeParse(compose({ volumes: [{ volumeName: '/var/run/docker.sock', containerPath: '/x' }] }));
+    expect(error?.issues).toEqual([
+      expect.objectContaining({ message: 'CUSTOM_APP_ERROR_VOLUME_NAME_INVALID', path: ['services', 0, 'volumes', 0, 'volumeName'] }),
+    ]);
+  });
+
+  it.each([
+    ['a denied host path', { hostPath: '/etc', containerPath: '/x' }, 'CUSTOM_APP_ERROR_HOST_PATH_DENIED', 'hostPath'],
+    ['an invalid volume name', { volumeName: '/var/run/docker.sock', containerPath: '/x' }, 'CUSTOM_APP_ERROR_VOLUME_NAME_INVALID', 'volumeName'],
+  ])('reports %s in an override once', (_name, volume, message, field) => {
+    const { error } = customAppComposeSchema.safeParse({
+      ...compose({}),
+      overrides: [{ architecture: 'arm64', services: [{ name: 'web', volumes: [volume] }] }],
+    });
+    expect(error?.issues).toEqual([expect.objectContaining({ message, path: ['overrides', 0, 'services', 0, 'volumes', 0, field] })]);
+  });
+
+  it('drops only the reports the schema already made, so a new rule on the same field is still refused', () => {
+    const newRule = { path: ['volumes', 0, 'hostPath'], message: 'CUSTOM_APP_ERROR_SOME_NEW_RULE' };
+    const repeated = { path: ['volumes', 0, 'hostPath'], message: 'CUSTOM_APP_ERROR_HOST_PATH_DENIED' };
+    expect(saveViolationsFor({ volumes: [{ hostPath: '/etc' }] }, [newRule, repeated])).toEqual([newRule]);
+  });
+
+  it('keeps a new rule on privileged, and drops the repeat', () => {
+    const newRule = { path: ['privileged'], message: 'CUSTOM_APP_ERROR_SOME_NEW_RULE' };
+    const repeated = { path: ['privileged'], message: 'CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED' };
+    expect(saveViolationsFor({ privileged: true }, [newRule, repeated])).toEqual([newRule]);
+  });
+
+  it('still accepts what Start accepts', () => {
+    const allowed = compose({
+      capAdd: ['NET_BIND_SERVICE', 'CHOWN'],
+      devices: ['/dev/ttyUSB0:/dev/ttyUSB0', '/dev/dri:/dev/dri'],
+      securityOpt: ['no-new-privileges:true'],
+      networkMode: 'bridge',
+    });
+    expect(customAppComposeSchema.safeParse(allowed).success).toBe(true);
+    expect(customAppComposeSchema.safeParse(compose({ networkMode: 'service:db' })).success).toBe(true);
+  });
+
+  it.each(refused)('still reads an app saved earlier with %s, so it lists and its editor opens', (_name, extra) => {
+    expect(dynamicComposeSchemaZod.safeParse(compose(extra)).success).toBe(true);
+    expect(() => parseInstalledComposeJson(compose(extra))).not.toThrow();
+  });
+});
+
+describe('an environment variable with no value', () => {
+  const service = (environment: unknown) => ({ name: 'web', image: 'nginx:alpine', internalPort: 80, isMain: true, environment });
+
+  it.each([
+    ['an empty string', { key: 'FOO', value: '' }, 'CUSTOM_APP_ERROR_ENV_VALUE_MIN_LENGTH'],
+    // What the form sends for an empty field. It matches no branch and a bare union said "Invalid input".
+    ['no value', { key: 'FOO' }, 'CUSTOM_APP_ERROR_ENV_VALUE_REQUIRED'],
+  ])('names the rule for %s', (_name, variable, message) => {
+    const { success, error } = dynamicComposeFormSchema.safeParse({ services: [service([variable])] });
+    expect(success).toBe(false);
+    expect(error?.issues[0]).toMatchObject({ message, path: ['services', 0, 'environment', 0, 'value'] });
+  });
+
+  it("gives the form's resolver, which takes a union's first branch on a tie, the same words", () => {
+    const { error } = dynamicComposeFormSchema.safeParse({ services: [service([{ key: 'FOO' }])] });
+    const issue = error?.issues[0] as unknown as { errors: { message: string }[][] };
+    expect(issue.errors[0]?.[0]?.message).toBe('CUSTOM_APP_ERROR_ENV_VALUE_REQUIRED');
+  });
+
+  it('still takes a string, a number or a boolean', () => {
+    for (const value of ['bar', 0, 5, false, true]) {
+      expect(dynamicComposeFormSchema.safeParse({ services: [service([{ key: 'FOO', value }])] }).success, String(value)).toBe(true);
+    }
   });
 });

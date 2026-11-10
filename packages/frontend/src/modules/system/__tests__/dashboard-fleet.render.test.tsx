@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, waitFor } from '@testing-library/react';
+import { cleanup, render, waitFor } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -119,6 +119,22 @@ describe('resource monitor on core-2 (pool hub, 16 peers)', () => {
 
     expect(container.textContent).toContain('All clear');
     expect(container.textContent).not.toContain('no node took');
+  });
+
+  it('stays all clear with a switched-off peer that is also down, and counts the same peer once it is on', async () => {
+    const downPeer = (enabled: boolean) => (data: Record<string, unknown>) => {
+      const { peers } = data.inference_pool_status as { peers: Record<string, unknown>[] };
+      peers[0] = { ...peers[0], status: 'unreachable', enabled, consecutiveFailures: 18966 };
+    };
+
+    const off = await renderNode('core-2', { edit: downPeer(false) });
+    expect(off.textContent).toContain('All clear');
+    expect(off.textContent).not.toContain('failing probes');
+    cleanup();
+
+    const on = await renderNode('core-2', { edit: downPeer(true) });
+    expect(on.textContent).not.toContain('All clear');
+    expect(on.textContent).toContain('failing probes');
   });
 
   it('names the request nine nodes tried and dropped for what it was, not "Unplaced"', async () => {

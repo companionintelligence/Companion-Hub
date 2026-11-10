@@ -649,7 +649,12 @@ const serviceSchemaV2Object = z.object({
     .array(
       z.object({
         key: z.string('CUSTOM_APP_ERROR_ENV_KEY_REQUIRED').min(1, 'CUSTOM_APP_ERROR_ENV_KEY_MIN_LENGTH'),
-        value: z.string('CUSTOM_APP_ERROR_ENV_VALUE_REQUIRED').min(1, 'CUSTOM_APP_ERROR_ENV_VALUE_MIN_LENGTH').or(z.number()).or(z.boolean()),
+        // A missing value fails all three branches with one issue each. The form's resolver takes the
+        // first on a tie. Everything else reads the union's own message, so both carry the words for it.
+        value: z.union(
+          [z.string('CUSTOM_APP_ERROR_ENV_VALUE_REQUIRED').min(1, 'CUSTOM_APP_ERROR_ENV_VALUE_MIN_LENGTH'), z.number(), z.boolean()],
+          'CUSTOM_APP_ERROR_ENV_VALUE_REQUIRED',
+        ),
       }),
     )
     .optional(),
@@ -823,6 +828,69 @@ export const dynamicComposeSchema = dynamicComposeObject.superRefine(assertCompo
  * itself on submit and therefore must not require it as user input.
  */
 export const dynamicComposeFormSchema = dynamicComposeObject.omit({ schemaVersion: true }).superRefine(assertComposeOverrideSecurity);
+
+const reportKey = (path: PropertyKey[], message: string) => JSON.stringify([path, message]);
+
+/**
+ * What the schema itself already reports for this service, as path-and-message keys: its own security
+ * check, with no grants as a custom app holds none, and the volume name's field rule.
+ */
+const reportsTheSchemaAlreadyMade = (service: SecurityCheckedService): Set<string> => {
+  const keys = new Set<string>();
+  assertCustomAppServiceSecurity(service, (issue) => keys.add(reportKey(issue.path, issue.message)));
+  for (const [index, volume] of (service.volumes ?? []).entries()) {
+    if (volume.volumeName !== undefined && !DOCKER_VOLUME_NAME_PATTERN.test(volume.volumeName)) {
+      keys.add(reportKey(['volumes', index, 'volumeName'], 'CUSTOM_APP_ERROR_VOLUME_NAME_INVALID'));
+    }
+  }
+  return keys;
+};
+
+/**
+ * The violations saving reports for a service. One is dropped only when the schema already reported the
+ * same message at the same path, so a rule added to `collectServiceSecurityViolations` is refused on save
+ * without touching this, even on a field the schema also checks. Exported for its tests.
+ */
+export const saveViolationsFor = (
+  service: SecurityCheckedService,
+  violations: ServiceSecurityViolation[] = collectServiceSecurityViolations(service),
+): ServiceSecurityViolation[] => {
+  const already = reportsTheSchemaAlreadyMade(service);
+  return violations.filter((violation) => !already.has(reportKey(violation.path, violation.message)));
+};
+
+/**
+ * Refuses, when a custom app is saved, what the compose builder would refuse when it starts. A custom
+ * app holds no grants, so this is the answer Start gives, only sooner. It's held to every override,
+ * including one Start wouldn't apply on this Hub's architecture.
+ *
+ * Save only, on purpose. `parseInstalledComposeJson` and the edit page read composes with the schemas
+ * above, so an app saved before this rule still lists and still opens. The setting can be removed there.
+ */
+const assertComposeInsideSandbox = (
+  compose: { services: SecurityCheckedService[]; overrides?: { services: SecurityCheckedService[] }[] },
+  ctx: z.RefinementCtx,
+) => {
+  const refuse = (service: SecurityCheckedService, at: PropertyKey[]) => {
+    for (const violation of saveViolationsFor(service)) {
+      ctx.addIssue({ code: 'custom', message: violation.message, path: [...at, ...violation.path] });
+    }
+  };
+  for (const [index, service] of compose.services.entries()) {
+    refuse(service, ['services', index]);
+  }
+  for (const [overrideIndex, override] of (compose.overrides ?? []).entries()) {
+    for (const [index, service] of override.services.entries()) {
+      refuse(service, ['overrides', overrideIndex, 'services', index]);
+    }
+  }
+};
+
+/** What `POST` and `PATCH /custom-apps` accept. Use `dynamicComposeSchema` to read a compose already on the Hub. */
+export const customAppComposeSchema = dynamicComposeSchema.superRefine(assertComposeInsideSandbox);
+
+/** `customAppComposeSchema` for the custom-app form, which supplies `schemaVersion` itself on submit. */
+export const customAppComposeFormSchema = dynamicComposeFormSchema.superRefine(assertComposeInsideSandbox);
 
 export const dynamicComposeUnion = z.discriminatedUnion('schemaVersion', [dynamicComposeSchemaV1, dynamicComposeSchema]);
 

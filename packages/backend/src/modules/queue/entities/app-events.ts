@@ -28,6 +28,9 @@ const queueAppFormSchema = z
     // Start only: let compose recreate just the services whose resolved definition changed. Set by
     // the Hub boot (`AppLifecycleService.restartRunningApps`) and the start after an update.
     onlyRecreateChanged: z.boolean().optional(),
+    // Start and Restart only: take the containers down if the app does not come up. Set when a person
+    // or a key asked for it (`AppLifecycleCommand.stopAppThatDidNotComeUp`), not for the Hub's own.
+    stopIfNotUp: z.boolean().optional(),
     cpuLimit: optionalCpuLimitSchema,
     memoryLimit: optionalMemoryLimitSchema,
     // Explicit fields for public domain selection — previously passed through catchall as unknown.
@@ -114,7 +117,8 @@ export const appEventResultSchema = z.object({
   // the record); reserved so Phase 2-4 ops can report where they landed.
   cancelledStatus: z.string().optional(),
   // Set by a failed update: the previous version is back in place (and running again, if it was running).
-  // Set by a backup refused before it stopped the app: the app is as it was.
+  // Set by a backup refused before it stopped the app, or a start or restart refused before it touched a
+  // container: the app is as it was.
   rolledBack: z.boolean().optional(),
 });
 

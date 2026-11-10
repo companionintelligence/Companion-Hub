@@ -1,6 +1,9 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MemoryRouter } from 'react-router';
+import en from '@ci-hub/common/i18n/translations/en.json';
+import enUS from '@ci-hub/common/i18n/translations/en-US.json';
+import es from '@ci-hub/common/i18n/translations/es-ES.json';
 
 const { mockStoreState, mockSearchAppsInfiniteOptions } = vi.hoisted(() => ({
   mockStoreState: {
@@ -19,15 +22,21 @@ const { mockStoreState, mockSearchAppsInfiniteOptions } = vi.hoisted(() => ({
 const mockNavigate = vi.fn();
 const mockSetSearchParams = vi.fn();
 let capturedSearchParams = new URLSearchParams();
+let capturedPathname = '/store';
 
 vi.mock('react-router', async () => {
   const actual = await vi.importActual<typeof import('react-router')>('react-router');
   return {
     ...actual,
     useParams: vi.fn(() => ({})),
+    useLocation: () => ({ pathname: capturedPathname, search: '', hash: '', state: null, key: 'default' }),
     useNavigate: () => mockNavigate,
     useSearchParams: vi.fn(() => [capturedSearchParams, mockSetSearchParams]),
-    Navigate: vi.fn(({ to }: { to: string }) => <div data-testid="navigate-to">{to}</div>),
+    Navigate: vi.fn(({ to, replace }: { to: string; replace?: boolean }) => (
+      <div data-testid="navigate-to" data-replace={String(Boolean(replace))}>
+        {to}
+      </div>
+    )),
     Link: vi.fn(({ to, children, ...rest }: { to: string; children: React.ReactNode }) => (
       <a href={to} {...rest}>
         {children}
@@ -94,7 +103,6 @@ const mockUsePortalCatalog = vi.hoisted(() =>
     alternatives: {},
     isLoading: false,
     isError: false,
-    alternativesError: undefined,
     refetchAlternatives: vi.fn(),
   })),
 );
@@ -140,6 +148,7 @@ const mockUseParams = vi.mocked(useParams);
 
 const STORE_A = { slug: 'ci-apps', name: 'CI Apps', enabled: true, url: '', hash: '', branch: 'main' };
 const STORE_B = { slug: 'community', name: 'Community', enabled: true, url: '', hash: '', branch: 'main' };
+const STORE_MARKETPLACE = { slug: 'ci-marketplace', name: 'CI Marketplace', enabled: true, url: '', hash: '', branch: 'main' };
 
 const OWNER_ACTIONS = ['view', 'start', 'stop', 'restart', 'install', 'update', 'uninstall', 'reset', 'backup', 'restore', 'configure'];
 /** What `GET /api/custom-apps/access` answers: an organization owner or admin unless a test says otherwise. */
@@ -171,10 +180,12 @@ function setupQueries(stores = [STORE_A, STORE_B]) {
 describe('AppStorePage — multi-store UX', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSetSearchParams.mockReset();
     customAppActions = OWNER_ACTIONS;
     manageHub = true;
     mockUseParams.mockReturnValue({});
     capturedSearchParams = new URLSearchParams();
+    capturedPathname = '/store';
     mockStoreState.category = undefined;
     mockStoreState.storeId = 'ci-apps';
     mockStoreState.search = '';
@@ -182,7 +193,6 @@ describe('AppStorePage — multi-store UX', () => {
       alternatives: {},
       isLoading: false,
       isError: false,
-      alternativesError: undefined,
       refetchAlternatives: vi.fn(),
     });
   });
@@ -284,6 +294,7 @@ describe('AppStorePage — multi-store UX', () => {
 
   it('redirects /store/:storeId to /store?store=<storeId>', () => {
     setupQueries();
+    capturedPathname = '/store/community';
     mockUseParams.mockReturnValue({ storeId: 'community' });
 
     render(
@@ -293,6 +304,23 @@ describe('AppStorePage — multi-store UX', () => {
     );
 
     expect(screen.getByTestId('navigate-to')).toHaveTextContent('/store?store=community');
+    // A redirect that stayed in the history would send Back straight here again.
+    expect(screen.getByTestId('navigate-to')).toHaveAttribute('data-replace', 'true');
+    expect(mockSetSearchParams).not.toHaveBeenCalled();
+  });
+
+  it('keeps a store name with reserved characters as one query value in the redirect', () => {
+    setupQueries();
+    capturedPathname = '/store/a%26category%3Dai';
+    mockUseParams.mockReturnValue({ storeId: 'a&category=ai' });
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId('navigate-to')).toHaveTextContent('/store?store=a%26category%3Dai');
   });
 
   it('shows matching alternatives in catalog search for a proprietary name', () => {
@@ -307,7 +335,6 @@ describe('AppStorePage — multi-store UX', () => {
       },
       isLoading: false,
       isError: false,
-      alternativesError: undefined,
       refetchAlternatives: vi.fn(),
     });
 
@@ -339,7 +366,6 @@ describe('AppStorePage — multi-store UX', () => {
       },
       isLoading: false,
       isError: false,
-      alternativesError: undefined,
       refetchAlternatives: vi.fn(),
     });
 
@@ -395,7 +421,11 @@ describe('AppStorePage — multi-store UX', () => {
       </MemoryRouter>,
     );
 
-    expect(mockSetSearchParams).toHaveBeenCalled();
+    const clearing = mockSetSearchParams.mock.calls.find(([updater]) => !updater(new URLSearchParams('store=nonexistent')).has('store'));
+
+    expect(clearing).toBeDefined();
+    // A pushed entry would keep the bad address in the history. Back would land on it and be sent forward again.
+    expect(clearing?.[1]).toEqual({ replace: true });
   });
 
   it('uses the shared store search value for the app query and syncs the mobile input from it', () => {
@@ -537,6 +567,188 @@ describe('AppStorePage — multi-store UX', () => {
 
     expect(mockStoreState.setSearchImmediate).toHaveBeenCalledWith('ollama');
     expect(mockStoreState.setCategory).toHaveBeenCalledWith('ai');
+  });
+
+  it('shows only the sentence and Retry when the alternatives fail to load', () => {
+    setupQueries();
+    mockStoreState.category = '__alternatives__';
+    mockUsePortalCatalog.mockReturnValue({
+      alternatives: {},
+      isLoading: false,
+      isError: true,
+      refetchAlternatives: vi.fn(),
+    });
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    const banner = screen.getByText(/APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS/);
+    expect(banner).toHaveTextContent(/^APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS COMMON_RETRY$/);
+  });
+
+  it.each([
+    ['en', en.APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS],
+    ['en-US', enUS.APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS],
+    ['es-ES', es.APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS],
+  ])('ends the alternatives error with a full stop in %s, since Retry follows it directly', (_language, message) => {
+    expect(message).toMatch(/\.$/);
+  });
+
+  // The dashboard layout keeps the old page mounted through its exit animation, so it sees the next page's address.
+  it("leaves the next page's address alone while it animates out", () => {
+    capturedPathname = '/home';
+    // With no ?store= on the address and the marketplace listed, the store sync would fall back to the marketplace.
+    setupQueries([STORE_MARKETPLACE, STORE_B]);
+    mockStoreState.category = 'featured';
+    mockStoreState.storeId = 'community';
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockSetSearchParams).not.toHaveBeenCalled();
+    expect(mockStoreState.setSearchImmediate).not.toHaveBeenCalled();
+    expect(mockStoreState.setCategory).not.toHaveBeenCalled();
+    expect(mockStoreState.setStoreId).not.toHaveBeenCalled();
+  });
+
+  it('ignores a store switch clicked while it animates out', () => {
+    capturedPathname = '/home';
+    setupQueries();
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByText('Community'));
+
+    expect(mockStoreState.setStoreId).not.toHaveBeenCalled();
+    expect(mockSetSearchParams).not.toHaveBeenCalled();
+  });
+
+  it('opens the full catalog for a link with a search term and no category', () => {
+    capturedSearchParams = new URLSearchParams('store=ci-apps&q=uptime');
+    setupQueries();
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockStoreState.setSearchImmediate).toHaveBeenCalledWith('uptime');
+    expect(mockStoreState.setCategory).toHaveBeenCalledWith(undefined);
+    expect(mockStoreState.setCategory).not.toHaveBeenCalledWith('featured');
+  });
+
+  it('leaves Featured for a link that names it alongside a search term', () => {
+    capturedSearchParams = new URLSearchParams('store=ci-apps&q=uptime&category=featured');
+    setupQueries();
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockStoreState.setSearchImmediate).toHaveBeenCalledWith('uptime');
+    expect(mockStoreState.setCategory).toHaveBeenCalledWith(undefined);
+    expect(mockStoreState.setCategory).not.toHaveBeenCalledWith('featured');
+  });
+
+  it('still opens Featured for a link with no search term', () => {
+    capturedSearchParams = new URLSearchParams('store=ci-apps');
+    setupQueries();
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockStoreState.setCategory).toHaveBeenCalledWith('featured');
+  });
+
+  it('leaves Featured when the address gains a search term while the page is open', () => {
+    capturedSearchParams = new URLSearchParams('store=ci-apps');
+    setupQueries();
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+    expect(mockStoreState.setCategory).toHaveBeenCalledWith('featured');
+    mockStoreState.setCategory.mockClear();
+
+    capturedSearchParams = new URLSearchParams('store=ci-apps&q=uptime');
+    rerender(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockStoreState.setSearchImmediate).toHaveBeenCalledWith('uptime');
+    expect(mockStoreState.setCategory).toHaveBeenCalledWith(undefined);
+  });
+
+  it('keeps the open view when the address has neither a category nor a search term', () => {
+    capturedSearchParams = new URLSearchParams('store=ci-apps');
+    setupQueries();
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+    mockStoreState.setCategory.mockClear();
+
+    capturedSearchParams = new URLSearchParams('store=community');
+    rerender(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockStoreState.setCategory).not.toHaveBeenCalled();
+  });
+
+  it('still follows the next address after its own write turns out to change nothing', () => {
+    capturedSearchParams = new URLSearchParams('store=ci-apps&q=uptime');
+    setupQueries();
+    mockSetSearchParams.mockImplementation((updater: (prev: URLSearchParams) => URLSearchParams) => updater(capturedSearchParams));
+
+    // First pass: the store hasn't taken the search term yet, so the page writes an address without it.
+    const { rerender } = render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    // Second pass: the term has landed, the write matches the address and the URL never moves.
+    mockStoreState.search = 'uptime';
+    rerender(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+    mockStoreState.setCategory.mockClear();
+
+    capturedSearchParams = new URLSearchParams('store=ci-apps&category=development');
+    rerender(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockStoreState.setCategory).toHaveBeenCalledWith('development');
   });
 
   it('writes browse params to the URL when search and category are set', () => {

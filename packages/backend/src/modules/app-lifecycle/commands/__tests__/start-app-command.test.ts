@@ -7,7 +7,9 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
+import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
+import { APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN, type AppContainerLook } from '@/modules/docker/managed-app-containers';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
@@ -52,6 +54,7 @@ describe('StartAppCommand — pull policy', () => {
   let composeArgs: string[];
   let appFilesManager: any;
   let dockerode: ReturnType<typeof mock<Dockerode>>;
+  let dockerReadFacade: ReturnType<typeof mock<DockerReadFacade>>;
   let portManager: ReturnType<typeof mock<PortManagerService>>;
   let traefikConfigService: ReturnType<typeof mock<TraefikConfigService>>;
   const appUrn = 'urn:store:test-app' as AppUrn;
@@ -124,8 +127,13 @@ describe('StartAppCommand — pull policy', () => {
 
     portManager = mock<PortManagerService>();
 
+    dockerReadFacade = mock<DockerReadFacade>();
+    dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue([]);
+    dockerReadFacade.describeAppCameUpFailure.mockResolvedValue({ ok: false, message: 'db keeps restarting', errorDetail: 'db (restarting)' });
+
     const moduleRef = {
       get: vi.fn((token: any) => {
+        if (token === DockerReadFacade) return dockerReadFacade;
         if (token === PortManagerService) return portManager;
         if (token === LoggerService) return logger;
         if (token === ConfigurationService) return config;
@@ -287,6 +295,31 @@ describe('StartAppCommand — pull policy', () => {
     expect(result.errorCode).toBe('rocm_kfd_missing');
     expect(result.message).toContain('Set up ROCm in AI Settings');
     expect(dockerService.composeApp).not.toHaveBeenCalled();
+  });
+
+  // CI-Hub#2376: the refusal touches no container, so a start sent to an app that is up leaves it up.
+  it('reports a host-device refusal as rolled back, since no container was touched', async () => {
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest', devices: ['/dev/dri:/dev/dri', '/dev/kfd:/dev/kfd'] }],
+      overrides: [],
+    } as any);
+    vi.mocked(isRocmKfdPassthroughAvailable).mockResolvedValueOnce(false);
+
+    const result = await command.execute('comfyui:store' as AppUrn, {});
+
+    expect(result).toMatchObject({ success: false, errorCode: 'rocm_kfd_missing', rolledBack: true });
+  });
+
+  it('does not report a failed compose up as rolled back', async () => {
+    dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+      composeArgs.push(args);
+      if (args.startsWith('up')) throw new Error('compose up failed');
+    });
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(result).not.toHaveProperty('rolledBack');
   });
 
   it('SHOULD start normally when the required host device is available', async () => {
@@ -596,6 +629,273 @@ describe('StartAppCommand — pull policy', () => {
       expect(composeArgs.some((args) => args.startsWith('down') || args.startsWith('stop'))).toBe(false);
     });
 
+    describe('when someone asked for this start', () => {
+      it('takes the containers down, so Stopped is true and Docker stops retrying', async () => {
+        dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
+
+        const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(result).toMatchObject({ success: false, serviceFailure: crashLoop.serviceFailure });
+        expect(composeArgs).toContain('down --remove-orphans');
+      });
+
+      it('rebuilds the routes after the containers are gone', async () => {
+        const order: string[] = [];
+        dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
+        dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+          order.push(args.split(' ')[0] ?? args);
+        });
+        traefikConfigService.regenerateTraefikConfig.mockImplementation(async () => {
+          order.push('traefik');
+        });
+
+        await command.execute(appUrn, { exposedLocal: true, stopIfNotUp: true });
+
+        expect(order).toEqual(['up', 'down', 'traefik']);
+      });
+
+      it('still reports the failed service when the routes cannot be rebuilt', async () => {
+        dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
+        traefikConfigService.regenerateTraefikConfig.mockRejectedValue(new Error('traefik config is locked'));
+
+        const result = await command.execute(appUrn, { exposedLocal: true, stopIfNotUp: true });
+
+        expect(result).toMatchObject({ success: false, serviceFailure: crashLoop.serviceFailure });
+      });
+
+      it('still reports the failure when the containers cannot be taken down', async () => {
+        dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
+        dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+          if (args.startsWith('down')) throw new Error('daemon is busy');
+        });
+
+        const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(result).toMatchObject({ success: false, serviceFailure: crashLoop.serviceFailure });
+      });
+
+      it('does not touch an app that came up', async () => {
+        const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(result.success).toBe(true);
+        expect(composeArgs.some((args) => args.startsWith('down'))).toBe(false);
+      });
+
+      it('gives a slow app the longer window before calling it failed', async () => {
+        await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn, APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN);
+      });
+
+      it('does not touch the app when Docker could not answer the check', async () => {
+        dockerService.waitForManagedAppContainersReady.mockRejectedValue(new Error('socket hang up'));
+
+        const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(result.success).toBe(true);
+        expect(composeArgs.some((args) => args.startsWith('down'))).toBe(false);
+      });
+    });
+
+    describe('when compose up itself fails', () => {
+      const dependencyFailed = new Error('dependency failed to start: container test-app-db-1 is unhealthy');
+      const dbLook = (over: Partial<AppContainerLook>): AppContainerLook[] => [
+        {
+          id: 'db',
+          service: 'db',
+          containerName: 'test-app-db-1',
+          state: 'running',
+          exitCode: 0,
+          restartCount: 0,
+          startedAtMs: null,
+          health: null,
+          ...over,
+        },
+      ];
+      const restartingDb = dbLook({ state: 'restarting', exitCode: 1, restartCount: 4 });
+
+      beforeEach(() => {
+        dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+          composeArgs.push(args);
+          if (args.startsWith('up')) throw dependencyFailed;
+        });
+      });
+
+      it('takes the app down when someone asked for the start and a container is left restarting', async () => {
+        dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue(restartingDb);
+
+        const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(result.success).toBe(false);
+        expect(composeArgs.at(-1)).toBe('down --remove-orphans');
+      });
+
+      it('takes the app down when the dependency is left running with its health check failing', async () => {
+        dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue(dbLook({ health: 'unhealthy' }));
+
+        const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(result.success).toBe(false);
+        expect(composeArgs.at(-1)).toBe('down --remove-orphans');
+      });
+
+      it('takes the app down when the look lands between two crashes of the dependency', async () => {
+        dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue(dbLook({ health: 'starting', restartCount: 3 }));
+
+        const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(result.success).toBe(false);
+        expect(composeArgs.at(-1)).toBe('down --remove-orphans');
+      });
+
+      describe('when a setup step the app waits on to finish failed', () => {
+        const setupStepFailed = new Error('service "migrate" didn\'t complete successfully: exit 1');
+        const look = (service: string, over: Partial<AppContainerLook>): AppContainerLook => ({
+          ...dbLook({})[0],
+          id: service,
+          service,
+          containerName: `test-app-${service}-1`,
+          ...over,
+        });
+        const setupStepLeft = [
+          look('db', { health: 'healthy' }),
+          look('migrate', { state: 'exited', exitCode: 1 }),
+          look('web', { state: 'created', exitCode: 0 }),
+        ];
+
+        beforeEach(() => {
+          dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+            composeArgs.push(args);
+            if (args.startsWith('up')) throw setupStepFailed;
+          });
+        });
+
+        it('takes the app down, so the database that started does not run on behind Stopped', async () => {
+          dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue(setupStepLeft);
+
+          const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+          expect(result.success).toBe(false);
+          expect(result.message).toContain("didn't complete successfully");
+          expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans');
+        });
+
+        it('keeps the end of the failed setup step log before the container goes', async () => {
+          dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue(setupStepLeft);
+
+          await command.execute(appUrn, { stopIfNotUp: true });
+
+          expect(dockerReadFacade.describeAppCameUpFailure).toHaveBeenCalledWith(
+            expect.objectContaining({ containers: [expect.objectContaining({ service: 'migrate', exitCode: 1 })] }),
+          );
+        });
+
+        it('leaves the containers to Docker for the Hub own start', async () => {
+          dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue(setupStepLeft);
+
+          const result = await command.execute(appUrn, {});
+
+          expect(result.success).toBe(false);
+          expect(dockerService.composeApp).not.toHaveBeenCalledWith(appUrn, 'down --remove-orphans');
+        });
+
+        it('takes nothing down after a failed pull, which leaves no containers', async () => {
+          dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue([]);
+
+          await command.execute(appUrn, { stopIfNotUp: true });
+
+          expect(dockerService.composeApp).not.toHaveBeenCalledWith(appUrn, 'down --remove-orphans');
+        });
+
+        it('takes nothing down for a one-shot that failed when nothing waits on it', async () => {
+          dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue([look('db', {}), look('migrate', { state: 'exited', exitCode: 1 })]);
+
+          await command.execute(appUrn, { stopIfNotUp: true });
+
+          expect(dockerService.composeApp).not.toHaveBeenCalledWith(appUrn, 'down --remove-orphans');
+        });
+      });
+
+      it('keeps the end of the failing container log before the container goes', async () => {
+        const order: string[] = [];
+        dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue(restartingDb);
+        dockerReadFacade.describeAppCameUpFailure.mockImplementation(async () => {
+          order.push('logs');
+          return { ok: false, message: 'db keeps restarting', errorDetail: 'db (restarting)' };
+        });
+        dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+          order.push(args.split(' ')[0] ?? args);
+          if (args.startsWith('up')) throw dependencyFailed;
+        });
+
+        await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(order).toEqual(['up', 'logs', 'down']);
+      });
+
+      it('rebuilds the routes after taking the app down', async () => {
+        dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue(restartingDb);
+
+        await command.execute(appUrn, { exposedLocal: true, stopIfNotUp: true });
+
+        expect(traefikConfigService.regenerateTraefikConfig).toHaveBeenCalledWith(0);
+      });
+
+      it('still reports the compose failure when the routes cannot be rebuilt', async () => {
+        dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue(restartingDb);
+        traefikConfigService.regenerateTraefikConfig.mockRejectedValue(new Error('traefik config is locked'));
+
+        const result = await command.execute(appUrn, { exposedLocal: true, stopIfNotUp: true });
+
+        expect(result.success).toBe(false);
+        expect(result.message).toContain('dependency failed to start');
+      });
+
+      it('still reports the compose failure when Docker cannot be asked about the containers', async () => {
+        dockerReadFacade.lookAtManagedAppContainers.mockRejectedValue(new Error('socket hang up'));
+
+        const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(result.message).toContain('dependency failed to start');
+        expect(composeArgs.some((args) => args.startsWith('down'))).toBe(false);
+      });
+
+      it('leaves the routes alone when nothing was taken down', async () => {
+        await command.execute(appUrn, { exposedLocal: true, stopIfNotUp: true });
+
+        expect(traefikConfigService.regenerateTraefikConfig).not.toHaveBeenCalled();
+      });
+
+      it('takes nothing down for a service that crashed long ago and has been up since', async () => {
+        for (const health of ['healthy', null]) {
+          dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue(dbLook({ restartCount: 5, health }));
+          composeArgs.length = 0;
+
+          await command.execute(appUrn, { stopIfNotUp: true });
+
+          expect(composeArgs.some((args) => args.startsWith('down'))).toBe(false);
+        }
+      });
+
+      it('takes nothing down when no container is failing, as after a failed pull', async () => {
+        dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue(dbLook({}));
+
+        const result = await command.execute(appUrn, { stopIfNotUp: true });
+
+        expect(result.success).toBe(false);
+        expect(composeArgs.some((args) => args.startsWith('down'))).toBe(false);
+      });
+
+      it('leaves a restarting container to Docker for the Hub own start', async () => {
+        dockerReadFacade.lookAtManagedAppContainers.mockResolvedValue(restartingDb);
+
+        const result = await command.execute(appUrn, {});
+
+        expect(result.success).toBe(false);
+        expect(composeArgs.some((args) => args.startsWith('down'))).toBe(false);
+      });
+    });
+
     it('still routes an exposed app when a service fails, since its other containers go on serving', async () => {
       dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop);
 
@@ -608,7 +908,7 @@ describe('StartAppCommand — pull policy', () => {
       const result = await command.execute(appUrn, {});
 
       expect(result).toMatchObject({ success: true, message: `App ${appUrn} started successfully` });
-      expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn);
+      expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn, undefined);
     });
 
     it('checks an unchanged boot start too', async () => {

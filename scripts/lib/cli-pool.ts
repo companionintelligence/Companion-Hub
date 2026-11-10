@@ -11,6 +11,7 @@ import {
   approvePoolPeer,
   cancelPairingPin,
   deletePoolPin,
+  formatPoolUnpinLines,
   fetchPoolPeers,
   fetchPoolRoutingLog,
   fetchInferencePreferences,
@@ -49,7 +50,10 @@ import { decideImagePinWrite, HUB_IMAGE_VAR, readDeclaredHubImage, resolveCompos
 import { readHubApiKeySource, resolveHubApiBase } from '../public-web-cli.js';
 import { resolveEnvFromArgs, usageAndExit } from './cli-args.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
-import { run, runCapture } from './cli-proc.js';
+import { run, runCapture, runScript } from './cli-proc.js';
+import { applianceEnvFilePaths } from './paths.js';
+import { ensureStrongRabbitmqPassword } from './seed-appliance.js';
+import { syncRabbitmqPasswordFromEnv } from '../sync-rabbitmq-password.js';
 import {
   buildPoolUpdateComposeArgs,
   composeFilesForPoolUpdate,
@@ -57,6 +61,7 @@ import {
   describeImageChange,
   describeImageSource,
   gatherGitUpdateFacts,
+  poolUpdateRabbitmqEnvFiles,
   resolvePoolUpdateImage,
 } from './cli-pool-update.js';
 import { BASE_COMMAND, type HubEnv } from './cli-types.js';
@@ -113,6 +118,9 @@ const POOL_USAGE = `Usage: ${BASE_COMMAND} pool <${POOL_SUBCOMMANDS.join('|')}> 
 
 /** How long `pool doctor` runs before it starts narrating. Below this, the box arrives on its own. */
 const POOL_DOCTOR_PROGRESS_AFTER_MS = 3_000;
+
+/** `pool log` only wants this node's name from `/status`, which can wait on a rebuild of the local inventory. */
+const POOL_LOG_NAME_TIMEOUT_MS = 3_000;
 
 export interface ParsedPoolArgs {
   subcommand: PoolSubcommand;
@@ -233,9 +241,9 @@ export function parsePoolArgs(args: string[]): ParsedPoolArgs {
 }
 
 /**
- * Bounded, never normalized: a model id is compared verbatim and case-sensitively against the
- * engine's inventory on the Hub, so lower-casing a pin here would produce one that looks right and
- * silently never matches. Matches `MAX_PINNED_MODEL_LENGTH` on the backend.
+ * Bounded, never normalized: the Hub folds only the implicit `:latest` when it compares a model id
+ * with the engine's inventory and the rest is case-sensitive, so lower-casing a pin here would produce
+ * one that looks right and silently never matches. Matches `MAX_PINNED_MODEL_LENGTH` on the backend.
  */
 function parsePinnedModel(raw: string): string {
   const trimmed = raw.trim();
@@ -505,8 +513,16 @@ export async function runPoolCommand(args: string[]) {
     }
 
     if (parsed.subcommand === 'log') {
-      const log = await fetchPoolRoutingLog(envFile, parsed.limit);
-      printMessageBox(`Hub Pool routing log  [${env}]`, formatPoolRoutingLogLines(log), log.summary.failed > 0 ? 'yellow' : 'cyan');
+      // The name is a nicety on the NODE column, so a status that fails or runs late doesn't cost the log.
+      const [log, status] = await Promise.all([
+        fetchPoolRoutingLog(envFile, parsed.limit),
+        fetchPoolStatus(envFile, POOL_LOG_NAME_TIMEOUT_MS).catch(() => null),
+      ]);
+      printMessageBox(
+        `Hub Pool routing log  [${env}]`,
+        formatPoolRoutingLogLines(log, status?.localNode.nodeFqdn),
+        log.summary.failed > 0 ? 'yellow' : 'cyan',
+      );
       return;
     }
 
@@ -614,6 +630,24 @@ async function runPoolUpdateCommand(ctx: HubContext, requestedEnv: HubEnv): Prom
       ),
     );
   }
+  // Before anything reads the compose model: the prod compose requires RABBITMQ_PASSWORD from the env
+  // file, and `admin` is a credential every install shared (Companion-Hub#884). A replaced value
+  // changes the broker's RABBITMQ_DEFAULT_PASS, so the `up` below recreates the broker, and the sync
+  // after it confirms the broker takes the new password.
+  const rabbitmqReplaced = ensureStrongRabbitmqPassword(
+    poolUpdateRabbitmqEnvFiles({
+      identity,
+      envFile: ctx.envFile,
+      applianceEnvFiles: ctx.appliance && ctx.dataDir ? applianceEnvFilePaths(ctx.dataDir) : [],
+    }),
+  );
+  if (rabbitmqReplaced) {
+    lines.push(
+      cliWarn(
+        `RABBITMQ_PASSWORD was missing or the shared default 'admin' in ${pinTarget.path}; wrote one of its own, and the broker is changed to match`,
+      ),
+    );
+  }
   const { pullArgs, upArgs } = buildPoolUpdateComposeArgs(ctx.envFile, files, identity);
   printMessageBox(`Hub Pool update  [${ctx.env}]`, [...lines, '', 'Pulling the published image, then redeploying...'], 'cyan');
   // CI_HUB_IMAGE is exported even without the overlay. On an appliance the seeded compose carries
@@ -629,6 +663,9 @@ async function runPoolUpdateCommand(ctx: HubContext, requestedEnv: HubEnv): Prom
   }
   run('docker', pullArgs, envOverrides, ctx.cwd);
   run('docker', upArgs, envOverrides, ctx.cwd);
+  if (rabbitmqReplaced) {
+    await runScript('scripts/sync-rabbitmq-password.ts', () => syncRabbitmqPasswordFromEnv(pinTarget.path), envOverrides, ctx.cwd);
+  }
 
   // The env file may not carry API_PORT at all on an appliance install (the compose service
   // `environment:` block sets it) — read it off the container that just started, same precedence
@@ -893,7 +930,7 @@ async function runPoolPinCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
     printMessageBox(
       `Pin removed  [${env}]`,
       [
-        `Routing for ${covers} is back to the ranker (least-loaded, with the local head start).`,
+        ...formatPoolUnpinLines(covers, pins, parsed.model, env),
         ...(pins.length > 0 ? ['', `${pins.length} other pin(s) remain — see: ${BASE_COMMAND} pool status`] : []),
       ],
       'yellow',

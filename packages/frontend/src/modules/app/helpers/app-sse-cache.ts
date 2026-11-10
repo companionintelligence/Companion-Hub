@@ -5,6 +5,7 @@ import {
   appContextQueryKey,
   getCustomDomainsQueryKey,
   getServeStatusQueryKey,
+  getUpdatesAvailableQueryKey,
 } from '@/api-client/@tanstack/react-query.gen';
 import { tailscaleStatusQueryKey } from '@/lib/api-routes/named-status-routes';
 import { PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY } from '@/lib/cloudflare-api';
@@ -148,6 +149,23 @@ function runtimeHealthQueryKey(appUrn: string) {
 }
 
 /**
+ * Refetch every app record after the Hub comes back. What a restart changed was announced while no
+ * browser was connected. No app query polls, so an open page kept what it had read before (#2286).
+ */
+export function invalidateAppRecords(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
+  void queryClient.invalidateQueries({ queryKey: getInstalledAppUrnsQueryKey() });
+  void queryClient.invalidateQueries({ queryKey: [{ _id: 'getApp' }] });
+  // A listing read that failed while the Hub was away holds the page on "not found" with its record query off.
+  void queryClient.invalidateQueries({ queryKey: ['app-listing'], predicate: (query) => query.state.status === 'error' });
+}
+
+/** Refetch the update count behind the badge and Home's "Update all". */
+export function invalidateUpdatesAvailable(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: getUpdatesAvailableQueryKey() });
+}
+
+/**
  * Refetch everything that describes one app. Also the canonical way to unwind an optimistic install
  * write: `onMutate` forces the app to `installing` in several caches at once, and a request that
  * fails before the backend starts work emits no SSE event and none of these queries poll — so
@@ -277,10 +295,12 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
 
   // tailscaled started or stopped refusing the Hub's Tailscale Serve changes. Settings → Network
   // and every Private VPN access card read that from the Tailscale status, and once a publish goes
-  // through the served ports change too.
+  // through the served ports change too. The top of an app page gives up polling after five minutes,
+  // usually before anyone has fixed the operator, so its verdict is asked for again here.
   if (event === 'tailscale_serve_permission') {
     void queryClient.invalidateQueries({ queryKey: tailscaleStatusQueryKey() });
     void queryClient.invalidateQueries({ queryKey: getServeStatusQueryKey() });
+    void queryClient.invalidateQueries({ predicate: (query) => (query.queryKey[0] as { _id?: string } | undefined)?._id === 'checkAvailability' });
     return;
   }
 
@@ -338,6 +358,14 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
     queryClient.setQueryData(['app-install-error', urn], null);
     updateInstallationProgress(urn, null);
     clearUninstalledAppCaches(queryClient, appUrn);
+    invalidateAppQueries(queryClient, appUrn);
+    return;
+  }
+
+  // The app's ignored update was set or cleared, here or in another tab or through the MCP tool. Its
+  // buttons and the update count behind Home's "Update all" both change (#2376).
+  if (event === 'ignored_version_changed') {
+    invalidateUpdatesAvailable(queryClient);
     invalidateAppQueries(queryClient, appUrn);
     return;
   }

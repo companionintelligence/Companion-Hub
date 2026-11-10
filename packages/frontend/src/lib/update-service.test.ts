@@ -911,6 +911,17 @@ describe('update-service', () => {
       expect(mockSdkPerformUpdate).toHaveBeenCalledWith({ body: { targetVersion: '1.1.0', includeDesktopApp: false } });
     });
 
+    it('says nothing about a desktop app on a Hub that has none', async () => {
+      mockSdkPerformUpdate.mockResolvedValue(sdkOk({ success: true, stack: 'updating', host: 'skipped' }));
+
+      await expect(performStackUpdate('1.1.0', { noDesktopApp: true })).resolves.toEqual({
+        ok: true,
+        messageKey: 'SETTINGS_ACTIONS_UPDATE_RESTARTING',
+        stack: 'updating',
+        host: 'skipped',
+      });
+    });
+
     it('uses stack-only copy when the desktop listener is unavailable', async () => {
       mockSdkPerformUpdate.mockResolvedValue(sdkOk({ success: true, stack: 'updating', host: 'unavailable' }));
 

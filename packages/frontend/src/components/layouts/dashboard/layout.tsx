@@ -1,5 +1,5 @@
 import { Header } from '@/components/header/header';
-import { type PropsWithChildren, useEffect, useRef } from 'react';
+import { type PropsWithChildren, useCallback, useEffect, useRef } from 'react';
 import { useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -9,9 +9,11 @@ import { systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
 import { CoreServerBanner } from '@/components/core-server-banner/core-server-banner';
 import { shouldShowCoreServerBanner } from '@/components/core-server-banner/core-server-banner-visibility';
 import { useCoreServerBanner } from '@/hooks/use-core-server-banner';
+import { PortalConnectionBanner } from '@/components/portal-connection-banner/portal-connection-banner';
 import { TunnelStatusBanner } from '@/components/tunnel-status-banner/tunnel-status-banner';
 import { shouldSkipIosPageSlide } from '@/lib/ios-webview-guards';
 import { usePageScrollRestoration } from '@/lib/hooks/use-page-scroll-restoration';
+import { scrollPageToTop } from '@/lib/scroll-page-to-top';
 
 // Routes that use a layout with a persistent sidebar should share a single
 // animation key so the outer wrapper (sidebar + header) doesn't re-mount
@@ -26,8 +28,8 @@ export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
   const { isLoggedIn } = useUserContext();
 
   return (
-    <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
-      <Header isLoggedIn={isLoggedIn} allowAutoThemes={false} />
+    <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'var(--app-height)' }}>
+      <Header isLoggedIn={isLoggedIn} />
       <div
         className="dashboard-column flex h-full flex-1 flex-col overflow-y-auto"
         style={{ marginTop: 'var(--header-offset)', paddingTop: '0.5rem', paddingBottom: 'var(--safe-area-bottom)' }}
@@ -39,12 +41,15 @@ export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
 };
 
 export const DashboardLayout = ({ children }: PropsWithChildren) => {
-  const { user, userSettings, isLoading: isAppLoading, loadFailed } = useAppContext();
+  const { user, isLoading: isAppLoading, loadFailed } = useAppContext();
   const location = useLocation();
   const prevPathRef = useRef(location.pathname);
   const mainRef = useRef<HTMLElement>(null);
   const pageKey = getAnimationKey(location.pathname);
   usePageScrollRestoration(mainRef, pageKey);
+  const scrollToTop = useCallback(() => {
+    if (mainRef.current) scrollPageToTop(mainRef.current, pageKey);
+  }, [pageKey]);
   const { isLoggedIn } = useUserContext();
   const { data: systemData } = useQuery({
     ...systemLoadOptions(),
@@ -112,8 +117,8 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   };
 
   return (
-    <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
-      <Header isLoggedIn={isLoggedIn} allowAutoThemes={userSettings.allowAutoThemes} />
+    <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'var(--app-height)' }}>
+      <Header isLoggedIn={isLoggedIn} onScrollToTop={scrollToTop} />
       <main
         ref={mainRef}
         className="dashboard-column relative flex h-full flex-1 flex-col overflow-x-hidden overflow-y-auto"
@@ -122,6 +127,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
         <div className="mb-1 flex shrink-0 flex-col gap-2 empty:hidden">
           {showCoreServerBanner && <CoreServerBanner onDismiss={dismiss} />}
           <TunnelStatusBanner />
+          <PortalConnectionBanner />
         </div>
         {shouldSkipIosPageSlide() ? (
           <div className="w-full min-h-0 min-w-0 flex-1" data-page-key={pageKey} data-testid="dashboard-page">

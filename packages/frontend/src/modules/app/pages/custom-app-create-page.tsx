@@ -10,7 +10,7 @@ import { createCustomAppMutation } from '@/api-client/@tanstack/react-query.gen'
 import { Input } from '@/components/ui/Input/Input';
 import { Card, CardContent } from '@/components/ui/Card';
 import type { TranslatableError } from '@/types/error.types';
-import { useEffect, useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { useMultiServiceStore } from '@/stores/multiServiceStore';
 
 export default () => {
@@ -19,9 +19,13 @@ export default () => {
   const resetToDefaults = useMultiServiceStore((state) => state.resetToDefaults);
 
   // Create starts from a blank app. Edit fills this same store from the saved
-  // config, so it must not reset.
-  useEffect(() => {
+  // config, so it must not reset. The form reads the store on its first render and
+  // its environment, volume and port rows keep what they read, so it waits for the
+  // reset. A layout effect finishes that wait before the page is first painted.
+  const [storeIsReset, setStoreIsReset] = useState(false);
+  useLayoutEffect(() => {
     resetToDefaults();
+    setStoreIsReset(true);
   }, [resetToDefaults]);
   const [appName, setAppName] = useState('');
   const [appNameError, setAppNameError] = useState<string>();
@@ -95,7 +99,7 @@ export default () => {
           </div>
         </CardContent>
       </Card>
-      <MultiServiceForm onSubmit={onSubmit} />
+      {storeIsReset && <MultiServiceForm onSubmit={onSubmit} />}
     </div>
   );
 };

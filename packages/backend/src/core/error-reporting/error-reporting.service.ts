@@ -5,6 +5,7 @@ import * as Sentry from '@sentry/nestjs';
 import type { AppUrn } from '@ci-hub/common/types';
 import {
   APP_SERVICE_FAILED_CODE,
+  KATA_RUNTIME_MISSING_CODE,
   KVM_MISSING_CODE,
   NETWORK_OVERLAP_CODE,
   ROCM_KFD_MISSING_CODE,
@@ -142,6 +143,7 @@ const APP_RUNTIME_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: string 
 const ERROR_CODE_CLASSIFICATIONS: Readonly<Record<string, AppFailureClassification>> = {
   [ROCM_KFD_MISSING_CODE]: { category: 'user_environment', errorClass: 'rocm-unavailable' },
   [KVM_MISSING_CODE]: { category: 'user_environment', errorClass: 'kvm-unavailable' },
+  [KATA_RUNTIME_MISSING_CODE]: { category: 'user_environment', errorClass: 'kata-runtime-unavailable' },
   [NETWORK_OVERLAP_CODE]: { category: 'user_environment', errorClass: 'network-overlap' },
   // The report's text ends in the app's own log, which can say anything. A crash that logs "Permission denied"
   // would read as the device's, and one that logs a bind on 443 would not be captured at all.

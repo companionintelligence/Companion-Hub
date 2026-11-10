@@ -17,7 +17,15 @@ import {
   Tr,
 } from '@/components/ui/dense/dense';
 import { cn } from '@/lib/utils';
-import { bucketTotal, isRefused, outputFault, type RoutingBucket, routingActivity, settledOutcome } from '@/modules/system/pool-node-series';
+import {
+  bucketTotal,
+  isRefused,
+  LOCAL_NODE_KEY,
+  outputFault,
+  type RoutingBucket,
+  routingActivity,
+  settledOutcome,
+} from '@/modules/system/pool-node-series';
 import {
   estimatedPromptTokens,
   isExhausted,
@@ -140,6 +148,9 @@ export function PoolActivity({
   // an inbound one, and collapsing that distinction is the regression #1366 fixed.
   const byNode = routingByNode(entries, t('DASHBOARD_ROUTING_UNPLACED'), t('DASHBOARD_ROUTING_EXHAUSTED_LABEL'));
 
+  // `local` is the log's key for this node. The node cards above call it This Hub, so the feed does too.
+  const nodeName = (node: string) => (node === LOCAL_NODE_KEY ? t('DASHBOARD_THIS_HUB') : node);
+
   /*
    * Tokens over the SAME window as the bars beside them, split into what the engines read and what
    * they wrote. One whole-ring "Tokens" sum mixed the two — and on this fleet they differ by two
@@ -150,7 +161,7 @@ export function PoolActivity({
   const completionTokens = buckets.reduce((sum, bucket) => sum + bucket.completionTokens, 0);
   const segments = [...byNode.entries()]
     .sort((a, b) => b[1] - a[1])
-    .map(([label, value], index) => ({ label, value, tone: NODE_TONES[index % NODE_TONES.length] as Tone }));
+    .map(([label, value], index) => ({ label: nodeName(label), value, tone: NODE_TONES[index % NODE_TONES.length] as Tone }));
 
   // Same partial-coverage reality as the `tokensServed` chip above: a model absent here is not
   // "used zero tokens", it is "every request for it so far landed on an entry with no usage frame".
@@ -304,8 +315,8 @@ export function PoolActivity({
                   // Each node passed over and what it answered, where the Hub says; the names alone otherwise.
                   const failoverDetail =
                     entry.attempts && entry.attempts.length > 0
-                      ? entry.attempts.map((attempt) => `${attempt.node} (${attempt.reason})`).join(', ')
-                      : failedOver.join(', ');
+                      ? entry.attempts.map((attempt) => `${nodeName(attempt.node)} (${attempt.reason})`).join(', ')
+                      : failedOver.map(nodeName).join(', ');
                   // A nodeless outbound row is one of two outcomes, and they are named apart: every
                   // candidate tried and failed, or none existed. Either way it must not read as the
                   // local node having served it. The first used to render "Unplaced · +9 tried",
@@ -320,7 +331,7 @@ export function PoolActivity({
                       <Td align="right" className="text-muted-foreground">
                         {relativeAge(entry.at, now)}
                       </Td>
-                      <Td className="max-w-[104px] truncate font-medium @sm:max-w-[160px]" title={entry.node ?? undefined}>
+                      <Td className="max-w-[104px] truncate font-medium @sm:max-w-[160px]" title={entry.node ? nodeName(entry.node) : undefined}>
                         <span
                           className={cn('mr-1 text-[11px]', inbound ? 'text-muted-foreground' : 'text-primary')}
                           title={inbound ? t('DASHBOARD_ACTIVITY_DIR_IN') : t('DASHBOARD_ACTIVITY_DIR_OUT')}
@@ -333,6 +344,8 @@ export function PoolActivity({
                           </span>
                         ) : unplaced ? (
                           <span className=" text-destructive">{t('DASHBOARD_ROUTING_UNPLACED')}</span>
+                        ) : entry.node === LOCAL_NODE_KEY ? (
+                          nodeName(entry.node)
                         ) : (
                           (entry.node ?? DASH).split('.')[0]
                         )}

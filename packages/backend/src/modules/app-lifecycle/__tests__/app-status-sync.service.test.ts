@@ -9,6 +9,7 @@ import { SystemEventsQueue } from '@/modules/queue/entities/system-events';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import type { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
+import type { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppOperationRegistry } from '../app-operation-registry';
 import type Dockerode from 'dockerode';
 
@@ -23,9 +24,12 @@ describe('AppStatusSyncService', () => {
   let operationRegistry: AppOperationRegistry;
   let dockerReadFacade: { diagnoseAppContainers: ReturnType<typeof vi.fn> };
   let logger: MockProxy<LoggerService>;
+  let appFilesManager: MockProxy<AppFilesManager>;
 
   beforeEach(() => {
     logger = mock<LoggerService>();
+    appFilesManager = mock<AppFilesManager>();
+    appFilesManager.getOneShotServiceNames.mockResolvedValue(new Set());
     appRepository = mock<AppsRepository>();
     appRepository.updateAppByIdIfStatus.mockResolvedValue(true);
     docker = mock<Dockerode>();
@@ -65,6 +69,8 @@ describe('AppStatusSyncService', () => {
       errorReportingService,
       undefined,
       dockerReadFacade as never,
+      undefined,
+      appFilesManager,
     );
   });
 
@@ -523,6 +529,63 @@ describe('AppStatusSyncService', () => {
 
     expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(10, 'running', expect.objectContaining({ status: 'stopped' }));
     expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'status_change', appUrn: 'wordpress:ci-marketplace', appStatus: 'stopped' });
+  });
+
+  it('keeps an app running when only its one-shot service has exited with an error', async () => {
+    appFilesManager.getOneShotServiceNames.mockResolvedValue(new Set(['sync']));
+    appRepository.getApps.mockResolvedValue([
+      { id: 14, appName: 'listmonk', appStoreSlug: 'ci-marketplace', status: 'running', updatedAt: new Date().toISOString() },
+    ] as never);
+    docker.listContainers.mockResolvedValue([
+      {
+        Id: 'web',
+        State: 'running',
+        Status: 'Up 2 hours',
+        Labels: { 'ci-hub.appurn': 'listmonk:ci-marketplace', 'com.docker.compose.service': 'web' },
+      },
+      {
+        Id: 'sync',
+        State: 'exited',
+        Status: 'Exited (1) 2 hours ago',
+        Labels: { 'ci-hub.appurn': 'listmonk:ci-marketplace', 'com.docker.compose.service': 'sync' },
+      },
+    ] as never);
+
+    await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    expect(errorReportingService.captureWarning).not.toHaveBeenCalled();
+  });
+
+  it('marks an app stopped when a long-running service exited with an error, one-shot or no one-shot beside it', async () => {
+    appFilesManager.getOneShotServiceNames.mockResolvedValue(new Set(['sync']));
+    appRepository.getApps.mockResolvedValue([
+      { id: 15, appName: 'listmonk', appStoreSlug: 'ci-marketplace', status: 'running', updatedAt: new Date().toISOString() },
+    ] as never);
+    docker.listContainers.mockResolvedValue([
+      {
+        Id: 'web',
+        State: 'running',
+        Status: 'Up 2 hours',
+        Labels: { 'ci-hub.appurn': 'listmonk:ci-marketplace', 'com.docker.compose.service': 'web' },
+      },
+      {
+        Id: 'sync',
+        State: 'exited',
+        Status: 'Exited (1) 2 hours ago',
+        Labels: { 'ci-hub.appurn': 'listmonk:ci-marketplace', 'com.docker.compose.service': 'sync' },
+      },
+      {
+        Id: 'worker',
+        State: 'exited',
+        Status: 'Exited (1) 2 hours ago',
+        Labels: { 'ci-hub.appurn': 'listmonk:ci-marketplace', 'com.docker.compose.service': 'worker' },
+      },
+    ] as never);
+
+    await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(15, 'running', expect.objectContaining({ status: 'stopped' }));
   });
 
   it('keeps an app running when only its one-shot init service has exited cleanly', async () => {

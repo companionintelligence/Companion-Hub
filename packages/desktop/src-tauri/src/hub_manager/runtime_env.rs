@@ -513,6 +513,17 @@ pub(crate) fn render_runtime_env_content_for_portal(
     } else {
         ""
     };
+    // The operator's "MCP stays off" switch, set by `cihub mcp shutdown`. The Hub reads it at boot, so
+    // dropping it would turn MCP back on at the next launch with nothing to say so. Unset means on,
+    // so only the off value is carried forward.
+    let mcp_disabled_line = if existing
+        .get("MCP_ENABLED")
+        .is_some_and(|value| unquote_env_value(value) == "false")
+    {
+        "MCP_ENABLED=false\n"
+    } else {
+        ""
+    };
     // The operator's "keep this machine-ID-shaped DEVICE_ID from another machine" switch (see
     // `device-id-host-check.ts` in the backend). A launch keeps such an ID now, so it keeps this too.
     let allow_foreign_device_id_line = if existing
@@ -641,6 +652,7 @@ pub(crate) fn render_runtime_env_content_for_portal(
          {allow_foreign_device_id_line}\
          {tailscale_auth_key_lines}\
          {tailscale_serve_user_disabled_line}\
+         {mcp_disabled_line}\
          \n\
          # Derived (recomputed every launch from the current binary)\n\
          INTERNAL_IP=0.0.0.0\n\
@@ -664,6 +676,7 @@ pub(crate) fn render_runtime_env_content_for_portal(
         tailscale_auth_key_lines = tailscale_auth_key_lines,
         allow_foreign_device_id_line = allow_foreign_device_id_line,
         tailscale_serve_user_disabled_line = tailscale_serve_user_disabled_line,
+        mcp_disabled_line = mcp_disabled_line,
         cloud_url = cloud_url,
         hub_version = hub_version,
         hub_image = hub_image,

@@ -17,6 +17,7 @@ import {
   hubHostPorts,
   mappedHostPorts,
   parsePort,
+  portRangeRefusal,
   type MappedHostPort,
 } from './custom-app-host-port';
 import { getFrontmatter } from '@/utils/frontmatter/frontmatter';
@@ -25,9 +26,9 @@ import { frontmatterSchema, type AppInfo, type ServiceInput } from '@ci-hub/comm
 const APPS_FOLDER = '_user';
 
 /**
- * The main service's port, which becomes the app's single access port. The create form submits it as
- * typed, a string; a number only comes from a hand-written config. A value that is not a plain port (an
- * env reference, a range) leaves it unset.
+ * The main service's port, which becomes the app's single access port. The form submits a number; digits
+ * as text come from the JSON editor, the API or a config an older form saved. A value that is not a plain
+ * port (an env reference, a range) leaves it unset.
  */
 function mainServicePort(config: CreateCustomAppDto['config']): number | undefined {
   const main = config.services.find((s: ServiceInput) => s.isMain) ?? config.services[0];
@@ -76,6 +77,7 @@ export class CustomAppService {
     const mappings = mappedHostPorts(config.services);
 
     // Before anything is written, so a refusal leaves no files or row behind.
+    this.assertPortsInRange(config);
     await this.assertMappedHostPortsFree(mappings, hubPorts);
 
     try {
@@ -118,6 +120,29 @@ export class CustomAppService {
       await this.portManager.releaseAll(appUrn).catch(() => 0);
       console.error(error);
       throw new TranslatableError('CUSTOM_APP_ERROR_CREATION_FAILED', { name: displayName }, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /**
+   * Refuse a port outside 1 to 65535: an internal port or either side of a Port Mapping, in a service or an
+   * override. MCP callers reach this with no schema, so nothing here is trusted to be well formed.
+   */
+  private assertPortsInRange(config: CreateCustomAppDto['config']): void {
+    const assertInRange = (value: unknown, field: 'INTERNAL' | 'HOST' | 'CONTAINER') => {
+      const refusal = portRangeRefusal(value);
+      if (refusal) {
+        throw new TranslatableError(`CUSTOM_APP_ERROR_${field}_PORT_${refusal}`, { port: String(value) }, HttpStatus.BAD_REQUEST);
+      }
+    };
+
+    const overrides = Array.isArray(config.overrides) ? config.overrides : [];
+    const services = [...(Array.isArray(config.services) ? config.services : []), ...overrides.flatMap((override) => override?.services ?? [])];
+    for (const service of services) {
+      assertInRange(service?.internalPort, 'INTERNAL');
+      for (const mapping of Array.isArray(service?.addPorts) ? service.addPorts : []) {
+        assertInRange(mapping?.hostPort, 'HOST');
+        assertInRange(mapping?.containerPort, 'CONTAINER');
+      }
     }
   }
 
@@ -176,6 +201,8 @@ export class CustomAppService {
     if (!existingApp) {
       throw new TranslatableError('CUSTOM_APP_ERROR_NOT_FOUND', { urn: appUrn }, HttpStatus.NOT_FOUND);
     }
+
+    this.assertPortsInRange(config);
 
     // An edit can add Port Mappings too, and they are held to the same rule as on creation.
     await this.assertMappedHostPortsFree(mappedHostPorts(config.services), hubHostPorts(this.configService.get('userSettings')));
@@ -331,25 +358,23 @@ export class CustomAppService {
 
     const configPath = path.join(dataDir, 'apps', appStoreId, appName, 'config.json');
 
-    const frontmatterYml = getFrontmatter(description) || {};
+    // Read even when nothing below writes it. No `config.json` means no such app and `writeTextFile`
+    // creates the folders it needs, so saving the note alone would leave a stray app folder behind.
+    const appInfo = await this.filesystem.readJsonFile(configPath);
 
-    if (frontmatterYml) {
-      const frontmatter = await frontmatterSchema.safeParseAsync(frontmatterYml);
+    if (!appInfo) {
+      throw new TranslatableError('CUSTOM_APP_ERROR_NOT_FOUND', { urn: appUrn }, HttpStatus.NOT_FOUND);
+    }
 
-      if (!frontmatter.success) {
-        throw new Error(`Invalid frontmatter: ${frontmatter.error.message}`);
-      }
+    const frontmatter = await frontmatterSchema.safeParseAsync(getFrontmatter(description) || {});
 
-      const appInfo = await this.filesystem.readJsonFile(configPath);
+    if (!frontmatter.success) {
+      const key = frontmatter.error.issues[0]?.path.join('.') ?? '';
+      throw new TranslatableError('CUSTOM_APP_ERROR_FRONTMATTER_INVALID', { key }, HttpStatus.BAD_REQUEST);
+    }
 
-      if (!appInfo) {
-        throw new Error(`Failed to read app info at ${configPath}`);
-      }
-
-      const ok = await this.filesystem.writeJsonFile(configPath, {
-        ...appInfo,
-        ...frontmatter.data,
-      });
+    if (Object.keys(frontmatter.data).length > 0) {
+      const ok = await this.filesystem.writeJsonFile(configPath, { ...appInfo, ...frontmatter.data });
 
       if (!ok) {
         throw new Error(`Failed to update app info at ${configPath}`);

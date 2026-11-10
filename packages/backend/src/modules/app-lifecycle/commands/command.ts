@@ -1,7 +1,11 @@
 import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { LoggerService } from '@/core/logger/logger.service';
 import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
+import { getEffectiveExposureMode } from '@/modules/apps/app-exposure.helpers';
+import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
+import { APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN, type AppCameUpTiming, type AppContainerLook } from '@/modules/docker/managed-app-containers';
+import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import type { PortAllocation } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -52,6 +56,27 @@ export interface LifecycleCommand {
 }
 
 /**
+ * Whether a failed `compose up` left this container failing. A crash loop reads `running` between two crashes
+ * with its health check back at `starting`, so a restart count counts then. A count alone says nothing: `up`
+ * can fail before it recreates anything, as a pull does, and the service may have been fine for weeks since.
+ */
+function isLeftFailing({ state, health, restartCount }: AppContainerLook): boolean {
+  return state === 'restarting' || health === 'unhealthy' || (health === 'starting' && (restartCount ?? 0) > 0);
+}
+
+/**
+ * The setup steps a failed `compose up` stopped at. A service that waits for a one-shot through
+ * `service_completed_successfully` stays `created` when the one-shot exits with an error, while services
+ * that started before it keep running. Without a `created` container the error exit is not what failed the `up`.
+ */
+function failedSetupSteps(containers: AppContainerLook[]): AppContainerLook[] {
+  if (!containers.some(({ state }) => state === 'created')) {
+    return [];
+  }
+  return containers.filter(({ state, exitCode }) => state === 'exited' && (exitCode ?? 0) !== 0);
+}
+
+/**
  * Base class the ten lifecycle commands extend.
  *
  * The bodies of these members live in sibling modules so each can be read and tested on its own;
@@ -81,7 +106,11 @@ export class AppLifecycleCommand {
     await entitlements.assertForInstall(appUrn);
   }
 
-  protected async ensureAppDir(appUrn: AppUrn, form: AppEventFormInput, options?: { excludeSubnets?: string[] }): Promise<void> {
+  protected async ensureAppDir(
+    appUrn: AppUrn,
+    form: AppEventFormInput,
+    options?: { excludeSubnets?: string[]; createVolumeDirs?: boolean },
+  ): Promise<void> {
     return prepareAppComposeDir(this.moduleRef, this.docker, appUrn, form, options);
   }
 
@@ -140,10 +169,10 @@ export class AppLifecycleCommand {
    * retry, start and restart all ask this. A check Docker could not answer says nothing against the
    * app, so it counts as up: the status sync reads the containers again.
    */
-  protected async appCameUpError(appUrn: AppUrn): Promise<AppLifecycleError | null> {
+  protected async appCameUpError(appUrn: AppUrn, timing?: AppCameUpTiming): Promise<AppLifecycleError | null> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     try {
-      const verification = await this.moduleRef.get(DockerService, { strict: false }).waitForManagedAppContainersReady(appUrn);
+      const verification = await this.moduleRef.get(DockerService, { strict: false }).waitForManagedAppContainersReady(appUrn, timing);
       if (verification.ok) {
         return null;
       }
@@ -157,6 +186,97 @@ export class AppLifecycleCommand {
       logger.warn(`Could not check whether ${appUrn} came up: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     }
+  }
+
+  /**
+   * The check after `compose up` in a Start or Restart: {@link appCameUpError}, but one someone asked for
+   * gets the longer window and takes the app down if it did not come up.
+   */
+  protected async appCameUpErrorAfterStart(appUrn: AppUrn, form: AppEventFormInput): Promise<AppLifecycleError | null> {
+    const notUp = await this.appCameUpError(appUrn, form.stopIfNotUp ? APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN : undefined);
+    if (notUp && form.stopIfNotUp) {
+      await this.stopAppThatDidNotComeUp(appUrn);
+    }
+    return notUp;
+  }
+
+  /**
+   * Take down an app whose Start or Restart did not come up, as Stop does. The app is reported as stopped, but
+   * Docker would go on restarting the crashing container behind that and the app could come up by itself with
+   * the page still saying Stopped. Removing the containers rather than stopping them keeps a `restart: always`
+   * service from coming back when Docker restarts.
+   *
+   * Only for a start someone asked for. The Hub's own starts leave the containers alone, since an app at boot
+   * can be waiting on something that comes up later and Docker's retries are what brings it back.
+   */
+  protected async stopAppThatDidNotComeUp(appUrn: AppUrn): Promise<void> {
+    const logger = this.moduleRef.get(LoggerService, { strict: false });
+    try {
+      await this.moduleRef.get(DockerService, { strict: false }).composeApp(appUrn, 'down --remove-orphans');
+      logger.info(`Took down the containers of ${appUrn}, which did not come up`);
+    } catch (error) {
+      logger.warn(`Could not take down ${appUrn} after it did not come up: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * The routes after a Start or Restart failed: either the other containers stay up and go on serving or they
+   * just went down, and the routes follow both. A rebuild that fails must not replace the failure being reported.
+   */
+  protected async rebuildRoutesAfterFailure(appUrn: AppUrn, form: AppEventFormInput): Promise<void> {
+    if (getEffectiveExposureMode(form) === 'local') {
+      return;
+    }
+    await this.moduleRef
+      .get(TraefikConfigService, { strict: false })
+      .regenerateTraefikConfig(0)
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.moduleRef.get(LoggerService, { strict: false }).warn(`Could not rebuild the routes after ${appUrn} failed: ${detail}`);
+      });
+  }
+
+  /**
+   * `compose up` failed in a Start or Restart. Rethrows the failure. One someone asked for first takes the app
+   * down if a dependency was left failing, with the routes following as they do after a failed check.
+   */
+  protected async failComposeUp(appUrn: AppUrn, form: AppEventFormInput, error: unknown): Promise<never> {
+    if (form.stopIfNotUp && (await this.stopAppLeftFailing(appUrn))) {
+      await this.rebuildRoutesAfterFailure(appUrn, form);
+    }
+    throw error;
+  }
+
+  /**
+   * A dependency that does not get healthy fails the `up` ("dependency failed to start"). Compose leaves it
+   * crash-looping or running with its health check failing and Docker keeps it alive either way, so the app goes
+   * down as after a failed check. So does a setup step that failed (see {@link failedSetupSteps}): the services
+   * that started before it would otherwise run on behind Stopped. The container's log goes with it, so its end is
+   * kept in the Hub's log first. An `up` that failed with no container failing, as a pull usually does, leaves the
+   * app as it is. Returns whether the app was taken down.
+   */
+  private async stopAppLeftFailing(appUrn: AppUrn): Promise<boolean> {
+    const logger = this.moduleRef.get(LoggerService, { strict: false });
+    const dockerRead = this.moduleRef.get(DockerReadFacade, { strict: false });
+    const containers = await dockerRead.lookAtManagedAppContainers(appUrn).catch((error: unknown) => {
+      logger.warn(`Could not look for failing containers of ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    });
+    const setupSteps = failedSetupSteps(containers);
+    const failing = containers.filter((container) => isLeftFailing(container) || setupSteps.includes(container));
+    if (failing.length === 0) {
+      return false;
+    }
+
+    const { errorDetail } = await dockerRead.describeAppCameUpFailure({
+      outcome: 'failed',
+      kind: 'restarting',
+      containers: failing,
+      containersSeen: containers.length,
+    });
+    logger.warn(`[AppDiag] ${appUrn} left failing by compose up:\n${errorDetail ?? ''}`);
+    await this.stopAppThatDidNotComeUp(appUrn);
+    return true;
   }
 
   protected handleAppError = async (err: unknown, appId: string, event: string): Promise<AppCommandFailureResult> => {

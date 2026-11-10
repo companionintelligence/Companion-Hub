@@ -45,10 +45,13 @@ describe('syncRabbitmqPasswordFromEnv', () => {
     let changed = false;
     spawnSync.mockImplementation((_command: string, args: string[]) => {
       if (args[0] === 'inspect') return inspected(args);
-      if (args[0] === 'exec' && args[1] === '-d' && args[3] === 'sh') commandByDir.set(String(args[7]), args.slice(8));
+      // `exec -d [-e NAME]... <container> sh -c <copy script> sh <dir> <command...>`
+      const copyScript = args.indexOf('-c');
+      if (args[0] === 'exec' && args[1] === '-d' && copyScript > 0) commandByDir.set(String(args[copyScript + 3]), args.slice(copyScript + 4));
       if (args[0] === 'cp') {
         const dir = String(args[1]).slice(String(args[1]).indexOf(':') + 1);
-        const verb = commandByDir.get(dir)?.[1];
+        const command = commandByDir.get(dir) ?? [];
+        const verb = command[command.indexOf('rabbitmqctl') + 1];
         if (verb === 'change_password') changed = true;
         const status = verb === 'authenticate_user' && !changed ? 65 : 0;
         return { status: 0, stdout: copiedCommandFolder(dir.split('/').pop() ?? '', `${verb} ...`, status), stderr: Buffer.alloc(0) };
@@ -75,5 +78,45 @@ describe('syncRabbitmqPasswordFromEnv', () => {
     expect(rabbitmqctlVerbs()).toEqual(['authenticate_user']);
     expect(dockerCalls().some((args) => args[0] === 'cp' || args[1] === '-d')).toBe(false);
     expect(logged()).toContain('auth already matches');
+  });
+});
+
+/*
+ * The broker password reaches rabbitmqctl on stdin, through `docker exec -e` and the shell's printf
+ * builtin, so `ps` on the host or in the container never shows it.
+ */
+describe('syncRabbitmqPasswordFromEnv keeps the password out of argv', () => {
+  beforeEach(() => {
+    delete process.env.RABBITMQ_PASSWORD;
+    spawnSync.mockReset();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  it('names the variable in argv and puts the value only in the docker CLI environment', async () => {
+    let authenticated = false;
+    spawnSync.mockImplementation((_command: string, args: string[]) => {
+      if (args[0] === 'inspect') return inspected(args);
+      if (args[0] === 'exec' && args.includes('change_password')) {
+        authenticated = true;
+        return { status: 0, stdout: 'Changing password for user "companion" ...\n', stderr: '' };
+      }
+      if (args[0] === 'exec') return { status: authenticated ? 0 : 65, stdout: 'Authenticating user "companion" ...\n', stderr: '' };
+      return { status: 1, stdout: '', stderr: '' };
+    });
+
+    await syncRabbitmqPasswordFromEnv('.env');
+
+    const rabbitmqctlCalls = spawnSync.mock.calls.filter(([, args]) => (args as string[]).includes('rabbitmqctl'));
+    expect(rabbitmqctlCalls.map(([, args]) => (args as string[])[(args as string[]).indexOf('rabbitmqctl') + 1])).toEqual([
+      'authenticate_user',
+      'change_password',
+      'authenticate_user',
+    ]);
+    for (const [, args, options] of rabbitmqctlCalls) {
+      expect((args as string[]).join(' ')).not.toContain('from-env-file');
+      expect((args as string[]).slice(0, 3)).toEqual(['exec', '-e', 'CIHUB_RABBITMQ_PASSWORD']);
+      expect((args as string[]).at(-1)).toBe('companion');
+      expect((options as { env: NodeJS.ProcessEnv }).env.CIHUB_RABBITMQ_PASSWORD).toBe('from-env-file');
+    }
   });
 });

@@ -225,7 +225,8 @@ function NodeCard({ card, window: samples }: { card: PoolNodeCard; window: PoolS
           </>
         )}
         {card.local ? null : <span className="tabular-nums">{t('DASHBOARD_NODE_LAST_SEEN', { age: relativeAge(card.lastSeenAt, now) })}</span>}
-        {card.consecutiveFailures ? (
+        {/* Not on a switched-off peer: this Hub sends it nothing, so its failed probes are no fault to show in red. */}
+        {card.consecutiveFailures && card.status !== 'disabled' ? (
           <span className="text-destructive">{t('DASHBOARD_NODE_FAILURES', { total: card.consecutiveFailures })}</span>
         ) : null}
         {card.fqdn && !card.local ? (

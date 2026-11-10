@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { publishesPublicWebRoute, servedExposureMode, storedExposureForm } from '../exposure.js';
+import { publishesHostPort, publishesPublicWebRoute, servedExposureMode, storedExposureForm, storedHostPortForm } from '../exposure.js';
 
 describe('publishesPublicWebRoute', () => {
   it('is true for the cloudflare mode and for the legacy exposedLocal flag without a mode', () => {
@@ -64,5 +64,48 @@ describe('servedExposureMode', () => {
     expect(servedExposureMode({ exposureMode: 'tailscale' })).toBe('tailscale');
     expect(servedExposureMode({ exposedLocal: true })).toBe('cloudflare');
     expect(servedExposureMode({})).toBe('local');
+  });
+});
+
+describe('storedHostPortForm', () => {
+  it('reads openPort and the exposure from the stored install form rather than the row columns', () => {
+    const app = {
+      config: { exposureMode: 'tailscale', exposedLocal: true, openPort: false },
+      exposureMode: 'local',
+      exposedLocal: false,
+      openPort: true,
+    };
+
+    expect(storedHostPortForm(app)).toEqual({ exposureMode: 'tailscale', exposedLocal: true, openPort: false });
+  });
+
+  it('leaves openPort out when the form holds none, so the served default applies', () => {
+    expect(storedHostPortForm({ config: { exposureMode: 'cloudflare' }, openPort: false })).toEqual({
+      exposureMode: 'cloudflare',
+      exposedLocal: false,
+      openPort: undefined,
+    });
+  });
+
+  // The row's exposed_local is true for any exposable app installed without exposure settings, so it cannot stand in.
+  it('is undefined for a record that carries no form', () => {
+    expect(storedHostPortForm({ exposureMode: 'tailscale', exposedLocal: true, openPort: false })).toBeUndefined();
+    expect(storedHostPortForm({ config: null })).toBeUndefined();
+  });
+});
+
+describe('publishesHostPort', () => {
+  it('is true for a Private VPN form that asked to be exposed on the local network', () => {
+    expect(publishesHostPort({ exposureMode: 'tailscale', exposedLocal: true, openPort: false })).toBe(true);
+  });
+
+  it('is false for a Private VPN or Public Web form with a closed port and no exposedLocal', () => {
+    expect(publishesHostPort({ exposureMode: 'tailscale', openPort: false })).toBe(false);
+    expect(publishesHostPort({ exposureMode: 'cloudflare', openPort: false })).toBe(false);
+  });
+
+  it('is true for This Machine Only and for a form with no openPort, as the queue serves it open', () => {
+    expect(publishesHostPort({ exposureMode: 'local', openPort: false })).toBe(true);
+    expect(publishesHostPort({ exposureMode: 'tailscale' })).toBe(true);
   });
 });

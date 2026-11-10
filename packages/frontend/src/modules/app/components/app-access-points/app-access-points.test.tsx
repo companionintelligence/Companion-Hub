@@ -1,7 +1,15 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AppAccessPoints, buildAppAccessPoints, isLoopbackAccessUrl, isMalformedAccessUrl, resolveReachableHubHost } from './app-access-points';
+import { publishesHostPort } from '@ci-hub/common/types';
+import {
+  AppAccessPoints,
+  buildAppAccessPoints,
+  hasDirectLocalAccess,
+  isLoopbackAccessUrl,
+  isMalformedAccessUrl,
+  resolveReachableHubHost,
+} from './app-access-points';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -221,6 +229,54 @@ describe('buildAppAccessPoints', () => {
       host: null,
       state: 'unavailable',
     });
+  });
+
+  // #2377: compose binds the host port for a Private VPN form with `exposedLocal`, so the LAN link works.
+  it('marks local access active for a Private VPN app exposed on the local network', () => {
+    const accessPoints = buildAppAccessPoints({
+      app: {
+        status: 'running',
+        port: 8080,
+        localSubdomain: 'bitboard',
+        exposureMode: 'tailscale',
+        exposedLocal: true,
+        openPort: false,
+        config: { exposureMode: 'tailscale', exposedLocal: true, openPort: false },
+      } as any,
+      info: { ...info, port: 8080, url_suffix: '' },
+      sslPort: 443,
+      internalIp: '192.168.1.9',
+      viewerHostname: '192.168.1.9',
+      cloudflareAvailable: true,
+      tailscaleAvailable: true,
+      tailscaleNodeFqdn: 'hub-tailscale-1.example.ts.net',
+      tailscaleHttpsEnabled: true,
+      tailscaleServedPorts: new Set([8080]),
+    });
+
+    expect(accessPoints[2]).toMatchObject({ key: 'local', url: 'http://192.168.1.9:8080', state: 'active' });
+  });
+
+  // #2377: a Public Web form with a closed port and no `exposedLocal` binds no host port, whatever the row says.
+  it('does not mark local access active for a Public Web app whose stored form closes the host port', () => {
+    const accessPoints = buildAppAccessPoints({
+      app: {
+        status: 'running',
+        port: 8080,
+        localSubdomain: 'bitboard',
+        exposureMode: 'cloudflare',
+        openPort: true,
+        config: { exposureMode: 'cloudflare', openPort: false },
+      } as any,
+      info: { ...info, port: 8080, url_suffix: '' },
+      sslPort: 443,
+      internalIp: '192.168.1.9',
+      viewerHostname: '192.168.1.9',
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    });
+
+    expect(accessPoints[2]).toMatchObject({ key: 'local', url: null, state: 'unavailable' });
   });
 
   it('marks public web active for cloudflare apps with a derived public URL', () => {
@@ -490,6 +546,23 @@ describe('buildAppAccessPoints', () => {
   });
 });
 
+/** The page offers a LAN link exactly when compose binds the host port, so the two cannot drift apart again (#2377). */
+describe('hasDirectLocalAccess', () => {
+  const modes = [undefined, 'local', 'cloudflare', 'tailscale'] as const;
+  const flags = [undefined, true, false] as const;
+  const forms = modes.flatMap((exposureMode) => flags.flatMap((openPort) => flags.map((exposedLocal) => ({ exposureMode, openPort, exposedLocal }))));
+
+  it.each(forms)('agrees with compose for mode $exposureMode, openPort $openPort, exposedLocal $exposedLocal', (form) => {
+    expect(hasDirectLocalAccess({ ...form, config: form }, { hasHostPort: true, dynamicConfig: true })).toBe(publishesHostPort(form));
+  });
+
+  it('is false without a host port', () => {
+    expect(hasDirectLocalAccess({ exposureMode: 'local', config: { exposureMode: 'local' } }, { hasHostPort: false, dynamicConfig: true })).toBe(
+      false,
+    );
+  });
+});
+
 describe('AppAccessPoints', () => {
   afterEach(() => {
     tailscaleStatus.servePermission = NOT_DENIED;
@@ -517,6 +590,45 @@ describe('AppAccessPoints', () => {
     expect(screen.getByTestId('vpn-access-refused')).toHaveTextContent('APP_DETAILS_ACCESS_TAILSCALE_REFUSED');
     expect(screen.getByRole('link', { name: 'APP_DETAILS_ACCESS_TAILSCALE_REFUSED_LINK' })).toHaveAttribute('href', '/settings?tab=network');
     expect(screen.queryByText('APP_DETAILS_ACCESS_PENDING')).not.toBeInTheDocument();
+  });
+
+  it('names the refusal on the Public domain card and offers no link when the Portal refused the address', () => {
+    render(
+      <MemoryRouter>
+        <AppAccessPoints
+          app={{ status: 'running', port: 8138, localSubdomain: 'bitboard', exposureMode: 'cloudflare', exposed: true } as any}
+          info={
+            { urn: 'bitboard:community', name: 'Bitboard', no_gui: false, https: false, port: 8138, dynamic_config: true, exposable: true } as any
+          }
+          publicAddressRefusal="No public address: the plan has none left."
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('APP_DETAILS_ACCESS_REFUSED')).toBeInTheDocument();
+    expect(screen.getByTestId('public-access-refused')).toHaveTextContent('No public address: the plan has none left.');
+    // Three cards, one Open each: the public one stays disabled so the refused address can't be opened.
+    expect(screen.getAllByRole('button', { name: 'APP_ACTION_OPEN' })[0]).toBeDisabled();
+    expect(screen.queryByText(/https:\/\/bitboard/)).not.toBeInTheDocument();
+  });
+
+  // The only subdomain the Portal calls invalid is one with nothing left after sanitizing, so no address can be built.
+  it('names the refusal on the Public domain card when the refused subdomain leaves no address to show', () => {
+    render(
+      <MemoryRouter>
+        <AppAccessPoints
+          app={{ status: 'running', port: 8138, localSubdomain: '!!!', exposureMode: 'cloudflare', exposed: true } as any}
+          info={
+            { urn: 'bitboard:community', name: 'Bitboard', no_gui: false, https: false, port: 8138, dynamic_config: true, exposable: true } as any
+          }
+          publicAddressRefusal="No public address: this subdomain isn't valid."
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('APP_DETAILS_ACCESS_REFUSED')).toBeInTheDocument();
+    expect(screen.getByTestId('public-access-refused')).toHaveTextContent("No public address: this subdomain isn't valid.");
+    expect(screen.getAllByRole('button', { name: 'APP_ACTION_OPEN' })[0]).toBeDisabled();
   });
 
   it('still says Pending when tailscaled has not refused anything', () => {

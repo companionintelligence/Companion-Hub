@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   APP_CAME_UP_TIMING,
+  APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN,
   type AppContainerLook,
   AppCameUpWatch,
   describeAppServiceFailure,
@@ -23,9 +24,9 @@ function container(over: Partial<AppContainerLook> & { service: string; state: s
 }
 
 /** Runs the looks one second apart as the wait does and returns the first answer. */
-function watch(lookAt: (elapsedMs: number) => AppContainerLook[]) {
-  const appWatch = new AppCameUpWatch(START);
-  for (let elapsedMs = 0; elapsedMs <= 120_000; elapsedMs += APP_CAME_UP_TIMING.lookEveryMs) {
+function watch(lookAt: (elapsedMs: number) => AppContainerLook[], timing = APP_CAME_UP_TIMING, oneShotServices = new Set<string>()) {
+  const appWatch = new AppCameUpWatch(START, timing, oneShotServices);
+  for (let elapsedMs = 0; elapsedMs <= 300_000; elapsedMs += APP_CAME_UP_TIMING.lookEveryMs) {
     const verdict = appWatch.judge(lookAt(elapsedMs), START + elapsedMs);
     if (verdict.outcome !== 'waiting') {
       return { ...verdict, elapsedMs };
@@ -97,6 +98,35 @@ describe('AppCameUpWatch', () => {
 
     expect(verdict.outcome).toBe('up');
     expect(verdict.elapsedMs).toBe(25_000 + APP_CAME_UP_TIMING.upAfterCrashMs);
+  });
+
+  describe('with the window of a start someone asked for', () => {
+    // Docker's retry at 25.5 s still failed, the database was ready by the next one at 51 s.
+    const databaseReadyAt51s = (elapsedMs: number) =>
+      elapsedMs < 51_000
+        ? [container({ service: 'api', state: 'restarting', exitCode: 1, restartCount: Math.min(9, Math.floor(elapsedMs / 5000)) })]
+        : [container({ service: 'api', state: 'running', restartCount: 10, startedAtMs: START + 51_000 })];
+
+    it('calls that service failed with the default window', () => {
+      expect(watch(databaseReadyAt51s).outcome).toBe('failed');
+    });
+
+    it('lets it come up instead, so a slow app is not taken down', () => {
+      const verdict = watch(databaseReadyAt51s, APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN);
+
+      expect(verdict.outcome).toBe('up');
+      expect(verdict.elapsedMs).toBe(51_000 + APP_CAME_UP_TIMING.upAfterCrashMs);
+    });
+
+    it('still fails a service that never comes up', () => {
+      const verdict = watch(
+        () => [container({ service: 'api', state: 'restarting', exitCode: 3, restartCount: 5 })],
+        APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN,
+      );
+
+      expect(verdict).toMatchObject({ outcome: 'failed', kind: 'restarting' });
+      expect(verdict.elapsedMs).toBe(APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN.settleWithinMs);
+    });
   });
 
   it('still fails a service that never stays down long enough to read restarting, once its last run has had its time', () => {
@@ -193,6 +223,48 @@ describe('AppCameUpWatch', () => {
     const verdict = watch(() => [container({ service: 'web', state: 'running' }), container({ service: 'setup', state: 'exited', exitCode: 0 })]);
 
     expect(verdict.outcome).toBe('up');
+  });
+
+  it('lets a one-shot that exited with an error sit beside a running service and hands it to the caller', () => {
+    const verdict = watch(
+      () => [container({ service: 'web', state: 'running' }), container({ service: 'sync', state: 'exited', exitCode: 1 })],
+      APP_CAME_UP_TIMING,
+      new Set(['sync']),
+    );
+
+    expect(verdict).toMatchObject({ outcome: 'up', failedOneShots: [{ service: 'sync', exitCode: 1 }] });
+    expect(verdict.elapsedMs).toBe(APP_CAME_UP_TIMING.upAfterMs);
+  });
+
+  it('still fails a service that exited with an error and is not one of the one-shots', () => {
+    const verdict = watch(
+      () => [container({ service: 'web', state: 'running' }), container({ service: 'worker', state: 'exited', exitCode: 1 })],
+      APP_CAME_UP_TIMING,
+      new Set(['sync']),
+    );
+
+    expect(verdict).toMatchObject({ outcome: 'failed', kind: 'exited', containers: [{ service: 'worker' }] });
+  });
+
+  it('names a failed one-shot when nothing else is running, without the 10 s wait for a service to appear', () => {
+    const verdict = watch(() => [container({ service: 'sync', state: 'exited', exitCode: 1 })], APP_CAME_UP_TIMING, new Set(['sync']));
+
+    expect(verdict).toMatchObject({ outcome: 'failed', kind: 'exited', containers: [{ service: 'sync', exitCode: 1 }] });
+    expect(verdict.elapsedMs).toBe(0);
+  });
+
+  it('gives a crash loop the whole window beside a failed one-shot and names the crash first', () => {
+    const verdict = watch(
+      () => [
+        container({ service: 'sync', state: 'exited', exitCode: 1 }),
+        container({ service: 'web', state: 'restarting', exitCode: 3, restartCount: 2 }),
+      ],
+      APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN,
+      new Set(['sync']),
+    );
+
+    expect(verdict).toMatchObject({ outcome: 'failed', kind: 'restarting', containers: [{ service: 'web' }, { service: 'sync' }] });
+    expect(verdict.elapsedMs).toBe(APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN.settleWithinMs);
   });
 
   it('is fine with a service still Created beside a running one', () => {

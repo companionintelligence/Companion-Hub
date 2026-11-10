@@ -23,7 +23,6 @@ import {
   DEFAULT_DEMO_MODE,
   DEFAULT_DISABLE_PASSWORD_RESET,
   DEFAULT_GUEST_DASHBOARD,
-  DEFAULT_ALLOW_AUTO_THEMES,
   DEFAULT_ALLOW_ERROR_MONITORING,
   DEFAULT_PERSIST_TRAEFIK_CONFIG,
   DEFAULT_QUEUE_TIMEOUT_IN_MINUTES,
@@ -31,7 +30,6 @@ import {
   DEFAULT_ADVANCED_SETTINGS,
   DEFAULT_LOG_LEVEL,
   DEFAULT_EXPERIMENTAL_INSECURE_COOKIE,
-  DEFAULT_THEME_BASE,
   DEFAULT_THEME_COLOR,
   DEFAULT_LOCAL_DOMAIN,
 } from '../constants';
@@ -240,6 +238,11 @@ export function resolveHubDomain(sources: {
  * Resolves the RabbitMQ password without silently using the development default in
  * production. Production requires an explicit value; an explicit `admin` remains
  * compatible but returns a migration warning.
+ *
+ * The `admin` escape hatch stays until every update path, including the in-app updater,
+ * replaces `admin` (Companion-Hub#884): a Hub released before that updates itself through a
+ * compose that still falls back to `admin`, so refusing it here would crash-loop unattended
+ * nodes. Removing the hatch, and failing closed on `admin`, is a follow-up.
  */
 export function resolveRabbitmqPassword(envMap: Map<string, string>): { password: string; warning?: string } {
   const isProduction = process.env.NODE_ENV === 'production';
@@ -251,7 +254,8 @@ export function resolveRabbitmqPassword(envMap: Map<string, string>): { password
         password: explicit,
         warning:
           "RABBITMQ_PASSWORD is set to the weak default 'admin' in production. Set a strong, unique RABBITMQ_PASSWORD " +
-          '(and match RABBITMQ_DEFAULT_PASS on the broker) — the default is a known credential.',
+          '(and match RABBITMQ_DEFAULT_PASS on the broker) — the default is a known credential. `cihub up`, `cihub pool update` ' +
+          'and the desktop app replace it; a later release will refuse to start on it.',
       };
     }
     return { password: explicit };
@@ -929,10 +933,6 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     'GUEST_DASHBOARD',
     resolve('GUEST_DASHBOARD', { envMap, settingsVal: boolStr(settingsData.guestDashboard), fallback: DEFAULT_GUEST_DASHBOARD }),
   );
-  envMap.set(
-    'ALLOW_AUTO_THEMES',
-    resolve('ALLOW_AUTO_THEMES', { envMap, settingsVal: boolStr(settingsData.allowAutoThemes), fallback: DEFAULT_ALLOW_AUTO_THEMES }),
-  );
   // Not `resolve()`'s settingsVal slot: that slot is env-first, and this one key must not be.
   const errorMonitoringEnv = resolve('ALLOW_ERROR_MONITORING', { envMap, fallback: DEFAULT_ALLOW_ERROR_MONITORING });
   envMap.set(
@@ -990,7 +990,6 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     }),
   );
 
-  envMap.set('THEME_BASE', resolve('THEME_BASE', { envMap, settingsVal: settingsData.themeBase, fallback: DEFAULT_THEME_BASE }));
   envMap.set('THEME_COLOR', resolve('THEME_COLOR', { envMap, settingsVal: settingsData.themeColor, fallback: DEFAULT_THEME_COLOR }));
 
   // Prefer mounted data because Docker Compose can retain stale host-shell values.

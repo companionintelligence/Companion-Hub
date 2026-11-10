@@ -49,12 +49,20 @@ export {
   parseTunnelCustomDomains,
   selectCustomDomain,
 } from '../public-web/custom-domains.js';
-export { effectiveExposureMode, publishesPublicWebRoute, servedExposureMode, storedExposureForm } from '../public-web/exposure.js';
+export {
+  effectiveExposureMode,
+  publishesHostPort,
+  publishesPublicWebRoute,
+  servedExposureMode,
+  storedExposureForm,
+  storedHostPortForm,
+} from '../public-web/exposure.js';
 export { buildTailscaleNodeFqdn, buildTailscalePortHost, buildTailscalePortUrl, buildTailscaleWebIdentity } from '../tailscale/identity.js';
 export type { DesktopReleaseManifest } from './desktop-release.js';
 export { desktopInstallerUrl, desktopReleaseCdn, isTrustedDownloadUrlForHost, platformManifestKey } from './desktop-release.js';
 export { INFERENCE_BACKEND_TYPES } from './inference.js';
 export { defaultChatModelId } from '../inference/default-chat-model.js';
+export { gpuRuntimeReady } from '../inference/gpu-runtime.js';
 export { OPERATOR_MINTABLE_SCOPES } from './api-key-scopes.js';
 export type { OperatorMintableScope } from './api-key-scopes.js';
 export type {

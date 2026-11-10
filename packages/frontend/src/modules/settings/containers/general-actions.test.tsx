@@ -1,5 +1,6 @@
 import { act, render, screen, userEvent, waitFor, within } from '@/tests/test-utils';
 import { useAppContext } from '@/context/app-context';
+import { useLayoutEffect } from 'react';
 import {
   checkForUpdates,
   type DesktopUpdateCallbacks,
@@ -10,12 +11,13 @@ import {
   installDesktopUpdate,
   isTauri,
   openDesktopDownloadPage,
+  performStackUpdate,
   performUpdate,
   restartDesktopApp,
   type UpdateInfo,
 } from '@/lib/update-service';
 import { factoryReset } from '@/api-client/sdk.gen';
-import { resolveStackUpdate } from '@/lib/desktop-stack-session';
+import { keepStackUpdateOutcome, markStackUpdatePending, readKeptStackUpdateOutcome, resolveStackUpdate } from '@/lib/desktop-stack-session';
 import { TranslatableError } from '@/types/error.types';
 import { sdkFail, sdkOk } from '@/tests/sdk-mock-helpers';
 import { toast } from 'sonner';
@@ -71,6 +73,7 @@ vi.mock('@/lib/update-service', async () => {
     getDesktopRestartState: vi.fn(),
     getInstalledDesktopVersion: vi.fn(),
     isTauri: vi.fn(),
+    performStackUpdate: vi.fn(),
     performUpdate: vi.fn(),
     restartDesktopApp: vi.fn(),
     installDesktopUpdate: vi.fn(),
@@ -114,6 +117,12 @@ function commandsIn(instructions: HTMLElement): (string | null)[] {
   return Array.from(instructions.querySelectorAll('code'), (code) => code.textContent);
 }
 
+/** A layout effect runs after the commit and before the panel's passive effects subscribe. */
+const HelloBeforeSubscribe = () => {
+  useLayoutEffect(() => resolveStackUpdate({ state: 'completed', version: '4.7.0' }), []);
+  return null;
+};
+
 describe('GeneralActionsContainer', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -124,6 +133,7 @@ describe('GeneralActionsContainer', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    sessionStorage.clear();
 
     mockUseAppContext.mockReturnValue({
       version: {
@@ -141,7 +151,7 @@ describe('GeneralActionsContainer', () => {
     mockIsTauri.mockReturnValue(false);
     mockGetInstalledDesktopVersion.mockResolvedValue(null);
     mockCheckForUpdates.mockResolvedValue(null);
-    mockFetchHostListenerStatus.mockResolvedValue(false);
+    mockFetchHostListenerStatus.mockResolvedValue({ reachable: false, desktopApp: true });
     mockGetDesktopRestartState.mockResolvedValue(null);
   });
 
@@ -500,7 +510,7 @@ describe('GeneralActionsContainer', () => {
   });
 
   it('tells a browser where to update the desktop app when the Hub cannot reach it', async () => {
-    mockFetchHostListenerStatus.mockResolvedValue(false);
+    mockFetchHostListenerStatus.mockResolvedValue({ reachable: false, desktopApp: true });
 
     render(<GeneralActionsContainer />);
 
@@ -513,9 +523,168 @@ describe('GeneralActionsContainer', () => {
     expect(screen.queryByTestId('host-listener-ready')).not.toBeInTheDocument();
   });
 
+  describe('on a Hub with no desktop app', () => {
+    beforeEach(() => {
+      mockFetchHostListenerStatus.mockResolvedValue({ reachable: false, desktopApp: false });
+    });
+
+    // A started update leaves its pending marker behind, which would carry into the next test.
+    afterEach(() => {
+      sessionStorage.clear();
+    });
+
+    it('tells a browser the Hub came from cihub instead of offering the desktop app', async () => {
+      render(<GeneralActionsContainer />);
+
+      const note = await screen.findByTestId('desktop-app-cli-install-note');
+      expect(note).toHaveTextContent('This Hub was installed with the cihub command line, so it has no desktop app to update.');
+      expect(note).toHaveTextContent('use Hub stack above or run cihub pool update');
+      expect(note).not.toHaveTextContent('companion-hub');
+      expect(screen.queryByTestId('desktop-shell-update-card')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('host-listener-unavailable')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('hub-shell-update-btn')).not.toBeInTheDocument();
+    });
+
+    it('leaves out the update steps for a member, who has no Hub stack card', async () => {
+      render(<GeneralActionsContainer manageHub={false} />);
+
+      const note = await screen.findByTestId('desktop-app-cli-install-note');
+      expect(note).toHaveTextContent('This Hub was installed with the cihub command line, so it has no desktop app to update.');
+      expect(note).not.toHaveTextContent('Hub stack');
+      expect(note).not.toHaveTextContent('cihub pool update');
+    });
+
+    it('says nothing about how the Hub was installed until the Hub answers', async () => {
+      mockFetchHostListenerStatus.mockReturnValue(new Promise(() => undefined));
+
+      render(<GeneralActionsContainer />);
+
+      await screen.findByTestId('hub-check-updates-btn');
+      expect(screen.queryByTestId('desktop-app-cli-install-note')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('desktop-shell-update-card')).not.toBeInTheDocument();
+    });
+
+    it('still shows the card in the desktop window, which is the desktop app', async () => {
+      vi.mocked(isTauri).mockReturnValue(true);
+      (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+
+      render(<GeneralActionsContainer />);
+
+      expect(await screen.findByTestId('desktop-shell-update-card')).toBeInTheDocument();
+      expect(screen.queryByTestId('desktop-app-cli-install-note')).not.toBeInTheDocument();
+    });
+
+    it('asks for an update without the desktop app advice', async () => {
+      mockUseAppContext.mockReturnValue({
+        version: { current: '4.7.0', latest: '4.8.0', body: '', releases: [] },
+        refreshAppContext: vi.fn(),
+        userSettings: { ciHubDeviceSlug: 'core' },
+      } as unknown as ReturnType<typeof useAppContext>);
+      vi.mocked(performStackUpdate).mockResolvedValue({ ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_RESTARTING' });
+
+      render(<GeneralActionsContainer />);
+      await waitFor(() => expect(mockFetchHostListenerStatus).toHaveBeenCalled());
+      await waitFor(() => expect(screen.queryByTestId('desktop-shell-update-card')).not.toBeInTheDocument());
+      await userEvent.click(await screen.findByTestId('hub-update-btn'));
+
+      await waitFor(() => expect(performStackUpdate).toHaveBeenCalledWith('4.8.0', { noDesktopApp: true }));
+    });
+
+    // Desktop apps up to 0.2.77 keep their token where the Hub can't read it, so the window is one too.
+    it('keeps the desktop app advice in the desktop window, whatever the Hub can see of the app', async () => {
+      vi.mocked(isTauri).mockReturnValue(true);
+      (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+      mockUseAppContext.mockReturnValue({
+        version: { current: '4.7.0', latest: '4.8.0', body: '', releases: [] },
+        refreshAppContext: vi.fn(),
+        userSettings: { ciHubDeviceSlug: 'core' },
+      } as unknown as ReturnType<typeof useAppContext>);
+      vi.mocked(performStackUpdate).mockResolvedValue({ ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_RESTARTING' });
+
+      render(<GeneralActionsContainer />);
+      await waitFor(() => expect(mockFetchHostListenerStatus).toHaveBeenCalled());
+      await screen.findByTestId('desktop-shell-update-card');
+      // The status answer lands asynchronously; let it settle before clicking.
+      await act(async () => {
+        await Promise.resolve();
+      });
+      await userEvent.click(await screen.findByTestId('hub-update-btn'));
+
+      await waitFor(() => expect(performStackUpdate).toHaveBeenCalledWith('4.8.0', { noDesktopApp: false }));
+    });
+  });
+
+  describe('on a Hub that has said it has no desktop app, then goes quiet', () => {
+    // A started update leaves its pending marker behind, which would carry into the next test.
+    afterEach(() => {
+      sessionStorage.clear();
+    });
+
+    it('leaves the card out when a later check gets no answer', async () => {
+      mockFetchHostListenerStatus.mockResolvedValueOnce({ reachable: false, desktopApp: false }).mockResolvedValue(null);
+
+      render(<GeneralActionsContainer />);
+      await waitFor(() => expect(mockFetchHostListenerStatus).toHaveBeenCalledTimes(1));
+      await userEvent.click(await screen.findByTestId('hub-check-updates-btn'));
+
+      await waitFor(() => expect(mockToastSuccess).toHaveBeenCalled());
+      expect(mockFetchHostListenerStatus).toHaveBeenCalledTimes(2);
+      expect(screen.queryByTestId('desktop-shell-update-card')).not.toBeInTheDocument();
+      expect(screen.getByTestId('desktop-app-cli-install-note')).toBeInTheDocument();
+    });
+
+    it('asks again once the Hub is back from an update', async () => {
+      mockFetchHostListenerStatus.mockResolvedValueOnce(null).mockResolvedValue({ reachable: false, desktopApp: false });
+
+      render(<GeneralActionsContainer />);
+      expect(await screen.findByTestId('desktop-shell-update-card')).toBeInTheDocument();
+
+      act(() => {
+        resolveStackUpdate({ state: 'completed', version: '4.7.0' });
+      });
+
+      await waitFor(() => expect(screen.queryByTestId('desktop-shell-update-card')).not.toBeInTheDocument());
+    });
+
+    it('asks the Hub before updating when its first answer has not come', async () => {
+      mockUseAppContext.mockReturnValue({
+        version: { current: '4.7.0', latest: '4.8.0', body: '', releases: [] },
+        refreshAppContext: vi.fn(),
+        userSettings: { ciHubDeviceSlug: 'core' },
+      } as unknown as ReturnType<typeof useAppContext>);
+      vi.mocked(performStackUpdate).mockResolvedValue({ ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_RESTARTING' });
+      mockFetchHostListenerStatus.mockReturnValueOnce(new Promise(() => undefined)).mockResolvedValue({ reachable: false, desktopApp: false });
+
+      render(<GeneralActionsContainer />);
+      await userEvent.click(await screen.findByTestId('hub-update-btn'));
+
+      await waitFor(() => expect(performStackUpdate).toHaveBeenCalledWith('4.8.0', { noDesktopApp: true }));
+    });
+  });
+
+  // Desktop apps up to 0.2.77 keep their token where the Hub can't read it, Windows ones among them.
+  it('keeps the Desktop app card on a Hub that says its desktop app updates it', async () => {
+    mockFetchHostListenerStatus.mockResolvedValue({ reachable: false, desktopApp: false });
+    getUpdateBlocks.mockResolvedValue(
+      sdkOk({ updateBlockedReason: 'started on Windows', autoUpdateBlockedReason: 'started on Windows', desktopAppUpdatesHub: true }),
+    );
+
+    render(<GeneralActionsContainer />);
+
+    expect(await screen.findByTestId('desktop-shell-update-card')).toBeInTheDocument();
+  });
+
+  it('keeps the Desktop app card when the Hub could not say whether it has one', async () => {
+    mockFetchHostListenerStatus.mockResolvedValue(null);
+
+    render(<GeneralActionsContainer />);
+
+    expect(await screen.findByTestId('desktop-shell-update-card')).toBeInTheDocument();
+  });
+
   // A browser's update leaves the desktop app out (#2316), so "Update will refresh the app" was untrue.
   it('tells a browser where to update the desktop app when the Hub can reach it too', async () => {
-    mockFetchHostListenerStatus.mockResolvedValue(true);
+    mockFetchHostListenerStatus.mockResolvedValue({ reachable: true, desktopApp: true });
 
     render(<GeneralActionsContainer />);
 
@@ -524,7 +693,7 @@ describe('GeneralActionsContainer', () => {
   });
 
   it('says a browser update refreshes the desktop app on a Windows install, which the app updates', async () => {
-    mockFetchHostListenerStatus.mockResolvedValue(true);
+    mockFetchHostListenerStatus.mockResolvedValue({ reachable: true, desktopApp: true });
     getUpdateBlocks.mockResolvedValue(
       sdkOk({ updateBlockedReason: null, autoUpdateBlockedReason: 'started on Windows', desktopAppUpdatesHub: true }),
     );
@@ -894,7 +1063,7 @@ describe('GeneralActionsContainer', () => {
   it('does not POST the host listener from the browser tab', async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
-    mockFetchHostListenerStatus.mockResolvedValue(false);
+    mockFetchHostListenerStatus.mockResolvedValue({ reachable: false, desktopApp: true });
 
     render(<GeneralActionsContainer />);
 
@@ -1044,7 +1213,7 @@ describe('GeneralActionsContainer', () => {
       });
 
       it('offers the button in a browser and says the update refreshes the desktop app', async () => {
-        mockFetchHostListenerStatus.mockResolvedValue(true);
+        mockFetchHostListenerStatus.mockResolvedValue({ reachable: true, desktopApp: true });
 
         render(<GeneralActionsContainer />);
 
@@ -1125,11 +1294,54 @@ describe('GeneralActionsContainer', () => {
     expect(await screen.findByTestId('hub-update-status')).toHaveTextContent('Updated. The Hub is running 4.7.0.');
     expect(screen.queryByTestId('hub-check-updates-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('hub-update-stop-waiting')).not.toBeInTheDocument();
+    // On screen, so the next visit has nothing left to repeat.
+    expect(readKeptStackUpdateOutcome()).toBeNull();
 
     await userEvent.click(screen.getByTestId('hub-update-dismiss'));
 
     expect(screen.queryByTestId('hub-update-status')).not.toBeInTheDocument();
     expect(screen.getByTestId('hub-check-updates-btn')).toBeInTheDocument();
+  });
+
+  it('says the update finished when the update ended by reloading the page and says it once', async () => {
+    mockUseAppContext.mockReturnValue({
+      version: { current: '4.7.0', latest: '4.7.0', body: '', releases: [] },
+      refreshAppContext: vi.fn(),
+      userSettings: { ciHubDeviceSlug: 'core' },
+    } as unknown as ReturnType<typeof useAppContext>);
+    keepStackUpdateOutcome({ state: 'completed', version: '4.7.0' });
+
+    const first = render(<GeneralActionsContainer />);
+
+    expect(await screen.findByTestId('hub-update-status')).toHaveTextContent('Updated. The Hub is running 4.7.0.');
+    expect(screen.queryByTestId('hub-update-stop-waiting')).not.toBeInTheDocument();
+    expect(readKeptStackUpdateOutcome()).toBeNull();
+
+    first.unmount();
+    render(<GeneralActionsContainer />);
+
+    expect(await screen.findByTestId('hub-check-updates-btn')).toBeInTheDocument();
+    expect(screen.queryByTestId('hub-update-status')).not.toBeInTheDocument();
+  });
+
+  it('shows an outcome that lands after the first render and before the panel has subscribed', async () => {
+    mockUseAppContext.mockReturnValue({
+      version: { current: '4.7.0', latest: '4.7.0', body: '', releases: [] },
+      refreshAppContext: vi.fn(),
+      userSettings: { ciHubDeviceSlug: 'core' },
+    } as unknown as ReturnType<typeof useAppContext>);
+    markStackUpdatePending('4.6.0');
+
+    render(
+      <>
+        <GeneralActionsContainer />
+        <HelloBeforeSubscribe />
+      </>,
+    );
+
+    expect(await screen.findByTestId('hub-update-status')).toHaveTextContent('Updated. The Hub is running 4.7.0.');
+    expect(screen.queryByTestId('hub-update-stop-waiting')).not.toBeInTheDocument();
+    expect(readKeptStackUpdateOutcome()).toBeNull();
   });
 
   it('asks for this device name before factory reset', async () => {

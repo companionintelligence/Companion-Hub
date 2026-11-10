@@ -536,13 +536,16 @@ describe('env-helpers — RABBITMQ_PASSWORD fail-closed in production', () => {
   });
 
   it('MUST NOT invent the weak default, but tolerates an explicit admin in production (compose fallback)', async () => {
-    // Compose interpolates ${RABBITMQ_PASSWORD:-admin}. An explicit admin still
-    // matches the broker; we keep it rather than silently inventing another value.
+    // A Hub released before Companion-Hub#884 updates itself through a compose that still
+    // interpolates ${RABBITMQ_PASSWORD:-admin}. An explicit admin still matches the broker, so the Hub
+    // keeps it and warns loudly instead of crash-looping, until the migrations have shipped.
     process.env.NODE_ENV = 'production';
     process.env.RABBITMQ_PASSWORD = 'admin';
+    loggedWarnings.length = 0;
     setupMocks({ dataEnv: '' });
     const envMap = await generateSystemEnvFile();
     expect(envMap.get('RABBITMQ_PASSWORD')).toBe('admin');
+    expect(loggedWarnings).toContainEqual(expect.stringMatching(/RABBITMQ_PASSWORD is set to the weak default 'admin' in production/));
   });
 
   it('MUST expose the fail-closed + warning policy via resolveRabbitmqPassword()', async () => {

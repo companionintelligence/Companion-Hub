@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils';
 import type { AppDetails, AppInfo } from '@/types/app.types';
 import { hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
 import { buildPublicWebIdentity, normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
-import { publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm } from '@ci-hub/common/types';
+import { publishesHostPort, publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm, storedHostPortForm } from '@ci-hub/common/types';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, Copy, ExternalLink, Globe, Lock, MonitorSmartphone, QrCode as QrCodeIcon } from 'lucide-react';
 import { useId, useMemo, useState } from 'react';
@@ -34,6 +34,8 @@ export interface AppAccessPoint {
    * published and will not be until someone on the host runs the command Settings → Network shows.
    */
   tailscaleRefused?: boolean;
+  /** Public web only: the Portal refused this app a public address, so the address does not resolve. */
+  publicRefused?: boolean;
 }
 
 function resolveBrowserHost(internalIp?: string | null): string {
@@ -97,7 +99,7 @@ export function isMalformedAccessUrl(url: string | null): boolean {
   return url ? parseAccessUrl(url) === null : false;
 }
 
-function isLoopbackHost(host: string): boolean {
+export function isLoopbackHost(host: string): boolean {
   const lower = host.toLowerCase();
   // `*.localhost` resolves to loopback in browsers (RFC 6761), and the Tauri desktop
   // shell serves from `tauri.localhost` on Windows.
@@ -166,12 +168,17 @@ export function isTailscalePortPublished(port: number | null | undefined, served
   return port != null && servedPorts.has(port);
 }
 
-function hasDirectLocalAccess(
-  record: { exposureMode?: string | null; exposedLocal?: boolean; openPort?: boolean },
+export function hasDirectLocalAccess(
+  record: { config?: unknown; exposureMode?: string | null; exposedLocal?: boolean; openPort?: boolean },
   options: { hasHostPort: boolean; dynamicConfig: boolean },
 ): boolean {
   if (!options.hasHostPort) return false;
 
+  // Compose binds the host port from the stored install form, so a record that carries it is judged by compose's rule.
+  const form = storedHostPortForm(record);
+  if (form) return publishesHostPort(form);
+
+  // A guest's record carries no form, and its row's `exposedLocal` is true for any exposable app installed without exposure settings.
   const mode = record.exposureMode;
   // Tailscale-only installs may skip publishing a host port unless explicitly requested.
   if (mode === 'tailscale') return Boolean(record.openPort);
@@ -197,6 +204,8 @@ export function buildAppAccessPoints(input: {
   tailscaleServedPorts?: ReadonlySet<number>;
   /** Whether tailscaled refuses the Hub's Tailscale Serve changes; see `servePermission` in the Tailscale status. */
   tailscaleServeDenied?: boolean;
+  /** Whether the last sync says the Portal refused this app a public address. */
+  publicAddressRefused?: boolean;
   organizationSlug?: string;
   deviceSlug?: string;
   hubSubdomain?: string | null;
@@ -214,6 +223,7 @@ export function buildAppAccessPoints(input: {
     tailscaleHttpsEnabled = false,
     tailscaleServedPorts = new Set<number>(),
     tailscaleServeDenied = false,
+    publicAddressRefused = false,
     organizationSlug,
     deviceSlug,
     hubSubdomain,
@@ -298,8 +308,16 @@ export function buildAppAccessPoints(input: {
   // `exposedLocal` defaults to true for an exposable app installed without exposure settings,
   // and reading it showed "Enabled" for a route nothing served.
   const publicWebConfigured = publishesPublicWebRoute(storedExposureForm(record)) || Boolean(configuredPublicDomain) || Boolean(record.exposed);
-  const publicActive = Boolean(publicUrl && publicWebConfigured);
-  const publicState: AccessPointState = publicActive ? 'active' : cloudflareAvailable && publicUrl && info.exposable ? 'available' : 'unavailable';
+  const publicActive = Boolean(publicUrl && publicWebConfigured) && !publicAddressRefused;
+  // No `publicUrl` here: a subdomain the Portal refused as invalid sanitizes to nothing, so it has no address to build.
+  const publicRefused = Boolean(info.exposable && publicWebConfigured && publicAddressRefused);
+  const publicState: AccessPointState = publicRefused
+    ? 'unavailable'
+    : publicActive
+      ? 'active'
+      : cloudflareAvailable && publicUrl && info.exposable
+        ? 'available'
+        : 'unavailable';
 
   return [
     {
@@ -310,10 +328,13 @@ export function buildAppAccessPoints(input: {
       host: info.exposable ? publicHost : null,
       state: info.exposable ? publicState : 'unavailable',
       stateLabel: info.exposable
-        ? publicState === 'active'
-          ? 'APP_DETAILS_ACCESS_ENABLED'
-          : 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
+        ? publicRefused
+          ? 'APP_DETAILS_ACCESS_REFUSED'
+          : publicState === 'active'
+            ? 'APP_DETAILS_ACCESS_ENABLED'
+            : 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
         : 'APP_DETAILS_ACCESS_LOCAL_ONLY',
+      publicRefused,
     },
     {
       key: 'vpn',
@@ -362,9 +383,11 @@ const stateClasses: Record<AccessPointState, string> = {
 interface Props {
   app?: AppDetails | null;
   info: AppInfo;
+  /** Why the Portal refused this app a public address, when it did; shown on the Public domain card. */
+  publicAddressRefusal?: string | null;
 }
 
-export const AppAccessPoints = ({ app, info }: Props) => {
+export const AppAccessPoints = ({ app, info, publicAddressRefusal = null }: Props) => {
   const { t } = useTranslation();
   const { userSettings, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn, tailscaleHttpsEnabled } = useAppContext();
   const [qrEntry, setQrEntry] = useState<AppAccessPoint | null>(null);
@@ -400,6 +423,7 @@ export const AppAccessPoints = ({ app, info }: Props) => {
     tailscaleHttpsEnabled,
     tailscaleServedPorts,
     tailscaleServeDenied,
+    publicAddressRefused: Boolean(publicAddressRefusal),
     organizationSlug: userSettings.ciHubOrganizationSlug,
     deviceSlug: userSettings.ciHubDeviceSlug,
     hubSubdomain: userSettings.ciHubHubSubdomain,
@@ -493,6 +517,10 @@ export const AppAccessPoints = ({ app, info }: Props) => {
                         <Link to="/settings?tab=network" className="font-medium underline underline-offset-2">
                           {t('APP_DETAILS_ACCESS_TAILSCALE_REFUSED_LINK')}
                         </Link>
+                      </div>
+                    ) : entry.publicRefused ? (
+                      <div className="min-w-0 text-sm leading-5 text-warning" data-testid="public-access-refused">
+                        {publicAddressRefusal}
                       </div>
                     ) : (
                       <div className={cn('min-w-0 break-all text-sm leading-5', !isActive && 'text-muted-foreground')}>

@@ -7,6 +7,7 @@ import {
   hubHostPorts,
   mappedHostPorts,
   parsePort,
+  portRangeRefusal,
 } from '../custom-app-host-port';
 
 const APP_URN = 'my-nginx:_user' as AppUrn;
@@ -206,5 +207,34 @@ describe('hubHostPorts', () => {
     expect(hubHostPorts({ port: 8000, sslPort: 8001 }, { HTTP_PORT: '8880', HTTPS_PORT: ' 8443 ', TRAEFIK_DASHBOARD_PORT: 'not-a-port' })).toEqual(
       new Set([8880, 8443, 8080, 5002, 6543, 5001, 8000, 8001]),
     );
+  });
+});
+
+describe('portRangeRefusal', () => {
+  it.each([
+    ['70000', 'MAX'],
+    ['65536', 'MAX'],
+    [' 70000 ', 'MAX'],
+    ['0', 'MIN'],
+    ['-1', 'MIN'],
+    [70000, 'MAX'],
+    [0, 'MIN'],
+    ['70000-70010', 'MAX'],
+    ['8000-70000', 'MAX'],
+    ['0-10', 'MIN'],
+  ])('refuses %j', (value, refusal) => {
+    expect(portRangeRefusal(value)).toBe(refusal);
+  });
+
+  it.each(['abc', '80.5', ' 80 ', '8010-8000', 80.5, '${APP_PORT', '$1PORT'])('refuses %j as not a port', (value) => {
+    expect(portRangeRefusal(value)).toBe('INVALID');
+  });
+
+  it.each(['$APP_PORT', '${APP_PORT:-8080}'])('leaves the env reference %j alone', (value) => {
+    expect(portRangeRefusal(value)).toBeUndefined();
+  });
+
+  it.each(['80', '65535', '1', '${APP_PORT}', '8000-8010', '', undefined, null, 80, 65535, true])('leaves %j alone', (value) => {
+    expect(portRangeRefusal(value)).toBeUndefined();
   });
 });

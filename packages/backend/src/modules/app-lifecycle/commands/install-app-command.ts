@@ -8,13 +8,16 @@ import { AppHelpers } from '@/modules/apps/app.helpers';
 import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
+import { AppVolumeArchiveService } from '@/modules/docker/app-volume-archive.service';
 import { EnvUtils } from '@/modules/env/env.utils';
+import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { ImageSizeService } from '@/modules/marketplace/image-size.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { withTimeout } from '@/common/helpers/with-timeout';
 import { AppLifecycleCommand, type CommandExecutionContext } from './command';
 import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { AppLifecycleError, type AppCommandResult } from './app-lifecycle-errors';
@@ -71,6 +74,12 @@ async function getOpenclawFallbackEntrypoint(): Promise<string> {
     throw new Error(`Failed to load OpenClaw fallback entrypoint from ${scriptPath}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
+
+/** What the app already had on this Hub before an install wrote anything. A cancel leaves it there. */
+type EarlierAppData = { files: boolean; volumes: boolean };
+
+/** Both checks are local calls. A Docker engine or a disk that stops answering must not hold up the install queue. */
+const EARLIER_DATA_CHECK_TIMEOUT_MS = 15_000;
 
 export class InstallAppCommand extends AppLifecycleCommand {
   public async execute(appUrn: AppUrn, form: AppEventFormInput, ctx?: CommandExecutionContext): Promise<AppCommandResult> {
@@ -130,12 +139,8 @@ export class InstallAppCommand extends AppLifecycleCommand {
     }
 
     const refusedHostPorts = new Set<number>();
-    // Read before this install creates anything. What is there now was not written by this install. A folder
-    // that can't be checked is treated the same way, so a cancel can't send root at it.
-    const dataFromEarlier = await appFilesManager.hasAppData(appUrn).catch((err) => {
-      logger.warn(`Could not check for data from before this install of ${appUrn}; a cancel will not use the root helper on it: ${err}`);
-      return true;
-    });
+    // Read before this install writes anything: what is there now is data it must not take with it on a cancel.
+    const earlierData = await this.readEarlierData(appUrn);
 
     try {
       ctx?.setPhase('preparing');
@@ -208,7 +213,9 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       // Ensure app directory exists before we try to use APP_DATA_DIR
       await emitProgress(30);
-      await this.ensureAppDir(appUrn, form);
+      // Not the volume folders yet: one made for a file a volume mounts (`data/config.yml`) would stop
+      // copyDataDir below from copying the store's data folder. They are made after it (#2198).
+      await this.ensureAppDir(appUrn, form, { createVolumeDirs: false });
 
       // Copy data dir
       await emitProgress(35);
@@ -254,10 +261,13 @@ export class InstallAppCommand extends AppLifecycleCommand {
       //   ci-entrypoint.sh — the actual Hub inference auto-config script
       // Ensure both exist even if copyDataDir was skipped or the app payload was incomplete.
       if (appName === 'openclaw') {
+        const filesystem = this.moduleRef.get(FilesystemService, { strict: false });
         const { appInstalledDir } = appFilesManager.getAppPaths(appUrn);
         const appRepoDir = path.join(directories.dataDir, 'repos', appStoreId, 'apps', appName);
         const targetDir = path.join(containerAppDataPath, 'data');
-        await fs.promises.mkdir(targetDir, { recursive: true });
+        if (!(await filesystem.createDirectory(targetDir))) {
+          throw new Error(`Could not create ${targetDir} for the OpenClaw start scripts`);
+        }
 
         // Helper: copy a file from the installed app payload to the data volume,
         // falling back to the provided content string if the source is absent.
@@ -266,26 +276,26 @@ export class InstallAppCommand extends AppLifecycleCommand {
           const candidateSources = [path.join(appInstalledDir, 'data', filename), path.join(appRepoDir, 'data', filename)];
           let restoredFromSource = false;
           for (const sourcePath of candidateSources) {
-            try {
-              await fs.promises.access(sourcePath);
-              await fs.promises.copyFile(sourcePath, targetPath);
+            // A regular file only. These folders hold what a store's author shipped and what the app's
+            // container wrote. The filesystem service keeps every step inside them.
+            if (!(await filesystem.isFile(sourcePath))) {
+              continue;
+            }
+            if (await filesystem.copyFile(sourcePath, targetPath)) {
               restoredFromSource = true;
               logger.info(`[OpenClaw] Restored ${filename} from ${sourcePath}`);
               break;
-            } catch (err) {
-              if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-                logger.warn(
-                  `[OpenClaw] Unexpected error restoring ${filename} from ${sourcePath}: ${
-                    err instanceof Error ? err.message : String(err)
-                  }. Trying next source.`,
-                );
-              }
             }
+            logger.warn(`[OpenClaw] Could not restore ${filename} from ${sourcePath}. Trying next source.`);
           }
-          if (restoredFromSource) {
-            await fs.promises.chmod(targetPath, 0o755);
-          } else {
-            await fs.promises.writeFile(targetPath, fallbackContent, { mode: 0o755 });
+          // The container's entrypoint: without it the install would report success and the app never start.
+          if (!restoredFromSource && !(await filesystem.writeTextFile(targetPath, fallbackContent))) {
+            throw new Error(`Could not write the OpenClaw start script ${targetPath}`);
+          }
+          if (!(await filesystem.makeExecutable(targetPath))) {
+            throw new Error(`Could not make the OpenClaw start script ${targetPath} executable`);
+          }
+          if (!restoredFromSource) {
             logger.warn(fallbackWarning);
           }
         };
@@ -505,7 +515,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // A user-requested cancel: tear down whatever was partially created and report a cancellation
       // (not a failure). The service finalizes the cancel (deletes the record + emits install_cancelled).
       if (isAbortError(err)) {
-        return { success: false, cancelled: true, ...(await this.compensateInstallCancel(appUrn, dataFromEarlier, ctx?.deadline)) };
+        return { success: false, cancelled: true, ...(await this.compensateInstallCancel(appUrn, earlierData, ctx?.deadline)) };
       }
       // The row, config and app.env stay on a port the run moved to, whatever failed after the move.
       return { ...(await this.handleAppError(err, appUrn, 'install')), movedHostPort: hostPortMoveOf(form, refusedHostPorts) };
@@ -560,19 +570,49 @@ export class InstallAppCommand extends AppLifecycleCommand {
   }
 
   /**
-   * Best-effort cleanup after an install is cancelled mid-flight: tears down containers, the app's own
-   * volumes, project networks, port allocations, the agent webhook, and the app/data directories so no
-   * orphaned resources are left behind. Pulled images are intentionally kept (faster re-install, and so
-   * we never force-remove an image another installed app might share). Every step is individually
-   * guarded and idempotent; the compose-down runs WITHOUT the (now-aborted) signal so cleanup completes.
-   * Does NOT delete the DB record — the service owns that (see AppLifecycleService.handleCancelledResult).
+   * What the app already had on this Hub before this install wrote anything: the data folder and named volumes an
+   * uninstall with Delete all data off keeps. A folder left by an install that failed looks the same and counts too.
+   * A check that fails or doesn't answer in time counts as data being there: a cancel then keeps something it could
+   * have removed instead of removing what it had to keep.
+   */
+  private async readEarlierData(appUrn: AppUrn): Promise<EarlierAppData> {
+    const logger = this.moduleRef.get(LoggerService, { strict: false });
+    const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
+    const present = async (what: string, check: () => Promise<boolean>): Promise<boolean> => {
+      try {
+        return await withTimeout(check(), EARLIER_DATA_CHECK_TIMEOUT_MS, 'no answer in time');
+      } catch (err) {
+        logger.warn(`Could not check ${appUrn} for ${what} from before this install, so a cancel will keep them: ${err}`);
+        return true;
+      }
+    };
+
+    const [files, volumes] = await Promise.all([
+      present('app data', () => appFilesManager.hasAppData(appUrn)),
+      present('named volumes', () => this.moduleRef.get(AppVolumeArchiveService, { strict: false }).hasProjectVolumes(appUrn)),
+    ]);
+
+    return { files, volumes };
+  }
+
+  /**
+   * Best-effort cleanup after an install is cancelled mid-flight: tears down containers, project networks,
+   * port allocations, the agent webhook and the app directory. The app's data and volumes go too unless they
+   * were there before this install. Pulled images are intentionally kept: a re-install is faster and we never
+   * force-remove an image another installed app might share. Every step is individually guarded and
+   * idempotent; the compose-down runs WITHOUT the (now-aborted) signal so cleanup completes. The DB record
+   * stays for the service to delete (see AppLifecycleService.handleCancelledResult).
    *
-   * @returns A human-readable summary for the cancellation result. When the app's data could not be
+   * @param earlier What the app had before this install. Kept data is left exactly as it is, along with
+   * anything this install added to it: the Hub cannot tell a file this install wrote from one kept
+   * by an uninstall. A later install starts from the same place a completed one would.
+   * @param deadline The command's time limit. The root helper keeps to what is left of it.
+   * @returns A human-readable summary for the cancellation result. When the app's folder or data could not be
    * removed, also the warning the page shows, with where it is on the host.
    */
   private async compensateInstallCancel(
     appUrn: AppUrn,
-    dataFromEarlier: boolean,
+    earlier: EarlierAppData,
     deadline?: AppCommandDeadline,
   ): Promise<{ message: string; warningCode?: string; warningDetail?: string }> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
@@ -594,12 +634,20 @@ export class InstallAppCommand extends AppLifecycleCommand {
       logger.warn(`[install-cancel] failed to release ports for ${appUrn}: ${err}`);
     }
 
-    // Tear down whatever was partially created. `--rmi local` only removes locally-built images and
-    // `-v` removes the app's own anonymous volumes — pulled images are intentionally kept (faster
-    // re-install, and we never force-remove an image another installed app might share). This mirrors
-    // the ticket's cleanup intent for install cancel.
+    // Without `-v` below, the anonymous volumes of this install's containers would stay behind with nothing to
+    // remove them. `rm -v` takes those and no named ones. It has to run first: `down` removes the containers
+    // that say which volumes are theirs.
+    if (earlier.volumes) {
+      await dockerService
+        .composeApp(appUrn, 'rm --force --stop -v')
+        .catch((err) => logger.warn(`[install-cancel] removing the containers' anonymous volumes failed for ${appUrn} (continuing): ${err}`));
+    }
+
+    // Tear down whatever was partially created. `--rmi local` only removes locally-built images, so pulled
+    // images stay. `-v` removes the app's named volumes as well as its anonymous ones, so it goes only when
+    // there were no named volumes before this install. Otherwise it would delete what an uninstall kept.
     try {
-      await dockerService.composeApp(appUrn, 'down --remove-orphans -v --rmi local');
+      await dockerService.composeApp(appUrn, earlier.volumes ? 'down --remove-orphans --rmi local' : 'down --remove-orphans -v --rmi local');
     } catch (err) {
       logger.warn(`[install-cancel] compose down failed for ${appUrn} (continuing): ${err}`);
     }
@@ -619,16 +667,13 @@ export class InstallAppCommand extends AppLifecycleCommand {
       logger.warn(`[install-cancel] deleteAppFolder failed for ${appUrn}: ${err}`);
       return false;
     });
-    // A folder that was there before this install holds data kept by an uninstall, or left by an install that failed.
-    // Root must not get to that and nothing tells the person to delete it. A database this install started wrote its
-    // files as its own user, so those need the root helper.
+    // A folder that already held files was there before this install: an uninstall kept it, or a failed attempt left
+    // it. The Hub can't tell what this install wrote into it from what was there, so none of it is removed. Only a
+    // folder this install started empty goes to the Hub's delete and then the root helper, for files a container
+    // wrote as another user.
     let data: { removed: boolean; hostPath?: string } = { removed: true };
-    let earlierDataRemoved = true;
-    if (dataFromEarlier) {
-      earlierDataRemoved = await appFilesManager.deleteAppDataDir(appUrn).catch((err) => {
-        logger.warn(`[install-cancel] deleteAppDataDir failed for ${appUrn}: ${err}`);
-        return false;
-      });
+    if (earlier.files) {
+      logger.info(`[install-cancel] leaving the data folder of ${appUrn}: it held data from before this install`);
     } else {
       data = await removeAppDataWithPrivilegedFallback(appFilesManager, dockerService, logger, appUrn, deadline).catch((err) => {
         logger.warn(`[install-cancel] removing the app data failed for ${appUrn}: ${err}`);
@@ -641,19 +686,18 @@ export class InstallAppCommand extends AppLifecycleCommand {
       logger.warn(
         `[install-cancel] the ${leftover} of ${appUrn} could not be fully removed; a disk remnant may remain${data.hostPath ? ` at ${data.hostPath}` : ''}`,
       );
+      const kept = earlier.files || earlier.volumes ? '; data from before this install was left in place' : '';
       return {
-        message: `Install of ${appUrn} was cancelled, but its ${leftover} could not be fully removed and may leave a remnant on disk`,
+        message: `Install of ${appUrn} was cancelled, but its ${leftover} could not be fully removed and may leave a remnant on disk${kept}`,
         warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT',
         ...(data.hostPath ? { warningDetail: data.hostPath } : {}),
       };
     }
 
-    if (!earlierDataRemoved) {
-      logger.warn(`[install-cancel] data of ${appUrn} from before this install is still on disk`);
-      return { message: `Install of ${appUrn} was cancelled, but data from before this install is still on disk` };
-    }
-
     logger.info(`[install-cancel] compensation complete for ${appUrn}`);
+    if (earlier.files || earlier.volumes) {
+      return { message: `Install of ${appUrn} was cancelled; data from before this install was left in place` };
+    }
     return { message: `Install of ${appUrn} was cancelled and cleaned up` };
   }
 

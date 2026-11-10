@@ -92,6 +92,55 @@ describe('VllmBackend', () => {
     });
   });
 
+  // vLLM serves each model at the one window it was started with (`--max-model-len`) and answers a
+  // request above it with a 400, so a handout must never promise more than `max_model_len`.
+  describe('servedContextLength', () => {
+    const MODEL = 'Qwen/Qwen3-4B-Instruct-2507';
+    const listing = (row: Record<string, unknown>) => ({ data: { object: 'list', data: [{ id: MODEL, owned_by: 'vllm', ...row }] } });
+
+    it('reads max_model_len for the model from GET /v1/models, with the saved API key', async () => {
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        preferredVllmApiKey: 'vllm-local',
+      });
+      (axios.get as any) = vi.fn().mockResolvedValue(listing({ max_model_len: 8192 }));
+
+      await expect(backend.servedContextLength(MODEL)).resolves.toBe(8192);
+      expect(axios.get).toHaveBeenCalledWith(
+        expect.stringContaining('/v1/models'),
+        expect.objectContaining({ headers: { Authorization: 'Bearer vllm-local' } }),
+      );
+    });
+
+    it('returns null for a model the server does not list', async () => {
+      (axios.get as any) = vi.fn().mockResolvedValue(listing({ max_model_len: 8192 }));
+
+      await expect(backend.servedContextLength('some/other-model')).resolves.toBeNull();
+    });
+
+    it('returns null when max_model_len is absent or not a positive integer', async () => {
+      for (const row of [{}, { max_model_len: '8192' }, { max_model_len: 0 }, { max_model_len: -1 }, { max_model_len: 8192.5 }]) {
+        (axios.get as any) = vi.fn().mockResolvedValue(listing(row));
+        await expect(backend.servedContextLength(MODEL)).resolves.toBeNull();
+      }
+    });
+
+    it("returns null when the server on the port is oMLX's, not vLLM's", async () => {
+      (axios.get as any) = vi.fn().mockResolvedValue(listing({ owned_by: 'omlx', max_model_len: 8192 }));
+
+      await expect(backend.servedContextLength(MODEL)).resolves.toBeNull();
+    });
+
+    it('returns null when vLLM cannot be reached', async () => {
+      (axios.get as any) = vi.fn().mockRejectedValue(new Error('Connection refused'));
+
+      await expect(backend.servedContextLength(MODEL)).resolves.toBeNull();
+    });
+  });
+
   describe('Base URL resolution', () => {
     it('prefers the operator-configured URL from Settings over the env default', async () => {
       configurationService.getInferencePreferences.mockReturnValue({

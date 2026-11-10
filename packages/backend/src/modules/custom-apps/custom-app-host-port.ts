@@ -4,13 +4,54 @@ import type { AppsRepository } from '@/modules/apps/apps.repository';
 import type { PortManagerService } from '@/modules/network/port-manager.service';
 
 /**
- * A port written as a number or as the digits the create form submits, with stray whitespace allowed.
+ * A port written as a number or as digits (a config saved by an older form, the JSON editor, the API), with stray whitespace allowed.
  * Anything else (an env reference, a range, a value outside 1 to 65535) is not a plain port.
  */
 export function parsePort(value: unknown): number | undefined {
   const raw = typeof value === 'string' ? value.trim() : value;
   const port = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\d{1,5}$/.test(raw) ? Number(raw) : Number.NaN;
   return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : undefined;
+}
+
+/**
+ * Why a port can't be saved: past one end of 1 to 65535 (`MIN`, `MAX`), written as a number, as digits or as a
+ * range, or not a port at all (`INVALID`). The schema only ranges real numbers and takes any text, so `"70000"`
+ * and `"abc"` passed and Docker refused them at start, and the MCP tools reach the service with no schema at all.
+ */
+export function portRangeRefusal(value: unknown): 'MIN' | 'MAX' | 'INVALID' | undefined {
+  return outOfRange(value) ?? (isPortShaped(value) ? undefined : 'INVALID');
+}
+
+/**
+ * A whole number, or text that is digits, a range low to high, an env reference (`$NAME`, `${NAME}` or
+ * `${NAME:-default}`) or empty, as written: Docker reads `" 80 "` as it stands. Any other type is left to the schema.
+ */
+function isPortShaped(value: unknown): boolean {
+  if (typeof value === 'number') {
+    return Number.isInteger(value);
+  }
+  if (typeof value !== 'string') {
+    return true;
+  }
+  const range = value.match(/^(\d+)-(\d+)$/);
+  if (range) {
+    return Number(range[1]) <= Number(range[2]);
+  }
+  return /^(?:\d*|\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*(?::?[-+?][^}]*)?\})$/.test(value);
+}
+
+function outOfRange(value: unknown): 'MIN' | 'MAX' | undefined {
+  const text = typeof value === 'string' ? value.trim() : undefined;
+  const range = text?.match(/^(\d+)-(\d+)$/);
+  if (range) {
+    return outOfRange(Number(range[1])) ?? outOfRange(Number(range[2]));
+  }
+  const port = text !== undefined && /^-?\d+$/.test(text) ? Number(text) : value;
+  if (typeof port !== 'number') {
+    return undefined;
+  }
+  if (port < 1) return 'MIN';
+  return port > 65535 ? 'MAX' : undefined;
 }
 
 export type MappedHostPort = { hostPort: number; protocol: 'tcp' | 'udp' };

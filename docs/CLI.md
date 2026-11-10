@@ -292,6 +292,7 @@ cihub config [env]                                   # show resolved config valu
 - `--detached` runs the stack in the background (equivalent to `docker compose up -d`). Outside a CI-Hub checkout (the `cihub` a desktop install or a standalone binary puts on PATH), `up`, `restart` and `recreate` run detached unless you pass `--attached`. In a checkout they pick the mode `up` would: `dev` runs detached, other environments stay attached unless you pass `--detached`. In 0.3.6 and earlier, `restart` and `recreate` stayed attached in both places, `restart dev` in a checkout included. Attached, the command stays on `docker compose up`. Ctrl+C or a signal to it then makes Compose stop the containers, `cloudflared` included.
 - Outside a checkout, `up` and `restart` leave the keys the desktop app writes in the data dir's env file alone (`DOCKER_GID`, `CI_HUB_CONTAINER_UID`, `CI_HUB_CONTAINER_GID`) and add only the ones that are missing. That is a file the desktop app wrote, whose header reads `# Derived (recomputed every launch from the current binary)`. In a file `cihub up` seeded on a headless node no app recomputes anything, so `cihub` refreshes the keys it computes itself: `DOCKER_GID` from the host's docker group plus the `0` uid and gid it pins under Docker Desktop. Both env files there hold `JWT_SECRET`, `POSTGRES_PASSWORD` and `RABBITMQ_PASSWORD`. `cihub` restricts them to `0600` before it starts the stack. It leaves the mode alone when `CI_HUB_CONTAINER_UID` pins the Hub to a non-root uid other than the file's owner, since the Hub then reads the file as that uid.
 - Before it starts the stack, `cihub up` checks the Docker versions the stack file needs. If Docker Compose is older than 2.33, which can't read the file, it stops and names the version it found. If Docker Engine is older than 28, which ignores the file's network priority, it warns that the Hub, Traefik, and the Tailscale helper may use the wrong network for internet and host traffic, and starts anyway. If it can't read a version, it says so and starts anyway. `restart` and `recreate` run the same check when they start the stack again. `cihub up local` (source dev) isn't checked.
+- The prod compose requires `RABBITMQ_PASSWORD` from the env file, and the Hub warns loudly on `admin` in production, which a later release will refuse ([#884](https://github.com/companionintelligence/Companion-Hub/issues/884)). So every `cihub up` except `cihub up local` rewrites `RABBITMQ_PASSWORD` in the env files when it is missing, empty or `admin`: outside a checkout in both of the data dir's env files, in a checkout in `.env.<env>`. It writes the strong value one of those files already has, or else 64 random hex characters, and leaves a strong value alone. The broker is then changed to match before the Hub starts. `cihub pool update` does the same before it pulls; see [`cihub pool update`](#cihub-pool-update).
 - After a reset (no `~/.local/share/companion-hub` seed), `cihub up prod` prompts interactively for a database password and writes a fresh install. Set `POSTGRES_PASSWORD` (or `CIHUB_POSTGRES_PASSWORD`) to skip the prompt.
 - The fresh install pins `CI_HUB_IMAGE` from exactly one of these, in order, and prints which:
   1. `CI_HUB_IMAGE` in the environment.
@@ -302,6 +303,8 @@ cihub config [env]                                   # show resolved config valu
 - The fresh install pairs against the Portal in `CI_CLOUD_URL` when that is a bare origin (`https`, or plain `http` for `localhost` only), and against production, `https://hub.ci.computer`, when it is unset. That default is what a release Hub has always used, although `cihub`'s own commands default to the dev Portal. An unusable value is ignored and the seed says why in a red box; to fix it afterwards, edit `CI_CLOUD_URL` in both env files and run `cihub restart --detached`, since the Hub reads it only when it starts. `CI_CLOUD_URL` is read only when there is no complete install, meaning an env file and the compose beside it, so it never moves a complete install to another Portal. A partial one is seeded again from scratch and does take it; the seed's green box names the Portal it wrote. A desktop app rewrites `CI_CLOUD_URL` on every launch and Hub start, to the Portal its build was compiled for. When one is installed or running and `CI_CLOUD_URL` chose the Portal, the seed says so in a red box and names the app's override file (`~/.config/computer.ci.app.hub/portal-url-override` on Linux), which keeps the chosen Portal under the app.
 - The seed never reads a CI-Hub checkout under the home directory or an env file left by an earlier install. If it passed over a file, if a desktop package at another release is installed, or if a desktop app is running that will rewrite the pin on its next start, the seed says so in a red box. If nothing uses the desktop app, the box says to quit it and leave it closed, since it only rewrites the env while it runs. Don't remove the `companion-hub` package to get rid of it: its uninstall deletes the Hub `cihub up` just set up, with every app and its data, because both use `~/.local/share/companion-hub`, the `ci_hub_pgdata` volume and the same containers.
 - `status` shows three sections: **Containers** (color-coded ●/✗), **Network** (local URL, Cloudflare tunnel URL from `CF_DOMAIN`/`DOMAIN`, Tailscale VPN IP), and **Models** (installed Ollama models).
+
+- Outside a checkout, `config` reads and `mcp` writes the installed Hub's env files in the data dir. With no install they exit `2`. `models` uses the host's `ollama` command at the address its service listens on when the Hub has no Ollama container, which is the normal case on an installed Hub.
 
 ![Screenshot of cihub status local](./images/cli/status.svg)
 
@@ -467,6 +470,8 @@ cihub mcp setup [env]     # set MCP_ENABLED=true
 cihub mcp shutdown [env]  # set MCP_ENABLED=false
 cihub mcp config [env]    # show current MCP settings
 ```
+
+The Hub reads `MCP_ENABLED` when it starts, so `setup` and `shutdown` take effect after `cihub restart`.
 
 ![Screenshots of cihub mcp setup, config, and shutdown](./images/cli/mcp.svg)
 
@@ -643,7 +648,7 @@ cihub pool allow-bearer [env] [--yes]         # recovery switch: allow the legac
 | ---- | ------ |
 | `--yes` | Skip the confirmation prompt. Required for `pair`/`approve`/`reject`/`unpair`/`enable`/`disable` on a non-interactive terminal |
 | `--name <label>` | `pair` only: a display label for the peer |
-| `--model <id>` | `pin`/`unpin` only: which model the pin covers. Omit it for the pool-wide pin. Compared verbatim against the engine's inventory, so case matters |
+| `--model <id>` | `pin`/`unpin` only: which model the pin covers. Omit it for the pool-wide pin. `name` and `name:latest` are one model when routing, saving and removing; anything else is compared verbatim, so case matters. If both spellings are stored as separate pins, each is touched only when named exactly |
 | `--pin <digits>` | `pair` only: the six digits minted on the *other* Hub. Required when the target is an address |
 | `--limit N` | `log` only: how many decisions to show, 1–200 (default: all 200 retained) |
 | `--check-latency` | `doctor` only: also measure non-streaming first-byte latency. Spends GPU time, so it is skipped otherwise |
@@ -916,6 +921,14 @@ behalf. After the pull and redeploy it polls `/api/health` for up to ~20s, then 
 off `/api/inference/pool/identify` so you know at a glance whether the redeploy landed and whether this
 build has Hub Pool at all.
 
+Before it pulls, it rewrites `RABBITMQ_PASSWORD` in the env files compose reads (both data-dir env
+files on a packaged install) when the value is missing, empty or `admin`, as `cihub up` does. The prod
+compose requires the value and the Hub warns on `admin` in production
+([#884](https://github.com/companionintelligence/Companion-Hub/issues/884)), so a checkout whose env
+file came from `.env.example` would otherwise stop at `RABBITMQ_PASSWORD must be set` after the
+fast-forward. The new value changes the broker's `RABBITMQ_DEFAULT_PASS`, so the redeploy recreates the
+broker, and the command then checks the broker accepts it (`scripts/sync-rabbitmq-password.ts`).
+
 #### Which image it deploys
 
 The command exports `CI_HUB_IMAGE` into the `docker compose` child's **environment**, and Compose
@@ -964,7 +977,8 @@ Runs before the device-key gate, like `doctor` — the node most likely to need 
 The answer to "is pooling actually doing anything". One line per routing decision — time, direction,
 model, the node that served it, which ranked candidate won, time to response headers, and outcome — with
 a `↳ failed over from …` line naming the chain whenever a candidate was tried and rejected. `in` rows are
-work a *peer* sent to this node's engines.
+work a *peer* sent to this node's engines. This node appears under its tailnet name, or as `this Hub` when
+it has none or `/status` did not supply it in time; `local` is only the key the routing log stores for it.
 
 The log is in-memory, process-local and holds the last 200 decisions, so an empty log means "nothing
 routed since this Hub started", not "nothing ever routed". Duration is time to headers, not the streamed
@@ -1955,7 +1969,7 @@ straight through a broken Docker bridge, and a fleet run that installed on 0 of 
 | `fleet preflight` | Any node would be refused by `install`/`update` — a `block` finding, or a probe that could not run |
 | `pool context-cap` | The Hub's build predates the cap (nothing was written), or the cap read back after the write is not the one requested |
 | `pool slots` | The Hub's build predates the slot count (nothing was written), or the count read back after the write is not the one requested |
-| `models list` / `install` / `rm` | There is no Ollama container to talk to |
+| `models list` / `install` / `rm` | The Hub has no Ollama container and this machine has no `ollama` command |
 | `app status <name>` | That named container is not there |
 | `app inspect <name>` | `docker inspect` could not read the container |
 | `public-web repair` | A repair step failed |

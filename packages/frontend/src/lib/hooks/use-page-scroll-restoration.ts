@@ -18,7 +18,7 @@ type PendingRestore = { frame: number; cancel: () => void };
 
 // The layout's scroller plus the marked scrollers of the page on screen. A page
 // that is still animating out has its own wrapper, so it is left alone.
-function currentScrollers(layout: HTMLElement, pageKey: string) {
+export function currentScrollers(layout: HTMLElement, pageKey: string) {
   const scrollers = new Map<string, HTMLElement>([[LAYOUT_SCROLLER, layout]]);
 
   for (const wrapper of layout.children) {

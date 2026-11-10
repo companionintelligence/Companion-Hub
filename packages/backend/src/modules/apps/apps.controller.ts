@@ -7,6 +7,7 @@ import { ModuleRef } from '@nestjs/core';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { settingsReadAction } from '@/core/portal/local-app-reads';
 import { AuthGuard } from '../auth/auth.guard';
+import { GuestDashboardGuard } from '../auth/guest-dashboard.guard';
 import { ObservabilityRead, ObservabilityReadGuard } from '../auth/observability-read.guard';
 import { AppRuntimeMonitorService } from './app-runtime-monitor.service';
 import { appStartingPageHeaders, appStartingPageStatus, renderAppStartingPage } from './app-starting-page';
@@ -94,10 +95,11 @@ export class AppsController {
   }
 
   @Get('guest')
+  @UseGuards(GuestDashboardGuard)
   @ApiResponse({ type: GuestAppsDto })
   async getGuestApps() {
     const guest = await this.appsReadService.getGuestDashboardApps();
-    const installed = guest.map(({ app, info, metadata }) => ({ app: pickGuestAppFields(app), info, metadata }));
+    const installed = guest.map(({ app, info, metadata, publicUrl }) => ({ app: { ...pickGuestAppFields(app), publicUrl }, info, metadata }));
 
     return GuestAppsDto.parse({ installed }, { reportOnly: true });
   }

@@ -1,21 +1,23 @@
 import { render, screen, userEvent } from '@/tests/test-utils';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, type ReactNode } from 'react';
-import { MemoryRouter, useLocation } from 'react-router';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { isStackUpdatePending, markStackUpdatePending, subscribeStackUpdate } from '@/lib/desktop-stack-session';
 import { SSEProvider } from './sse-provider';
 
 const { appNameCache } = vi.hoisted(() => ({ appNameCache: { dropped: false } }));
 
-const { mockUseSSE, mockHandleAppSseEvent, mockToastWarning, mockToastError, mockToastDismiss, mockToastSuccess } = vi.hoisted(() => ({
-  mockUseSSE: vi.fn(),
-  mockHandleAppSseEvent: vi.fn(),
-  mockToastWarning: vi.fn(),
-  mockToastError: vi.fn(),
-  mockToastDismiss: vi.fn(),
-  mockToastSuccess: vi.fn(),
-}));
+const { mockUseSSE, mockHandleAppSseEvent, mockInvalidateAppRecords, mockToastWarning, mockToastError, mockToastDismiss, mockToastSuccess } =
+  vi.hoisted(() => ({
+    mockUseSSE: vi.fn(),
+    mockHandleAppSseEvent: vi.fn(),
+    mockInvalidateAppRecords: vi.fn(),
+    mockToastWarning: vi.fn(),
+    mockToastError: vi.fn(),
+    mockToastDismiss: vi.fn(),
+    mockToastSuccess: vi.fn(),
+  }));
 
 vi.mock('@/lib/hooks/use-sse', () => ({
   useSSE: (...args: unknown[]) => mockUseSSE(...args),
@@ -23,6 +25,7 @@ vi.mock('@/lib/hooks/use-sse', () => ({
 
 vi.mock('@/modules/app/helpers/app-sse-cache', () => ({
   handleAppSseEvent: (...args: unknown[]) => mockHandleAppSseEvent(...args),
+  invalidateAppRecords: (...args: unknown[]) => mockInvalidateAppRecords(...args),
   // The page's name for the app, as the cache would give it, until an event has taken it out.
   cachedAppName: (_queryClient: unknown, appUrn: string, fallback: string) =>
     appUrn === 'uptime-kuma:ci-marketplace' && !appNameCache.dropped ? 'Uptime Kuma' : fallback,
@@ -81,6 +84,92 @@ describe('SSEProvider', () => {
     await userEvent.click(logsLink);
 
     expect(mockToastDismiss).toHaveBeenCalledWith('install-error-toast');
+  });
+
+  it.each([
+    ['start_error', 'kvm_missing', 'This app needs hardware virtualization (KVM). It is not available on this machine.'],
+    ['install_error', 'kvm_missing', 'This app needs hardware virtualization (KVM). It is not available on this machine.'],
+    ['restart_error', 'kvm_missing', 'This app needs hardware virtualization (KVM). It is not available on this machine.'],
+    ['start_error', 'kata_runtime_missing', "This app needs the Kata container runtime. It isn't set up in Docker on this machine."],
+    ['install_error', 'kata_runtime_missing', "This app needs the Kata container runtime. It isn't set up in Docker on this machine."],
+    ['restart_error', 'kata_runtime_missing', "This app needs the Kata container runtime. It isn't set up in Docker on this machine."],
+  ])('%s with %s says what the machine lacks', (event, errorCode, message) => {
+    let onEvent: ((data: unknown) => void) | undefined;
+    mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+      onEvent = config.onEvent;
+    });
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <SSEProvider>
+            <div>child</div>
+          </SSEProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    act(() => {
+      onEvent?.({ event, appUrn: 'kata-test:_user', errorCode });
+    });
+
+    expect(mockToastError).toHaveBeenCalledExactlyOnceWith(message);
+  });
+
+  // CI-Hub#2376: only an install named these. A start or restart refused for them said "see logs".
+  describe.each(['install_error', 'start_error', 'restart_error'])('%s refused by a check the Hub can name', (event) => {
+    const renderProvider = () => {
+      let onEvent: ((data: unknown) => void) | undefined;
+      mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+        onEvent = config.onEvent;
+      });
+      render(
+        <QueryClientProvider client={new QueryClient()}>
+          <MemoryRouter>
+            <SSEProvider>
+              <div>child</div>
+            </SSEProvider>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      return (data: Record<string, unknown>) => act(() => onEvent?.({ event, appUrn: 'comfyui:ci-marketplace', ...data }));
+    };
+
+    it('says the app needs ROCm and links to where it is set up', async () => {
+      const send = renderProvider();
+      mockToastError.mockReturnValueOnce('rocm-toast');
+
+      send({ errorCode: 'rocm_kfd_missing', settingsPath: '/settings?tab=ai&section=rocm' });
+
+      expect(mockToastError).toHaveBeenCalledTimes(1);
+      render(<MemoryRouter>{mockToastError.mock.calls[0]?.[0] as ReactNode}</MemoryRouter>);
+      const settingsLink = screen.getByRole('link', { name: 'AI Settings' });
+      expect(settingsLink).toHaveAttribute('href', '/settings?tab=ai&section=rocm');
+      expect(settingsLink.parentElement).toHaveTextContent('comfyui needs AMD ROCm.');
+      expect(screen.queryByRole('link', { name: 'see logs' })).toBeNull();
+
+      await userEvent.click(settingsLink);
+      expect(mockToastDismiss).toHaveBeenCalledWith('rocm-toast');
+    });
+
+    it('falls back to the ROCm settings section when the event names no path', () => {
+      const send = renderProvider();
+
+      send({ errorCode: 'rocm_kfd_missing' });
+
+      render(<MemoryRouter>{mockToastError.mock.calls[0]?.[0] as ReactNode}</MemoryRouter>);
+      expect(screen.getByRole('link', { name: 'AI Settings' })).toHaveAttribute('href', '/settings?tab=ai&section=rocm');
+    });
+
+    it('names a Docker network range conflict', () => {
+      const send = renderProvider();
+
+      send({ errorCode: 'network_overlap' });
+
+      expect(mockToastError).toHaveBeenCalledExactlyOnceWith(
+        'comfyui hit a Docker network range conflict. Retry install or start. Hub will pick a fresh internal network.',
+      );
+    });
   });
 
   it('links app operation failures to the logs tab via "see logs"', async () => {
@@ -504,6 +593,17 @@ describe('SSEProvider', () => {
       expect(invalidate).not.toHaveBeenCalled();
     });
 
+    // What a restart changed was announced while no browser was connected (#2286).
+    it('refetches every app record when the Hub greets again after a restart, not on its first greeting', () => {
+      const { fire } = mountWithHandler();
+      fire({ event: 'hub_hello', version: '0.2.72' });
+      expect(mockInvalidateAppRecords).not.toHaveBeenCalled();
+
+      fire({ event: 'hub_hello', version: '0.2.72' });
+
+      expect(mockInvalidateAppRecords).toHaveBeenCalledTimes(1);
+    });
+
     it('is inert when nothing is pending', () => {
       const { fire, invalidate } = mountWithHandler();
       fire({ event: 'hub_hello', version: '0.2.72' });
@@ -517,14 +617,14 @@ describe('SSEProvider: a cancelled install of a custom app', () => {
   // biome-ignore lint/correctness/noComponentHookFactories: this one-shot test fixture is created once per suite.
   const Where = () => <span data-testid="where">{useLocation().pathname}</span>;
 
-  const renderOnAppPage = () => {
+  const renderOnAppPage = (path = '/apps/my-tool') => {
     let onEvent: ((data: unknown) => void) | undefined;
     mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
       onEvent = config.onEvent;
     });
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <MemoryRouter initialEntries={['/apps/my-tool']}>
+        <MemoryRouter initialEntries={[path]}>
           <SSEProvider>
             <Where />
           </SSEProvider>
@@ -542,6 +642,64 @@ describe('SSEProvider: a cancelled install of a custom app', () => {
     const send = renderOnAppPage();
 
     send({ event: 'install_cancelled', appUrn: 'my-tool:_user', appStatus: 'missing' });
+
+    expect(screen.getByTestId('where')).toHaveTextContent('/store');
+  });
+
+  it.each(['/apps/my-tool', '/apps/my-tool/', '/apps/my-tool/edit'])('leaves %s when that custom app is uninstalled', (path) => {
+    const send = renderOnAppPage(path);
+
+    send({ event: 'uninstall_success', appUrn: 'my-tool:_user', appStatus: 'missing' });
+
+    expect(screen.getByTestId('where')).toHaveTextContent('/store');
+  });
+
+  it.each(['/settings', '/apps/other-tool', '/apps/my-tool-2', '/apps/ci-marketplace/uptime-kuma', '/'])(
+    'stays on %s when an unrelated custom app is removed or its install cancelled',
+    (path) => {
+      const send = renderOnAppPage(path);
+
+      send({ event: 'uninstall_success', appUrn: 'my-tool:_user', appStatus: 'missing' });
+      send({ event: 'install_cancelled', appUrn: 'my-tool:_user', appStatus: 'missing' });
+
+      expect(screen.getByTestId('where').textContent).toBe(path);
+    },
+  );
+
+  it("stays on a store app's page when the removed custom app has that store's name", () => {
+    const send = renderOnAppPage('/apps/ci-marketplace/uptime-kuma');
+
+    send({ event: 'uninstall_success', appUrn: 'ci-marketplace:_user', appStatus: 'missing' });
+
+    expect(screen.getByTestId('where').textContent).toBe('/apps/ci-marketplace/uptime-kuma');
+  });
+
+  it('follows the tab as it moves: the app page is judged when the event arrives', () => {
+    let goTo: (path: string) => void = () => undefined;
+    // biome-ignore lint/correctness/noComponentHookFactories: this one-shot test fixture is created once for this test.
+    const Nav = () => {
+      const navigate = useNavigate();
+      goTo = navigate;
+      return null;
+    };
+    let onEvent: ((data: unknown) => void) | undefined;
+    // The first render's handler, as the real useSSE keeps it.
+    mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+      onEvent ??= config.onEvent;
+    });
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={['/settings']}>
+          <SSEProvider>
+            <Where />
+            <Nav />
+          </SSEProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    act(() => goTo('/apps/my-tool'));
+    act(() => onEvent?.({ event: 'uninstall_success', appUrn: 'my-tool:_user', appStatus: 'missing' }));
 
     expect(screen.getByTestId('where')).toHaveTextContent('/store');
   });

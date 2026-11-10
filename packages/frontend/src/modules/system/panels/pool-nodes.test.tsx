@@ -108,6 +108,25 @@ describe('PoolNodes', () => {
     expect(cells).not.toContain('0/0');
   });
 
+  it('shows failed probes for a peer in use but not for one the operator switched off', async () => {
+    const user = userEvent.setup();
+    render(
+      <PoolNodes
+        cards={[
+          card({ key: 'parked', label: 'parked', status: 'disabled', consecutiveFailures: 18966 }),
+          card({ key: 'flaky', label: 'flaky', status: 'unreachable', consecutiveFailures: 4 }),
+        ]}
+        window={EMPTY_SAMPLE_WINDOW}
+        state={READY}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'parked' }));
+    await user.click(screen.getByRole('button', { name: 'flaky' }));
+
+    expect(screen.getAllByText(/failed probes/).map((element) => element.textContent)).toEqual(['4 failed probes']);
+  });
+
   it('still separates a failed pool fetch from an empty pool', () => {
     const failed = render(<PoolNodes cards={[]} window={EMPTY_SAMPLE_WINDOW} state={{ pending: false, failed: true }} />);
     expect(failed.container.querySelector('table')).toBeNull();
