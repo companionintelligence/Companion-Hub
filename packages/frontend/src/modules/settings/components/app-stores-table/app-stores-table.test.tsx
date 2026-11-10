@@ -33,6 +33,21 @@ describe('AppStoresTable', () => {
     expect(urlText).toHaveClass('block', 'max-w-[28rem]', 'truncate');
   });
 
+  it('shows the built-in store under its stored name and keeps its link after a rename', () => {
+    render(<AppStoresTable appStores={[{ ...APP_STORE, slug: 'ci-marketplace', name: 'Home Shelf', url: 'https://portal.example.com/api' }]} />);
+
+    const link = screen.getByRole('link', { name: 'Home Shelf' });
+    expect(link).toHaveAttribute('href', 'https://portal.example.com');
+    expect(screen.queryByText('CI Portal')).not.toBeInTheDocument();
+  });
+
+  it('links only the built-in store, even when another store carries its name', () => {
+    render(<AppStoresTable appStores={[{ ...APP_STORE, name: 'CI Marketplace' }]} />);
+
+    expect(screen.getByText('CI Marketplace').closest('a')).toBeNull();
+    expect(screen.queryByText('CI Portal')).not.toBeInTheDocument();
+  });
+
   it('keeps row actions available', () => {
     render(<AppStoresTable appStores={[APP_STORE]} />);
 

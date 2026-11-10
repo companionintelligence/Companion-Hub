@@ -1,6 +1,7 @@
 import type { INestApplication } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
+import type { Response } from 'express';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { MainExceptionFilter } from '@/common/error/exception.filter';
@@ -137,6 +138,25 @@ describe('HubPoolOllamaCompatController — top-level /api/version and /api/tags
     expect(apiKeys.resolve).not.toHaveBeenCalled();
     expect(proxyService.proxyLocalOnlyRequest).not.toHaveBeenCalled();
     expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  // Cloudflare replaces the body of a 502, so the Hub's reason survives only under another status (#2274).
+  it('sends a 502 as a 500 through the tunnel and as a 502 from inside, with the same body', async () => {
+    const noBackend = { error: 'No local backend able to serve /api/version' };
+    const answer502 = async (_path: string, _method: string, _body: unknown, res: Response) => {
+      res.status(502).json(noBackend);
+    };
+    proxyService.proxyLocalOnlyRequest.mockImplementationOnce(answer502).mockImplementationOnce(answer502);
+
+    const tunnelled = await fetch(`${baseUrl}/api/version`, {
+      headers: { 'cf-ray': '8f00000000000000-LHR', authorization: `Bearer ${INFERENCE_KEY}` },
+    });
+    expect(tunnelled.status).toBe(500);
+    await expect(tunnelled.json()).resolves.toEqual(noBackend);
+
+    const inside = await fetch(`${baseUrl}/api/version`);
+    expect(inside.status).toBe(502);
+    await expect(inside.json()).resolves.toEqual(noBackend);
   });
 
   it('admits a tunnel-forwarded request that carries a valid inference key', async () => {

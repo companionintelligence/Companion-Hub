@@ -39,7 +39,7 @@ export function SetupPageShell({
         fitShortWindows && 'short-window:py-5 compact-window:py-4',
         className,
       )}
-      style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}
+      style={{ height: 'var(--app-height)' }}
     >
       <div
         className={cn(

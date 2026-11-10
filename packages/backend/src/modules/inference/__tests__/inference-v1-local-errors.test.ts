@@ -99,6 +99,7 @@ function connect(url: string, body: unknown): { firstChunk: Promise<string>; end
  * Nest leaves on a `@Res()` response, which only a real dispatch shows.
  */
 describe('InferenceController — local /v1 path answers with the engine, not a 502', () => {
+  const apiKeys = mock<ApiKeyService>();
   let app: INestApplication;
   let baseUrl: string;
   let engine: http.Server;
@@ -216,7 +217,7 @@ describe('InferenceController — local /v1 path answers with the engine, not a 
         { provide: BackendObserverService, useValue: mock<BackendObserverService>() },
         { provide: PoolProxyService, useValue: mock<PoolProxyService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
-        { provide: ApiKeyService, useValue: mock<ApiKeyService>() },
+        { provide: ApiKeyService, useValue: apiKeys },
       ],
     }).compile();
 
@@ -249,8 +250,8 @@ describe('InferenceController — local /v1 path answers with the engine, not a 
     await new Promise<void>((resolve) => engine?.close(() => resolve()));
   });
 
-  const post = (path: string, body: unknown) =>
-    fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+    fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
 
   const chatWithTools = {
     model: 'gemma3:4b',
@@ -288,6 +289,45 @@ describe('InferenceController — local /v1 path answers with the engine, not a 
     const body = (await res.json()) as { error: { message: string; type: string } };
     expect(body.error.type).toBe('server_error');
     expect(body.error.message).toMatch(/ECONNREFUSED/);
+  });
+
+  // Cloudflare replaces a 502, 503 or 504 body with its own `error code: 502` text (#2274).
+  describe('through the public address', () => {
+    // A tunnel caller needs an inference key, as it does in production.
+    const tunnel = { 'cf-ray': '8f00000000000000-LHR', authorization: `Bearer ${'a'.repeat(64)}` };
+
+    beforeEach(() => {
+      apiKeys.resolve.mockResolvedValue({ id: 1, scopes: ['inference'] } as never);
+    });
+
+    it("answers 500 with the Hub's own body where a refused connection is a 502 from inside", async () => {
+      ollamaBackend.getBaseUrl.mockReturnValue(deadEngineUrl);
+      const res = await post('/v1/chat/completions', { model: 'gemma3:4b', messages: [{ role: 'user', content: 'hi' }] }, tunnel);
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { error: { message: string; type: string } };
+      expect(body.error.type).toBe('server_error');
+      expect(body.error.message).toBe('The inference engine did not answer (ECONNREFUSED).');
+    });
+
+    it('reads an empty marker as no marker, so the status and the engine address stay as they are from inside', async () => {
+      ollamaBackend.getBaseUrl.mockReturnValue(deadEngineUrl);
+      const res = await post('/v1/chat/completions', { model: 'gemma3:4b', messages: [{ role: 'user', content: 'hi' }] }, { 'cf-ray': '' });
+      expect(res.status).toBe(502);
+      const body = (await res.json()) as { error: { message: string } };
+      expect(body.error.message).toMatch(/ECONNREFUSED 127\.0\.0\.1:/);
+    });
+
+    it('answers 500 with its reason when there is no image backend', async () => {
+      const res = await post('/v1/images/generations', { model: 'some-image-model', prompt: 'a cat' }, tunnel);
+      expect(res.status).toBe(500);
+      await expect(res.json()).resolves.toEqual({ error: { message: 'No image generation backend available', type: 'server_error' } });
+    });
+
+    it("leaves an engine's own refusal as it was", async () => {
+      const res = await post('/v1/chat/completions', chatWithTools, tunnel);
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toEqual(TOOLS_REFUSAL);
+    });
   });
 
   it.each([

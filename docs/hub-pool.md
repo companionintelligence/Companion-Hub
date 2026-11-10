@@ -169,7 +169,7 @@ Both Hubs still need to be on the same tailnet, because a peer is stored under i
 
   were reported as a release blocker — "placement returns no candidate and times out at 30 s" — when placement had ranked **fourteen** candidates, `local` was prefilling the first, and the app had given up after 30 s. The only surviving hint was `attempt`, which is `1` on a hang-up and `candidates.length` when every candidate really failed, and no operator is going to read a routing failure out of that. The same null also put the row in the dashboard's `Unplaced` bucket, which `triage.ts` raises as a red "nothing was even tried at a node" fault.
 
-  So: `cihub pool log` prints `↳ the app closed its connection after 30031 ms; local had not answered yet — not a routing failure` under such a row, and both `cihub pool log` and `cihub pool status` break the count out as `4 failed (4 abandoned by the caller)`. The count stays inside `failed` — the request genuinely went unanswered — but an operator can now tell the two apart at a glance. **The Hub's own `httpServer.requestTimeout = 30_000` in `main.ts` is not the cause, and raising it is not the fix.** It is the first thing an investigator finds when every cut lands at ~30 s, but Node clears that timer once the request has been *received*, so a response that takes minutes is untouched by it — pinned against a real socket in `hub-pool-proxy-timeout.test.ts`. What it does cut is a client that promises a body and never sends it, which is what it is there for. Look upstream instead: the calling app's read timeout, or a reverse proxy between it and the Hub. **A cluster of these is a statement about caller patience against this fleet's time to first byte, not about placement**: a 47k-token turn is ~300 s of prefill on a GPU node here, so any client with a 30 s or 60 s read timeout will produce them whenever a second turn queues behind a first.
+  So: `cihub pool log` prints `↳ the app closed its connection after 30031 ms; this Hub had not answered yet — not a routing failure` under such a row, and both `cihub pool log` and `cihub pool status` break the count out as `4 failed (4 abandoned by the caller)`. The count stays inside `failed` — the request genuinely went unanswered — but an operator can now tell the two apart at a glance. **The Hub's own `httpServer.requestTimeout = 30_000` in `main.ts` is not the cause, and raising it is not the fix.** It is the first thing an investigator finds when every cut lands at ~30 s, but Node clears that timer once the request has been *received*, so a response that takes minutes is untouched by it — pinned against a real socket in `hub-pool-proxy-timeout.test.ts`. What it does cut is a client that promises a body and never sends it, which is what it is there for. Look upstream instead: the calling app's read timeout, or a reverse proxy between it and the Hub. **A cluster of these is a statement about caller patience against this fleet's time to first byte, not about placement**: a 47k-token turn is ~300 s of prefill on a GPU node here, so any client with a 30 s or 60 s read timeout will produce them whenever a second turn queues behind a first.
 - **Recovery**: a peer that fails three consecutive health polls is marked `unreachable` and stops being offered as a candidate, but it keeps being polled — the first successful probe puts it straight back to `connected`. No operator action is needed, and unpairing is never the way to fix a node that was merely offline.
 
 ## Required configuration
@@ -213,11 +213,13 @@ An operator preference for where a model runs: `cihub pool pin core-1.example-ta
 - A pin whose target has no candidate is a **silent no-op** — the request routes exactly as it would unpinned. That covers a pinned node that is down, and one that was unpaired while the pin still named it (the pin is left in place and simply stops matching).
 - A pin can never make inference fail. The 502 for a model nothing can serve names the pin, and says in the same breath that a pin is not what caused it.
 
-Scopes: one pin per exact model id, plus one pool-wide default. A model pin wins over the default and they never stack; the model string is compared **verbatim and case-sensitively**, because that is how candidate matching reads the engine inventory.
+Scopes: one pin per model, plus one pool-wide default. A model pin wins over the default and they never stack. A pin matches a request the way candidate matching reads the engine inventory: `name` and `name:latest` are one model, so a pin on either spelling applies to a request using either. Everything else is compared **verbatim and case-sensitively**, so a pin on `gemma3:270m` never applies to `gemma3:1b` or to `gemma3`.
+
+Saving and removing find the pin the same way. The spelling given wins, otherwise the pin that folds to it. Saving `name:latest` replaces a pin stored as `name`, so one model doesn't end up with two pins. The stored spelling becomes the one you saved. Removing either spelling takes the pin away. Two pins already stored under the two spellings stay separate: each is touched only when named exactly, and a request follows the one spelled the way it is.
 
 **A hard `require` mode was designed and cut.** With a default-scope `require` pin at a peer, every app still discovers *this* node's model list from the local-only listing routes and would then get an unfailoverable 502 for every model the peer lacks — embeddings included, since the embedding host points at the same pool URL. It also turns a peer outage into a first-byte-budget hang per request for the whole 90 s–15 min window before the unreachable threshold trips, while the pin still reads as healthy. Nothing anyone asked for needed it.
 
-`GET /api/inference/pool/status` reports every pin with its target resolved to a node name and `targetAvailable` computed from the same predicates routing uses — which is the only place a pin that has quietly stopped applying is visible. `POST /api/inference/pool/pins` upserts one (the key is `(scope, model)`, not an id); `DELETE /api/inference/pool/pins?scope=model&model=<id>` removes it, addressed by query because model ids contain `/` and `:`.
+`GET /api/inference/pool/status` reports every pin with its target resolved to a node name and `targetAvailable` computed from the same predicates routing uses. It is the only place a pin that has quietly stopped applying is visible. `POST /api/inference/pool/pins` upserts one (there is no id: it finds the pin from `(scope, model)` by the rule above); `DELETE /api/inference/pool/pins?scope=model&model=<id>` removes it the same way, addressed by query because model ids contain `/` and `:`.
 
 ## Prompt ceilings
 
@@ -826,14 +828,14 @@ states no default. `behind` lists the nodes the engine gave way to, and is empty
 place. `overriddenBy` is `'affinity'` when the engine would have given way but prefix affinity held
 it, and `null` otherwise, including when affinity qualified the engine but the prefix could not still
 be warm there (the row's `affinity` is then a `skipped` with `qualified: true`). `cihub pool log`
-prints one of four lines:
+prints one of four lines. A Hub with a tailnet name prints that name where these say `this Hub`:
 
-- `↳ moved local (busy with qwen3.8:27b at num_ctx 65536; this one at num_ctx 65536) behind <node>`
+- `↳ moved this Hub (busy with qwen3.8:27b at num_ctx 65536; this one at num_ctx 65536) behind <node>`
   when the engine gave way.
-- `↳ placed anyway on local (…): nothing it gave way to answered` when failover reached it.
-- `↳ kept local (…) first: every node after it was busier, or moved behind it by a line above` when
+- `↳ placed anyway on this Hub (…): nothing it gave way to answered` when failover reached it.
+- `↳ kept this Hub (…) first: every node after it was busier, or moved behind it by a line above` when
   it kept its place and served the request.
-- `↳ kept local (…) first: it holds this session's prompt prefix, which prefix affinity follows over contention`
+- `↳ kept this Hub (…) first: it holds this session's prompt prefix, which prefix affinity follows over contention`
   when affinity held it and it served the request.
 
 ## Prefix affinity

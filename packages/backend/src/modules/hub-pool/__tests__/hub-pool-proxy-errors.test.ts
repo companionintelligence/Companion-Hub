@@ -72,6 +72,14 @@ describe('describeAllCandidatesFailed', () => {
     expect(msg).not.toMatch(/deadline, not proof/i);
   });
 
+  it('leaves the cause out when asked, which still keeps the sentence about a deadline', () => {
+    const withoutCause = { withCause: false };
+    expect(describeAllCandidatesFailed('m', 3, new Error('peer-a.example returned 503'), withoutCause)).toBe(
+      'All 3 pool candidates for model "m" failed.',
+    );
+    expect(describeAllCandidatesFailed('m', 1, new Error('No response headers within 300000ms'), withoutCause)).toMatch(/deadline, not proof/i);
+  });
+
   it('agrees with itself on plurality', () => {
     expect(describeAllCandidatesFailed('m', 1, new Error('boom'))).toContain('1 pool candidate for');
     expect(describeAllCandidatesFailed('m', 2, new Error('boom'))).toContain('2 pool candidates for');

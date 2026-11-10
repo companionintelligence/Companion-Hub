@@ -604,7 +604,6 @@
   "SETTINGS_GENERAL_APPS_REPO_HINT": "Az alkalmazás-tárház URL-je.",
   "SETTINGS_GENERAL_APP_DATA_PATH": "Alkalmazásadatok elérési útja",
   "SETTINGS_GENERAL_APP_DATA_PATH_HINT": "A hely, ahol az alkalmazásadatok tárolva vannak.",
-  "SETTINGS_GENERAL_BASE_THEME": "Alap téma",
   "SETTINGS_GENERAL_DOMAIN": "Domain név",
   "SETTINGS_GENERAL_DOMAIN_HINT": "Tegye elérhetővé a műszerfalát egy egyedi domainhez. Győződjön meg arról, hogy van A rekordja, amely a szerver IP-címére mutat.",
   "SETTINGS_GENERAL_DOWNLOAD_CERTIFICATE": "Töltse le a tanúsítványt",

@@ -11,6 +11,7 @@ import {
   approvePoolPeer,
   cancelPairingPin,
   deletePoolPin,
+  formatPoolUnpinLines,
   fetchPoolPeers,
   fetchPoolRoutingLog,
   fetchInferencePreferences,
@@ -113,6 +114,9 @@ const POOL_USAGE = `Usage: ${BASE_COMMAND} pool <${POOL_SUBCOMMANDS.join('|')}> 
 
 /** How long `pool doctor` runs before it starts narrating. Below this, the box arrives on its own. */
 const POOL_DOCTOR_PROGRESS_AFTER_MS = 3_000;
+
+/** `pool log` only wants this node's name from `/status`, which can wait on a rebuild of the local inventory. */
+const POOL_LOG_NAME_TIMEOUT_MS = 3_000;
 
 export interface ParsedPoolArgs {
   subcommand: PoolSubcommand;
@@ -233,9 +237,9 @@ export function parsePoolArgs(args: string[]): ParsedPoolArgs {
 }
 
 /**
- * Bounded, never normalized: a model id is compared verbatim and case-sensitively against the
- * engine's inventory on the Hub, so lower-casing a pin here would produce one that looks right and
- * silently never matches. Matches `MAX_PINNED_MODEL_LENGTH` on the backend.
+ * Bounded, never normalized: the Hub folds only the implicit `:latest` when it compares a model id
+ * with the engine's inventory and the rest is case-sensitive, so lower-casing a pin here would produce
+ * one that looks right and silently never matches. Matches `MAX_PINNED_MODEL_LENGTH` on the backend.
  */
 function parsePinnedModel(raw: string): string {
   const trimmed = raw.trim();
@@ -505,8 +509,16 @@ export async function runPoolCommand(args: string[]) {
     }
 
     if (parsed.subcommand === 'log') {
-      const log = await fetchPoolRoutingLog(envFile, parsed.limit);
-      printMessageBox(`Hub Pool routing log  [${env}]`, formatPoolRoutingLogLines(log), log.summary.failed > 0 ? 'yellow' : 'cyan');
+      // The name is a nicety on the NODE column, so a status that fails or runs late doesn't cost the log.
+      const [log, status] = await Promise.all([
+        fetchPoolRoutingLog(envFile, parsed.limit),
+        fetchPoolStatus(envFile, POOL_LOG_NAME_TIMEOUT_MS).catch(() => null),
+      ]);
+      printMessageBox(
+        `Hub Pool routing log  [${env}]`,
+        formatPoolRoutingLogLines(log, status?.localNode.nodeFqdn),
+        log.summary.failed > 0 ? 'yellow' : 'cyan',
+      );
       return;
     }
 
@@ -893,7 +905,7 @@ async function runPoolPinCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
     printMessageBox(
       `Pin removed  [${env}]`,
       [
-        `Routing for ${covers} is back to the ranker (least-loaded, with the local head start).`,
+        ...formatPoolUnpinLines(covers, pins, parsed.model, env),
         ...(pins.length > 0 ? ['', `${pins.length} other pin(s) remain — see: ${BASE_COMMAND} pool status`] : []),
       ],
       'yellow',

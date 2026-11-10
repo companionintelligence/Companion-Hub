@@ -50,14 +50,44 @@ describe('UserConfigService', () => {
   });
 
   describe('updateUserConfig', () => {
-    it('should write config to files', async () => {
+    const OVERRIDE = 'services:\n  web:\n    environment:\n      FOO: bar\n';
+
+    beforeEach(() => {
+      appsRepository.getApps.mockResolvedValue([] as any);
       appFilesManager.getUserComposeFile.mockResolvedValue({ path: 'compose-path', content: null });
       appFilesManager.getUserEnv.mockResolvedValue({ path: 'env-path', content: null });
+    });
 
-      await service.updateUserConfig('app' as any, { dockerCompose: 'compose', appEnv: 'env' } as any);
+    it('should write config to files', async () => {
+      await service.updateUserConfig('app:store' as any, { dockerCompose: OVERRIDE, appEnv: 'FOO=bar' });
 
-      expect(filesystemService.writeTextFile).toHaveBeenCalledWith('compose-path', 'compose');
-      expect(filesystemService.writeTextFile).toHaveBeenCalledWith('env-path', 'env');
+      expect(filesystemService.writeTextFile).toHaveBeenCalledWith('compose-path', OVERRIDE);
+      expect(filesystemService.writeTextFile).toHaveBeenCalledWith('env-path', 'FOO=bar');
+    });
+
+    it('clears an override saved as empty', async () => {
+      await service.updateUserConfig('app:store' as any, { dockerCompose: '', appEnv: '' });
+
+      expect(filesystemService.writeTextFile).toHaveBeenCalledWith('compose-path', '');
+    });
+
+    it('refuses an override the sandbox does not allow, names the rule and writes nothing', async () => {
+      await expect(
+        service.updateUserConfig('app:store' as any, { dockerCompose: 'services:\n  web:\n    not_a_known_key: 1\n', appEnv: '' }),
+      ).rejects.toMatchObject({
+        response: { message: 'COMPOSE_OVERRIDE_NOT_ALLOWED', intlParams: { details: expect.stringContaining('services.web.not_a_known_key') } },
+        status: 400,
+      });
+
+      expect(filesystemService.writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it('refuses an override that cannot be read', async () => {
+      await expect(service.updateUserConfig('app:store' as any, { dockerCompose: 'services:\n  web: [', appEnv: '' })).rejects.toBeInstanceOf(
+        TranslatableError,
+      );
+
+      expect(filesystemService.writeTextFile).not.toHaveBeenCalled();
     });
   });
 
