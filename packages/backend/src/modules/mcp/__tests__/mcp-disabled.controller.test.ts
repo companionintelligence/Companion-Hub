@@ -25,6 +25,9 @@ describe('AppModule MCP wiring', () => {
     vi.resetModules();
   });
 
+  // Each case evaluates the whole AppModule graph cold (vi.resetModules), which takes 2-5s alone
+  // and longer under load; the explicit 30s timeout on both tests keeps that from tripping the
+  // 5s default.
   const importedModules = async () => {
     vi.resetModules();
     const { AppModule } = await import('@/app.module');
@@ -40,7 +43,7 @@ describe('AppModule MCP wiring', () => {
 
     expect(imports).toContain(McpDisabledModule);
     expect(imports).not.toContain(McpModule);
-  });
+  }, 30_000);
 
   it('imports the MCP module, not the disabled stand-in, when MCP is on', async () => {
     vi.stubEnv('MCP_ENABLED', 'true');
@@ -48,5 +51,5 @@ describe('AppModule MCP wiring', () => {
 
     expect(imports).toContain(McpModule);
     expect(imports).not.toContain(McpDisabledModule);
-  });
+  }, 30_000);
 });
