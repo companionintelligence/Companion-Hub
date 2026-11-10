@@ -65,6 +65,9 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
     },
   });
 
+  const createdDate = info.created_at
+    ? new Date(info.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'numeric', day: 'numeric' })
+    : null;
   const updatedDate = info.updated_at
     ? new Date(info.updated_at).toLocaleDateString(undefined, { year: 'numeric', month: 'numeric', day: 'numeric' })
     : null;
@@ -153,16 +156,33 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
           <div>
             <h2 className="text-lg font-medium mb-4">{t('COMMON_INFORMATION')}</h2>
             <div className="space-y-3 sm:space-y-4">
-              <div className="flex justify-between items-start">
-                <span className="text-sm text-muted-foreground">{t('APP_DETAILS_PROVIDER')}</span>
-                <span className="text-sm font-medium text-right">{info.author}</span>
-              </div>
-              <div className="border-t border-border/40" />
-              <div className="flex justify-between items-start">
-                <span className="text-sm text-muted-foreground">{t('APP_DETAILS_CATEGORIES_TITLE')}</span>
-                <span className="text-sm font-medium text-right">{(info.categories ?? []).map((c) => getCategoryLabel(t, c)).join(', ')}</span>
-              </div>
-              <div className="border-t border-border/40" />
+              {/* An app made on this Hub has no provider, store category, source, download size or
+                  privacy declaration: its manifest held placeholders ("User", "Utilities", an empty
+                  source link), so only the rows that are true for it are shown. */}
+              {isUserApp ? (
+                createdDate && (
+                  <>
+                    <div className="flex justify-between items-start" data-testid="app-created-date">
+                      <span className="text-sm text-muted-foreground">{t('COMMON_CREATED')}</span>
+                      <span className="text-sm font-medium">{createdDate}</span>
+                    </div>
+                    <div className="border-t border-border/40" />
+                  </>
+                )
+              ) : (
+                <>
+                  <div className="flex justify-between items-start">
+                    <span className="text-sm text-muted-foreground">{t('APP_DETAILS_PROVIDER')}</span>
+                    <span className="text-sm font-medium text-right">{info.author}</span>
+                  </div>
+                  <div className="border-t border-border/40" />
+                  <div className="flex justify-between items-start">
+                    <span className="text-sm text-muted-foreground">{t('APP_DETAILS_CATEGORIES_TITLE')}</span>
+                    <span className="text-sm font-medium text-right">{(info.categories ?? []).map((c) => getCategoryLabel(t, c)).join(', ')}</span>
+                  </div>
+                  <div className="border-t border-border/40" />
+                </>
+              )}
               {updatedDate && (
                 <>
                   <div className="flex justify-between items-start">
@@ -176,79 +196,83 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
                 <span className="text-sm text-muted-foreground">{t('COMMON_VERSION')}</span>
                 <span className="text-sm font-medium">{info.version}</span>
               </div>
-              <div className="border-t border-border/40" />
-              <div className="flex justify-between items-start">
-                <span className="text-sm text-muted-foreground">{t('COMMON_SOURCE_CODE')}</span>
-                <a target="_blank" rel="noreferrer" className="text-sm text-primary underline-offset-2 hover:underline" href={info.source}>
-                  {t('APP_DETAILS_LINK')}
-                  <ExternalLink size={12} className="ml-1 mb-0.5 inline" />
-                </a>
-              </div>
-              {info.website && (
+              {!isUserApp && (
                 <>
                   <div className="border-t border-border/40" />
                   <div className="flex justify-between items-start">
-                    <span className="text-sm text-muted-foreground">{t('APP_DETAILS_WEBSITE')}</span>
-                    <a
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-sm text-primary underline-offset-2 hover:underline truncate max-w-[160px]"
-                      href={info.website}
-                    >
+                    <span className="text-sm text-muted-foreground">{t('COMMON_SOURCE_CODE')}</span>
+                    <a target="_blank" rel="noreferrer" className="text-sm text-primary underline-offset-2 hover:underline" href={info.source}>
                       {t('APP_DETAILS_LINK')}
                       <ExternalLink size={12} className="ml-1 mb-0.5 inline" />
                     </a>
                   </div>
-                </>
-              )}
-              <div className="border-t border-border/40" />
-              <div className="flex justify-between items-start">
-                <span className="text-sm text-muted-foreground">{t('APP_DETAILS_DOWNLOAD_SIZE')}</span>
-                <span className="text-sm font-medium flex items-center gap-1">
-                  <HardDrive size={13} />
-                  {imageSizeLoading ? t('APP_DETAILS_CALCULATING') : imageSizeFormatted ? `~${imageSizeFormatted}` : t('COMMON_UNKNOWN')}
-                </span>
-              </div>
-              {info.supported_architectures && info.supported_architectures.length > 0 && (
-                <>
+                  {info.website && (
+                    <>
+                      <div className="border-t border-border/40" />
+                      <div className="flex justify-between items-start">
+                        <span className="text-sm text-muted-foreground">{t('APP_DETAILS_WEBSITE')}</span>
+                        <a
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-sm text-primary underline-offset-2 hover:underline truncate max-w-[160px]"
+                          href={info.website}
+                        >
+                          {t('APP_DETAILS_LINK')}
+                          <ExternalLink size={12} className="ml-1 mb-0.5 inline" />
+                        </a>
+                      </div>
+                    </>
+                  )}
                   <div className="border-t border-border/40" />
-                  <div className="flex justify-between items-start" data-testid="app-architectures">
-                    <span className="text-sm text-muted-foreground">{t('COMMON_ARCHITECTURES')}</span>
+                  <div className="flex justify-between items-start">
+                    <span className="text-sm text-muted-foreground">{t('APP_DETAILS_DOWNLOAD_SIZE')}</span>
                     <span className="text-sm font-medium flex items-center gap-1">
-                      <Cpu size={13} />
-                      {info.supported_architectures.join(', ')}
+                      <HardDrive size={13} />
+                      {imageSizeLoading ? t('APP_DETAILS_CALCULATING') : imageSizeFormatted ? `~${imageSizeFormatted}` : t('COMMON_UNKNOWN')}
                     </span>
                   </div>
-                </>
-              )}
-              {info.gpu_requirements && (
-                <>
-                  <div className="border-t border-border/40" />
-                  <div className="flex justify-between items-start" data-testid="app-gpu-requirements">
-                    <span className="text-sm text-muted-foreground">{t('ONBOARDING_GPU')}</span>
-                    <span className="text-sm font-medium text-right">
-                      <span className="flex items-center justify-end gap-1">
-                        <Cpu size={13} />
-                        {info.gpu_requirements.type.toUpperCase()} ·{' '}
-                        {info.gpu_requirements.optional ? t('ONBOARDING_BADGE_OPTIONAL') : t('ONBOARDING_BADGE_REQUIRED')}
-                      </span>
-                      <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
-                        {info.gpu_requirements.host_platforms.join(', ')}
-                        {info.gpu_requirements.minimum_vram_gb === undefined
-                          ? ''
-                          : ` · ≥${info.gpu_requirements.minimum_vram_gb} GB ${t('ONBOARDING_VRAM')}`}
-                      </span>
-                    </span>
-                  </div>
-                </>
-              )}
-              {metadata?.minHubVersion && (
-                <>
-                  <div className="border-t border-border/40" />
-                  <div className="flex justify-between items-start" data-testid="app-min-hub-version">
-                    <span className="text-sm text-muted-foreground">{t('COMMON_MIN_HUB_VERSION')}</span>
-                    <span className="text-sm font-medium">{metadata.minHubVersion}</span>
-                  </div>
+                  {info.supported_architectures && info.supported_architectures.length > 0 && (
+                    <>
+                      <div className="border-t border-border/40" />
+                      <div className="flex justify-between items-start" data-testid="app-architectures">
+                        <span className="text-sm text-muted-foreground">{t('COMMON_ARCHITECTURES')}</span>
+                        <span className="text-sm font-medium flex items-center gap-1">
+                          <Cpu size={13} />
+                          {info.supported_architectures.join(', ')}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                  {info.gpu_requirements && (
+                    <>
+                      <div className="border-t border-border/40" />
+                      <div className="flex justify-between items-start" data-testid="app-gpu-requirements">
+                        <span className="text-sm text-muted-foreground">{t('ONBOARDING_GPU')}</span>
+                        <span className="text-sm font-medium text-right">
+                          <span className="flex items-center justify-end gap-1">
+                            <Cpu size={13} />
+                            {info.gpu_requirements.type.toUpperCase()} ·{' '}
+                            {info.gpu_requirements.optional ? t('ONBOARDING_BADGE_OPTIONAL') : t('ONBOARDING_BADGE_REQUIRED')}
+                          </span>
+                          <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+                            {info.gpu_requirements.host_platforms.join(', ')}
+                            {info.gpu_requirements.minimum_vram_gb === undefined
+                              ? ''
+                              : ` · ≥${info.gpu_requirements.minimum_vram_gb} GB ${t('ONBOARDING_VRAM')}`}
+                          </span>
+                        </span>
+                      </div>
+                    </>
+                  )}
+                  {metadata?.minHubVersion && (
+                    <>
+                      <div className="border-t border-border/40" />
+                      <div className="flex justify-between items-start" data-testid="app-min-hub-version">
+                        <span className="text-sm text-muted-foreground">{t('COMMON_MIN_HUB_VERSION')}</span>
+                        <span className="text-sm font-medium">{metadata.minHubVersion}</span>
+                      </div>
+                    </>
+                  )}
                 </>
               )}
             </div>
@@ -258,59 +282,61 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
               Three states, because "nobody declared anything" and "the developer declared this app
               collects nothing" are different claims. Only a real `privacy` block in the manifest
               earns the reassuring copy; without one we say so plainly. */}
-          <div className="rounded-md border border-border/50 bg-muted/20 p-3 sm:p-4" data-testid="app-privacy-card">
-            <div className="flex items-center gap-2 mb-2">
-              {privacyState === 'undeclared' ? (
-                <ShieldQuestion className="h-4 w-4 text-muted-foreground" />
-              ) : (
-                <Shield className="h-4 w-4 text-primary" />
-              )}
-              <span className="text-sm font-medium">{t('APP_DETAILS_APP_PRIVACY')}</span>
-            </div>
-            <p className="text-xs text-muted-foreground mb-3">
-              {privacyState === 'undeclared' ? t('APP_DETAILS_APP_PRIVACY_UNDECLARED_DESC') : t('APP_DETAILS_APP_PRIVACY_DESC')}
-            </p>
+          {!isUserApp && (
+            <div className="rounded-md border border-border/50 bg-muted/20 p-3 sm:p-4" data-testid="app-privacy-card">
+              <div className="flex items-center gap-2 mb-2">
+                {privacyState === 'undeclared' ? (
+                  <ShieldQuestion className="h-4 w-4 text-muted-foreground" />
+                ) : (
+                  <Shield className="h-4 w-4 text-primary" />
+                )}
+                <span className="text-sm font-medium">{t('APP_DETAILS_APP_PRIVACY')}</span>
+              </div>
+              <p className="text-xs text-muted-foreground mb-3">
+                {privacyState === 'undeclared' ? t('APP_DETAILS_APP_PRIVACY_UNDECLARED_DESC') : t('APP_DETAILS_APP_PRIVACY_DESC')}
+              </p>
 
-            {privacyState === 'collects' ? (
-              <div className="flex flex-col gap-1.5" data-testid="app-privacy-collects">
-                {privacy?.collects.map((entry) => (
-                  <div key={entry.category} className="flex items-center gap-2 rounded-lg bg-muted/30 p-2 sm:p-2.5">
-                    <Shield className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <div>
-                      <p className="text-xs font-medium">{t(`APP_DETAILS_PRIVACY_CATEGORY_${entry.category.toUpperCase()}`)}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {entry.purposes.map((purpose) => t(`APP_DETAILS_PRIVACY_PURPOSE_${purpose.toUpperCase()}`)).join(', ')}
-                        {entry.used_for_tracking ? ` · ${t('APP_DETAILS_PRIVACY_USED_FOR_TRACKING')}` : ''}
-                        {entry.linked_to_identity ? ` · ${t('APP_DETAILS_PRIVACY_LINKED_TO_IDENTITY')}` : ''}
-                      </p>
+              {privacyState === 'collects' ? (
+                <div className="flex flex-col gap-1.5" data-testid="app-privacy-collects">
+                  {privacy?.collects.map((entry) => (
+                    <div key={entry.category} className="flex items-center gap-2 rounded-lg bg-muted/30 p-2 sm:p-2.5">
+                      <Shield className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <div>
+                        <p className="text-xs font-medium">{t(`APP_DETAILS_PRIVACY_CATEGORY_${entry.category.toUpperCase()}`)}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {entry.purposes.map((purpose) => t(`APP_DETAILS_PRIVACY_PURPOSE_${purpose.toUpperCase()}`)).join(', ')}
+                          {entry.used_for_tracking ? ` · ${t('APP_DETAILS_PRIVACY_USED_FOR_TRACKING')}` : ''}
+                          {entry.linked_to_identity ? ` · ${t('APP_DETAILS_PRIVACY_LINKED_TO_IDENTITY')}` : ''}
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 rounded-lg bg-muted/30 p-2 sm:p-2.5">
-                <Shield className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                <div>
-                  <p className="text-xs font-medium">{t('APP_DETAILS_DATA_COLLECTION')}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {privacyState === 'no_collection' ? t('APP_DETAILS_NO_DATA_COLLECTED') : t('APP_DETAILS_PRIVACY_NOT_DECLARED')}
-                  </p>
+                  ))}
                 </div>
-              </div>
-            )}
+              ) : (
+                <div className="flex items-center gap-2 rounded-lg bg-muted/30 p-2 sm:p-2.5">
+                  <Shield className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <div>
+                    <p className="text-xs font-medium">{t('APP_DETAILS_DATA_COLLECTION')}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {privacyState === 'no_collection' ? t('APP_DETAILS_NO_DATA_COLLECTED') : t('APP_DETAILS_PRIVACY_NOT_DECLARED')}
+                    </p>
+                  </div>
+                </div>
+              )}
 
-            {privacy?.policy_url && (
-              <a
-                href={privacy.policy_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mt-2 inline-flex items-center gap-1 text-xs text-primary hover:underline"
-              >
-                {t('APP_DETAILS_PRIVACY_POLICY')}
-                <ExternalLink size={11} />
-              </a>
-            )}
-          </div>
+              {privacy?.policy_url && (
+                <a
+                  href={privacy.policy_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-2 inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                >
+                  {t('APP_DETAILS_PRIVACY_POLICY')}
+                  <ExternalLink size={11} />
+                </a>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

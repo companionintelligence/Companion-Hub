@@ -79,6 +79,10 @@ vi.mock('../components/app-backups-card/app-backups-card', () => ({
   AppBackupsCard: () => <div data-testid="app-backups-card" />,
 }));
 
+vi.mock('../components/app-access-points/app-access-points', () => ({
+  AppAccessPoints: () => <div data-testid="app-access-points" />,
+}));
+
 import { CustomAppDetailsPageContent } from './custom-app-details-page-content';
 
 const info = {
@@ -100,14 +104,40 @@ describe('CustomAppDetailsPageContent', () => {
     seen.onImageUpload = undefined;
   });
 
-  // The store page puts AppDetailsTabs outside its card, so the tabs bring no
-  // padding. Here they sit inside the card and used to touch its edges.
-  it('insets the notes and information inside the card like the header', () => {
-    render(<CustomAppDetailsPageContent appId="whoami-check" info={info} app={null} metadata={{} as AppMetadata} />);
+  // Laid out like a store app's page: the app's name heads the card, and "Version: 1.0.0" no longer stands in for it.
+  it("heads the page with the app's own name and says it is a custom app", () => {
+    render(<CustomAppDetailsPageContent appId="whoami-check" info={info} app={installed} metadata={{} as AppMetadata} />);
 
-    const tabs = screen.getByTestId('app-details-tabs');
-    expect(screen.getByTestId('app-details')).toContainElement(tabs);
-    expect(tabs.parentElement).toHaveClass('p-6', 'pt-0');
+    expect(screen.getByRole('heading', { level: 1, name: 'Whoami Check' })).toBeInTheDocument();
+    expect(screen.getByText('CUSTOM_APP_KIND')).toBeInTheDocument();
+    expect(screen.getByTestId('app-version')).toHaveTextContent('v1.0.0');
+  });
+
+  it('leaves out the description the Hub wrote itself and shows one the owner wrote', () => {
+    const { rerender } = render(<CustomAppDetailsPageContent appId="whoami-check" info={info} app={installed} metadata={{} as AppMetadata} />);
+    expect(screen.queryByText('User-created custom app')).not.toBeInTheDocument();
+
+    rerender(
+      <CustomAppDetailsPageContent
+        appId="whoami-check"
+        info={{ ...info, short_desc: 'Checks who is calling' } as AppInfo}
+        app={installed}
+        metadata={{} as AppMetadata}
+      />,
+    );
+    expect(screen.getByText('Checks who is calling')).toBeInTheDocument();
+  });
+
+  // As on a store app page: the addresses, backups and notes follow the header card instead of sitting inside it.
+  it('puts the addresses, backups and notes after the header card', () => {
+    render(<CustomAppDetailsPageContent appId="whoami-check" info={info} app={installed} metadata={{} as AppMetadata} />);
+
+    const card = screen.getByTestId('app-details');
+    for (const id of ['app-access-points', 'app-backups-card', 'app-details-tabs']) {
+      const section = screen.getByTestId(id);
+      expect(card).not.toContainElement(section);
+      expect(card.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
   });
 
   it('gives an organization owner or admin every control: actions, notes, logo and backups', () => {

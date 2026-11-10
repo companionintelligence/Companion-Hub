@@ -7,10 +7,12 @@ import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card/Card';
 import { useAppContext } from '@/context/app-context';
+import { AppLogo } from '@/components/app-logo/app-logo';
 import { getMarketplaceAppImageUrl } from '@/lib/marketplace-image-url';
 import { openExternal } from '@/lib/helpers/open-external';
 import { getServeStatusOptions } from '@/api-client/@tanstack/react-query.gen';
-import { buildAppAccessPoints, buildTailscaleServedPortSet } from '@/modules/app/components/app-access-points/app-access-points';
+import { AppAccessPoints, buildAppAccessPoints, buildTailscaleServedPortSet } from '@/modules/app/components/app-access-points/app-access-points';
+import { AppHeaderStat } from '@/modules/app/components/app-header-stat/app-header-stat';
 import { UninstallDialog } from '@/modules/app/components/dialogs/uninstall-dialog/uninstall-dialog';
 import { PortExposeSettingsDialog } from '@/modules/app/components/port-expose-settings-dialog/port-expose-settings-dialog';
 import type { AppDetails, AppInfo } from '@/types/app.types';
@@ -90,75 +92,76 @@ export const PortExposeDetailsView = ({ app, info }: Props) => {
   const logoUrl = getMarketplaceAppImageUrl(info.urn);
   const exposureLabel = exposureModeLabel(t, app.exposureMode);
 
+  const port = app.port ?? info.port;
+
+  // Laid out like a store app's page header (`app-details-page.tsx`): the name, what kind of app it is,
+  // its facts as pills, then the actions along the bottom. Its addresses follow in the access points card.
   return (
     <div className="mx-auto max-w-6xl space-y-4 px-0 pb-20 sm:space-y-8">
-      <Card className="overflow-hidden border-border/60 bg-card/80 shadow-sm">
+      <Card data-testid="app-details" className="overflow-hidden border-border/60 bg-card/80 shadow-sm">
         <CardContent className="space-y-4 p-3 sm:space-y-6 sm:p-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-6">
-            <div className="flex shrink-0 justify-start">
-              <img
-                src={logoUrl}
-                alt={info.name}
-                className="h-24 w-24 rounded-md bg-white/10 object-cover shadow-lg sm:h-28 sm:w-28 md:h-32 md:w-32"
-                onError={(event) => {
-                  event.currentTarget.src = '/app-not-found.jpg';
-                }}
-              />
+            <div className="h-24 w-24 shrink-0 rounded-md shadow-lg sm:h-28 sm:w-28 md:h-32 md:w-32">
+              <AppLogo url={logoUrl} size="100%" shape="rounded" alt={info.name} name={info.name} />
             </div>
 
             <div className="min-w-0 flex-1 space-y-3 sm:space-y-4">
-              <div className="space-y-2">
-                <h1 className="text-2xl font-medium tracking-tight sm:text-4xl">{info.name}</h1>
-                <p className="text-sm text-muted-foreground sm:text-base">
-                  {t('PORT_EXPOSE_DETAILS_SUBTITLE', { port: app.port ?? info.port ?? '—' })} · {exposureLabel}
-                </p>
+              <div className="min-w-0 space-y-2">
+                <h1 className="break-words text-2xl font-medium tracking-tight sm:text-4xl">{info.name}</h1>
+                <p className="text-base font-medium text-emerald-800 dark:text-emerald-400 sm:text-lg">{t('PORT_EXPOSE_KIND')}</p>
               </div>
-
-              <div data-testid="app-header-actions-row" className={clsx('flex flex-wrap items-start gap-2', 'hero-actions-layout')}>
-                <div className="hero-action-bar">
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="ghost"
-                    aria-label={t('COMMON_SETTINGS')}
-                    data-testid="icon-action-settings"
-                    data-tooltip-id="port-expose-actions-tooltip"
-                    data-tooltip-content={t('COMMON_SETTINGS')}
-                    className="hero-action-icon"
-                    onClick={() => setSettingsOpen(true)}
-                  >
-                    <Settings size={16} />
-                  </Button>
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="ghost"
-                    aria-label={t('COMMON_REMOVE')}
-                    data-testid="icon-action-remove"
-                    data-tooltip-id="port-expose-actions-tooltip"
-                    data-tooltip-content={t('COMMON_REMOVE')}
-                    className="hero-action-icon text-destructive hover:text-destructive"
-                    onClick={() => setRemoveOpen(true)}
-                  >
-                    <Trash size={16} />
-                  </Button>
-                </div>
-
-                <Button
-                  data-testid="action-open"
-                  size="lg"
-                  className="action-button launch-action-button"
-                  disabled={!openUrl}
-                  onClick={() => openUrl && openExternal(openUrl)}
-                >
-                  {t('APP_ACTION_OPEN')}
-                  <ExternalLink className="ml-1" size={14} role="img" aria-label={t('APP_ACTION_OPEN')} />
-                </Button>
+              <div data-testid="app-header-stats" className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                <AppHeaderStat testId="port-expose-port" value={port ?? '—'} label={t('COMMON_PORT')} />
+                <AppHeaderStat testId="port-expose-exposure" value={exposureLabel} label={t('APP_INSTALL_FORM_EXPOSURE_MODE')} />
               </div>
             </div>
           </div>
+
+          <div data-testid="app-header-actions-row" className={clsx('flex flex-wrap items-start gap-2', 'hero-actions-layout')}>
+            <div className="hero-action-bar">
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                aria-label={t('COMMON_SETTINGS')}
+                data-testid="icon-action-settings"
+                data-tooltip-id="port-expose-actions-tooltip"
+                data-tooltip-content={t('COMMON_SETTINGS')}
+                className="hero-action-icon"
+                onClick={() => setSettingsOpen(true)}
+              >
+                <Settings size={16} />
+              </Button>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                aria-label={t('COMMON_REMOVE')}
+                data-testid="icon-action-remove"
+                data-tooltip-id="port-expose-actions-tooltip"
+                data-tooltip-content={t('COMMON_REMOVE')}
+                className="hero-action-icon text-destructive hover:text-destructive"
+                onClick={() => setRemoveOpen(true)}
+              >
+                <Trash size={16} />
+              </Button>
+            </div>
+
+            <Button
+              data-testid="action-open"
+              size="lg"
+              className="action-button launch-action-button"
+              disabled={!openUrl}
+              onClick={() => openUrl && openExternal(openUrl)}
+            >
+              {t('APP_ACTION_OPEN')}
+              <ExternalLink className="ml-1" size={14} role="img" aria-label={t('APP_ACTION_OPEN')} />
+            </Button>
+          </div>
         </CardContent>
       </Card>
+
+      <AppAccessPoints app={app} info={info} />
 
       <Tooltip id="port-expose-actions-tooltip" className="tooltip" positionStrategy="fixed" />
 

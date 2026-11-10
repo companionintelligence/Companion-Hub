@@ -56,6 +56,8 @@ vi.mock('@/stores/multiServiceStore', async () => ({
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getAppComposeDiffOptions: () => ({ queryKey: ['compose-diff'] }),
+  // The page reads the app's display name for its title.
+  getAppOptions: () => ({ queryKey: ['app'] }),
   getAppComposeDiffQueryKey: (options: { path: { urn: string } }) => ['compose-diff', options.path.urn],
   updateCustomAppMutation: () => ({}),
 }));

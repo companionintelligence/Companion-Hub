@@ -21,6 +21,10 @@
   border-radius: var(--radius-lg);
 }
 
+.custom-app-logo-container.is-rounded .custom-app-logo-overlay {
+  border-radius: var(--radius-md);
+}
+
 .custom-app-logo-overlay:hover {
   opacity: 1;
 }

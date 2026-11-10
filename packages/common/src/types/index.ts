@@ -22,6 +22,7 @@ export {
 export type { AvailableDomain, AvailableDomainsResponse } from './domains.js';
 // biome-ignore lint/performance/noBarrelFile: install and port-expose pickers filter through @ci-hub/common/types
 export { selectOfferedDomains } from './domains.js';
+export { CUSTOM_APP_DEFAULT_SHORT_DESC, PORT_EXPOSE_DEFAULT_SHORT_DESC, isLocalAppDefaultShortDesc } from './local-app-defaults.js';
 export type { PublicWebIdentity, BuildOriginServerNameInput, BuildPublicWebIdentityInput } from '../public-web/identity.js';
 export type { AvailableCustomDomain, TunnelCustomDomain, ParsedTunnelCustomDomains } from '../public-web/custom-domains.js';
 export type { AppExposureFields, AppExposureMode } from '../public-web/exposure.js';

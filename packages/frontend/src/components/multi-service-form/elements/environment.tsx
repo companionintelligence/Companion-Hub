@@ -4,7 +4,7 @@ import { Input } from '@/components/ui/Input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table';
 import type { dynamicComposeSchema } from '@ci-hub/common/schemas';
 import type { z } from 'zod';
-import { X } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import { useFieldArray, type Control, type FieldErrors, type UseFormRegister } from 'react-hook-form';
 import { HintMarker } from '@/components/ui/field-hint/field-hint';
@@ -34,7 +34,8 @@ export const EnvironmentConfig = ({ errors, serviceIndex, control, register }: P
           <div>
             {t('MULTI_SERVICE_ENVIRONMENT_TITLE')} <HintMarker anchorClass="my-env-vars" hint={t('MULTI_SERVICE_ENVIRONMENT_TITLE_TOOLTIP')} />
           </div>
-          <Button type="button" onClick={() => append({ key: '', value: '' })} size="sm">
+          <Button type="button" onClick={() => append({ key: '', value: '' })} size="sm" variant="outline" className="gap-1.5">
+            <Plus className="size-4" aria-hidden="true" />
             {t('MULTI_SERVICE_ENVIRONMENT_ADD_VARIABLE')}
           </Button>
         </div>
@@ -66,8 +67,8 @@ export const EnvironmentConfig = ({ errors, serviceIndex, control, register }: P
                   />
                 </TableCell>
                 <TableCell className="align-middle w-1">
-                  <Button type="button" size="sm" onClick={() => remove(index)} className="btn-action">
-                    <X className="" size={16} />
+                  <Button type="button" variant="ghost" size="icon" aria-label={t('COMMON_REMOVE')} onClick={() => remove(index)}>
+                    <Trash2 className="size-4 text-destructive" aria-hidden="true" />
                   </Button>
                 </TableCell>
               </TableRow>

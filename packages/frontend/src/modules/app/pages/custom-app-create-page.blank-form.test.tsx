@@ -52,7 +52,7 @@ describe('custom app create after editing an app', () => {
       expect(screen.queryByDisplayValue(leftover)).not.toBeInTheDocument();
     }
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add Variable', hidden: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add variable', hidden: true }));
 
     expect(screen.getAllByPlaceholderText('KEY')).toHaveLength(1);
     expect(screen.getByPlaceholderText('KEY')).toHaveValue('');

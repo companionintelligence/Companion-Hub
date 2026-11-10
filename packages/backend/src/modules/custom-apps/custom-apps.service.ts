@@ -6,7 +6,7 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import { deriveAppSlug, RESERVED_APP_NAMES } from '@ci-hub/common/types';
+import { CUSTOM_APP_DEFAULT_SHORT_DESC, deriveAppSlug, RESERVED_APP_NAMES } from '@ci-hub/common/types';
 import path from 'node:path';
 import { AppsRepository } from '../apps/apps.repository';
 import { PortManagerService, type PortAllocation } from '../network/port-manager.service';
@@ -261,7 +261,7 @@ export class CustomAppService {
       port: inferredPort,
       categories: ['utilities'],
       description: `Custom application: ${name}`,
-      short_desc: 'User-created custom app',
+      short_desc: CUSTOM_APP_DEFAULT_SHORT_DESC,
       replaces: [],
       author: 'User',
       source: '',
@@ -285,7 +285,7 @@ export class CustomAppService {
     const descriptionPath = path.join(dataDir, 'apps', appStoreId, appName, 'metadata', 'description.md');
     // JSON.stringify produces a valid double-quoted YAML scalar, keeping the
     // frontmatter well-formed for free-form names (e.g. containing a colon).
-    const descriptionContent = `---\nname: ${JSON.stringify(name)}\nshort_desc: User-created custom app\nversion: 1.0.0\n---\n\n# ${name}\n\nThis is a user-created custom application.\n`;
+    const descriptionContent = `---\nname: ${JSON.stringify(name)}\nshort_desc: ${CUSTOM_APP_DEFAULT_SHORT_DESC}\nversion: 1.0.0\n---\n\n# ${name}\n\nThis is a user-created custom application.\n`;
 
     const ok = await this.filesystem.writeJsonFile(infoPath, appInfo);
     if (!ok) {

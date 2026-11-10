@@ -1,9 +1,10 @@
-import { render, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useAppContext } from '@/context/app-context';
 import { useDnsAvailability } from '@/modules/app/components/install-form/use-dns-availability';
 import PortExposeCreatePage from './port-expose-create-page';
+import { TranslatableError } from '@/types/error.types';
 
 // Polyfill ResizeObserver for Radix UI
 global.ResizeObserver = class ResizeObserver {
@@ -23,6 +24,8 @@ const DOMAINS = {
   domains: [] as Array<{ id: string; domain: string; isDefault: boolean; offered?: boolean }>,
 };
 
+const createMutation = vi.hoisted(() => ({ options: undefined as undefined | { onError?: (error: unknown) => void } }));
+
 /** Whether the domain list is still on its first load — which is a fetch too, as in TanStack Query. */
 const DOMAIN_LIST = { isLoading: false };
 
@@ -34,7 +37,10 @@ vi.mock('@tanstack/react-query', () => ({
     isError: false,
     refetch: vi.fn(),
   }),
-  useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+  useMutation: (options: { onError?: (error: unknown) => void }) => {
+    createMutation.options = options;
+    return { mutate: vi.fn(), isPending: false };
+  },
 }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
@@ -120,5 +126,25 @@ describe('PortExposeCreatePage', () => {
     renderPage();
 
     await waitFor(() => expect(checkedDomain()).toBe(HUB_DOMAIN));
+  });
+
+  // The browser's own bubble ("Value must be greater than or equal to 1024") stood in for the form's error.
+  it('reports a port under 1024 under the field, not in a browser bubble', async () => {
+    const { container } = renderPage();
+
+    expect(container.querySelector('form')).toHaveAttribute('novalidate');
+    fireEvent.change(screen.getByPlaceholderText('CUSTOM_APP_NAME_PLACEHOLDER'), { target: { value: 'Printer' } });
+    fireEvent.change(screen.getByPlaceholderText('PORT_EXPOSE_PORT_PLACEHOLDER'), { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: 'PORT_EXPOSE_SUBMIT' }));
+
+    expect(await screen.findByText('PORT_EXPOSE_PORT_INVALID')).toBeInTheDocument();
+  });
+
+  it('puts "nothing is listening on that port" under the port field instead of in a toast', async () => {
+    renderPage();
+
+    act(() => createMutation.options?.onError?.(new TranslatableError('PORT_EXPOSE_PORT_UNREACHABLE', { port: '9999', host: '127.0.0.1' })));
+
+    expect(await screen.findByText('PORT_EXPOSE_PORT_UNREACHABLE')).toBeInTheDocument();
   });
 });

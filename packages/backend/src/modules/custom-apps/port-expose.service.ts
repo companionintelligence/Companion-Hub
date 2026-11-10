@@ -7,7 +7,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildOriginServerName, deriveAppSlug, RESERVED_APP_NAMES, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { buildOriginServerName, deriveAppSlug, PORT_EXPOSE_DEFAULT_SHORT_DESC, RESERVED_APP_NAMES, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { isPortExposeApp, PORT_EXPOSE_KIND, type AppInfo } from '@ci-hub/common/schemas';
 import path from 'node:path';
 import { AppsRepository } from '../apps/apps.repository';
@@ -490,7 +490,7 @@ export class PortExposeService {
       kind: PORT_EXPOSE_KIND,
       categories: ['utilities'],
       description: `Port-exposed workload: ${name}`,
-      short_desc: 'User workload exposed on a host port',
+      short_desc: PORT_EXPOSE_DEFAULT_SHORT_DESC,
       replaces: [],
       author: 'User',
       source: '',
@@ -514,7 +514,7 @@ export class PortExposeService {
     const descriptionPath = path.join(dataDir, 'apps', appStoreId, appName, 'metadata', 'description.md');
     // JSON.stringify produces a valid double-quoted YAML scalar, keeping the
     // frontmatter well-formed for free-form names (e.g. containing a colon).
-    const descriptionContent = `---\nname: ${JSON.stringify(name)}\nshort_desc: User workload exposed on a host port\nversion: 1.0.0\n---\n\n# ${name}\n\nThis workload is exposed via a host port on your Hub.\n`;
+    const descriptionContent = `---\nname: ${JSON.stringify(name)}\nshort_desc: ${PORT_EXPOSE_DEFAULT_SHORT_DESC}\nversion: 1.0.0\n---\n\n# ${name}\n\nThis workload is exposed via a host port on your Hub.\n`;
 
     const ok = await this.filesystem.writeJsonFile(infoPath, appInfo);
     if (!ok) {

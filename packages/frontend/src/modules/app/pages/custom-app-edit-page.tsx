@@ -9,11 +9,11 @@ import { MultiServiceForm } from '@/components/multi-service-form/multi-service-
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { Input } from '@/components/ui/Input/Input';
 import { Button } from '@/components/ui/Button';
-import { Card, CardContent } from '@/components/ui/Card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import type { TranslatableError } from '@/types/error.types';
 import { useEffect, useId, useState } from 'react';
 import { describeComposeIssue, useMultiServiceStore } from '@/stores/multiServiceStore';
-import { getAppComposeDiffOptions, getAppComposeDiffQueryKey, updateCustomAppMutation } from '@/api-client/@tanstack/react-query.gen';
+import { getAppComposeDiffOptions, getAppComposeDiffQueryKey, getAppOptions, updateCustomAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import type { Route } from './+types/custom-app-edit-page';
 import { getAppComposeDiff } from '@/api-client';
 
@@ -62,6 +62,10 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
   });
 
   const id = useId();
+
+  // The name the app was created with ("Family Photos"); the URL only holds its identifier.
+  const { data: appRecord } = useQuery({ ...getAppOptions({ path: { urn: `${params.appId}:_user` } }), staleTime: 30_000 });
+  const displayName = appRecord?.info?.name ?? appName ?? '';
 
   useEffect(() => {
     if (!currentConfig?.current) {
@@ -139,43 +143,50 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
 
   return (
     <div className="page-scroller-edge-0 relative h-full overflow-y-auto" data-page-scroller="custom-app-edit">
-      {refusedLabels.length > 0 && (
-        <Alert variant="danger" className="mb-4" data-testid="custom-app-edit-refused-label">
-          <AlertIcon>
-            <AlertCircle strokeWidth={2} />
-          </AlertIcon>
-          <div>
-            <AlertHeading>{t('CUSTOM_APP_EDIT_REFUSED_LABELS_TITLE')}</AlertHeading>
-            {refusedLabels.map((refusal, index) => (
-              // By position too: two overrides without an architecture can name the same label in the same words.
-              // biome-ignore lint/suspicious/noArrayIndexKey: the list only changes when the config is read again
-              <AlertDescription key={`${index}-${refusal}`}>{i18n.exists(refusal) ? t(refusal) : refusal}</AlertDescription>
-            ))}
-            <AlertDescription>{t('CUSTOM_APP_EDIT_REFUSED_LABELS_HINT')}</AlertDescription>
-          </div>
-        </Alert>
-      )}
-      <Card>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="mx-auto max-w-6xl pb-20">
+        {refusedLabels.length > 0 && (
+          <Alert variant="danger" className="mb-4" data-testid="custom-app-edit-refused-label">
+            <AlertIcon>
+              <AlertCircle strokeWidth={2} />
+            </AlertIcon>
             <div>
-              <Input
-                label={
-                  <>
-                    {t('CUSTOM_APP_NAME_LABEL')} <span className="text-destructive">*</span>
-                  </>
-                }
-                value={appName}
-                disabled={true}
-                placeholder={t('CUSTOM_APP_NAME_PLACEHOLDER')}
-                title={t('CUSTOM_APP_NAME_VALIDATION_HELP')}
-              />
-              <p className="mt-1 text-xs text-muted-foreground">{t('CUSTOM_APP_NAME_EDIT_HELP')}</p>
+              <AlertHeading>{t('CUSTOM_APP_EDIT_REFUSED_LABELS_TITLE')}</AlertHeading>
+              {refusedLabels.map((refusal, index) => (
+                // By position too: two overrides without an architecture can name the same label in the same words.
+                // biome-ignore lint/suspicious/noArrayIndexKey: the list only changes when the config is read again
+                <AlertDescription key={`${index}-${refusal}`}>{i18n.exists(refusal) ? t(refusal) : refusal}</AlertDescription>
+              ))}
+              <AlertDescription>{t('CUSTOM_APP_EDIT_REFUSED_LABELS_HINT')}</AlertDescription>
             </div>
-          </div>
-        </CardContent>
-      </Card>
-      <MultiServiceForm key={loadCount} onSubmit={onSubmit} />
+          </Alert>
+        )}
+        <Card className="overflow-hidden border-border/60 bg-card/80 shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-2xl font-medium tracking-tight">{t('CUSTOM_APP_EDIT_TITLE', { name: displayName })}</CardTitle>
+            <p className="max-w-3xl text-sm text-muted-foreground">{t('CUSTOM_APP_EDIT_SUBTITLE')}</p>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div>
+                <Input
+                  label={t('CUSTOM_APP_NAME_LABEL')}
+                  value={displayName}
+                  disabled={true}
+                  placeholder={t('CUSTOM_APP_NAME_PLACEHOLDER')}
+                  title={t('CUSTOM_APP_NAME_VALIDATION_HELP')}
+                />
+                <p className="mt-1 text-xs text-muted-foreground">{t('CUSTOM_APP_NAME_EDIT_HELP')}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <MultiServiceForm
+          key={loadCount}
+          onSubmit={onSubmit}
+          submitLabel={t('MULTI_SERVICE_SAVE_CHANGES')}
+          onCancel={() => navigate(`/apps/${appName}`)}
+        />
+      </div>
     </div>
   );
 }
