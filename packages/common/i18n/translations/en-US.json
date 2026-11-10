@@ -2814,6 +2814,8 @@
   "HUB_POOL_ROUTING_SUMMARY": "{{served}} served · {{failed}} failed · {{failovers}} failed over",
   "HUB_POOL_ROUTING_OUTBOUND": "Sent to {{node}}",
   "HUB_POOL_ROUTING_INBOUND": "Served for {{node}}",
+  "HUB_POOL_ROUTING_LOCAL_SERVED": "Served by this Hub",
+  "HUB_POOL_ROUTING_LOCAL_SENT": "Sent to this Hub",
   "HUB_POOL_ROUTING_NO_NODE": "an unnamed node",
   "HUB_POOL_ROUTING_DURATION": "{{ms}} ms to first response",
   "HUB_POOL_ROUTING_FAILED": "Failed",

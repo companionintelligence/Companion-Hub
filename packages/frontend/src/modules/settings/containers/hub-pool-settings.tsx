@@ -21,7 +21,7 @@ import { isI18nKey } from '@/lib/format-api-error';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import { cn } from '@/lib/utils';
-import { isRefused, outputFault, settledOutcome } from '@/modules/system/pool-node-series';
+import { isRefused, LOCAL_NODE_KEY, outputFault, settledOutcome } from '@/modules/system/pool-node-series';
 import { TranslatableError } from '@/types/error.types';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRightLeft, ChevronRight, Network, RefreshCw } from 'lucide-react';
@@ -557,6 +557,7 @@ export const HubPoolSection = () => {
   const outboundEnvLocked = !envLocked && status.directions.outbound.disabledBy === 'env';
   const inboundEnvLocked = !envLocked && status.directions.inbound.disabledBy === 'env';
   const localLabel = t('HUB_POOL_LOCAL_NODE_LABEL');
+  const routingNodeName = (node: string) => (node === LOCAL_NODE_KEY ? localLabel : node);
   const models = mergePoolModels(status, localLabel);
   /* Column order is the order the ranker considers: this Hub first, then peers by name.
      Derived from the PEER list rather than from `models`, so a connected peer holding
@@ -1304,7 +1305,9 @@ export const HubPoolSection = () => {
                         />
                         <span className="truncate">
                           {entry.direction === 'outbound'
-                            ? t('HUB_POOL_ROUTING_OUTBOUND', { node: entry.node ?? t('HUB_POOL_ROUTING_NO_NODE') })
+                            ? entry.node === LOCAL_NODE_KEY
+                              ? t(settledOutcome(entry) === 'served' ? 'HUB_POOL_ROUTING_LOCAL_SERVED' : 'HUB_POOL_ROUTING_LOCAL_SENT')
+                              : t('HUB_POOL_ROUTING_OUTBOUND', { node: entry.node ?? t('HUB_POOL_ROUTING_NO_NODE') })
                             : t('HUB_POOL_ROUTING_INBOUND', { node: entry.node ?? t('HUB_POOL_ROUTING_NO_NODE') })}
                         </span>
                         {/* Named on the row it shaped: an operator seeing everything land on one
@@ -1322,8 +1325,8 @@ export const HubPoolSection = () => {
                             title={t('HUB_POOL_ROUTING_FAILOVER', {
                               // With what each answered, where the Hub says: which nodes refused is half of it, why is the rest.
                               nodes: entry.attempts?.length
-                                ? entry.attempts.map((attempt) => `${attempt.node} (${attempt.reason})`).join(' → ')
-                                : entry.failedOverFrom.join(' → '),
+                                ? entry.attempts.map((attempt) => `${routingNodeName(attempt.node)} (${attempt.reason})`).join(' → ')
+                                : entry.failedOverFrom.map(routingNodeName).join(' → '),
                             })}
                           >
                             {t('HUB_POOL_ROUTING_FAILOVER_MARK', { count: entry.failedOverFrom.length })}
