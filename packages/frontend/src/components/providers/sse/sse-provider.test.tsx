@@ -86,6 +86,36 @@ describe('SSEProvider', () => {
     expect(mockToastDismiss).toHaveBeenCalledWith('install-error-toast');
   });
 
+  it.each([
+    ['start_error', 'kvm_missing', 'This app needs hardware virtualization (KVM). It is not available on this machine.'],
+    ['install_error', 'kvm_missing', 'This app needs hardware virtualization (KVM). It is not available on this machine.'],
+    ['restart_error', 'kvm_missing', 'This app needs hardware virtualization (KVM). It is not available on this machine.'],
+    ['start_error', 'kata_runtime_missing', "This app needs the Kata container runtime. It isn't set up in Docker on this machine."],
+    ['install_error', 'kata_runtime_missing', "This app needs the Kata container runtime. It isn't set up in Docker on this machine."],
+    ['restart_error', 'kata_runtime_missing', "This app needs the Kata container runtime. It isn't set up in Docker on this machine."],
+  ])('%s with %s says what the machine lacks', (event, errorCode, message) => {
+    let onEvent: ((data: unknown) => void) | undefined;
+    mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+      onEvent = config.onEvent;
+    });
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <SSEProvider>
+            <div>child</div>
+          </SSEProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    act(() => {
+      onEvent?.({ event, appUrn: 'kata-test:_user', errorCode });
+    });
+
+    expect(mockToastError).toHaveBeenCalledExactlyOnceWith(message);
+  });
+
   it('links app operation failures to the logs tab via "see logs"', async () => {
     let onEvent: ((data: unknown) => void) | undefined;
     mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {

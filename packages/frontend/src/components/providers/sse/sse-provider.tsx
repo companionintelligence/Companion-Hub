@@ -15,6 +15,12 @@ import { Link, useNavigate } from 'react-router';
 
 const logsPageHref = '/settings?tab=logs';
 
+/** The machine can't run this app. No log of an app that never started will say more, so the toast names it. */
+const HOST_CAPABILITY_ERROR_KEYS: Record<string, string> = {
+  kvm_missing: 'APP_ERROR_KVM_MISSING',
+  kata_runtime_missing: 'APP_ERROR_KATA_RUNTIME_MISSING',
+};
+
 /**
  * Map Companion Portal's public-DNS failure class onto the message the user sees. An
  * unknown or absent code (older Companion Portal) falls back to the generic copy.
@@ -74,6 +80,14 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     } else {
       toast.success(t(successKey, { id: appName }));
     }
+  };
+
+  const showHostCapabilityToast = (errorCode: string | undefined): boolean => {
+    const key = errorCode ? HOST_CAPABILITY_ERROR_KEYS[errorCode] : undefined;
+    if (key) {
+      toast.error(t(key));
+    }
+    return Boolean(key);
   };
 
   // The service's name comes from the app's compose file, so it stays plain text: `Trans` would read tags in it.
@@ -182,6 +196,9 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
             toast.error(t('APP_ERROR_NETWORK_OVERLAP_TOAST', { id: appName }));
             break;
           }
+          if (showHostCapabilityToast(errorCode)) {
+            break;
+          }
           if (serviceFailure) {
             showServiceFailureToast('APP_ERROR_APP_FAILED_TO_INSTALL_BECAUSE', appName, serviceFailure);
             break;
@@ -197,6 +214,9 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
         case 'start_error':
           if (errorCode === 'network_overlap') {
             toast.error(t('APP_ERROR_NETWORK_OVERLAP_TOAST', { id: appName }));
+            break;
+          }
+          if (showHostCapabilityToast(errorCode)) {
             break;
           }
           if (serviceFailure) {
@@ -266,6 +286,9 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           showSuccessOrPortMoved('APP_RESTART_SUCCESS', appName, movedHostPort);
           break;
         case 'restart_error':
+          if (showHostCapabilityToast(errorCode)) {
+            break;
+          }
           if (serviceFailure) {
             showServiceFailureToast('APP_ERROR_APP_FAILED_TO_RESTART_BECAUSE', appName, serviceFailure);
             break;
