@@ -55,6 +55,18 @@ export class AppVolumeArchiveService {
     return (Volumes ?? []).map((volume) => ({ name: volume.Name, key: volume.Labels?.[COMPOSE_VOLUME_LABEL] ?? volume.Name }));
   }
 
+  /**
+   * Whether the engine holds a volume that `compose down -v` for this app could delete. Compose removes the volumes
+   * in the app's file by name and ignores labels, so this also counts one named as compose names them that has no
+   * labels (made by hand or carried over from another machine), which {@link listAppVolumes} leaves out.
+   */
+  public async hasProjectVolumes(appUrn: AppUrn): Promise<boolean> {
+    const project = this.dockerRead.getComposeProjectName(appUrn);
+    const { Volumes } = await this.docker.listVolumes();
+
+    return (Volumes ?? []).some((volume) => volume.Name.startsWith(`${project}_`) || volume.Labels?.[COMPOSE_PROJECT_LABEL] === project);
+  }
+
   /** Write the volume's contents to `file` as a tar archive. */
   public async exportVolume(volume: string, file: string): Promise<void> {
     await this.assertNotMounted(volume);
