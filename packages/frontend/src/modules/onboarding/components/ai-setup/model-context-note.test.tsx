@@ -5,10 +5,6 @@ import type { ModelContextPlan } from '@ci-hub/common/types';
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string, params?: Record<string, unknown>) => (params ? `${key} ${JSON.stringify(params)}` : key) }),
 }));
-vi.mock('@/api-client/@tanstack/react-query.gen', () => ({ getInstalledAppsOptions: () => ({ queryKey: ['installedApps'] }) }));
-vi.mock('@tanstack/react-query', () => ({
-  useQuery: () => ({ data: { installed: [{ info: { urn: 'ci-hermes:ci-marketplace', name: 'Hermes' } }] } }),
-}));
 
 import { ModelContextNote, formatTokens } from './model-context-note';
 
@@ -40,18 +36,17 @@ describe('ModelContextNote', () => {
     expect(screen.queryByTestId('model-context-floor-unmet')).toBeNull();
   });
 
-  it('says when the Hub would use the 8-bit cache, naming the app it is for', () => {
+  it('says when the Hub would use the 8-bit cache, and why, without naming an app', () => {
     render(<ModelContextNote plan={plan({ kvCacheType: 'q8_0', floor: { minContextLength: 64_000, apps: ['ci-hermes'], met: true } })} />);
     const badge = screen.getByTestId('model-context-8bit');
     expect(badge.textContent).toContain('MODEL_CONTEXT_8BIT');
-    expect(badge.getAttribute('title')).toContain('"apps":"Hermes","floor":"64k"');
+    expect(badge.getAttribute('title')).toBe('MODEL_CONTEXT_8BIT_TITLE {"floor":"64k"}');
   });
 
-  it('warns when the model cannot reach an installed app floor here', () => {
+  // Most people run none of the apps that set a floor, so the warning says what, not which.
+  it('warns generically when the model cannot reach an installed app floor here', () => {
     render(<ModelContextNote plan={plan({ window: 32_768, floor: { minContextLength: 64_000, apps: ['ci-hermes'], met: false } })} />);
-    expect(screen.getByTestId('model-context-floor-unmet').textContent).toContain(
-      'MODEL_CONTEXT_FLOOR_UNMET {"apps":"Hermes","floor":"64k","window":"32k"}',
-    );
+    expect(screen.getByTestId('model-context-floor-unmet').textContent).toContain('MODEL_CONTEXT_FLOOR_UNMET {"floor":"64k","window":"32k"}');
   });
 
   it('marks an estimate, says when nothing fits, and renders nothing without a plan', () => {
