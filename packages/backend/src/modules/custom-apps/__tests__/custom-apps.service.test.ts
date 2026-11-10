@@ -72,6 +72,100 @@ describe('CustomAppService', () => {
     vi.clearAllMocks();
   });
 
+  describe('a port no container can listen on or publish', () => {
+    const composeWithPort = (internalPort: unknown) =>
+      ({ schemaVersion: 2, services: [{ name: 'web', image: 'nginx', isMain: true, internalPort }] }) as any;
+
+    it.each([
+      ['70000', 'CUSTOM_APP_ERROR_INTERNAL_PORT_MAX'],
+      [70000, 'CUSTOM_APP_ERROR_INTERNAL_PORT_MAX'],
+      [0, 'CUSTOM_APP_ERROR_INTERNAL_PORT_MIN'],
+    ])('refuses a new app with port %j before writing anything', async (port, refusal) => {
+      appsRepository.getAppByUrn.mockResolvedValue(undefined as any);
+
+      await expect(service.createCustomApp({ name: 'Port Seventy', config: composeWithPort(port) } as any)).rejects.toThrow(refusal);
+
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
+    it('refuses an edit and leaves the app as it was', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+
+      await expect(service.updateCustomApp('myapp:_user' as any, composeWithPort('0'))).rejects.toThrow('CUSTOM_APP_ERROR_INTERNAL_PORT_MIN');
+
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it('refuses it in an override too', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+      const config = { ...composeWithPort(80), overrides: [{ services: [{ name: 'web', internalPort: '99999' }] }] };
+
+      await expect(service.updateCustomApp('myapp:_user' as any, config)).rejects.toThrow('CUSTOM_APP_ERROR_INTERNAL_PORT_MAX');
+    });
+
+    it('refuses a number too, which is how an MCP call with no schema sends it', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+
+      await expect(service.updateCustomApp('myapp:_user' as any, composeWithPort(70000))).rejects.toThrow('CUSTOM_APP_ERROR_INTERNAL_PORT_MAX');
+
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [{ hostPort: '70000', containerPort: 80 }, 'CUSTOM_APP_ERROR_HOST_PORT_MAX'],
+      [{ hostPort: 8081, containerPort: '70000' }, 'CUSTOM_APP_ERROR_CONTAINER_PORT_MAX'],
+      [{ hostPort: '0', containerPort: 80 }, 'CUSTOM_APP_ERROR_HOST_PORT_MIN'],
+      [{ hostPort: '8000-8010', containerPort: '70000-70010' }, 'CUSTOM_APP_ERROR_CONTAINER_PORT_MAX'],
+    ])('refuses a Port Mapping %j before writing anything', async (mapping, refusal) => {
+      appsRepository.getAppByUrn.mockResolvedValue(undefined as any);
+      const config = { ...composeWithPort(80), services: [{ name: 'web', image: 'nginx', isMain: true, internalPort: 80, addPorts: [mapping] }] };
+
+      await expect(service.createCustomApp({ name: 'Port Seventy', config } as any)).rejects.toThrow(refusal);
+
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
+    it('refuses a Port Mapping in an override', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+      const config = { ...composeWithPort(80), overrides: [{ services: [{ name: 'web', addPorts: [{ hostPort: '99999', containerPort: 80 }] }] }] };
+
+      await expect(service.updateCustomApp('myapp:_user' as any, config)).rejects.toThrow('CUSTOM_APP_ERROR_HOST_PORT_MAX');
+    });
+
+    it('names the port it refused, which is all an MCP caller gets besides the key', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+
+      await expect(service.updateCustomApp('myapp:_user' as any, composeWithPort('70000'))).rejects.toMatchObject({
+        response: { message: 'CUSTOM_APP_ERROR_INTERNAL_PORT_MAX', intlParams: { port: '70000' } },
+      });
+    });
+
+    it('still takes an env reference', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+
+      await expect(service.updateCustomApp('myapp:_user' as any, composeWithPort('${APP_PORT}'))).resolves.toBeUndefined();
+    });
+
+    it('still takes a mapping written as an env reference or a range', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+      const addPorts = [
+        { hostPort: '${EXTRA_PORT}', containerPort: 9000 },
+        { hostPort: '8000-8010', containerPort: '8000-8010' },
+      ];
+      const config = { ...composeWithPort(80), services: [{ name: 'web', image: 'nginx', isMain: true, internalPort: 80, addPorts }] };
+
+      await expect(service.updateCustomApp('myapp:_user' as any, config)).resolves.toBeUndefined();
+    });
+
+    it('does not throw on a malformed config, which only an MCP call can send', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+
+      await expect(service.updateCustomApp('myapp:_user' as any, { overrides: 'x', services: { web: {} } } as any)).resolves.toBeUndefined();
+    });
+  });
+
   describe('createCustomApp', () => {
     it('should create app when valid', async () => {
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
@@ -352,7 +446,7 @@ describe('CustomAppService', () => {
 
     it.each([
       ['a number', 8080, 8080],
-      ['the string the create form submits', '8080', 8080],
+      ['digits as text', '8080', 8080],
       ['a string with stray whitespace', ' 3000 ', 3000],
     ])('takes %s', async (_name, input, expected) => {
       await expect(portWrittenFor(input)).resolves.toBe(expected);
@@ -361,8 +455,6 @@ describe('CustomAppService', () => {
     it.each([
       ['an environment reference', '${APP_PORT}'],
       ['a range', '8000-8010'],
-      ['zero', 0],
-      ['a number past the port range', 70000],
       ['an empty string', ''],
     ])('leaves the port unset for %s', async (_name, input) => {
       await expect(portWrittenFor(input)).resolves.toBeUndefined();
