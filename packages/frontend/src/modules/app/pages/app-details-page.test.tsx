@@ -251,6 +251,28 @@ describe('AppDetailsPage', () => {
       expect(screen.getByTestId('app-version')).toHaveTextContent('v2026.11.2');
     });
 
+    // A 502 from the proxy while the Hub restarts is no answer about the app (#2286).
+    it('keeps the record it has when a read fails, instead of offering Install on an installed app', () => {
+      withRecord({
+        data: { info: LISTING, app: { status: 'installing' }, metadata: {} },
+        isLoading: false,
+        isError: true,
+        error: { message: 'Bad Gateway' },
+      });
+
+      render(<AppDetailsPage />);
+
+      expect(screen.getByTestId('app-actions')).toHaveAttribute('data-status', 'installing');
+    });
+
+    it.each(['APP_ERROR_APP_NOT_FOUND', 'APP_ACTION_GRANT_DENIED'])('drops the record when the Hub answers %s', (message) => {
+      withRecord({ data: { info: LISTING, app: { status: 'running' }, metadata: {} }, isLoading: false, isError: true, error: { message } });
+
+      render(<AppDetailsPage />);
+
+      expect(screen.getByTestId('app-actions')).toHaveAttribute('data-status', 'none');
+    });
+
     it('does not hold the page when the record is refused', () => {
       withRecord({ data: undefined, isLoading: false, isError: true, error: { message: 'APP_ACTION_GRANT_DENIED' } });
 

@@ -844,7 +844,7 @@ export class AuthService {
     const userId = this.cache.get(totpSessionId);
 
     if (!userId) {
-      throw new TranslatableError('AUTH_ERROR_TOTP_SESSION_NOT_FOUND');
+      throw new TranslatableError('AUTH_ERROR_TOTP_SESSION_NOT_FOUND', {}, HttpStatus.BAD_REQUEST);
     }
 
     const user = await this.userRepository.getUserById(Number(userId));
@@ -854,7 +854,7 @@ export class AuthService {
     // that no longer exists, so a burst of parallel guesses got far more than five tries. Everything
     // below this line runs without waiting, so the count and the check cannot be separated again.
     if (!this.cache.get(totpSessionId)) {
-      throw new TranslatableError('AUTH_ERROR_TOTP_SESSION_NOT_FOUND');
+      throw new TranslatableError('AUTH_ERROR_TOTP_SESSION_NOT_FOUND', {}, HttpStatus.BAD_REQUEST);
     }
 
     if (!user) {
@@ -885,7 +885,7 @@ export class AuthService {
       }
 
       this.cache.set(attemptsKey, String(attempts), TOTP_SESSION_EXPIRATION_SECONDS);
-      throw new TranslatableError('AUTH_ERROR_TOTP_INVALID_CODE');
+      throw new TranslatableError('AUTH_ERROR_TOTP_INVALID_CODE', {}, HttpStatus.BAD_REQUEST);
     }
 
     // Spent before the session is created, not after: two parallel requests carrying the same correct
@@ -1083,19 +1083,19 @@ export class AuthService {
     const valid = await this.passwordService.verify(password, user.password);
 
     if (!valid) {
-      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD');
+      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD', {}, HttpStatus.BAD_REQUEST);
     }
 
     const email = normalizeUsername(newUsername);
 
     if (!validator.isEmail(email)) {
-      throw new TranslatableError('AUTH_ERROR_INVALID_USERNAME');
+      throw new TranslatableError('AUTH_ERROR_INVALID_USERNAME', {}, HttpStatus.BAD_REQUEST);
     }
 
     const existingUser = await this.userRepository.getUserByUsername(email);
 
     if (existingUser) {
-      throw new TranslatableError('AUTH_ERROR_USER_ALREADY_EXISTS');
+      throw new TranslatableError('AUTH_ERROR_USER_ALREADY_EXISTS', {}, HttpStatus.BAD_REQUEST);
     }
 
     await this.userRepository.updateUser(user.id, { username: email });
@@ -1120,11 +1120,11 @@ export class AuthService {
     const valid = await this.passwordService.verify(currentPassword, user.password);
 
     if (!valid) {
-      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD');
+      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD', {}, HttpStatus.BAD_REQUEST);
     }
 
     if (newPassword.length < 8) {
-      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD_LENGTH');
+      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD_LENGTH', {}, HttpStatus.BAD_REQUEST);
     }
 
     const hash = await this.passwordService.hash(newPassword);
@@ -1156,7 +1156,7 @@ export class AuthService {
 
     const isPasswordValid = await this.passwordService.verify(password, user.password);
     if (!isPasswordValid) {
-      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD');
+      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD', {}, HttpStatus.BAD_REQUEST);
     }
 
     if (user.totpEnabled) {
@@ -1199,7 +1199,7 @@ export class AuthService {
     const isValid = TotpAuthenticator.check(totpCode, totpSecret);
 
     if (!isValid) {
-      throw new TranslatableError('AUTH_ERROR_TOTP_INVALID_CODE');
+      throw new TranslatableError('AUTH_ERROR_TOTP_INVALID_CODE', {}, HttpStatus.BAD_REQUEST);
     }
 
     await this.userRepository.updateUser(userId, { totpEnabled: true });
@@ -1222,7 +1222,7 @@ export class AuthService {
 
     const isPasswordValid = await this.passwordService.verify(password, user.password);
     if (!isPasswordValid) {
-      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD');
+      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD', {}, HttpStatus.BAD_REQUEST);
     }
 
     await this.userRepository.updateUser(userId, { totpEnabled: false, totpSecret: null });

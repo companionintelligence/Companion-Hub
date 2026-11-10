@@ -177,6 +177,7 @@ describe('InferenceRouterService', () => {
       expect(models.length).toBeGreaterThanOrEqual(3);
       expect(models.find((m) => m.id === 'phi-4-mini')?.state).toBe('pinned');
       expect(models.find((m) => m.id === 'phi-4-mini')?.local).toBe(true);
+      expect(models.find((m) => m.id === 'phi-4-mini')?.backend_model_id).toBe('phi4-mini');
       expect(models.find((m) => m.id === 'gpt-4o')?.local).toBe(false);
     });
 

@@ -603,7 +603,6 @@
   "SETTINGS_GENERAL_APPS_REPO_HINT": "URL-адрес репозитория приложений.",
   "SETTINGS_GENERAL_APP_DATA_PATH": "Путь к данным приложения",
   "SETTINGS_GENERAL_APP_DATA_PATH_HINT": "Расположение, в котором хранятся данные приложения.",
-  "SETTINGS_GENERAL_BASE_THEME": "Основная тема",
   "SETTINGS_GENERAL_DOMAIN": "Доменное имя",
   "SETTINGS_GENERAL_DOMAIN_HINT": "Предоставьте доступ к вашей панели управления через пользовательский домен. Убедитесь, что у вас настроены A-записи, указывающие на IP-адрес сервера.",
   "SETTINGS_GENERAL_EVENTS_TIMEOUT": "Таймаут событий",

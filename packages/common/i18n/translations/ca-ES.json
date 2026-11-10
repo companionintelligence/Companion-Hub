@@ -603,7 +603,6 @@
   "SETTINGS_GENERAL_APPS_REPO_HINT": "URL del repositori d'aplicacions.",
   "SETTINGS_GENERAL_APP_DATA_PATH": "App data path",
   "SETTINGS_GENERAL_APP_DATA_PATH_HINT": "The location in which app data are storred.",
-  "SETTINGS_GENERAL_BASE_THEME": "Base theme",
   "SETTINGS_GENERAL_DOMAIN": "Domain name",
   "SETTINGS_GENERAL_DOMAIN_HINT": "Expose your dashboard to a custom domain. Make sure you have A records pointing to the server's IP address.",
   "SETTINGS_GENERAL_EVENTS_TIMEOUT": "Events timeout",

@@ -603,7 +603,6 @@
   "SETTINGS_GENERAL_APPS_REPO_HINT": "Uygulama deposunun URL'si.",
   "SETTINGS_GENERAL_APP_DATA_PATH": "Uygulama veri yolu",
   "SETTINGS_GENERAL_APP_DATA_PATH_HINT": "Uygulama verilerinin depolandığı konum.",
-  "SETTINGS_GENERAL_BASE_THEME": "Temel tema",
   "SETTINGS_GENERAL_DOMAIN": "Alan adı",
   "SETTINGS_GENERAL_DOMAIN_HINT": "Kontrol panelinizi özel bir alan adına açın. Sunucunun IP adresine işaret eden A kayıtlarınız olduğundan emin olun.",
   "SETTINGS_GENERAL_EVENTS_TIMEOUT": "Olay zaman aşımı",

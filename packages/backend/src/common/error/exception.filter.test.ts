@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { LoggerService } from '@/core/logger/logger.service';
 import { MainExceptionFilter } from './exception.filter';
+import { TranslatableError } from './translatable-error';
 
 describe('MainExceptionFilter', () => {
   let filter: MainExceptionFilter;
@@ -139,6 +140,20 @@ describe('MainExceptionFilter', () => {
     expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining('/api/inference/pool/local/api/chat'));
     expect(response.status).not.toHaveBeenCalled();
     expect(response.json).not.toHaveBeenCalled();
+  });
+
+  it('answers a refusal the person caused with its key and writes no error line', () => {
+    request.method = 'PATCH';
+    request.path = '/api/auth/password';
+    request.url = '/api/auth/password';
+
+    filter.catch(new TranslatableError('AUTH_ERROR_INVALID_PASSWORD', {}, HttpStatus.BAD_REQUEST), createHost());
+
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(response.status).toHaveBeenCalledWith(HttpStatus.BAD_REQUEST);
+    expect(response.json).toHaveBeenCalledWith(
+      expect.objectContaining({ statusCode: HttpStatus.BAD_REQUEST, message: 'AUTH_ERROR_INVALID_PASSWORD' }),
+    );
   });
 
   it('still reports and answers any other error', () => {

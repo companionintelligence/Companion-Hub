@@ -603,7 +603,6 @@
   "SETTINGS_GENERAL_APPS_REPO_HINT": "URL до репозиторію додатків.",
   "SETTINGS_GENERAL_APP_DATA_PATH": "Шлях до даних програми",
   "SETTINGS_GENERAL_APP_DATA_PATH_HINT": "Місце, де зберігаються дані додатків.",
-  "SETTINGS_GENERAL_BASE_THEME": "Базова тема",
   "SETTINGS_GENERAL_DOMAIN": "Доменне ім'я",
   "SETTINGS_GENERAL_DOMAIN_HINT": "Наведіть свою панель на свій домен. Переконайтеся, що у вас є записи, на які вказує IP адреса сервера.",
   "SETTINGS_GENERAL_EVENTS_TIMEOUT": "Час очікування подій",

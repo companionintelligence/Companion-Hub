@@ -12,6 +12,7 @@ import { markHubSessionIssuedAt, setTauriSessionId } from '@/lib/api-fetch';
 import { rememberPortalAccountEmail } from '@/lib/portal-session-hint';
 import { emailFromIdToken, loginWithPortalOidc, OidcCancelledError, resumePendingOidcLogin } from '../oidc';
 import {
+  clearPortalAuth,
   establishHubSessionFromPortal,
   type HubDevice,
   listHubDevices,
@@ -23,8 +24,8 @@ import {
 
 /**
  * Mobile-only entry screen. Portal OIDC in an in-app browser, then pick a Hub.
- * Email/password and a custom Portal URL live under Advanced — same split as
- * Memory's `/device-connect` landing.
+ * A custom Portal URL lives under Advanced — same split as Memory's
+ * `/device-connect` landing.
  */
 export async function clientLoader() {
   const { hubBaseUrl } = await initMobileConnection();
@@ -61,9 +62,10 @@ export default function ConnectPage() {
   const [signInError, setSignInError] = useState<string | null>(null);
 
   // Safari → "Open with Companion Hub" often cold-starts the app. PKCE state
-  // lives in localStorage; Rust stashed the callback URL. Email sign-in on
-  // Advanced stashes Portal auth in sessionStorage. Finish the exchange on
-  // mount, when we become visible again, and when Rust emits the callback.
+  // lives in localStorage; Rust stashed the callback URL. A finished sign-in
+  // leaves its Portal auth in sessionStorage, so a reload lands back on the
+  // picker. Finish the exchange on mount, when we become visible again, and
+  // when Rust emits the callback.
   useEffect(() => {
     let cancelled = false;
     let inFlight = false;
@@ -144,6 +146,11 @@ export default function ConnectPage() {
     if (!hubAuthFlowPolicy(readHubAuthFlow()).usesPortalPkce) {
       return;
     }
+    // Log in is a fresh sign-in. Drop the last one first: the resume effect
+    // above runs when the app comes back from the browser, and with a kept
+    // token it would open the Hub picker even though this sign-in was cancelled.
+    clearPortalAuth();
+    setAuth(null);
     const controller = new AbortController();
     setOidcController(controller);
     setBusy(true);
@@ -169,6 +176,14 @@ export default function ConnectPage() {
       setBusy(false);
       setOidcController(null);
     }
+  };
+
+  /** Back from the picker signs out of cloud connect; it does not just hide the list. */
+  const handleBackToSignIn = () => {
+    clearPortalAuth();
+    setAuth(null);
+    setDevices([]);
+    setStep('sign-in');
   };
 
   const handleRefresh = async () => {
@@ -198,10 +213,14 @@ export default function ConnectPage() {
           ).baseUrl
         : device.hubUrl;
       await setHubConnection(hubUrl);
+      // The Portal sign-in has done its job once a Hub is chosen. Keeping its
+      // tokens would let a later visit to /connect list Hubs with no sign-in.
+      const idToken = auth?.idToken;
+      clearPortalAuth();
       // Cloud connect already signed this person in. The Hub session is that
       // same account. A Hub that cannot take the token still has its own sheet.
-      if (auth?.idToken) {
-        const session = await establishHubSessionFromPortal(hubUrl, auth.idToken);
+      if (idToken) {
+        const session = await establishHubSessionFromPortal(hubUrl, idToken);
         if (session) {
           setTauriSessionId(session.sessionId);
           markHubSessionIssuedAt();
@@ -300,7 +319,7 @@ export default function ConnectPage() {
               })
             )}
             <div className="mt-2 flex items-center justify-between">
-              <Button variant="ghost" size="sm" className={TOUCH} onClick={() => setStep('sign-in')} disabled={connectingId !== null}>
+              <Button variant="ghost" size="sm" className={TOUCH} onClick={handleBackToSignIn} disabled={connectingId !== null}>
                 {t('MOBILE_CONNECT_BACK')}
               </Button>
               <Button

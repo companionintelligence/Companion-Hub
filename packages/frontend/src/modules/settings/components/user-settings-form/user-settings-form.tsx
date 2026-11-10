@@ -19,7 +19,6 @@ import './user-settings-form.css';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import { THEME_COLOR_ENUM } from '../color-selector/color-selector';
-import { THEME_BASE_ENUM, type ThemeBase, ThemeBaseSelector } from '../theme-base-selector/theme-base-selector';
 import { TimeZoneSuspense } from '@/components/timezone-selector/timezone.suspense';
 
 const TimeZoneSelector = lazy(() =>
@@ -58,15 +57,16 @@ const settingsSchema = z.object({
   // request, so a value an older build stored stays as it is.
   port: z.number().min(1).max(65535).optional(),
   sslPort: z.number().min(1).max(65535).optional(),
-  eventsTimeout: z.coerce.number().int().min(1).optional(),
+  // The Hub takes 1 to 120 here, so a higher number gets its message under the field instead of a refused request.
+  eventsTimeout: z.coerce.number().int().min(1).max(120).optional(),
   maxBackups: z.coerce.number().int().min(0).max(100).optional(),
   persistTraefikConfig: z.boolean().optional(),
   domain: z.string().optional(),
   appDataPath: z.string().optional(),
-  forwardAuthUrl: z.url().optional(),
+  // `z.url()` alone reads `auth.example.com:9000/verify` as a URL whose scheme is the host, so the scheme is named.
+  forwardAuthUrl: z.url({ protocol: /^https?$/ }).optional(),
   logLevel: z.enum(LOG_LEVEL_ENUM).optional(),
   themeColor: z.enum(THEME_COLOR_ENUM).optional(),
-  themeBase: z.enum(THEME_BASE_ENUM).optional(),
 });
 
 export type SettingsFormValues = {
@@ -89,12 +89,25 @@ export type SettingsFormValues = {
   forwardAuthUrl?: string;
   logLevel?: LogLevel;
   themeColor?: string;
-  themeBase?: string;
 };
+
+/**
+ * Leaves out each value the Hub already had that the schema refuses, the rule Local domain and Internal IP
+ * follow below. With Advanced settings off those fields aren't on the page, so a refusal would stop every
+ * save with nothing to correct, including the save that turns Advanced settings on.
+ */
+const withoutRefusedHubValues = (values: SettingsFormValues, hubValues?: Partial<SettingsFormValues>) =>
+  Object.fromEntries(
+    Object.entries(values).filter(([key, value]) => {
+      const field = key as keyof SettingsFormValues;
+      return value !== hubValues?.[field] || settingsSchema.shape[field]?.safeParse(value).success !== false;
+    }),
+  );
+
+type FieldErrors = { [K in keyof SettingsFormValues]?: string };
 
 interface IProps {
   currentLocale?: Locale;
-  currentBaseTheme?: ThemeBase;
   onSubmit: (values: SettingsFormValues) => void;
   initialValues?: Partial<SettingsFormValues>;
   loading?: boolean;
@@ -103,7 +116,7 @@ interface IProps {
   publicHubHostname?: string;
   /**
    * Whether this person may change the Hub's settings (`useHubAccess`). A member gets only their own
-   * language; the theme and every setting below it apply to the whole Hub.
+   * language; every other setting here applies to the whole Hub.
    */
   manageHub?: boolean;
 }
@@ -114,7 +127,7 @@ export const UserSettingsForm = (props: IProps) => {
   const advancedSettingsDisclosure = useDisclosure();
 
   const validateFields = (values: SettingsFormValues) => {
-    const errors: { [K in keyof SettingsFormValues]?: string } = {};
+    const errors: FieldErrors = {};
 
     // Check only a Local domain the person changed. The field is read-only until Advanced settings
     // are on, so a value the Hub already had that fails the check would block every save on the page.
@@ -139,6 +152,7 @@ export const UserSettingsForm = (props: IProps) => {
     register,
     handleSubmit,
     setError,
+    setFocus,
     control,
     watch,
     formState: { errors, isDirty },
@@ -152,19 +166,34 @@ export const UserSettingsForm = (props: IProps) => {
     }
   }, [submitErrors, setError]);
 
-  const validate = (values: SettingsFormValues) => {
-    const validationErrors = validateFields(values);
+  const showFieldErrors = (fieldErrors: FieldErrors) => {
+    const fields = Object.keys(fieldErrors) as (keyof SettingsFormValues)[];
+    for (const field of fields) {
+      setError(field, { message: fieldErrors[field] });
+    }
+    // The first message can be far above the button the person pressed.
+    if (fields[0]) {
+      setFocus(fields[0]);
+    }
+  };
 
-    for (const [key, value] of Object.entries(validationErrors)) {
-      if (value) {
-        setError(key as keyof SettingsFormValues, { message: value });
-      }
+  const validate = (values: SettingsFormValues) => {
+    // An Internal IP that is not IPv4 is either refused by validateFields or the Hub's own, so it stays out of the request.
+    const { internalIp, ...rest } = values;
+    const request = isIpv4(trimmed(internalIp)) ? { ...rest, internalIp: trimmed(internalIp) } : rest;
+    const result = settingsSchema.safeParse(withoutRefusedHubValues(request, initialValues));
+
+    const fieldErrors = validateFields(values);
+    // A Forward auth URL that isn't a URL, or an emptied Port, lands here.
+    for (const issue of result.error?.issues ?? []) {
+      const field = issue.path[0] as keyof SettingsFormValues;
+      fieldErrors[field] = field === 'forwardAuthUrl' ? t('SETTINGS_GENERAL_INVALID_URL') : t('SETTINGS_GENERAL_INVALID_VALUE');
     }
 
-    if (Object.keys(validationErrors).length === 0) {
-      // Past the checks above, an Internal IP that is not IPv4 is the Hub's own, so it stays out of the request.
-      const { internalIp, ...rest } = values;
-      onSubmit(settingsSchema.parse(isIpv4(trimmed(internalIp)) ? { ...rest, internalIp: trimmed(internalIp) } : rest));
+    if (result.success && Object.keys(fieldErrors).length === 0) {
+      onSubmit(result.data);
+    } else {
+      showFieldErrors(fieldErrors);
     }
   };
 
@@ -234,11 +263,6 @@ export const UserSettingsForm = (props: IProps) => {
         </CardHeader>
         <CardContent>
           <LanguageSelector showLabel locale={currentLocale} />
-          <Controller
-            control={control}
-            name="themeBase"
-            render={({ field: { onChange, value } }) => <ThemeBaseSelector value={value as ThemeBase} onChange={onChange} />}
-          />
           {/* ColorSelector hidden — theme colors don't apply yet */}
         </CardContent>
       </Card>
@@ -533,7 +557,6 @@ export const UserSettingsForm = (props: IProps) => {
                   <Input
                     {...register('eventsTimeout', {
                       valueAsNumber: true,
-                      required: true,
                     })}
                     label={
                       <>
@@ -550,7 +573,6 @@ export const UserSettingsForm = (props: IProps) => {
                   <Input
                     {...register('maxBackups', {
                       valueAsNumber: true,
-                      required: true,
                     })}
                     label={
                       <>

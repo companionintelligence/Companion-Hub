@@ -303,6 +303,8 @@ cihub config [env]                                   # show resolved config valu
 - The seed never reads a CI-Hub checkout under the home directory or an env file left by an earlier install. If it passed over a file, if a desktop package at another release is installed, or if a desktop app is running that will rewrite the pin on its next start, the seed says so in a red box. If nothing uses the desktop app, the box says to quit it and leave it closed, since it only rewrites the env while it runs. Don't remove the `companion-hub` package to get rid of it: its uninstall deletes the Hub `cihub up` just set up, with every app and its data, because both use `~/.local/share/companion-hub`, the `ci_hub_pgdata` volume and the same containers.
 - `status` shows three sections: **Containers** (color-coded ●/✗), **Network** (local URL, Cloudflare tunnel URL from `CF_DOMAIN`/`DOMAIN`, Tailscale VPN IP), and **Models** (installed Ollama models).
 
+- Outside a checkout, `config` reads and `mcp` writes the installed Hub's env files in the data dir. With no install they exit `2`. `models` uses the host's `ollama` command at the address its service listens on when the Hub has no Ollama container, which is the normal case on an installed Hub.
+
 ![Screenshot of cihub status local](./images/cli/status.svg)
 
 ![Screenshots of cihub config, cihub up, and cihub down](./images/cli/lifecycle.svg)
@@ -467,6 +469,8 @@ cihub mcp setup [env]     # set MCP_ENABLED=true
 cihub mcp shutdown [env]  # set MCP_ENABLED=false
 cihub mcp config [env]    # show current MCP settings
 ```
+
+The Hub reads `MCP_ENABLED` when it starts, so `setup` and `shutdown` take effect after `cihub restart`.
 
 ![Screenshots of cihub mcp setup, config, and shutdown](./images/cli/mcp.svg)
 
@@ -643,7 +647,7 @@ cihub pool allow-bearer [env] [--yes]         # recovery switch: allow the legac
 | ---- | ------ |
 | `--yes` | Skip the confirmation prompt. Required for `pair`/`approve`/`reject`/`unpair`/`enable`/`disable` on a non-interactive terminal |
 | `--name <label>` | `pair` only: a display label for the peer |
-| `--model <id>` | `pin`/`unpin` only: which model the pin covers. Omit it for the pool-wide pin. Compared verbatim against the engine's inventory, so case matters |
+| `--model <id>` | `pin`/`unpin` only: which model the pin covers. Omit it for the pool-wide pin. `name` and `name:latest` are one model when routing, saving and removing; anything else is compared verbatim, so case matters. If both spellings are stored as separate pins, each is touched only when named exactly |
 | `--pin <digits>` | `pair` only: the six digits minted on the *other* Hub. Required when the target is an address |
 | `--limit N` | `log` only: how many decisions to show, 1–200 (default: all 200 retained) |
 | `--check-latency` | `doctor` only: also measure non-streaming first-byte latency. Spends GPU time, so it is skipped otherwise |
@@ -964,7 +968,8 @@ Runs before the device-key gate, like `doctor` — the node most likely to need 
 The answer to "is pooling actually doing anything". One line per routing decision — time, direction,
 model, the node that served it, which ranked candidate won, time to response headers, and outcome — with
 a `↳ failed over from …` line naming the chain whenever a candidate was tried and rejected. `in` rows are
-work a *peer* sent to this node's engines.
+work a *peer* sent to this node's engines. This node appears under its tailnet name, or as `this Hub` when
+it has none or `/status` did not supply it in time; `local` is only the key the routing log stores for it.
 
 The log is in-memory, process-local and holds the last 200 decisions, so an empty log means "nothing
 routed since this Hub started", not "nothing ever routed". Duration is time to headers, not the streamed
@@ -1955,7 +1960,7 @@ straight through a broken Docker bridge, and a fleet run that installed on 0 of 
 | `fleet preflight` | Any node would be refused by `install`/`update` — a `block` finding, or a probe that could not run |
 | `pool context-cap` | The Hub's build predates the cap (nothing was written), or the cap read back after the write is not the one requested |
 | `pool slots` | The Hub's build predates the slot count (nothing was written), or the count read back after the write is not the one requested |
-| `models list` / `install` / `rm` | There is no Ollama container to talk to |
+| `models list` / `install` / `rm` | The Hub has no Ollama container and this machine has no `ollama` command |
 | `app status <name>` | That named container is not there |
 | `app inspect <name>` | `docker inspect` could not read the container |
 | `public-web repair` | A repair step failed |

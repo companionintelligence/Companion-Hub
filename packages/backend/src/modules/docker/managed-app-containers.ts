@@ -24,7 +24,7 @@ export interface FailedAppContainer {
 
 export type AppCameUpVerdict =
   | { outcome: 'waiting' }
-  | { outcome: 'up' }
+  | { outcome: 'up'; failedOneShots: FailedAppContainer[] }
   | { outcome: 'failed'; kind: AppServiceFailure['kind']; containers: FailedAppContainer[]; containersSeen: number };
 
 /**
@@ -49,6 +49,16 @@ export const APP_CAME_UP_TIMING = {
 
 export type AppCameUpTiming = typeof APP_CAME_UP_TIMING;
 
+/**
+ * {@link APP_CAME_UP_TIMING} for a Start or Restart someone asked for, which takes the app down when it
+ * did not come up (`AppLifecycleCommand.stopAppThatDidNotComeUp`). Once the containers are gone nothing
+ * retries, so a service crashing at once until its database is ready, whose next tries Docker makes at
+ * about 51 s and 102 s, needs the longer window or the app could never be started. A service that takes
+ * longer to fail has later retries, so this is not a promise for every app. It costs a broken app about
+ * 90 s more of Starting before its failure is reported.
+ */
+export const APP_CAME_UP_TIMING_BEFORE_TAKING_DOWN: AppCameUpTiming = { ...APP_CAME_UP_TIMING, settleWithinMs: 120_000 };
+
 interface TrackedContainer {
   firstRestartCount: number | null;
   crashed: boolean;
@@ -72,6 +82,9 @@ interface TrackedContainer {
  *   bringing it back.
  * - Exited 0 is a finished one-shot and `created` is left to compose. Neither holds the answer up,
  *   but one container has to be running. An app whose every container exited 0 is stopped.
+ * - A one-shot (see `oneShotServiceNames`) that exited with an error does not fail the app while
+ *   something else runs. The caller gets it in `failedOneShots` so it can say so. With nothing else
+ *   running it is the failure.
  * - `running` with a health check still `starting` counts by its run time alone: many store apps take
  *   minutes to answer, which the app page shows as Initializing. That is not a failure.
  *
@@ -85,6 +98,7 @@ export class AppCameUpWatch {
   constructor(
     nowMs: number,
     private readonly timing: AppCameUpTiming = APP_CAME_UP_TIMING,
+    private readonly oneShotServices: ReadonlySet<string> = new Set(),
   ) {
     this.startedAtMs = nowMs;
   }
@@ -95,6 +109,7 @@ export class AppCameUpWatch {
     const stoppedForGood: FailedAppContainer[] = [];
     const crashing: FailedAppContainer[] = [];
     const runningSinceACrash: FailedAppContainer[] = [];
+    const failedOneShots: FailedAppContainer[] = [];
     let running = 0;
     let oneMoreLook = false;
 
@@ -102,7 +117,10 @@ export class AppCameUpWatch {
       const seen = this.track(container, nowMs);
       const failed = { service: container.service, containerName: container.containerName, state: container.state, exitCode: seen.lastExitCode };
 
-      if (container.state === 'dead' || (container.state === 'exited' && container.exitCode !== 0)) {
+      if (container.state === 'exited' && container.exitCode !== 0 && this.oneShotServices.has(container.service)) {
+        // A one-shot something waits on to finish has already failed `compose up`, so this one is optional.
+        failedOneShots.push(failed);
+      } else if (container.state === 'dead' || (container.state === 'exited' && container.exitCode !== 0)) {
         if (container.state === 'dead' || seen.exitedLooks >= 2) {
           stoppedForGood.push(failed);
         } else {
@@ -131,22 +149,31 @@ export class AppCameUpWatch {
       return {
         outcome: 'failed',
         kind: 'exited',
-        containers: [...stoppedForGood, ...crashing, ...runningSinceACrash],
+        containers: [...stoppedForGood, ...crashing, ...runningSinceACrash, ...failedOneShots],
         containersSeen: containers.length,
       };
     }
     if (crashing.length > 0 || runningSinceACrash.length > 0) {
       const outOfTimeAtMs = this.timing.settleWithinMs + (crashing.length > 0 ? 0 : this.timing.upAfterCrashMs);
       return elapsedMs >= outOfTimeAtMs
-        ? { outcome: 'failed', kind: 'restarting', containers: [...crashing, ...runningSinceACrash], containersSeen: containers.length }
+        ? {
+            outcome: 'failed',
+            kind: 'restarting',
+            containers: [...crashing, ...runningSinceACrash, ...failedOneShots],
+            containersSeen: containers.length,
+          }
         : { outcome: 'waiting' };
     }
     if (running === 0) {
+      // Nothing else came up, so the failed one-shot says more than "none of the services are running".
+      if (failedOneShots.length > 0 && !oneMoreLook) {
+        return { outcome: 'failed', kind: 'exited', containers: failedOneShots, containersSeen: containers.length };
+      }
       return elapsedMs >= this.timing.runningWithinMs
         ? { outcome: 'failed', kind: 'none_running', containers: [], containersSeen: containers.length }
         : { outcome: 'waiting' };
     }
-    return this.looks < 2 || (oneMoreLook && elapsedMs < this.timing.settleWithinMs) ? { outcome: 'waiting' } : { outcome: 'up' };
+    return this.looks < 2 || (oneMoreLook && elapsedMs < this.timing.settleWithinMs) ? { outcome: 'waiting' } : { outcome: 'up', failedOneShots };
   }
 
   private track(container: AppContainerLook, nowMs: number): TrackedContainer {
