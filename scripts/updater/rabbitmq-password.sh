@@ -12,7 +12,8 @@
 #
 # Every function returns non-zero on a failure; update.sh runs under errexit, so that stops it.
 
-# Seconds any one docker call that talks to the broker may take, where `timeout` exists.
+# Seconds any one docker call here may take, where `timeout` exists. Every docker call in this file
+# goes through rabbitmq_password_docker, so a paused container or a stuck daemon cannot hang update.sh.
 RABBITMQ_PASSWORD_DOCKER_TIMEOUT=60
 
 # The value of $2 in the env file $1, read the way compose reads it: leading whitespace and a leading
@@ -60,7 +61,7 @@ rabbitmq_password_file_stat() {
 rabbitmq_password_hub_container() {
   local name
   for name in "$1" ci-hub ci-os-hub; do
-    if docker inspect "$name" > /dev/null 2>&1; then
+    if rabbitmq_password_docker inspect "$name" > /dev/null 2>&1; then
       printf '%s' "$name"
       return 0
     fi
@@ -69,7 +70,7 @@ rabbitmq_password_hub_container() {
 
 # The value of $2 in the environment compose gave the container $1, from `docker inspect`.
 rabbitmq_password_container_env() {
-  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$1" 2>/dev/null | grep -E "^$2=" | tail -n 1 | cut -d= -f2- || true
+  rabbitmq_password_docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$1" 2>/dev/null | grep -E "^$2=" | tail -n 1 | cut -d= -f2- || true
 }
 
 # The RABBITMQ_PASSWORD a running Hub container was created with.
@@ -101,7 +102,7 @@ rabbitmq_password_target_mode() {
   fi
   if rabbitmq_password_pins_other_uid "$next_pin" "$owner" \
     || { [ -n "$hub" ] && rabbitmq_password_pins_other_uid "$(rabbitmq_password_container_env "$hub" CI_HUB_CONTAINER_UID)" "$owner"; } \
-    || { [ -n "$hub" ] && rabbitmq_password_pins_other_uid "$(docker inspect -f '{{.Config.User}}' "$hub" 2>/dev/null || true)" "$owner"; }; then
+    || { [ -n "$hub" ] && rabbitmq_password_pins_other_uid "$(rabbitmq_password_docker inspect -f '{{.Config.User}}' "$hub" 2>/dev/null || true)" "$owner"; }; then
     printf '%s\n' "$mode"
   else
     printf '%o\n' $((8#$mode & 8#600))
@@ -257,7 +258,7 @@ rabbitmq_password_check_broker() {
     password="$(rabbitmq_password_env_value "$env_file" RABBITMQ_PASSWORD)" || return 1
   fi
   for name in ci-hub-queue ci-os-hub-queue; do
-    if [ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null || true)" = "true" ]; then
+    if [ "$(rabbitmq_password_docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null || true)" = "true" ]; then
       queue="$name"
       break
     fi
@@ -278,7 +279,7 @@ rabbitmq_password_check_broker() {
       return 1
     elif rabbitmq_password_ctl "$queue" change_password "$password" && rabbitmq_password_ctl "$queue" authenticate_user "$password"; then
       echo "   OK: changed the broker password in ${queue} to the one ${hub} uses; restarting ${hub}"
-      docker restart "$hub" > /dev/null
+      rabbitmq_password_docker restart "$hub" > /dev/null
       restarted="yes"
     else
       echo "ERROR: ${queue} does not accept the broker password the Hub uses, and changing it failed."
@@ -288,6 +289,6 @@ rabbitmq_password_check_broker() {
   fi
   if [ "${RABBITMQ_PASSWORD_WRITTEN:-}" = yes ] && [ -n "$hub" ] && [ -z "$restarted" ]; then
     echo "   OK: restarting ${hub} so it reads the rewritten ${env_file}"
-    docker restart "$hub" > /dev/null
+    rabbitmq_password_docker restart "$hub" > /dev/null
   fi
 }

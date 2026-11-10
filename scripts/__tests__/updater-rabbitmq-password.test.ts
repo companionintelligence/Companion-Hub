@@ -66,7 +66,7 @@ case "$1" in
       given="$(cat)"
       case "$5" in
         authenticate_user) [ "$given" = "$(cat "$STUB_DIR/broker")" ] && exit 0; exit 65 ;;
-        change_password) printf '%s' "$given" > "$STUB_DIR/broker"; exit 0 ;;
+        change_password) [ -z "\${STUB_CHANGE_NOOP:-}" ] && printf '%s' "$given" > "$STUB_DIR/broker"; exit 0 ;;
       esac
     fi
     exit 0 ;;
@@ -507,6 +507,81 @@ describe('rabbitmq_password_prepare and rabbitmq_password_check_broker', () => {
     expect(result.stdout).toContain('could not read');
     expect(readFileSync(envFile, 'utf-8')).toBe(body);
     expect(leftovers()).toEqual([]);
+  });
+
+  // These need the quotes stripped: left on, `"admin"` reads as a strong password and is kept.
+  it.each([
+    ['double-quoted', 'JWT_SECRET=jwt\nRABBITMQ_PASSWORD="admin"\n'],
+    ['single-quoted with a comment', "JWT_SECRET=jwt\nRABBITMQ_PASSWORD='admin' # c\n"],
+    ['double-quoted with a comment after the closing quote', 'JWT_SECRET=jwt\nRABBITMQ_PASSWORD="admin" # x\n'],
+  ])('reads a %s admin as admin, and rewrites it to one random password', (_case, body) => {
+    writeFileSync(envFile, body, { mode: 0o600 });
+
+    const result = run();
+
+    expect(result.status, result.stdout).toBe(0);
+    expect(result.stdout).toContain('WRITTEN=yes');
+    expect(passwordLines()).toHaveLength(1);
+    expect(passwordLines()[0]).toMatch(/^RABBITMQ_PASSWORD=[0-9a-f]{64}$/);
+    expect(readFileSync(envFile, 'utf-8')).not.toContain('admin');
+  });
+
+  // The quoted value is the owner's own uid, so it is no foreign pin and the bits are cleared.
+  it("reads a quoted CI_HUB_CONTAINER_UID of the file's owner as no pin, and narrows 0644 to 0600", () => {
+    const uid = process.getuid?.() ?? Number(spawnSync('id', ['-u'], { encoding: 'utf-8' }).stdout.trim());
+    writeFileSync(envFile, `JWT_SECRET=jwt\nCI_HUB_CONTAINER_UID="${uid}" # c\n`);
+    chmodSync(envFile, 0o644);
+
+    const result = run({ STUB_NO_HUB: '1' });
+
+    expect(passwordLines()[0], result.stdout).toMatch(/^RABBITMQ_PASSWORD=[0-9a-f]{64}$/);
+    expect(mode()).toBe(0o600);
+  });
+
+  it('reads a CRLF env file without the carriage return, and writes a clean line', () => {
+    writeFileSync(envFile, 'JWT_SECRET=jwt\r\nRABBITMQ_PASSWORD=admin\r\nDOMAIN=example.com\r\n', { mode: 0o600 });
+
+    const result = run();
+
+    expect(result.status, result.stdout).toBe(0);
+    expect(result.stdout).toContain('WRITTEN=yes');
+    const content = readFileSync(envFile, 'utf-8');
+    expect(content).not.toContain('admin');
+    expect(content).toMatch(/\nRABBITMQ_PASSWORD=[0-9a-f]{64}\n$/);
+    expect(content).toContain('JWT_SECRET=jwt\r\n');
+  });
+
+  it('restarts the Hub exactly once when it both rewrote the env file and changed the broker', () => {
+    writeFileSync(envFile, 'RABBITMQ_PASSWORD=admin\n', { mode: 0o600 });
+
+    const result = run();
+
+    expect(result.status, result.stdout).toBe(0);
+    expect(argvLog()).toContain('change_password');
+    expect(result.stdout).toContain('WRITTEN=yes');
+    expect(restarts()).toBe(1);
+  });
+
+  it('asks the broker again after change_password, and reports a change that did not take', () => {
+    writeFileSync(envFile, 'RABBITMQ_PASSWORD=already-strong\n', { mode: 0o600 });
+
+    const result = run({ STUB_CHANGE_NOOP: '1' });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain('changing it failed');
+    expect(argvLog().match(/rabbitmqctl authenticate_user/g)).toHaveLength(2);
+    expect(restarts()).toBe(0);
+  });
+
+  it('with no Hub container, checks the broker against an exported password before the env file', () => {
+    writeFileSync(envFile, 'RABBITMQ_PASSWORD=file-strong\n', { mode: 0o600 });
+    writeFileSync(path.join(dir, 'broker'), 'exported-strong');
+
+    const result = run({ STUB_NO_HUB: '1', RABBITMQ_PASSWORD: 'exported-strong' });
+
+    expect(result.status, result.stdout).toBe(0);
+    expect(result.stdout).toContain('accepts the broker password');
+    expect(argvLog()).not.toContain('change_password');
   });
 
   it('stops the update when there is no env file and no exported password', () => {
