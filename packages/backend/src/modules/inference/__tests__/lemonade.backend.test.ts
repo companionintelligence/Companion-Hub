@@ -255,6 +255,117 @@ describe('LemonadeBackend', () => {
       });
     });
 
+    // An 8-bit KV cache (the catalog row's kvCacheType) must not be SENT on the load: Lemonade lets a
+    // request's llamacpp_args replace the model's and its architecture's flags, which dropped the
+    // 27B's sampling on 2026-11-10. It is saved as the model's options, and the load sends none.
+    describe('a model whose catalog row runs with a q8_0 KV cache', () => {
+      const BASE = 'http://ci-hub-lemonade:13305';
+      const SAMPLING = `--temp 1.0 --chat-template-kwargs '{"preserve_thinking":true}' --parallel 1`;
+      const server = (version: string, recipe_options: Record<string, unknown> | null, optionsRoute: 'ok' | 404 = 'ok') => {
+        (axios.get as never) = vi.fn().mockImplementation((url: string) => {
+          if (url === `${BASE}/v1/health`) return Promise.resolve({ status: 200, data: { version } });
+          if (url.startsWith(`${BASE}/v1/models/`)) {
+            return recipe_options === null ? Promise.reject(new Error('timeout')) : Promise.resolve({ data: { recipe_options } });
+          }
+          // The registry listing the health probe reads, which is where serverVersion() is kept.
+          if (url.startsWith(`${BASE}/v1/models`)) return Promise.resolve({ data: { data: [{ id: 'Qwen3.8-27B-GGUF', downloaded: true }] } });
+          return Promise.resolve({ data: {} });
+        });
+        const post = vi
+          .fn()
+          .mockImplementation((url: string) =>
+            url.endsWith('/options') && optionsRoute === 404
+              ? Promise.reject(Object.assign(new Error('Request failed with status code 404'), { response: { status: 404 } }))
+              : Promise.resolve({ data: { status: 'success' } }),
+          );
+        (axios.post as never) = post;
+        return post;
+      };
+      const q8Row = { id: 'qwen3-8-27b-lemonade', backend: 'lemonade', runtime: { kvCacheType: 'q8_0' } } as never;
+
+      it('saves the cache flags beside the flags already saved, then loads sending no flags', async () => {
+        const post = server('2026.45.3', { ctx_size: 32_768, llamacpp_args: SAMPLING });
+
+        await backend.loadModel('Qwen3.8-27B-GGUF', { contextLength: 65_536, kvCacheType: 'q8_0' });
+
+        expect(post).toHaveBeenNthCalledWith(
+          1,
+          `${BASE}/v1/models/Qwen3.8-27B-GGUF/options`,
+          { llamacpp_args: `${SAMPLING} -fa on --cache-type-k q8_0 --cache-type-v q8_0`, ctx_size: 65_536 },
+          { timeout: 30000 },
+        );
+        expect(post).toHaveBeenNthCalledWith(2, `${BASE}/v1/load`, { model_name: 'Qwen3.8-27B-GGUF', ctx_size: 65_536 }, { timeout: 120000 });
+        expect(post).toHaveBeenCalledTimes(2);
+      });
+
+      it('keeps a larger saved window for the next load when this window is provisional', async () => {
+        const post = server('2026.45.3', { ctx_size: 65_536 });
+
+        await backend.loadModel('Qwen3.8-27B-GGUF', { contextLength: 32_768, provisionalWindow: true, kvCacheType: 'q8_0' });
+
+        expect(post).toHaveBeenNthCalledWith(
+          1,
+          `${BASE}/v1/models/Qwen3.8-27B-GGUF/options`,
+          { llamacpp_args: '-fa on --cache-type-k q8_0 --cache-type-v q8_0' },
+          { timeout: 30000 },
+        );
+        expect(post).toHaveBeenNthCalledWith(2, `${BASE}/v1/load`, { model_name: 'Qwen3.8-27B-GGUF', ctx_size: 32_768 }, { timeout: 120000 });
+      });
+
+      it('loads the 16-bit way on Lemonade 10.2.0, which cannot save options without a load, and says so', async () => {
+        const post = server('10.2.0', { ctx_size: 32_768 });
+
+        await backend.loadModel('Qwen3.8-27B-GGUF', { contextLength: 32_768, kvCacheType: 'q8_0' });
+
+        expect(post).toHaveBeenCalledTimes(1);
+        expect(post).toHaveBeenCalledWith(
+          `${BASE}/v1/load`,
+          { ctx_size: 32_768, model_name: 'Qwen3.8-27B-GGUF', save_options: true },
+          { timeout: 120000 },
+        );
+        expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('16-bit cache'));
+        expect(backend.kvCacheScale(q8Row)).toBe(1);
+      });
+
+      it('refuses the load rather than wipe flags it could not read', async () => {
+        const post = server('2026.45.3', null);
+
+        await expect(backend.loadModel('Qwen3.8-27B-GGUF', { contextLength: 65_536, kvCacheType: 'q8_0' })).rejects.toThrow(/saved options/);
+        expect(post).not.toHaveBeenCalled();
+      });
+
+      it('stops counting on the quantized cache once the options route answers 404', async () => {
+        const post = server('2026.45.3', { ctx_size: 32_768 }, 404);
+
+        await expect(backend.loadModel('Qwen3.8-27B-GGUF', { contextLength: 65_536, kvCacheType: 'q8_0' })).rejects.toThrow(/16-bit/);
+        expect(post).not.toHaveBeenCalledWith(`${BASE}/v1/load`, expect.anything(), expect.anything());
+        expect(backend.kvCacheScale(q8Row)).toBe(1);
+      });
+
+      it('sizes a q8_0 row at 34/64 of its 16-bit cost on a version that can set it, and nothing else', async () => {
+        server('2026.45.3', { ctx_size: 32_768 });
+        await backend.healthCheck();
+        expect(backend.kvCacheScale(q8Row)).toBeCloseTo(34 / 64, 6);
+        expect(backend.kvCacheScale({ ...(q8Row as object), runtime: {} } as never)).toBe(1);
+        expect(backend.kvCacheScale({ ...(q8Row as object), backend: 'ollama' } as never)).toBe(1);
+      });
+
+      it('sizes it at the 16-bit cost on 10.2.0, and before any version has been read', async () => {
+        expect(backend.kvCacheScale(q8Row)).toBe(1);
+        server('10.2.0', { ctx_size: 32_768 });
+        await backend.healthCheck();
+        expect(backend.kvCacheScale(q8Row)).toBe(1);
+      });
+
+      it('never sends cache flags for an embedder', async () => {
+        const post = server('2026.45.3', {});
+
+        await backend.loadModel('nomic-embed-text-v1-GGUF', { embedding: true, kvCacheType: 'q8_0' });
+
+        expect(post).not.toHaveBeenCalledWith(expect.stringContaining('/options'), expect.anything(), expect.anything());
+      });
+    });
+
     it('sends the batch flags instead of a window for an embedding model, saved beside its options', async () => {
       const get = vi.fn().mockResolvedValue({ data: { recipe_options: { llamacpp_backend: 'rocm' } } });
       const post = vi.fn().mockResolvedValue({ data: { status: 'success' } });

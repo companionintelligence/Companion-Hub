@@ -18,12 +18,31 @@ import type { ContextCost } from './model-geometry.util';
  * its weights, encoders and runtime hold 4,046-4,357 MiB, so the file would put back the refusal the
  * measurement fixed.
  *
+ * Both sources are 16-bit figures. An engine that will run the model with the quantized cache its row
+ * names (`runtime.kvCacheType`) says how much less that costs (`InferenceBackend.kvCacheScale`), and
+ * the per-token cost is scaled by it, so the load window and every app handout size the cache the
+ * engine really allocates: 65536 tokens of Qwen 3.8 27B on a 24 GiB card instead of 32768.
+ *
  * Only meaningful for a model this node serves; a peer's engine cannot be asked from here.
  * Never throws: a probe that fails costs only the measurement.
  */
 export async function probeContextCost(backend: InferenceBackend, model: CuratedModel): Promise<ContextCost | null> {
   const cost = await probeEngineAndCatalog(backend, model);
-  return cost && model.runtime.footprintMeasured ? { ...cost, weightMb: null } : cost;
+  if (!cost) return null;
+  const scale = kvCacheScaleOf(backend, model);
+  const scaled = scale < 1 ? { ...cost, kvMbPerToken: cost.kvMbPerToken * scale } : cost;
+  return model.runtime.footprintMeasured ? { ...scaled, weightMb: null } : scaled;
+}
+
+/** The engine's {@link InferenceBackend.kvCacheScale} for `model`, kept to (0, 1]; 1 when it says nothing usable. */
+function kvCacheScaleOf(backend: InferenceBackend, model: CuratedModel): number {
+  let scale: number | undefined;
+  try {
+    scale = backend.kvCacheScale?.(model);
+  } catch {
+    return 1;
+  }
+  return typeof scale === 'number' && Number.isFinite(scale) && scale > 0 && scale < 1 ? scale : 1;
 }
 
 async function probeEngineAndCatalog(backend: InferenceBackend, model: CuratedModel): Promise<ContextCost | null> {

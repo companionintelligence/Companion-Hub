@@ -235,6 +235,16 @@ export interface CuratedModel {
      * `head_count_kv`). Absent: the engine's own figure, else the context ladder's assumption.
      */
     kvMbPerToken?: number;
+    /**
+     * The KV cache type this model is measured to run well with, when not llama.cpp's 16-bit default.
+     * `q8_0` halves what a token of context costs (34 bytes per 32 values against 64), so a window
+     * twice as large fits in the same memory: Qwen 3.8 27B holds 65536 tokens on a 24 GiB card where
+     * its 16-bit cache holds 32768. Set only on rows measured that way, because a quantized V cache
+     * needs flash attention, which not every architecture and engine build has, and a load that asks
+     * for it without support fails. `kvMbPerToken` stays the 16-bit figure; an engine that applies the
+     * type scales it (`InferenceBackend.kvCacheScale`). Absent: the engine's default (16-bit).
+     */
+    kvCacheType?: 'q8_0';
   };
   tiers: {
     high: TierRecommendation;

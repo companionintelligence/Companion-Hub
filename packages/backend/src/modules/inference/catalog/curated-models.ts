@@ -941,9 +941,33 @@ const MEASURED_KV_MB_PER_TOKEN: Record<string, number> = {
   'qwen3-8-27b-lemonade': 0.0667,
 };
 
+/**
+ * Rows measured to run with an 8-bit KV cache (see `CuratedModel.runtime.kvCacheType`).
+ *
+ * Qwen 3.8 27B on Lemonade 2026.45.3, measured 2026-11-10 on a 7900 XTX (ROCm, llama.cpp b11836, MTP
+ * draft on): 22.01 GiB in use at 32768 with the 16-bit cache, 22.50 GiB at 65536 with
+ * `-fa on --cache-type-k q8_0 --cache-type-v q8_0`. Prompt 924 vs 937 tok/s, generation 63.8 vs 64.8
+ * tok/s, the same greedy answer word for word, and a 55,812-token prompt recalled 4 of 4 facts placed
+ * through it. Hermes needs 64000, which the 16-bit cache cannot give on that card. Only the Lemonade
+ * row: the Hub sets a Lemonade model's cache type per model, while Ollama's is the server-wide
+ * `OLLAMA_KV_CACHE_TYPE`, a provisioning setting the Hub does not read.
+ */
+const MEASURED_KV_CACHE_TYPE: Record<string, NonNullable<CuratedModel['runtime']['kvCacheType']>> = {
+  'qwen3-8-27b-lemonade': 'q8_0',
+};
+
 function withMeasuredKv(model: CuratedModel): CuratedModel {
   const kvMbPerToken = MEASURED_KV_MB_PER_TOKEN[model.id];
-  return kvMbPerToken === undefined ? model : { ...model, runtime: { ...model.runtime, kvMbPerToken } };
+  const kvCacheType = MEASURED_KV_CACHE_TYPE[model.id];
+  if (kvMbPerToken === undefined && kvCacheType === undefined) return model;
+  return {
+    ...model,
+    runtime: {
+      ...model.runtime,
+      ...(kvMbPerToken !== undefined && { kvMbPerToken }),
+      ...(kvCacheType !== undefined && { kvCacheType }),
+    },
+  };
 }
 
 export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...lemonadeLlms, ...vllmLlms, ...omlxLlms, ...extraModels].map(withMeasuredKv);

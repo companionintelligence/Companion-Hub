@@ -451,6 +451,9 @@ export class ModelPullerService {
         contextLength: options?.contextLength,
         ...(options?.provisionalWindow ? { provisionalWindow: true } : {}),
         ...(onCpu && { device: 'cpu' }),
+        // The cache the window was sized for (context-cost.util scales by kvCacheScale): the engine
+        // decides whether it can set it, by the same rule it answered the sizing with.
+        ...(!embedding && curated.runtime.kvCacheType && { kvCacheType: curated.runtime.kvCacheType }),
       });
       this.modelRegistry.updateModelState(catalogId, 'loaded');
       this.modelRegistry.markHubLoaded(catalogId);

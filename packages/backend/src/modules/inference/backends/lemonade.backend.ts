@@ -1,12 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { EngineCapabilities, InferenceBackend, LoadModelOptions } from './backend.interface';
-import type { BackendHealthStatus, BackendResidency, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
+import type { BackendHealthStatus, BackendResidency, BackendModelInfo, CuratedModel, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
 // Shared with the Ollama backend: both mount the same AMD device nodes and so
 // need the same host GIDs. See that module for the full rationale.
 import { type DeviceGroupProbe, resolveAmdDeviceGroupIds } from './amd-device-groups.util';
 import { OpenAiCompatibleClient } from './openai-compatible.client';
+import { KV_CACHE_SCALE, lemonadeSavesOptionsWithoutLoading, withKvCacheFlags } from './lemonade-kv-cache.util';
 import { LEMONADE_USER_NAMESPACE, withoutLemonadeUserNamespace } from '../model-availability.util';
 
 /** Extra deployment hints beyond the shared `{ rocmReady, unifiedMemory }` pair. */
@@ -244,6 +245,28 @@ export class LemonadeBackend implements InferenceBackend {
   }
 
   /**
+   * Set once this server answered `POST /v1/models/{id}/options` with 404, whatever its version says,
+   * so the next sizing stops counting on a quantized cache it cannot set.
+   */
+  private savedOptionsRouteMissing = false;
+
+  /** Whether a model's cache type can be saved here (see `lemonadeSavesOptionsWithoutLoading`), from the version the registry read last saw. */
+  private canSetKvCacheType(version: string | null = this.serverVersion()): boolean {
+    return !this.savedOptionsRouteMissing && lemonadeSavesOptionsWithoutLoading(version);
+  }
+
+  /**
+   * The share of the 16-bit KV cost `model` costs here: its row's `kvCacheType` scale when this server
+   * can set that type, else 1. Read synchronously from the last registry read; before one there is no
+   * version yet and the answer is 1 — the 16-bit window, which a quantized load then over-provides
+   * rather than under-provides.
+   */
+  kvCacheScale(model: CuratedModel): number {
+    const type = model.backend === 'lemonade' ? model.runtime.kvCacheType : undefined;
+    return type && this.canSetKvCacheType() ? KV_CACHE_SCALE[type] : 1;
+  }
+
+  /**
    * Whether this Lemonade can supply `modelId`: its registry lists it (in either spelling, see
    * `LEMONADE_USER_NAMESPACE`), or the Hub registers it on pull. Null when no registry listing has
    * been read, so a caller keeps its old behaviour instead of hiding every row.
@@ -354,6 +377,17 @@ export class LemonadeBackend implements InferenceBackend {
     );
     const auth = this.authHeaders();
     const config = { ...(auth ? { headers: auth } : {}) };
+    if (options?.kvCacheType && !options.embedding) {
+      const version = this.serverVersion() ?? (await this.readServerVersion());
+      if (this.canSetKvCacheType(version)) {
+        await this.loadWithSavedKvCache(engineId, window, options.kvCacheType, options.provisionalWindow === true, config);
+        return;
+      }
+      this.logger.warn(
+        `[Lemonade] ${engineId} runs with a ${options.kvCacheType} KV cache by its catalog row, but Lemonade ${version ?? '(version unread)'} ` +
+          'cannot save a cache type without a load, so it is loaded with the 16-bit cache.',
+      );
+    }
     let body: Record<string, unknown> = { model_name: engineId };
     if (Object.keys(wanted).length > 0) {
       const saved = await this.readModelInfo(engineId);
@@ -377,6 +411,71 @@ export class LemonadeBackend implements InferenceBackend {
       }
     }
     await axios.post(`${this.getBaseUrl()}/v1/load`, body, { timeout: 120000, ...config });
+  }
+
+  /**
+   * A load with a quantized KV cache: the cache flags (and the window, as `save_options` would) saved
+   * as the model's options first, then a load that sends no `llamacpp_args`, so Lemonade combines the
+   * saved flags with its own defaults for the model instead of replacing them (see
+   * `lemonade-kv-cache.util`). The saved flags keep every other flag the model already had saved, and
+   * Lemonade's own later loads of it — on a request, or from its UI — read them too, so the model keeps
+   * the cache its window was sized for.
+   *
+   * A provisional window is loaded without saving it over a larger saved one, as `loadModel` does. A
+   * model whose saved options cannot be read is refused rather than given flags that might replace an
+   * operator's: its window was sized for the quantized cache, and a 16-bit load at it may not fit.
+   */
+  private async loadWithSavedKvCache(
+    engineId: string,
+    window: number | null,
+    type: NonNullable<LoadModelOptions['kvCacheType']>,
+    provisional: boolean,
+    config: { headers?: Record<string, string> },
+  ): Promise<void> {
+    const saved = await this.readModelInfo(engineId);
+    const savedOptions = saved ? recipeOptionsOf(saved) : null;
+    if (!savedOptions) {
+      throw new Error(
+        `Lemonade did not give ${engineId}'s saved options, so its ${type} KV cache could not be saved; not loading it with a 16-bit cache at a window sized for ${type}`,
+      );
+    }
+    const savedWindow = positiveWindow(savedOptions.ctx_size);
+    const keepSavedWindow = provisional && window !== null && savedWindow !== null && savedWindow > window;
+    const toSave = {
+      llamacpp_args: withKvCacheFlags(savedOptions.llamacpp_args, type),
+      ...(window !== null && !keepSavedWindow && { ctx_size: window }),
+    };
+    try {
+      await axios.post(`${this.getBaseUrl()}/v1/models/${encodeURIComponent(engineId)}/options`, toSave, { timeout: 30000, ...config });
+    } catch (err) {
+      if ((err as { response?: { status?: number } } | null)?.response?.status === 404) {
+        this.savedOptionsRouteMissing = true;
+        throw new Error(
+          `Lemonade has no POST /v1/models/{id}/options, so ${engineId}'s ${type} KV cache could not be saved; its next load is sized for the 16-bit cache`,
+        );
+      }
+      throw err;
+    }
+    this.logger.info(
+      `[Lemonade] Loading model: ${engineId}${window ? ` at ctx_size ${window}` : ''} with a ${type} KV cache (saved: ${JSON.stringify(toSave)})` +
+        (keepSavedWindow ? `; its saved ctx_size ${savedWindow} is kept for its next load` : ''),
+    );
+    await axios.post(
+      `${this.getBaseUrl()}/v1/load`,
+      { model_name: engineId, ...(window !== null && { ctx_size: window }) },
+      { timeout: 120000, ...config },
+    );
+  }
+
+  /** `/v1/health`'s version, read now: the registry read that `serverVersion` keeps may not have run yet. Null when it cannot be read. */
+  private async readServerVersion(): Promise<string | null> {
+    try {
+      const auth = this.authHeaders();
+      const response = await axios.get(`${this.getBaseUrl()}/v1/health`, { timeout: 5000, ...(auth ? { headers: auth } : {}) });
+      return typeof response.data?.version === 'string' ? response.data.version : null;
+    } catch {
+      return null;
+    }
   }
 
   /**

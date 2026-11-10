@@ -284,6 +284,23 @@ describe('ModelPullerService.evaluatePull', () => {
     expect(result.alreadyInstalled).toBe(true);
   });
 
+  it("passes a text model's measured KV cache type to the engine, which decides whether it can set it", async () => {
+    const quantized = {
+      ...curated,
+      id: 'qwen3-8-27b-lemonade',
+      backend: 'lemonade',
+      backendModelId: 'Qwen3.8-27B-GGUF',
+      modality: 'llm',
+      runtime: { ...curated.runtime, kvCacheType: 'q8_0' },
+    } as CuratedModel;
+    modelRegistry.getCuratedModel.mockReturnValue(quantized);
+    lemonadeBackend.engineModelId.mockImplementation((id) => id);
+
+    await service.loadModel('qwen3-8-27b-lemonade', { contextLength: 65_536 });
+
+    expect(lemonadeBackend.loadModel).toHaveBeenCalledWith('Qwen3.8-27B-GGUF', { embedding: false, contextLength: 65_536, kvCacheType: 'q8_0' });
+  });
+
   it('loads and unloads under the name the engine knows the model by', async () => {
     const embedder = {
       ...curated,

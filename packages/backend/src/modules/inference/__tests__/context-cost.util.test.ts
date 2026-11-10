@@ -39,6 +39,26 @@ describe('probeContextCost', () => {
     await expect(probeContextCost(backend, model(0.0667))).resolves.toEqual({ kvMbPerToken: 0.0667, weightMb: 17_630, source: 'catalog' });
   });
 
+  // An engine that will run the model with an 8-bit cache says so, and every caller sizes that cache.
+  it('scales the cost by what the engine says its quantized cache costs, and only by a sane share', async () => {
+    const lemonade = (scale: unknown) =>
+      ({ weightsOnDiskMb: vi.fn().mockResolvedValue(17_630), kvCacheScale: vi.fn().mockReturnValue(scale) }) as unknown as InferenceBackend;
+    await expect(probeContextCost(lemonade(34 / 64), model(0.0667))).resolves.toEqual({
+      kvMbPerToken: 0.0667 * (34 / 64),
+      weightMb: 17_630,
+      source: 'catalog',
+    });
+    for (const nonsense of [1, 0, -0.5, 1.5, Number.NaN, undefined]) {
+      await expect(probeContextCost(lemonade(nonsense), model(0.0667))).resolves.toMatchObject({ kvMbPerToken: 0.0667 });
+    }
+    const throwing = {
+      kvCacheScale: () => {
+        throw new Error('boom');
+      },
+    } as unknown as InferenceBackend;
+    await expect(probeContextCost(throwing, model(0.0667))).resolves.toMatchObject({ kvMbPerToken: 0.0667 });
+  });
+
   it('answers null when nothing can say, and never throws for a failing probe', async () => {
     await expect(probeContextCost({} as InferenceBackend, model())).resolves.toBeNull();
     const failing = {

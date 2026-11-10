@@ -1,4 +1,4 @@
-import type { BackendHealthStatus, BackendModelInfo, BackendResidency, InferenceBackendType, PullProgress } from '@ci-hub/common/types';
+import type { BackendHealthStatus, BackendModelInfo, BackendResidency, CuratedModel, InferenceBackendType, PullProgress } from '@ci-hub/common/types';
 import type { ContextCost } from '../model-geometry.util';
 
 export interface LoadModelOptions {
@@ -18,6 +18,12 @@ export interface LoadModelOptions {
    * model. Absent leaves the engine's own choice.
    */
   device?: 'cpu';
+  /**
+   * The model's measured KV cache type (`CuratedModel.runtime.kvCacheType`), for a text model. An
+   * engine that can set it per model applies it when {@link InferenceBackend.kvCacheScale} says so,
+   * so the window sized for it and the cache the engine allocates agree. Ignored by the others.
+   */
+  kvCacheType?: CuratedModel['runtime']['kvCacheType'];
 }
 
 /**
@@ -118,6 +124,15 @@ export interface InferenceBackend {
    * lists them but cannot say what a token of context costs. Optional; null when it cannot say.
    */
   weightsOnDiskMb?(modelId: string): Promise<number | null>;
+
+  /**
+   * The share of the catalog's 16-bit `kvMbPerToken` this engine allocates per token of `model`'s
+   * context: below 1 when it will run the model with the quantized cache its row names
+   * (`runtime.kvCacheType`), 1 otherwise. Optional; absent means 1. Context sizing multiplies by it, so
+   * an engine must answer below 1 only for a cache it really sets on the next load
+   * ({@link LoadModelOptions.kvCacheType}), or the window it is handed would not fit.
+   */
+  kvCacheScale?(model: CuratedModel): number;
 
   /**
    * Whether the engine's server can supply a catalog `backendModelId` — has it, or can download it —

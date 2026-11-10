@@ -186,6 +186,13 @@ describe('curated-models (TOON catalog)', () => {
 
   // F7 in the #1679 audit: the row carried 17.2, its files measured in GiB, where every other Lemonade
   // row carries the registry's size. The measurement now sets the footprint through `ramGb` instead.
+  it('runs only the measured Lemonade 27B with a q8_0 KV cache', () => {
+    const quantized = CURATED_MODELS.filter((m) => m.runtime.kvCacheType).map((m) => m.id);
+    expect(quantized).toEqual(['qwen3-8-27b-lemonade']);
+    // The per-token figure stays the 16-bit one: the engine scales it when it applies the type.
+    expect(byId.get('qwen3-8-27b-lemonade')?.runtime.kvMbPerToken).toBe(0.0667);
+  });
+
   it("gives qwen3-8-27b-lemonade the registry's 18.8 GB and its measured footprint", () => {
     const m = byId.get('qwen3-8-27b-lemonade');
     expect(m?.requirements.diskMb).toBe(Math.round(18.8 * 1024));
