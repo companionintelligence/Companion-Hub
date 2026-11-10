@@ -3716,6 +3716,10 @@ describe('AuthController', () => {
       // The page must not be framed by the site that lured someone to it, or that site could take the click.
       expect(res.setHeader).toHaveBeenCalledWith('Content-Security-Policy', expect.stringContaining("frame-ancestors 'none'"));
       expect(res.setHeader).toHaveBeenCalledWith('X-Frame-Options', 'DENY');
+      // Chrome applies form-action to the redirects after Continue, and the last one leaves this
+      // origin (CI Memory's consent page), so the directive would silently stop the flow.
+      const csp = vi.mocked(res.setHeader).mock.calls.find(([name]) => name === 'Content-Security-Policy')?.[1];
+      expect(csp).not.toContain('form-action');
     });
 
     it('consume redirects home for a missing/expired/replayed ticket without setting a cookie or writing', async () => {

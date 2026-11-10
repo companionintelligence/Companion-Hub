@@ -35,7 +35,13 @@ export function describeBrowserHandoffTarget(next: string): string {
 
 /**
  * The headers for the confirmation page. It must not be framed (a luring site could otherwise
- * overlay it and take the click), runs no script, and posts only to its own origin.
+ * overlay it and take the click) and runs no script.
+ *
+ * NO `form-action`. Chrome enforces it on every redirect after the submit, not just the POST, and
+ * Continue's chain ends on another host: confirm → Hub `/api/memory-connect/start` → CI Memory's
+ * consent page (or an app host, for Open). `form-action 'self'` silently stopped that last hop, so
+ * Continue spent the ticket and then left the page sitting there. The page has one form, written
+ * by the server, so there is no injected form for the directive to guard against.
  */
 export function setBrowserHandoffConfirmHeaders(res: Response): void {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -43,10 +49,7 @@ export function setBrowserHandoffConfirmHeaders(res: Response): void {
   res.setHeader('X-Frame-Options', 'DENY');
   // `same-origin`, not `no-referrer`: the latter makes Chrome send `Origin: null` on the Continue POST.
   res.setHeader('Referrer-Policy', 'same-origin');
-  res.setHeader(
-    'Content-Security-Policy',
-    "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
-  );
+  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'");
 }
 
 const escapeHtml = (value: string) =>
