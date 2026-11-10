@@ -606,9 +606,9 @@ export class InstallAppCommand extends AppLifecycleCommand {
    * @param earlier What the app had before this install. Kept data is left exactly as it is, along with
    * anything this install added to it: the Hub cannot tell a file this install wrote from one kept
    * by an uninstall. A later install starts from the same place a completed one would.
-   * @param deadline The time the command has left, which the root helper keeps to.
-   * @returns A human-readable summary for the cancellation result. When the data this install made could not
-   * be removed, also the warning the page shows, with where it is on the host.
+   * @param deadline The command's time limit. The root helper keeps to what is left of it.
+   * @returns A human-readable summary for the cancellation result. When the app's folder or data could not be
+   * removed, also the warning the page shows, with where it is on the host.
    */
   private async compensateInstallCancel(
     appUrn: AppUrn,
@@ -667,9 +667,10 @@ export class InstallAppCommand extends AppLifecycleCommand {
       logger.warn(`[install-cancel] deleteAppFolder failed for ${appUrn}: ${err}`);
       return false;
     });
-    // A data folder that held files before this install is left exactly as it is: nothing is deleted from it and
-    // root never gets to it. One this install made holds what its containers wrote, a database's files as its own
-    // user among them, so those go through the root helper.
+    // A folder that already held files was there before this install: an uninstall kept it, or a failed attempt left
+    // it. The Hub can't tell what this install wrote into it from what was there, so none of it is removed. Only a
+    // folder this install started empty goes to the Hub's delete and then the root helper, for files a container
+    // wrote as another user.
     let data: { removed: boolean; hostPath?: string } = { removed: true };
     if (earlier.files) {
       logger.info(`[install-cancel] leaving the data folder of ${appUrn}: it held data from before this install`);
@@ -685,8 +686,9 @@ export class InstallAppCommand extends AppLifecycleCommand {
       logger.warn(
         `[install-cancel] the ${leftover} of ${appUrn} could not be fully removed; a disk remnant may remain${data.hostPath ? ` at ${data.hostPath}` : ''}`,
       );
+      const kept = earlier.files || earlier.volumes ? '; data from before this install was left in place' : '';
       return {
-        message: `Install of ${appUrn} was cancelled, but its ${leftover} could not be fully removed and may leave a remnant on disk`,
+        message: `Install of ${appUrn} was cancelled, but its ${leftover} could not be fully removed and may leave a remnant on disk${kept}`,
         warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT',
         ...(data.hostPath ? { warningDetail: data.hostPath } : {}),
       };
