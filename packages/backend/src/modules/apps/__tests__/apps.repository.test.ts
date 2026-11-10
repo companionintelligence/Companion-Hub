@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { AppsRepository } from '../apps.repository';
 
 /**
@@ -59,5 +61,46 @@ describe('AppsRepository.getAppsByLocalSubdomain', () => {
     // and can collide with nobody on this value.
     expect(await repository.getAppsByLocalSubdomain('---')).toEqual([]);
     expect(findMany).not.toHaveBeenCalled();
+  });
+});
+
+/*
+ * The guest switch in Settings changes one key of the stored form. Read and written back whole, a
+ * config another save wrote in between went back to the copy read first, so the key is merged into
+ * the row's config in the UPDATE itself.
+ */
+describe('AppsRepository.setGuestVisibility', () => {
+  const capture = (rows: Array<{ id: number }>) => {
+    const calls: { set?: Record<string, unknown> } = {};
+    const chain = {
+      set: vi.fn((values: Record<string, unknown>) => {
+        calls.set = values;
+        return chain;
+      }),
+      where: vi.fn(() => chain),
+      returning: vi.fn(() => chain),
+      execute: vi.fn(async () => rows),
+    };
+    const repository = new AppsRepository({ update: vi.fn(() => chain) } as never);
+    return { repository, calls, chain };
+  };
+
+  it('merges the key into the config the row has when it runs', async () => {
+    const { repository, calls } = capture([{ id: 4 }]);
+
+    await expect(repository.setGuestVisibility('immich:ci-marketplace' as never, true)).resolves.toBe(true);
+
+    expect(calls.set?.isVisibleOnGuestDashboard).toBe(true);
+    const { sql, params } = new PgDialect().sqlToQuery(calls.set?.config as SQL);
+    expect(sql).toBe(
+      `(case when jsonb_typeof("app"."config") = 'object' then "app"."config" else '{}'::jsonb end) || jsonb_build_object('isVisibleOnGuestDashboard', $1::boolean)`,
+    );
+    expect(params).toEqual([true]);
+  });
+
+  it('says so when no app has that name', async () => {
+    const { repository } = capture([]);
+
+    await expect(repository.setGuestVisibility('nope:ci-marketplace' as never, false)).resolves.toBe(false);
   });
 });

@@ -52,7 +52,8 @@ export class CustomAppTools implements OnModuleInit {
       name: 'hub_update_custom_app',
       access: 'write',
       destructive: true, // ISSUE-MCP-2: rewrites the app's raw docker-compose (can change/remove volume mounts).
-      description: 'Update a custom app docker-compose configuration.',
+      description:
+        'Update a custom app docker-compose configuration. A running app keeps its current containers until it restarts (hub_restart_app); a stopped app uses the new configuration when it next starts.',
       inputSchema: {
         type: 'object',
         properties: { appUrn: urnProp, config: { type: 'object', description: 'New compose config' } },

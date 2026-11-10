@@ -82,18 +82,12 @@ export const GuestLinkDialog = ({ isOpen, onClose, link }: GuestLinkDialogProps)
   const editLink = useMutation({ ...editLinkMutation(), onError });
   const saving = createLink.isPending || editLink.isPending;
 
+  // The form's fields are the request body's, already trimmed by the schema.
   const save = (values: LinkFormValues) => {
-    const body = {
-      title: values.title,
-      url: values.url,
-      description: values.description,
-      iconUrl: values.iconUrl,
-      isVisibleOnGuestDashboard: values.isVisibleOnGuestDashboard,
-    };
     if (link) {
-      editLink.mutate({ path: { id: link.id }, body }, { onSuccess: () => onSaved('GUEST_LINK_SAVED', values.title) });
+      editLink.mutate({ path: { id: link.id }, body: values }, { onSuccess: () => onSaved('GUEST_LINK_SAVED', values.title) });
     } else {
-      createLink.mutate({ body }, { onSuccess: () => onSaved('GUEST_LINK_ADDED', values.title) });
+      createLink.mutate({ body: values }, { onSuccess: () => onSaved('GUEST_LINK_ADDED', values.title) });
     }
   };
 

@@ -232,6 +232,7 @@ Apps
   GET  /apps/installed                      List all installed apps
   GET  /apps/guest                          Guest-visible apps (for guest dashboard)
   GET  /apps/:urn                           Get specific installed app
+  PATCH /apps/:urn/guest-visibility         Show or hide an app on the guest dashboard
 
 App Lifecycle
   POST /app-lifecycle/:urn/install          Install and start an app

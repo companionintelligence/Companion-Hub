@@ -849,17 +849,9 @@ export class AppsService {
    * is what a save through that dialog would do.
    */
   public async setGuestVisibility(appUrn: AppUrn, visible: boolean) {
-    const app = await this.appsRepository.getAppByUrn(appUrn);
-
-    if (!app) {
+    if (!(await this.appsRepository.setGuestVisibility(appUrn, visible))) {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', {}, 404);
     }
-
-    const config = (app.config ?? {}) as Record<string, unknown>;
-    await this.appsRepository.updateAppById(app.id, {
-      isVisibleOnGuestDashboard: visible,
-      config: { ...config, isVisibleOnGuestDashboard: visible },
-    });
 
     this.logger.info(`${visible ? 'Showed' : 'Hid'} app ${appUrn} on the guest dashboard`);
   }

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { openExternal } from '@/lib/helpers/open-external';
 import { UserSettingsContainer } from './user-settings';
 
-const pending = vi.hoisted(() => ({ settings: false, mode: false, modeMutate: vi.fn() }));
+const pending = vi.hoisted(() => ({ settings: false, mode: false, modeMutate: vi.fn(), formValues: vi.fn() }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getPortalConfigOptions: () => ({ queryKey: ['portal-config'] }),
@@ -29,11 +29,14 @@ vi.mock('./guest-dashboard-settings', () => ({
 }));
 
 vi.mock('../components/user-settings-form/user-settings-form', () => ({
-  UserSettingsForm: ({ loading }: { loading?: boolean }) => (
-    <button type="submit" disabled={loading}>
-      Update settings
-    </button>
-  ),
+  UserSettingsForm: ({ loading, initialValues }: { loading?: boolean; initialValues?: unknown }) => {
+    pending.formValues(initialValues);
+    return (
+      <button type="submit" disabled={loading}>
+        Update settings
+      </button>
+    );
+  },
 }));
 
 describe('UserSettingsContainer pending state', () => {
@@ -77,5 +80,13 @@ describe('UserSettingsContainer pending state', () => {
 
     rerender(<UserSettingsContainer manageHub={false} />);
     expect(screen.queryByTestId('guest-dashboard-settings')).not.toBeInTheDocument();
+  });
+
+  // The card's switch refreshes the Hub's settings. Handed to General settings, the new value reset that
+  // form and dropped what was typed there and not saved yet.
+  it('keeps the guest dashboard switch out of the General settings form', () => {
+    render(<UserSettingsContainer initialValues={{ domain: 'example.com', guestDashboard: true } as never} />);
+
+    expect(pending.formValues).toHaveBeenLastCalledWith({ domain: 'example.com' });
   });
 });

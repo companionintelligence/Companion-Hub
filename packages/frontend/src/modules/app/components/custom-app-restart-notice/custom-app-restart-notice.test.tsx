@@ -33,13 +33,29 @@ describe('CustomAppRestartNotice', () => {
     render(<CustomAppRestartNotice info={info} app={app('running', true)} canRestart />);
 
     const notice = screen.getByTestId('custom-app-restart-notice');
-    expect(notice).toHaveTextContent('Restart to use the saved changes');
-    expect(notice).toHaveTextContent('Family Photos keeps running with its old configuration until it restarts.');
+    expect(notice).toHaveTextContent('Restart needed');
+    expect(notice).toHaveTextContent('Family Photos keeps running with its previous settings until it restarts.');
     expect(notice).toHaveAttribute('role', 'status');
 
     await user.click(screen.getByRole('button', { name: 'Restart' }));
 
     expect(screen.getByRole('dialog', { name: 'Restart Family Photos?' })).toBeInTheDocument();
+  });
+
+  // Unmounted with the notice, the dialog kept its open state and opened by itself when the notice came back.
+  it('keeps an open confirmation when the notice goes away, so it does not come back open', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<CustomAppRestartNotice info={info} app={app('running', true)} canRestart />);
+    await user.click(screen.getByRole('button', { name: 'Restart' }));
+
+    rerender(<CustomAppRestartNotice info={info} app={app('stopped', true)} canRestart />);
+    expect(screen.queryByTestId('custom-app-restart-notice')).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Restart Family Photos?' })).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    rerender(<CustomAppRestartNotice info={info} app={app('running', true)} canRestart />);
+    expect(screen.getByTestId('custom-app-restart-notice')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('still says so to someone who may not restart the app, without the button', () => {

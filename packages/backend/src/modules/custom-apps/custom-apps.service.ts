@@ -208,11 +208,13 @@ export class CustomAppService {
     await this.assertMappedHostPortsFree(mappedHostPorts(config.services), hubHostPorts(this.configService.get('userSettings')));
 
     try {
-      await this.writeDockerComposeConfig(appUrn, config);
+      const before = await this.filesystem.readTextFile(this.dockerComposeConfigPath(appUrn));
+      const written = await this.writeDockerComposeConfig(appUrn, config);
       // A running app keeps the containers it started with until it restarts. Raise the flag Home's
       // "Restart needed" badge and the custom app page read, as a settings change does; start and
-      // restart clear it.
-      if (existingApp.status === 'running') {
+      // restart clear it. A save that left the file as it was owes nothing, as a settings save that
+      // changed nothing doesn't. The file ends in the newline `writeTextFile` adds.
+      if (existingApp.status === 'running' && before?.trimEnd() !== written) {
         await this.appsRepository.updateAppById(existingApp.id, { pendingRestart: true });
       }
       this.logger.info(`Custom app ${appUrn} updated successfully`);
@@ -237,17 +239,23 @@ export class CustomAppService {
     }
   }
 
-  private async writeDockerComposeConfig(appUrn: AppUrn, config: CreateCustomAppDto['config']): Promise<void> {
+  private dockerComposeConfigPath(appUrn: AppUrn): string {
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const { dataDir } = this.configService.get('directories');
 
-    const configPath = path.join(dataDir, 'apps', appStoreId, appName, 'docker-compose.json');
+    return path.join(dataDir, 'apps', appStoreId, appName, 'docker-compose.json');
+  }
+
+  /** Writes the app's compose config and returns the text it wrote. */
+  private async writeDockerComposeConfig(appUrn: AppUrn, config: CreateCustomAppDto['config']): Promise<string> {
+    const configPath = this.dockerComposeConfigPath(appUrn);
     const configContent = JSON.stringify(config, null, 2);
 
     const ok = await this.filesystem.writeTextFile(configPath, configContent);
     if (!ok) {
       throw new Error(`Failed to write docker-compose config at ${configPath}`);
     }
+    return configContent;
   }
 
   private async createAppInfo(appUrn: AppUrn, name: string, config: CreateCustomAppDto['config']): Promise<void> {

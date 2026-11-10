@@ -903,6 +903,11 @@ export const AppActions = ({
     return null;
   })();
 
+  const isCustomApp = info.urn.split(':')[1] === '_user';
+  const editConfigButton = (
+    <IconActionButton key="edit-config" icon={Edit} label={t('CUSTOM_APP_EDIT_CONFIG')} onClick={() => navigate(`/apps/${info.id}/edit`)} />
+  );
+
   switch (app?.status ?? 'missing') {
     case 'stopped':
     case 'missing': {
@@ -910,9 +915,9 @@ export const AppActions = ({
       // legacy/compose-down state and should offer Start, not Install.
       if (!app) {
         buttons.push(InstallButton);
-        if (info.urn.split(':')[1] === '_user') {
+        if (isCustomApp) {
           secondaryActions.push(
-            <IconActionButton key="edit-config" icon={Edit} label={t('CUSTOM_APP_EDIT_CONFIG')} onClick={() => navigate(`/apps/${info.id}/edit`)} />,
+            editConfigButton,
             <IconActionButton
               key="remove"
               icon={Trash}
@@ -930,10 +935,8 @@ export const AppActions = ({
         <IconActionButton key="settings" icon={Settings} label={t('COMMON_SETTINGS')} onClick={updateSettingsDisclosure.open} />,
         <IconActionButton key="reset" icon={Eraser} label={t('APP_INSTALL_FORM_RESET')} onClick={resetAppDisclosure.open} />,
       );
-      if (info.urn.split(':')[1] === '_user') {
-        secondaryActions.push(
-          <IconActionButton key="edit-config" icon={Edit} label={t('CUSTOM_APP_EDIT_CONFIG')} onClick={() => navigate(`/apps/${info.id}/edit`)} />,
-        );
+      if (isCustomApp) {
+        secondaryActions.push(editConfigButton);
       }
       if (openDataFolderButton) secondaryActions.push(openDataFolderButton);
       // Last, as when the app is running: Uninstall sat in the middle of the bar for a stopped app.
@@ -987,9 +990,7 @@ export const AppActions = ({
         <IconActionButton key="reset" icon={Eraser} label={t('APP_INSTALL_FORM_RESET')} onClick={resetAppDisclosure.open} />,
         // A running custom app can be edited too, as the API and MCP tools always allowed. The save marks it
         // as needing a restart, and its page offers one (#2421). Same place as on a stopped app.
-        ...(info.urn.split(':')[1] === '_user'
-          ? [<IconActionButton key="edit-config" icon={Edit} label={t('CUSTOM_APP_EDIT_CONFIG')} onClick={() => navigate(`/apps/${info.id}/edit`)} />]
-          : []),
+        ...(isCustomApp ? [editConfigButton] : []),
         ...(openDataFolderButton ? [openDataFolderButton] : []),
         <IconActionButton
           key="remove"
@@ -1112,7 +1113,7 @@ export const AppActions = ({
       );
       break;
     default:
-      if (info.urn.split(':')[1] === '_user') {
+      if (isCustomApp) {
         secondaryActions.push(
           <IconActionButton
             key="edit-config"
