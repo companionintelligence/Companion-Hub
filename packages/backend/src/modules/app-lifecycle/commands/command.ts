@@ -94,7 +94,11 @@ export class AppLifecycleCommand {
     await entitlements.assertForInstall(appUrn);
   }
 
-  protected async ensureAppDir(appUrn: AppUrn, form: AppEventFormInput, options?: { excludeSubnets?: string[] }): Promise<void> {
+  protected async ensureAppDir(
+    appUrn: AppUrn,
+    form: AppEventFormInput,
+    options?: { excludeSubnets?: string[]; createVolumeDirs?: boolean },
+  ): Promise<void> {
     return prepareAppComposeDir(this.moduleRef, this.docker, appUrn, form, options);
   }
 
