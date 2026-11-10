@@ -3,7 +3,8 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { HttpStatus, Injectable } from '@nestjs/common';
 
 /**
- * What each guarded route allows per client address, per window.
+ * What each guarded route allows per client, per window. A client is an address, except in
+ * `accountRecheck`, where it is an account.
  *
  * `failures` scopes count only attempts that did not succeed: a guess is what brute force needs, a
  * correct password is not one. That also keeps the limit out of the way of a test suite or a script
@@ -28,6 +29,8 @@ const SCOPES = {
   // does not verify is what a guess looks like, so only failures count there.
   didAuthChallenge: { mode: 'attempts', limit: 20, windowMs: 60_000 },
   didAuth: { mode: 'failures', limit: 10, windowMs: 60_000 },
+  // A signed-in person confirming their own password or two-factor code. The only scope keyed by account: see the class note.
+  accountRecheck: { mode: 'failures', limit: 10, windowMs: 60_000 },
 } as const;
 
 export type AuthRateScope = keyof typeof SCOPES;
@@ -36,10 +39,13 @@ export type AuthRateScope = keyof typeof SCOPES;
 const MAX_TRACKED_KEYS = 10_000;
 
 /**
- * An in-memory limiter for the unauthenticated auth routes.
+ * An in-memory limiter for the auth routes.
  *
- * ⚠ KEYED BY CLIENT ADDRESS, NEVER BY ACCOUNT. Keying by email would let anyone who knows the
- * operator's address lock the operator out by failing a few times on purpose.
+ * ⚠ ROUTES THAT TAKE NO SESSION ARE KEYED BY CLIENT ADDRESS, NEVER BY ACCOUNT. Keying by email would
+ * let anyone who knows the operator's address lock the operator out by failing a few times on purpose.
+ * `accountRecheck` is keyed by account id because its routes need that account's own session (or a
+ * host-local credential, which speaks as the first operator). A stranger cannot spend that budget and a
+ * person keeps the same one from whichever address they are on.
  *
  * The address is whatever Express resolved through the Hub's trusted-proxy configuration, so it is
  * the real client behind Traefik and the tunnel, not the proxy's own. Where a caller reaches the Hub
@@ -56,7 +62,7 @@ export class AuthRateLimiter {
   /**
    * Throw 429 if `clientKey` has used up `scope`; otherwise reserve a slot for this request.
    *
-   * @returns a function that gives the slot back, for a request that turned out to be a success. It
+   * @returns a function that gives the slot back, for a request that turned out not to be a guess. It
    * gives back only this request's own slot: a success does not wipe the failures of other requests
    * from the same address, or one correct login would reset the budget for guessing at the others.
    * It does nothing in an `attempts` scope.
@@ -88,6 +94,30 @@ export class AuthRateLimiter {
         this.refund(key, at);
       }
     };
+  }
+
+  /** Whether `clientKey` has used up `scope`, so its next request would be refused. */
+  public isSpent(scope: AuthRateScope, clientKey: string): boolean {
+    const { limit, windowMs } = SCOPES[scope];
+
+    return this.recent(`${scope}:${clientKey}`, windowMs).length >= limit;
+  }
+
+  /**
+   * True the first time it is asked about `clientKey` within a window of `scope`, then false until
+   * that window has passed. For the log line written when a limit is reached: a client that keeps
+   * going past the limit should cost one line, not one per refused request.
+   */
+  public firstNoticeInWindow(scope: AuthRateScope, clientKey: string): boolean {
+    const key = `${scope}:notice:${clientKey}`;
+
+    if (this.recent(key, SCOPES[scope].windowMs).length > 0) {
+      return false;
+    }
+
+    this.record(key, [], this.now());
+
+    return true;
   }
 
   private recent(key: string, windowMs: number): number[] {
@@ -136,12 +166,16 @@ export class AuthRateLimiter {
       }
     }
 
-    // Everything is live and the table is still over the cap: drop the oldest entries first.
+    // Everything is live and the table is still over the cap: drop the oldest entries first. Account
+    // budgets stay: there is one per person on this Hub, so they cannot grow the table and the budget
+    // that ignores the address must not be emptied by traffic from other addresses.
     for (const key of this.hits.keys()) {
       if (this.hits.size <= MAX_TRACKED_KEYS) {
         break;
       }
-      this.hits.delete(key);
+      if (!key.startsWith('accountRecheck:')) {
+        this.hits.delete(key);
+      }
     }
   }
 }

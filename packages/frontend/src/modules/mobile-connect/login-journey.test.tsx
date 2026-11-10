@@ -47,11 +47,9 @@ vi.mock('@/lib/mobile-connection', () => ({
 }));
 
 // ── Portal + OIDC boundaries ───────────────────────────────────────────────
-const signInToPortal = vi.fn();
 const listHubDevices = vi.fn();
 vi.mock('./portal-client', async (orig) => ({
   ...(await orig<typeof import('./portal-client')>()),
-  signInToPortal: (...a: unknown[]) => signInToPortal(...a),
   listHubDevices: (...a: unknown[]) => listHubDevices(...a),
 }));
 
@@ -96,7 +94,6 @@ beforeEach(() => {
   mc.setHub.mockClear();
   mc.clearHub.mockClear();
   mc.init.mockClear();
-  signInToPortal.mockReset();
   listHubDevices.mockReset();
   loginWithPortalOidc.mockReset();
   resumePendingOidcLogin.mockReset();
@@ -107,39 +104,7 @@ beforeEach(() => {
 });
 
 describe('mobile login journey', () => {
-  it('email → Portal → pick Hub → hands off to /login with native fetch active', async () => {
-    signInToPortal.mockResolvedValue({ token: 'sess-tok', cookie: null });
-    listHubDevices.mockResolvedValue(DEVICES);
-    renderJourney();
-
-    // Lands on the splash — logo + Log in, not email.
-    expect(await screen.findByTestId('oidc-login-btn')).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText('you@example.com')).not.toBeInTheDocument();
-
-    // Email lives under Advanced.
-    await user.click(screen.getByTestId('advanced-link'));
-    expect(await screen.findByPlaceholderText('you@example.com')).toBeInTheDocument();
-
-    await user.type(screen.getByPlaceholderText('you@example.com'), 'you@example.com');
-    await user.type(screen.getByPlaceholderText('Password'), 'pw');
-    await user.click(screen.getByRole('button', { name: /sign in with email/i }));
-
-    // Portal returns the Hub list.
-    expect(await screen.findByText('Apple Hub')).toBeInTheDocument();
-    expect(signInToPortal).toHaveBeenCalledWith('you@example.com', 'pw', expect.any(String));
-
-    // Pick the reachable Hub → hands off to /login.
-    await user.click(screen.getByTestId('hub-row-reg-1'));
-
-    expect(await screen.findByTestId('hub-login-screen')).toBeInTheDocument();
-    // The exact regression guard: the connection + native fetch are established
-    // before the /login POST would fire.
-    expect(mc.setHub).toHaveBeenCalledWith('https://hub-apple.ci.computer');
-    expect(conn.hubUrl).toBe('https://hub-apple.ci.computer');
-    expect(conn.nativeFetchActive).toBe(true);
-  });
-
-  it('OIDC → Portal → pick Hub → hands off to /login', async () => {
+  it('OIDC → Portal → pick Hub → hands off to /login with native fetch active', async () => {
     loginWithPortalOidc.mockResolvedValue({ accessToken: 'AT', idToken: null, tokenType: 'Bearer', expiresIn: 3600 });
     listHubDevices.mockResolvedValue(DEVICES);
     renderJourney();
@@ -152,7 +117,22 @@ describe('mobile login journey', () => {
 
     await user.click(screen.getByTestId('hub-row-reg-1'));
     expect(await screen.findByTestId('hub-login-screen')).toBeInTheDocument();
+    // The exact regression guard: the connection + native fetch are established
+    // before the /login POST would fire.
+    expect(mc.setHub).toHaveBeenCalledWith('https://hub-apple.ci.computer');
     expect(conn.hubUrl).toBe('https://hub-apple.ci.computer');
+    expect(conn.nativeFetchActive).toBe(true);
+  });
+
+  it('Advanced offers the Companion URL only, and returns to Log in', async () => {
+    renderJourney();
+
+    await user.click(await screen.findByTestId('advanced-link'));
+    expect(await screen.findByLabelText('Companion URL')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('you@example.com')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /^save url$/i }));
+    expect(await screen.findByTestId('oidc-login-btn')).toBeInTheDocument();
   });
 
   it('an already-connected device is routed off /connect to the app (not stranded on the picker)', async () => {
@@ -169,31 +149,25 @@ describe('mobile login journey', () => {
     expect(await screen.findByTestId('home-screen')).toBeInTheDocument();
   });
 
-  it('bad credentials surface an error and keep the user on the connect screen', async () => {
-    signInToPortal.mockRejectedValue(new Error('Invalid credentials'));
+  it('a failed sign-in surfaces an error and keeps the user on the connect screen', async () => {
+    loginWithPortalOidc.mockRejectedValue(new Error('Invalid credentials'));
     renderJourney();
 
-    await user.click(await screen.findByTestId('advanced-link'));
-    await user.type(await screen.findByPlaceholderText('you@example.com'), 'a@b.c');
-    await user.type(screen.getByPlaceholderText('Password'), 'wrong');
-    await user.click(screen.getByRole('button', { name: /sign in with email/i }));
+    await user.click(await screen.findByTestId('oidc-login-btn'));
 
     await vi.waitFor(() => expect(toastError).toHaveBeenCalledWith('Invalid credentials'));
     expect(listHubDevices).not.toHaveBeenCalled();
     expect(screen.queryByTestId('hub-login-screen')).not.toBeInTheDocument();
-    expect(screen.getByPlaceholderText('you@example.com')).toBeInTheDocument();
+    expect(screen.getByTestId('oidc-login-btn')).toBeInTheDocument();
     expect(mc.setHub).not.toHaveBeenCalled();
   });
 
   it('an unreachable Hub cannot be connected (row disabled, no handoff)', async () => {
-    signInToPortal.mockResolvedValue({ token: 'sess-tok', cookie: null });
+    loginWithPortalOidc.mockResolvedValue({ accessToken: 'AT', idToken: null, tokenType: 'Bearer', expiresIn: 3600 });
     listHubDevices.mockResolvedValue(DEVICES);
     renderJourney();
 
-    await user.click(await screen.findByTestId('advanced-link'));
-    await user.type(await screen.findByPlaceholderText('you@example.com'), 'a@b.c');
-    await user.type(screen.getByPlaceholderText('Password'), 'pw');
-    await user.click(screen.getByRole('button', { name: /sign in with email/i }));
+    await user.click(await screen.findByTestId('oidc-login-btn'));
 
     const unreachable = await screen.findByTestId('hub-row-reg-2');
     expect(unreachable).toBeDisabled();

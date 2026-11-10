@@ -98,7 +98,7 @@ which used to also carry the four steps they share. Those now live in their own 
 | Module | Step |
 |---|---|
 | `commands/compose-preparation.ts` | Renders the app's `docker-compose.yml` from its manifest — architecture overrides, exposure hostnames, resource limits, subnet |
-| `commands/host-device-preflight.ts` | Fails fast when a manifest wants `/dev/kfd` or `/dev/kvm` the host cannot provide |
+| `commands/host-device-preflight.ts` | Fails fast when a manifest wants `/dev/kfd` or `/dev/kvm` the host cannot provide, or a Kata runtime Docker doesn't have |
 | `commands/network-recovery.ts` | Runs compose, retrying with a fresh subnet when Docker reports an overlapping bridge range |
 | `commands/failure-reporting.ts` | Turns a thrown error into the structured result the queue replies with, and reports it |
 
@@ -288,6 +288,7 @@ is set, so the source-address check alone passed public tunnel traffic with no c
   `code` `missing_api_key` or `invalid_api_key` and a `WWW-Authenticate` header; a key-store outage
   answers 503 with `type: 'server_error'`. The guard writes the body and then throws, because
   `MainExceptionFilter` returns early once `headersSent`.
+- **Replies through the tunnel.** `TunnelErrorStatusInterceptor` is on the handlers that relay engine or pool errors (`/api/inference/v1/*`, the app-facing `/api/inference/pool/*` and the root `/api/version` and `/api/tags`). For a request that `arrivedThroughTunnel` (a non-empty `TUNNEL_MARKER_HEADERS` header) it sends a 502, 503 or 504 as a 500, because Cloudflare replaces those bodies with `error code: 502`. Those replies also drop `localBackends`, engine addresses and the reason a pool candidate failed (`describeNoCandidates` with no probes, `describeAllCandidatesFailed` with `withCause: false`, `describeRouteError` with `hideAddresses`). The marker is only a reading of where a reply goes, never an admission: a caller on the LAN who adds one has to present a key and gets the shorter reply. The guard's own 503 is written before interceptors run, so it keeps its status.
 
 The `inference` scope is appended last in `API_KEY_SCOPES` so `normalizeScopes` keeps every stored
 row's order. It is minted by the CLI only (`cihub api-key create --scope inference`, alone on its key,
@@ -333,7 +334,13 @@ What cancelling an install (`AppLifecycleService.cancelOperation`) does depends 
   install queue go out, and the worker skips the message when it reaches it
   (`takeSettledBeforeStart`), even if the app has been installed again since.
 - A running install's abort reaches the pull or `compose up`, and the worker compensates and sends
-  `install_cancelled`. From `finalizing` on, the cancel is refused.
+  `install_cancelled`. From `finalizing` on, the cancel is refused. Compensation removes what this
+  install added and leaves what was there when it began: a data folder that already held files
+  stays as it is (with whatever this install wrote into it). When the app already had a named
+  volume, `compose down` drops `-v`, so every named volume stays (one this install created beside
+  it too), and `compose rm -v` clears only the anonymous volumes of this install's containers. A
+  volume named as compose names them counts without compose's labels, since `down -v` goes by
+  name. A check that fails or takes over 15 seconds counts as data being there.
 
 ## One lifecycle operation per app
 
@@ -1009,6 +1016,12 @@ The port-expose routes still take only a sign-in.
 
 `/user-config/:urn` (GET, PUT, enable, disable) asserts the same verbs as its MCP tools for every app:
 reading takes `view` (`configure` on a `_user` app), and every change takes `configure`.
+
+An override saved there, and the env file beside it, is held to the app sandbox when it is saved and each time the
+app's containers are created (`compose-override-sandbox.ts`). The check runs at `compose up` too because a file can
+also come from a restore or an older Hub. It applies the builder's rules with the app's own grants and refuses any
+Compose key it doesn't know to be harmless. An override that can't be read as YAML is refused. The env file can't set a name the
+Hub's checks take as the app's own (`HUB_OWNED_APP_ENV_VARS`), and neither file can use a value from outside the app.
 
 An app's log stream (`/api/sse/app-logs`) takes the verb reading its settings takes (`settingsReadAction`),
 since a container prints its env values at start. A stream sends at most 1000 lines at the start

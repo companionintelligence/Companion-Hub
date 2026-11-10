@@ -69,22 +69,22 @@ export class RestartAppCommand extends AppLifecycleCommand {
         {
           recoverHostPortConflict: (error) => this.moveMainPortOffConflict(appUrn, form, error, refusedHostPorts),
         },
-      );
+      ).catch((error: unknown) => this.failComposeUp(appUrn, form, error));
 
       // `compose up` returning says nothing about a service that crashes as soon as it starts.
-      const notUp = await this.appCameUpError(appUrn);
+      const notUp = await this.appCameUpErrorAfterStart(appUrn, form);
+
+      if (notUp) {
+        await this.rebuildRoutesAfterFailure(appUrn, form);
+        throw notUp;
+      }
 
       // TODO(#244): revisit on next Traefik upgrade
       // Regenerate Traefik file-based config after app restarts (workaround for Docker API version issue).
-      // Also when a service failed, since the other containers stay up and go on serving. The check
-      // above is the wait for them to start.
+      // The check above is the wait for them to start.
       if (exposedThroughTraefik) {
         logger.debug(`Regenerating Traefik config for restarted exposed app ${appUrn}`);
         await traefikConfigService.regenerateTraefikConfig(0);
-      }
-
-      if (notUp) {
-        throw notUp;
       }
 
       logger.info(`App ${appUrn} restarted`);

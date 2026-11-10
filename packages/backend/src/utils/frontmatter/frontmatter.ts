@@ -14,9 +14,7 @@ export function getFrontmatter(content: string) {
       return null;
     }
 
-    const frontmatter = match[0];
-
-    return YAML.parse(frontmatter.replace(/---/gm, '').trim());
+    return YAML.parse(match[1] ?? '');
   } catch (error) {
     console.error('Error extracting frontmatter:', error);
     return null;

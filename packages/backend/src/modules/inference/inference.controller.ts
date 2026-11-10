@@ -78,6 +78,7 @@ import { BackendObserverService } from './supervision/backend-observer.service';
 import { isSameServer } from './engine-credential-scope';
 import { buildTranscriptionForm, MAX_TRANSCRIPTION_BYTES, speechContentType, type UploadedAudio } from './audio-proxy.util';
 import { sendRouteError } from './inference-error-reply';
+import { TunnelErrorStatusInterceptor } from './tunnel-error-status.interceptor';
 import { abortWhenClientCloses, relayStream } from './upstream-stream';
 
 /** The transcription `response_format`s that are a plain-text transcript, and the type each goes out under. */
@@ -158,7 +159,8 @@ export class InferenceController {
   // OpenAI-shaped (`{ error: { message, type, code } }`) like every error these
   // handlers emit themselves, so a client shows the reason, not a Nest envelope.
   // On the local path an engine's own refusal keeps its status and message, and
-  // only a failure to get any answer is a 502 — see `inference-error-reply.ts`.
+  // only a failure to get any answer is a 502 — see `inference-error-reply.ts`. Through the public
+  // address those replies go out as 500 so Cloudflare keeps the body: `TunnelErrorStatusInterceptor`.
   //
   // `@HttpCode(200)` on every POST here: Nest sets a POST's default 201 on the
   // response before the handler runs, `@Res()` or not, so a local success went
@@ -173,6 +175,7 @@ export class InferenceController {
   // connection, still generating, for as long as the provider kept it open.
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('v1/chat/completions')
   @HttpCode(200)
   async v1ChatCompletions(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
@@ -204,6 +207,7 @@ export class InferenceController {
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('v1/completions')
   @HttpCode(200)
   async v1Completions(@Body() body: Record<string, unknown>, @Res() res: Response) {
@@ -233,6 +237,7 @@ export class InferenceController {
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('v1/embeddings')
   @HttpCode(200)
   async v1Embeddings(@Body() body: Record<string, unknown>, @Res() res: Response) {
@@ -250,6 +255,7 @@ export class InferenceController {
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Get('v1/models')
   async v1Models(@Res() res: Response) {
     try {
@@ -261,6 +267,7 @@ export class InferenceController {
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('v1/audio/speech')
   @HttpCode(200)
   async v1AudioSpeech(@Body() body: Record<string, unknown>, @Res() res: Response) {
@@ -274,6 +281,7 @@ export class InferenceController {
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('v1/audio/transcriptions')
   @HttpCode(200)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_TRANSCRIPTION_BYTES } }))
@@ -308,6 +316,7 @@ export class InferenceController {
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('v1/images/generations')
   @HttpCode(200)
   async v1ImagesGenerations(@Body() body: Record<string, unknown>, @Res() res: Response) {

@@ -2,12 +2,78 @@ import { describe, expect, it } from 'vitest';
 import {
   canServeOnCustomDomain,
   didPublicRoutingIdentityChange,
+  guestPublicUrl,
   publishesCloudflarePublicRoute,
   requiresHubLoginOnPublicRoute,
   resolveRoutingSubdomain,
 } from '../app-public-routing.helpers';
 
 describe('app-public-routing.helpers', () => {
+  describe('guestPublicUrl', () => {
+    const hub = { orgSlug: 'my-org', hubSubdomain: 'hub-my-device-my-org', domain: 'example.com' };
+    const onPublicWeb = {
+      appName: 'jellyfin',
+      appStoreSlug: 'ci-marketplace',
+      localSubdomain: 'jellyfin',
+      publicDomain: 'ci0.example',
+      exposureMode: 'cloudflare',
+      exposedLocal: true,
+      config: { exposureMode: 'cloudflare', exposedLocal: true },
+    };
+
+    it('builds the hostname the tunnel publishes', () => {
+      expect(guestPublicUrl(onPublicWeb, { exposable: true }, hub)).toBe('https://jellyfin-my-device-my-org.ci0.example');
+    });
+
+    it("uses the Hub's domain for an app with no public domain of its own", () => {
+      expect(guestPublicUrl({ ...onPublicWeb, publicDomain: null }, { exposable: true }, hub)).toBe('https://jellyfin-my-device-my-org.example.com');
+    });
+
+    it('names the routing label Portal serves when the app chose no subdomain', () => {
+      expect(guestPublicUrl({ ...onPublicWeb, localSubdomain: null }, { exposable: true }, hub)).toBe(
+        'https://jellyfin-ci-marketplace-my-device-my-org.ci0.example',
+      );
+    });
+
+    it('prefers a custom hostname Portal has wired', () => {
+      expect(guestPublicUrl({ ...onPublicWeb, customDomain: 'Media.Example.org.' }, { exposable: true }, hub)).toBe('https://media.example.org');
+    });
+
+    it('names the app under the organization alone for a registration with no Hub subdomain, as the sync publishes it', () => {
+      expect(guestPublicUrl(onPublicWeb, { exposable: true }, { ...hub, hubSubdomain: null })).toBe('https://jellyfin-my-org.ci0.example');
+    });
+
+    it('keeps a custom hostname when the sync refused the platform name', () => {
+      expect(guestPublicUrl({ ...onPublicWeb, customDomain: 'media.example.org' }, { exposable: true }, hub, true)).toBe('https://media.example.org');
+    });
+
+    it.each([
+      [
+        'it is not on Public web',
+        { ...onPublicWeb, exposureMode: 'local', exposedLocal: false, config: { exposureMode: 'local' } },
+        { exposable: true },
+        hub,
+      ],
+      ['its stored form is local whatever the row says', { ...onPublicWeb, config: { exposureMode: 'local' } }, { exposable: true }, hub],
+      [
+        'a custom hostname is left on an app that moved off Public web',
+        { ...onPublicWeb, customDomain: 'media.example.org', config: { exposureMode: 'tailscale', exposedLocal: true, openPort: false } },
+        { exposable: true },
+        hub,
+      ],
+      ['it cannot be exposed', onPublicWeb, { exposable: false }, hub],
+      ['it has an exposed domain of its own', { ...onPublicWeb, exposed: true, domain: 'own.example.org' }, { exposable: true }, hub],
+      ['the Hub is not paired', onPublicWeb, { exposable: true }, { orgSlug: undefined, hubSubdomain: undefined, domain: 'example.com' }],
+      ['no domain is known', { ...onPublicWeb, publicDomain: '' }, { exposable: true }, { ...hub, domain: '' }],
+    ])('is null when %s', (_case, app, info, names) => {
+      expect(guestPublicUrl(app, info, names)).toBeNull();
+    });
+
+    it('is null when the sync refused the platform name and there is no custom hostname', () => {
+      expect(guestPublicUrl(onPublicWeb, { exposable: true }, hub, true)).toBeNull();
+    });
+  });
+
   describe('publishesCloudflarePublicRoute', () => {
     it('returns true for cloudflare exposure mode', () => {
       expect(publishesCloudflarePublicRoute({ exposureMode: 'cloudflare', exposedLocal: false })).toBe(true);

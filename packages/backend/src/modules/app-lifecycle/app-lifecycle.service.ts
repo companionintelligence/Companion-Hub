@@ -442,7 +442,7 @@ function buildInstallRowPatch(parsedForm: ParsedAppForm, storedConfig: unknown):
 
   /*
    * A form that names no port keeps the one the app is on. The config is replaced whole, and every start
-   * rebuilds APP_PORT from it (`startCommandForm`), so a port the form left out sent the app back to the
+   * rebuilds APP_PORT from it (`lifecycleCommandForm`), so a port the form left out sent the app back to the
    * manifest's while the row still named the port it had. A port is set by a move or by a save that names one.
    */
   const config = toStoredConfig(parsedForm);
@@ -810,7 +810,29 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     void action().catch((err) => this.logLifecycleHandlerError(command, appUrn, err));
   }
 
+  /** Answers a command that will not run because its app was already settled. A failed reply is only logged. */
+  private async endSettledCommand(
+    data: z.infer<typeof appEventSchema>,
+    job: LifecycleJob | null,
+    reply: (response: z.output<typeof appEventResultSchema>) => Promise<void>,
+    message: string,
+  ) {
+    if (job) {
+      await this.lifecycleJobService?.cancelJob(job.id, message).catch(() => null);
+    }
+    try {
+      await reply({ success: false, cancelled: true, message });
+    } catch (err) {
+      this.logger.warn(
+        `[lifecycle] could not reply to the settled '${data.command}' for ${data.appUrn}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   async invokeCommand(data: z.infer<typeof appEventSchema>, reply: (response: z.output<typeof appEventResultSchema>) => Promise<void>) {
+    // This consumer registers before bootstrap has loaded the app stores, so a redelivered command waits for them.
+    await this.marketplaceService.whenInitialized();
+
     // Serialize installs so a second "Install" cannot compete with an in-progress image pull.
     let releasePipeline: (() => void) | undefined;
     const isInstall = data.command === 'install';
@@ -847,16 +869,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // row by URN, which may now belong to the newer install, and would fail it.
       if (this.operationRegistry.takeSettledBeforeStart(data.requestId)) {
         this.logger.info(`[lifecycle] '${data.command}' for ${data.appUrn} was cancelled while queued and is already settled; skipping it`);
-        if (job) {
-          await this.lifecycleJobService?.cancelJob(job.id, 'Operation cancelled before it started').catch(() => null);
-        }
-        try {
-          await reply({ success: false, cancelled: true, message: 'Operation cancelled before it started' });
-        } catch (err) {
-          this.logger.warn(
-            `[lifecycle] could not reply to the settled '${data.command}' for ${data.appUrn}: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
+        await this.endSettledCommand(data, job, reply, 'Operation cancelled before it started');
         return;
       }
 
@@ -864,7 +877,26 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // message dequeued after a newer op replaced the entry must NOT wire the newer op's AbortSignal
       // into this command or mutate the newer entry's phase.
       const registered = this.operationRegistry.get(data.appUrn);
-      const entry = registered && registered.requestId === data.requestId ? registered : undefined;
+      let entry = registered && registered.requestId === data.requestId ? registered : undefined;
+
+      // An install redelivered across a restart has no entry. Startup recovery fails every install it
+      // does not see running, which includes one still waiting its turn or delivered late. Running that
+      // one would install an app its page already shows as failed (#2286). A retry puts the row back to
+      // `installing` under its own request, so the row alone cannot tell the old message from the retry.
+      if (isInstall && !entry) {
+        const row = await this.appRepository.getAppByUrn(data.appUrn);
+        // Read after the row: a retry can register during that read.
+        const newer = this.operationRegistry.get(data.appUrn);
+        if (newer || row?.status !== 'installing') {
+          const why = newer ? `request ${newer.requestId} holds the app` : `row is ${row?.status ?? 'gone'}`;
+          this.logger.info(`[lifecycle] redelivered install of ${data.appUrn} is no longer wanted (${why}); skipping it`);
+          await this.endSettledCommand(data, job, reply, 'Install already ended before it could resume');
+          return;
+        }
+        // Registered as a dispatched install is, so Cancel reaches it and other commands wait for it.
+        this.registerDispatchedCommand(data.appUrn, data.requestId, 'install', { takesOverClaim: false });
+        entry = this.operationRegistry.get(data.appUrn);
+      }
 
       // Tier-A: the op was cancelled while queued (before this worker dequeued it). Skip execution
       // entirely and finalize the cancellation. No compose/pull ran, so there is nothing to compensate.
@@ -1233,8 +1265,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     // Aborting somebody else's install or update weighs what stopping the app does, so it takes
     // `stop` — the verb the cancel route asserts. Before the registry is read; see `assertActorMay`.
-    // Unmarked, unlike stopping the app: cancelling an install undoes it, down to the data it was
-    // installing onto, so a managed key needs `full` to cancel another app's operation.
+    // Unmarked, unlike stopping the app: cancelling an install undoes it, down to the data it wrote,
+    // so a managed key needs `full` to cancel another app's operation.
     await this.assertActorMay(params.actor, appUrn, 'stop');
     const entry = this.operationRegistry.get(appUrn);
     if (!entry) {
@@ -1289,26 +1321,34 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   /**
-   * The form a start publishes: the stored config with this start's options on top.
+   * The form a start or restart publishes: the stored config with this command's options on top.
    *
    * `appFormSchema` passes unknown keys through into the stored config, so a stored
    * `onlyRecreateChanged` would otherwise stop every dashboard start from force-recreating.
-   * Only the caller decides it: the Hub boot and the start after an update.
+   * Only the caller decides it: the Hub boot and the start after an update. Likewise `stopIfNotUp`.
    */
-  private startCommandForm(storedConfig: unknown, options: { skipPull?: boolean; onlyRecreateChanged?: boolean }): Record<string, unknown> {
-    const { onlyRecreateChanged: _storedRecreateMode, ...config } = (storedConfig ?? {}) as Record<string, unknown>;
-    return { ...config, skipPull: options.skipPull, ...(options.onlyRecreateChanged ? { onlyRecreateChanged: true } : {}) };
+  private lifecycleCommandForm(
+    storedConfig: unknown,
+    options: { skipPull?: boolean; onlyRecreateChanged?: boolean; stopIfNotUp?: boolean },
+  ): Record<string, unknown> {
+    const { onlyRecreateChanged: _storedRecreateMode, stopIfNotUp: _storedStopIfNotUp, ...config } = (storedConfig ?? {}) as Record<string, unknown>;
+    return {
+      ...config,
+      skipPull: options.skipPull,
+      ...(options.onlyRecreateChanged ? { onlyRecreateChanged: true } : {}),
+      ...(options.stopIfNotUp ? { stopIfNotUp: true } : {}),
+    };
   }
 
   async startApp(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean; actor: LifecycleActor }) {
     // Before the app is even read — see `assertActorMay`.
     await this.assertActorMay(params.actor, params.appUrn, 'start');
-    return this.withOperationClaim(params.appUrn, 'start', () => this.dispatchStart(params));
+    return this.withOperationClaim(params.appUrn, 'start', () => this.dispatchStart({ ...params, stopIfNotUp: params.actor.kind !== 'system' }));
   }
 
   /** `startApp` past its grant check, with the app claimed: by this start, or by the install it is part of. */
-  private async dispatchStart(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean }) {
-    const { appUrn, skipPull, onlyRecreateChanged } = params;
+  private async dispatchStart(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean; stopIfNotUp?: boolean }) {
+    const { appUrn, skipPull, onlyRecreateChanged, stopIfNotUp } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -1325,7 +1365,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       appUrn,
       command: 'start',
       requestId,
-      form: this.startCommandForm(app.config, { skipPull, onlyRecreateChanged }),
+      form: this.lifecycleCommandForm(app.config, { skipPull, onlyRecreateChanged, stopIfNotUp }),
     })
       .then(async (raw) => {
         const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort } = raw as z.output<
@@ -2386,7 +2426,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'restart');
-    this.publishRegistered(appUrn, requestId, { command: 'restart', appUrn, requestId, form: { ...app.config, skipPull } })
+    const form = this.lifecycleCommandForm(app.config, { skipPull, stopIfNotUp: params.actor.kind !== 'system' });
+    this.publishRegistered(appUrn, requestId, { command: 'restart', appUrn, requestId, form })
       .then(async (raw) => {
         const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort } = raw as z.output<
           typeof appEventResultSchema
@@ -2472,7 +2513,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       appUrn,
       command: 'start',
       requestId,
-      form: this.startCommandForm(app.config, { skipPull, onlyRecreateChanged }),
+      form: this.lifecycleCommandForm(app.config, { skipPull, onlyRecreateChanged }),
     });
     const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort } = raw as z.output<typeof appEventResultSchema>;
 
@@ -2578,7 +2619,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       command: 'restart',
       appUrn,
       requestId,
-      form: { ...app.config, skipPull },
+      form: this.lifecycleCommandForm(app.config, { skipPull }),
     });
     const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort } = raw as z.output<typeof appEventResultSchema>;
 

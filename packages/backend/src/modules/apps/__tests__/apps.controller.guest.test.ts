@@ -52,6 +52,28 @@ describe('AppsController.getGuestApps', () => {
     expect(result.installed[0]?.app).toMatchObject({ id: 3, status: 'running', domain: 'open-webui.example.test' });
   });
 
+  it('passes on the public address, the one field a tile needs that is not a column', async () => {
+    const read = mock<AppsReadService>();
+    read.getGuestDashboardApps.mockResolvedValue([
+      {
+        app: { id: 3, status: 'running', appName: 'open-webui' },
+        info: { id: 'open-webui' },
+        metadata: {},
+        publicUrl: 'https://webui-dev-org.example.test',
+      },
+    ] as never);
+
+    const result = await new AppsController(
+      read,
+      mock<AppsService>(),
+      mock<AppRuntimeMonitorService>(),
+      mock<ModuleRef>(),
+      mock<MarketplaceWhoIsService>(),
+    ).getGuestApps();
+
+    expect((result.installed[0]?.app as { publicUrl?: string } | undefined)?.publicUrl).toBe('https://webui-dev-org.example.test');
+  });
+
   it('does not include the install form, whatever the row holds', async () => {
     const result = await controllerServingGuestApps().getGuestApps();
 

@@ -56,8 +56,8 @@ Below `full`, the rest is refused with `APP_ACTION_GRANT_DENIED`: installing the
 configuration (user config, ignored versions, custom-app compose or metadata, availability repair, and
 app config); uninstalling, resetting, or updating it; cancelling its operation in progress; and taking,
 restoring, or deleting a backup. Cancelling and taking a backup sit with `full` because both can lose
-data: cancelling an install undoes it down to the data it was installing onto, and each backup's
-retention cleanup deletes the app's oldest backups.
+data: cancelling an install deletes what that install wrote to an app with no earlier data. Each
+backup's retention cleanup deletes the app's oldest backups.
 
 These are grant rules, and the key's capability still gates each tool on top of them, on its own app
 too. At `write` the destructive tools stay refused: `hub_call_app_tool`; a `hub_call_app_api` call that

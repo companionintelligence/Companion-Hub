@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
+import { mergeArchitectureOverrides, oneShotServiceNames } from '@/common/helpers/compose-helpers';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { supportsPosixPermissions } from '@/common/helpers/bind-mount-helpers';
 import { execAsync } from '@/common/helpers/exec-helpers';
@@ -9,6 +10,7 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AsyncMutex } from '@/utils/mutex/async-mutex';
 import { Injectable } from '@nestjs/common';
+import { securityGrantsFor } from './security-grants';
 import { parseInstalledAppInfo, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 
@@ -224,6 +226,25 @@ export class AppFilesManager {
   }
 
   /**
+   * Which services of the installed app are one-shots (see `oneShotServiceNames`), read as
+   * `compose-preparation.ts` runs them. None when the app has no docker-compose.json or it can't be read:
+   * a failed service then counts as it always has.
+   */
+  public async getOneShotServiceNames(appUrn: AppUrn): Promise<Set<string>> {
+    try {
+      const composeJson = await this.getDockerComposeJson(appUrn);
+      if (!composeJson.content) {
+        return new Set();
+      }
+      const { services, overrides } = parseInstalledComposeJson(composeJson.content, securityGrantsFor(appUrn));
+      return oneShotServiceNames(mergeArchitectureOverrides(services, overrides, this.configuration.get('architecture')));
+    } catch (error) {
+      this.logger.warn(`Could not read which services of ${appUrn} are one-shots: ${error instanceof Error ? error.message : String(error)}`);
+      return new Set();
+    }
+  }
+
+  /**
    * Write the docker-compose.yml file to the installed app folder
    * @param appUrn - The app id
    * @param composeFile - The content of the docker-compose.yml file
@@ -361,6 +382,18 @@ export class AppFilesManager {
       appDataPath: config.userSettings.appDataPath,
       rootFolderHost: config.rootFolderHost,
     });
+  }
+
+  /**
+   * Whether the app has data on disk. An uninstall with Delete all data off leaves it for a later install to pick up.
+   * A folder the Hub cannot read counts, because `pathExists` and `listFiles` report that one as missing or empty.
+   */
+  public async hasAppData(appUrn: AppUrn): Promise<boolean> {
+    const { appDataDir } = this.getAppPaths(appUrn);
+    if ((await this.filesystem.findUnreadable(appDataDir, { maxEntries: 1, maxFound: 1 })).length > 0) {
+      return true;
+    }
+    return (await this.filesystem.pathExists(appDataDir)) && (await this.filesystem.listFiles(appDataDir)).length > 0;
   }
 
   public async createAppDataDir(appUrn: AppUrn) {

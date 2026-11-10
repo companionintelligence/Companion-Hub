@@ -148,6 +148,18 @@ function runtimeHealthQueryKey(appUrn: string) {
 }
 
 /**
+ * Refetch every app record after the Hub comes back. What a restart changed was announced while no
+ * browser was connected. No app query polls, so an open page kept what it had read before (#2286).
+ */
+export function invalidateAppRecords(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
+  void queryClient.invalidateQueries({ queryKey: getInstalledAppUrnsQueryKey() });
+  void queryClient.invalidateQueries({ queryKey: [{ _id: 'getApp' }] });
+  // A listing read that failed while the Hub was away holds the page on "not found" with its record query off.
+  void queryClient.invalidateQueries({ queryKey: ['app-listing'], predicate: (query) => query.state.status === 'error' });
+}
+
+/**
  * Refetch everything that describes one app. Also the canonical way to unwind an optimistic install
  * write: `onMutate` forces the app to `installing` in several caches at once, and a request that
  * fails before the backend starts work emits no SSE event and none of these queries poll — so
@@ -277,10 +289,12 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
 
   // tailscaled started or stopped refusing the Hub's Tailscale Serve changes. Settings → Network
   // and every Private VPN access card read that from the Tailscale status, and once a publish goes
-  // through the served ports change too.
+  // through the served ports change too. The top of an app page gives up polling after five minutes,
+  // usually before anyone has fixed the operator, so its verdict is asked for again here.
   if (event === 'tailscale_serve_permission') {
     void queryClient.invalidateQueries({ queryKey: tailscaleStatusQueryKey() });
     void queryClient.invalidateQueries({ queryKey: getServeStatusQueryKey() });
+    void queryClient.invalidateQueries({ predicate: (query) => (query.queryKey[0] as { _id?: string } | undefined)?._id === 'checkAvailability' });
     return;
   }
 
