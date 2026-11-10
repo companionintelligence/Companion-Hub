@@ -1791,11 +1791,18 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       const failures = peer.consecutiveFailures + 1;
       const failure = await this.recordProbeFailure(peer, error);
-      this.logger.warn(
-        `[HubPool] capabilities probe for ${peer.nodeFqdn} failed (${failures}/${UNREACHABLE_THRESHOLD}): ${failure.detail}${
-          failure.action ? ` — ${failure.action} Next probe after ${failure.nextProbeAt}.` : ''
-        }`,
-      );
+      const message = `[HubPool] capabilities probe for ${peer.nodeFqdn} failed (${failures}/${UNREACHABLE_THRESHOLD}): ${failure.detail}${
+        failure.action ? ` — ${failure.action} Next probe after ${failure.nextProbeAt}.` : ''
+      }`;
+      // A peer the operator switched off is still probed (see `refreshPeerHealth`), but this Hub sends
+      // it nothing, so its being down asks nothing of anyone. A warning on every poll only filled the log.
+      // A refusal stays a warning: waiting never clears it, the line names the fix and the backoff
+      // already holds it to four an hour.
+      if (peer.enabled === false && failure.kind === 'unreachable') {
+        this.logger.debug(message);
+      } else {
+        this.logger.warn(message);
+      }
       await this.repo.update(peer.id, {
         consecutiveFailures: failures,
         // A changed identity is a definite answer, not a flaky network, so it leaves routing on the

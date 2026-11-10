@@ -1094,7 +1094,7 @@ export const HubPoolSection = () => {
                         >
                           {peer.probeFailure.action}
                         </span>
-                      ) : peer.status === 'unreachable' ? (
+                      ) : peer.status === 'unreachable' && peer.enabled ? (
                         <span data-testid="hub-pool-unreachable-hint" className="text-xs text-muted-foreground">
                           {t('HUB_POOL_UNREACHABLE_HINT', { failures: peer.consecutiveFailures })}
                         </span>

@@ -670,6 +670,30 @@ describe('HubPoolPeerService', () => {
       expect(repo.listByStatuses).toHaveBeenCalledWith(['connected', 'unreachable']);
     });
 
+    it('still probes a switched-off peer but warns only about peers in use', async () => {
+      const logger = mock<LoggerService>();
+      (service as unknown as { logger: LoggerService }).logger = logger;
+      // Through the poll, not `refreshOnePeer`: the poll is what decides a switched-off peer is still probed.
+      const poll = (service as unknown as { refreshPeerHealth: () => Promise<void> }).refreshPeerHealth.bind(service);
+      vi.mocked(global.fetch).mockRejectedValue(new Error('fetch failed'));
+
+      repo.listByStatuses.mockResolvedValue([
+        mockPeer({ status: 'unreachable', consecutiveFailures: 18966, enabled: false, presentTokenEncrypted: 'ENC:token' }),
+      ]);
+      await poll();
+
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining('capabilities probe'));
+
+      repo.listByStatuses.mockResolvedValue([
+        mockPeer({ status: 'unreachable', consecutiveFailures: 4, enabled: true, presentTokenEncrypted: 'ENC:token' }),
+      ]);
+      await poll();
+
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('capabilities probe'));
+    });
+
     it('drives a peer to unreachable and back to connected once it answers again', async () => {
       const capabilities = { hardwareTier: 'high', backends: [], updatedAt: new Date().toISOString() };
       const peer = mockPeer({ status: 'connected', consecutiveFailures: 2, presentTokenEncrypted: 'ENC:token' });
@@ -830,6 +854,23 @@ describe('HubPoolPeerService', () => {
       repo.listAll.mockResolvedValue([peer]);
 
       expect((await service.getPoolStatus()).peers[0]?.probeFailure).toBeNull();
+    });
+
+    it.each([
+      ['identity-mismatch', 'identity_changed'],
+      [undefined, 'unauthorized'],
+    ])('keeps warning when a switched-off peer refuses this Hub (%s)', async (header, kind) => {
+      const logger = mock<LoggerService>();
+      (service as unknown as { logger: LoggerService }).logger = logger;
+      const peer = stalePeer({ enabled: false, status: 'unreachable', consecutiveFailures: 3 });
+      repo.listAll.mockResolvedValue([peer]);
+      vi.mocked(global.fetch).mockResolvedValue(refusal(header));
+
+      await refresh(peer);
+
+      expect((await service.getPoolStatus()).peers[0]?.probeFailure?.kind).toBe(kind);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('cihub pool unpair beta-max.tailxyz.ts.net'));
+      expect(logger.debug).not.toHaveBeenCalledWith(expect.stringContaining('capabilities probe'));
     });
 
     it('warns when a PIN pairing request is swallowed by the stale row it is meant to replace', async () => {
