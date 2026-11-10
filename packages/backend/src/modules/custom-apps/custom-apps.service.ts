@@ -209,6 +209,12 @@ export class CustomAppService {
 
     try {
       await this.writeDockerComposeConfig(appUrn, config);
+      // A running app keeps the containers it started with until it restarts. Raise the flag Home's
+      // "Restart needed" badge and the custom app page read, as a settings change does; start and
+      // restart clear it.
+      if (existingApp.status === 'running') {
+        await this.appsRepository.updateAppById(existingApp.id, { pendingRestart: true });
+      }
       this.logger.info(`Custom app ${appUrn} updated successfully`);
     } catch (error) {
       this.logger.error(`Failed to update custom app ${appUrn}:`, error);

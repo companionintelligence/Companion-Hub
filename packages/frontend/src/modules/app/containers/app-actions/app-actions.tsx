@@ -985,6 +985,11 @@ export const AppActions = ({
         <IconActionButton key="restart" icon={RotateCw} label={t('COMMON_RESTART')} onClick={restartDisclosure.open} />,
         <IconActionButton key="settings" icon={Settings} label={t('COMMON_SETTINGS')} onClick={updateSettingsDisclosure.open} />,
         <IconActionButton key="reset" icon={Eraser} label={t('APP_INSTALL_FORM_RESET')} onClick={resetAppDisclosure.open} />,
+        // A running custom app can be edited too, as the API and MCP tools always allowed. The save marks it
+        // as needing a restart, and its page offers one (#2421). Same place as on a stopped app.
+        ...(info.urn.split(':')[1] === '_user'
+          ? [<IconActionButton key="edit-config" icon={Edit} label={t('CUSTOM_APP_EDIT_CONFIG')} onClick={() => navigate(`/apps/${info.id}/edit`)} />]
+          : []),
         ...(openDataFolderButton ? [openDataFolderButton] : []),
         <IconActionButton
           key="remove"

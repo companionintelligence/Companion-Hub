@@ -13,7 +13,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import type { TranslatableError } from '@/types/error.types';
 import { useEffect, useId, useState } from 'react';
 import { describeComposeIssue, useMultiServiceStore } from '@/stores/multiServiceStore';
-import { getAppComposeDiffOptions, getAppComposeDiffQueryKey, getAppOptions, updateCustomAppMutation } from '@/api-client/@tanstack/react-query.gen';
+import {
+  getAppComposeDiffOptions,
+  getAppComposeDiffQueryKey,
+  getAppOptions,
+  getAppQueryKey,
+  updateCustomAppMutation,
+} from '@/api-client/@tanstack/react-query.gen';
 import type { Route } from './+types/custom-app-edit-page';
 import { getAppComposeDiff } from '@/api-client';
 
@@ -111,6 +117,9 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
       // loader's newer answer. Without this, opening the editor again right after a save showed the
       // config from before it. Saving that view put the old config back.
       void queryClient.invalidateQueries({ queryKey: getAppComposeDiffQueryKey({ path: { urn: `${params.appId}:_user` } }) });
+      // And the app itself: a save to a running app owes a restart, which its page says (#2421). Its cached record,
+      // fresh for 30 seconds, would hide that until the next refetch.
+      void queryClient.invalidateQueries({ queryKey: getAppQueryKey({ path: { urn: `${params.appId}:_user` } }) });
       navigate(`/apps/${appName}`);
     },
     onError: (error: TranslatableError) => {

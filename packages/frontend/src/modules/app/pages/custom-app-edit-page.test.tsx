@@ -59,6 +59,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   // The page reads the app's display name for its title.
   getAppOptions: () => ({ queryKey: ['app'] }),
   getAppComposeDiffQueryKey: (options: { path: { urn: string } }) => ['compose-diff', options.path.urn],
+  getAppQueryKey: (options: { path: { urn: string } }) => ['app', options.path.urn],
   updateCustomAppMutation: () => ({}),
 }));
 
@@ -137,6 +138,8 @@ describe('custom app edit', () => {
     mutationOptions.current?.onSuccess?.();
 
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['compose-diff', 'my-app:_user'] });
+    // The app's own record too, so its page shows the restart a save to a running app owes (#2421).
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['app', 'my-app:_user'] });
     expect(mockNavigate).toHaveBeenCalledWith('/apps/my-app');
   });
 
