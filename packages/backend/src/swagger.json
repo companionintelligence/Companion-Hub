@@ -10642,6 +10642,10 @@
                     "ignoredVersion": {
                       "nullable": true,
                       "type": "number"
+                    },
+                    "publicUrl": {
+                      "nullable": true,
+                      "type": "string"
                     }
                   },
                   "required": [

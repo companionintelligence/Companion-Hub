@@ -97,7 +97,7 @@ export function isMalformedAccessUrl(url: string | null): boolean {
   return url ? parseAccessUrl(url) === null : false;
 }
 
-function isLoopbackHost(host: string): boolean {
+export function isLoopbackHost(host: string): boolean {
   const lower = host.toLowerCase();
   // `*.localhost` resolves to loopback in browsers (RFC 6761), and the Tauri desktop
   // shell serves from `tauri.localhost` on Windows.
@@ -166,7 +166,7 @@ export function isTailscalePortPublished(port: number | null | undefined, served
   return port != null && servedPorts.has(port);
 }
 
-function hasDirectLocalAccess(
+export function hasDirectLocalAccess(
   record: { exposureMode?: string | null; exposedLocal?: boolean; openPort?: boolean },
   options: { hasHostPort: boolean; dynamicConfig: boolean },
 ): boolean {
