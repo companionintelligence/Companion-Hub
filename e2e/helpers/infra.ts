@@ -88,7 +88,7 @@ export async function requireInfraReady(retries = 10, intervalMs = 2000) {
     if (!status.rabbitmq) missing.push(`${RABBITMQ.name} (${RABBITMQ.host}:${RABBITMQ.port})`);
     throw new Error(
       `E2E infrastructure not ready — missing: ${missing.join(', ')}.\n` +
-        'Start infra with: docker compose -f e2e/docker-compose.e2e.yml up -d db queue\n' +
+        'Start infra with: docker compose -f e2e/docker-compose.e2e.yml up -d db queue (its broker password is RABBITMQ_PASSWORD=e2e-rabbitmq)\n' +
         'Or start the local development stack with: cihub up local',
     );
   }

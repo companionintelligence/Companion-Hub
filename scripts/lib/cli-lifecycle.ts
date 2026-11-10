@@ -34,6 +34,7 @@ import {
   resolveHubContext,
 } from './hub-context.js';
 import { applianceEnvFilePaths } from './paths.js';
+import { ensureStrongRabbitmqPassword } from './seed-appliance.js';
 
 const POSTGRES_INFRA_SERVICES = ['ci-hub-queue', 'ci-hub-db'] as const;
 
@@ -47,6 +48,19 @@ async function ensurePostgresInfraAndSyncPassword(
   run('docker', [...buildComposeBaseArgs(envFileName, composeFiles), 'up', '-d', ...POSTGRES_INFRA_SERVICES], envOverrides, cwd);
   await runScript('scripts/sync-postgres-password.ts', () => syncPostgresPasswordFromEnv(envFileName), envOverrides);
   await runScript('scripts/sync-rabbitmq-password.ts', () => syncRabbitmqPasswordFromEnv(envFileName), envOverrides);
+}
+
+/** Say so when `cihub up` gave the env file a broker password of its own (Companion-Hub#884). */
+function noteRabbitmqPasswordReplaced(replaced: boolean): void {
+  if (!replaced) return;
+  printMessageBox(
+    'Broker password replaced',
+    [
+      "RABBITMQ_PASSWORD was missing or the shared default 'admin'; the env file now has a random one.",
+      'The broker is changed to match before the Hub starts.',
+    ],
+    'yellow',
+  );
 }
 
 export function shouldRetryApkMirrorWithHostNetwork(
@@ -139,6 +153,8 @@ export async function startHub(mode: StartMode, env: HubEnv) {
   }
 
   if (env !== 'local') await runScript('scripts/init-traefik.ts', () => initTraefik(), envOverrides);
+  // Every stack but local runs docker-compose.prod.yml, which requires the broker password from this file.
+  if (env !== 'local') noteRabbitmqPasswordReplaced(ensureStrongRabbitmqPassword([envFileName]));
 
   try {
     const portHeal = healHubPortsBeforeStartup(envFileName, (message) => {
@@ -182,6 +198,7 @@ async function startApplianceHub(ctx: HubContext, detachedMode: 'attached' | 'de
   // Both env files hold JWT_SECRET and the database and broker passwords. Desktop apps up to 0.3.6
   // created them at the umask's 0664. A later write keeps the mode a file already has.
   for (const envFile of applianceEnvFilePaths(dataDir)) restrictEnvFileMode(envFile);
+  noteRabbitmqPasswordReplaced(ensureStrongRabbitmqPassword(applianceEnvFilePaths(dataDir)));
   await runScript('scripts/init-hub-data-dirs.ts', () => initHubDataDirs({ appliance: true }), initEnv, dataDir);
   // `state/traefik/config/traefik.yml` and `acme_storage.json` are FILE bind mounts, so on a data dir
   // that has never had them compose stops at "bind source path does not exist" before `ci-hub`

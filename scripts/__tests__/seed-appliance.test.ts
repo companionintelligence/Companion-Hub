@@ -9,6 +9,7 @@ import {
   describeHubImageSource,
   desktopPortalOverridePath,
   describeIgnoredHubResources,
+  ensureStrongRabbitmqPassword,
   envPasswordFrom,
   findBundledCompose,
   findTraefikAssets,
@@ -296,6 +297,68 @@ describe('seedApplianceInstall', () => {
         execPath: join(dataDir, 'no-such-cihub'),
       }),
     ).toThrow(/Could not find docker-compose.prod.yml/);
+  });
+});
+
+/*
+ * The prod compose no longer falls back to `admin` and the Hub refuses it in production
+ * (Companion-Hub#884), so `cihub up` replaces a missing or `admin` broker password in an existing
+ * install's env files before compose reads them, as the desktop app does (runtime_env.rs).
+ */
+describe('ensureStrongRabbitmqPassword', () => {
+  let dataDir: string;
+  afterEach(() => {
+    if (dataDir) rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  function seedEnvFiles(body: string): string[] {
+    dataDir = mkdtempSync(join(tmpdir(), 'cihub-rabbit-'));
+    const files = [join(dataDir, '.env.dev'), join(dataDir, '.env')];
+    for (const file of files) writeFileSync(file, body, { mode: 0o600 });
+    return files;
+  }
+
+  function rabbitmqPasswordIn(file: string): string | undefined {
+    return /^RABBITMQ_PASSWORD=(.*)$/m.exec(readFileSync(file, 'utf8'))?.[1];
+  }
+
+  it.each([
+    ['admin', 'JWT_SECRET=jwt\nRABBITMQ_PASSWORD=admin\nDOMAIN=example.com\n'],
+    ['missing', 'JWT_SECRET=jwt\nDOMAIN=example.com\n'],
+    ['blank', 'JWT_SECRET=jwt\nRABBITMQ_PASSWORD=\nDOMAIN=example.com\n'],
+  ])('replaces a %s password with a 64-hex one, the same in both env files', (_case, body) => {
+    const files = seedEnvFiles(body);
+    expect(ensureStrongRabbitmqPassword(files)).toBe(true);
+    const [primary, compat] = files.map(rabbitmqPasswordIn);
+    expect(primary).toMatch(/^[0-9a-f]{64}$/);
+    expect(compat).toBe(primary);
+    for (const file of files) {
+      expect(readFileSync(file, 'utf8')).toContain('JWT_SECRET=jwt\n');
+      expect(readFileSync(file, 'utf8')).toContain('DOMAIN=example.com');
+    }
+  });
+
+  it('keeps a strong password, and leaves the file as it was', () => {
+    const body = 'JWT_SECRET=jwt\nRABBITMQ_PASSWORD=already-strong-secret\n';
+    const files = seedEnvFiles(body);
+    expect(ensureStrongRabbitmqPassword(files)).toBe(false);
+    for (const file of files) expect(readFileSync(file, 'utf8')).toBe(body);
+  });
+
+  it('copies the strong password one env file has into the other, instead of minting a second one', () => {
+    const [primary, compat] = seedEnvFiles('RABBITMQ_PASSWORD=admin\n');
+    writeFileSync(primary, 'RABBITMQ_PASSWORD=already-strong-secret\n');
+    expect(ensureStrongRabbitmqPassword([primary, compat])).toBe(true);
+    expect(rabbitmqPasswordIn(primary)).toBe('already-strong-secret');
+    expect(rabbitmqPasswordIn(compat)).toBe('already-strong-secret');
+  });
+
+  it('creates no env file that is not there', () => {
+    const [primary, compat] = seedEnvFiles('RABBITMQ_PASSWORD=admin\n');
+    rmSync(compat);
+    expect(ensureStrongRabbitmqPassword([primary, compat])).toBe(true);
+    expect(rabbitmqPasswordIn(primary)).toMatch(/^[0-9a-f]{64}$/);
+    expect(existsSync(compat)).toBe(false);
   });
 });
 

@@ -535,36 +535,30 @@ describe('env-helpers — RABBITMQ_PASSWORD fail-closed in production', () => {
     await expect(generateSystemEnvFile()).rejects.toThrow(/RABBITMQ_PASSWORD is not set/);
   });
 
-  it('MUST NOT invent the weak default, but tolerates an explicit admin in production (compose fallback)', async () => {
-    // Compose interpolates ${RABBITMQ_PASSWORD:-admin}. An explicit admin still
-    // matches the broker; we keep it rather than silently inventing another value.
+  it('MUST fail closed on an explicit weak default in production', async () => {
+    // The shipped prod compose no longer falls back to admin (Companion-Hub#884), so an explicit
+    // admin is a known credential someone set, and the Hub refuses to boot on it.
     process.env.NODE_ENV = 'production';
     process.env.RABBITMQ_PASSWORD = 'admin';
     setupMocks({ dataEnv: '' });
-    const envMap = await generateSystemEnvFile();
-    expect(envMap.get('RABBITMQ_PASSWORD')).toBe('admin');
+    await expect(generateSystemEnvFile()).rejects.toThrow(/is set to the weak default 'admin'/);
   });
 
-  it('MUST expose the fail-closed + warning policy via resolveRabbitmqPassword()', async () => {
+  it('MUST expose the fail-closed policy via resolveRabbitmqPassword()', async () => {
     const savedNodeEnv = process.env.NODE_ENV;
     delete process.env.RABBITMQ_PASSWORD;
     try {
       process.env.NODE_ENV = 'production';
       // Unset in production → throw (no silent weak fallback)
       expect(() => resolveRabbitmqPassword(new Map())).toThrow(/RABBITMQ_PASSWORD is not set/);
-      // Explicit weak default in production → returned but warned
-      const weak = resolveRabbitmqPassword(new Map([['RABBITMQ_PASSWORD', 'admin']]));
-      expect(weak.password).toBe('admin');
-      expect(weak.warning).toMatch(/weak default/i);
-      // Strong explicit value in production → no warning
-      const strong = resolveRabbitmqPassword(new Map([['RABBITMQ_PASSWORD', 'strong-secret']]));
-      expect(strong.password).toBe('strong-secret');
-      expect(strong.warning).toBeUndefined();
-      // Non-production → dev default, no warning
+      // Explicit weak default in production → throw as well
+      expect(() => resolveRabbitmqPassword(new Map([['RABBITMQ_PASSWORD', 'admin']]))).toThrow(/is set to the weak default 'admin'/);
+      // Strong explicit value in production → returned as is
+      expect(resolveRabbitmqPassword(new Map([['RABBITMQ_PASSWORD', 'strong-secret']]))).toEqual({ password: 'strong-secret' });
+      // Non-production → dev default
       process.env.NODE_ENV = 'development';
-      const dev = resolveRabbitmqPassword(new Map());
-      expect(dev.password).toBe('admin');
-      expect(dev.warning).toBeUndefined();
+      expect(resolveRabbitmqPassword(new Map())).toEqual({ password: 'admin' });
+      expect(resolveRabbitmqPassword(new Map([['RABBITMQ_PASSWORD', 'admin']]))).toEqual({ password: 'admin' });
     } finally {
       if (savedNodeEnv === undefined) delete process.env.NODE_ENV;
       else process.env.NODE_ENV = savedNodeEnv;
