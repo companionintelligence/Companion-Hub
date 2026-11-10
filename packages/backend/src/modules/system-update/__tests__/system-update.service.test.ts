@@ -35,6 +35,7 @@ vi.mock('node:fs', () => ({
     appendFileSync: vi.fn(),
     openSync: vi.fn(() => 3),
     fstatSync: vi.fn(),
+    lstatSync: vi.fn(),
     closeSync: vi.fn(),
     constants: { O_RDONLY: 0, O_NOFOLLOW: 0o400000, O_NONBLOCK: 0o4000 },
     promises: { writeFile: vi.fn() },
@@ -476,6 +477,48 @@ describe('SystemUpdateService', () => {
       expect(vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1]).toBe(PINNED_ENV);
     });
 
+    // Companion-Hub#884: an env file with no broker password recreated the Hub through the older
+    // compose's `:-admin` fallback, moving a Hub that ran on a strong password back onto `admin`.
+    it.each([
+      ['no broker password', PINNED_ENV],
+      ['the shared default', `${PINNED_ENV}RABBITMQ_PASSWORD=admin\n`],
+    ])('writes the broker password this Hub runs with to an env file that has %s', async (_case, envContent) => {
+      vi.stubEnv('RABBITMQ_PASSWORD', 'running-broker-password');
+      insideHubContainer(envContent);
+      const calls = await installDocker(core6Appliance(RELEASE_PIN));
+
+      await service.performUpdate('0.2.71');
+
+      const written = vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1] as string;
+      expect(written).toMatch(/^RABBITMQ_PASSWORD=running-broker-password$/m);
+      expect(written).not.toMatch(/^RABBITMQ_PASSWORD=admin$/m);
+      // The value travels in the env file, never in the helper's argv.
+      const runArgs = calls.find((call) => call[1][0] === 'run')?.[1] ?? [];
+      expect(runArgs.join(' ')).not.toContain('running-broker-password');
+    });
+
+    it('keeps a strong broker password the env file already has', async () => {
+      vi.stubEnv('RABBITMQ_PASSWORD', 'running-broker-password');
+      insideHubContainer(`${PINNED_ENV}RABBITMQ_PASSWORD=file-broker-password\n`);
+      await installDocker(core6Appliance(RELEASE_PIN));
+
+      await service.performUpdate('0.2.71');
+
+      const written = vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1] as string;
+      expect(written).toMatch(/^RABBITMQ_PASSWORD=file-broker-password$/m);
+      expect(written).not.toContain('running-broker-password');
+    });
+
+    it('never writes the shared default from a Hub that runs on it', async () => {
+      vi.stubEnv('RABBITMQ_PASSWORD', 'admin');
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+
+      await service.performUpdate('0.2.71');
+
+      expect(vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1]).not.toContain('RABBITMQ_PASSWORD');
+    });
+
     it('leaves the env file alone when the pull fails', async () => {
       insideHubContainer(PINNED_ENV);
       await installDocker(core6Appliance(RELEASE_PIN), { failing: 'pull' });
@@ -633,7 +676,7 @@ describe('SystemUpdateService', () => {
       vi.mocked(axios.get).mockRejectedValue(new Error('timeout'));
 
       await expect(service.probeHostListener()).resolves.toBe(false);
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: false });
       expect(axios.get).toHaveBeenCalledWith(expect.stringMatching(/\/health$/), expect.anything());
     });
   });
@@ -794,6 +837,10 @@ describe('SystemUpdateService', () => {
     function withFiles(files: Record<string, string>) {
       const openFiles = new Map<number, string>();
       openFlags.clear();
+      vi.mocked(fs.lstatSync).mockImplementation(((target: unknown) => {
+        if (files[String(target)] === undefined) throw Object.assign(new Error(`ENOENT: ${String(target)}`), { code: 'ENOENT' });
+        return {};
+      }) as never);
       vi.mocked(fs.openSync).mockImplementation(((target: unknown, flags: unknown) => {
         openFlags.set(String(target), Number(flags));
         const entry = files[String(target)];
@@ -828,28 +875,41 @@ describe('SystemUpdateService', () => {
     it('reaches the listener with the token the desktop app keeps in state/', async () => {
       withFiles({ [STATE_TOKEN]: 'state-token\n' });
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: true });
       expectSentToken('state-token');
     });
 
     it('prefers state/ over a token an older desktop build left at the data folder root', async () => {
       withFiles({ [STATE_TOKEN]: 'state-token\n', [ROOT_TOKEN]: 'legacy-token\n' });
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: true });
       expectSentToken('state-token');
     });
 
     it('falls back to the data folder root, where older desktop builds wrote the token', async () => {
       withFiles({ [ROOT_TOKEN]: 'legacy-token\n' });
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: true });
       expectSentToken('legacy-token');
+    });
+
+    it('says this Hub has no desktop app when neither token file exists', async () => {
+      withFiles({});
+
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false, desktopApp: false });
+    });
+
+    it('says a desktop app runs this Hub when its token is there, even while the app is closed', async () => {
+      withFiles({ [STATE_TOKEN]: 'state-token\n' });
+      vi.mocked(axios.get).mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false, desktopApp: true });
     });
 
     it('reports the listener unreachable, without calling it, when neither file exists', async () => {
       withFiles({});
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: false });
       expect(axios.get).not.toHaveBeenCalled();
     });
 
@@ -858,7 +918,7 @@ describe('SystemUpdateService', () => {
     it('does not follow a symlink in place of the token', async () => {
       withFiles({ [STATE_TOKEN]: SYMLINK });
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false, desktopApp: true });
       expect(axios.get).not.toHaveBeenCalled();
     });
 
@@ -866,7 +926,7 @@ describe('SystemUpdateService', () => {
     it('does not wait on a FIFO in place of the token', async () => {
       withFiles({ [STATE_TOKEN]: FIFO });
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false, desktopApp: true });
       expect((openFlags.get(STATE_TOKEN) ?? 0) & fs.constants.O_NONBLOCK).not.toBe(0);
       expect(axios.get).not.toHaveBeenCalled();
     });
@@ -879,7 +939,7 @@ describe('SystemUpdateService', () => {
     ])('does not send %s as the token', async (_name, entry) => {
       withFiles({ [STATE_TOKEN]: entry });
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false, desktopApp: true });
       expect(axios.get).not.toHaveBeenCalled();
     });
 
@@ -896,14 +956,14 @@ describe('SystemUpdateService', () => {
       it('calls the listener at the Windows host address the desktop app recorded', async () => {
         withFiles({ [STATE_TOKEN]: 'state-token\n', [STATE_HOST]: '172.27.96.1\n' });
 
-        await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+        await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: true });
         expectCalledAt('http://172.27.96.1:17400');
       });
 
       it('calls host.docker.internal when the desktop app recorded no address', async () => {
         withFiles({ [STATE_TOKEN]: 'state-token\n' });
 
-        await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+        await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: true });
         expectCalledAt('http://host.docker.internal:17400');
       });
 

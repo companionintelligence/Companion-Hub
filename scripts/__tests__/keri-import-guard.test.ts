@@ -224,7 +224,9 @@ describe('the repository', () => {
 
   beforeAll(() => {
     found = findKeriImports(REPO_ROOT);
-  });
+    // It reads every source file in the repository. That takes under a second on an idle machine but took
+    // 17 s to 37 s while the backend and frontend suites ran alongside, past the 10 s default.
+  }, 60_000);
 
   it('has no non-test source that imports the frozen KERI module', () => {
     expect(

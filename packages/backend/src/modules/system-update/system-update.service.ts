@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common';
 import {
   DATA_DIR,
+  DEFAULT_RABBITMQ_PASSWORD,
   HUB_STACK_IMAGE_REPO,
   HUB_STACK_REGISTRY_REPO,
   UPDATE_LISTENER_HOST_FILENAME,
@@ -140,6 +141,16 @@ function readListenerTokenFile(tokenPath: string): string | null {
     if (fd !== undefined) {
       fs.closeSync(fd);
     }
+  }
+}
+
+/** Whether anything sits at `tokenPath`, even a file the Hub can't read or use. Doesn't follow a symlink. */
+function listenerTokenFileExists(tokenPath: string): boolean {
+  try {
+    fs.lstatSync(tokenPath);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -357,6 +368,20 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     let lines = content.split('\n');
     lines = this.upsertEnvLine(lines, 'CI_HUB_IMAGE', imageLine);
     lines = this.upsertEnvLine(lines, 'CI_HUB_VERSION', targetVersion);
+    // Companion-Hub#884: the prod compose either falls back to the shared `admin` (older copies) or
+    // refuses to start (newer ones) when the env file names no broker password. When this Hub runs with
+    // a password other than `admin`, the broker accepts it, so writing it here keeps the recreated Hub
+    // on it. A Hub that runs on `admin` writes nothing: `admin` is never written to the file.
+    const fileRabbitmqPassword = readEnvFileValue(content, 'RABBITMQ_PASSWORD');
+    const runningRabbitmqPassword = process.env.RABBITMQ_PASSWORD;
+    if (
+      (!fileRabbitmqPassword || fileRabbitmqPassword === DEFAULT_RABBITMQ_PASSWORD) &&
+      runningRabbitmqPassword &&
+      runningRabbitmqPassword !== DEFAULT_RABBITMQ_PASSWORD
+    ) {
+      lines = this.upsertEnvLine(lines, 'RABBITMQ_PASSWORD', runningRabbitmqPassword);
+      this.logger.info(`Wrote the broker password this Hub runs with to ${envFile}, which had none or the shared default`);
+    }
     fs.writeFileSync(envFile, lines.join('\n'));
     this.logger.info(`Pinned stack update in ${envFile}: CI_HUB_IMAGE=${imageLine}, CI_HUB_VERSION=${targetVersion}`);
     return content;
@@ -378,8 +403,13 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     return path.join(logsDir, 'hub-stack-update.log');
   }
 
-  async getHostListenerStatus(): Promise<{ reachable: boolean }> {
-    return { reachable: await this.probeHostListener() };
+  /**
+   * `reachable`: the desktop app answers right now. `desktopApp`: a desktop app runs this Hub at all,
+   * open or closed. Only the desktop app writes the listener token, so a `cihub` install has none. A
+   * token the Hub can't read or use is still there, so it counts.
+   */
+  async getHostListenerStatus(): Promise<{ reachable: boolean; desktopApp: boolean }> {
+    return { reachable: await this.probeHostListener(), desktopApp: this.hostListenerTokenPaths().some(listenerTokenFileExists) };
   }
 
   async probeHostListener(): Promise<boolean> {
@@ -707,12 +737,16 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
    * root, which only a Hub running on the host can see, so that file is the fallback.
    */
   private getHostUpdateListenerToken(): string | null {
-    for (const tokenPath of [path.join(DATA_DIR, 'state', UPDATE_LISTENER_TOKEN_FILENAME), path.join(DATA_DIR, UPDATE_LISTENER_TOKEN_FILENAME)]) {
+    for (const tokenPath of this.hostListenerTokenPaths()) {
       const token = readListenerTokenFile(tokenPath);
       if (token) {
         return token;
       }
     }
     return null;
+  }
+
+  private hostListenerTokenPaths(): string[] {
+    return [path.join(DATA_DIR, 'state', UPDATE_LISTENER_TOKEN_FILENAME), path.join(DATA_DIR, UPDATE_LISTENER_TOKEN_FILENAME)];
   }
 }

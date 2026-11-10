@@ -1,5 +1,5 @@
 import { Link, NavLink, useLocation, useNavigate } from 'react-router';
-import { LogOut, Home, Settings, Store, Menu, LogIn, Sun, Moon, Activity, Loader2 } from 'lucide-react';
+import { LogOut, Home, Settings, Store, Menu, LogIn, Sun, Moon, Monitor, Activity, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useTranslation } from 'react-i18next';
 import { Button, buttonVariants } from '@/components/ui/Button';
@@ -13,11 +13,16 @@ import { useAppStoreState } from '@/stores/app-store';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useAppContext } from '@/context/app-context';
+import { isMobileClient } from '@/lib/mobile-connection';
 
 type HeaderProps = {
   isLoggedIn?: boolean;
-  allowAutoThemes?: boolean;
+  /** Scrolls the page under the header to the top. Called when the empty header band is tapped on the mobile app. */
+  onScrollToTop?: () => void;
 };
+
+// Controls in the header that handle the tap themselves.
+const HEADER_CONTROLS = 'a,button,input,[role="menu"]';
 
 export const Header = (props: HeaderProps) => {
   const userContext = useUserContext();
@@ -26,6 +31,8 @@ export const Header = (props: HeaderProps) => {
   const { resetBrowseToFeatured } = useAppStoreState();
   // Prefer context for authentication state
   const isLoggedIn = props.isLoggedIn ?? userContext.isLoggedIn;
+  const { onScrollToTop } = props;
+  const headerRef = useRef<HTMLElement>(null);
 
   const navigate = useNavigate();
   const { t } = useTranslation();
@@ -57,12 +64,29 @@ export const Header = (props: HeaderProps) => {
   const navButtonBase = 'cursor-pointer text-foreground/80 hover:bg-accent hover:text-accent-foreground';
   const navButtonActive = 'bg-accent text-accent-foreground shadow-sm';
 
+  // On iOS a status-bar tap scrolls only the web view, but the pages scroll <main> or their own
+  // panes, so it does nothing. On the mobile app the header band under the status bar does it
+  // instead (#1879). A native listener, so taps in the menu's scrim (portaled to <body>) never
+  // reach it through React's tree.
+  useEffect(() => {
+    const header = headerRef.current;
+    if (!header || !onScrollToTop) return;
+    const onClick = (event: MouseEvent) => {
+      if (!isMobileClient()) return;
+      if (event.target instanceof Element && event.target.closest(HEADER_CONTROLS)) return;
+      onScrollToTop();
+    };
+    header.addEventListener('click', onClick);
+    return () => header.removeEventListener('click', onClick);
+  }, [onScrollToTop]);
+
   // Common NavLink classes logic
   const getNavLinkClass = ({ isActive }: { isActive: boolean }) =>
     clsx(buttonVariants({ variant: 'ghost', size: 'sm' }), navButtonBase, isActive ? clsx(navButtonActive, 'btn-active') : '');
 
   return (
     <header
+      ref={headerRef}
       data-testid="app-header"
       className="fixed left-0 top-0 z-50 flex w-full items-center gap-2 border-b bg-background/90 px-4 shadow-sm backdrop-blur-md"
       style={{
@@ -287,6 +311,7 @@ function MobileAppMenu({
                   {t('THEME_DARK')}
                 </button>
                 <button type="button" role="menuitem" className={menuItemClass} onClick={() => setTheme('system')}>
+                  <Monitor className="mr-2 size-4" />
                   {t('COMMON_SYSTEM')}
                 </button>
                 <div className="my-1 h-px bg-muted" />

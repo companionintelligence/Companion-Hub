@@ -87,7 +87,7 @@ export interface VerdictInput {
   pool: {
     state: LoadState;
     unreachablePeers: number;
-    /** Nodes with a non-zero `consecutiveFailures` — probing is failing but the peer is not yet out. */
+    /** Nodes in use with a non-zero `consecutiveFailures` — probing is failing but the peer is not yet out. */
     probeFailures: number;
     stalePins: number;
     envDisabledDirections: number;

@@ -4,6 +4,8 @@
  * API client differs from what `pnpm run gen:api-client` writes from that swagger.json.
  * The client half catches a swagger change nobody regenerated, a hand edit, a generator bump and
  * a generator that no longer runs (TypeScript 7 reaching the repo root).
+ * Both halves generate into a temp folder, so neither writes to the tree, and a failing check
+ * leaves the committed files as they were.
  * Usage: node scripts/check-openapi-drift.cjs
  */
 const { execFileSync, execSync } = require('node:child_process');
@@ -13,13 +15,33 @@ const path = require('node:path');
 
 const repoRoot = path.resolve(__dirname, '..');
 const swaggerPath = path.join(repoRoot, 'packages/backend/src/swagger.json');
-const committed = fs.readFileSync(swaggerPath, 'utf8');
 
 process.chdir(repoRoot);
-execSync('pnpm --filter backend run gen:swagger', { stdio: 'inherit' });
 
-const generated = fs.readFileSync(swaggerPath, 'utf8');
-if (committed !== generated) {
+/** Generates swagger.json into a temp folder (`CI_HUB_SWAGGER_OUT`) and says whether it matches the committed one. */
+const checkSwagger = () => {
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-hub-swagger-'));
+  try {
+    const generatedPath = path.join(out, 'swagger.json');
+    try {
+      execSync('pnpm --filter backend run gen:swagger', { stdio: 'inherit', env: { ...process.env, CI_HUB_SWAGGER_OUT: generatedPath } });
+    } catch {
+      return { failed: true };
+    }
+    return { matches: fs.readFileSync(swaggerPath, 'utf8') === fs.readFileSync(generatedPath, 'utf8') };
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true });
+  }
+};
+
+const swagger = checkSwagger();
+if (swagger.failed) {
+  console.error(
+    "openapi drift: pnpm gen:swagger failed, so packages/backend/src/swagger.json can't be checked. Fix the generator, then run pnpm gen:swagger and commit.",
+  );
+  process.exit(1);
+}
+if (!swagger.matches) {
   console.error('openapi drift: packages/backend/src/swagger.json is out of date. Run pnpm gen:swagger and commit.');
   process.exit(1);
 }

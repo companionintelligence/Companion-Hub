@@ -294,7 +294,11 @@ The Hub's own rule is the exception: Portal always rebuilds it as
 `host.docker.internal:{hubListenPort}`, whatever the Hub's entry says. `cloudflared` reaches that
 through the host's published port (its `extra_hosts` entry is load-bearing), so the Hub sees those
 requests from a Docker bridge gateway, not from Traefik, and does not resolve their forwarded
-client address. An earlier shape targeted `host.docker.internal:{port}` for every app too.
+client address. Express's `req.ip` stays the gateway on that route. The sign-in rate limit alone
+reads the visitor from `CF-Connecting-IP` there, because `localhost:5002` and an app container
+dialing the host arrive from the same gateway; a forged header can only spend a capped shared
+budget (`AuthRateLimiter.admitRequest`). An earlier shape targeted `host.docker.internal:{port}`
+for every app too.
 
 ### Three exposure modes
 

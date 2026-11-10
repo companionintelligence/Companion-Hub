@@ -116,7 +116,8 @@ export function pickGuestAppFields<T extends object>(app: T): Pick<T, Extract<ke
 const guestAppsSchema = z.object({
   installed: z.array(
     z.object({
-      app: guestAppSchema,
+      // The address of an app on Public web. It is public already, and a guest has nothing else to build it from.
+      app: guestAppSchema.extend({ publicUrl: z.string().nullable().optional() }),
       info: appInfoSchemaRef,
       metadata: metadataSchema,
     }),

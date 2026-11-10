@@ -25,6 +25,10 @@ import { MemoryApiKeyCheck } from '../memory-api-key.check';
 import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
 import { SessionManager } from '../session.manager';
 
+vi.mock('@/common/helpers/this-host-address', async (importOriginal) =>
+  (await import('@/tests/utils/appliance-host-address')).onAppliance(await importOriginal()),
+);
+
 const req = (ip: string, extra: Record<string, unknown> = {}) => ({ ip, headers: {}, ...extra }) as unknown as Request;
 const res = () => ({ cookie: vi.fn() }) as unknown as Response;
 const wrongCredentials = () => new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
@@ -75,6 +79,28 @@ describe('AuthController rate limiting', () => {
       });
 
       expect(authService.login).toHaveBeenCalledTimes(10);
+    });
+
+    it('keeps a stranger on the public address from locking out the machine or the next visitor', async () => {
+      const gateway = '172.18.0.1';
+      authService.login.mockRejectedValue(wrongCredentials());
+      const throughTunnel = (visitor: string) => req(gateway, { socket: { remoteAddress: gateway }, headers: { 'cf-connecting-ip': visitor } });
+
+      for (let i = 0; i < 10; i++) {
+        await expect(
+          controller.login({ username: `x${i}@example.org`, password: 'x' } as never, res(), throughTunnel('203.0.113.9')),
+        ).rejects.toThrow('AUTH_ERROR_INVALID_CREDENTIALS');
+      }
+
+      await expect(controller.login({ username: 'y@example.org', password: 'x' } as never, res(), throughTunnel('203.0.113.9'))).rejects.toThrow(
+        'AUTH_ERROR_RATE_LIMITED',
+      );
+      await expect(controller.login({ username: 'y@example.org', password: 'x' } as never, res(), throughTunnel('198.51.100.20'))).rejects.toThrow(
+        'AUTH_ERROR_INVALID_CREDENTIALS',
+      );
+      await expect(controller.login({ username: 'y@example.org', password: 'x' } as never, res(), req(gateway))).rejects.toThrow(
+        'AUTH_ERROR_INVALID_CREDENTIALS',
+      );
     });
 
     it('does not limit someone who signs in successfully, however often', async () => {
@@ -153,7 +179,7 @@ describe('AuthController rate limiting', () => {
 
   describe('POST /auth/verify-totp', () => {
     it('stops answering a client that keeps getting the code wrong', async () => {
-      authService.verifyTotp.mockRejectedValue(new TranslatableError('AUTH_ERROR_TOTP_INVALID_CODE'));
+      authService.verifyTotp.mockRejectedValue(new TranslatableError('AUTH_ERROR_TOTP_INVALID_CODE', {}, HttpStatus.BAD_REQUEST));
 
       for (let i = 0; i < 10; i++) {
         await expect(controller.verifyTotp({ totpSessionId: 's', totpCode: '000000' } as never, res(), req('203.0.113.9'))).rejects.toThrow(

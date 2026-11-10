@@ -5,7 +5,7 @@ import type { InferenceBackend } from './backend.interface';
 import { detectHubContainer, normalizeHostBackendUrl, resolveHostBackendProbeUrl } from './host-url.util';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
-import { foreignEngineHealth, openAiModelIds } from './engine-identity';
+import { foreignEngineHealth, openAiModelIds, openAiModelMaxLen } from './engine-identity';
 import { OpenAiCompatibleClient } from './openai-compatible.client';
 import { isSameServer } from '../engine-credential-scope';
 
@@ -136,6 +136,25 @@ export class VllmBackend implements InferenceBackend {
       });
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * The window vLLM serves `modelId` at whatever a request asks: the `max_model_len` it states on
+   * GET /v1/models, set by `--max-model-len` when the server started. vLLM takes no window per
+   * request and refuses one whose prompt plus `max_tokens` exceeds it with a 400, so a handout above
+   * it promises the app context it cannot use; see `capHandoutAtServedWindow`. Null when the server
+   * cannot be reached, is another engine's (oMLX shares port 8000), or states no window for the model:
+   * the handout is then left as sized.
+   */
+  async servedContextLength(modelId: string): Promise<number | null> {
+    try {
+      const baseUrl = this.getBaseUrl();
+      const body = await this.api.fetchModels(baseUrl, { timeout: 5000, apiKey: this.vllmAuthKey() });
+      if (foreignEngineHealth('vllm', body, baseUrl)) return null;
+      return openAiModelMaxLen(body, modelId);
+    } catch {
+      return null;
     }
   }
 

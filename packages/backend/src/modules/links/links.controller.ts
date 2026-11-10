@@ -2,6 +2,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { Body, Controller, Delete, Get, Injectable, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { AuthGuard } from '../auth/auth.guard';
+import { GuestDashboardGuard } from '../auth/guest-dashboard.guard';
 import { EditLinkBodyDto, LinkBodyDto, LinksDto } from './dto/links.dto';
 import { LinksService } from './links.service';
 import { ApiResponse } from '@nestjs/swagger';
@@ -12,6 +13,7 @@ export class LinksController {
   constructor(private readonly linksService: LinksService) {}
 
   @Get('guest')
+  @UseGuards(GuestDashboardGuard)
   @ApiResponse({ type: LinksDto })
   async getGuestLinks() {
     const links = await this.linksService.getGuestDashboardLinks();

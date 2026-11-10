@@ -120,9 +120,9 @@ describe('SystemUpdateController', () => {
 
   describe('getHostListenerStatus', () => {
     it('returns whether the desktop listener is reachable', async () => {
-      updateService.getHostListenerStatus.mockResolvedValue({ reachable: false });
+      updateService.getHostListenerStatus.mockResolvedValue({ reachable: false, desktopApp: true });
 
-      await expect(controller.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      await expect(controller.getHostListenerStatus()).resolves.toEqual({ reachable: false, desktopApp: true });
     });
   });
 

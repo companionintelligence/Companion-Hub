@@ -113,7 +113,7 @@ The backend has ~30 NestJS modules organized into **core infrastructure** and **
 | **Tailscale** | `TailscaleService` | When the host has the Tailscale CLI and socket, manages `tailscale` commands and `tailscale serve`. Can fall back to `docker exec` into an optional sidecar named by `TAILSCALE_SIDECAR_CONTAINER` (legacy stacks used `hub-tailscale`). |
 | **Backups** | `BackupsService` | Creates, lists, restores, deletes, and uploads per-app backups. Backups are tar.gz archives of the app's data directory. Flow: set app status to `backing_up` → stop containers → archive → restart. Restore reverses the process. Respects `app.maxBackups` for automatic retention. Tracks `cihub_app_version` in backup metadata for version compatibility. |
 | **Custom Apps** | `CustomAppService` | Lets users define their own Docker Compose apps without an app store. Files are created under the reserved `_user` store slug. Generates `docker-compose.json`, `config.json`, and metadata files (description.md, logo). Validates metadata via the shared frontmatter schema from `@ci-hub/common`. |
-| **System** | `SystemService` | Reports system metrics: CPU load, memory usage (reads `/host/proc/meminfo` from the bind mount), disk usage. Retrieves TLS certificates from Traefik's ACME storage. Lists running Docker services. Powers the dashboard system info panel. |
+| **System** | `SystemService` | Reports system metrics: CPU load, memory usage (reads `/host/proc/meminfo` from the bind mount), disk usage. Lists running Docker services. Powers the dashboard system info panel. |
 | **System Update** | `SystemUpdateService` | Checks for new Hub versions (compares `CI_HUB_VERSION` against the latest available). Performs self-updates by pulling new Docker images and restarting the compose stack. |
 | **Network** | `PortAllocationRepository` | Tracks TCP/UDP port mappings in the database. Prevents port conflicts between apps. Allocates ports dynamically during install. |
 | **Inference** | `InferenceBackendRegistry`, `ModelRegistryService`, `ModelPullerService`, `InferenceRouterService`, `HardwareInspectorService` | Runs local models across four backends (Ollama, oMLX, vLLM, Lemonade), each an `InferenceBackend` adapter under `inference/backends/`. The other path is a typed decode endpoint and encode endpoint. llama.cpp, LM Studio, MTPLX, mlx-dspark, and Lucebox are not Hub backends. `InferenceBackendRegistry` is the one type-to-instance mapping — a `Record` keyed by the closed `InferenceBackendType` union, so a backend added to the union without being wired here is a build error. `HardwareInspectorService` profiles GPU/NPU/RAM into a tier that the curated model catalog filters against. |
@@ -857,7 +857,7 @@ See [`e2e/README.md`](../e2e/README.md) for full lane documentation.
 | `RABBITMQ_HOST` | `ci-hub-queue` | RabbitMQ hostname |
 | `RABBITMQ_PORT` | `5672` | RabbitMQ port |
 | `RABBITMQ_USERNAME` | `companion` | Queue user |
-| `RABBITMQ_PASSWORD` | `admin` | Queue password |
+| `RABBITMQ_PASSWORD` | none in production; `admin` in development | Queue password. The prod compose requires it from the env file ([#884](https://github.com/companionintelligence/Companion-Hub/issues/884)). In production the Hub still starts on `admin` but logs a loud warning; that escape hatch stays until every update path, including the in-app updater, replaces `admin`, and removing it is a follow-up. |
 
 ### Networking
 
@@ -890,5 +890,4 @@ See [`e2e/README.md`](../e2e/README.md) for full lane documentation.
 | `DEMO_MODE` | `false` | Read-only demo mode |
 | `GUEST_DASHBOARD` | `false` | Allow unauthenticated dashboard access |
 | `ADVANCED_SETTINGS` | `false` | Show advanced settings in UI |
-| `ALLOW_AUTO_THEMES` | `true` | Allow automatic theme switching |
 | `DISABLE_PASSWORD_RESET` | `false` | Disable password reset flow |

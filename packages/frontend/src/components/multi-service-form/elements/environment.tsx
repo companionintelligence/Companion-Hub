@@ -10,6 +10,9 @@ import { useFieldArray, type Control, type FieldErrors, type UseFormRegister } f
 import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import { useTranslation } from 'react-i18next';
 
+/** Trims typed text. A saved number or boolean value stays as it is until it is edited. */
+const trimText = (value: unknown) => (typeof value === 'string' ? value.trim() || undefined : value);
+
 type Props = {
   control: Control<z.infer<typeof dynamicComposeSchema>>;
   register: UseFormRegister<z.infer<typeof dynamicComposeSchema>>;
@@ -48,7 +51,7 @@ export const EnvironmentConfig = ({ errors, serviceIndex, control, register }: P
               <TableRow key={field.id}>
                 <TableCell scope="row" className="w-50">
                   <Input
-                    {...register(`services.${serviceIndex}.environment.${index}.key`, { setValueAs: (v) => v.trim() || undefined })}
+                    {...register(`services.${serviceIndex}.environment.${index}.key`, { setValueAs: trimText })}
                     error={t(errors?.services?.[serviceIndex]?.environment?.[index]?.key?.message as string)}
                     placeholder={t('MULTI_SERVICE_ENVIRONMENT_KEY_PLACEHOLDER')}
                     className="table-row-input"
@@ -56,7 +59,7 @@ export const EnvironmentConfig = ({ errors, serviceIndex, control, register }: P
                 </TableCell>
                 <TableCell className="w-50">
                   <Input
-                    {...register(`services.${serviceIndex}.environment.${index}.value`, { setValueAs: (v) => v.trim() || undefined })}
+                    {...register(`services.${serviceIndex}.environment.${index}.value`, { setValueAs: trimText })}
                     error={t(errors?.services?.[serviceIndex]?.environment?.[index]?.value?.message as string)}
                     placeholder={t('MULTI_SERVICE_ENVIRONMENT_VALUE_PLACEHOLDER')}
                     className="table-row-input"

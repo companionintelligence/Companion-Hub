@@ -208,6 +208,89 @@ describe('AppLifecycleService', () => {
   });
 
   describe('invokeCommand', () => {
+    // RabbitMQ redelivers an install the restart cut off before bootstrap has loaded the stores (#2286).
+    it('waits for the app stores before running a redelivered command', async () => {
+      const data = { appUrn: 'test-app', command: 'install', requestId: '00000000-0000-4000-8000-000000000002', form: {} } as any;
+      const command = { execute: vi.fn().mockResolvedValue({ success: true, message: 'OK' }) };
+      commandFactory.createCommand.mockReturnValue(command as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'installing' } as any);
+      let storesLoaded: () => void = () => undefined;
+      marketplaceService.whenInitialized.mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          storesLoaded = resolve;
+        }),
+      );
+
+      const running = service.invokeCommand(data, vi.fn());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(command.execute).not.toHaveBeenCalled();
+
+      storesLoaded();
+      await running;
+      expect(command.execute).toHaveBeenCalledWith('test-app', expect.anything(), expect.anything());
+    });
+
+    // Startup recovery fails an install still waiting its turn. Its message still comes (#2286).
+    it.each([
+      ['install_failed', { id: 1, status: 'install_failed' }],
+      ['gone', null],
+    ])('does not run a redelivered install whose row is %s', async (_name, row) => {
+      const data = { appUrn: 'test-app', command: 'install', requestId: '00000000-0000-4000-8000-000000000004', form: {} } as any;
+      const command = { execute: vi.fn() };
+      commandFactory.createCommand.mockReturnValue(command as any);
+      appsRepository.getAppByUrn.mockResolvedValue(row as any);
+      const reply = vi.fn().mockResolvedValue(undefined);
+
+      await service.invokeCommand(data, reply);
+
+      expect(command.execute).not.toHaveBeenCalled();
+      expect(reply).toHaveBeenCalledWith(expect.objectContaining({ success: false, cancelled: true }));
+      expect(installPipelineTracker.getActive()).toBeNull();
+    });
+
+    // Recovery failed the install and the operator retried it while the old message waited its turn.
+    it('does not run a redelivered install once a retry of the app has registered', async () => {
+      const appUrn = 'test-app' as any;
+      const data = { appUrn, command: 'install', requestId: '00000000-0000-4000-8000-000000000005', form: {} } as any;
+      const retryRequestId = '00000000-0000-4000-8000-000000000006';
+      operationRegistry.register(appUrn, { requestId: retryRequestId, command: 'install', tier: 'safe' });
+      const command = { execute: vi.fn() };
+      commandFactory.createCommand.mockReturnValue(command as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'installing' } as any);
+      const reply = vi.fn().mockResolvedValue(undefined);
+
+      await service.invokeCommand(data, reply);
+
+      expect(command.execute).not.toHaveBeenCalled();
+      expect(reply).toHaveBeenCalledWith(expect.objectContaining({ success: false, cancelled: true }));
+      expect(operationRegistry.get(appUrn)?.requestId).toBe(retryRequestId);
+    });
+
+    it('lets Cancel reach an install that resumes after a restart', async () => {
+      const appUrn = 'test-app' as any;
+      const data = { appUrn, command: 'install', requestId: '00000000-0000-4000-8000-000000000007', form: {} } as any;
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'installing' } as any);
+      let finish: (result: { success: boolean; cancelled?: boolean; message: string }) => void = () => undefined;
+      const command = {
+        execute: vi.fn().mockReturnValue(
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+        ),
+      };
+      commandFactory.createCommand.mockReturnValue(command as any);
+
+      const running = service.invokeCommand(data, vi.fn().mockResolvedValue(undefined));
+      await vi.waitFor(() => expect(command.execute).toHaveBeenCalled());
+
+      expect(await service.cancelOperation({ actor: TEST_ACTOR, appUrn })).toMatchObject({ outcome: 'cancelling' });
+      expect(command.execute.mock.calls[0][2].signal.aborted).toBe(true);
+
+      finish({ success: false, cancelled: true, message: 'cancelled' });
+      await running;
+      expect(operationRegistry.get(appUrn)).toBeUndefined();
+    });
+
     it('should execute command and sync cloudflare on success', async () => {
       const data = {
         appUrn: 'test-app',
@@ -219,6 +302,7 @@ describe('AppLifecycleService', () => {
       const command = { execute: vi.fn().mockResolvedValue({ success: true, message: 'OK' }) };
 
       commandFactory.createCommand.mockReturnValue(command as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'installing' } as any);
 
       registrationService.getDeviceRegistrationInfo.mockResolvedValue({
         id: 'org-id',
@@ -233,7 +317,7 @@ describe('AppLifecycleService', () => {
 
       expect(mutex.acquire).toHaveBeenCalledWith('__install-pipeline__');
       expect(mutex.acquire).toHaveBeenCalledWith('test-app');
-      expect(command.execute).toHaveBeenCalledWith('test-app', expect.anything());
+      expect(command.execute).toHaveBeenCalledWith('test-app', expect.anything(), expect.anything());
       expect(cloudflareClientService.syncState).toHaveBeenCalled();
       expect(reply).toHaveBeenCalledWith({ success: true, message: 'OK' });
     });
@@ -3832,6 +3916,45 @@ describe('AppLifecycleService', () => {
       expect(published.form).toMatchObject({ port: 8080 });
     });
 
+    describe('whether a start that does not come up takes the containers down', () => {
+      const publishedForm = () => (appEventsQueue.publish.mock.calls.at(-1)?.[0] as { form?: Record<string, unknown> } | undefined)?.form ?? {};
+
+      const storedConfig = (config: Record<string, unknown>) =>
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 1, name: 'test-app', status: 'stopped', config } as any);
+
+      beforeEach(() => {
+        storedConfig({ port: 8080 });
+        appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+      });
+
+      it('asks for it when someone asked for the start', async () => {
+        await service.startApp({ actor: TEST_ACTOR, appUrn: 'test-app' as any });
+
+        expect(publishedForm()).toMatchObject({ stopIfNotUp: true, port: 8080 });
+      });
+
+      it('leaves the containers alone for the Hub own start, even when the stored config carries the flag', async () => {
+        storedConfig({ stopIfNotUp: true, port: 8080 });
+        await service.startApp({ actor: { kind: 'system', reason: 'bootstrap-restart' }, appUrn: 'test-app' as any });
+
+        expect(publishedForm()).not.toHaveProperty('stopIfNotUp');
+        expect(publishedForm()).toMatchObject({ port: 8080 });
+      });
+
+      it('asks for it on a restart someone asked for', async () => {
+        await service.restartApp({ actor: TEST_ACTOR, appUrn: 'test-app' as any });
+
+        expect(publishedForm()).toMatchObject({ stopIfNotUp: true, port: 8080 });
+      });
+
+      it('leaves the containers alone for the Hub own restart, even when the stored config carries the flag', async () => {
+        storedConfig({ stopIfNotUp: true, port: 8080 });
+        await service.restartApp({ actor: { kind: 'system', reason: 'inference-env-refresh' }, appUrn: 'test-app' as any });
+
+        expect(publishedForm()).not.toHaveProperty('stopIfNotUp');
+      });
+    });
+
     it('should throw if app not found', async () => {
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
       await expect(service.startApp({ actor: TEST_ACTOR, appUrn: 'missing' as any })).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
@@ -7177,6 +7300,37 @@ describe('AppLifecycleService', () => {
       expect(syncSpy).toHaveBeenNthCalledWith(2, { skipAutoRestartAppUrns: ['myapp:ci-marketplace'] });
     });
 
+    it("releases nothing when a save names the Hub's own domain for a row that stores none", async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'running',
+        appName: 'myapp',
+        appStoreSlug: 'ci-marketplace',
+        config: { exposureMode: 'cloudflare', localSubdomain: 'sub', port: 8080 },
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        localSubdomain: 'sub',
+        publicDomain: null,
+        port: 8080,
+      } as any);
+      configService.getConfig.mockReturnValue({
+        isProduction: false,
+        userSettings: { domain: 'example.com', localDomain: 'ci.lan' },
+        domain: 'example.com',
+      } as any);
+      vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
+      const syncSpy = vi.spyOn(exposureSyncService, 'triggerCloudflareSync').mockResolvedValue(undefined);
+
+      await service.updateAppConfig({
+        actor: TEST_ACTOR,
+        appUrn,
+        form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'sub', publicDomain: 'example.com', port: 8080 },
+      });
+
+      expect(syncSpy).toHaveBeenCalledTimes(1);
+      expect(syncSpy).toHaveBeenCalledWith({ skipAutoRestartAppUrns: ['myapp:ci-marketplace'] });
+    });
+
     it('judges the saved row by its stored form, as the sync published it', async () => {
       // A legacy Public web install: the row says `local` + `exposed_local`, the form says
       // `exposedLocal`. Saving the same public settings moves no hostname, so nothing is released.
@@ -7649,6 +7803,16 @@ describe('AppLifecycleService', () => {
 
       const [form] = appEventsQueue.publish.mock.calls.map(([message]) => (message as any).form);
       expect(form).not.toHaveProperty('onlyRecreateChanged');
+    });
+
+    it('restartAppAndWait ignores a stopIfNotUp left in the stored config', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, config: { stopIfNotUp: true } } as any);
+
+      await service.restartAppAndWait({ appUrn, skipPull: true });
+
+      const [form] = appEventsQueue.publish.mock.calls.map(([message]) => (message as any).form);
+      expect(form).not.toHaveProperty('stopIfNotUp');
+      expect(form).toMatchObject({ skipPull: true });
     });
 
     it('restartAppAndWait error: errorCode/errorDetail/settingsPath reach the emitted SSE event', async () => {
@@ -9726,6 +9890,62 @@ describe('AppLifecycleService', () => {
           errorCode: QUEUE_UNAVAILABLE_CODE,
         });
       });
+    });
+  });
+
+  // CI-Hub#2376: a restart the host-device check refused left the container running and the row on `stopped`.
+  describe('a start or restart refused before it touched the containers', () => {
+    const appUrn = createAppUrn('ci-hermes', 'ci-marketplace');
+    const flushMicrotasks = () => new Promise<void>((r) => setTimeout(r, 0));
+    const givenApp = (status: string) => appsRepository.getAppByUrn.mockResolvedValue({ id: 7, name: 'ci-hermes', status, config: {} } as any);
+    const refusal = { success: false, message: 'KVM is not available on this machine', errorCode: 'kvm_missing' };
+
+    it.each([
+      { command: 'restartApp', event: 'restart_error' },
+      { command: 'startApp', event: 'start_error' },
+    ] as const)('$command settles a running app back on running', async ({ command, event }) => {
+      givenApp('running');
+      appEventsQueue.publish.mockResolvedValue({ ...refusal, rolledBack: true } as any);
+
+      await service[command]({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'running' });
+      expect(sseService.emit).toHaveBeenLastCalledWith('app', expect.objectContaining({ event, appStatus: 'running', errorCode: 'kvm_missing' }));
+    });
+
+    it.each([
+      { command: 'restartAppAndWait', event: 'restart_error' },
+      { command: 'startAppAndWait', event: 'start_error' },
+    ] as const)('$command reports failure and settles a running app back on running', async ({ command, event }) => {
+      givenApp('running');
+      appEventsQueue.publish.mockResolvedValue({ ...refusal, rolledBack: true } as any);
+
+      await expect(service[command]({ appUrn })).resolves.toBe(false);
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'running' });
+      expect(sseService.emit).toHaveBeenLastCalledWith('app', expect.objectContaining({ event, appStatus: 'running', errorCode: 'kvm_missing' }));
+    });
+
+    it('a restart that failed after taking the app down still settles on stopped', async () => {
+      givenApp('running');
+      appEventsQueue.publish.mockResolvedValue(refusal as any);
+
+      await service.restartApp({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'stopped' });
+    });
+
+    // As for a command the queue never took: a transitional status belongs to an operation now superseded.
+    it('does not put back a transitional status', async () => {
+      givenApp('starting');
+      appEventsQueue.publish.mockResolvedValue({ ...refusal, rolledBack: true } as any);
+
+      await service.restartApp({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'stopped' });
     });
   });
 });

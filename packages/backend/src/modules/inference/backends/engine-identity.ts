@@ -22,6 +22,16 @@ export function openAiModelIds(body: unknown): string[] {
   return Array.isArray(data) ? data.map((m) => String(m?.id ?? '')).filter(Boolean) : [];
 }
 
+/**
+ * `max_model_len` of the `modelId` row in an OpenAI `/v1/models` body (vLLM states it per model), or
+ * null when the row is missing or the figure is not a positive integer.
+ */
+export function openAiModelMaxLen(body: unknown, modelId: string): number | null {
+  const data = (body as { data?: { id?: unknown; max_model_len?: unknown }[] } | null)?.data;
+  const len = Array.isArray(data) ? data.find((m) => m?.id === modelId)?.max_model_len : undefined;
+  return typeof len === 'number' && Number.isInteger(len) && len > 0 ? len : null;
+}
+
 /** `data[0].owned_by` from an OpenAI `/v1/models` body, lowercased. Empty string when absent. */
 export function openAiModelOwner(body: unknown): string {
   const data = (body as { data?: { owned_by?: unknown }[] } | null)?.data;

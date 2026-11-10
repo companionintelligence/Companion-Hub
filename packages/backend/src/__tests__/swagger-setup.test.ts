@@ -1,7 +1,10 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { APP_DIR } from '@/common/constants';
 import { describe, expect, it } from 'vitest';
 import committedSwagger from '../swagger.json';
 import { OPERATION_PATH_PARAMS, OPERATION_QUERY_DTOS, OPERATION_REQUEST_BODIES, OPERATION_RESPONSE_SCHEMAS } from '../swagger-operation-patches';
-import { patchSwaggerWithZodSchemas } from '../swagger-setup';
+import { patchSwaggerWithZodSchemas, writeSwaggerJsonFile } from '../swagger-setup';
 
 type SwaggerDocument = Parameters<typeof patchSwaggerWithZodSchemas>[0];
 
@@ -105,5 +108,31 @@ describe('committed swagger.json', () => {
   ])('has one route for the %s patch', (operationId) => {
     const routes = routesFor(document, operationId);
     expect(routes, routes.join(', ') || 'no route').toHaveLength(1);
+  });
+});
+
+/*
+ * `check:openapi` generated into the tracked swagger.json before comparing, so a drifted tree was
+ * left rewritten. The CLI now passes a path of its own; the boot-time write passes none. fs is the
+ * memfs mock here, so neither write reaches the real tree.
+ */
+describe('writeSwaggerJsonFile', () => {
+  const document = { openapi: '3.1.0', paths: {} };
+  const trackedPath = path.join(APP_DIR, 'packages', 'backend', 'src', 'swagger.json');
+  const written = `${JSON.stringify(document, null, 2)}\n`;
+
+  it('writes to the path it is given and leaves the tracked file alone', async () => {
+    const outPath = '/tmp/ci-hub-swagger-test/swagger.json';
+
+    await writeSwaggerJsonFile(document, outPath);
+
+    expect(await fs.promises.readFile(outPath, 'utf8')).toBe(written);
+    expect(fs.existsSync(trackedPath)).toBe(false);
+  });
+
+  it('writes the tracked file when given no path', async () => {
+    await writeSwaggerJsonFile(document);
+
+    expect(await fs.promises.readFile(trackedPath, 'utf8')).toBe(written);
   });
 });

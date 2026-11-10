@@ -138,7 +138,6 @@ const poolPinsSchema = z.array(poolPinSchema).max(MAX_POOL_PINS);
 
 export const settingsSchema = z.object({
   advancedSettings: z.boolean(),
-  allowAutoThemes: z.boolean(),
   allowErrorMonitoring: z.boolean(),
   appDataPath: z.string().trim(),
   appsRepoUrl: z.string().url().optional(),
@@ -167,7 +166,6 @@ export const settingsSchema = z.object({
   sslPort: z.union([z.number().int(), z.string().transform(Number)]).pipe(z.number().min(0).max(65535)),
   timeZone: z.string().trim(),
   experimental_insecureCookie: z.boolean().optional(),
-  themeBase: z.string().optional(),
   themeColor: z.string().optional(),
   ciHubOrganizationId: z.string().trim().optional(),
   ciHubOrganizationSlug: z.string().trim().optional(),
@@ -408,7 +406,6 @@ const versionSchema = z.object({
  */
 const APP_CONTEXT_SETTINGS = {
   advancedSettings: true,
-  allowAutoThemes: true,
   allowErrorMonitoring: true,
   appDataPath: true,
   appsRepoUrl: true,
@@ -433,7 +430,6 @@ const APP_CONTEXT_SETTINGS = {
   sslPort: true,
   timeZone: true,
   experimental_insecureCookie: true,
-  themeBase: true,
   themeColor: true,
   ciHubOrganizationId: true,
   ciHubOrganizationSlug: true,
@@ -553,10 +549,8 @@ const userContextDto = z.object({
   isConfigured: z.boolean(),
   isGuestDashboardEnabled: z.boolean(),
   isPasswordResetDisabled: z.boolean(),
-  allowAutoThemes: z.boolean(),
   allowErrorMonitoring: z.boolean(),
   themeColor: z.string(),
-  themeBase: z.string(),
   localDomain: z.string(),
   domain: z.string(),
   sslPort: z.number(),

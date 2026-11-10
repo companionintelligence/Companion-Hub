@@ -1222,20 +1222,6 @@
         ]
       }
     },
-    "/api/system/certificate": {
-      "get": {
-        "operationId": "downloadLocalCertificate",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "System"
-        ]
-      }
-    },
     "/api/system/detect-services": {
       "get": {
         "operationId": "detectServices",
@@ -7309,16 +7295,10 @@
           "isPasswordResetDisabled": {
             "type": "boolean"
           },
-          "allowAutoThemes": {
-            "type": "boolean"
-          },
           "allowErrorMonitoring": {
             "type": "boolean"
           },
           "themeColor": {
-            "type": "string"
-          },
-          "themeBase": {
             "type": "string"
           },
           "localDomain": {
@@ -7343,10 +7323,8 @@
           "isConfigured",
           "isGuestDashboardEnabled",
           "isPasswordResetDisabled",
-          "allowAutoThemes",
           "allowErrorMonitoring",
           "themeColor",
-          "themeBase",
           "localDomain",
           "domain",
           "sslPort"
@@ -7400,9 +7378,6 @@
             "type": "object",
             "properties": {
               "advancedSettings": {
-                "type": "boolean"
-              },
-              "allowAutoThemes": {
                 "type": "boolean"
               },
               "allowErrorMonitoring": {
@@ -7502,9 +7477,6 @@
               },
               "experimental_insecureCookie": {
                 "type": "boolean"
-              },
-              "themeBase": {
-                "type": "string"
               },
               "themeColor": {
                 "type": "string"
@@ -7690,7 +7662,6 @@
             },
             "required": [
               "advancedSettings",
-              "allowAutoThemes",
               "allowErrorMonitoring",
               "appDataPath",
               "demoMode",
@@ -7920,9 +7891,6 @@
           "advancedSettings": {
             "type": "boolean"
           },
-          "allowAutoThemes": {
-            "type": "boolean"
-          },
           "allowErrorMonitoring": {
             "type": "boolean"
           },
@@ -8018,9 +7986,6 @@
           "timeZone": {},
           "experimental_insecureCookie": {
             "type": "boolean"
-          },
-          "themeBase": {
-            "type": "string"
           },
           "themeColor": {
             "type": "string"
@@ -10652,6 +10617,10 @@
                     "ignoredVersion": {
                       "nullable": true,
                       "type": "number"
+                    },
+                    "publicUrl": {
+                      "nullable": true,
+                      "type": "string"
                     }
                   },
                   "required": [
@@ -15342,15 +15311,11 @@
                           "value": {
                             "anyOf": [
                               {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "minLength": 1
-                                  },
-                                  {
-                                    "type": "number"
-                                  }
-                                ]
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "number"
                               },
                               {
                                 "type": "boolean"
@@ -15929,15 +15894,11 @@
                                 "value": {
                                   "anyOf": [
                                     {
-                                      "anyOf": [
-                                        {
-                                          "type": "string",
-                                          "minLength": 1
-                                        },
-                                        {
-                                          "type": "number"
-                                        }
-                                      ]
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "type": "number"
                                     },
                                     {
                                       "type": "boolean"
@@ -16565,15 +16526,11 @@
                           "value": {
                             "anyOf": [
                               {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "minLength": 1
-                                  },
-                                  {
-                                    "type": "number"
-                                  }
-                                ]
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "number"
                               },
                               {
                                 "type": "boolean"
@@ -17152,15 +17109,11 @@
                                 "value": {
                                   "anyOf": [
                                     {
-                                      "anyOf": [
-                                        {
-                                          "type": "string",
-                                          "minLength": 1
-                                        },
-                                        {
-                                          "type": "number"
-                                        }
-                                      ]
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "type": "number"
                                     },
                                     {
                                       "type": "boolean"

@@ -1,5 +1,4 @@
-import { servedOpenPort } from '@ci-hub/common/schemas';
-import { effectiveExposureMode, publishesPublicWebRoute } from '@ci-hub/common/types';
+import { effectiveExposureMode, publishesHostPort as publishesSharedHostPort, publishesPublicWebRoute } from '@ci-hub/common/types';
 
 export type AppFormHostPortFields = {
   openPort?: boolean;
@@ -12,9 +11,12 @@ export function getEffectiveExposureMode(form: AppFormHostPortFields): 'local' |
   return effectiveExposureMode(form);
 }
 
-/** True when the main service binds ${APP_PORT} on the Docker host. A form with no `openPort` is served on an open one (`servedOpenPort`). */
+/**
+ * True when the main service binds ${APP_PORT} on the Docker host. Shared with the app page, which
+ * offers the LAN link exactly when this holds for the stored install form.
+ */
 export function publishesHostPort(form: AppFormHostPortFields): boolean {
-  return servedOpenPort(form) || getEffectiveExposureMode(form) === 'local' || Boolean(form.exposedLocal);
+  return publishesSharedHostPort(form);
 }
 
 /**

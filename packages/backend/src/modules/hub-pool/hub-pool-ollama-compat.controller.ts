@@ -1,7 +1,8 @@
-import { Controller, Get, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Res, UseGuards, UseInterceptors } from '@nestjs/common';
 import type { Response } from 'express';
 import { ApiExcludeController } from '@nestjs/swagger';
 import { InferenceAccessGuard } from '@/modules/auth/inference-access.guard';
+import { TunnelErrorStatusInterceptor } from '@/modules/inference/tunnel-error-status.interceptor';
 import { PoolProxyService } from './hub-pool-proxy.service';
 
 /**
@@ -41,12 +42,14 @@ export class HubPoolOllamaCompatController {
   // `HubPoolController` correctly does under ITS `inference/pool` prefix) would instead mount at
   // `/api/api/version`, reintroducing exactly the reachability gap this controller exists to close.
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Get('version')
   async version(@Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/api/version', 'GET', undefined, res);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Get('tags')
   async tags(@Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/api/tags', 'GET', undefined, res);

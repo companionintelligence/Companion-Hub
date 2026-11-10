@@ -71,9 +71,6 @@ importers:
       '@playwright/test':
         specifier: ^1.64.1
         version: 1.64.1
-      cloudflare:
-        specifier: ^7.3.0
-        version: 7.3.0
       dotenv-cli:
         specifier: ^11.1.0
         version: 11.1.0
@@ -468,9 +465,6 @@ importers:
       isbot:
         specifier: ^5.2.2
         version: 5.2.2
-      let-it-go:
-        specifier: ^3.0.0
-        version: 3.0.0
       lottie-react:
         specifier: ^3.1.2
         version: 3.1.2(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -4036,10 +4030,6 @@ packages:
     resolution: {integrity: sha512-BSeNnyus75C4//NQ9gQt1/csTXyo/8Sb+afLAkzAptFuMsod9HFokGNudZpi/oQV73hnVK+sR+5PVRMd+Dr7YQ==}
     engines: {node: '>=12'}
 
-  cloudflare@7.3.0:
-    resolution: {integrity: sha512-0P4cMFjzdIe388E57xNCV2wKzv1ZVZqMFu7+p2gsZuggbXs39xTKtXJN8FACkKh+xjLQ7dNruNlT/aT+9ajJtg==}
-    hasBin: true
-
   clsx@2.1.1:
     resolution: {integrity: sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==}
     engines: {node: '>=6'}
@@ -5094,10 +5084,6 @@ packages:
 
   launch-editor@2.14.2:
     resolution: {integrity: sha512-NHJEb30MGBCkmZXLZwz25t37QR4aY03ZzPYUJXOJaOa92uWwExI9SBQUuIznBYc1xkD7cJNGX7oc3Nl3sq2kQQ==}
-
-  let-it-go@3.0.0:
-    resolution: {integrity: sha512-7Yj2d+GbxYMMsFGD3Biz+wunFeA0s6VHEgQAh34xi0E4YrbN5caBuINzQcUIAQkTgQOTMhdjuGwtEhx6CzSsJA==}
-    engines: {node: '>=22'}
 
   leven@3.1.0:
     resolution: {integrity: sha512-qsda+H8jTaUaN/x5vzW2rzc+8Rw4TAQ/4KjB46IwK5VH+IlVeeeje/EoZRpiXvIqjFgK84QffqPztGI3VBLG1A==}
@@ -10216,8 +10202,6 @@ snapshots:
       strip-ansi: 6.0.1
       wrap-ansi: 7.0.0
 
-  cloudflare@7.3.0: {}
-
   clsx@2.1.1: {}
 
   codemirror@6.0.2:
@@ -11223,8 +11207,6 @@ snapshots:
     dependencies:
       picocolors: 1.1.1
       shell-quote: 1.12.0
-
-  let-it-go@3.0.0: {}
 
   leven@3.1.0: {}
 

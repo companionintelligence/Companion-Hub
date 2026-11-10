@@ -11,7 +11,10 @@ import { AppLifecycleCommand } from './command';
 import { hostPortMoveOf } from './main-host-port';
 
 export class RestartAppCommand extends AppLifecycleCommand {
-  public async execute(appUrn: AppUrn, form: AppEventFormInput): Promise<{ success: boolean; message: string; movedHostPort?: HostPortMove }> {
+  public async execute(
+    appUrn: AppUrn,
+    form: AppEventFormInput,
+  ): Promise<{ success: boolean; message: string; movedHostPort?: HostPortMove; rolledBack?: boolean }> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
@@ -31,9 +34,14 @@ export class RestartAppCommand extends AppLifecycleCommand {
       // can be gone by the time the app is restarted (driver not loaded yet at boot, host
       // reconfigured). Catch that here with friendly guidance instead of letting Docker's
       // raw device-attach error reach the user unclassified.
-      await this.assertRequiredHostDevices(appUrn);
+      try {
+        await this.assertRequiredHostDevices(appUrn);
 
-      await this.ensureAppDir(appUrn, form);
+        await this.ensureAppDir(appUrn, form);
+      } catch (err) {
+        // Refused before `down`: the containers still run, so the app keeps the status it had rather than "stopped".
+        return { ...(await this.handleAppError(err, appUrn, 'restart')), rolledBack: true };
+      }
 
       // Not `form.exposedLocal`, which a Private VPN app leaves off: its routes go through Traefik too.
       const exposedThroughTraefik = getEffectiveExposureMode(form) !== 'local';
@@ -69,22 +77,22 @@ export class RestartAppCommand extends AppLifecycleCommand {
         {
           recoverHostPortConflict: (error) => this.moveMainPortOffConflict(appUrn, form, error, refusedHostPorts),
         },
-      );
+      ).catch((error: unknown) => this.failComposeUp(appUrn, form, error));
 
       // `compose up` returning says nothing about a service that crashes as soon as it starts.
-      const notUp = await this.appCameUpError(appUrn);
+      const notUp = await this.appCameUpErrorAfterStart(appUrn, form);
+
+      if (notUp) {
+        await this.rebuildRoutesAfterFailure(appUrn, form);
+        throw notUp;
+      }
 
       // TODO(#244): revisit on next Traefik upgrade
       // Regenerate Traefik file-based config after app restarts (workaround for Docker API version issue).
-      // Also when a service failed, since the other containers stay up and go on serving. The check
-      // above is the wait for them to start.
+      // The check above is the wait for them to start.
       if (exposedThroughTraefik) {
         logger.debug(`Regenerating Traefik config for restarted exposed app ${appUrn}`);
         await traefikConfigService.regenerateTraefikConfig(0);
-      }
-
-      if (notUp) {
-        throw notUp;
       }
 
       logger.info(`App ${appUrn} restarted`);

@@ -34,9 +34,7 @@ const USER_CONTEXT_DEFAULTS: UserContextDto = {
   localDomain: 'localhost',
   sslPort: 443,
   allowErrorMonitoring: true,
-  allowAutoThemes: false,
   themeColor: 'blue',
-  themeBase: 'gray',
   version: { current: '0.0.0', latest: '0.0.0', body: '', releases: [] },
 } as UserContextDto;
 

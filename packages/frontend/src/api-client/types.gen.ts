@@ -18,10 +18,8 @@ export type UserContextDto = {
     isConfigured: boolean;
     isGuestDashboardEnabled: boolean;
     isPasswordResetDisabled: boolean;
-    allowAutoThemes: boolean;
     allowErrorMonitoring: boolean;
     themeColor: string;
-    themeBase: string;
     localDomain: string;
     domain: string;
     sslPort: number;
@@ -41,7 +39,6 @@ export type AppContextDto = {
     };
     userSettings: {
         advancedSettings: boolean;
-        allowAutoThemes: boolean;
         allowErrorMonitoring: boolean;
         appDataPath: string;
         appsRepoUrl?: string;
@@ -66,7 +63,6 @@ export type AppContextDto = {
         sslPort: number;
         timeZone: string;
         experimental_insecureCookie?: boolean;
-        themeBase?: string;
         themeColor?: string;
         ciHubOrganizationId?: string;
         ciHubOrganizationSlug?: string;
@@ -148,7 +144,6 @@ export type HubAccessDto = {
 
 export type UserSettingsBody = {
     advancedSettings?: boolean;
-    allowAutoThemes?: boolean;
     allowErrorMonitoring?: boolean;
     appDataPath?: string;
     appsRepoUrl?: string;
@@ -173,7 +168,6 @@ export type UserSettingsBody = {
     sslPort?: number;
     timeZone?: unknown;
     experimental_insecureCookie?: boolean;
-    themeBase?: string;
     themeColor?: string;
     ciHubOrganizationId?: string;
     ciHubOrganizationSlug?: string;
@@ -805,6 +799,7 @@ export type GuestAppsDto = {
             customDomain?: string;
             pendingRestart: boolean;
             ignoredVersion: number;
+            publicUrl?: string;
         };
         info: {
             id: string;
@@ -3271,17 +3266,6 @@ export type DownloadHubLogsResponses = {
     /**
      * Hub logs download
      */
-    200: unknown;
-};
-
-export type DownloadLocalCertificateData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/system/certificate';
-};
-
-export type DownloadLocalCertificateResponses = {
     200: unknown;
 };
 

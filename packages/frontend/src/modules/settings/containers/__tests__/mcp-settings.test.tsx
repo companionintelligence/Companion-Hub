@@ -182,6 +182,54 @@ describe('McpSettingsContainer', () => {
     expect(screen.queryByTestId('mcp-installed-error')).toBeNull();
   });
 
+  // CI-Hub#2380: with MCP_ENABLED=false the Hub answers the status with `enabled: false` and no server.
+  it('shows Disabled and the setup hint when MCP is off', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url === '/api/mcp-admin/status') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ enabled: false, endpoint: '/api/mcp', toolCount: 0, activeSessions: 0, activeKeyCount: 0 }),
+        });
+      }
+      if (url === '/api/mcp-admin/tools') return Promise.resolve({ ok: true, json: async () => ({ tools: [] }) });
+      return mockGet(url);
+    });
+
+    renderContainer();
+
+    expect(await screen.findByText('MCP_SETTINGS_STATUS_DISABLED_HINT')).toBeTruthy();
+    expect(screen.getByText('MCP_SETTINGS_STATUS_DISABLED')).toBeTruthy();
+    expect(screen.queryByText('MCP_SETTINGS_LOAD_ERROR')).toBeNull();
+    expect(screen.queryByTestId('mcp-tool-catalog')).toBeNull();
+    expect(mockApiFetch).not.toHaveBeenCalledWith('/api/apps/installed');
+  });
+
+  it('shows Disabled when an older Hub answers the status with 404', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url.startsWith('/api/mcp-admin/')) return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+      return mockGet(url);
+    });
+
+    renderContainer();
+
+    expect(await screen.findByText('MCP_SETTINGS_STATUS_DISABLED_HINT')).toBeTruthy();
+    expect(screen.getByText('MCP_SETTINGS_STATUS_DISABLED')).toBeTruthy();
+    expect(screen.queryByText('MCP_SETTINGS_LOAD_ERROR')).toBeNull();
+    expect(screen.queryByTestId('mcp-tool-catalog')).toBeNull();
+  });
+
+  it('still shows the load error when the status fails for another reason', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url === '/api/mcp-admin/status') return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
+      return mockGet(url);
+    });
+
+    renderContainer();
+
+    expect(await screen.findByText('MCP_SETTINGS_LOAD_ERROR')).toBeTruthy();
+    expect(screen.queryByText('MCP_SETTINGS_STATUS_DISABLED')).toBeNull();
+  });
+
   it('links to hub-wide key management on the Security tab instead of listing keys', async () => {
     renderContainer();
     await waitFor(() => expect(screen.getByTestId('mcp-settings')).toBeTruthy());

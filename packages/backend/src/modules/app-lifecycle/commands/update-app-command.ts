@@ -225,7 +225,11 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       report(this.wasRunning ? 'starting' : 'replacing');
       // From here on the previous files and app.env are being replaced.
       replacingFiles = true;
-      await this.ensureAppDir(appUrn, form);
+      // Volume folders only for an app that was running: its store data is already copied. One that was
+      // not may be an install that failed before the copy, and a folder made here for a file a volume
+      // mounts (`data/config.yml`) would stop the retry's copyDataDir. A stopped app gets them at its
+      // next start (#2198).
+      await this.ensureAppDir(appUrn, form, { createVolumeDirs: this.wasRunning });
       // Written once here so a write that fails (a read-only app.env) fails while the old version still runs.
       await appHelpers.generateEnvFile(appUrn, form);
 
@@ -241,7 +245,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       }
       await marketplaceService.copyAppFromRepoToInstalled(appUrn);
 
-      await this.ensureAppDir(appUrn, form);
+      await this.ensureAppDir(appUrn, form, { createVolumeDirs: this.wasRunning });
       // ⚠ AND AGAIN ONCE THE NEW FILES ARE IN. app.env is built from the installed config.json (its
       // version, port and form defaults), so the write above gave the new version the previous version's
       // environment. The start that follows a successful update rewrites app.env from the new files,

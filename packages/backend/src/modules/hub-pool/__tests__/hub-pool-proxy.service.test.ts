@@ -911,6 +911,38 @@ describe('PoolProxyService', () => {
       expect(body.localBackends).toHaveLength(INFERENCE_BACKEND_TYPES.length);
     });
 
+    // Cloudflare used to swallow these bodies; once a reply through the tunnel keeps its body they reach a key holder outside.
+    it('keeps engine addresses and probe errors off a reply through the tunnel', async () => {
+      vllm.getBaseUrl.mockReturnValue('http://192.168.1.20:8000');
+      vllm.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [], error: 'connect ECONNREFUSED 192.168.1.20:8000' });
+      omlx.healthCheck.mockResolvedValue({ running: true, healthy: false, modelsLoaded: [], error: 'The server names itself "vllm"' });
+      const res = createMockResponse();
+      Object.assign(res, { req: { headers: { 'cf-ray': '8f00000000000000-LHR' } } });
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: 'missing' }, model: 'missing', res });
+
+      expect(vi.mocked(res.json).mock.calls[0]?.[0]).toEqual({ error: 'No pool node currently has model "missing" available.' });
+    });
+
+    it('does not name the failing peer on a reply through the tunnel, and still does from inside', async () => {
+      const peer = mockPeer({ lastCapabilities: capabilitiesWithModel('llama3.2:3b') as unknown as Record<string, unknown> });
+      peerService.listConnectedPeers.mockResolvedValue([peer]);
+      peerService.getPeerById.mockResolvedValue(peer);
+      peerService.getPresentToken.mockResolvedValue('raw-token');
+      vi.mocked(global.fetch).mockRejectedValue(new Error('connect ECONNREFUSED 100.64.0.2:5002'));
+      const body = { model: 'llama3.2:3b' };
+
+      const tunnelled = createMockResponse();
+      Object.assign(tunnelled, { req: { headers: { 'cf-ray': '8f00000000000000-LHR' } } });
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model: 'llama3.2:3b', res: tunnelled });
+      expect(vi.mocked(tunnelled.json).mock.calls[0]?.[0]).toEqual({ error: 'All 1 pool candidate for model "llama3.2:3b" failed.' });
+
+      const inside = createMockResponse();
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model: 'llama3.2:3b', res: inside });
+      const answered = vi.mocked(inside.json).mock.calls[0]?.[0] as { error: string };
+      expect(answered.error).toContain('100.64.0.2');
+    });
+
     it('fails over to a connected peer when the local candidate 5xxs', async () => {
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['llama3.2:3b'] });
       const peer = mockPeer({ lastCapabilities: capabilitiesWithModel('llama3.2:3b') as unknown as Record<string, unknown> });
@@ -2700,7 +2732,7 @@ describe('PoolProxyService', () => {
       expect((await service.buildCandidateList('other:1b')).map((candidate) => candidate.peerId)).toEqual(['peer-a', null]);
     });
 
-    it('matches a model pin verbatim: a case variant is a different model and does not apply', async () => {
+    it('does not apply a model pin to a case variant, which is a different model', async () => {
       peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', MODEL, { inFlightRequests: 0 })]);
       // Two queued locally against an idle peer clears the affinity head start, so the peer wins on
       // score alone — the ranking a pin would have had to override.
@@ -2710,6 +2742,25 @@ describe('PoolProxyService', () => {
 
       // Local is loaded, the peer is idle — but no pin applies, so this is the plain ranking.
       expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId)).toEqual(['peer-a', null]);
+    });
+
+    it.each([
+      ['nomic-embed-text', 'nomic-embed-text:latest'],
+      ['nomic-embed-text:latest', 'nomic-embed-text'],
+    ])('puts the peer a pin on %s names first for a request for %s', async (pinned, requested) => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['nomic-embed-text:latest'] });
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-busy', 'nomic-embed-text:latest', { inFlightRequests: 5 })]);
+      setPoolPreferences({ poolPins: [{ scope: 'model', model: pinned, targetKind: 'peer', peerId: 'peer-busy', mode: 'prefer' }] });
+
+      expect((await service.buildCandidateList(requested)).map((candidate) => candidate.peerId)).toEqual(['peer-busy', null]);
+    });
+
+    it('leaves a request for another tag on the plain ranking', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:270m', 'gemma3:1b'] });
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-busy', 'gemma3:1b', { inFlightRequests: 5 })]);
+      setPoolPreferences({ poolPins: [{ scope: 'model', model: 'gemma3:270m', targetKind: 'peer', peerId: 'peer-busy', mode: 'prefer' }] });
+
+      expect((await service.buildCandidateList('gemma3:1b')).map((candidate) => candidate.peerId)).toEqual([null, 'peer-busy']);
     });
 
     /**

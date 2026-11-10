@@ -26,7 +26,9 @@ export async function clientLoader({ params }: Route.ActionArgs) {
   // the app's page rather than on an error.
   const composeDiff = await getAppComposeDiff({ path: { urn: `${params.appId}:_user` } }).catch(() => null);
 
-  if (!composeDiff) {
+  // The client answers a refusal with the error rather than throwing it.
+  const refused = composeDiff?.response?.status === 401 || composeDiff?.response?.status === 403;
+  if (!composeDiff || refused) {
     return redirect(`/apps/${encodeURIComponent(params.appId)}`);
   }
 
@@ -47,7 +49,10 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
   const params = useParams<{ appId: string }>();
 
   const [appName] = useState(params.appId);
-  const { setServices, setOverrides } = useMultiServiceStore();
+  const { loadSaved } = useMultiServiceStore();
+  // Bumped each time the config is read into the store. The form's rows are drawn from its first values,
+  // so a config read again while the page is open gives the form a new key.
+  const [loadCount, setLoadCount] = useState(0);
   const queryClient = useQueryClient();
 
   const { data: currentConfig } = useQuery({
@@ -78,9 +83,9 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
       }));
 
       setConfigError(null);
-      setServices(servicesWithId);
-      // Kept beside the form, which has no fields for them, so a save writes them back.
-      setOverrides(parsed.data.overrides);
+      // The overrides are kept beside the form, which has no fields for them, so a save writes them back.
+      loadSaved(servicesWithId, parsed.data.overrides);
+      setLoadCount((count) => count + 1);
       // All of them, so they can go in one save. A save names the first one left.
       const values = { services: servicesWithId, overrides: parsed.data.overrides };
       const refusals = parsed.labelIssues.map((issue) => describeComposeIssue([issue], values));
@@ -92,7 +97,7 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
     } catch {
       setConfigError(t('CUSTOM_APP_INVALID_CONFIG'));
     }
-  }, [currentConfig, setServices, setOverrides, t, id]);
+  }, [currentConfig, loadSaved, t, id]);
 
   const updateCustomApp = useMutation({
     ...updateCustomAppMutation(),
@@ -170,7 +175,7 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
           </div>
         </CardContent>
       </Card>
-      <MultiServiceForm onSubmit={onSubmit} />
+      <MultiServiceForm key={loadCount} onSubmit={onSubmit} />
     </div>
   );
 }

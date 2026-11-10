@@ -4,10 +4,11 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/Input';
 import { Switch } from '@/components/ui/Switch';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
+import { invalidateStoreCatalogQueries } from '@/lib/invalidate-store-catalog-queries';
 import type { AppStore } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useId } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { toast } from 'sonner';
@@ -21,6 +22,7 @@ type Props = {
 export const EditAppStoreDialog = ({ appStore }: Props) => {
   const editAppStoreDisclosure = useDisclosure();
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
 
   const schema = z.object({
     name: z.string().max(16),
@@ -34,7 +36,8 @@ export const EditAppStoreDialog = ({ appStore }: Props) => {
     onError: (e: TranslatableError) => {
       toast.error(t(e.message, e.intlParams));
     },
-    onSuccess: () => {
+    onSuccess: async () => {
+      await invalidateStoreCatalogQueries(queryClient);
       editAppStoreDisclosure.close();
       toast.success(t('APP_STORE_EDIT_DIALOG_SUCCESS'));
     },
@@ -83,6 +86,7 @@ export const EditAppStoreDialog = ({ appStore }: Props) => {
                     checked={Boolean(value)}
                     onCheckedChange={onChange}
                     {...rest}
+                    disabled={editAppStore.isPending}
                     label={t('APP_STORE_EDIT_DIALOG_ENABLED')}
                   />
                 )}

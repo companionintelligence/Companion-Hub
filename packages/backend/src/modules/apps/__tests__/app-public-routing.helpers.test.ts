@@ -2,12 +2,78 @@ import { describe, expect, it } from 'vitest';
 import {
   canServeOnCustomDomain,
   didPublicRoutingIdentityChange,
+  guestPublicUrl,
   publishesCloudflarePublicRoute,
   requiresHubLoginOnPublicRoute,
   resolveRoutingSubdomain,
 } from '../app-public-routing.helpers';
 
 describe('app-public-routing.helpers', () => {
+  describe('guestPublicUrl', () => {
+    const hub = { orgSlug: 'my-org', hubSubdomain: 'hub-my-device-my-org', domain: 'example.com' };
+    const onPublicWeb = {
+      appName: 'jellyfin',
+      appStoreSlug: 'ci-marketplace',
+      localSubdomain: 'jellyfin',
+      publicDomain: 'ci0.example',
+      exposureMode: 'cloudflare',
+      exposedLocal: true,
+      config: { exposureMode: 'cloudflare', exposedLocal: true },
+    };
+
+    it('builds the hostname the tunnel publishes', () => {
+      expect(guestPublicUrl(onPublicWeb, { exposable: true }, hub)).toBe('https://jellyfin-my-device-my-org.ci0.example');
+    });
+
+    it("uses the Hub's domain for an app with no public domain of its own", () => {
+      expect(guestPublicUrl({ ...onPublicWeb, publicDomain: null }, { exposable: true }, hub)).toBe('https://jellyfin-my-device-my-org.example.com');
+    });
+
+    it('names the routing label Portal serves when the app chose no subdomain', () => {
+      expect(guestPublicUrl({ ...onPublicWeb, localSubdomain: null }, { exposable: true }, hub)).toBe(
+        'https://jellyfin-ci-marketplace-my-device-my-org.ci0.example',
+      );
+    });
+
+    it('prefers a custom hostname Portal has wired', () => {
+      expect(guestPublicUrl({ ...onPublicWeb, customDomain: 'Media.Example.org.' }, { exposable: true }, hub)).toBe('https://media.example.org');
+    });
+
+    it('names the app under the organization alone for a registration with no Hub subdomain, as the sync publishes it', () => {
+      expect(guestPublicUrl(onPublicWeb, { exposable: true }, { ...hub, hubSubdomain: null })).toBe('https://jellyfin-my-org.ci0.example');
+    });
+
+    it('keeps a custom hostname when the sync refused the platform name', () => {
+      expect(guestPublicUrl({ ...onPublicWeb, customDomain: 'media.example.org' }, { exposable: true }, hub, true)).toBe('https://media.example.org');
+    });
+
+    it.each([
+      [
+        'it is not on Public web',
+        { ...onPublicWeb, exposureMode: 'local', exposedLocal: false, config: { exposureMode: 'local' } },
+        { exposable: true },
+        hub,
+      ],
+      ['its stored form is local whatever the row says', { ...onPublicWeb, config: { exposureMode: 'local' } }, { exposable: true }, hub],
+      [
+        'a custom hostname is left on an app that moved off Public web',
+        { ...onPublicWeb, customDomain: 'media.example.org', config: { exposureMode: 'tailscale', exposedLocal: true, openPort: false } },
+        { exposable: true },
+        hub,
+      ],
+      ['it cannot be exposed', onPublicWeb, { exposable: false }, hub],
+      ['it has an exposed domain of its own', { ...onPublicWeb, exposed: true, domain: 'own.example.org' }, { exposable: true }, hub],
+      ['the Hub is not paired', onPublicWeb, { exposable: true }, { orgSlug: undefined, hubSubdomain: undefined, domain: 'example.com' }],
+      ['no domain is known', { ...onPublicWeb, publicDomain: '' }, { exposable: true }, { ...hub, domain: '' }],
+    ])('is null when %s', (_case, app, info, names) => {
+      expect(guestPublicUrl(app, info, names)).toBeNull();
+    });
+
+    it('is null when the sync refused the platform name and there is no custom hostname', () => {
+      expect(guestPublicUrl(onPublicWeb, { exposable: true }, hub, true)).toBeNull();
+    });
+  });
+
   describe('publishesCloudflarePublicRoute', () => {
     it('returns true for cloudflare exposure mode', () => {
       expect(publishesCloudflarePublicRoute({ exposureMode: 'cloudflare', exposedLocal: false })).toBe(true);
@@ -55,6 +121,7 @@ describe('app-public-routing.helpers', () => {
   describe('didPublicRoutingIdentityChange', () => {
     const appName = 'airtrail';
     const appStoreSlug = 'ci-marketplace';
+    const hubDomain = 'example.com';
 
     it('detects subdomain changes for cloudflare apps', () => {
       expect(
@@ -63,6 +130,71 @@ describe('app-public-routing.helpers', () => {
           { exposureMode: 'cloudflare', localSubdomain: 'airtrail-new' },
           appName,
           appStoreSlug,
+          hubDomain,
+        ),
+      ).toBe(true);
+    });
+
+    // The Settings form fills an empty subdomain with this routing name, so a save names it (#2272).
+    it('treats an empty stored subdomain and its routing name as the same address', () => {
+      expect(
+        didPublicRoutingIdentityChange(
+          { exposureMode: 'cloudflare', localSubdomain: null },
+          { exposureMode: 'cloudflare', localSubdomain: 'airtrail-ci-marketplace' },
+          appName,
+          appStoreSlug,
+          hubDomain,
+        ),
+      ).toBe(false);
+    });
+
+    // A save stores the canonical spelling, and the Portal files both under it.
+    it('reads a stored name the way a save stores it, so an old spelling is not a move', () => {
+      expect(
+        didPublicRoutingIdentityChange(
+          { exposureMode: 'cloudflare', localSubdomain: 'My--App' },
+          { exposureMode: 'cloudflare', localSubdomain: 'my-app' },
+          appName,
+          appStoreSlug,
+          hubDomain,
+        ),
+      ).toBe(false);
+    });
+
+    // The Portal keeps the underscore in a routing name, so these are two addresses there.
+    it("sees a custom app's `<app>-_user` and the `<app>-user` a save would store as two addresses", () => {
+      expect(
+        didPublicRoutingIdentityChange(
+          { exposureMode: 'cloudflare', localSubdomain: null },
+          { exposureMode: 'cloudflare', localSubdomain: 'airtrail-user' },
+          appName,
+          '_user',
+          hubDomain,
+        ),
+      ).toBe(true);
+    });
+
+    // The Settings form fills an empty public domain with the Hub's own, the one such an app already serves on (#2272).
+    it('treats an empty stored public domain and the Hub default as the same address', () => {
+      expect(
+        didPublicRoutingIdentityChange(
+          { exposureMode: 'cloudflare', localSubdomain: 'airtrail', publicDomain: null },
+          { exposureMode: 'cloudflare', localSubdomain: 'airtrail', publicDomain: 'example.com' },
+          appName,
+          appStoreSlug,
+          hubDomain,
+        ),
+      ).toBe(false);
+    });
+
+    it('still sees a move from an empty stored public domain to another domain', () => {
+      expect(
+        didPublicRoutingIdentityChange(
+          { exposureMode: 'cloudflare', localSubdomain: 'airtrail', publicDomain: null },
+          { exposureMode: 'cloudflare', localSubdomain: 'airtrail', publicDomain: 'other.com' },
+          appName,
+          appStoreSlug,
+          hubDomain,
         ),
       ).toBe(true);
     });
@@ -74,13 +206,20 @@ describe('app-public-routing.helpers', () => {
           { exposureMode: 'cloudflare', localSubdomain: 'airtrail', publicDomain: 'other.com' },
           appName,
           appStoreSlug,
+          hubDomain,
         ),
       ).toBe(true);
     });
 
     it('returns false when local-only settings change unrelated fields', () => {
       expect(
-        didPublicRoutingIdentityChange({ exposureMode: 'local', openPort: true }, { exposureMode: 'local', openPort: false }, appName, appStoreSlug),
+        didPublicRoutingIdentityChange(
+          { exposureMode: 'local', openPort: true },
+          { exposureMode: 'local', openPort: false },
+          appName,
+          appStoreSlug,
+          hubDomain,
+        ),
       ).toBe(false);
     });
 
@@ -91,6 +230,7 @@ describe('app-public-routing.helpers', () => {
           { exposureMode: 'local', exposedLocal: false, localSubdomain: 'airtrail' },
           appName,
           appStoreSlug,
+          hubDomain,
         ),
       ).toBe(true);
     });

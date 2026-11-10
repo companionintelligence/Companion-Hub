@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { AppsReadService } from '../apps-read.service';
 import { AppsRepository } from '../apps.repository';
@@ -9,6 +9,8 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { PortAllocationRepository } from '../../network/port-allocation.repository';
 import { InstallPipelineTracker } from '../install-pipeline.tracker';
 import { LifecycleJobService } from '../../app-lifecycle/lifecycle-job.service';
+import { ExposureSyncService } from '../../app-lifecycle/exposure-sync.service';
+import { RegistrationService } from '../../registration/registration.service';
 import type { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 
@@ -131,6 +133,38 @@ describe('AppsReadService.countUpdatesAvailable', () => {
     expect(marketplaceService.getAppUpdateInfo).not.toHaveBeenCalled();
     expect(appFilesManager.getInstalledAppInfo).not.toHaveBeenCalled();
   });
+
+  // CI-Hub#2376: an ignored update stayed in Home's "Update all" for the cache's minute.
+  describe('the cached count', () => {
+    it('is walked again after an invalidation', async () => {
+      const { service } = build();
+      const count = vi.spyOn(service, 'countUpdatesAvailable').mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+
+      await expect(service.getUpdatesAvailableCached()).resolves.toBe(1);
+      await expect(service.getUpdatesAvailableCached()).resolves.toBe(1);
+      service.invalidateUpdatesAvailableCache();
+
+      await expect(service.getUpdatesAvailableCached()).resolves.toBe(0);
+      expect(count).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not keep a count a walk read before the invalidation', async () => {
+      const { service } = build();
+      let finishStaleWalk: (n: number) => void = () => {};
+      vi.spyOn(service, 'countUpdatesAvailable')
+        .mockImplementationOnce(() => new Promise<number>((resolve) => (finishStaleWalk = resolve)))
+        .mockResolvedValueOnce(0)
+        .mockResolvedValueOnce(5);
+
+      const stale = service.getUpdatesAvailableCached();
+      service.invalidateUpdatesAvailableCache();
+      await expect(service.getUpdatesAvailableCached()).resolves.toBe(0);
+      finishStaleWalk(1);
+      await stale;
+
+      expect(service.peekUpdatesAvailableCached()).toBe(0);
+    });
+  });
 });
 
 describe('AppsReadService.getApp failure', () => {
@@ -247,5 +281,122 @@ describe('AppsReadService.getApp failure', () => {
 
     await expect(service.getApp(appUrn)).resolves.toMatchObject({ failure: null });
     expect(jobService.listJobs).not.toHaveBeenCalled();
+  });
+});
+
+describe('AppsReadService.getGuestDashboardApps', () => {
+  const row = {
+    id: 3,
+    appName: 'jellyfin',
+    appStoreSlug: 'ci-marketplace',
+    localSubdomain: 'jellyfin',
+    exposureMode: 'cloudflare',
+    exposedLocal: true,
+  };
+  const urn = 'jellyfin:ci-marketplace';
+
+  function build(
+    options: {
+      refused?: string[];
+      registration?: () => Promise<unknown>;
+      guestDashboard?: boolean;
+      registrationMissing?: boolean;
+      customDomain?: string;
+      settingsDomain?: string;
+    } = {},
+  ) {
+    const appsRepository = mock<AppsRepository>();
+    appsRepository.getGuestDashboardApps.mockResolvedValue([{ ...row, customDomain: options.customDomain ?? null }] as never);
+    const appFilesManager = mock<AppFilesManager>();
+    appFilesManager.getInstalledAppInfo.mockResolvedValue({ urn, exposable: true } as never);
+    appFilesManager.getDockerComposeJson.mockResolvedValue({ content: null } as never);
+    const marketplaceService = mock<MarketplaceService>();
+    marketplaceService.getAppUpdateInfo.mockResolvedValue({ latestVersion: 1, latestDockerVersion: '1', minHubVersion: null } as never);
+    const configurationService = mock<ConfigurationService>();
+    configurationService.getConfig.mockReturnValue({
+      domain: 'paired.example',
+      userSettings: { domain: options.settingsDomain ?? 'example.com', guestDashboard: options.guestDashboard ?? true },
+    } as never);
+    const moduleRef = mock<ModuleRef>();
+    moduleRef.get.mockImplementation(((token: unknown) => {
+      if (token === RegistrationService) {
+        if (options.registrationMissing) {
+          throw new Error('Nest could not find RegistrationService');
+        }
+        return {
+          getDeviceRegistrationInfo:
+            options.registration ?? (async () => ({ slug: 'my-org', hubSubdomain: 'hub-my-device-my-org', tunnelId: 'tunnel-1' })),
+        };
+      }
+      return token === ExposureSyncService
+        ? { publicDnsRefusalFor: (appUrn: string) => (options.refused?.includes(appUrn) ? 'subdomain_quota_exceeded' : null) }
+        : undefined;
+    }) as never);
+
+    return new AppsReadService(
+      appsRepository,
+      appFilesManager,
+      mock<LoggerService>(),
+      marketplaceService,
+      configurationService,
+      mock<PortAllocationRepository>(),
+      mock<InstallPipelineTracker>(),
+      moduleRef,
+    );
+  }
+
+  it('gives an app on Public web its public address', async () => {
+    const [entry] = await build().getGuestDashboardApps();
+
+    expect(entry?.publicUrl).toBe('https://jellyfin-my-device-my-org.example.com');
+  });
+
+  it('gives no address the Portal refused, because no DNS record exists for it', async () => {
+    const [entry] = await build({ refused: [urn] }).getGuestDashboardApps();
+
+    expect(entry?.publicUrl).toBeNull();
+  });
+
+  it('keeps a custom hostname when the Portal refused the platform name, because it has its own ingress rule', async () => {
+    const [entry] = await build({ refused: [urn], customDomain: 'media.example.org' }).getGuestDashboardApps();
+
+    expect(entry?.publicUrl).toBe('https://media.example.org');
+  });
+
+  it('uses the domain the Hub paired into when no setting overrides it, as the tunnel sync does', async () => {
+    const [entry] = await build({ settingsDomain: '  ' }).getGuestDashboardApps();
+
+    expect(entry?.publicUrl).toBe('https://jellyfin-my-device-my-org.paired.example');
+  });
+
+  it('gives no public address on a Hub with no tunnel, because the sync publishes nothing', async () => {
+    const [entry] = await build({
+      registration: async () => ({ slug: 'my-org', hubSubdomain: 'hub-my-device-my-org', tunnelId: null }),
+      customDomain: 'media.example.org',
+    }).getGuestDashboardApps();
+
+    expect(entry?.app).toMatchObject({ id: 3 });
+    expect(entry?.publicUrl).toBeNull();
+  });
+
+  it('gives no public address while the guest dashboard is turned off', async () => {
+    const [entry] = await build({ guestDashboard: false }).getGuestDashboardApps();
+
+    expect(entry?.app).toMatchObject({ id: 3 });
+    expect(entry?.publicUrl).toBeNull();
+  });
+
+  it('still serves the tile when the registration service cannot be resolved', async () => {
+    const [entry] = await build({ registrationMissing: true }).getGuestDashboardApps();
+
+    expect(entry?.app).toMatchObject({ id: 3 });
+    expect(entry?.publicUrl).toBeNull();
+  });
+
+  it('still serves the tile when the registration cannot be read', async () => {
+    const [entry] = await build({ registration: () => Promise.reject(new Error('database down')) }).getGuestDashboardApps();
+
+    expect(entry?.app).toMatchObject({ id: 3 });
+    expect(entry?.publicUrl).toBeNull();
   });
 });

@@ -1,5 +1,12 @@
 import { requiresHubLoginOnPublicRoute, servedOpenPort } from '@ci-hub/common/schemas';
-import { publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm } from '@ci-hub/common/types';
+import {
+  buildPublicWebIdentity,
+  normalizeStoredHostname,
+  publishesPublicWebRoute,
+  resolveRoutingSubdomain,
+  sanitizeAppSubdomain,
+  storedExposureForm,
+} from '@ci-hub/common/types';
 import type { AppFormHostPortFields } from './app-exposure.helpers';
 
 export type AppPublicRoutingSnapshot = AppFormHostPortFields & {
@@ -28,6 +35,60 @@ export function publicRoutingSnapshotOf<T extends AppPublicRoutingSnapshot & { c
   return { ...app, ...storedExposureForm(app) };
 }
 
+/**
+ * The address a guest can open an app on from anywhere, or `null` when it has none.
+ *
+ * Worked out here because the guest dashboard cannot: it is signed out, so it has neither the
+ * organization and Hub names the hostname is built from nor the stored install form, which is
+ * withheld from it. Same order as the app page: a custom hostname Companion Portal has wired, then
+ * the name the tunnel sync publishes. An app with its own `exposed` domain keeps the entry the
+ * dashboard already gives it.
+ *
+ * `platformNameRefused` says the last sync refused that published name. A custom hostname has its
+ * own ingress rule and can go on serving through a refusal, so it is still offered.
+ */
+export function guestPublicUrl(
+  app: Parameters<typeof storedExposureForm>[0] & {
+    appName: string;
+    appStoreSlug: string;
+    localSubdomain?: string | null;
+    publicDomain?: string | null;
+    customDomain?: string | null;
+    exposed?: boolean | null;
+    domain?: string | null;
+  },
+  info: { exposable?: boolean },
+  hub: { orgSlug?: string | null; hubSubdomain?: string | null; domain?: string | null },
+  platformNameRefused = false,
+): string | null {
+  // First, so a custom hostname left on the row of an app that moved off Public web is not offered: no tunnel route serves it.
+  if (!info.exposable || !publishesPublicWebRoute(storedExposureForm(app))) {
+    return null;
+  }
+
+  const customDomain = normalizeStoredHostname(app.customDomain);
+  if (customDomain) {
+    return `https://${customDomain}`;
+  }
+
+  if ((app.exposed && app.domain) || platformNameRefused) {
+    return null;
+  }
+
+  // No `hubSubdomain` is not a reason to stop: a registration without one is published as `<app>-<org>`.
+  const publicDomainRoot = app.publicDomain?.trim() || hub.domain?.trim();
+  if (!hub.orgSlug || !publicDomainRoot) {
+    return null;
+  }
+
+  return buildPublicWebIdentity({
+    appSubdomain: resolveRoutingSubdomain(app.localSubdomain, app.appName, app.appStoreSlug),
+    hubSubdomain: hub.hubSubdomain,
+    orgSlug: hub.orgSlug,
+    publicDomainRoot,
+  }).publicUrl;
+}
+
 // Defined in @ci-hub/common so the install form's edit dialog shows what this builder serves.
 export { requiresHubLoginOnPublicRoute };
 
@@ -54,14 +115,28 @@ export function canServeOnCustomDomain(snapshot: AppFormHostPortFields): boolean
 export { resolveRoutingSubdomain };
 
 /**
+ * The label Companion Portal files an app under. A name someone set is read the way a save stores it
+ * (`normalizeSubmittedForm`), so a row written before saves did that is not a move. The routing name is
+ * left as it is because the Portal keeps the underscore in a custom app's `<app>-_user`.
+ */
+function publishedLabel(localSubdomain: string | null | undefined, appName: string, appStoreSlug: string): string {
+  const name = resolveRoutingSubdomain(localSubdomain, appName, appStoreSlug);
+  return localSubdomain?.trim() ? sanitizeAppSubdomain(name) : name;
+}
+
+/**
  * Returns true when a config save changes the public hostname/subdomain Companion Portal
  * publishes, so the previous DNS record must be released before the new one is created.
+ *
+ * `defaultPublicDomain` is the domain the tunnel sync publishes a row with no stored one on. A save
+ * that names that domain, as the Settings form does, leaves the app where it is.
  */
 export function didPublicRoutingIdentityChange(
   before: AppPublicRoutingSnapshot,
   after: AppPublicRoutingSnapshot,
   appName: string,
   appStoreSlug: string,
+  defaultPublicDomain: string,
 ): boolean {
   const wasPublished = publishesCloudflarePublicRoute(before);
   const willPublish = publishesCloudflarePublicRoute(after);
@@ -74,10 +149,10 @@ export function didPublicRoutingIdentityChange(
     return true;
   }
 
-  const oldSubdomain = resolveRoutingSubdomain(before.localSubdomain, appName, appStoreSlug);
-  const newSubdomain = resolveRoutingSubdomain(after.localSubdomain, appName, appStoreSlug);
-  const oldPublicDomain = before.publicDomain?.trim() || null;
-  const newPublicDomain = after.publicDomain?.trim() || null;
+  const oldSubdomain = publishedLabel(before.localSubdomain, appName, appStoreSlug);
+  const newSubdomain = publishedLabel(after.localSubdomain, appName, appStoreSlug);
+  const oldPublicDomain = before.publicDomain?.trim() || defaultPublicDomain;
+  const newPublicDomain = after.publicDomain?.trim() || defaultPublicDomain;
 
   return oldSubdomain !== newSubdomain || oldPublicDomain !== newPublicDomain;
 }
