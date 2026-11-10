@@ -522,6 +522,7 @@
   "NO": "No",
   "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_one": "{{count}} מודל הורד",
   "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_two": "{{count}} מודלים הורדו",
+  "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_many": "{{count}} מודלים הורדו",
   "ONBOARDING_LEMONADE_DOWNLOADED_COUNT_other": "{{count}} מודלים הורדו",
   "RESTORE_APPS_ACTION_INSTALL": "הוסף התקנה לתור",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "כבר פועל",
