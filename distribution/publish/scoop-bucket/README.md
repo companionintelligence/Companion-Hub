@@ -15,4 +15,4 @@ scoop install companion-hub
 scoop update companion-hub
 ```
 
-Manifests are generated from [CI-Hub `distribution/`](https://github.com/companionintelligence/CI-Hub/tree/dev/distribution) on each desktop release.
+Manifests are generated from [CI-Hub `distribution/`](https://github.com/companionintelligence/Companion-Hub/tree/dev/distribution) on each desktop release.
