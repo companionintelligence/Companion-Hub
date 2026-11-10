@@ -92,33 +92,42 @@ rabbitmq_password_docker_says_absent() {
   esac
 }
 
-# The first of the Hub container names that exists: $1, then ci-hub, then ci-os-hub, on stdout.
-# Empty when docker says none of them exists. When docker cannot answer (a timeout, or any error that
-# is not "No such ..."), prints an ERROR and fails: "could not check" is never read as "absent".
+# The running Hub container, on stdout: the first of $1, ci-hub, ci-os-hub (each once) whose
+# State.Running is true. A stopped container is never picked, read, started or restarted, whatever its
+# name: update.sh can pass ci-hub while a stale ci-hub sits stopped beside the running ci-os-hub, and
+# a stopped container's password may be stale. Empty when no candidate runs (with a NOTE saying so).
+# When docker cannot answer (a timeout, or any error that is not "no such ..."), prints an ERROR and
+# fails: "could not check" is never read as "absent" or "stopped".
 rabbitmq_password_hub_container() {
-  local name rc names=()
-  # $1 first, always: update.sh passes the running Hub, and a stopped ci-hub left beside a running
-  # ci-os-hub must not be picked ahead of it. Later duplicates of $1 are dropped, so each name is
-  # probed (and named) once.
+  local name rc names=() stopped=()
   if [ -n "$1" ]; then names+=("$1"); fi
   for name in ci-hub ci-os-hub; do
     [ "$name" = "$1" ] || names+=("$name")
   done
   for name in "${names[@]}"; do
     rc=0
-    rabbitmq_password_docker_capture container inspect "$name" || rc=$?
+    rabbitmq_password_docker_capture container inspect -f '{{.State.Running}}' "$name" || rc=$?
     if [ "$rc" = 0 ]; then
-      printf '%s' "$name"
-      return 0
+      if [ "$RABBITMQ_PASSWORD_OUT" = true ]; then
+        printf '%s' "$name"
+        return 0
+      fi
+      stopped+=("$name")
+      continue
     fi
     if ! rabbitmq_password_docker_says_absent "$RABBITMQ_PASSWORD_ERR"; then
       echo "ERROR: could not check for the Hub container ${name} ($(rabbitmq_password_docker_cause "$rc" "$RABBITMQ_PASSWORD_ERR"))." >&2
       return 1
     fi
   done
-  local listed
+  local listed note
   listed="$(printf '%s, ' "${names[@]}")"
-  echo "   NOTE: no Hub container (${listed%, }) exists" >&2
+  note="   NOTE: no running Hub container (${listed%, })"
+  if [ "${#stopped[@]}" -gt 0 ]; then
+    listed="$(printf '%s, ' "${stopped[@]}")"
+    note="${note}; left the stopped ${listed%, } alone"
+  fi
+  echo "$note" >&2
 }
 
 # The value of $2 in the environment compose gave the container $1, from `docker inspect`. Empty when
