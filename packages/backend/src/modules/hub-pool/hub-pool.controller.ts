@@ -14,6 +14,7 @@ import {
   Res,
   ServiceUnavailableException,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { ModuleRef } from '@nestjs/core';
@@ -22,6 +23,7 @@ import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/comm
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
 import { InferenceAccessGuard } from '@/modules/auth/inference-access.guard';
+import { TunnelErrorStatusInterceptor } from '@/modules/inference/tunnel-error-status.interceptor';
 import { ObservabilityRead, ObservabilityReadGuard } from '@/modules/auth/observability-read.guard';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -495,36 +497,42 @@ export class HubPoolController {
   // ── App-facing proxy (InferenceAccessGuard: apps inside the appliance by origin; editors and SDKs anywhere with an `inference` key) ──
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('v1/chat/completions')
   async proxyChatCompletions(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
     await this.proxyToPool('/v1/chat/completions', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('v1/completions')
   async proxyCompletions(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
     await this.proxyToPool('/v1/completions', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('v1/embeddings')
   async proxyEmbeddings(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
     await this.proxyToPool('/v1/embeddings', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('api/generate')
   async proxyOllamaGenerate(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
     await this.proxyToPool('/api/generate', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('api/chat')
   async proxyOllamaChat(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
     await this.proxyToPool('/api/chat', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('api/embeddings')
   async proxyOllamaEmbeddings(
     @Body() body: Record<string, unknown>,
@@ -535,18 +543,21 @@ export class HubPoolController {
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('api/embed')
   async proxyOllamaEmbed(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
     await this.proxyToPool('/api/embed', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Get('v1/models')
   async proxyOpenAiModelsList(@Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Get('api/tags')
   async proxyOllamaTags(@Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/api/tags', 'GET', undefined, res);
@@ -557,18 +568,21 @@ export class HubPoolController {
   // /api/show falls back to a peer that holds the model when no local engine does — see
   // `PoolProxyService.describeFromPeer`.
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Get('api/ps')
   async proxyOllamaPs(@Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/api/ps', 'GET', undefined, res);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Get('api/version')
   async proxyOllamaVersion(@Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/api/version', 'GET', undefined, res);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('api/show')
   async proxyOllamaShow(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/api/show', 'POST', body, res);

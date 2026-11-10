@@ -14,6 +14,7 @@ import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import {
   CAPABILITIES_FRESHNESS_POLLS,
   UNKNOWN_PRESSURE,
+  arrivedThroughTunnel,
   clampPromptCeiling,
   effectivePeerPressureBand,
   inventoryListsModel,
@@ -386,7 +387,12 @@ function safeJson(value: unknown): string {
   }
 }
 
-export function describeAllCandidatesFailed(model: string, candidates: number, lastError: unknown): string {
+export function describeAllCandidatesFailed(
+  model: string,
+  candidates: number,
+  lastError: unknown,
+  { withCause = true }: { withCause?: boolean } = {},
+): string {
   // `String(someObject)` is "[object Object]", which tells the operator nothing and hides the one
   // field that would have. A rejected value here is not always an Error — a fetch layer can reject
   // with a plain object carrying `code`/`errno` — so serialise those rather than stringifying them.
@@ -410,7 +416,9 @@ export function describeAllCandidatesFailed(model: string, candidates: number, l
       'a node loading weights, reading a long prompt slowly or serving a long queue hits it while remaining healthy.'
     );
   }
-  return `All ${candidates} pool ${plural} for model "${model}" failed${message ? `: ${message}` : '.'}`;
+  // The cause names a node, its address or its pairing state. A reply through the tunnel leaves that out (`withCause: false`).
+  const reason = withCause ? message : '';
+  return `All ${candidates} pool ${plural} for model "${model}" failed${reason ? `: ${reason}` : '.'}`;
 }
 /**
  * Which deadline actually expired, in the terms an operator can act on.
@@ -2831,8 +2839,16 @@ export class PoolProxyService {
       res.setHeader(POOL_REQUEST_ID_HEADER, failed.id);
       // `localBackends` is the container's-eye view of every local engine: the operator reading
       // this on a node that plainly runs the model needs the probed URL and the error, not a
-      // second look at the inventory.
-      res.status(502).json({ error: describeNoCandidates(model, pin, localProbes), localBackends: localProbes });
+      // second look at the inventory. Those URLs and errors stay on the machine's own network: a
+      // reply through the tunnel gets the reason alone, and the routing log's row says only
+      // `no candidate`, so the operator repeats the request from inside to see them.
+      res
+        .status(502)
+        .json(
+          arrivedThroughTunnel(res.req)
+            ? { error: describeNoCandidates(model, pin) }
+            : { error: describeNoCandidates(model, pin, localProbes), localBackends: localProbes },
+        );
       return;
     }
 
@@ -3259,7 +3275,9 @@ export class PoolProxyService {
         res.setHeader(name, value);
       }
     }
-    this.respondUncommitted(res, 502, { error: describeAllCandidatesFailed(model, candidates.length, lastError) });
+    this.respondUncommitted(res, 502, {
+      error: describeAllCandidatesFailed(model, candidates.length, lastError, { withCause: !arrivedThroughTunnel(res.req) }),
+    });
   }
 
   /**
