@@ -296,6 +296,8 @@
   "CUSTOM_APP_EDIT_CONFIG": "Edit Configuration",
   "CUSTOM_APP_NAME_EDIT_HELP": "App name cannot be changed after creation",
   "CUSTOM_APP_UPDATE_SUCCESS": "Custom app {{name}} updated successfully!",
+  "CUSTOM_APP_RESTART_NOTICE_TITLE": "Restart to use the saved changes",
+  "CUSTOM_APP_RESTART_NOTICE_BODY": "{{name}} keeps running with its old configuration until it restarts.",
   "CUSTOM_APP_UPDATE_ERROR": "Failed to update custom app",
   "CUSTOM_APP_ERROR_INVALID_URN": "Invalid app identifier",
   "CUSTOM_APP_ERROR_NOT_FOUND": "Custom app not found",

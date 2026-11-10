@@ -79,6 +79,10 @@ vi.mock('../components/app-backups-card/app-backups-card', () => ({
   AppBackupsCard: () => <div data-testid="app-backups-card" />,
 }));
 
+vi.mock('../components/custom-app-restart-notice/custom-app-restart-notice', () => ({
+  CustomAppRestartNotice: () => null,
+}));
+
 vi.mock('../components/app-access-points/app-access-points', () => ({
   AppAccessPoints: () => <div data-testid="app-access-points" />,
 }));
