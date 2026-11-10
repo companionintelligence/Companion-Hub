@@ -763,12 +763,12 @@ describe('env-helpers — ALLOW_ERROR_MONITORING precedence', () => {
     expect(envMap.get('ALLOW_ERROR_MONITORING')).toBe('false');
   });
 
-  it('MUST fall back to the opt-out default when no source has an opinion', async () => {
+  it('MUST fall back to the opt-in default when no source has an opinion', async () => {
     setSettings({});
 
     const envMap = await generateSystemEnvFile();
 
-    expect(envMap.get('ALLOW_ERROR_MONITORING')).toBe('true');
+    expect(envMap.get('ALLOW_ERROR_MONITORING')).toBe('false');
   });
 });
 

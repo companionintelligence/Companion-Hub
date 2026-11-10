@@ -188,7 +188,7 @@ function boolStr(val: boolean | undefined): string | undefined {
  * and deliberately not the `resolveHubPoolEnabled` shape either. Those exist so a box
  * owner's `.env` cannot be undone from the dashboard, and both are disable-only:
  * `HUB_POOL_USER_DISABLED=true` switches pooling off and nothing switches it back on.
- * `ALLOW_ERROR_MONITORING` is two-valued and defaults to `'true'`, so env-first would let a
+ * `ALLOW_ERROR_MONITORING` is two-valued and defaults to `'false'`, so env-first would let a
  * `true` inherited from a compose file, a stale shell, or an older build's
  * `state/.env.resolved` override a user who explicitly opted out — an environment variable
  * forcing consent ON, which is the one direction a privacy control must never move.
