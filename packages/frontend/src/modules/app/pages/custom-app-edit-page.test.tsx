@@ -3,9 +3,8 @@ import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 
-const { mockNavigate, composeCurrent, mutationOptions, toastError, invalidateQueries, setOverrides, setServices } = vi.hoisted(() => ({
-  setOverrides: vi.fn(),
-  setServices: vi.fn(),
+const { mockNavigate, composeCurrent, mutationOptions, toastError, invalidateQueries, loadSaved } = vi.hoisted(() => ({
+  loadSaved: vi.fn(),
   mockNavigate: vi.fn(),
   composeCurrent: { value: '{' as string | undefined },
   mutationOptions: {
@@ -28,8 +27,17 @@ vi.mock('react-router', async () => {
   };
 });
 
+// One object per answer, as react-query keeps an unchanged answer's identity. A new object on each
+// render reads the config again on each render.
+const answers = new Map<string, { current: string }>();
+function answerFor(current: string) {
+  const answer = answers.get(current) ?? { current };
+  answers.set(current, answer);
+  return answer;
+}
+
 vi.mock('@tanstack/react-query', () => ({
-  useQuery: () => ({ data: composeCurrent.value ? { current: composeCurrent.value } : undefined }),
+  useQuery: () => ({ data: composeCurrent.value ? answerFor(composeCurrent.value) : undefined }),
   useMutation: (options: typeof mutationOptions.current) => {
     mutationOptions.current = options;
     return { mutate: vi.fn(), mutateAsync: vi.fn(async () => undefined), isPending: false };
@@ -43,7 +51,7 @@ vi.mock('@/components/multi-service-form/multi-service-form', () => ({
 
 vi.mock('@/stores/multiServiceStore', async () => ({
   ...(await vi.importActual<typeof import('@/stores/multiServiceStore')>('@/stores/multiServiceStore')),
-  useMultiServiceStore: () => ({ setServices, setOverrides, resetToDefaults: vi.fn() }),
+  useMultiServiceStore: () => ({ loadSaved, resetToDefaults: vi.fn() }),
 }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
@@ -143,7 +151,7 @@ describe('custom app edit', () => {
       </MemoryRouter>,
     );
 
-    expect(setOverrides).toHaveBeenCalledWith(overrides);
+    expect(loadSaved).toHaveBeenCalledWith([expect.objectContaining({ name: 'web' })], overrides);
   });
 
   // A config saved before a label rule existed. The Hub leaves those labels out of the running app; the
@@ -155,7 +163,7 @@ describe('custom app edit', () => {
       services: [{ name: 'web', image: 'nginx:1.27-alpine', isMain: true, internalPort: 80, extraLabels }],
     });
     composeCurrent.value = stored;
-    setServices.mockClear();
+    loadSaved.mockClear();
 
     render(
       <MemoryRouter>
@@ -165,7 +173,7 @@ describe('custom app edit', () => {
 
     expect(screen.getByTestId('edit-form')).toBeInTheDocument();
     expect(screen.queryByText('Invalid configuration. Please check your services.')).not.toBeInTheDocument();
-    expect(setServices).toHaveBeenCalledWith([expect.objectContaining({ name: 'web', extraLabels })]);
+    expect(loadSaved).toHaveBeenCalledWith([expect.objectContaining({ name: 'web', extraLabels })], undefined);
     const notice = screen.getByTestId('custom-app-edit-refused-label');
     expect(notice).toHaveTextContent('This app has labels the Hub no longer accepts');
     expect(notice).toHaveTextContent('Service web:');
@@ -208,12 +216,34 @@ describe('custom app edit', () => {
 
   // The compose holds the app's env values, so a member is refused it. A member who follows an old link
   // to the editor lands on the app's page instead of an error.
+  // The client answers a refusal with the error; it doesn't throw.
   it('sends someone refused the compose to the app page', async () => {
-    vi.mocked(getAppComposeDiff).mockRejectedValue(new Error('APP_ACTION_GRANT_DENIED'));
+    for (const status of [401, 403]) {
+      vi.mocked(getAppComposeDiff).mockResolvedValue({
+        error: new Error('APP_ACTION_GRANT_DENIED'),
+        response: new Response(null, { status }),
+      } as never);
+
+      const result = await clientLoader({ params: { appId: 'my-app' } } as never);
+
+      expect(result).toBeInstanceOf(Response);
+      expect((result as Response).headers.get('Location')).toBe('/apps/my-app');
+    }
+  });
+
+  it('sends a request that fails outright to the app page', async () => {
+    vi.mocked(getAppComposeDiff).mockRejectedValue(new Error('Failed to fetch'));
 
     const result = await clientLoader({ params: { appId: 'my-app' } } as never);
 
-    expect(result).toBeInstanceOf(Response);
     expect((result as Response).headers.get('Location')).toBe('/apps/my-app');
+  });
+
+  it('sends an app the Hub does not have to the app list', async () => {
+    vi.mocked(getAppComposeDiff).mockResolvedValue({ error: new Error('NOT_FOUND'), response: new Response(null, { status: 404 }) } as never);
+
+    const result = await clientLoader({ params: { appId: 'my-app' } } as never);
+
+    expect((result as Response).headers.get('Location')).toBe('/apps');
   });
 });

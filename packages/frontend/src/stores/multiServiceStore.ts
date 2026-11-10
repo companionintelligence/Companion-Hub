@@ -32,6 +32,8 @@ interface MultiServiceState {
   setIsDirty: (dirty: boolean) => void;
   setServices: (services: ServiceWithId[]) => void;
   setOverrides: (overrides: MultiServiceFormData['overrides']) => void;
+  /** Puts a saved config in the form, opened on its first service. The selection another page left would point past its services. */
+  loadSaved: (services: ServiceWithId[], overrides: MultiServiceFormData['overrides']) => void;
 }
 
 const defaultService: ServiceFormData = {
@@ -95,6 +97,7 @@ export const useMultiServiceStore = create<MultiServiceState>()((set, get) => ({
   error: '',
   setServices: (services: ServiceWithId[]) => set({ services }),
   setOverrides: (overrides: MultiServiceFormData['overrides']) => set({ overrides }),
+  loadSaved: (services, overrides) => set({ services, overrides, activeService: 0, isDirty: false, error: '' }),
   validate: (values: z.infer<typeof dynamicComposeSchema>) => {
     const res = customAppComposeFormSchema.safeParse(values);
 
