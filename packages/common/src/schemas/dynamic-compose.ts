@@ -829,11 +829,35 @@ export const dynamicComposeSchema = dynamicComposeObject.superRefine(assertCompo
  */
 export const dynamicComposeFormSchema = dynamicComposeObject.omit({ schemaVersion: true }).superRefine(assertComposeOverrideSecurity);
 
+const reportKey = (path: PropertyKey[], message: string) => JSON.stringify([path, message]);
+
 /**
- * The fields the schema's own check already refuses, so a second issue would only repeat it. Listed this
- * way round so a rule added to `collectServiceSecurityViolations` is refused on save without touching this.
+ * What the schema itself already reports for this service, as path-and-message keys: its own security
+ * check, with no grants as a custom app holds none, and the volume name's field rule.
  */
-const SANDBOX_FIELDS_THE_SCHEMA_ALREADY_REFUSES: ReadonlySet<string | number | undefined> = new Set(['privileged', 'volumes']);
+const reportsTheSchemaAlreadyMade = (service: SecurityCheckedService): Set<string> => {
+  const keys = new Set<string>();
+  assertCustomAppServiceSecurity(service, (issue) => keys.add(reportKey(issue.path, issue.message)));
+  for (const [index, volume] of (service.volumes ?? []).entries()) {
+    if (volume.volumeName !== undefined && !DOCKER_VOLUME_NAME_PATTERN.test(volume.volumeName)) {
+      keys.add(reportKey(['volumes', index, 'volumeName'], 'CUSTOM_APP_ERROR_VOLUME_NAME_INVALID'));
+    }
+  }
+  return keys;
+};
+
+/**
+ * The violations saving reports for a service. One is dropped only when the schema already reported the
+ * same message at the same path, so a rule added to `collectServiceSecurityViolations` is refused on save
+ * without touching this, even on a field the schema also checks. Exported for its tests.
+ */
+export const saveViolationsFor = (
+  service: SecurityCheckedService,
+  violations: ServiceSecurityViolation[] = collectServiceSecurityViolations(service),
+): ServiceSecurityViolation[] => {
+  const already = reportsTheSchemaAlreadyMade(service);
+  return violations.filter((violation) => !already.has(reportKey(violation.path, violation.message)));
+};
 
 /**
  * Refuses, when a custom app is saved, what the compose builder would refuse when it starts. A custom
@@ -848,10 +872,8 @@ const assertComposeInsideSandbox = (
   ctx: z.RefinementCtx,
 ) => {
   const refuse = (service: SecurityCheckedService, at: PropertyKey[]) => {
-    for (const violation of collectServiceSecurityViolations(service)) {
-      if (!SANDBOX_FIELDS_THE_SCHEMA_ALREADY_REFUSES.has(violation.path[0])) {
-        ctx.addIssue({ code: 'custom', message: violation.message, path: [...at, ...violation.path] });
-      }
+    for (const violation of saveViolationsFor(service)) {
+      ctx.addIssue({ code: 'custom', message: violation.message, path: [...at, ...violation.path] });
     }
   };
   for (const [index, service] of compose.services.entries()) {
