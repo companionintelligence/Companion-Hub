@@ -297,6 +297,83 @@ describe('DockerService', () => {
     });
   });
 
+  describe('composeApp with a user config', () => {
+    const appUrn = 'test-app:_user' as any;
+    const REFUSED = 'services:\n  web:\n    not_a_known_key: 1\n';
+    const ALLOWED = 'services:\n  web:\n    environment:\n      FOO: bar\n';
+
+    const useUserConfig = (content: string | null, enabled = true, userEnv: string | null = null) => {
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/apps/test-app/.env', content: 'FOO=BAR' });
+      appFilesManager.getUserEnv.mockResolvedValue({ path: '/apps/test-app/user.env', content: userEnv });
+      appFilesManager.getDockerComposeYaml.mockResolvedValue({ path: '/apps/test-app/docker-compose.yml', content: 'services:' });
+      appFilesManager.getUserComposeFile.mockResolvedValue({ path: '/apps/test-app/user-compose.yml', content });
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 'test-app', userConfigEnabled: enabled } as any);
+      appsRepository.getApps.mockResolvedValue([] as any);
+    };
+
+    const composeRuns = () => {
+      const compose = createMockSpawnProcess();
+      compose.on = vi.fn().mockImplementation((event, handler) => {
+        if (event === 'close') {
+          queueMicrotask(() => handler(0));
+        }
+        return compose;
+      });
+      (child_process.spawn as any).mockImplementationOnce(() => createComposeProbeProcess(0)).mockImplementationOnce(() => compose);
+    };
+
+    it('refuses to create containers from a stored override the sandbox does not allow, and runs nothing', async () => {
+      useUserConfig(REFUSED);
+
+      await expect(service.composeApp(appUrn, 'up --detach')).rejects.toThrow(
+        /test-app.*services\.web\.not_a_known_key.*\[COMPOSE_OVERRIDE_SETTING_NOT_ALLOWED\]/,
+      );
+
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('refuses to create containers from an override that cannot be read', async () => {
+      useUserConfig('services:\n  web: [');
+
+      await expect(service.composeApp(appUrn, 'up --detach')).rejects.toThrow(/COMPOSE_OVERRIDE_UNREADABLE/);
+
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('checks the env file even when there is no compose override', async () => {
+      useUserConfig(null, true, 'APP_DATA_DIR=/elsewhere\n');
+
+      await expect(service.composeApp(appUrn, 'up --detach')).rejects.toThrow(/COMPOSE_OVERRIDE_ENV_NAME_RESERVED/);
+    });
+
+    it('still stops an app that has a refused override', async () => {
+      useUserConfig(REFUSED);
+      composeRuns();
+
+      await service.composeApp(appUrn, 'down --remove-orphans');
+
+      expect(child_process.spawn).toHaveBeenCalledWith('docker', expect.arrayContaining(['down', '--remove-orphans']), expect.anything());
+    });
+
+    it('does not read an override that is turned off', async () => {
+      useUserConfig(REFUSED, false);
+      composeRuns();
+
+      await service.composeApp(appUrn, 'up --detach');
+
+      expect(child_process.spawn).toHaveBeenCalledWith('docker', expect.arrayContaining(['up', '--detach']), expect.anything());
+    });
+
+    it('starts an app with an override the sandbox allows', async () => {
+      useUserConfig(ALLOWED);
+      composeRuns();
+
+      await service.composeApp(appUrn, 'up --detach');
+
+      expect(child_process.spawn).toHaveBeenCalledWith('docker', expect.arrayContaining(['up', '--detach']), expect.anything());
+    });
+  });
+
   describe('composeApp', () => {
     it('should spawn docker-compose with correct arguments', async () => {
       const appUrn = 'test-app' as any;

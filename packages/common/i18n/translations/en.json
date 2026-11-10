@@ -2334,6 +2334,7 @@
   "CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED": "A custom app can't add this Linux capability.",
   "CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED": "A custom app can't use this host device.",
   "CUSTOM_APP_ERROR_SECURITY_OPT_NOT_ALLOWED": "A custom app can't switch off this security setting.",
+  "COMPOSE_OVERRIDE_NOT_ALLOWED": "This Compose override can't be saved. The app sandbox doesn't allow: {{details}}",
   "CUSTOM_APP_ERROR_RESTART_INVALID": "Restart must be no, always, unless-stopped or on-failure.",
   "MULTI_SERVICE_ERROR_IN_SERVICE": "Service {{service}}: {{message}}",
   "MULTI_SERVICE_ERROR_IN_OVERRIDE": "Service {{service}} in the {{architecture}} override: {{message}}",
