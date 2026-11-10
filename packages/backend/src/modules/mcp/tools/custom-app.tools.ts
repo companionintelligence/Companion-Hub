@@ -1,12 +1,27 @@
-import { Injectable, type OnModuleInit } from '@nestjs/common';
+import { BadRequestException, Injectable, type OnModuleInit } from '@nestjs/common';
+import type { z } from 'zod';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { CustomAppService } from '@/modules/custom-apps/custom-apps.service';
 import { castAppUrn } from '@/common/helpers/app-helpers';
-import type { CreateCustomAppDto, UpdateCustomAppDto } from '@/modules/custom-apps/dto/custom-apps.dto';
+import { CreateCustomAppDto, UpdateCustomAppDto } from '@/modules/custom-apps/dto/custom-apps.dto';
 import { assertMcpCallerMay, mcpCallerLifecycleActor } from '../mcp-tool-call';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
 const urnProp = { type: 'string', description: 'App identifier in appName:storeSlug format' } as const;
+
+/**
+ * Runs a tool's arguments through the schema the `/api/custom-apps` route uses, so an agent is refused
+ * what the form refuses (CI-Hub#2372). The refusal lists each issue as `<path>: <message>`, the message
+ * being the key the form translates, e.g. `config.services.0.capAdd.0: CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED`.
+ */
+function parseOrRefuse<T extends z.ZodType>(schema: T, input: unknown): z.output<T> {
+  const parsed = schema.safeParse(input);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((issue) => `${issue.path.map(String).join('.')}: ${issue.message}`);
+    throw new BadRequestException(`Invalid custom app config. ${issues.join('; ')}`);
+  }
+  return parsed.data;
+}
 
 @Injectable()
 export class CustomAppTools implements OnModuleInit {
@@ -62,7 +77,7 @@ export class CustomAppTools implements OnModuleInit {
   /** Creating one takes an organization owner or admin behind the call, as the HTTP route does. */
   async createCustomApp(params: { name: string; config: Record<string, unknown> }) {
     await this.appLifecycleService.assertActorMayCreateCustomApp(mcpCallerLifecycleActor('install'));
-    const dto = { name: params.name, config: params.config } as CreateCustomAppDto;
+    const dto = parseOrRefuse(CreateCustomAppDto.schema, { name: params.name, config: params.config });
     return this.customAppService.createCustomApp(dto);
   }
 
@@ -74,7 +89,7 @@ export class CustomAppTools implements OnModuleInit {
   async updateCustomApp(params: { appUrn: string; config: Record<string, unknown> }) {
     const appUrn = castAppUrn(params.appUrn);
     await assertMcpCallerMay(this.appLifecycleService, appUrn, 'configure');
-    const config = params.config as UpdateCustomAppDto['config'];
+    const { config } = parseOrRefuse(UpdateCustomAppDto.schema, { config: params.config });
     await this.customAppService.updateCustomApp(appUrn, config);
     return { success: true };
   }
