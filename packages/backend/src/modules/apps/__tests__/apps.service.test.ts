@@ -686,6 +686,28 @@ describe('AppsService', () => {
     });
   });
 
+  // #2422: a guest dashboard switch in Settings. A save through the app's Settings dialog rewrites its
+  // routing and can restart it; this changes only what the guest list and that dialog read.
+  describe('setGuestVisibility', () => {
+    it('saves the column and the stored form value, and nothing else', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 4, config: { exposureMode: 'local', localSubdomain: 'immich' } } as any);
+
+      await service.setGuestVisibility('immich:ci-marketplace' as AppUrn, true);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(4, {
+        isVisibleOnGuestDashboard: true,
+        config: { exposureMode: 'local', localSubdomain: 'immich', isVisibleOnGuestDashboard: true },
+      });
+    });
+
+    it('says the app is not found when it is not installed', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(undefined as any);
+
+      await expect(service.setGuestVisibility('nope:ci-marketplace' as AppUrn, false)).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+  });
+
   // CI-Hub#2376: an ignore left the update in Home's "Update all" for the cached count's minute, and
   // another tab, or an ignore through the MCP tool, never heard of it.
   describe.each([

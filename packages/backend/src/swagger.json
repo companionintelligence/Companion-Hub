@@ -2751,6 +2751,39 @@
         ]
       }
     },
+    "/api/apps/{urn}/guest-visibility": {
+      "patch": {
+        "operationId": "setGuestVisibility",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuestVisibilityBodyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Apps"
+        ]
+      }
+    },
     "/api/apps/{urn}/inference-env": {
       "get": {
         "operationId": "getInferenceEnvStaleness",
@@ -13526,6 +13559,18 @@
         "required": [
           "current",
           "new"
+        ],
+        "additionalProperties": false
+      },
+      "GuestVisibilityBodyDto": {
+        "type": "object",
+        "properties": {
+          "visible": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "visible"
         ],
         "additionalProperties": false
       },
