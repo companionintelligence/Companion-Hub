@@ -3,8 +3,9 @@ import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 
-const { mockNavigate, composeCurrent, mutationOptions, toastError, invalidateQueries, loadSaved } = vi.hoisted(() => ({
+const { mockNavigate, composeCurrent, mutationOptions, toastError, invalidateQueries, invalidateAppQueries, loadSaved } = vi.hoisted(() => ({
   loadSaved: vi.fn(),
+  invalidateAppQueries: vi.fn(),
   mockNavigate: vi.fn(),
   composeCurrent: { value: '{' as string | undefined },
   mutationOptions: {
@@ -59,9 +60,10 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   // The page reads the app's display name for its title.
   getAppOptions: () => ({ queryKey: ['app'] }),
   getAppComposeDiffQueryKey: (options: { path: { urn: string } }) => ['compose-diff', options.path.urn],
-  getAppQueryKey: (options: { path: { urn: string } }) => ['app', options.path.urn],
   updateCustomAppMutation: () => ({}),
 }));
+
+vi.mock('../helpers/app-sse-cache', () => ({ invalidateAppQueries }));
 
 vi.mock('@/api-client', () => ({
   getAppComposeDiff: vi.fn(),
@@ -138,8 +140,8 @@ describe('custom app edit', () => {
     mutationOptions.current?.onSuccess?.();
 
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['compose-diff', 'my-app:_user'] });
-    // The app's own record too, so its page shows the restart a save to a running app owes (#2421).
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['app', 'my-app:_user'] });
+    // The app's own record and Home's list too, so both show the restart a save to a running app owes (#2421).
+    expect(invalidateAppQueries).toHaveBeenCalledWith(expect.objectContaining({ invalidateQueries }), 'my-app:_user');
     expect(mockNavigate).toHaveBeenCalledWith('/apps/my-app');
   });
 

@@ -19,6 +19,19 @@ import { Switch } from '@/components/ui/Switch';
 import { SettingsHint } from '../components/settings-hint';
 import { GuestDashboardSettings } from './guest-dashboard-settings';
 
+/**
+ * The Hub's settings without the guest dashboard switch, which the Guest dashboard card saves by itself.
+ * The form resets to whatever it is handed when that changes, so a flip of that switch dropped anything
+ * typed into General settings and not saved yet.
+ */
+const withoutGuestDashboard = (settings?: SettingsFormValues): SettingsFormValues | undefined => {
+  if (!settings) {
+    return undefined;
+  }
+  const { guestDashboard: _guestDashboard, ...rest } = settings as SettingsFormValues & { guestDashboard?: boolean };
+  return rest;
+};
+
 type Props = {
   initialValues?: SettingsFormValues;
   /** hub-{device}-{org}.{domain} from registration + settings; display-only */
@@ -102,7 +115,7 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname, manage
         </CardContent>
       </Card>
       <UserSettingsForm
-        initialValues={initialValues}
+        initialValues={withoutGuestDashboard(initialValues)}
         currentLocale={currentLocale as Locale}
         onSubmit={onSubmit}
         loading={updateSettings.isPending}

@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   deleteLink: vi.fn(async (_options: unknown) => ({})),
   installed: [] as unknown[],
   links: [] as unknown[],
+  linksFail: false,
 }));
 
 vi.mock('@/context/app-context', () => ({
@@ -21,7 +22,14 @@ vi.mock('@/context/app-context', () => ({
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getInstalledAppsOptions: () => ({ queryKey: ['installed'], queryFn: async () => ({ installed: h.installed }) }),
   getInstalledAppsQueryKey: () => ['installed'],
-  getLinksOptions: () => ({ queryKey: ['links'], queryFn: async () => ({ links: h.links }) }),
+  getAppQueryKey: (options: { path: { urn: string } }) => ['app', options.path.urn],
+  getLinksOptions: () => ({
+    queryKey: ['links'],
+    queryFn: async () => {
+      if (h.linksFail) throw new Error('INTERNAL_SERVER_ERROR');
+      return { links: h.links };
+    },
+  }),
   getLinksQueryKey: () => ['links'],
   updateUserSettingsMutation: () => ({ mutationFn: h.updateSettings }),
   setGuestVisibilityMutation: () => ({ mutationFn: h.setVisibility }),
@@ -88,6 +96,7 @@ describe('GuestDashboardSettings', () => {
       app('family-photos:_user', 'Family Photos', false, 'User-created custom app'),
     ];
     h.links = [wiki, calendar];
+    h.linksFail = false;
   });
 
   it('turns the guest dashboard on by itself, without the rest of General settings', async () => {
@@ -129,6 +138,42 @@ describe('GuestDashboardSettings', () => {
     );
   });
 
+  // The switch used to read the one mutation's last variables: it flicked back between the answer and
+  // the refetch, and a second app flipped meanwhile dropped the first back to its old state.
+  it('keeps each app switch on its new state while its save and refetch are under way', async () => {
+    const saves: Array<() => void> = [];
+    const heldSave = (options: unknown) =>
+      new Promise<object>((resolve) => {
+        saves.push(() => {
+          const { path, body } = options as { path: { urn: string }; body: { visible: boolean } };
+          h.installed = h.installed.map((entry) => {
+            const row = entry as ReturnType<typeof app>;
+            return row.info.urn === path.urn ? { ...row, app: { ...row.app, isVisibleOnGuestDashboard: body.visible } } : row;
+          });
+          resolve({});
+        });
+      });
+    h.setVisibility.mockImplementationOnce(heldSave).mockImplementationOnce(heldSave);
+    renderCard();
+
+    const list = await screen.findByTestId('guest-dashboard-apps-list');
+    const immich = within(list).getByRole('switch', { name: 'Show Immich to guests' });
+    const photos = within(list).getByRole('switch', { name: 'Show Family Photos to guests' });
+    await userEvent.click(immich);
+    await userEvent.click(photos);
+
+    expect(immich).not.toBeChecked();
+    expect(immich).toBeDisabled();
+    expect(photos).toBeChecked();
+    expect(photos).toBeDisabled();
+
+    for (const save of saves) save();
+
+    await waitFor(() => expect(photos).toBeEnabled());
+    expect(immich).not.toBeChecked();
+    expect(photos).toBeChecked();
+  });
+
   it('lists the links and marks the ones guests do not see', async () => {
     renderCard();
 
@@ -136,6 +181,19 @@ describe('GuestDashboardSettings', () => {
     expect(within(list).getByText('Family wiki')).toBeInTheDocument();
     expect(within(list).getByText('https://wiki.example.com')).toBeInTheDocument();
     expect(within(list).getAllByText('Hidden from guests')).toHaveLength(1);
+  });
+
+  it('says the links failed to load, rather than that there are none, and loads them on Retry', async () => {
+    h.linksFail = true;
+    renderCard();
+
+    expect(await screen.findByText('Something went wrong. Retry, or refresh the page if it keeps happening.')).toBeInTheDocument();
+    expect(screen.queryByText('No links yet.')).not.toBeInTheDocument();
+
+    h.linksFail = false;
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect(await screen.findByTestId('guest-dashboard-links-list')).toBeInTheDocument();
   });
 
   it('adds a link, naming what is wrong before it is sent', async () => {

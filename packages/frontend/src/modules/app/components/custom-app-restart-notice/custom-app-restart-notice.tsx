@@ -1,5 +1,6 @@
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { Button } from '@/components/ui/Button';
+import { restartCanApply } from '@/lib/cloudflare-api';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import type { AppDetails, AppInfo } from '@/types/app.types';
 import { RotateCw } from 'lucide-react';
@@ -17,13 +18,21 @@ interface Props {
  * A running custom app whose configuration was saved keeps its old containers until it restarts (#2421).
  * The save raises `pendingRestart`, which Home shows as a "Restart needed" badge; this says the same on
  * the app's page and offers the restart through the usual Restart dialog. Start and restart clear it.
+ *
+ * The flag has other sources too, such as the exposure sync binding a custom domain, and this page has no
+ * custom domain banner. So the words name no cause: "Restart needed", as on Home.
  */
 export const CustomAppRestartNotice = ({ info, app, canRestart }: Props) => {
   const { t } = useTranslation();
   const restartDisclosure = useDisclosure();
 
-  if (app?.status !== 'running' || !app.pendingRestart) {
-    return null;
+  // Rendered whether or not the notice is, as the custom domain banner does. A status change while the
+  // confirmation was open unmounted it with its disclosure still open. It then opened by itself the next
+  // time the notice showed.
+  const dialog = <RestartDialog info={info} isOpen={restartDisclosure.isOpen} onClose={restartDisclosure.close} />;
+
+  if (!app?.pendingRestart || !restartCanApply(app.status)) {
+    return dialog;
   }
 
   return (
@@ -44,7 +53,7 @@ export const CustomAppRestartNotice = ({ info, app, canRestart }: Props) => {
           ) : null}
         </div>
       </Alert>
-      <RestartDialog info={info} isOpen={restartDisclosure.isOpen} onClose={restartDisclosure.close} />
+      {dialog}
     </>
   );
 };

@@ -1,4 +1,6 @@
+import type { GetInstalledAppsResponse } from '@/api-client';
 import {
+  getAppQueryKey,
   getInstalledAppsOptions,
   getInstalledAppsQueryKey,
   getLinksOptions,
@@ -14,13 +16,28 @@ import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import type { CustomLink } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
 import { isLocalAppDefaultShortDesc } from '@ci-hub/common/types';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExternalLink, Pencil, Plus, Trash2, Users } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { SettingsHint } from '../components/settings-hint';
 import { DeleteGuestLinkDialog, GuestLinkDialog } from '../components/guest-link-dialog/guest-link-dialog';
+
+const SET_VISIBILITY_KEY = ['guest-dashboard-settings', 'set-guest-visibility'];
+
+/** A list that didn't load, with Retry, as Home shows when its app list fails. */
+const LoadFailed = ({ onRetry }: { onRetry: () => void }) => {
+  const { t } = useTranslation();
+  return (
+    <div className="flex flex-col items-start gap-2">
+      <p className="text-sm text-muted-foreground">{t('COMMON_AN_ERROR_OCCURRED')}</p>
+      <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+        {t('COMMON_RETRY')}
+      </Button>
+    </div>
+  );
+};
 
 /**
  * Everything about the guest dashboard in one card (#2422): whether it's on, which apps guests see and
@@ -61,12 +78,36 @@ export const GuestDashboardSettings = () => {
   const installedApps = useQuery({ ...getInstalledAppsOptions(), enabled: shown, staleTime: 30_000 });
   const links = useQuery({ ...getLinksOptions(), enabled: shown });
 
+  // Each switch shows its new state at once and stays disabled until the Hub's list agrees. Read back from
+  // the one mutation's last variables, a second switch flipped before the first answered dropped the first
+  // back to its old state. Every switch also flicked back for the moment between the answer and the refetch.
   const setVisibility = useMutation({
     ...setGuestVisibilityMutation(),
-    onError,
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
+    mutationKey: SET_VISIBILITY_KEY,
+    onMutate: async ({ path, body }) => {
+      await queryClient.cancelQueries({ queryKey: getInstalledAppsQueryKey() });
+      queryClient.setQueryData<GetInstalledAppsResponse>(getInstalledAppsQueryKey(), (current) =>
+        current
+          ? {
+              ...current,
+              installed: current.installed.map((entry) =>
+                entry.info.urn === path.urn ? { ...entry, app: { ...entry.app, isVisibleOnGuestDashboard: body.visible } } : entry,
+              ),
+            }
+          : current,
+      );
     },
+    onError,
+    onSettled: (_data, _error, { path }) => {
+      // The app's own record too. Its Settings dialog opens with the stored value, and a save from a cached
+      // copy, with the guest switch hidden outside Advanced mode, put the old choice back.
+      void queryClient.invalidateQueries({ queryKey: getAppQueryKey({ path: { urn: path.urn } }) });
+      return queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
+    },
+  });
+  const savingUrns = useMutationState({
+    filters: { mutationKey: SET_VISIBILITY_KEY, status: 'pending' },
+    select: (mutation) => (mutation.state.variables as { path: { urn: string } } | undefined)?.path.urn,
   });
 
   const apps = installedApps.data?.installed ?? [];
@@ -108,14 +149,15 @@ export const GuestDashboardSettings = () => {
               </div>
               {installedApps.isPending ? (
                 <p className="text-sm text-muted-foreground">{t('COMMON_LOADING')}</p>
+              ) : installedApps.isError ? (
+                <LoadFailed onRetry={() => void installedApps.refetch()} />
               ) : apps.length === 0 ? (
                 <p className="text-sm text-muted-foreground">{t('SETTINGS_GUEST_DASHBOARD_APPS_EMPTY')}</p>
               ) : (
                 <ul className="divide-y divide-border/60 rounded-md border border-border/60" data-testid="guest-dashboard-apps-list">
                   {apps.map(({ app, info }) => {
                     const description = info.short_desc && !isLocalAppDefaultShortDesc(info.short_desc) ? info.short_desc : null;
-                    const pending = setVisibility.isPending && setVisibility.variables?.path.urn === info.urn;
-                    const visible = pending ? Boolean(setVisibility.variables?.body.visible) : app.isVisibleOnGuestDashboard;
+                    const pending = savingUrns.includes(info.urn);
                     return (
                       <li key={info.urn} className="flex items-center gap-3 px-3 py-2.5">
                         <AppLogo urn={info.urn} alt={info.name} name={info.name} size={32} className="shrink-0 rounded-md" />
@@ -125,7 +167,7 @@ export const GuestDashboardSettings = () => {
                         </div>
                         <Switch
                           aria-label={t('SETTINGS_GUEST_DASHBOARD_APP_TOGGLE', { name: info.name })}
-                          checked={visible}
+                          checked={app.isVisibleOnGuestDashboard}
                           disabled={pending}
                           onCheckedChange={(checked) => setVisibility.mutate({ path: { urn: info.urn }, body: { visible: checked } })}
                         />
@@ -160,6 +202,8 @@ export const GuestDashboardSettings = () => {
               </div>
               {links.isPending ? (
                 <p className="text-sm text-muted-foreground">{t('COMMON_LOADING')}</p>
+              ) : links.isError ? (
+                <LoadFailed onRetry={() => void links.refetch()} />
               ) : linkList.length === 0 ? (
                 <p className="text-sm text-muted-foreground">{t('SETTINGS_GUEST_DASHBOARD_LINKS_EMPTY')}</p>
               ) : (

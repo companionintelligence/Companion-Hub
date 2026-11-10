@@ -13,15 +13,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import type { TranslatableError } from '@/types/error.types';
 import { useEffect, useId, useState } from 'react';
 import { describeComposeIssue, useMultiServiceStore } from '@/stores/multiServiceStore';
-import {
-  getAppComposeDiffOptions,
-  getAppComposeDiffQueryKey,
-  getAppOptions,
-  getAppQueryKey,
-  updateCustomAppMutation,
-} from '@/api-client/@tanstack/react-query.gen';
+import { getAppComposeDiffOptions, getAppComposeDiffQueryKey, getAppOptions, updateCustomAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import type { Route } from './+types/custom-app-edit-page';
 import { getAppComposeDiff } from '@/api-client';
+import { invalidateAppQueries } from '../helpers/app-sse-cache';
 
 export async function clientLoader({ params }: Route.ActionArgs) {
   if (!params.appId) {
@@ -117,9 +112,9 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
       // loader's newer answer. Without this, opening the editor again right after a save showed the
       // config from before it. Saving that view put the old config back.
       void queryClient.invalidateQueries({ queryKey: getAppComposeDiffQueryKey({ path: { urn: `${params.appId}:_user` } }) });
-      // And the app itself: a save to a running app owes a restart, which its page says (#2421). Its cached record,
-      // fresh for 30 seconds, would hide that until the next refetch.
-      void queryClient.invalidateQueries({ queryKey: getAppQueryKey({ path: { urn: `${params.appId}:_user` } }) });
+      // And the app itself: a save to a running app owes a restart, which its page and Home's badge say (#2421).
+      // Their cached records, fresh for 30 seconds, would hide that until the next refetch.
+      invalidateAppQueries(queryClient, `${params.appId}:_user`);
       navigate(`/apps/${appName}`);
     },
     onError: (error: TranslatableError) => {

@@ -37,7 +37,6 @@ vi.mock('@tanstack/react-query', () => ({
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getAppComposeDiffOptions: () => ({ queryKey: ['compose-diff'] }),
   getAppComposeDiffQueryKey: () => ['compose-diff'],
-  getAppQueryKey: () => ['app'],
   // The page reads the app's display name for its title.
   getAppOptions: () => ({ queryKey: ['app'] }),
   updateCustomAppMutation: () => ({}),
@@ -46,6 +45,8 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 vi.mock('@/api-client', () => ({
   getAppComposeDiff: vi.fn(),
 }));
+
+vi.mock('@/modules/app/helpers/app-sse-cache', () => ({ invalidateAppQueries: vi.fn() }));
 
 import EditPageContent from '../custom-app-edit-page';
 import { useMultiServiceStore } from '@/stores/multiServiceStore';

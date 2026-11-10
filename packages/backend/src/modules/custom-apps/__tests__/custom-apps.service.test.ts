@@ -191,6 +191,17 @@ describe('CustomAppService', () => {
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { pendingRestart: true });
     });
 
+    it('owes no restart for a save that leaves the file as it was', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 7, status: 'running' } as any);
+      const config = composeWithPort(80);
+      filesystem.readTextFile.mockResolvedValue(`${JSON.stringify(config, null, 2)}\n`);
+
+      await service.updateCustomApp('myapp:_user' as any, config);
+
+      expect(filesystem.writeTextFile).toHaveBeenCalled();
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
     it('leaves a stopped app alone, since its next start reads the new file', async () => {
       appsRepository.getAppByUrn.mockResolvedValue({ id: 7, status: 'stopped' } as any);
 

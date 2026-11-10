@@ -27,6 +27,31 @@ export class AppsRepository {
   }
 
   /**
+   * Shows or hides an app on the guest dashboard: the column the guest list reads, and the same key in
+   * the stored form, which the app's Settings dialog opens with. `false` when there is no such app.
+   *
+   * One statement that merges the key into `config` as it is at that moment. Read, changed and written
+   * back whole, a config that a settings save or a port move wrote in between was put back to the copy
+   * read before it.
+   */
+  public async setGuestVisibility(appUrn: AppUrn, visible: boolean): Promise<boolean> {
+    const { appStoreId, appName } = extractAppUrn(appUrn);
+
+    const updated = await this.db
+      .update(app)
+      .set({
+        isVisibleOnGuestDashboard: visible,
+        config: sql`(case when jsonb_typeof(${app.config}) = 'object' then ${app.config} else '{}'::jsonb end) || jsonb_build_object('isVisibleOnGuestDashboard', ${visible}::boolean)`,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(and(eq(app.appName, appName), eq(app.appStoreSlug, appStoreId)))
+      .returning({ id: app.id })
+      .execute();
+
+    return updated.length > 0;
+  }
+
+  /**
    * The custom hostname bound to this app, or `null` when it serves on its
    * platform hostname (and when the row does not exist yet, which is the state
    * every install starts from).
