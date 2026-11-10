@@ -227,7 +227,43 @@ fn queue_oidc_callback(app: &tauri::AppHandle, url: &str) {
     let _ = app.emit("deep-link-oidc", url);
 }
 
+/// Hosts whose https links the app treats as its own (iOS Universal Links).
+/// The Portal serves the matching `apple-app-site-association` file. Only the
+/// production host: `hub.companionintelligence.com` is routed to the dev Worker
+/// alone, so claiming it would send store users' links nowhere.
+const APP_LINK_HOSTS: &[&str] = &["hub.ci.computer"];
+
+/// Paths on those hosts that open the app. Each maps onto the same `cihub://`
+/// handler, so a Universal Link and a custom-scheme link do the same thing.
+const APP_LINK_PATHS: &[&str] = &["/auth", "/pair"];
+
+/// Rewrites an https app link into its `cihub://` form. Returns `None` for
+/// anything else: other hosts, other paths, `http://`, ports and userinfo.
+fn normalize_app_link(url: &str) -> Option<String> {
+    let rest = url.trim().strip_prefix("https://")?;
+    let host_end = rest.find(|c| matches!(c, '/' | '?' | '#')).unwrap_or(rest.len());
+    let (host, after_host) = rest.split_at(host_end);
+    let host = host.to_ascii_lowercase();
+    if !APP_LINK_HOSTS.contains(&host.as_str()) {
+        return None;
+    }
+    let path_end = after_host.find(|c| matches!(c, '?' | '#')).unwrap_or(after_host.len());
+    let (path, tail) = after_host.split_at(path_end);
+    let allowed = APP_LINK_PATHS
+        .iter()
+        .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")));
+    if !allowed {
+        return None;
+    }
+    let query = tail.split('#').next().unwrap_or("");
+    Some(format!("cihub:/{path}{query}"))
+}
+
 fn handle_deep_link_url(app: &tauri::AppHandle, url: &str) {
+    // Universal Links arrive as https. Hand them to the `cihub://` handlers below.
+    let normalized = normalize_app_link(url);
+    let url = normalized.as_deref().unwrap_or(url);
+
     // OIDC first: `cihub://auth/callback` also matches the `cihub://auth` prefix
     // used by the legacy token handoff, but must not be swallowed as portal-auth.
     if let Some(callback) = extract_oidc_callback(url) {
@@ -505,8 +541,52 @@ fn extract_intent(url: &str) -> Option<String> {
 mod tests {
     use super::{
         deep_link_urls_from_payload, extract_intent, extract_oidc_callback, extract_pairing_code,
-        extract_portal_auth, frontend_fixup_url, webview_already_on_frontend, PortalAuthPayload,
+        extract_portal_auth, frontend_fixup_url, normalize_app_link, webview_already_on_frontend,
+        PortalAuthPayload,
     };
+
+    /// Universal Links on the Hub host map onto the `cihub://` handlers.
+    #[test]
+    fn normalize_app_link_maps_hub_auth_and_pair_to_cihub() {
+        let cases = [
+            ("https://hub.ci.computer/auth?token=tok-1", "cihub://auth?token=tok-1"),
+            (
+                "https://hub.ci.computer/auth/callback?code=c1&state=s1",
+                "cihub://auth/callback?code=c1&state=s1",
+            ),
+            ("https://hub.ci.computer/pair?code=abc123", "cihub://pair?code=abc123"),
+            ("https://hub.ci.computer/pair/abc123?utm=x", "cihub://pair/abc123?utm=x"),
+            ("https://HUB.ci.computer/auth?token=t#frag", "cihub://auth?token=t"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(normalize_app_link(input).as_deref(), Some(expected), "{input}");
+        }
+    }
+
+    #[test]
+    fn normalize_app_link_leaves_every_other_url_alone() {
+        for url in [
+            "https://hub.ci.computer/device?user_code=WDJB-MJHT",
+            "https://hub.ci.computer/authority?x=1",
+            "https://hub.ci.computer?token=x",
+            "https://hub.ci.computer.evil.example/auth?token=x",
+            "https://hub.ci.computer:8443/auth?token=x",
+            "https://user@hub.ci.computer/auth?token=x",
+            "https://evil.example/auth?token=x",
+            "https://hub.companionintelligence.com/auth?token=x",
+            "http://hub.ci.computer/auth?token=x",
+            "cihub://auth?token=x",
+        ] {
+            assert_eq!(normalize_app_link(url), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn normalized_universal_link_reaches_the_portal_auth_handler() {
+        let normalized = normalize_app_link("https://hub.ci.computer/auth?token=tok-9").unwrap();
+        let payload = extract_portal_auth(&normalized).expect("token captured");
+        assert_eq!(payload.token.as_deref(), Some("tok-9"));
+    }
 
     /// The webview fix-up is an iOS WKWebView workaround. Forcing it on Android
     /// navigated the webview to iOS's `tauri://localhost`, which Android cannot

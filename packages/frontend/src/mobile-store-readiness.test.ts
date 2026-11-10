@@ -99,7 +99,18 @@ describe('iOS store readiness', () => {
     const entitlements = read('gen/apple/ci-os-hub-mobile_iOS/ci-os-hub-mobile_iOS.entitlements');
     expect(entitlements).toContain('com.apple.developer.associated-domains');
     expect(entitlements).toContain('<string>applinks:hub.ci.computer</string>');
-    expect(entitlements).toContain('<string>applinks:hub.companionintelligence.com</string>');
+    expect(entitlements).not.toContain('applinks:hub.companionintelligence.com');
+  });
+
+  it('routes the production Hub host through the deep-link plugin', () => {
+    // The plugin strips associated-domains from every build unless a mobile entry
+    // carries a host. The committed entitlements alone would not catch that.
+    const conf = JSON.parse(read('tauri.conf.json')) as {
+      plugins: { 'deep-link': { mobile: Array<{ host?: string }> } };
+    };
+    const hosts = conf.plugins['deep-link'].mobile.map((entry) => entry.host);
+    // Only the production host: the dev-only host would be claimed by the store build for nothing.
+    expect(hosts.filter(Boolean)).toEqual(['hub.ci.computer']);
   });
 });
 
