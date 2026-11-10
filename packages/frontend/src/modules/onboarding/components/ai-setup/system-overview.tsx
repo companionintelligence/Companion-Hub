@@ -7,8 +7,9 @@ import { TranslatableError } from '@/types/error.types';
 import type { HardwareProfile, HardwareTier } from '@ci-hub/common/types';
 import { formatMemoryMb, resolveGpuSubLabel, resolveTierBadge, resolveVramDisplay } from '@/modules/onboarding/helpers/hardware-display';
 import { RocmSetupCard } from '@/modules/onboarding/components/ai-setup/rocm-setup-card';
-import { AlertTriangle, Cpu, HardDrive, MemoryStick, Monitor } from 'lucide-react';
-import { type ReactNode, useRef } from 'react';
+import { AlertTriangle, ChevronDown, ChevronUp, Cpu, HardDrive, MemoryStick, Monitor } from 'lucide-react';
+import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
+import { type ReactNode, useRef, useState } from 'react';
 import { AutoInstallRunnerButton } from './auto-install-runner-button';
 import { GpuIcon, VramIcon } from './icons';
 import i18next from 'i18next';
@@ -101,6 +102,8 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
   // The install can take minutes. A rescan from the render that started it would restore the engine picked back then.
   const latestOnRescan = useRef(onRescan);
   latestOnRescan.current = onRescan;
+  // The distribution commands are long. Folded away as on the ROCm card, they no longer push the page below the fold.
+  const [manualOpen, setManualOpen] = useState(false);
 
   const installRuntime = async () => {
     await getTauriInvoke()?.('install_nvidia_runtime_command');
@@ -179,40 +182,58 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
         />
       </div>
 
+      {/* The Hub's warning Alert: the icon and heading in the warning colour, the text in the page's own
+          colours, and commands in the muted blocks the ROCm card uses. role="note" because it is
+          guidance, not news; the install's own error keeps role="alert". */}
       {noGpu && (
-        <div className="mt-4 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2.5">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
-          <div className="text-xs text-warning">
+        <Alert variant="warning" role="note" className="mt-4">
+          <AlertIcon>
+            <AlertTriangle strokeWidth={2} />
+          </AlertIcon>
+          <AlertDescription className="text-xs">
             <strong>{t('ONBOARDING_NO_GPU_DETECTED_STRONG')}</strong> {t('ONBOARDING_NO_GPU_DETECTED_DESC')}
-          </div>
-        </div>
+          </AlertDescription>
+        </Alert>
       )}
 
       {showRocmSetup && <RocmSetupCard hardware={hardware} onRescan={onRescan} rescanning={rescanning} />}
 
       {nvidiaDriverMissing && (
-        <div className="mt-4 rounded-md border border-warning/30 bg-warning/10 p-3 text-xs text-warning" data-testid="nvidia-driver-warning">
-          <p className="mb-2">{t('ONBOARDING_NVIDIA_DRIVER_MISSING_DESC')}</p>
-          {showUbuntuDriverCommand && (
-            <div className="mb-3 rounded bg-warning/10 p-2.5 font-mono text-[11px] leading-6 text-warning">
-              <p className="font-medium text-warning">{t('ONBOARDING_DISTRO_UBUNTU')}</p>
-              <p>sudo ubuntu-drivers install</p>
+        <Alert variant="warning" role="note" className="mt-4" data-testid="nvidia-driver-warning">
+          <AlertIcon>
+            <AlertTriangle strokeWidth={2} />
+          </AlertIcon>
+          <div className="min-w-0 space-y-3 text-xs">
+            <AlertHeading>{t('ONBOARDING_NVIDIA_DRIVER_MISSING_TITLE')}</AlertHeading>
+            <AlertDescription>{t('ONBOARDING_NVIDIA_DRIVER_MISSING_DESC')}</AlertDescription>
+            {showUbuntuDriverCommand && (
+              <div className="rounded bg-muted p-2.5 font-mono text-[11px] leading-6">
+                <p className="font-medium font-sans">{t('ONBOARDING_DISTRO_UBUNTU')}</p>
+                <p>sudo ubuntu-drivers install</p>
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Only the desktop app and `cihub up` write the probe that proves the driver. A Rescan alone only reads it. */}
+              <span>{t(isTauriDesktopApp() ? 'ONBOARDING_NVIDIA_DRIVER_THEN_RESCAN' : 'ONBOARDING_NVIDIA_DRIVER_THEN_CIHUB_UP_RESCAN')}</span>
+              {rescanButton}
             </div>
-          )}
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Only the desktop app and `cihub up` write the probe that proves the driver. A Rescan alone only reads it. */}
-            <span>{t(isTauriDesktopApp() ? 'ONBOARDING_NVIDIA_DRIVER_THEN_RESCAN' : 'ONBOARDING_NVIDIA_DRIVER_THEN_CIHUB_UP_RESCAN')}</span>
-            {rescanButton}
           </div>
-        </div>
+        </Alert>
       )}
 
       {nvidiaRuntimeMissing && (
-        <div className="mt-4 rounded-md border border-warning/30 bg-warning/10 p-3 text-xs text-warning" data-testid="nvidia-runtime-warning">
-          <p className="mb-2">{t('ONBOARDING_NVIDIA_RUNTIME_MISSING_DESC_1')}</p>
-          {!desktopInstallsRuntime && <p className="mb-2">{t('ONBOARDING_NVIDIA_RUNTIME_MISSING_DESC_2')}</p>}
-          <p className="font-medium">{t('ONBOARDING_ACTION_ITEMS')}</p>
-          <div className="mt-2 space-y-3 leading-relaxed">
+        <Alert variant="warning" role="note" className="mt-4" data-testid="nvidia-runtime-warning">
+          <AlertIcon>
+            <AlertTriangle strokeWidth={2} />
+          </AlertIcon>
+          <div className="min-w-0 space-y-3 text-xs leading-relaxed">
+            <AlertHeading>{t('ONBOARDING_NVIDIA_RUNTIME_MISSING_TITLE')}</AlertHeading>
+            {/* One description, so both paragraphs take the muted colour the Alert gives the text under a heading. */}
+            <AlertDescription className="space-y-2">
+              <p>{t('ONBOARDING_NVIDIA_RUNTIME_MISSING_DESC_1')}</p>
+              {!desktopInstallsRuntime && <p>{t('ONBOARDING_NVIDIA_RUNTIME_MISSING_DESC_2')}</p>}
+            </AlertDescription>
+            <p className="font-medium">{t('ONBOARDING_ACTION_ITEMS')}</p>
             {desktopInstallsRuntime ? (
               <div>
                 <p className="mb-1.5 font-medium">1. {t('ONBOARDING_NVIDIA_RUNTIME_RUN_AUTOMATICALLY')}</p>
@@ -228,17 +249,26 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
             ) : (
               <div>
                 <p className="font-medium">1. {t('ONBOARDING_RETRY_AUTOMATIC_SETUP')}</p>
-                <p>{t('ONBOARDING_RETRY_AUTOMATIC_SETUP_DESC')}</p>
+                <p className="text-muted-foreground">{t('ONBOARDING_RETRY_AUTOMATIC_SETUP_DESC')}</p>
               </div>
             )}
-            <div>
-              {showLinuxRuntimeSteps ? (
-                <>
-                  <p className="font-medium">2. {t('ONBOARDING_MANUAL_INSTALL_DISTRO_SPECIFIC')}</p>
-                  {isWslEngineHost && <p className="mt-1 text-warning">{t('ONBOARDING_WSL_ENGINE_MANUAL_NOTE')}</p>}
-                  <div className="mt-1.5 space-y-2">
-                    <div className="rounded bg-warning/10 p-2.5 font-mono text-[11px] leading-6 text-warning">
-                      <p className="font-medium text-warning">{t('ONBOARDING_DISTRO_DEBIAN_UBUNTU')}</p>
+            {showLinuxRuntimeSteps ? (
+              <div>
+                <button
+                  type="button"
+                  className="flex items-center gap-1 text-xs font-medium text-foreground"
+                  onClick={() => setManualOpen((open) => !open)}
+                  aria-expanded={manualOpen}
+                  data-testid="nvidia-manual-toggle"
+                >
+                  2. {t('ONBOARDING_MANUAL_INSTALL_DISTRO_SPECIFIC')}
+                  {manualOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                </button>
+                {isWslEngineHost && <p className="mt-1 text-muted-foreground">{t('ONBOARDING_WSL_ENGINE_MANUAL_NOTE')}</p>}
+                {manualOpen && (
+                  <div className="mt-2 space-y-2">
+                    <div className="rounded bg-muted p-2.5 font-mono text-[11px] leading-6">
+                      <p className="font-medium font-sans">{t('ONBOARDING_DISTRO_DEBIAN_UBUNTU')}</p>
                       <p>sudo mkdir -p /etc/apt/keyrings</p>
                       <p>
                         curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o
@@ -251,54 +281,47 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
                       </p>
                       <p>sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit</p>
                     </div>
-                    <div className="rounded bg-warning/10 p-2.5 font-mono text-[11px] leading-6 text-warning">
-                      <p className="font-medium text-warning">{t('ONBOARDING_DISTRO_RHEL_FEDORA')}</p>
+                    <div className="rounded bg-muted p-2.5 font-mono text-[11px] leading-6">
+                      <p className="font-medium font-sans">{t('ONBOARDING_DISTRO_RHEL_FEDORA')}</p>
                       <p>
                         curl -fsSL https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | sudo tee
                         /etc/yum.repos.d/nvidia-container-toolkit.repo
                       </p>
                       <p>sudo dnf install -y nvidia-container-toolkit</p>
                     </div>
-                    <div className="rounded bg-warning/10 p-2.5 font-mono text-[11px] leading-6 text-warning">
-                      <p className="font-medium text-warning">{t('ONBOARDING_DISTRO_ARCH_MANJARO')}</p>
+                    <div className="rounded bg-muted p-2.5 font-mono text-[11px] leading-6">
+                      <p className="font-medium font-sans">{t('ONBOARDING_DISTRO_ARCH_MANJARO')}</p>
                       <p>sudo pacman -Sy --noconfirm nvidia-container-toolkit</p>
                     </div>
+                    <p className="font-medium">{t('ONBOARDING_THEN_RUN')}</p>
+                    <div className="rounded bg-muted p-2.5 font-mono text-[11px] leading-6">
+                      <p>sudo nvidia-ctk runtime configure --runtime=docker</p>
+                      <p>sudo systemctl restart docker</p>
+                      <p>docker info | grep -i nvidia</p>
+                    </div>
                   </div>
-                </>
-              ) : (
-                <>
-                  <p className="font-medium">2. {t('ONBOARDING_COMPLETE_GPU_SUPPORT_HOST')}</p>
-                  <div className="mt-1.5 rounded bg-warning/10 p-2.5 text-[11px] leading-6 text-warning">
-                    {t('ONBOARDING_COMPLETE_GPU_SUPPORT_HOST_DESC')}
-                  </div>
-                </>
-              )}
-            </div>
-            {showLinuxRuntimeSteps && (
+                )}
+              </div>
+            ) : (
               <div>
-                <p className="font-medium">3. {t('ONBOARDING_THEN_RUN')}</p>
-                <div className="mt-1.5 rounded bg-warning/10 p-2.5 font-mono text-[11px] leading-6 text-warning">
-                  <p>sudo nvidia-ctk runtime configure --runtime=docker</p>
-                  <p>sudo systemctl restart docker</p>
-                  <p>docker info | grep -i nvidia</p>
-                </div>
+                <p className="font-medium">2. {t('ONBOARDING_COMPLETE_GPU_SUPPORT_HOST')}</p>
+                <p className="mt-1 text-muted-foreground">{t('ONBOARDING_COMPLETE_GPU_SUPPORT_HOST_DESC')}</p>
               </div>
             )}
             <div className="flex flex-wrap items-center gap-2">
               <p>
-                {showLinuxRuntimeSteps ? '4.' : '3.'} {t('ONBOARDING_RETURN_AND_CLICK')} <span className="font-medium">{t('ONBOARDING_RESCAN')}</span>
-                .
+                3. {t('ONBOARDING_RETURN_AND_CLICK')} <span className="font-medium">{t('ONBOARDING_RESCAN')}</span>.
               </p>
               {rescanButton}
             </div>
           </div>
-        </div>
+        </Alert>
       )}
 
       {nvidiaRuntimeReady && (
-        <div className="mt-4 rounded-md border border-success/30 bg-success/10 p-3 text-xs text-success" data-testid="nvidia-runtime-ready">
-          {t('ONBOARDING_NVIDIA_RUNTIME_READY')}
-        </div>
+        <Alert variant="success" role="note" className="mt-4" data-testid="nvidia-runtime-ready">
+          <AlertDescription className="text-xs">{t('ONBOARDING_NVIDIA_RUNTIME_READY')}</AlertDescription>
+        </Alert>
       )}
     </section>
   );

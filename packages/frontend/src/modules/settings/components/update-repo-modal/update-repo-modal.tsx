@@ -24,7 +24,10 @@ export const UpdateRepoModal = () => {
 
   return (
     <div>
-      <Button onClick={() => UpdateRepoModalDisclosure.open()}>{t('COMMON_UPDATE')}</Button>
+      {/* Outline, as every card action on the System tab is; the dialog it opens holds the filled Update. */}
+      <Button variant="outline" onClick={() => UpdateRepoModalDisclosure.open()}>
+        {t('COMMON_UPDATE')}
+      </Button>
       <Dialog open={UpdateRepoModalDisclosure.isOpen} onOpenChange={UpdateRepoModalDisclosure.toggle}>
         <DialogContent size="sm">
           <DialogHeader>

@@ -9,7 +9,7 @@ import { motion } from 'framer-motion';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
-import { ArrowRight, Check, ChevronLeft, Loader2, X } from 'lucide-react';
+import { ArrowRight, Check, Loader2, X } from 'lucide-react';
 import type { TranslatableError } from '@/types/error.types';
 import { redirect, useLocation, useNavigate, useParams } from 'react-router';
 import type { Route } from './+types/app-update-page';
@@ -75,115 +75,116 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
     return composeDiffQuery.data.current !== composeDiffQuery.data.new;
   }, [composeDiffQuery.data]);
 
+  // The width of the app page it comes from, and the footer order the Hub's dialogs use: Cancel, then the action.
   return (
-    <Card data-testid="app-update">
-      <CardHeader className="border-0 pb-0">
-        <div className="flex flex-col lg:flex-row items-start lg:items-center border-b pb-4 w-full">
-          <AppLogo urn={info.urn} size={96} alt={info.name} />
-          <div className="mt-3 lg:mt-0 lg:ml-3">
-            <h2 className="mb-1 text-2xl font-medium">{t('APP_UPDATE_FORM_TITLE', { name: info.name })}</h2>
-            <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
-              <VersionChip>{info.version}</VersionChip>
-              <ArrowRight size={16} />
-              <VersionChip tone="next">{metadata.latestDockerVersion}</VersionChip>
-            </div>
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="pt-2">
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-          <div className="space-y-4" data-testid="update-summary">
-            <div className="space-y-3">
-              <div className="flex justify-between items-center" data-testid="update-summary-version">
-                <span className="text-sm text-muted-foreground">{t('COMMON_VERSION')}</span>
-                <span className="text-sm font-medium">
-                  {info.version} <ArrowRight size={12} className="inline mx-1" /> {metadata.latestDockerVersion}
-                </span>
-              </div>
-              {info.supported_architectures && info.supported_architectures.length > 0 && (
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-muted-foreground">{t('COMMON_ARCHITECTURES')}</span>
-                  <span className="text-sm font-medium">{info.supported_architectures.join(', ')}</span>
-                </div>
-              )}
-              {metadata.minHubVersion && (
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-muted-foreground">{t('COMMON_MIN_HUB_VERSION')}</span>
-                  <span className="text-sm font-medium">{metadata.minHubVersion}</span>
-                </div>
-              )}
-              <div className="border-t border-border/40 pt-2 space-y-1">
-                <div className="flex items-center gap-2 text-sm">
-                  {configChanged === undefined ? (
-                    <Loader2 size={14} className="animate-spin text-muted-foreground" />
-                  ) : configChanged ? (
-                    <Check size={14} className="text-amber-500" />
-                  ) : (
-                    <X size={14} className="text-muted-foreground" />
-                  )}
-                  <span>
-                    {configChanged === undefined
-                      ? t('APP_UPDATE_SUMMARY_CONFIG_CHECKING')
-                      : configChanged
-                        ? t('APP_UPDATE_SUMMARY_CONFIG_CHANGED')
-                        : t('APP_UPDATE_SUMMARY_CONFIG_UNCHANGED')}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 text-sm">
-                  {composeChanged === undefined ? (
-                    <Loader2 size={14} className="animate-spin text-muted-foreground" />
-                  ) : composeChanged ? (
-                    <Check size={14} className="text-amber-500" />
-                  ) : (
-                    <X size={14} className="text-muted-foreground" />
-                  )}
-                  <span>
-                    {composeChanged === undefined
-                      ? t('APP_UPDATE_SUMMARY_COMPOSE_CHECKING')
-                      : composeChanged
-                        ? t('APP_UPDATE_SUMMARY_COMPOSE_CHANGED')
-                        : t('APP_UPDATE_SUMMARY_COMPOSE_UNCHANGED')}
-                  </span>
-                </div>
+    <div className="mx-auto max-w-6xl pb-20">
+      <Card data-testid="app-update" className="overflow-hidden border-border/60 bg-card/80 shadow-sm">
+        <CardHeader className="border-0 pb-0">
+          <div className="flex flex-col lg:flex-row items-start lg:items-center border-b pb-4 w-full">
+            <AppLogo urn={info.urn} size={96} alt={info.name} />
+            <div className="mt-3 lg:mt-0 lg:ml-3">
+              <h1 className="mb-1 text-2xl font-medium tracking-tight">{t('APP_UPDATE_FORM_TITLE', { name: info.name })}</h1>
+              <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
+                <VersionChip>{info.version}</VersionChip>
+                <ArrowRight size={16} />
+                <VersionChip tone="next">{metadata.latestDockerVersion}</VersionChip>
               </div>
             </div>
-
-            <p className="text-sm text-muted-foreground" data-testid="update-what-happens">
-              {t('APP_UPDATE_WHAT_HAPPENS', { name: info.name })}
-            </p>
-
-            <div className="border-t border-border/40 pt-3">
-              <p className="text-sm text-muted-foreground">{t('APP_UPDATE_BACKUP_SUBTITLE')}</p>
-              <Switch
-                checked={backupApp}
-                onCheckedChange={setBackupApp}
-                label={t('COMMON_BACKUP')}
-                className="mt-3"
-                data-testid="update-backup-switch"
-              />
-            </div>
           </div>
-        </motion.div>
-      </CardContent>
-      <CardFooter className="border-0 flex items-center justify-between gap-3">
-        <Button variant="ghost" onClick={() => navigate(location.state?.from || '/apps')}>
-          <ChevronLeft className="me-1" size={16} />
-          {t('COMMON_CANCEL')}
-        </Button>
-        <Button
-          onClick={() =>
-            update.mutate({
-              path: { urn: info.urn },
-              body: { performBackup: backupApp },
-            })
-          }
-          intent="success"
-          loading={update.isPending}
-          data-testid="update-confirm"
-        >
-          {t('COMMON_UPDATE')}
-        </Button>
-      </CardFooter>
-    </Card>
+        </CardHeader>
+        <CardContent className="pt-2">
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+            <div className="space-y-4" data-testid="update-summary">
+              <div className="space-y-3">
+                <div className="flex justify-between items-center" data-testid="update-summary-version">
+                  <span className="text-sm text-muted-foreground">{t('COMMON_VERSION')}</span>
+                  <span className="text-sm font-medium">
+                    {info.version} <ArrowRight size={12} className="inline mx-1" /> {metadata.latestDockerVersion}
+                  </span>
+                </div>
+                {info.supported_architectures && info.supported_architectures.length > 0 && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-muted-foreground">{t('COMMON_ARCHITECTURES')}</span>
+                    <span className="text-sm font-medium">{info.supported_architectures.join(', ')}</span>
+                  </div>
+                )}
+                {metadata.minHubVersion && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-muted-foreground">{t('COMMON_MIN_HUB_VERSION')}</span>
+                    <span className="text-sm font-medium">{metadata.minHubVersion}</span>
+                  </div>
+                )}
+                <div className="border-t border-border/40 pt-2 space-y-1">
+                  <div className="flex items-center gap-2 text-sm">
+                    {configChanged === undefined ? (
+                      <Loader2 size={14} className="animate-spin text-muted-foreground" />
+                    ) : configChanged ? (
+                      <Check size={14} className="text-amber-500" />
+                    ) : (
+                      <X size={14} className="text-muted-foreground" />
+                    )}
+                    <span>
+                      {configChanged === undefined
+                        ? t('APP_UPDATE_SUMMARY_CONFIG_CHECKING')
+                        : configChanged
+                          ? t('APP_UPDATE_SUMMARY_CONFIG_CHANGED')
+                          : t('APP_UPDATE_SUMMARY_CONFIG_UNCHANGED')}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-sm">
+                    {composeChanged === undefined ? (
+                      <Loader2 size={14} className="animate-spin text-muted-foreground" />
+                    ) : composeChanged ? (
+                      <Check size={14} className="text-amber-500" />
+                    ) : (
+                      <X size={14} className="text-muted-foreground" />
+                    )}
+                    <span>
+                      {composeChanged === undefined
+                        ? t('APP_UPDATE_SUMMARY_COMPOSE_CHECKING')
+                        : composeChanged
+                          ? t('APP_UPDATE_SUMMARY_COMPOSE_CHANGED')
+                          : t('APP_UPDATE_SUMMARY_COMPOSE_UNCHANGED')}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <p className="text-sm text-muted-foreground" data-testid="update-what-happens">
+                {t('APP_UPDATE_WHAT_HAPPENS', { name: info.name })}
+              </p>
+
+              <div className="border-t border-border/40 pt-3">
+                <p className="text-sm text-muted-foreground">{t('APP_UPDATE_BACKUP_SUBTITLE')}</p>
+                <Switch
+                  checked={backupApp}
+                  onCheckedChange={setBackupApp}
+                  label={t('COMMON_BACKUP')}
+                  className="mt-3"
+                  data-testid="update-backup-switch"
+                />
+              </div>
+            </div>
+          </motion.div>
+        </CardContent>
+        <CardFooter className="flex items-center justify-end gap-2 border-t border-border pt-4">
+          <Button variant="ghost" onClick={() => navigate(location.state?.from || '/apps')}>
+            {t('COMMON_CANCEL')}
+          </Button>
+          <Button
+            onClick={() =>
+              update.mutate({
+                path: { urn: info.urn },
+                body: { performBackup: backupApp },
+              })
+            }
+            loading={update.isPending}
+            data-testid="update-confirm"
+          >
+            {t('COMMON_UPDATE')}
+          </Button>
+        </CardFooter>
+      </Card>
+    </div>
   );
 }
