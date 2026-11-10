@@ -46,10 +46,10 @@ export const StopDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
         <DialogDescription>
           <span className="text-muted-foreground">{t('COMMON_ALL_DATA_RETAINED')}</span>
         </DialogDescription>
+        {/* The primary button, as for the Hub's other confirmations that lose nothing (Backup now, Update).
+            Red is for actions that can't be undone, such as Reset and Remove. */}
         <DialogFooter>
-          <Button onClick={() => stopMutation.mutate({ path: { urn: info.urn } })} intent="danger">
-            {t('COMMON_STOP')}
-          </Button>
+          <Button onClick={() => stopMutation.mutate({ path: { urn: info.urn } })}>{t('COMMON_STOP')}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

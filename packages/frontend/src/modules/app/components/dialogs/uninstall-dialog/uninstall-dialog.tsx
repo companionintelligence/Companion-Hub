@@ -20,9 +20,15 @@ interface IProps {
   onClose: () => void;
   /** The page offers Reset app for this app, so the dialog may point at it. Port-expose apps, failed installs and a caller without the reset grant have none. */
   canReset?: boolean;
+  /**
+   * Set for a port expose, the port it publishes. Removing one stops the Hub publishing that port and
+   * deletes no app data, so the dialog says that instead of offering to delete data and backups it has none of.
+   */
+  portExposePort?: number | null;
 }
 
-export const UninstallDialog = ({ info, isOpen, onClose, canReset = false }: IProps) => {
+export const UninstallDialog = ({ info, isOpen, onClose, canReset = false, portExposePort }: IProps) => {
+  const isPortExpose = portExposePort !== undefined;
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { setOptimisticStatus } = useAppStatus();
@@ -53,34 +59,43 @@ export const UninstallDialog = ({ info, isOpen, onClose, canReset = false }: IPr
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent type="danger" size="sm">
         <DialogHeader>
-          <DialogTitle>{t('APP_UNINSTALL_FORM_TITLE', { name: info.name })}</DialogTitle>
+          {/* Nothing was installed for a port expose, so its page and this dialog say Remove. Apps say Uninstall throughout. */}
+          <DialogTitle>{t(isPortExpose ? 'PORT_EXPOSE_REMOVE_TITLE' : 'APP_UNINSTALL_FORM_TITLE', { name: info.name })}</DialogTitle>
         </DialogHeader>
         <DialogDescription className="text-center py-4">
           <AlertTriangle className="mb-2 text-destructive size-12 mx-auto" />
-          <h3>{t('COMMON_ACTION_CANNOT_BE_UNDONE')}</h3>
-          {/* Delete all data takes the app's backups along with its data folder and volumes. With it off, all three stay. */}
-          <span className="text-muted-foreground">
-            {t(shouldDeleteAllData ? 'APP_UNINSTALL_FORM_DATA_AND_BACKUPS_LOST' : 'APP_UNINSTALL_FORM_DATA_KEPT')}
-          </span>
-          {shouldDeleteAllData && canReset && <p className="mt-2 text-muted-foreground">{t('APP_UNINSTALL_FORM_RESET_KEEPS_BACKUPS')}</p>}
-          {requiresForce && (
-            <MemoryProviderForceWarning
-              consumers={consumers}
-              unableToVerify={unableToVerify}
-              forceConfirmed={forceConfirmed}
-              onForceConfirmedChange={setForceConfirmed}
-              switchName="uninstall-force-confirm"
-            />
+          {isPortExpose ? (
+            <span className="text-muted-foreground" data-testid="port-expose-remove-description">
+              {t('PORT_EXPOSE_REMOVE_DESCRIPTION', { port: portExposePort ?? '' })}
+            </span>
+          ) : (
+            <>
+              <h3>{t('COMMON_ACTION_CANNOT_BE_UNDONE')}</h3>
+              {/* Delete all data takes the app's backups along with its data folder and volumes. With it off, all three stay. */}
+              <span className="text-muted-foreground">
+                {t(shouldDeleteAllData ? 'APP_UNINSTALL_FORM_DATA_AND_BACKUPS_LOST' : 'APP_UNINSTALL_FORM_DATA_KEPT')}
+              </span>
+              {shouldDeleteAllData && canReset && <p className="mt-2 text-muted-foreground">{t('APP_UNINSTALL_FORM_RESET_KEEPS_BACKUPS')}</p>}
+              {requiresForce && (
+                <MemoryProviderForceWarning
+                  consumers={consumers}
+                  unableToVerify={unableToVerify}
+                  forceConfirmed={forceConfirmed}
+                  onForceConfirmedChange={setForceConfirmed}
+                  switchName="uninstall-force-confirm"
+                />
+              )}
+              <div className="flex justify-center pt-3">
+                <Switch
+                  name="uninstall-delete-all-data"
+                  className="text-start"
+                  checked={shouldDeleteAllData}
+                  onCheckedChange={setShouldDeleteAllData}
+                  label={t('APP_UNINSTALL_FORM_DELETE_ALL_DATA')}
+                />
+              </div>
+            </>
           )}
-          <div className="flex justify-center pt-3">
-            <Switch
-              name="uninstall-delete-all-data"
-              className="text-start"
-              checked={shouldDeleteAllData}
-              onCheckedChange={setShouldDeleteAllData}
-              label={t('APP_UNINSTALL_FORM_DELETE_ALL_DATA')}
-            />
-          </div>
         </DialogDescription>
         <DialogFooter>
           <Button
@@ -93,7 +108,7 @@ export const UninstallDialog = ({ info, isOpen, onClose, canReset = false }: IPr
             disabled={submitDisabled}
             intent="danger"
           >
-            {t('APP_UNINSTALL_FORM_SUBMIT')}
+            {t(isPortExpose ? 'COMMON_REMOVE' : 'APP_UNINSTALL_FORM_SUBMIT')}
           </Button>
         </DialogFooter>
       </DialogContent>

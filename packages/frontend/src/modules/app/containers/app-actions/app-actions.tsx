@@ -916,7 +916,7 @@ export const AppActions = ({
             <IconActionButton
               key="remove"
               icon={Trash}
-              label={t('COMMON_REMOVE')}
+              label={t('APP_ACTION_UNINSTALL')}
               onClick={uninstallDisclosure.open}
               className="text-destructive hover:text-destructive"
             />,
@@ -929,13 +929,6 @@ export const AppActions = ({
       secondaryActions.push(
         <IconActionButton key="settings" icon={Settings} label={t('COMMON_SETTINGS')} onClick={updateSettingsDisclosure.open} />,
         <IconActionButton key="reset" icon={Eraser} label={t('APP_INSTALL_FORM_RESET')} onClick={resetAppDisclosure.open} />,
-        <IconActionButton
-          key="remove"
-          icon={Trash}
-          label={t('COMMON_REMOVE')}
-          onClick={uninstallDisclosure.open}
-          className="text-destructive hover:text-destructive"
-        />,
       );
       if (info.urn.split(':')[1] === '_user') {
         secondaryActions.push(
@@ -943,6 +936,16 @@ export const AppActions = ({
         );
       }
       if (openDataFolderButton) secondaryActions.push(openDataFolderButton);
+      // Last, as when the app is running: Uninstall sat in the middle of the bar for a stopped app.
+      secondaryActions.push(
+        <IconActionButton
+          key="remove"
+          icon={Trash}
+          label={t('APP_ACTION_UNINSTALL')}
+          onClick={uninstallDisclosure.open}
+          className="text-destructive hover:text-destructive"
+        />,
+      );
       if (updateAvailable) {
         secondaryActions.push(
           <IconActionButton
@@ -986,7 +989,7 @@ export const AppActions = ({
         <IconActionButton
           key="remove"
           icon={Trash}
-          label={t('COMMON_REMOVE')}
+          label={t('APP_ACTION_UNINSTALL')}
           onClick={uninstallDisclosure.open}
           className="text-destructive hover:text-destructive"
         />,
@@ -1097,7 +1100,7 @@ export const AppActions = ({
         <IconActionButton
           key="remove"
           icon={Trash}
-          label={t('COMMON_REMOVE')}
+          label={t('APP_ACTION_UNINSTALL')}
           onClick={uninstallDisclosure.open}
           className="text-destructive hover:text-destructive"
         />,

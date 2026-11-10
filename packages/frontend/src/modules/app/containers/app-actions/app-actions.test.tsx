@@ -998,7 +998,7 @@ describe('AppActions', () => {
     const CHANGES = [
       'icon-action-common_settings',
       'icon-action-app_install_form_reset',
-      'icon-action-common_remove',
+      'icon-action-app_action_uninstall',
       'icon-action-custom_app_edit_config',
     ];
 
@@ -1068,6 +1068,14 @@ describe('AppActions', () => {
       for (const testId of CHANGES) {
         expect(screen.getByTestId(testId)).toBeInTheDocument();
       }
+    });
+
+    // A stopped app had Uninstall in the middle of the bar, before Edit Configuration. It is last, as when the app runs.
+    it('puts Uninstall last in the bar of a stopped app', () => {
+      renderCustom('stopped', ['view', 'start', 'stop', 'restart', 'install', 'update', 'uninstall', 'reset', 'backup', 'restore', 'configure']);
+
+      const icons = screen.getAllByTestId(/^icon-action-/).map((icon) => icon.getAttribute('data-testid'));
+      expect(icons.at(-1)).toBe('icon-action-app_action_uninstall');
     });
   });
 

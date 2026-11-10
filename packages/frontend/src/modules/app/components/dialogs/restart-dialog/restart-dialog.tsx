@@ -49,10 +49,10 @@ export const RestartDialog: React.FC<IProps> = ({ info, isOpen, onClose, reason 
           {reason ? <span className="block mb-2">{reason}</span> : null}
           <span className="text-muted-foreground">{t('COMMON_ALL_DATA_RETAINED')}</span>
         </DialogDescription>
+        {/* The primary button, as for the Hub's other confirmations that lose nothing (Backup now, Update).
+            Red is for actions that can't be undone, such as Reset and Remove. */}
         <DialogFooter>
-          <Button onClick={() => restartMutation.mutate({ path: { urn: info.urn } })} intent="danger">
-            {t('COMMON_RESTART')}
-          </Button>
+          <Button onClick={() => restartMutation.mutate({ path: { urn: info.urn } })}>{t('COMMON_RESTART')}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
