@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import type { HardwareProfile } from '@ci-hub/common/types';
+import type { HardwareProfile, InferenceModelInfo, InferenceStatus } from '@ci-hub/common/types';
 import type { LifecycleActorFor } from '@/core/portal/lifecycle-actor';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -13,7 +13,7 @@ import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import { mcpAdminCallContext, mcpCallContext } from '../../mcp-call-context';
 import { McpToolRegistry } from '../../mcp-tool-registry.service';
-import { InferenceTools } from '../../tools/inference.tools';
+import { InferenceTools, filterModels, summarizeInferenceStatus } from '../../tools/inference.tools';
 
 /** Hermes' managed key on core-2: 'write', which every non-destructive tool admits. */
 const HERMES_KEY: ApiKeyContext = { id: 7, name: 'Hermes', capability: 'write', ownerAppUrn: null, createdByUserId: null };
@@ -168,5 +168,88 @@ describe('InferenceTools: hub_set_cloud_provider', () => {
 
     expect(cloudFallback.getProvider('openai')?.apiKey).toBeUndefined();
     await expect(call('hub_get_cloud_providers', {})).resolves.toEqual([expect.objectContaining({ provider: 'openai', configured: false })]);
+  });
+});
+
+describe('InferenceTools: status and model list sizes', () => {
+  const model = (over: Partial<InferenceModelInfo>): InferenceModelInfo => ({
+    id: 'm',
+    object: 'model',
+    created: 1,
+    owned_by: 'catalog:ollama',
+    state: 'available',
+    backend: 'ollama',
+    modality: ['text'],
+    local: true,
+    ...over,
+  });
+  const models: InferenceModelInfo[] = [
+    model({ id: 'qwen3.5:27b', owned_by: 'local:ollama', state: 'loaded', context_window: 32768 }),
+    model({ id: 'gemma3-4b', owned_by: 'local:ollama', state: 'pulled', backend_model_id: 'gemma3:4b' }),
+    model({ id: 'gpt-4o-mini', owned_by: 'cloud:openai', backend: 'cloud', local: false }),
+    model({ id: 'phi-4-mini' }),
+    model({ id: 'llama-3.3-8b-instruct' }),
+    model({ id: 'qwen-omlx', owned_by: 'catalog:omlx', backend: 'omlx' }),
+  ];
+  const status = {
+    hardwareTier: 'high',
+    backends: [{ type: 'ollama', running: true, healthy: true, url: 'http://host.docker.internal:11434', modelsLoaded: 2 }],
+    models,
+    memoryBudget: { totalRamMb: 125781 },
+    cloudProviders: [{ provider: 'openai', enabled: true, configured: true }],
+  } as unknown as InferenceStatus;
+
+  let registry: McpToolRegistry;
+  let router: MockProxy<InferenceRouterService>;
+
+  beforeEach(() => {
+    registry = new McpToolRegistry();
+    router = mock<InferenceRouterService>();
+    router.getStatus.mockResolvedValue(status);
+    router.listModels.mockResolvedValue(models);
+    new InferenceTools(
+      mock<LoggerService>(),
+      registry,
+      mock<HardwareInspectorService>(),
+      mock<MemoryManagerService>(),
+      mock<ModelPullerService>(),
+      router,
+      mock<CloudFallbackService>(),
+      mock<InferenceBackendRegistry>(),
+    ).onModuleInit();
+  });
+
+  it('lists only the models this node can serve and counts the catalog per backend', () => {
+    const summary = summarizeInferenceStatus(status);
+    expect(summary.models.map((m) => m.id)).toEqual(['qwen3.5:27b', 'gemma3-4b', 'gpt-4o-mini']);
+    expect(summary.catalog).toMatchObject({ notDownloaded: 3, byBackend: { ollama: 2, omlx: 1 } });
+    expect(summary.backends).toBe(status.backends);
+    expect(summary.memoryBudget).toBe(status.memoryBudget);
+    expect(summary.cloudProviders).toBe(status.cloudProviders);
+  });
+
+  it('drops the /v1/models envelope fields from each model and keeps the rest', () => {
+    const [loaded, pulled] = summarizeInferenceStatus(status).models;
+    expect(loaded).toEqual({ id: 'qwen3.5:27b', state: 'loaded', backend: 'ollama', modality: ['text'], context_window: 32768 });
+    expect(pulled).toMatchObject({ backend_model_id: 'gemma3:4b' });
+  });
+
+  it('hub_get_inference_status answers with the summary unless includeCatalog is true', async () => {
+    const tool = registry.getTool('hub_get_inference_status');
+    await expect(tool?.handler({})).resolves.toEqual(summarizeInferenceStatus(status));
+    await expect(tool?.handler({ includeCatalog: true })).resolves.toBe(status);
+  });
+
+  it('hub_list_models filters by backend and by state, and lists everything without a filter', async () => {
+    const tool = registry.getTool('hub_list_models');
+    await expect(tool?.handler({})).resolves.toEqual(models);
+    const omlx = (await tool?.handler({ backend: 'omlx' })) as InferenceModelInfo[];
+    expect(omlx.map((m) => m.id)).toEqual(['qwen-omlx']);
+    const pulled = (await tool?.handler({ backend: 'ollama', state: 'pulled' })) as InferenceModelInfo[];
+    expect(pulled.map((m) => m.id)).toEqual(['gemma3-4b']);
+  });
+
+  it('ignores a filter that is not a non-empty string', () => {
+    expect(filterModels(models, { backend: '', state: 3 })).toEqual(models);
   });
 });
