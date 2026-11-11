@@ -8,8 +8,8 @@ const { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await v
 /**
  * A stand-in stdio MCP server, run as a real child process with `node -e`. It records its pid,
  * waits as long as the delay file says before reading stdin (a `docker run` still pulling its
- * image), answers initialize and tools/list, echoes FAKE_TOKEN from its environment for any tool
- * call, and answers the `fail` tool with a JSON-RPC error.
+ * image) and answers initialize and tools/list. Any tool call gets FAKE_TOKEN from its environment
+ * back, after `arguments.delayMs` when the call sets it. The `fail` tool gets a JSON-RPC error.
  */
 const SCRIPT = String.raw`
 const fs = require('fs');
@@ -30,7 +30,10 @@ setTimeout(() => {
       { name: 'fail', description: 'Always fails', inputSchema: { type: 'object' } },
     ] } });
     if (m.method === 'tools/call' && m.params.name === 'fail') return send({ error: { code: -32603, message: 'failed on purpose' } });
-    if (m.method === 'tools/call') return send({ result: { content: [{ type: 'text', text: process.env.FAKE_TOKEN || '' }] } });
+    if (m.method === 'tools/call') {
+      const reply = () => send({ result: { content: [{ type: 'text', text: process.env.FAKE_TOKEN || '' }] } });
+      return setTimeout(reply, Number(m.params.arguments && m.params.arguments.delayMs) || 0);
+    }
     send({ error: { code: -32601, message: 'unknown method' } });
   });
   rl.on('close', () => process.exit(0));
@@ -64,14 +67,15 @@ export function makeFakeStdioServer(): FakeStdioServer {
   return {
     command: [process.execPath, '-e', SCRIPT, pidFile, delayFile],
     pids,
-    waitForPids: async (count, timeoutMs = 5000) => {
-      const deadline = Date.now() + timeoutMs;
-      while (pids().length < count) {
-        if (Date.now() > deadline) throw new Error(`expected ${count} fake server process(es), saw ${pids().length}`);
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-      return pids();
-    },
+    waitForPids: (count, timeoutMs = 5000) =>
+      vi.waitFor(
+        () => {
+          const started = pids();
+          if (started.length < count) throw new Error(`expected ${count} fake server process(es), saw ${started.length}`);
+          return started;
+        },
+        { timeout: timeoutMs, interval: 20 },
+      ),
     setDelay: (ms) => writeFileSync(delayFile, String(ms)),
     cleanup: () => {
       for (const pid of pids()) {
@@ -87,15 +91,18 @@ export function makeFakeStdioServer(): FakeStdioServer {
 }
 
 /** True once `pid` is gone, false if it is still running after `timeoutMs`. */
-export async function waitForExit(pid: number, timeoutMs = 5000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      process.kill(pid, 0);
-    } catch {
-      return true;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  return false;
+export function waitForExit(pid: number, timeoutMs = 5000): Promise<boolean> {
+  return vi
+    .waitFor(
+      () => {
+        try {
+          process.kill(pid, 0);
+        } catch {
+          return true;
+        }
+        throw new Error(`process ${pid} is still running`);
+      },
+      { timeout: timeoutMs, interval: 20 },
+    )
+    .catch(() => false);
 }

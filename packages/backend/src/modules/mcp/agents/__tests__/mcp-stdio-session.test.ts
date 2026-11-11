@@ -22,10 +22,11 @@ describe('McpStdioSession', () => {
   };
 
   it('starts a fresh process after a start that timed out, instead of replaying the timeout', async () => {
-    server.setDelay(3000);
-    const s = open({ hostDockerStartTimeoutMs: 300 });
+    // Long enough for a loaded machine to start node and record the pid before the kill.
+    server.setDelay(10_000);
+    const s = open({ hostDockerStartTimeoutMs: 1000 });
 
-    await expect(s.request('tools/list', {}, 300)).rejects.toThrow(/timeout.*initialize/);
+    await expect(s.request('tools/list', {}, 1000)).rejects.toThrow(/timeout.*initialize/);
     const [first] = await server.waitForPids(1);
     expect(await waitForExit(first as number)).toBe(true);
 
@@ -49,6 +50,14 @@ describe('McpStdioSession', () => {
 
     await expect(s.request('tools/list', {}, 5000)).resolves.toMatchObject({ tools: [{ name: 'echo_token' }, { name: 'fail' }] });
     expect(server.pids()).toHaveLength(2);
+  });
+
+  it('counts as alive before its first request, so a second caller does not replace it', () => {
+    const s = open();
+
+    expect(s.alive).toBe(true);
+    s.close();
+    expect(s.alive).toBe(false);
   });
 
   it('keeps the process when the server answers with a JSON-RPC error', async () => {

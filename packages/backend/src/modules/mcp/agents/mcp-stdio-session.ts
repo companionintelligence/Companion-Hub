@@ -9,7 +9,7 @@ const INITIALIZE_PARAMS = {
 
 /**
  * How long a host_docker server gets to answer `initialize`. Its `docker run` pulls the image first
- * when the Hub doesn't have it yet, and the pull happens inside this wait: GitHub MCP's first start
+ * when the Hub doesn't have it yet and the pull happens inside this wait: GitHub MCP's first start
  * took 13.7 s and 16.6 s on a laptop, against the 15 s a request otherwise allows. A container_exec
  * server runs in a container that is already up, so it keeps the caller's budget.
  */
@@ -50,6 +50,16 @@ export class McpServerError extends Error {
 }
 
 /**
+ * End stdin before the signal. `docker run` forwards SIGTERM to the container and keeps waiting. A
+ * server running as PID 1 with no SIGTERM handler (a Node or Python image) ignores it. End of input
+ * reaches it through `docker run -i` and stops it.
+ */
+const stopProcess = (proc: ChildProcessWithoutNullStreams): void => {
+  proc.stdin.end();
+  proc.kill();
+};
+
+/**
  * Long-lived stdio MCP session — one server process, many JSON-RPC requests.
  * Replaces per-call `docker exec` for container_exec listings and supports
  * host_docker (`docker run …`) commands that cannot run inside exec.
@@ -62,6 +72,7 @@ export class McpStdioSession {
   private ready: Promise<void> | null = null;
   private sawAnyResponse = false;
   private closed = false;
+  private started = false;
 
   constructor(
     private readonly label: string,
@@ -82,13 +93,19 @@ export class McpStdioSession {
       reject(new Error(`MCP stdio session for ${this.label} closed`));
     }
     this.pending.clear();
-    this.proc?.kill();
+    if (this.proc) {
+      stopProcess(this.proc);
+    }
     this.proc = null;
     this.ready = null;
   }
 
+  /**
+   * A session no request has started yet counts as alive. Otherwise a second caller would close it
+   * before its first request runs. That request would then start a process nobody holds.
+   */
   get alive(): boolean {
-    return this.proc !== null && !this.closed;
+    return !this.closed && (this.proc !== null || !this.started);
   }
 
   private async ensureReady(timeoutMs: number): Promise<void> {
@@ -97,6 +114,7 @@ export class McpStdioSession {
     }
     this.close();
     this.closed = false;
+    this.started = true;
     this.ready = this.bootstrap(this.startTimeout(timeoutMs));
     return this.ready;
   }
@@ -124,7 +142,7 @@ export class McpStdioSession {
         this.proc = null;
         this.ready = null;
       }
-      proc.kill();
+      stopProcess(proc);
       throw error;
     }
     this.writeLine({ jsonrpc: '2.0', method: 'notifications/initialized' });
@@ -158,6 +176,11 @@ export class McpStdioSession {
     // A killed process reports its exit after the next one may already be running. Its handlers
     // must not touch the session then, or they reject the new process's requests and drop its handle.
     const isCurrent = () => this.proc === proc;
+
+    proc.stdin.on('error', () => {
+      // A write to a server that stopped reading fails with EPIPE. Unheard, that error would take the
+      // Hub down. The `close` handler below reports the server's exit to the waiting requests.
+    });
 
     proc.stdout.on('data', (data: Buffer) => {
       if (!isCurrent()) return;

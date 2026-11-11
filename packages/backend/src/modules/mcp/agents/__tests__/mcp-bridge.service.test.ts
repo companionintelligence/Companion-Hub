@@ -177,6 +177,51 @@ describe('McpBridgeService', () => {
       expect(await waitForExit(pids[0] as number)).toBe(true);
     });
 
+    it('refuses a call while the app is uninstalling and stops its server', async () => {
+      await service.discoverTools(STDIO_URN, stdioConfig());
+      const [pid] = await server.waitForPids(1);
+      appsService.getApp.mockResolvedValue({ app: { status: 'uninstalling' } } as any);
+
+      await expect(service.callTool(STDIO_URN, stdioConfig(), 'echo_token', {})).resolves.toEqual({
+        error: `App ${STDIO_URN} is not installed`,
+        isError: true,
+      });
+      expect(await waitForExit(pid as number)).toBe(true);
+      expect(server.pids()).toHaveLength(1);
+    });
+
+    it('keeps the new server when a call still on the old one fails after app.env changes', async () => {
+      await service.callTool(STDIO_URN, stdioConfig(), 'echo_token', {});
+      const inFlight = service.callTool(STDIO_URN, stdioConfig(), 'echo_token', { delayMs: 2000 });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      setAppEnv('FAKE_TOKEN=second-token');
+      const afterChange = service.callTool(STDIO_URN, stdioConfig(), 'echo_token', {});
+
+      await expect(inFlight).resolves.toMatchObject({ isError: true });
+      await expect(afterChange).resolves.toMatchObject({ content: [{ text: 'second-token' }] });
+      await expect(service.callTool(STDIO_URN, stdioConfig(), 'echo_token', {})).resolves.toMatchObject({
+        content: [{ text: 'second-token' }],
+      });
+      expect(server.pids()).toHaveLength(2);
+    });
+
+    it('starts no process for a connection a config change replaced while it was connecting', async () => {
+      const replaced = service.discoverTools(STDIO_URN, stdioConfig()).catch((error: Error) => error);
+      await Promise.resolve();
+      const changed = makeConfig({
+        enabled: true,
+        config: { enabled: true, transport: 'stdio', launch: 'host_docker', command: [...server.command, 'changed'] },
+      });
+      await expect(service.discoverTools(STDIO_URN, changed)).resolves.toHaveLength(2);
+      await replaced;
+
+      const pids = server.pids();
+      expect(pids).toHaveLength(1);
+      service.onModuleDestroy();
+      expect(await waitForExit(pids[0] as number)).toBe(true);
+    });
+
     it('keeps a running server when app.env reads back empty', async () => {
       await service.callTool(STDIO_URN, stdioConfig(), 'echo_token', {});
 

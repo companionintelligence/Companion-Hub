@@ -27,7 +27,10 @@ interface McpConnection {
   stdioSession?: McpStdioSession;
   /** Hash of the spawn spec (command and app.env) the stdio process was started with. */
   stdioSpecKey?: string;
-  /** Set by dropApp: work still in flight for this connection must not start a new process. */
+  /**
+   * Set by disconnect (uninstall, a config change, shutdown). The connection is out of the map by
+   * then, so work still in flight for it must not start a process nothing would stop.
+   */
   dropped?: boolean;
 }
 
@@ -186,7 +189,7 @@ export class McpBridgeService implements OnModuleDestroy {
   private async assertBridgeable(appUrn: AppUrn, conn: McpConnection): Promise<void> {
     try {
       const { app } = await this.appsService.getApp(appUrn);
-      if (!app) {
+      if (!app || app.status === 'uninstalling') {
         throw new Error(`App ${appUrn} is not installed`);
       }
       if (!isHostDockerLaunch(conn.config.launch) && app.status !== 'running') {
@@ -271,8 +274,6 @@ export class McpBridgeService implements OnModuleDestroy {
     } catch (err) {
       if (err instanceof StdioSilentExitError) {
         this.logger.warn(`MCP stdio server for ${appUrn} exited silently (early stdin close?) — retrying once`);
-        conn.stdioSession?.close();
-        conn.stdioSession = undefined;
         return this.stdioRequestOnce(appUrn, conn, request, timeoutMs);
       }
       throw err;
@@ -286,7 +287,17 @@ export class McpBridgeService implements OnModuleDestroy {
     timeoutMs: number,
   ): Promise<unknown> {
     const session = await this.getOrCreateStdioSession(appUrn, conn);
-    return session.request(request.method, request.params, timeoutMs);
+    try {
+      return await session.request(request.method, request.params, timeoutMs);
+    } catch (err) {
+      // Drop only the session that failed. A changed app.env may have replaced it while this request
+      // was in flight. Closing the replacement would fail the request that started it.
+      if (!(err instanceof McpServerError) && conn.stdioSession === session) {
+        session.close();
+        conn.stdioSession = undefined;
+      }
+      throw err;
+    }
   }
 
   private async getOrCreateStdioSession(appUrn: AppUrn, conn: McpConnection): Promise<McpStdioSession> {
@@ -303,7 +314,7 @@ export class McpBridgeService implements OnModuleDestroy {
     conn.stdioSession?.close();
     conn.stdioSession = undefined;
     if (conn.dropped) {
-      throw new Error(`App ${appUrn} is not installed`);
+      throw new Error(`MCP connection for ${appUrn} was closed`);
     }
     const session = new McpStdioSession(appUrn, spec, (chunk) => {
       this.logger.warn(`MCP stdio stderr (${appUrn}): ${chunk}`);
@@ -315,7 +326,9 @@ export class McpBridgeService implements OnModuleDestroy {
 
   private async buildStdioSpawnSpec(appUrn: AppUrn, conn: McpConnection): Promise<StdioSpawnSpec> {
     const launch = conn.config.launch ?? 'container_exec';
-    const appEnv = await this.loadAppEnvRecord(appUrn);
+    // Only a host_docker process gets app.env. A `docker exec` runs with the container's own
+    // environment, so a change to app.env must not restart it.
+    const appEnv = launch === 'host_docker' ? await this.loadAppEnvRecord(appUrn) : {};
     return {
       launch,
       command: conn.config.command ?? [],
@@ -369,8 +382,9 @@ export class McpBridgeService implements OnModuleDestroy {
     // Check if app is still reachable
     try {
       const { app } = await this.appsService.getApp(appUrn);
-      if (!app) {
-        // Uninstall drops the connection itself. This covers a server that outlived the app anyway.
+      if (!app || app.status === 'uninstalling') {
+        // Uninstall drops the connection itself. This covers a server that outlived the app anyway. It
+        // also refuses a call made while the uninstall runs, which would start one after the drop.
         this.dropApp(appUrn);
         return { error: `App ${appUrn} is not installed`, isError: true };
       }
@@ -440,9 +454,8 @@ export class McpBridgeService implements OnModuleDestroy {
       if (err instanceof McpServerError) {
         return { error: err.message, isError: true };
       }
+      // stdioRequestOnce has already dropped the session that failed.
       conn.connected = false;
-      conn.stdioSession?.close();
-      conn.stdioSession = undefined;
       return { error: err instanceof Error ? err.message : 'MCP stdio call failed', isError: true };
     }
   }
@@ -501,19 +514,19 @@ export class McpBridgeService implements OnModuleDestroy {
   /**
    * Forget an app's MCP connection: stop its server and the tools it advertised. Uninstall calls
    * this. A host_docker server is a `docker run` the bridge started itself, outside the app's compose
-   * project, so `compose down` never reaches it, and it holds the app's credentials in its
-   * environment.
+   * project. `compose down` never reaches it and it holds the app's credentials in its environment.
    */
   dropApp(appUrn: AppUrn): void {
     const conn = this.connections.get(appUrn);
     if (!conn) return;
-    conn.dropped = true;
     this.disconnect(conn);
     conn.tools = [];
     this.connections.delete(appUrn);
   }
 
+  /** Every caller removes the connection from the map right after, so it is closed for good. */
   private disconnect(conn: McpConnection): void {
+    conn.dropped = true;
     if (conn.retryTimer) {
       clearTimeout(conn.retryTimer);
       conn.retryTimer = undefined;
