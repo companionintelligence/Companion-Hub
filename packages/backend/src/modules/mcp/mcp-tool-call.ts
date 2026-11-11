@@ -11,6 +11,7 @@ import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
 import type { ApiKeyContext } from '@/modules/api-keys/api-key.service';
 import type { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { formatToolError, formatToolSuccess } from './mcp-error.handler';
+import { isMarkedCallToolResult, toWireCallToolResult } from './mcp-call-tool-result';
 import { mcpAdminCallContext, mcpCallContext } from './mcp-call-context';
 import { McpToolNotFoundError, McpToolRegistry } from './mcp-tool-registry.service';
 
@@ -138,8 +139,10 @@ export async function invokeRegistryTool(
       capability: mcpCallerCapability(),
       assertMayManageHub: (tool) => assertMcpKeyMayManageHub(whois, tool),
     });
-    logger.info('MCP tool call', toolName, `${Date.now() - start}ms`, 'ok');
-    return formatToolSuccess(result) as CallToolResult;
+    // An app tool's own result (hub_call_app_tool) keeps its content items and isError.
+    const wire = isMarkedCallToolResult(result) ? toWireCallToolResult(result) : (formatToolSuccess(result) as CallToolResult);
+    logger.info('MCP tool call', toolName, `${Date.now() - start}ms`, wire.isError ? 'isError' : 'ok');
+    return wire;
   } catch (error) {
     const durationMs = Date.now() - start;
     if (error instanceof McpToolNotFoundError) {

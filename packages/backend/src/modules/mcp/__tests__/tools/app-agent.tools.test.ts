@@ -17,6 +17,7 @@ import { AgentConfigService } from '../../agents/agent-config.service';
 import { SkillResolverService } from '../../agents/skill-resolver.service';
 import { OpenApiBridgeService } from '../../agents/openapi-bridge.service';
 import { McpBridgeService } from '../../agents/mcp-bridge.service';
+import { isMarkedCallToolResult } from '../../mcp-call-tool-result';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppsService } from '@/modules/apps/apps.service';
 
@@ -175,6 +176,198 @@ describe('AppAgentTools', () => {
 
       const result = await asGrantedOperator(() => tools.listAppTools({ appUrn: 'ci-store:test' }));
       expect(result.tools).toEqual([]);
+    });
+  });
+
+  describe('hub_list_app_tools with tool: one tool and its inputSchema', () => {
+    const LIST_ISSUES = {
+      name: 'github-mcp_ci-marketplace__list_issues',
+      description: 'List issues',
+      source: 'mcp' as const,
+      inputSchema: { type: 'object', properties: { state: { type: 'string', enum: ['open', 'closed', 'all'] } } },
+    };
+
+    beforeEach(() => {
+      appsService.getApp.mockResolvedValue({ info: { urn: 'github-mcp:ci-marketplace' } } as any);
+      agentConfigService.getAgentConfig.mockResolvedValue({
+        skill: { enabled: false, content: null, inline: false },
+        openapi: { enabled: false, specPath: null, config: null },
+        mcp: { enabled: true, config: {} },
+      } as any);
+      mcpBridge.discoverTools.mockResolvedValue([]);
+      openapiBridge.listToolInfo.mockResolvedValue([]);
+      openapiBridge.generateTools.mockResolvedValue([]);
+    });
+
+    it("returns a bridged tool's inputSchema after connecting the way the list does", async () => {
+      mcpBridge.describeTool.mockReturnValue(LIST_ISSUES);
+
+      const result = await asGrantedOperator(() => tools.describeAppTool({ appUrn: 'github-mcp:ci-marketplace', tool: 'list_issues' }));
+
+      expect(mcpBridge.discoverTools).toHaveBeenCalled();
+      expect(mcpBridge.describeTool).toHaveBeenCalledWith('github-mcp:ci-marketplace', 'list_issues');
+      expect(result).toEqual({ tool: LIST_ISSUES });
+    });
+
+    it('returns an OpenAPI tool with the inputSchema its operation generates', async () => {
+      mcpBridge.describeTool.mockReturnValue(undefined);
+      openapiBridge.listToolInfo.mockResolvedValue([
+        { name: 'ci-store_test__listUsers', description: 'List users', source: 'openapi', method: 'get', path: '/api/users' },
+      ]);
+      openapiBridge.generateTools.mockResolvedValue([
+        { name: 'ci-store_test__listUsers', inputSchema: { type: 'object', properties: { limit: { type: 'number' } } } } as any,
+      ]);
+
+      const result = await asGrantedOperator(() => tools.describeAppTool({ appUrn: 'ci-store:test', tool: 'listUsers' }));
+
+      expect(result.tool).toEqual({
+        name: 'ci-store_test__listUsers',
+        description: 'List users',
+        source: 'openapi',
+        method: 'get',
+        path: '/api/users',
+        inputSchema: { type: 'object', properties: { limit: { type: 'number' } } },
+      });
+    });
+
+    it('takes the OpenAPI operation with that exact name, not one whose name ends in it', async () => {
+      mcpBridge.describeTool.mockReturnValue(undefined);
+      openapiBridge.listToolInfo.mockResolvedValue([
+        { name: 'ci-store_test__admin__users', description: 'Admin users', source: 'openapi', method: 'delete', path: '/admin/users' },
+        { name: 'ci-store_test__users', description: 'Users', source: 'openapi', method: 'get', path: '/users' },
+      ]);
+      openapiBridge.generateTools.mockResolvedValue([
+        { name: 'ci-store_test__admin__users', inputSchema: { type: 'object', properties: { force: { type: 'boolean' } } } } as any,
+        { name: 'ci-store_test__users', inputSchema: { type: 'object', properties: { limit: { type: 'number' } } } } as any,
+      ]);
+
+      const result = await asGrantedOperator(() => tools.describeAppTool({ appUrn: 'ci-store:test', tool: 'users' }));
+
+      expect(result.tool).toMatchObject({ name: 'ci-store_test__users', path: '/users' });
+    });
+
+    it('names the missing tool and how to list the real ones', async () => {
+      mcpBridge.describeTool.mockReturnValue(undefined);
+
+      await expect(asGrantedOperator(() => tools.describeAppTool({ appUrn: 'github-mcp:ci-marketplace', tool: 'nope' }))).rejects.toThrow(
+        'github-mcp:ci-marketplace has no tool named nope. Call hub_list_app_tools without tool to list them.',
+      );
+    });
+
+    it("says the app's tools couldn't be read when connecting failed, not that the tool is missing", async () => {
+      mcpBridge.discoverTools.mockRejectedValue(new Error('App github-mcp:ci-marketplace is not running'));
+      mcpBridge.describeTool.mockReturnValue(undefined);
+
+      await expect(asGrantedOperator(() => tools.describeAppTool({ appUrn: 'github-mcp:ci-marketplace', tool: 'list_issues' }))).rejects.toThrow(
+        "Could not read github-mcp:ci-marketplace's tools: App github-mcp:ci-marketplace is not running",
+      );
+    });
+
+    it('the registered tool looks one tool up when given tool and lists them all otherwise', async () => {
+      tools.onModuleInit();
+      const definition = registry.register.mock.calls.map(([d]) => d).find((d) => d.name === 'hub_list_app_tools');
+      if (!definition) {
+        throw new Error('hub_list_app_tools was not registered');
+      }
+      expect(definition.inputSchema).toMatchObject({ properties: { tool: { type: 'string' } }, required: ['appUrn'] });
+      mcpBridge.describeTool.mockReturnValue(LIST_ISSUES);
+      mcpBridge.listToolInfo.mockReturnValue([]);
+
+      await expect(asGrantedOperator(() => definition.handler({ appUrn: 'github-mcp:ci-marketplace', tool: 'list_issues' }))).resolves.toEqual({
+        tool: LIST_ISSUES,
+      });
+      await expect(asGrantedOperator(() => definition.handler({ appUrn: 'github-mcp:ci-marketplace' }))).resolves.toEqual({ tools: [] });
+    });
+  });
+
+  describe("hub_call_app_tool returns the app server's own result", () => {
+    beforeEach(() => {
+      appsService.getApp.mockResolvedValue({ info: { urn: 'github-mcp:ci-marketplace' } } as any);
+      agentConfigService.getAgentConfig.mockResolvedValue({
+        skill: { enabled: false, content: null, inline: false },
+        openapi: { enabled: false, specPath: null, config: null },
+        mcp: { enabled: true, config: {} },
+      } as any);
+      mcpBridge.describeTool.mockReturnValue({
+        name: 'github-mcp_ci-marketplace__list_issues',
+        description: 'List issues',
+        source: 'mcp',
+        inputSchema: { type: 'object', properties: { state: { type: 'string', enum: ['open', 'closed', 'all'] } } },
+      });
+    });
+
+    const callListIssues = (state: string) =>
+      asGrantedOperator(() =>
+        tools.callAppTool({
+          appUrn: 'github-mcp:ci-marketplace',
+          tool: 'list_issues',
+          arguments: { owner: 'github', repo: 'github-mcp-server', state },
+        }),
+      );
+
+    it('passes a successful result through as an MCP result, not as JSON in a string', async () => {
+      mcpBridge.callTool.mockResolvedValue({ content: [{ type: 'text', text: '[{"number":3818,"state":"open"}]' }] });
+
+      const result = await callListIssues('open');
+
+      expect(isMarkedCallToolResult(result)).toBe(true);
+      expect(result).toEqual({ content: [{ type: 'text', text: '[{"number":3818,"state":"open"}]' }] });
+    });
+
+    it("marks the server's refusal as an error and adds the tool's inputSchema", async () => {
+      mcpBridge.callTool.mockResolvedValue({
+        error: 'MCP error from github-mcp:ci-marketplace: failed to list issues: 422 Validation Failed [{Resource:Issue Field:state Code:invalid}]',
+        isError: true,
+      });
+
+      const result = (await callListIssues('OPEN')) as { content: Array<{ text: string }>; isError?: boolean };
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toContain('422 Validation Failed');
+      expect(result.content[1]?.text).toBe(
+        'github-mcp_ci-marketplace__list_issues takes these arguments (JSON Schema): {"type":"object","properties":{"state":{"type":"string","enum":["open","closed","all"]}}}',
+      );
+    });
+
+    it("keeps the server's own isError result and adds the schema", async () => {
+      mcpBridge.callTool.mockResolvedValue({ content: [{ type: 'text', text: 'invalid state' }], isError: true });
+
+      const result = (await callListIssues('OPEN')) as { content: unknown[]; isError?: boolean };
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toHaveLength(2);
+    });
+
+    it('adds no schema when the bridge does not know the tool', async () => {
+      mcpBridge.callTool.mockResolvedValue({ error: 'MCP error from github-mcp:ci-marketplace: unknown tool', isError: true });
+      mcpBridge.describeTool.mockReturnValue(undefined);
+
+      const result = await callListIssues('open');
+
+      expect(result).toEqual({ content: [{ type: 'text', text: 'MCP error from github-mcp:ci-marketplace: unknown tool' }], isError: true });
+    });
+
+    it('reports an app with no MCP server as a failed call', async () => {
+      agentConfigService.getAgentConfig.mockResolvedValue({
+        skill: { enabled: false, content: null, inline: false },
+        openapi: { enabled: false, specPath: null, config: null },
+        mcp: { enabled: false, config: null },
+      } as any);
+      mcpBridge.describeTool.mockReturnValue(undefined);
+
+      const result = await callListIssues('open');
+
+      expect(mcpBridge.callTool).not.toHaveBeenCalled();
+      expect(result).toEqual({ content: [{ type: 'text', text: 'App github-mcp:ci-marketplace has no MCP server configured' }], isError: true });
+    });
+
+    it('returns any other shape unchanged, to be encoded as before', async () => {
+      mcpBridge.callTool.mockResolvedValue({ rows: [1, 2] });
+
+      const result = await callListIssues('open');
+
+      expect(isMarkedCallToolResult(result)).toBe(false);
+      expect(result).toEqual({ rows: [1, 2] });
     });
   });
 

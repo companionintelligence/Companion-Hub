@@ -6,6 +6,7 @@ import { McpServerFactory } from '../mcp-server.factory';
 import { McpService } from '../mcp.service';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 import { mcpCallContext } from '../mcp-call-context';
+import { markCallToolResult } from '../mcp-call-tool-result';
 import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
 import { LoggerService } from '@/core/logger/logger.service';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
@@ -94,6 +95,38 @@ describe('McpServerFactory (real MCP client over in-memory transport)', () => {
     const res = await asKey('read', () => client.callTool({ name: 'hub_void', arguments: {} }));
     expect(res.isError).toBeFalsy();
     expect(textOf(res)).toBe('null');
+  });
+
+  // hub_call_app_tool hands back an app MCP server's own result. It has to reach the client as that
+  // result (its items and isError). The SDK has to accept it, resource item included.
+  it("passes an app tool's own result through, content items and isError intact", async () => {
+    const file = { uri: 'repo://github/github-mcp-server/contents/LICENSE', mimeType: 'text/plain', text: 'MIT License' };
+    registry.register({
+      ...readTool('hub_app_ok'),
+      handler: async () =>
+        markCallToolResult({
+          content: [
+            { type: 'text', text: 'downloaded' },
+            { type: 'resource', resource: file },
+          ],
+        }),
+    });
+    registry.register({
+      ...readTool('hub_app_refused'),
+      handler: async () => markCallToolResult({ content: [{ type: 'text', text: '422 Validation Failed' }], isError: true }),
+    });
+    const client = await connectClient(registry);
+
+    const ok = await asKey('read', () => client.callTool({ name: 'hub_app_ok', arguments: {} }));
+    expect(ok.isError).toBeFalsy();
+    expect(ok.content).toEqual([
+      { type: 'text', text: 'downloaded' },
+      { type: 'resource', resource: file },
+    ]);
+
+    const refused = await asKey('read', () => client.callTool({ name: 'hub_app_refused', arguments: {} }));
+    expect(refused.isError).toBe(true);
+    expect(refused.content).toEqual([{ type: 'text', text: '422 Validation Failed' }]);
   });
 
   it('advertises MCP annotations so a client can warn before it calls', async () => {

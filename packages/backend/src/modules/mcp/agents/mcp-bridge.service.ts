@@ -42,10 +42,23 @@ const isStreamableHttpTransport = (transport: string): boolean => transport === 
 
 const isHostDockerLaunch = (launch: string | undefined): boolean => launch === 'host_docker';
 
+/** What an app's bridged tool names start with: `<app>_<store>__`. */
+const toolNamePrefix = (appUrn: AppUrn): string => `${appUrn.replace(':', '_')}__`;
+
+/** A tool name as the app's server knows it, from the bare name or the prefixed one the list shows. */
+const bareToolName = (appUrn: AppUrn, toolName: string): string => {
+  const prefix = toolNamePrefix(appUrn);
+  return toolName.startsWith(prefix) ? toolName.slice(prefix.length) : toolName;
+};
+
 export interface BridgedToolInfo {
   name: string;
   description: string;
   source: 'mcp';
+}
+
+export interface BridgedToolDetail extends BridgedToolInfo {
+  inputSchema: Record<string, unknown>;
 }
 
 /**
@@ -146,9 +159,7 @@ export class McpBridgeService implements OnModuleDestroy {
       return { error: `App ${appUrn} has no MCP server configured`, isError: true };
     }
     this.getOrCreateConnection(appUrn, agentConfig.mcp.config);
-    const prefix = `${appUrn.replace(':', '_')}__`;
-    const bareName = toolName.startsWith(prefix) ? toolName.slice(prefix.length) : toolName;
-    return this.callBridgedTool(appUrn, bareName, params);
+    return this.callBridgedTool(appUrn, bareToolName(appUrn, toolName), params);
   }
 
   /**
@@ -166,6 +177,31 @@ export class McpBridgeService implements OnModuleDestroy {
       description: tool.description,
       source: 'mcp' as const,
     }));
+  }
+
+  /**
+   * One bridged tool with its input schema, by bare or prefixed name, from what the app's server
+   * reported when the bridge connected. The list above leaves schemas out to stay small (GitHub's
+   * server has 67 tools); this is how a caller reads the arguments of the one tool it means to call.
+   * `undefined` when the bridge isn't connected or the server has no such tool.
+   */
+  describeTool(appUrn: AppUrn, toolName: string): BridgedToolDetail | undefined {
+    const conn = this.connections.get(appUrn);
+    if (!conn?.connected) return undefined;
+
+    const bareName = bareToolName(appUrn, toolName);
+    const tool = conn.tools.find((candidate) => candidate.name === bareName);
+
+    // A stdio server's tools/list goes in unchecked, so a tool without a schema gets the default the
+    // Streamable HTTP client gives one.
+    return (
+      tool && {
+        name: `${toolNamePrefix(appUrn)}${tool.name}`,
+        description: tool.description,
+        source: 'mcp',
+        inputSchema: tool.inputSchema ?? { type: 'object', properties: {} },
+      }
+    );
   }
 
   /**

@@ -5,10 +5,14 @@ import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.servi
 import { AppsService } from '@/modules/apps/apps.service';
 import { assertMcpCallerMay } from '../mcp-tool-call';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
-import { AgentConfigService } from '../agents/agent-config.service';
+import { AgentConfigService, type ResolvedAgentConfig } from '../agents/agent-config.service';
 import { SkillResolverService } from '../agents/skill-resolver.service';
-import { OpenApiBridgeService } from '../agents/openapi-bridge.service';
-import { McpBridgeService } from '../agents/mcp-bridge.service';
+import { OpenApiBridgeService, type GeneratedToolInfo } from '../agents/openapi-bridge.service';
+import { McpBridgeService, type BridgedToolDetail } from '../agents/mcp-bridge.service';
+import { bridgedCallToolResult, markCallToolResult } from '../mcp-call-tool-result';
+
+/** One app tool as `hub_list_app_tools` returns it when asked about that tool alone. */
+type AppToolDetail = BridgedToolDetail | (GeneratedToolInfo & { inputSchema: Record<string, unknown> });
 
 @Injectable()
 export class AppAgentTools implements OnModuleInit {
@@ -52,15 +56,26 @@ export class AppAgentTools implements OnModuleInit {
       category: 'App Agents & Skills',
       name: 'hub_list_app_tools',
       access: 'read',
-      description: 'List all agent tools provided by a specific app, including OpenAPI-generated tools and MCP-bridged tools.',
+      description:
+        'List the agent tools an app provides (OpenAPI-generated and MCP-bridged) by name and description. ' +
+        "Pass tool with one name to get that tool's inputSchema. For an MCP tool (source mcp) it is the arguments " +
+        'hub_call_app_tool takes. An OpenAPI tool (source openapi) is called through hub_call_app_api with the method ' +
+        "and path it lists. Its inputSchema names the operation's parameters and request body.",
       inputSchema: {
         type: 'object',
         properties: {
           appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format' },
+          tool: {
+            type: 'string',
+            description: 'Optional. One tool name (bare or prefixed, as listed) to return with its inputSchema instead of the whole list',
+          },
         },
         required: ['appUrn'],
       },
-      handler: (p) => this.listAppTools(p as { appUrn: string }),
+      handler: (p) =>
+        typeof p.tool === 'string' && p.tool !== ''
+          ? this.describeAppTool(p as { appUrn: string; tool: string })
+          : this.listAppTools(p as { appUrn: string }),
     });
 
     this.registry.register({
@@ -74,8 +89,10 @@ export class AppAgentTools implements OnModuleInit {
       // that can never actually run it.
       destructive: true,
       description:
-        "Call a tool on an app's bridged MCP server. Use hub_list_app_tools to discover tool names. " +
-        'The Hub forwards the call to the app container over its declared MCP transport and returns the result.',
+        "Call a tool on an app's bridged MCP server. Use hub_list_app_tools to discover tool names and " +
+        'hub_list_app_tools with tool to read the arguments one of them takes. The Hub forwards the call over ' +
+        "the app's declared MCP transport and returns the app's own result content. A failed call comes back " +
+        "with isError, plus the tool's inputSchema when the Hub still holds it from the app's server.",
       inputSchema: {
         type: 'object',
         properties: {
@@ -174,7 +191,61 @@ export class AppAgentTools implements OnModuleInit {
     };
   }
 
-  /** Forward a tool call to an app's bridged MCP server (#936). */
+  /**
+   * One of an app's tools with its inputSchema, for `hub_list_app_tools` given `tool`. The list leaves
+   * schemas out so it stays small, which left an agent guessing the arguments of the tool it was about
+   * to call (GitHub's list_issues refuses `state: "OPEN"`; it wants "open").
+   */
+  async describeAppTool(params: { appUrn: string; tool: string }): Promise<{ tool: AppToolDetail }> {
+    const appUrn = castAppUrn(params.appUrn);
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'view');
+    const { info } = await this.appsService.getApp(appUrn);
+    const agentConfig = await this.agentConfigService.getAgentConfig(appUrn, info);
+
+    let unreachable: string | undefined;
+    if (agentConfig) {
+      // Connects first if nothing has yet, the way the list does (#936).
+      unreachable = await this.mcpBridge.discoverTools(appUrn, agentConfig).then(
+        () => undefined,
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      );
+      const mcpTool = this.mcpBridge.describeTool(appUrn, params.tool);
+      if (mcpTool) {
+        return { tool: mcpTool };
+      }
+      const openApiTool = await this.describeOpenApiTool(appUrn, agentConfig, params.tool);
+      if (openApiTool) {
+        return { tool: openApiTool };
+      }
+    }
+
+    throw new Error(
+      unreachable
+        ? `Could not read ${params.appUrn}'s tools: ${unreachable}`
+        : `${params.appUrn} has no tool named ${params.tool}. Call hub_list_app_tools without tool to list them.`,
+    );
+  }
+
+  /** An OpenAPI-generated tool by its listed name (or the operation part of it), with its inputSchema. */
+  private async describeOpenApiTool(appUrn: AppUrn, agentConfig: ResolvedAgentConfig, toolName: string): Promise<AppToolDetail | undefined> {
+    // Exactly this app's name for the operation: a suffix match would take `admin__users` for `users`.
+    const prefixed = `${appUrn.replace(':', '_')}__${toolName}`;
+    const generated = (await this.openapiBridge.generateTools(appUrn, agentConfig)).find((tool) => tool.name === toolName || tool.name === prefixed);
+    if (!generated) {
+      return undefined;
+    }
+    // generateTools has just cached the spec, so this reads no file.
+    const listed = (await this.openapiBridge.listToolInfo(appUrn, agentConfig)).find((tool) => tool.name === generated.name);
+
+    return listed && { ...listed, inputSchema: generated.inputSchema };
+  }
+
+  /**
+   * Forward a tool call to an app's bridged MCP server (#936) and return the server's own result: its
+   * content items as they are, and `isError` when the server or the bridge refused the call. A refused
+   * call also carries the tool's inputSchema, so an agent that passed the wrong arguments can fix them
+   * without another lookup.
+   */
   async callAppTool(params: { appUrn: string; tool: string; arguments?: Record<string, unknown> }): Promise<unknown> {
     const appUrn = castAppUrn(params.appUrn);
     // An app call: `configure` to a person, and made by a managed app key on any app.
@@ -183,10 +254,21 @@ export class AppAgentTools implements OnModuleInit {
     const agentConfig = await this.agentConfigService.getAgentConfig(appUrn, info);
 
     if (!agentConfig?.mcp.enabled) {
-      return { error: `App ${params.appUrn} has no MCP server configured`, isError: true };
+      return markCallToolResult({ content: [{ type: 'text', text: `App ${params.appUrn} has no MCP server configured` }], isError: true });
     }
 
-    return this.mcpBridge.callTool(appUrn, agentConfig, params.tool, params.arguments ?? {});
+    const raw = await this.mcpBridge.callTool(appUrn, agentConfig, params.tool, params.arguments ?? {});
+    const result = bridgedCallToolResult(raw);
+    if (!result) {
+      return raw;
+    }
+    if (result.isError) {
+      const tool = this.mcpBridge.describeTool(appUrn, params.tool);
+      if (tool) {
+        result.content.push({ type: 'text', text: `${tool.name} takes these arguments (JSON Schema): ${JSON.stringify(tool.inputSchema)}` });
+      }
+    }
+    return markCallToolResult(result);
   }
 
   /**
