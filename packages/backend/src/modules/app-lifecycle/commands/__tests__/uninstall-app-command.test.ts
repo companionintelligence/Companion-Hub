@@ -8,6 +8,7 @@ import { AppsRepository } from '@/modules/apps/apps.repository';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
+import { McpBridgeService } from '@/modules/mcp/agents/mcp-bridge.service';
 import { PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { UninstallAppCommand } from '../uninstall-app-command';
@@ -29,6 +30,7 @@ describe('UninstallAppCommand', () => {
   let appFilesManager: MockProxy<AppFilesManager>;
   let portManager: MockProxy<PortManagerService>;
   let traefikConfigService: MockProxy<TraefikConfigService>;
+  let mcpBridge: { dropApp: ReturnType<typeof vi.fn> };
 
   // Single token-dispatch map for every command built in this suite, so a new
   // constructor dependency only has to be added here.
@@ -41,6 +43,7 @@ describe('UninstallAppCommand', () => {
         if (token === PortManagerService) return portManager;
         if (token === TraefikConfigService) return traefikConfigService;
         if (token === AppsRepository) return appsRepository;
+        if (token === McpBridgeService) return mcpBridge;
         return null;
       }),
     }) as unknown as ModuleRef;
@@ -63,6 +66,8 @@ describe('UninstallAppCommand', () => {
 
     traefikConfigService = mock<TraefikConfigService>();
     traefikConfigService.regenerateTraefikConfig.mockResolvedValue();
+
+    mcpBridge = { dropApp: vi.fn() };
 
     dockerService = {
       composeApp: vi.fn().mockResolvedValue({ success: true }),
@@ -103,6 +108,23 @@ describe('UninstallAppCommand', () => {
     expect(removeImagesOrder).toBeLessThan(removeNetworksOrder);
     expect(removeNetworksOrder).toBeLessThan(forgetImagesOrder);
     expect(forgetImagesOrder).toBeLessThan(deleteFolderOrder);
+  });
+
+  it('stops the MCP server the bridge started for the app', async () => {
+    await command.execute(appUrn);
+
+    expect(mcpBridge.dropApp).toHaveBeenCalledWith(appUrn);
+  });
+
+  it('still uninstalls when stopping the MCP bridge throws', async () => {
+    mcpBridge.dropApp.mockImplementation(() => {
+      throw new Error('boom');
+    });
+
+    const result = await command.execute(appUrn);
+
+    expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
+    expect(logger.warn).toHaveBeenCalledWith(`Failed to stop the MCP bridge for ${appUrn}: Error: boom`);
   });
 
   it('removes no pulled image when the app recorded none', async () => {

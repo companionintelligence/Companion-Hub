@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Injectable, type OnModuleDestroy } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { DockerService } from '@/modules/docker/docker.service';
@@ -8,7 +9,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import type { ResolvedAgentConfig } from './agent-config.service';
 import type { McpToolDefinition } from '../mcp-tool-registry.service';
 import { McpStreamableHttpClient } from './mcp-streamable-http-client';
-import { McpStdioSession, StdioSilentExitError, type StdioSpawnSpec } from './mcp-stdio-session';
+import { McpServerError, McpStdioSession, StdioSilentExitError, type StdioSpawnSpec } from './mcp-stdio-session';
 
 interface McpConnection {
   appUrn: AppUrn;
@@ -24,7 +25,17 @@ interface McpConnection {
   httpClient?: McpStreamableHttpClient;
   /** Reused stdio process for container_exec and host_docker listings. */
   stdioSession?: McpStdioSession;
+  /** Hash of the spawn spec (command and app.env) the stdio process was started with. */
+  stdioSpecKey?: string;
+  /**
+   * Set by disconnect (uninstall, a config change, shutdown). The connection is out of the map by
+   * then, so work still in flight for it must not start a process nothing would stop.
+   */
+  dropped?: boolean;
 }
+
+/** Hashed so the connection doesn't keep a second copy of the app's secrets. */
+const stdioSpecKey = (spec: StdioSpawnSpec): string => createHash('sha256').update(JSON.stringify(spec)).digest('hex');
 
 /** Legacy `sse` alias and canonical `streamable-http` both mean Streamable HTTP transport. */
 const isStreamableHttpTransport = (transport: string): boolean => transport === 'streamable-http' || transport === 'sse';
@@ -178,7 +189,7 @@ export class McpBridgeService implements OnModuleDestroy {
   private async assertBridgeable(appUrn: AppUrn, conn: McpConnection): Promise<void> {
     try {
       const { app } = await this.appsService.getApp(appUrn);
-      if (!app) {
+      if (!app || app.status === 'uninstalling') {
         throw new Error(`App ${appUrn} is not installed`);
       }
       if (!isHostDockerLaunch(conn.config.launch) && app.status !== 'running') {
@@ -263,8 +274,6 @@ export class McpBridgeService implements OnModuleDestroy {
     } catch (err) {
       if (err instanceof StdioSilentExitError) {
         this.logger.warn(`MCP stdio server for ${appUrn} exited silently (early stdin close?) — retrying once`);
-        conn.stdioSession?.close();
-        conn.stdioSession = undefined;
         return this.stdioRequestOnce(appUrn, conn, request, timeoutMs);
       }
       throw err;
@@ -278,25 +287,48 @@ export class McpBridgeService implements OnModuleDestroy {
     timeoutMs: number,
   ): Promise<unknown> {
     const session = await this.getOrCreateStdioSession(appUrn, conn);
-    return session.request(request.method, request.params, timeoutMs);
+    try {
+      return await session.request(request.method, request.params, timeoutMs);
+    } catch (err) {
+      // Drop only the session that failed. A changed app.env may have replaced it while this request
+      // was in flight. Closing the replacement would fail the request that started it.
+      if (!(err instanceof McpServerError) && conn.stdioSession === session) {
+        session.close();
+        conn.stdioSession = undefined;
+      }
+      throw err;
+    }
   }
 
   private async getOrCreateStdioSession(appUrn: AppUrn, conn: McpConnection): Promise<McpStdioSession> {
-    if (conn.stdioSession?.alive) {
+    // Built on every request: a process keeps the environment it started with, so a token changed in
+    // the app's settings only reaches the server through a new process.
+    const spec = await this.buildStdioSpawnSpec(appUrn, conn);
+    const specKey = stdioSpecKey(spec);
+    // An empty read (app.env missing, or caught mid-write) says nothing about the token, so it
+    // doesn't restart a server that is up.
+    const envUnknown = Object.keys(spec.env ?? {}).length === 0;
+    if (conn.stdioSession?.alive && (conn.stdioSpecKey === specKey || envUnknown)) {
       return conn.stdioSession;
     }
     conn.stdioSession?.close();
-    const spec = await this.buildStdioSpawnSpec(appUrn, conn);
+    conn.stdioSession = undefined;
+    if (conn.dropped) {
+      throw new Error(`MCP connection for ${appUrn} was closed`);
+    }
     const session = new McpStdioSession(appUrn, spec, (chunk) => {
       this.logger.warn(`MCP stdio stderr (${appUrn}): ${chunk}`);
     });
     conn.stdioSession = session;
+    conn.stdioSpecKey = specKey;
     return session;
   }
 
   private async buildStdioSpawnSpec(appUrn: AppUrn, conn: McpConnection): Promise<StdioSpawnSpec> {
     const launch = conn.config.launch ?? 'container_exec';
-    const appEnv = await this.loadAppEnvRecord(appUrn);
+    // Only a host_docker process gets app.env. A `docker exec` runs with the container's own
+    // environment, so a change to app.env must not restart it.
+    const appEnv = launch === 'host_docker' ? await this.loadAppEnvRecord(appUrn) : {};
     return {
       launch,
       command: conn.config.command ?? [],
@@ -350,8 +382,10 @@ export class McpBridgeService implements OnModuleDestroy {
     // Check if app is still reachable
     try {
       const { app } = await this.appsService.getApp(appUrn);
-      if (!app) {
-        conn.connected = false;
+      if (!app || app.status === 'uninstalling') {
+        // Uninstall drops the connection itself. This covers a server that outlived the app anyway. It
+        // also refuses a call made while the uninstall runs, which would start one after the drop.
+        this.dropApp(appUrn);
         return { error: `App ${appUrn} is not installed`, isError: true };
       }
       if (!isHostDockerLaunch(conn.config.launch) && app.status !== 'running') {
@@ -415,9 +449,13 @@ export class McpBridgeService implements OnModuleDestroy {
     try {
       return await this.stdioRequest(appUrn, conn, { method: 'tools/call', params: { name: toolName, arguments: params } }, 30000);
     } catch (err) {
+      // The server answered with an error (a 422 from GitHub, a bad argument): it is working, and
+      // restarting it would only cost the next call a fresh `docker run`.
+      if (err instanceof McpServerError) {
+        return { error: err.message, isError: true };
+      }
+      // stdioRequestOnce has already dropped the session that failed.
       conn.connected = false;
-      conn.stdioSession?.close();
-      conn.stdioSession = undefined;
       return { error: err instanceof Error ? err.message : 'MCP stdio call failed', isError: true };
     }
   }
@@ -459,22 +497,39 @@ export class McpBridgeService implements OnModuleDestroy {
    * S-AMB-3.4: Exponential backoff (1s, 2s, 4s, max 30s)
    */
   private scheduleRetry(appUrn: AppUrn, conn: McpConnection): void {
-    if (conn.retryTimer) return;
+    if (conn.retryTimer || conn.dropped) return;
 
     const delay = Math.min(1000 * 2 ** conn.retryCount, 30000);
     conn.retryCount++;
 
     conn.retryTimer = setTimeout(() => {
       conn.retryTimer = undefined;
+      if (conn.dropped) return;
       this.connectAndDiscover(appUrn, conn).catch((err) => {
         this.logger.warn(`MCP retry failed for ${appUrn}: ${err instanceof Error ? err.message : 'Unknown'}`);
       });
     }, delay);
   }
 
+  /**
+   * Forget an app's MCP connection: stop its server and the tools it advertised. Uninstall calls
+   * this. A host_docker server is a `docker run` the bridge started itself, outside the app's compose
+   * project. `compose down` never reaches it and it holds the app's credentials in its environment.
+   */
+  dropApp(appUrn: AppUrn): void {
+    const conn = this.connections.get(appUrn);
+    if (!conn) return;
+    this.disconnect(conn);
+    conn.tools = [];
+    this.connections.delete(appUrn);
+  }
+
+  /** Every caller removes the connection from the map right after, so it is closed for good. */
   private disconnect(conn: McpConnection): void {
+    conn.dropped = true;
     if (conn.retryTimer) {
       clearTimeout(conn.retryTimer);
+      conn.retryTimer = undefined;
     }
     if (conn.abortController) {
       conn.abortController.abort();
