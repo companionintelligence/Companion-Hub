@@ -10,7 +10,7 @@ import { cloudProviderStatus } from '@/modules/inference/cloud-provider-status';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import { mcpCallerIsOperator } from '../mcp-tool-call';
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
-import type { InferenceBackendType, CloudProviderType } from '@ci-hub/common/types';
+import type { InferenceBackendType, CloudProviderType, InferenceModelInfo, InferenceStatus } from '@ci-hub/common/types';
 
 @Injectable()
 export class InferenceTools implements OnModuleInit {
@@ -114,11 +114,20 @@ export class InferenceTools implements OnModuleInit {
       name: 'hub_list_models',
       access: 'read',
       description:
-        'List all models: curated catalog entries, pulled/loaded models, and cloud models. Shows state (available, pulling, pulled, loaded, pinned, error).',
-      inputSchema: { type: 'object', properties: {}, required: [] },
-      handler: async () => {
+        'List models: curated catalog entries, pulled/loaded models, and cloud models. Shows state (available, pulling, pulled, loaded, pinned, error). ' +
+        "'available' means a catalog model that is not on this node yet. With no filter this is the whole catalog, often 200+ entries; " +
+        "narrow it with backend (for example 'ollama') or state (for example 'available').",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          backend: { type: 'string', description: "Only models of this backend: 'ollama', 'vllm', 'lemonade', 'omlx', 'localai' or 'cloud'." },
+          state: { type: 'string', description: "Only models in this state: 'available', 'pulling', 'pulled', 'loaded', 'pinned' or 'error'." },
+        },
+        required: [],
+      },
+      handler: async (params) => {
         const models = await this.inferenceRouter.listModels();
-        return models;
+        return filterModels(models, params as { backend?: unknown; state?: unknown });
       },
     });
 
@@ -247,10 +256,22 @@ export class InferenceTools implements OnModuleInit {
       name: 'hub_get_inference_status',
       access: 'read',
       description:
-        'Get full inference router status: hardware tier, backend health, loaded models, memory budget, and cloud providers. Used by OpenClaw and agents to discover inference capabilities.',
-      inputSchema: { type: 'object', properties: {}, required: [] },
-      handler: async () => {
-        return this.inferenceRouter.getStatus();
+        'Get inference router status: hardware tier, backend health, memory budget, cloud providers and the models this node can serve now ' +
+        '(pulled, loaded, pinned, cloud). Catalog models that are not downloaded are only counted, per backend; ' +
+        'list them with hub_list_models, or pass includeCatalog: true to get them here as well.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          includeCatalog: {
+            type: 'boolean',
+            description: 'Also return every downloadable catalog model in `models`, as the status used to. That is often 200+ entries.',
+          },
+        },
+        required: [],
+      },
+      handler: async (params) => {
+        const status = await this.inferenceRouter.getStatus();
+        return params.includeCatalog === true ? status : summarizeInferenceStatus(status);
       },
     });
 
@@ -367,4 +388,47 @@ export class InferenceTools implements OnModuleInit {
         'Use the Hub AI settings to change backend or model configuration.',
     };
   }
+}
+
+/**
+ * A catalog entry nobody has downloaded. `listModels` lists the whole curated catalog, for every
+ * backend whether or not it runs here: 231 of a test node's 242 entries, about 49 KB of the status.
+ */
+const isCatalogOnly = (model: InferenceModelInfo): boolean => model.state === 'available' && model.backend !== 'cloud';
+
+/** A model entry without the OpenAI `/v1/models` envelope fields, which tell an agent nothing here. */
+function compactModel(model: InferenceModelInfo) {
+  const { object: _object, created: _created, owned_by: _ownedBy, local: _local, ...rest } = model;
+  return rest;
+}
+
+/** `hub_get_inference_status` by default: what this node can serve now, and the catalog only as counts. */
+export function summarizeInferenceStatus(status: InferenceStatus) {
+  const { models, ...rest } = status;
+  const catalogByBackend: Record<string, number> = {};
+  let catalogCount = 0;
+  for (const model of models) {
+    if (isCatalogOnly(model)) {
+      catalogByBackend[model.backend] = (catalogByBackend[model.backend] ?? 0) + 1;
+      catalogCount += 1;
+    }
+  }
+
+  return {
+    ...rest,
+    models: models.filter((model) => !isCatalogOnly(model)).map(compactModel),
+    catalog: {
+      notDownloaded: catalogCount,
+      byBackend: catalogByBackend,
+      hint: 'List them with hub_list_models (filter by backend or state), or call this tool with includeCatalog: true.',
+    },
+  };
+}
+
+/** `hub_list_models` filters. A filter that is not a non-empty string is ignored rather than refused. */
+export function filterModels(models: InferenceModelInfo[], filters: { backend?: unknown; state?: unknown }): InferenceModelInfo[] {
+  const backend = typeof filters.backend === 'string' && filters.backend !== '' ? filters.backend : undefined;
+  const state = typeof filters.state === 'string' && filters.state !== '' ? filters.state : undefined;
+
+  return models.filter((model) => (!backend || model.backend === backend) && (!state || model.state === state));
 }

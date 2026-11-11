@@ -46,18 +46,108 @@ describe('AppDiscoveryTools', () => {
   });
 
   describe('hub_list_installed_apps', () => {
-    it('should return array of installed apps with app, info, and metadata fields', async () => {
-      const mockApps = [{ app: { status: 'running' }, info: { name: 'test', urn: 'ci-store:test' }, metadata: { latestVersion: 1 } }];
-      appsService.getInstalledApps.mockResolvedValue(mockApps as any);
+    /** An installed entry as `AppsService.getInstalledApps` returns it, catalog copy included. */
+    const installedEntry = (over: { app?: Record<string, unknown>; info?: Record<string, unknown>; metadata?: Record<string, unknown> } = {}) => ({
+      app: {
+        status: 'running',
+        appName: 'ci-earth',
+        appStoreSlug: 'ci-marketplace',
+        version: 1,
+        ignoredVersion: null,
+        exposureMode: 'local',
+        openPort: true,
+        port: 18803,
+        localSubdomain: 'ci-earth',
+        publicDomain: null,
+        customDomain: null,
+        domain: null,
+        pendingRestart: false,
+        ...over.app,
+      },
+      info: {
+        name: 'Companion Earth',
+        short_desc: 'A globe of your places',
+        version: '1.2.0',
+        no_gui: false,
+        description: 'x'.repeat(4000),
+        form_fields: [{ env_variable: 'APP_ADMIN_PASSWORD', label: 'Admin password', type: 'password' }],
+        privacy: { summary: 'y'.repeat(800) },
+        ...over.info,
+      },
+      metadata: { latestVersion: 1, latestDockerVersion: '1.2.0', appDataDir: '/app-data/ci-marketplace/ci-earth', ...over.metadata },
+    });
+
+    it('returns one short entry per app with the count, leaving out the catalog copy', async () => {
+      appsService.getInstalledApps.mockResolvedValue([installedEntry()] as any);
       const result = await tools.listInstalledApps();
       expect(appsService.getInstalledApps).toHaveBeenCalled();
-      expect(result).toEqual(mockApps);
+      expect(result).toEqual({
+        count: 1,
+        apps: [
+          {
+            appUrn: 'ci-earth:ci-marketplace',
+            name: 'Companion Earth',
+            summary: 'A globe of your places',
+            status: 'running',
+            version: '1.2.0',
+            exposureMode: 'local',
+            port: 18803,
+            localSubdomain: 'ci-earth',
+          },
+        ],
+      });
+      expect(JSON.stringify(result)).not.toContain('Admin password');
+    });
+
+    it('flags a waiting update with the version it would install', async () => {
+      appsService.getInstalledApps.mockResolvedValue([installedEntry({ metadata: { latestDockerVersion: '1.3.0' } })] as any);
+      const result = (await tools.listInstalledApps()) as { apps: Array<Record<string, unknown>> };
+      expect(result.apps[0]).toMatchObject({ updateAvailable: true, latestVersion: '1.3.0' });
+    });
+
+    it('does not flag an update while the app is already updating', async () => {
+      appsService.getInstalledApps.mockResolvedValue([
+        installedEntry({ app: { status: 'updating' }, metadata: { latestDockerVersion: '1.3.0' } }),
+      ] as any);
+      const result = (await tools.listInstalledApps()) as { apps: Array<Record<string, unknown>> };
+      expect(result.apps[0]).not.toHaveProperty('updateAvailable');
+    });
+
+    it('reports public and custom domains, a pending restart and an app without a web page', async () => {
+      appsService.getInstalledApps.mockResolvedValue([
+        installedEntry({
+          app: {
+            exposureMode: 'cloudflare',
+            openPort: false,
+            publicDomain: 'ci-earth-hub.example.pw',
+            customDomain: 'earth.example.com',
+            pendingRestart: true,
+          },
+          info: { no_gui: true },
+        }),
+      ] as any);
+      const result = (await tools.listInstalledApps()) as { apps: Array<Record<string, unknown>> };
+      expect(result.apps[0]).toMatchObject({
+        exposureMode: 'cloudflare',
+        publicDomain: 'ci-earth-hub.example.pw',
+        customDomain: 'earth.example.com',
+        pendingRestart: true,
+        noGui: true,
+      });
+      // The port is not published when openPort is off, so naming it would send the agent to nothing.
+      expect(result.apps[0]).not.toHaveProperty('port');
+    });
+
+    it('returns the full stored records when asked with full: true', async () => {
+      const entries = [installedEntry()];
+      appsService.getInstalledApps.mockResolvedValue(entries as any);
+      await expect(tools.listInstalledApps({ full: true })).resolves.toEqual(entries);
     });
 
     it('should only include apps with a database record', async () => {
       appsService.getInstalledApps.mockResolvedValue([]);
       const result = await tools.listInstalledApps();
-      expect(result).toEqual([]);
+      expect(result).toEqual({ count: 0, apps: [] });
     });
   });
 
