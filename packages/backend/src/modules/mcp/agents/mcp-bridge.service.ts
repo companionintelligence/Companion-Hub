@@ -37,6 +37,10 @@ export interface BridgedToolInfo {
   source: 'mcp';
 }
 
+export interface BridgedToolDetail extends BridgedToolInfo {
+  inputSchema: Record<string, unknown>;
+}
+
 /**
  * Connects to app MCP servers and bridges their tools.
  * Implements AMB-1 (Streamable HTTP), AMB-2 (stdio), AMB-3 (lifecycle).
@@ -155,6 +159,23 @@ export class McpBridgeService implements OnModuleDestroy {
       description: tool.description,
       source: 'mcp' as const,
     }));
+  }
+
+  /**
+   * One bridged tool with its input schema, by bare or prefixed name, from what the app's server
+   * reported when the bridge connected. The list above leaves schemas out to stay small (GitHub's
+   * server has 67 tools); this is how a caller reads the arguments of the one tool it means to call.
+   * `undefined` when the bridge isn't connected or the server has no such tool.
+   */
+  describeTool(appUrn: AppUrn, toolName: string): BridgedToolDetail | undefined {
+    const conn = this.connections.get(appUrn);
+    if (!conn?.connected) return undefined;
+
+    const prefix = `${appUrn.replace(':', '_')}__`;
+    const bareName = toolName.startsWith(prefix) ? toolName.slice(prefix.length) : toolName;
+    const tool = conn.tools.find((candidate) => candidate.name === bareName);
+
+    return tool && { name: `${prefix}${tool.name}`, description: tool.description, source: 'mcp', inputSchema: tool.inputSchema };
   }
 
   /**
