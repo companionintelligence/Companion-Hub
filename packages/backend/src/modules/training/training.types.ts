@@ -1,8 +1,4 @@
-export type TrainingJobType =
-  | 'hbpe_bootstrap_hmt'
-  | 'hbpe_nightly_lora'
-  | 'llm_lora_finetune'
-  | 'embedding_adaptation';
+export type TrainingJobType = 'hbpe_bootstrap_hmt' | 'hbpe_nightly_lora' | 'llm_lora_finetune' | 'embedding_adaptation';
 
 export type TrainingDevice = 'auto' | 'cuda' | 'mps' | 'cpu';
 
@@ -15,7 +11,8 @@ export type TrainingJobState =
   | 'EXPORTING'
   | 'COMPLETED'
   | 'FAILED'
-  | 'CANCELLED';
+  | 'CANCELLED'
+  | 'DEFERRED';
 
 export interface TrainingJobManifest {
   jobId: string;

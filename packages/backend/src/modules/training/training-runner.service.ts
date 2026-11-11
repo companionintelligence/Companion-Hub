@@ -3,11 +3,7 @@ import { EventEmitter } from 'node:events';
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import type {
-  TrainingJobManifest,
-  TrainingJobStatus,
-  TrainingProgressEvent,
-} from './training.types';
+import type { TrainingJobManifest, TrainingJobStatus, TrainingProgressEvent } from './training.types';
 import { TrainingGovernorService } from './training-governor.service';
 
 @Injectable()
@@ -17,15 +13,17 @@ export class TrainingRunnerService {
   private readonly jobStatuses = new Map<string, TrainingJobStatus>();
   public readonly events = new EventEmitter();
 
-  constructor(
-    private readonly governor: TrainingGovernorService,
-  ) {}
+  constructor(private readonly governor: TrainingGovernorService) {}
 
   /**
    * Submit and start executing a training job locally.
    */
   async submitJob(manifest: TrainingJobManifest): Promise<TrainingJobStatus> {
     const jobId = manifest.jobId;
+    if (!/^[a-zA-Z0-9_-]+$/.test(jobId)) {
+      throw new Error(`Invalid jobId "${jobId}": must contain only alphanumeric characters, dashes, and underscores`);
+    }
+
     const now = new Date().toISOString();
 
     const initialStatus: TrainingJobStatus = {
@@ -57,20 +55,28 @@ export class TrainingRunnerService {
   }
 
   listJobs(): TrainingJobStatus[] {
-    return Array.from(this.jobStatuses.values()).sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    );
+    return Array.from(this.jobStatuses.values()).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
 
   cancelJob(jobId: string): boolean {
+    const status = this.jobStatuses.get(jobId);
+    if (!status) return false;
+
     const process = this.activeProcesses.get(jobId);
     if (process) {
-      this.logger.log(`Cancelling training process for job ${jobId}`);
+      this.logger.log(`Cancelling active training process for job ${jobId}`);
+      this.updateState(jobId, 'CANCELLED');
       process.kill('SIGTERM');
       this.activeProcesses.delete(jobId);
+      return true;
+    }
+
+    if (status.state === 'QUEUED' || status.state === 'ACQUIRING_RESOURCES' || status.state === 'DATA_STAGING') {
+      this.logger.log(`Cancelling pending training job ${jobId}`);
       this.updateState(jobId, 'CANCELLED');
       return true;
     }
+
     return false;
   }
 
@@ -78,19 +84,28 @@ export class TrainingRunnerService {
     const jobId = manifest.jobId;
 
     try {
+      if (this.jobStatuses.get(jobId)?.state === 'CANCELLED') {
+        return;
+      }
+
       // 1. Acquire Resources & Check VRAM
       this.updateState(jobId, 'ACQUIRING_RESOURCES');
-      const capacity = await this.governor.evaluateLocalCapacity(
-        manifest.resourcePolicy.maxVramMb ?? 4096,
-        manifest.resourcePolicy.priority,
-      );
+      const capacity = await this.governor.evaluateLocalCapacity(manifest.resourcePolicy.maxVramMb ?? 4096, manifest.resourcePolicy.priority);
 
       if (!capacity.canExecuteLocal) {
         if (capacity.recommendedAction === 'EVICT_INFERENCE') {
           await this.governor.evictIdleInferenceModels();
+        } else if (capacity.recommendedAction === 'DEFER') {
+          this.logger.log(`Deferring training job ${jobId}: ${capacity.reason}`);
+          this.updateState(jobId, 'DEFERRED', { errorMessage: capacity.reason });
+          return;
         } else {
           throw new Error(`Cannot run locally: ${capacity.reason}`);
         }
+      }
+
+      if (this.jobStatuses.get(jobId)?.state === 'CANCELLED') {
+        return;
       }
 
       // 2. Data Staging
@@ -101,9 +116,17 @@ export class TrainingRunnerService {
       const manifestPath = path.join(artifactsDir, 'manifest.json');
       fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
 
+      if (this.jobStatuses.get(jobId)?.state === 'CANCELLED') {
+        return;
+      }
+
       // 3. Execution (Running)
       this.updateState(jobId, 'RUNNING');
       await this.spawnTrainingProcess(manifest, manifestPath, artifactsDir);
+
+      if (this.jobStatuses.get(jobId)?.state === 'CANCELLED') {
+        return;
+      }
 
       // 4. Completed
       this.updateState(jobId, 'COMPLETED', {
@@ -114,6 +137,10 @@ export class TrainingRunnerService {
       });
       this.logger.log(`Training job ${jobId} completed successfully`);
     } catch (err) {
+      if (this.jobStatuses.get(jobId)?.state === 'CANCELLED') {
+        this.logger.log(`Training job ${jobId} cancelled successfully`);
+        return;
+      }
       const errorMsg = (err as Error).message;
       this.logger.error(`Training job ${jobId} failed: ${errorMsg}`);
       this.updateState(jobId, 'FAILED', { errorMessage: errorMsg });
@@ -122,26 +149,13 @@ export class TrainingRunnerService {
     }
   }
 
-  private spawnTrainingProcess(
-    manifest: TrainingJobManifest,
-    manifestPath: string,
-    artifactsDir: string,
-  ): Promise<void> {
+  private spawnTrainingProcess(manifest: TrainingJobManifest, manifestPath: string, artifactsDir: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const jobId = manifest.jobId;
       const datasetPath = path.resolve(manifest.dataset.dataPath);
 
       // Call the headless train_runner
-      const args = [
-        '-m',
-        'ci.hbpe.model.train_runner',
-        '--manifest',
-        manifestPath,
-        '--dataset',
-        datasetPath,
-        '--output',
-        artifactsDir,
-      ];
+      const args = ['-m', 'ci.hbpe.model.train_runner', '--manifest', manifestPath, '--dataset', datasetPath, '--output', artifactsDir];
 
       this.logger.log(`Spawning python3 ${args.join(' ')}`);
       const child = spawn('python3', args, {
@@ -150,9 +164,12 @@ export class TrainingRunnerService {
 
       this.activeProcesses.set(jobId, child);
 
+      let stdoutBuffer = '';
       child.stdout.on('data', (data: Buffer) => {
-        const text = data.toString();
-        for (const line of text.split('\n')) {
+        stdoutBuffer += data.toString();
+        const lines = stdoutBuffer.split('\n');
+        stdoutBuffer = lines.pop() ?? '';
+        for (const line of lines) {
           if (line.startsWith('CI_TRAIN_EVENT:')) {
             try {
               const payload = JSON.parse(line.replace('CI_TRAIN_EVENT:', '').trim());
@@ -173,6 +190,10 @@ export class TrainingRunnerService {
       });
 
       child.on('close', (code) => {
+        if (this.jobStatuses.get(jobId)?.state === 'CANCELLED') {
+          resolve();
+          return;
+        }
         if (code === 0) {
           resolve();
         } else {
@@ -213,11 +234,7 @@ export class TrainingRunnerService {
     this.events.emit(`progress.${jobId}`, progressEvent);
   }
 
-  private updateState(
-    jobId: string,
-    state: TrainingJobStatus['state'],
-    extra: Partial<TrainingJobStatus> = {},
-  ): void {
+  private updateState(jobId: string, state: TrainingJobStatus['state'], extra: Partial<TrainingJobStatus> = {}): void {
     const current = this.jobStatuses.get(jobId);
     if (current) {
       current.state = state;

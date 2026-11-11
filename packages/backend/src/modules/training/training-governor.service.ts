@@ -19,7 +19,7 @@ export class TrainingGovernorService {
    * Evaluates whether a training job can run locally right now without causing
    * VRAM exhaustion, battery drain, or thermal throttling.
    */
-  async evaluateLocalCapacity(requiredVramMb: number = 4096, priority: string = 'normal'): Promise<GovernorCheckResult> {
+  async evaluateLocalCapacity(requiredVramMb = 4096, priority = 'normal'): Promise<GovernorCheckResult> {
     // 1. Battery check (macOS & Linux laptops)
     const onBattery = await this.isOnBattery();
     if (onBattery && priority !== 'interactive') {
@@ -137,7 +137,11 @@ export class TrainingGovernorService {
     if (process.platform === 'darwin') {
       try {
         const { stdout } = await execAsync('pmset -g therm');
-        return stdout.includes('CPU_Speed_Limit') && stdout.includes('< 100');
+        const match = stdout.match(/CPU_Speed_Limit\s*=\s*(\d+)/);
+        if (match) {
+          return Number.parseInt(match[1], 10) < 100;
+        }
+        return false;
       } catch {
         return false;
       }
