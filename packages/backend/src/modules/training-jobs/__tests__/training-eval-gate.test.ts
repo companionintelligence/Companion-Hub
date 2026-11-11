@@ -31,4 +31,16 @@ describe('eval gate', () => {
   it('treats a non-finite baseline as no baseline', () => {
     expect(evaluateGate(up, 0.8, Number.NaN).promote).toBe(true);
   });
+
+  it('evaluates decision model calibration error and Brier score gates correctly', () => {
+    const brierGate = { metric: 'decision_brier_score', higherIsBetter: false, minDelta: 0.02, floor: 0.15 };
+    // Exceeds floor (0.18 > 0.15) -> blocked
+    expect(evaluateGate(brierGate, 0.18, 0.2).promote).toBe(false);
+    // Clears floor with no baseline
+    expect(evaluateGate(brierGate, 0.12, null).promote).toBe(true);
+    // Compares with baseline (needs 0.02 improvement: 0.14 vs 0.15 is only 0.01 improvement -> blocked)
+    expect(evaluateGate(brierGate, 0.14, 0.15).promote).toBe(false);
+    // 0.12 vs 0.15 improves by 0.03 -> promoted
+    expect(evaluateGate(brierGate, 0.12, 0.15).promote).toBe(true);
+  });
 });

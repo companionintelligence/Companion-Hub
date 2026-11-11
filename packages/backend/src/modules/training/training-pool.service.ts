@@ -27,7 +27,7 @@ export class TrainingPoolService {
       acceptingTrainingJobs: vramMb >= 4096,
       availableVramMb: vramMb,
       gpuPressure: 0,
-      supportedFrameworks: ['pytorch', 'onnx', 'mlx'],
+      supportedFrameworks: ['pytorch', 'onnx', 'mlx', 'unsloth'],
       activeTrainingJobs: this.runner.listJobs().filter((j) => j.state === 'RUNNING').length,
       lastUpdated: new Date().toISOString(),
     };

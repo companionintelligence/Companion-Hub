@@ -1,4 +1,4 @@
-export type TrainingJobType = 'hbpe_bootstrap_hmt' | 'hbpe_nightly_lora' | 'llm_lora_finetune' | 'embedding_adaptation';
+export type TrainingJobType = 'hbpe_bootstrap_hmt' | 'hbpe_nightly_lora' | 'llm_lora_finetune' | 'embedding_adaptation' | 'unsloth_decision_train';
 
 export type TrainingDevice = 'auto' | 'cuda' | 'mps' | 'cpu';
 
@@ -21,8 +21,8 @@ export interface TrainingJobManifest {
 
   model: {
     backboneId: string;
-    framework: 'pytorch' | 'mlx' | 'tinygrad';
-    targetFormat: 'onnx_int8' | 'pytorch_lora' | 'mlx_adapter';
+    framework: 'pytorch' | 'mlx' | 'tinygrad' | 'unsloth';
+    targetFormat: 'onnx_int8' | 'pytorch_lora' | 'mlx_adapter' | 'unsloth_decision_lora';
     baseCheckpointPath?: string;
   };
 
