@@ -54,6 +54,7 @@ export async function runSteps(
 
   for (let i = 0; i < total; i++) {
     const step = manifest.steps[i];
+    if (!step) continue;
 
     if (stopped || opts.signal.aborted) {
       if (opts.signal.aborted && !stopped) cancelled = true;
@@ -102,17 +103,15 @@ export async function runSteps(
  * Remaining time: declared ETAs for steps not yet run, scaled by how far finished steps ran over or
  * under their own ETAs. Same idea as HBPE `update_pipeline_progress`, applied per step.
  */
-export function estimateRemainingSeconds(
-  steps: TrainingJobManifest['steps'],
-  done: readonly StepResult[],
-  nextIndex: number,
-): number {
+export function estimateRemainingSeconds(steps: TrainingJobManifest['steps'], done: readonly StepResult[], nextIndex: number): number {
   let declaredDone = 0;
   let actualDone = 0;
   for (let i = 0; i < done.length && i < steps.length; i++) {
-    if (done[i].outcome !== 'ok') continue;
-    declaredDone += steps[i].etaSeconds;
-    actualDone += done[i].durationMs / 1000;
+    const d = done[i];
+    const s = steps[i];
+    if (!d || !s || d.outcome !== 'ok') continue;
+    declaredDone += s.etaSeconds;
+    actualDone += d.durationMs / 1000;
   }
   const scale = declaredDone > 0 && actualDone > 0 ? actualDone / declaredDone : 1;
   const declaredLeft = steps.slice(nextIndex).reduce((sum, s) => sum + s.etaSeconds, 0);

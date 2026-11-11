@@ -97,7 +97,7 @@ const UNKNOWN_LOAD = 1;
 const UNKNOWN_PRESSURE = 1;
 
 const TIER_RANK: Readonly<Record<string, number>> = { high: 0, medium: 1, low: 2, 'cpu-only': 3, insufficient: 4 };
-const UNKNOWN_TIER_RANK = TIER_RANK.low;
+const UNKNOWN_TIER_RANK = 2;
 /** Local is never out-ranked on hardware; local versus peer is decided by `localAffinity`. */
 const LOCAL_TIER_RANK = -1;
 
@@ -117,11 +117,7 @@ function rejectionFor(node: PlacementNode, req: PlacementRequest, opts: Placemen
   return null;
 }
 
-export function rankNodesForJob(
-  req: PlacementRequest,
-  nodes: readonly PlacementNode[],
-  options: Partial<PlacementOptions> = {},
-): PlacementResult {
+export function rankNodesForJob(req: PlacementRequest, nodes: readonly PlacementNode[], options: Partial<PlacementOptions> = {}): PlacementResult {
   const opts: PlacementOptions = { ...DEFAULT_PLACEMENT_OPTIONS, ...options };
   const rejected: PlacementResult['rejected'] = [];
   const ranked: Array<RankedNode & { tierRank: number }> = [];
@@ -137,8 +133,7 @@ export function rankNodesForJob(
     const inferenceLoad = node.inferenceInFlight ?? UNKNOWN_LOAD;
     const pressure = node.gpuPressure ?? UNKNOWN_PRESSURE;
 
-    let score =
-      trainingLoad + opts.inferenceWeight[req.priority] * inferenceLoad + opts.pressureWeight * pressure;
+    let score = trainingLoad + opts.inferenceWeight[req.priority] * inferenceLoad + opts.pressureWeight * pressure;
     if (node.isLocal) score -= opts.localAffinity;
     else if (req.dataHome !== null && node.key !== req.dataHome) score += opts.remotePenalty;
 
@@ -150,9 +145,7 @@ export function rankNodesForJob(
     });
   }
 
-  ranked.sort(
-    (a, b) => a.score - b.score || a.pressure - b.pressure || a.tierRank - b.tierRank || a.key.localeCompare(b.key),
-  );
+  ranked.sort((a, b) => a.score - b.score || a.pressure - b.pressure || a.tierRank - b.tierRank || a.key.localeCompare(b.key));
 
   return { candidates: ranked.map(({ key, score, pressure }) => ({ key, score, pressure })), rejected };
 }

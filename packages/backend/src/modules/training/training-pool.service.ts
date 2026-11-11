@@ -1,9 +1,5 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import type {
-  TrainingJobManifest,
-  TrainingJobStatus,
-  TrainingPeerCapability,
-} from './training.types';
+import type { TrainingJobManifest, TrainingJobStatus, TrainingPeerCapability } from './training.types';
 import { HubPoolPeerRepository } from '@/modules/hub-pool/hub-pool-peer.repository';
 import { HubPoolIdentityService } from '@/modules/hub-pool/hub-pool-identity.service';
 import { TrainingRunnerService } from './training-runner.service';
@@ -48,8 +44,10 @@ export class TrainingPoolService {
       try {
         const url = `https://${peer.nodeFqdn}/api/training/pool/capabilities`;
         const headers: Record<string, string> = {};
-        if (peer.outboundBearerToken) {
-          headers.Authorization = `Bearer ${peer.outboundBearerToken}`;
+        const peerRecord = peer as Record<string, unknown>;
+        const token = typeof peerRecord.outboundBearerToken === 'string' ? peerRecord.outboundBearerToken : peer.presentTokenEncrypted;
+        if (token) {
+          headers.Authorization = `Bearer ${token}`;
         }
 
         const response = await fetch(url, {
@@ -64,9 +62,7 @@ export class TrainingPoolService {
           results.push(cap);
         }
       } catch (err) {
-        this.logger.debug(
-          `Peer ${peer.nodeFqdn} does not support training pool or is unreachable: ${(err as Error).message}`,
-        );
+        this.logger.debug(`Peer ${peer.nodeFqdn} does not support training pool or is unreachable: ${(err as Error).message}`);
       }
     }
 
@@ -76,11 +72,9 @@ export class TrainingPoolService {
   /**
    * Select best peer for training offload based on available VRAM and tier.
    */
-  async selectOffloadPeer(requiredVramMb: number = 4096): Promise<TrainingPeerCapability | null> {
+  async selectOffloadPeer(requiredVramMb = 4096): Promise<TrainingPeerCapability | null> {
     const peers = await this.discoverTrainingPeers();
-    const eligible = peers.filter(
-      (p) => p.acceptingTrainingJobs && p.availableVramMb >= requiredVramMb && p.activeTrainingJobs === 0,
-    );
+    const eligible = peers.filter((p) => p.acceptingTrainingJobs && p.availableVramMb >= requiredVramMb && p.activeTrainingJobs === 0);
 
     if (eligible.length === 0) return null;
 
@@ -92,10 +86,7 @@ export class TrainingPoolService {
   /**
    * Dispatch a training job to a selected remote peer across the tailnet.
    */
-  async dispatchJobToPeer(
-    peerFqdn: string,
-    manifest: TrainingJobManifest,
-  ): Promise<TrainingJobStatus> {
+  async dispatchJobToPeer(peerFqdn: string, manifest: TrainingJobManifest): Promise<TrainingJobStatus> {
     const peer = await this.peerRepo.findByNodeFqdn(peerFqdn);
     if (!peer) {
       throw new NotFoundException(`Peer ${peerFqdn} not found in paired pool peers`);
@@ -105,8 +96,10 @@ export class TrainingPoolService {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
-    if (peer.outboundBearerToken) {
-      headers.Authorization = `Bearer ${peer.outboundBearerToken}`;
+    const peerRecord = peer as Record<string, unknown>;
+    const token = typeof peerRecord.outboundBearerToken === 'string' ? peerRecord.outboundBearerToken : peer.presentTokenEncrypted;
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
     }
 
     this.logger.log(`Dispatching training job ${manifest.jobId} to peer ${peer.nodeFqdn}`);

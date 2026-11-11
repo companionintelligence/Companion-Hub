@@ -138,8 +138,9 @@ export class TrainingGovernorService {
       try {
         const { stdout } = await execAsync('pmset -g therm');
         const match = stdout.match(/CPU_Speed_Limit\s*=\s*(\d+)/);
-        if (match) {
-          return Number.parseInt(match[1], 10) < 100;
+        const limitStr = match?.[1];
+        if (limitStr) {
+          return Number.parseInt(limitStr, 10) < 100;
         }
         return false;
       } catch {

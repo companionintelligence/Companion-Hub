@@ -116,6 +116,7 @@ build({
   sourcemap: true,
   minify: false,
   bundle: true,
+  nodePaths: [join(__dirname, 'node_modules')],
   plugins: [bundleLocalRequires],
   banner: {
     js: [
