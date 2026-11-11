@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { McpBridgeService } from '../../agents/mcp-bridge.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -9,6 +9,7 @@ import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { EnvUtils } from '@/modules/env/env.utils';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { ResolvedAgentConfig } from '../../agents/agent-config.service';
+import { type FakeStdioServer, makeFakeStdioServer, waitForExit } from './fake-stdio-mcp-server';
 
 const TEST_URN = 'ci-store:nextcloud' as AppUrn;
 
@@ -21,6 +22,8 @@ const makeConfig = (mcp: ResolvedAgentConfig['mcp']): ResolvedAgentConfig => ({
 describe('McpBridgeService', () => {
   let service: McpBridgeService;
   let appsService: MockProxy<AppsService>;
+  let appFilesManager: MockProxy<AppFilesManager>;
+  let envUtils: MockProxy<EnvUtils>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -36,6 +39,8 @@ describe('McpBridgeService', () => {
 
     service = module.get(McpBridgeService);
     appsService = module.get(AppsService);
+    appFilesManager = module.get(AppFilesManager);
+    envUtils = module.get(EnvUtils);
   });
 
   it('should be defined', () => {
@@ -96,6 +101,91 @@ describe('McpBridgeService', () => {
     it('should clean up connections', () => {
       // Should not throw
       service.onModuleDestroy();
+    });
+  });
+
+  // A real child process stands in for the `docker run` of a host_docker listing such as GitHub MCP.
+  describe('host_docker stdio server lifecycle', () => {
+    const STDIO_URN = 'fake-mcp:store' as AppUrn;
+    let server: FakeStdioServer;
+
+    const stdioConfig = () =>
+      makeConfig({
+        enabled: true,
+        config: { enabled: true, transport: 'stdio', launch: 'host_docker', command: server.command },
+      });
+    const setAppEnv = (content: string) => appFilesManager.getAppEnv.mockResolvedValue({ path: 'app.env', content });
+
+    beforeEach(() => {
+      server = makeFakeStdioServer();
+      envUtils.envStringToMap.mockImplementation(new EnvUtils().envStringToMap);
+      setAppEnv('FAKE_TOKEN=first-token');
+      appsService.getApp.mockResolvedValue({ app: { status: 'running' } } as any);
+    });
+
+    afterEach(() => {
+      service.onModuleDestroy();
+      server.cleanup();
+    });
+
+    it('dropApp stops the server and forgets the tools it advertised', async () => {
+      await expect(service.discoverTools(STDIO_URN, stdioConfig())).resolves.toHaveLength(2);
+      const [pid] = await server.waitForPids(1);
+
+      service.dropApp(STDIO_URN);
+
+      expect(await waitForExit(pid as number)).toBe(true);
+      expect(service.listToolInfo(STDIO_URN)).toEqual([]);
+    });
+
+    it('stops the server when a call finds the app uninstalled', async () => {
+      await service.discoverTools(STDIO_URN, stdioConfig());
+      const [pid] = await server.waitForPids(1);
+      appsService.getApp.mockResolvedValue({ app: null } as any);
+
+      await expect(service.callTool(STDIO_URN, stdioConfig(), 'echo_token', {})).resolves.toEqual({
+        error: `App ${STDIO_URN} is not installed`,
+        isError: true,
+      });
+      expect(await waitForExit(pid as number)).toBe(true);
+      expect(service.listToolInfo(STDIO_URN)).toEqual([]);
+    });
+
+    it('keeps the server running when a tool fails on the server side', async () => {
+      await expect(service.callTool(STDIO_URN, stdioConfig(), 'fail', {})).resolves.toEqual({
+        error: `MCP error from ${STDIO_URN}: failed on purpose`,
+        isError: true,
+      });
+      await expect(service.callTool(STDIO_URN, stdioConfig(), 'echo_token', {})).resolves.toMatchObject({
+        content: [{ text: 'first-token' }],
+      });
+      expect(server.pids()).toHaveLength(1);
+    });
+
+    it('restarts the server when app.env changes, so a new token takes effect', async () => {
+      await expect(service.callTool(STDIO_URN, stdioConfig(), 'echo_token', {})).resolves.toMatchObject({
+        content: [{ text: 'first-token' }],
+      });
+
+      setAppEnv('FAKE_TOKEN=second-token');
+
+      await expect(service.callTool(STDIO_URN, stdioConfig(), 'echo_token', {})).resolves.toMatchObject({
+        content: [{ text: 'second-token' }],
+      });
+      const pids = server.pids();
+      expect(pids).toHaveLength(2);
+      expect(await waitForExit(pids[0] as number)).toBe(true);
+    });
+
+    it('keeps a running server when app.env reads back empty', async () => {
+      await service.callTool(STDIO_URN, stdioConfig(), 'echo_token', {});
+
+      setAppEnv('');
+
+      await expect(service.callTool(STDIO_URN, stdioConfig(), 'echo_token', {})).resolves.toMatchObject({
+        content: [{ text: 'first-token' }],
+      });
+      expect(server.pids()).toHaveLength(1);
     });
   });
 });

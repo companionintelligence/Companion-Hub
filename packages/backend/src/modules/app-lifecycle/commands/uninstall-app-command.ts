@@ -6,6 +6,7 @@ import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
+import { McpBridgeService } from '@/modules/mcp/agents/mcp-bridge.service';
 import type { AppUrn } from '@ci-hub/common/types';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { AppLifecycleCommand } from './command';
@@ -104,6 +105,15 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         }
       } catch {
         // AgentNotifyService may not be available
+      }
+
+      // A host_docker MCP listing's server is a `docker run` the bridge started itself, outside the
+      // compose project removed above, with the app's credentials in its environment. Stop it and
+      // forget the app's tools.
+      try {
+        this.moduleRef.get(McpBridgeService, { strict: false })?.dropApp(appUrn);
+      } catch (error) {
+        logger.warn(`Failed to stop the MCP bridge for ${appUrn}: ${error}`);
       }
 
       // SEC-MCP-8: revoke the app's managed key (all scopes) so its Hub access dies with the app.
