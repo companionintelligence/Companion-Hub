@@ -44,6 +44,13 @@ if [ ! -f "$LONG_DESCRIPTION_SOURCE" ]; then
   exit 1
 fi
 
+# PackageKit hands a non-ASCII character in the control Description back as "??", and Ubuntu's App
+# Center shows it that way when a .deb is opened (0.3.11's em dash read "terminal ?? see").
+if ! LC_ALL=C python3 -c 'import sys; sys.exit(0 if open(sys.argv[1], "rb").read().isascii() else 1)' "$LONG_DESCRIPTION_SOURCE"; then
+  echo "[deb-patch][ERROR] $LONG_DESCRIPTION_SOURCE must be plain ASCII: App Center shows other characters as ??" >&2
+  exit 1
+fi
+
 find "$DESKTOP_DIR/src-tauri/target" -path '*/bundle/deb/*.deb' -type f 2>/dev/null | sort | while IFS= read -r deb_path; do
   [ -n "$deb_path" ] || continue
   (
