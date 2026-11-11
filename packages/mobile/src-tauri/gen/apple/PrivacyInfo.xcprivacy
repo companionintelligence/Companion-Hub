@@ -3,11 +3,17 @@
 <!--
   App Store privacy manifest (required for new submissions since May 2024).
 
-  Collected data: the user's email address + credentials are sent to the CI
-  cloud Portal (hub.ci.computer) purely for sign-in / listing the user's own
-  Hub appliances — app functionality, linked to the account, no tracking.
+  Collected data, as far as the app sends it:
+  - The user's email address goes to the CI cloud Portal (hub.ci.computer) for
+    sign-in and for listing the user's own Hub appliances. App functionality,
+    linked to the account, no tracking.
+  - Only while "Allow anonymous error monitoring" is on, which the user turns on
+    unless the operator seeds it on, Sentry receives crash reports, performance
+    data, session replays and other diagnostics. The device ID is set as the Sentry user on every event, so
+    these are declared as linked. No tracking.
 
-  Accessed-API reasons cover the Tauri runtime:
+  Accessed-API reasons cover the Tauri runtime. They are not yet verified
+  against the release binary:
   - FileTimestamp C617.1: tauri-plugin-store persists mobile-connection.json /
     app-intents.json inside the app container (Rust std::fs stats files).
   - SystemBootTime 35F9.1: Rust std::time::Instant uses mach_absolute_time.
@@ -35,7 +41,55 @@
 		</dict>
 		<dict>
 			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypeCredentials</string>
+			<string>NSPrivacyCollectedDataTypeCrashData</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypePerformanceData</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeOtherDiagnosticData</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeDeviceID</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeProductInteraction</string>
 			<key>NSPrivacyCollectedDataTypeLinked</key>
 			<true/>
 			<key>NSPrivacyCollectedDataTypeTracking</key>

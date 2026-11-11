@@ -55,9 +55,38 @@ describe('iOS store readiness', () => {
       expect(manifest).toContain(reason);
     }
 
-    // Declared collection matches what the connect flow actually sends to the Portal.
-    expect(manifest).toContain('NSPrivacyCollectedDataTypeEmailAddress');
-    expect(manifest).toContain('NSPrivacyCollectedDataTypeCredentials');
+    // Declared collection matches what the app sends: the email to the Portal, and diagnostics,
+    // device ID and interaction data to Sentry while the user has opted in. Every entry must be
+    // linked, not tracked, and used for app functionality only.
+    // The block runs to the next top-level key. A lazy match to the first closing array would stop
+    // inside the first entry's purposes list.
+    const start = manifest.indexOf('<key>NSPrivacyCollectedDataTypes</key>');
+    expect(start).toBeGreaterThan(-1);
+    const nextKey = manifest.indexOf('\n\t<key>', start + 1);
+    const collected = manifest.slice(start, nextKey === -1 ? undefined : nextKey);
+    const entries = [...collected.matchAll(/<dict>([\s\S]*?)<\/dict>/g)].map(([, body = '']) => ({
+      type: body.match(/<key>NSPrivacyCollectedDataType<\/key>\s*<string>([^<]+)<\/string>/)?.[1],
+      linked: body.match(/<key>NSPrivacyCollectedDataTypeLinked<\/key>\s*<(true|false)\/>/)?.[1],
+      tracking: body.match(/<key>NSPrivacyCollectedDataTypeTracking<\/key>\s*<(true|false)\/>/)?.[1],
+      purposes: [...body.matchAll(/<string>(NSPrivacyCollectedDataTypePurpose[A-Za-z]+)<\/string>/g)].map((m) => m[1]),
+    }));
+    expect(entries.map((entry) => entry.type).sort()).toEqual([
+      'NSPrivacyCollectedDataTypeCrashData',
+      'NSPrivacyCollectedDataTypeDeviceID',
+      'NSPrivacyCollectedDataTypeEmailAddress',
+      'NSPrivacyCollectedDataTypeOtherDiagnosticData',
+      'NSPrivacyCollectedDataTypePerformanceData',
+      'NSPrivacyCollectedDataTypeProductInteraction',
+    ]);
+    for (const entry of entries) {
+      expect(entry).toMatchObject({
+        linked: 'true',
+        tracking: 'false',
+        purposes: ['NSPrivacyCollectedDataTypePurposeAppFunctionality'],
+      });
+    }
+    // Apple does not document a Credentials data type, so the manifest must not declare one.
+    expect(manifest).not.toContain('NSPrivacyCollectedDataTypeCredentials');
 
     // It must be a target resource or xcodegen leaves it out of the bundle,
     // which fails validation exactly as if it never existed.

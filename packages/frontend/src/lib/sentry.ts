@@ -3,8 +3,14 @@ import { client } from '@/api-client/client.gen';
 import { TranslatableError } from '@/types/error.types';
 import { isChunkLoadError } from './chunk-load-error';
 import { fetchDeviceRegistrationInfoResult } from './registration-api';
-import { scrubBreadcrumb, scrubBrowserEvent, scrubString, scrubUrl } from './sentry-scrubber';
-import { isTelemetryAllowed, onTelemetryConsentChange, refreshTelemetryConsent, refreshTelemetryConsentIfStale } from './telemetry-consent';
+import { scrubBreadcrumb, scrubBrowserEvent, scrubBrowserSpan, scrubString, scrubUrl } from './sentry-scrubber';
+import {
+  CONSENT_REFRESH_INTERVAL_MS,
+  isTelemetryAllowed,
+  onTelemetryConsentChange,
+  refreshTelemetryConsent,
+  refreshTelemetryConsentIfStale,
+} from './telemetry-consent';
 
 let sentryInitialized = false;
 let deviceIdRequest: Promise<void> | null = null;
@@ -314,14 +320,58 @@ function shouldDropSentryEvent(event: Sentry.ErrorEvent): boolean {
 /** Name the SDK registers the replay integration under. */
 const REPLAY_INTEGRATION_NAME = 'Replay';
 
+/** The parts of the SDK's replay integration this module drives. The shape is not guaranteed, so every call is optional. */
+type ReplayControls = {
+  start?: () => void;
+  stop?: (options?: { flush?: boolean }) => Promise<void> | undefined;
+};
+
+/** The consent answer the recorder should follow. Read again when a queued start runs. */
+let replayWanted = false;
+
+/** The session sample rate, read the way `initHubSentry` reads it. An empty value reads as 0, which is what the published image gets. */
+function replaySessionSampleRate(): number {
+  return Number(import.meta.env.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE ?? 0.1);
+}
+
+/** True from an add or a start until the next stop, so re-confirming consent never starts the recorder twice. */
+let replayRunning = false;
+
+/** The latest stop() still in flight. A re-grant waits for it before calling start(). */
+let pendingReplayStop: Promise<void> | null = null;
+
+function trackReplayStop(stopping: Promise<void> | undefined): void {
+  if (!stopping) {
+    return;
+  }
+
+  pendingReplayStop = stopping;
+  const settle = () => {
+    if (pendingReplayStop === stopping) {
+      pendingReplayStop = null;
+    }
+  };
+  void stopping.then(settle, settle);
+}
+
+/** Run `task` after any stop in flight has finished, or straight away when none is. */
+function afterPendingReplayStop(task: () => void): void {
+  if (pendingReplayStop) {
+    void pendingReplayStop.then(task, task);
+    return;
+  }
+
+  task();
+}
+
 /**
  * Start or stop Session Replay to match consent.
  *
  * Replay cannot be gated in `beforeSend` — its envelopes never reach that hook —
  * so honouring a withdrawal means stopping the recorder. Added lazily on grant
  * so a user who never consents is never recorded at all, and stopped on
- * withdrawal so a mid-session flip takes effect without a reload, matching how
- * `beforeSend` already behaves for errors.
+ * withdrawal so a mid-session flip takes effect without a reload. A re-grant
+ * starts the recorder again once any stop in flight has finished.
  */
 export function syncSessionReplayWithConsent(allowed: boolean | null): void {
   const client = Sentry.getClient();
@@ -330,18 +380,80 @@ export function syncSessionReplayWithConsent(allowed: boolean | null): void {
     return;
   }
 
-  const existing = client.getIntegrationByName?.(REPLAY_INTEGRATION_NAME) as { start?: () => void; stop?: () => Promise<void> } | undefined;
+  const existing = client.getIntegrationByName?.(REPLAY_INTEGRATION_NAME) as ReplayControls | undefined;
 
   if (allowed === true) {
+    replayWanted = true;
+
     if (!existing) {
       client.addIntegration?.(Sentry.replayIntegration({ maskAllText: true, blockAllMedia: true }));
+      replayRunning = true;
+      return;
     }
+
+    if (replayRunning) {
+      return;
+    }
+
+    // start() records whatever the sample rate says, so the rate is rolled here. Without the roll a
+    // re-grant records every session, and the published image, whose rate is empty and so 0, records at all.
+    if (!(Math.random() < replaySessionSampleRate())) {
+      return;
+    }
+
+    // A withdrawal that lands while this start waits must cancel it, so consent is read again here.
+    afterPendingReplayStop(() => {
+      if (!replayWanted || replayRunning) {
+        return;
+      }
+
+      replayRunning = true;
+      existing.start?.();
+    });
 
     return;
   }
 
   // Unknown counts as withdrawn here, same posture as `isTelemetryAllowed`.
-  void existing?.stop?.();
+  replayWanted = false;
+  replayRunning = false;
+  // `flush: false` drops the unsent segment instead of uploading it after the switch is off.
+  trackReplayStop(existing?.stop?.({ flush: false }));
+}
+
+/**
+ * A transport that sends nothing while consent is off. `beforeSend` gates error
+ * events only: traces, sessions and replay segments reach the transport directly,
+ * and `beforeSendSpan` cannot drop a span in this SDK version, since a null return
+ * keeps the original. The empty response also tells replay the segment was handled,
+ * so a refused segment is not retried.
+ */
+function consentGatedTransport(transportOptions: Parameters<typeof Sentry.makeFetchTransport>[0]): ReturnType<typeof Sentry.makeFetchTransport> {
+  const inner = Sentry.makeFetchTransport(transportOptions);
+
+  return {
+    send(envelope) {
+      // No refresh on this path. A failed consent read leaves the answer unknown, and a refresh here
+      // would fetch again for every envelope, including the spans that fetch itself produces.
+      return isTelemetryAllowed() ? inner.send(envelope) : Promise.resolve({});
+    },
+    flush: (timeout) => inner.flush(timeout),
+  };
+}
+
+/** Consent re-checked on a timer, so a switch flipped in another tab reaches a page that is otherwise idle. */
+let consentRefreshTimer: ReturnType<typeof setInterval> | null = null;
+
+function startConsentRefreshTimer(): void {
+  if (typeof window === 'undefined' || consentRefreshTimer !== null) {
+    return;
+  }
+
+  // Refreshes directly rather than through refreshTelemetryConsentIfStale(): that check counts
+  // from the last answer, so a tick one interval later would skip and answers would arrive every second tick.
+  consentRefreshTimer = setInterval(() => {
+    void refreshTelemetryConsent();
+  }, CONSENT_REFRESH_INTERVAL_MS);
 }
 
 export function initHubSentry(): void {
@@ -387,9 +499,14 @@ export function initHubSentry(): void {
      * error events only. Sampling still comes from the rates below, which apply
      * when the integration is added.
      */
-    integrations: [Sentry.browserTracingIntegration()],
+    integrations: [
+      Sentry.browserTracingIntegration(),
+      // Console arguments are not scrubbed for bare emails or IDs, so the default console
+      // breadcrumbs are switched off. A same-named integration replaces the SDK's default one.
+      Sentry.consoleIntegration({ levels: [] }),
+    ],
     tracesSampleRate: Number(import.meta.env.VITE_SENTRY_TRACES_SAMPLE_RATE ?? 0.1),
-    replaysSessionSampleRate: Number(import.meta.env.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE ?? 0.1),
+    replaysSessionSampleRate: replaySessionSampleRate(),
     replaysOnErrorSampleRate: Number(import.meta.env.VITE_SENTRY_REPLAYS_ON_ERROR_SAMPLE_RATE ?? 1),
     // Sentry 11 removed `enableMetrics` / `enableLogs`; dropping them in the
     // before-send hooks keeps the `VITE_SENTRY_ENABLE_*=false` opt-outs working.
@@ -436,9 +553,14 @@ export function initHubSentry(): void {
     beforeBreadcrumb(breadcrumb) {
       return scrubBreadcrumb(breadcrumb);
     },
+    // Spans are the trace payload in the default `stream` lifecycle, where
+    // `beforeSendTransaction` is never called. The gate that drops them is the transport.
+    beforeSendSpan: (span) => scrubBrowserSpan(span),
+    transport: consentGatedTransport,
   });
 
   sentryInitialized = true;
+  startConsentRefreshTimer();
   Sentry.setTag('component', getComponentTag());
   applyStaticSentryTags();
   applyDeviceId(readStoredDeviceId());

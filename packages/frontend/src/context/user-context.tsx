@@ -15,15 +15,11 @@ const UserContext = createContext<UserContextValue | null>(null);
 /**
  * What the app renders with before `/user-context` answers, and after it fails.
  *
- * `allowErrorMonitoring` is the one field here where a wrong guess is a privacy claim rather
- * than a cosmetic default, so it tracks the Hub's own opt-out posture — `DEFAULT_ALLOW_ERROR_MONITORING`
- * in the backend constants, and the `allowErrorMonitoring: true` fallback in both branches of
- * `AppController.userContext`. Seeding `false` had the settings switch reading "off" during
- * every cold start while the Hub was in fact reporting, which is the failure that matters; the
- * opposite error costs one render of an over-stated "on" and self-corrects the moment the real
- * value lands. Consumers that must tell "not yet known" from a decision read `isLoading` — the
- * DTO is generated from the backend, where the field is a required boolean, so a third state
- * cannot be expressed in this object.
+ * `allowErrorMonitoring` follows the backend's opt-in default: `defaults.allowErrorMonitoring` in
+ * `AppController.userContext` is `false`, and a saved choice wins over the `ALLOW_ERROR_MONITORING`
+ * seed. Until the answer lands the value is not a decision. Consumers that must tell "not yet
+ * known" from a real answer read `isLoading`, because the DTO is generated from the backend, where
+ * the field is a required boolean, so a third state cannot be expressed in this object.
  */
 const USER_CONTEXT_DEFAULTS: UserContextDto = {
   isLoggedIn: false,
@@ -33,7 +29,7 @@ const USER_CONTEXT_DEFAULTS: UserContextDto = {
   domain: '',
   localDomain: 'localhost',
   sslPort: 443,
-  allowErrorMonitoring: true,
+  allowErrorMonitoring: false,
   themeColor: 'blue',
   version: { current: '0.0.0', latest: '0.0.0', body: '', releases: [] },
 } as UserContextDto;
