@@ -188,8 +188,8 @@ export type TierRecommendation = 'recommended' | 'available' | 'not-recommended'
 export interface ModelContextPlan {
   /** Tokens. Null when not even the smallest window (4096) fits an empty card here. */
   window: number | null;
-  /** `q8_0` only when the 16-bit cache cannot reach an installed app's floor and the engine offers it. */
-  kvCacheType: 'f16' | 'q8_0';
+  /** Quantized only when the 16-bit cache cannot reach an installed app's floor and the engine offers it: `q8_0`, or `q4_0` when only it reaches the floor. */
+  kvCacheType: 'f16' | 'q8_0' | 'q4_0';
   /** `measured`: the per-token cost is measured (catalog or engine). `estimated`: a fixed assumption stood in. */
   basis: 'measured' | 'estimated';
   /** The model's catalog row was measured running with q8_0 (`runtime.kvCacheType`). */

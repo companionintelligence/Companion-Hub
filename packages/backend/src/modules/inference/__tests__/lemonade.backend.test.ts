@@ -315,6 +315,20 @@ describe('LemonadeBackend', () => {
         expect(post).toHaveBeenCalledTimes(2);
       });
 
+      it('saves the q4_0 flags the same way, replacing a q8_0 setting', async () => {
+        const post = server('2026.45.3', { ctx_size: 65_536, llamacpp_args: `${SAMPLING} ${Q8}` });
+
+        await backend.loadModel('Qwen3.8-27B-GGUF', { contextLength: 65_536, kvCacheType: 'q4_0' });
+
+        expect(post).toHaveBeenNthCalledWith(
+          1,
+          `${BASE}/v1/models/Qwen3.8-27B-GGUF/options`,
+          { llamacpp_args: `${SAMPLING} -fa on --cache-type-k q4_0 --cache-type-v q4_0` },
+          { timeout: 30000 },
+        );
+        expect(post).toHaveBeenNthCalledWith(2, `${BASE}/v1/load`, { model_name: 'Qwen3.8-27B-GGUF', ctx_size: 65_536 }, { timeout: 120000 });
+      });
+
       it('takes the q8_0 flags back out for a 16-bit load, keeping the rest', async () => {
         const post = server('2026.45.3', { ctx_size: 65_536, llamacpp_args: `${SAMPLING} ${Q8}` });
 
@@ -362,6 +376,15 @@ describe('LemonadeBackend', () => {
 
         await expect(backend.loadModel('Qwen3.8-27B-GGUF', { contextLength: 65_536, kvCacheType: 'q8_0' })).rejects.toBeInstanceOf(KvCacheLoadError);
 
+        expect(post).toHaveBeenLastCalledWith(`${BASE}/v1/models/Qwen3.8-27B-GGUF/options`, { llamacpp_args: SAMPLING }, { timeout: 30000 });
+      });
+
+      it('does the same for a failed q4_0 load, naming the type', async () => {
+        const post = server('2026.45.3', { ctx_size: 32_768, llamacpp_args: SAMPLING }, { loadFails: true });
+
+        await expect(backend.loadModel('Qwen3.8-27B-GGUF', { contextLength: 65_536, kvCacheType: 'q4_0' })).rejects.toMatchObject({
+          kvCacheType: 'q4_0',
+        });
         expect(post).toHaveBeenLastCalledWith(`${BASE}/v1/models/Qwen3.8-27B-GGUF/options`, { llamacpp_args: SAMPLING }, { timeout: 30000 });
       });
 
@@ -414,10 +437,10 @@ describe('LemonadeBackend', () => {
         expect(backend.kvCacheScale(row())).toBe(1);
       });
 
-      it('offers q8_0 for a llama.cpp text model on a version that can save it, measured or not', async () => {
+      it('offers q8_0, then q4_0, for a llama.cpp text model on a version that can save it, measured or not', async () => {
         server('2026.45.3', {});
         await backend.healthCheck();
-        expect(backend.kvCacheTypesFor(row())).toEqual(['q8_0']);
+        expect(backend.kvCacheTypesFor(row())).toEqual(['q8_0', 'q4_0']);
         expect(backend.kvCacheTypesFor(row({ modality: 'embedding' }))).toEqual([]);
         expect(backend.kvCacheTypesFor(row({ backend: 'ollama' }))).toEqual([]);
       });

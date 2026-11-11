@@ -205,9 +205,10 @@ class FakeLemonade {
   /**
    * `offersQ8`: whether this Lemonade offers q8_0 for its llama.cpp models (2026.x does, 10.2.0 does
    * not). `failsQ8`: a q8_0 load throws as a model without flash attention would; a 16-bit one, the
-   * same model loaded the old way, still works unless `failsAll`.
+   * same model loaded the old way, still works unless `failsAll`. `offersQ4` adds q4_0 after q8_0, as
+   * the Hub's Lemonade backend offers it; `failsQ4` fails a q4_0 load as `failsQ8` does a q8_0 one.
    */
-  constructor(private readonly opts: { offersQ8?: boolean; failsQ8?: boolean; failsAll?: boolean } = {}) {}
+  constructor(private readonly opts: { offersQ8?: boolean; offersQ4?: boolean; failsQ8?: boolean; failsQ4?: boolean; failsAll?: boolean } = {}) {}
 
   backend(): Record<string, unknown> {
     return {
@@ -223,12 +224,19 @@ class FakeLemonade {
         if (options?.kvCacheType === 'q8_0' && this.opts.failsQ8) {
           throw new KvCacheLoadError('q8_0', new Error('V cache quantization requires flash_attn'));
         }
+        if (options?.kvCacheType === 'q4_0' && this.opts.failsQ4) {
+          throw new KvCacheLoadError('q4_0', new Error('V cache quantization requires flash_attn'));
+        }
         if (this.opts.failsAll) throw new Error('llama-server exited with code 1');
         this.loads.push({ id, ctx: options?.contextLength, ...(options?.provisionalWindow ? { provisional: true as const } : {}) });
         this.caches.push(options?.kvCacheType);
       },
       kvCacheTypesFor: (model: CuratedModel) =>
-        this.opts.offersQ8 && model.modality === 'llm' && !this.marked.includes(model.backendModelId) ? ['q8_0'] : [],
+        (this.opts.offersQ8 || this.opts.offersQ4) && model.modality === 'llm' && !this.marked.includes(model.backendModelId)
+          ? this.opts.offersQ4
+            ? ['q8_0', 'q4_0']
+            : ['q8_0']
+          : [],
       markKvCacheUnsupported: (model: CuratedModel) => {
         this.marked.push(model.backendModelId);
       },
@@ -674,6 +682,50 @@ describe('the load window on the fleet', () => {
         // Its own handout at q8_0 is 65536, above the floor, so the load takes that: what this card runs now.
         expect(lemonade.loads).toEqual([{ id: 'Qwen3.8-27B-GGUF', ctx: 65_536 }]);
         expect(lemonade.caches).toEqual(['q8_0']);
+      });
+
+      // A card a little short of what the 27B needs for Hermes' 64000 at q8_0 (18,473 MB, 1,024 kept free,
+      // 1,024 for its vision encoder, 0.0667 MB a token at 34/64): 4-bit reaches it, so 4-bit is used.
+      const SHORT_FOR_Q8 = discrete('amd', '22 GB card', 22_784);
+
+      it('plans q4_0 only where q8_0 cannot reach the floor and q4_0 can', async () => {
+        const lemonade = new FakeLemonade({ offersQ4: true });
+        const { router, registry } = world({ profile: SHORT_FOR_Q8, lemonade, installedApps: ['ci-hermes'] });
+
+        await expect(router.loadTrackedModel('qwen3-8-27b-lemonade', { origin: 'operator' })).resolves.toEqual({ loaded: true });
+        expect(lemonade.caches).toEqual(['q4_0']);
+        expect(lemonade.loads[0]?.ctx).toBeGreaterThanOrEqual(64_000);
+        await expect(router.contextPlanFor(registry.getCuratedModel('qwen3-8-27b-lemonade') as CuratedModel, SHORT_FOR_Q8)).resolves.toMatchObject({
+          kvCacheType: 'q4_0',
+          kvCacheMeasured: false,
+          floor: { minContextLength: 64_000, met: true },
+        });
+      });
+
+      it('keeps q8_0 where it reaches the floor though q4_0 is offered, and q8_0 where neither does', async () => {
+        const beta1 = new FakeLemonade({ offersQ4: true });
+        await world({ profile: BETA_1, lemonade: beta1, installedApps: ['ci-hermes'] }).router.loadTrackedModel('qwen3-8-27b-lemonade', {
+          origin: 'operator',
+        });
+        expect(beta1.caches).toEqual(['q8_0']);
+
+        // On a 21 GB card the 27B loads but not even 4-bit reaches 64000: the floor is missed either way,
+        // and the more precise cache is kept.
+        const small = new FakeLemonade({ offersQ4: true });
+        await world({ profile: discrete('amd', '21 GB card', 21_504), lemonade: small, installedApps: ['ci-hermes'] }).router.loadTrackedModel(
+          'qwen3-8-27b-lemonade',
+          { origin: 'operator' },
+        );
+        expect(small.caches).toEqual(['q8_0']);
+      });
+
+      it('falls back to 16-bit when q4_0 fails to load, and marks the model', async () => {
+        const lemonade = new FakeLemonade({ offersQ4: true, failsQ4: true });
+        const { router } = world({ profile: SHORT_FOR_Q8, lemonade, installedApps: ['ci-hermes'] });
+
+        await expect(router.loadTrackedModel('qwen3-8-27b-lemonade', { origin: 'operator' })).resolves.toEqual({ loaded: true });
+        expect(lemonade.caches).toEqual(['f16']);
+        expect(lemonade.marked).toEqual(['Qwen3.8-27B-GGUF']);
       });
 
       it('keeps 16-bit where it reaches the floor, and where no installed app has one', async () => {

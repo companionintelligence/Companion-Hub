@@ -2680,6 +2680,8 @@
   "BROWSER_HANDOFF_FAILED_TOAST": "This browser couldn't be signed in to your Hub, so it opened the Hub's main page instead. Go back to the app and try again.",
   "MODEL_CONTEXT_WINDOW": "{{window}} context",
   "MODEL_CONTEXT_8BIT": "8-bit cache",
+  "MODEL_CONTEXT_4BIT": "4-bit cache",
+  "MODEL_CONTEXT_4BIT_TITLE": "Uses a 4-bit context cache, about a quarter of the memory its context would take at 16-bit, so it reaches the {{floor}} some apps need. Long extractions, such as Memory's relationship finding, can come out noticeably different.",
   "MODEL_CONTEXT_8BIT_TITLE": "Uses an 8-bit context cache, which halves the memory its context takes, so it reaches the {{floor}} some apps need.",
   "MODEL_CONTEXT_ESTIMATED": "estimated",
   "MODEL_CONTEXT_NONE": "Does not fit on this hardware",

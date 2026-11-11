@@ -1,5 +1,3 @@
-import type { CuratedModel } from '@ci-hub/common/types';
-
 /**
  * Setting a Lemonade model's KV cache type: the llama-server flags, what they save, and the rule for
  * when the Hub may use them. Pure, so each piece is testable without a server.
@@ -13,20 +11,42 @@ import type { CuratedModel } from '@ci-hub/common/types';
  * `POST /v1/models/{id}/options`, and the load sends none.
  */
 
-type KvCacheType = NonNullable<CuratedModel['runtime']['kvCacheType']>;
+/**
+ * The quantized cache types the Hub sets, most precise first: the order the planner tries them in.
+ *
+ * q4_0 is a last step. Measured 2026-11-10 on Qwen 3.5 4B and Gemma 4 E4B (Lemonade, 64k window, 16-bit
+ * run twice as the noise floor, which came out identical): recall of 12 facts hidden through 58k tokens
+ * 12/12 at every type, HBPE labels 40/40; image descriptions identical 10-12 of 20 at q8_0 and 3 of 20 at
+ * q4_0, wording mostly, with an ambiguous detail flipped now and then; graph-enrichment extraction the
+ * most changed — Gemma's long batch agreed 0.70 with 16-bit at q8_0 and 0.18 at q4_0, and Qwen 3.5 4B
+ * overran its output on 2 of 4 batches at every quantized type, never at 16-bit. So q4_0 only where q8_0
+ * cannot reach an installed app's floor, which is where it buys an agent the window it needs.
+ */
+export const QUANTIZED_KV_CACHE_TYPES = ['q8_0', 'q4_0'] as const;
+export type QuantizedKvCacheType = (typeof QUANTIZED_KV_CACHE_TYPES)[number];
 
 /** The cache a load runs with: the 16-bit default, or a quantized type. */
-export type KvCacheChoice = 'f16' | KvCacheType;
+export type KvCacheChoice = 'f16' | QuantizedKvCacheType;
 
 /** llama-server flags for each cache type. A quantized V cache needs flash attention, so it is forced on. */
-export const LEMONADE_KV_CACHE_FLAGS: Record<KvCacheType, string> = {
+export const LEMONADE_KV_CACHE_FLAGS: Record<QuantizedKvCacheType, string> = {
   q8_0: '-fa on --cache-type-k q8_0 --cache-type-v q8_0',
+  q4_0: '-fa on --cache-type-k q4_0 --cache-type-v q4_0',
 };
 
-/** Bytes a cache type stores per value against the 16-bit default: q8_0 keeps 32 values in 34 bytes, against 64. */
-export const KV_CACHE_SCALE: Record<KvCacheType, number> = {
+/**
+ * Bytes a cache type stores per value against the 16-bit default: q8_0 keeps 32 values in 34 bytes and
+ * q4_0 in 18, against 64.
+ */
+export const KV_CACHE_SCALE: Record<QuantizedKvCacheType, number> = {
   q8_0: 34 / 64,
+  q4_0: 18 / 64,
 };
+
+/** The share of the 16-bit cost a choice costs: 1 for `f16` or none. */
+export function kvCacheScaleFor(choice: KvCacheChoice | undefined): number {
+  return choice === undefined || choice === 'f16' ? 1 : KV_CACHE_SCALE[choice];
+}
 
 /** Flags {@link withKvCacheFlags} replaces: any earlier setting of flash attention or either cache type. */
 const OWNED_FLAGS = new Set(['-fa', '--flash-attn', '-ctk', '--cache-type-k', '-ctv', '--cache-type-v']);
@@ -62,7 +82,7 @@ function tokenize(args: string): string[] {
  * `--chat-template-kwargs '{"preserve_thinking":true}'`. `args` is a saved `llamacpp_args`, or
  * absent when the model has none saved.
  */
-export function withKvCacheFlags(args: unknown, type: KvCacheType): string {
+export function withKvCacheFlags(args: unknown, type: QuantizedKvCacheType): string {
   const kept = withoutOwnedFlags(args);
   return [...kept, LEMONADE_KV_CACHE_FLAGS[type]].join(' ');
 }
@@ -79,13 +99,13 @@ export function withoutKvCacheFlags(args: unknown): string {
  * The quantized cache type a saved `llamacpp_args` sets — what Lemonade runs the model with on its
  * next load, whoever saved it — or null for the 16-bit default.
  */
-export function savedKvCacheType(args: unknown): KvCacheType | null {
+export function savedKvCacheType(args: unknown): QuantizedKvCacheType | null {
   const tokens = typeof args === 'string' ? tokenize(args) : [];
   for (let i = 0; i < tokens.length; i++) {
     const [name, inlineValue] = (tokens[i] as string).split('=', 2) as [string, string | undefined];
     if (name !== '-ctv' && name !== '--cache-type-v') continue;
     const value = (inlineValue ?? tokens[i + 1] ?? '').toLowerCase();
-    if (value === 'q8_0') return 'q8_0';
+    if (value === 'q8_0' || value === 'q4_0') return value;
   }
   return null;
 }

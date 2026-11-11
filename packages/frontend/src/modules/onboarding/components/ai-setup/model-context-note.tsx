@@ -10,7 +10,8 @@ export function formatTokens(tokens: number): string {
 
 /**
  * What a model gets on this hardware, from the onboarding profile's `contextPlans`: its context window,
- * the 8-bit KV cache when the Hub would use one to reach an installed app's floor, and a warning when
+ * the 8-bit or 4-bit KV cache when the Hub would use one to reach an installed app's floor (4-bit's
+ * tooltip says what it costs), and a warning when
  * the window cannot reach that floor here. The floor is said generically ("some apps need 64k") rather
  * than by app: most people run none of the apps that set one. Nothing when there is no plan.
  */
@@ -30,6 +31,12 @@ export function ModelContextNote({ plan }: { plan: ModelContextPlan | undefined 
           <span title={t('MODEL_CONTEXT_8BIT_TITLE', { floor })} data-testid="model-context-8bit">
             {' · '}
             {t('MODEL_CONTEXT_8BIT')}
+          </span>
+        )}
+        {plan.kvCacheType === 'q4_0' && (
+          <span title={t('MODEL_CONTEXT_4BIT_TITLE', { floor })} data-testid="model-context-4bit">
+            {' · '}
+            {t('MODEL_CONTEXT_4BIT')}
           </span>
         )}
         {plan.basis === 'estimated' && window !== null && <span className="italic">{` (${t('MODEL_CONTEXT_ESTIMATED')})`}</span>}

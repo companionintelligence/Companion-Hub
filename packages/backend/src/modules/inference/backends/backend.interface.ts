@@ -1,3 +1,4 @@
+import type { QuantizedKvCacheType } from './lemonade-kv-cache.util';
 import type { BackendHealthStatus, BackendModelInfo, BackendResidency, CuratedModel, InferenceBackendType, PullProgress } from '@ci-hub/common/types';
 import type { ContextCost } from '../model-geometry.util';
 import type { KvCacheChoice } from './lemonade-kv-cache.util';
@@ -141,7 +142,7 @@ export interface InferenceBackend {
    * engine leaves out a type it cannot set (its version) or one the model failed to load with before
    * ({@link markKvCacheUnsupported}).
    */
-  kvCacheTypesFor?(model: CuratedModel): readonly NonNullable<CuratedModel['runtime']['kvCacheType']>[];
+  kvCacheTypesFor?(model: CuratedModel): readonly QuantizedKvCacheType[];
 
   /**
    * Records that `model` failed to load with a quantized cache while it loaded at 16-bit straight

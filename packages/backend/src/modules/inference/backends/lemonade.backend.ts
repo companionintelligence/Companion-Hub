@@ -13,6 +13,8 @@ import {
   type KvCacheChoice,
   KvCacheLoadError,
   lemonadeSavesOptionsWithoutLoading,
+  QUANTIZED_KV_CACHE_TYPES,
+  type QuantizedKvCacheType,
   savedKvCacheType,
   withKvCacheFlags,
   withoutKvCacheFlags,
@@ -300,16 +302,16 @@ export class LemonadeBackend implements InferenceBackend {
   }
 
   /**
-   * The quantized cache types `model` may run with here: q8_0 for a text model Lemonade serves with
+   * The quantized cache types `model` may run with here: q8_0 and q4_0 for a text model Lemonade serves with
    * llama.cpp (the `llamacpp` recipe; `llamacpp-hrx`, FLM and the rest take no llama-server flags), on a
    * version that can save it, unless it failed to load with it before. Measured or not: a load that
    * fails with it falls back to 16-bit and marks it here ({@link markKvCacheUnsupported}).
    */
-  kvCacheTypesFor(model: CuratedModel): readonly 'q8_0'[] {
+  kvCacheTypesFor(model: CuratedModel): readonly QuantizedKvCacheType[] {
     if (model.backend !== 'lemonade' || model.modality !== 'llm' || !this.canSetKvCacheType()) return [];
     const engineId = this.engineModelId(model.backendModelId);
     if (this.currentOffer()?.recipes.get(engineId) !== 'llamacpp') return [];
-    return this.kvUnsupportedIds().has(engineId) ? [] : ['q8_0'];
+    return this.kvUnsupportedIds().has(engineId) ? [] : QUANTIZED_KV_CACHE_TYPES;
   }
 
   /** See {@link InferenceBackend.markKvCacheUnsupported}. Persisted for 30 days, so an engine upgrade gets another try. */
@@ -463,9 +465,9 @@ export class LemonadeBackend implements InferenceBackend {
       if (this.canSetKvCacheType(version)) {
         const loaded = await this.loadWithSavedOptions(engineId, window, options?.kvCacheType, options?.provisionalWindow === true, config);
         if (loaded) return;
-      } else if (options?.kvCacheType === 'q8_0') {
+      } else if (options?.kvCacheType && options.kvCacheType !== 'f16') {
         this.logger.warn(
-          `[Lemonade] ${engineId} was sized for a q8_0 KV cache, but Lemonade ${version ?? '(version unread)'} cannot save a cache type ` +
+          `[Lemonade] ${engineId} was sized for a ${options.kvCacheType} KV cache, but Lemonade ${version ?? '(version unread)'} cannot save a cache type ` +
             'without a load, so it is loaded with the 16-bit cache.',
         );
       }
@@ -504,11 +506,11 @@ export class LemonadeBackend implements InferenceBackend {
    * dropping the model's sampling defaults. Lemonade's own later loads of the model read the same saved
    * options, so the cache stays the one its window was sized for.
    *
-   * `type`: `q8_0` adds the quantized-cache flags, `f16` takes them out, absent leaves the saved flags.
+   * `type`: `q8_0` or `q4_0` adds that cache's flags, `f16` takes them out, absent leaves the saved flags.
    * A provisional window is loaded without saving it over a larger saved one. Returns false when the
    * route turned out not to exist, for the caller's older path; a quantized load then fails instead,
    * since its window was sized for a cache that path cannot set. A load that fails with `q8_0` has its
-   * flags taken back out and throws {@link KvCacheLoadError}, for the router's 16-bit retry.
+   * flags taken back out and throws {@link KvCacheLoadError}, for the router's 16-bit retry (either quantized type).
    */
   private async loadWithSavedOptions(
     engineId: string,
@@ -518,12 +520,13 @@ export class LemonadeBackend implements InferenceBackend {
     config: { headers?: Record<string, string> },
   ): Promise<boolean> {
     const loadBody = { model_name: engineId, ...(window !== null && { ctx_size: window }) };
+    const quantized = type !== undefined && type !== 'f16' ? type : null;
     const saved = await this.readModelInfo(engineId);
     const savedOptions = saved ? recipeOptionsOf(saved) : null;
     if (!savedOptions) {
-      if (type === 'q8_0') {
+      if (quantized) {
         throw new Error(
-          `Lemonade did not give ${engineId}'s saved options, so its q8_0 KV cache could not be saved; not loading it with a 16-bit cache at a window sized for q8_0`,
+          `Lemonade did not give ${engineId}'s saved options, so its ${type} KV cache could not be saved; not loading it with a 16-bit cache at a window sized for ${type}`,
         );
       }
       this.logger.warn(
@@ -536,7 +539,7 @@ export class LemonadeBackend implements InferenceBackend {
     const savedWindow = positiveWindow(savedOptions.ctx_size);
     const keepSavedWindow = provisional && window !== null && savedWindow !== null && savedWindow > window;
     const before = typeof savedOptions.llamacpp_args === 'string' ? savedOptions.llamacpp_args : '';
-    const args = type === 'q8_0' ? withKvCacheFlags(before, 'q8_0') : type === 'f16' ? withoutKvCacheFlags(before) : before;
+    const args = quantized ? withKvCacheFlags(before, quantized) : type === 'f16' ? withoutKvCacheFlags(before) : before;
     const toSave: Record<string, unknown> = {
       ...(window !== null && !keepSavedWindow && window !== savedWindow && { ctx_size: window }),
       ...(args !== before && { llamacpp_args: args }),
@@ -547,9 +550,9 @@ export class LemonadeBackend implements InferenceBackend {
       } catch (err) {
         if ((err as { response?: { status?: number } } | null)?.response?.status !== 404) throw err;
         this.savedOptionsRouteMissing = true;
-        if (type === 'q8_0') {
+        if (quantized) {
           throw new Error(
-            `Lemonade has no POST /v1/models/{id}/options, so ${engineId}'s q8_0 KV cache could not be saved; its next load is sized for the 16-bit cache`,
+            `Lemonade has no POST /v1/models/{id}/options, so ${engineId}'s ${quantized} KV cache could not be saved; its next load is sized for the 16-bit cache`,
           );
         }
         return false;
@@ -561,22 +564,22 @@ export class LemonadeBackend implements InferenceBackend {
       );
     }
     if (type) {
-      this.logger.info(`[Lemonade] ${engineId}: ${type === 'q8_0' ? 'q8_0' : '16-bit'} KV cache${window ? ` at ctx_size ${window}` : ''}`);
+      this.logger.info(`[Lemonade] ${engineId}: ${quantized ?? '16-bit'} KV cache${window ? ` at ctx_size ${window}` : ''}`);
     }
 
     try {
       await axios.post(`${this.getBaseUrl()}/v1/load`, loadBody, { timeout: 120000, ...config });
     } catch (err) {
-      if (type !== 'q8_0') throw err;
+      if (!quantized) throw err;
       // Taken back out before anything else loads the model, so no load runs it with the cache that failed.
       try {
         await this.saveOptions(engineId, { llamacpp_args: withoutKvCacheFlags(args) }, config);
       } catch (revertErr) {
         this.logger.error(
-          `[Lemonade] ${engineId} failed to load with a q8_0 KV cache, and its flags could not be taken back out: ${lemonadeErrorDetail(revertErr)}`,
+          `[Lemonade] ${engineId} failed to load with a ${quantized} KV cache, and its flags could not be taken back out: ${lemonadeErrorDetail(revertErr)}`,
         );
       }
-      throw new KvCacheLoadError('q8_0', err);
+      throw new KvCacheLoadError(quantized, err);
     }
     return true;
   }

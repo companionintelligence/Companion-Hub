@@ -43,6 +43,14 @@ describe('ModelContextNote', () => {
     expect(badge.getAttribute('title')).toBe('MODEL_CONTEXT_8BIT_TITLE {"floor":"64k"}');
   });
 
+  it('says when the Hub would use the 4-bit cache, with what it costs in its tooltip', () => {
+    render(<ModelContextNote plan={plan({ kvCacheType: 'q4_0', floor: { minContextLength: 64_000, apps: ['ci-hermes'], met: true } })} />);
+    const badge = screen.getByTestId('model-context-4bit');
+    expect(badge.textContent).toContain('MODEL_CONTEXT_4BIT');
+    expect(badge.getAttribute('title')).toBe('MODEL_CONTEXT_4BIT_TITLE {"floor":"64k"}');
+    expect(screen.queryByTestId('model-context-8bit')).toBeNull();
+  });
+
   // Most people run none of the apps that set a floor, so the warning says what, not which.
   it('warns generically when the model cannot reach an installed app floor here', () => {
     render(<ModelContextNote plan={plan({ window: 32_768, floor: { minContextLength: 64_000, apps: ['ci-hermes'], met: false } })} />);

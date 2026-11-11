@@ -34,7 +34,7 @@ import { CloudFallbackService, speaksOpenAiCompletions } from './cloud-fallback.
 import { ModelPullerService } from './model-puller.service';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 import type { InferenceBackend } from './backends/backend.interface';
-import { KV_CACHE_SCALE, type KvCacheChoice, KvCacheLoadError } from './backends/lemonade-kv-cache.util';
+import { type KvCacheChoice, KvCacheLoadError, kvCacheScaleFor } from './backends/lemonade-kv-cache.util';
 import { isCatalogModelInstalled, isServedModelForCatalog, resolveInstalledCatalogIds, trackedPullCounts } from './model-availability.util';
 import { InferenceRouteError, modelNotFound } from './inference-error-reply';
 import { firstByteBudgetMs, forwardBudgetMs, lastLocalBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
@@ -1501,7 +1501,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
         this.localContextCap() ?? Number.POSITIVE_INFINITY,
       ),
     });
-    const kvScale = kvCacheType === 'q8_0' ? KV_CACHE_SCALE.q8_0 : 1;
+    const kvScale = kvCacheScaleFor(kvCacheType);
     const sizing: ModelMemoryInput = {
       modelFootprintMb: catalogFootprint,
       kvMbPerToken: cost?.kvMbPerToken == null ? null : cost.kvMbPerToken * kvScale,
@@ -1650,8 +1650,8 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       }) ?? 'f16';
     const sizing: ModelMemoryInput = {
       ...base,
-      kvMbPerToken: base.kvMbPerToken != null && kvCacheType === 'q8_0' ? base.kvMbPerToken * KV_CACHE_SCALE.q8_0 : base.kvMbPerToken,
-      fixedKvMb: base.fixedKvMb != null && kvCacheType === 'q8_0' ? base.fixedKvMb * KV_CACHE_SCALE.q8_0 : base.fixedKvMb,
+      kvMbPerToken: base.kvMbPerToken == null ? null : base.kvMbPerToken * kvCacheScaleFor(kvCacheType),
+      fixedKvMb: base.fixedKvMb == null ? null : base.fixedKvMb * kvCacheScaleFor(kvCacheType),
     };
     const handout = handoutContextLength({
       model: curated,
@@ -1673,14 +1673,16 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       kvCacheType,
       // Computed from the file rather than seen loaded: the cache is exact, the catalog's weights figure may not be.
       basis: cost?.kvMbPerToken == null || (cost.source === 'gguf' && !curated.runtime.footprintMeasured) ? 'estimated' : 'measured',
-      kvCacheMeasured: curated.runtime.kvCacheType === 'q8_0',
+      kvCacheMeasured: kvCacheType !== 'f16' && curated.runtime.kvCacheType === kvCacheType,
       floor: floor ? { ...floor, met: window !== null && window >= floor.minContextLength } : null,
     };
   }
 
   /**
-   * The KV cache a Lemonade load plans for: q8_0 only when it is needed — the 16-bit cache cannot hold
-   * an installed app's floor (Hermes' 64000) even on an empty card here — and the engine offers it for
+   * The KV cache a Lemonade load plans for: quantized only when it is needed — the 16-bit cache cannot
+   * hold an installed app's floor (Hermes' 64000) even on an empty card here — and then q8_0, or q4_0
+   * when only q4_0 reaches the floor (see `QUANTIZED_KV_CACHE_TYPES` for what each costs in quality);
+   * the engine must offer the type for
    * the model (`InferenceBackend.kvCacheTypesFor`: a llama.cpp model on a Lemonade that can save it,
    * not one that failed with it before). 16-bit otherwise, so a model that fits its floor keeps the
    * cache measured to extract a little more from long multi-record prompts (2026-11-10). Decided
@@ -1697,10 +1699,23 @@ export class InferenceRouterService implements OnApplicationBootstrap {
   ): KvCacheChoice | undefined {
     if (model.backend !== 'lemonade' || model.modality !== 'llm') return undefined;
     if (input.fallback || !input.floor || input.sizing.kvMbPerToken == null) return 'f16';
-    if (!(backend.kvCacheTypesFor?.(model) ?? []).includes('q8_0')) return 'f16';
+    const offered = backend.kvCacheTypesFor?.(model) ?? [];
+    if (offered.length === 0) return 'f16';
     const floorWindow = Math.min(input.floor.minContextLength, input.windowCap);
-    const at16Bit = largestFittingWindow({ ...input.sizing, from: floorWindow, budgetMb: input.ceilingMb });
-    return at16Bit !== null && at16Bit >= floorWindow ? 'f16' : 'q8_0';
+    const reaches = (choice: KvCacheChoice) => {
+      const scale = kvCacheScaleFor(choice);
+      const sizing = {
+        ...input.sizing,
+        kvMbPerToken: (input.sizing.kvMbPerToken as number) * scale,
+        fixedKvMb: input.sizing.fixedKvMb == null ? null : input.sizing.fixedKvMb * scale,
+      };
+      const window = largestFittingWindow({ ...sizing, from: floorWindow, budgetMb: input.ceilingMb });
+      return window !== null && window >= floorWindow;
+    };
+    if (reaches('f16')) return 'f16';
+    // Most precise first; when none reaches the floor, the first (q8_0) as before: q4_0 is worth its cost
+    // only for the window it wins.
+    return offered.find(reaches) ?? offered[0] ?? 'f16';
   }
 
   /**

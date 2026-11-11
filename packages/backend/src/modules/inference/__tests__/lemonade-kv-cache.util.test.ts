@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   KV_CACHE_SCALE,
+  kvCacheScaleFor,
   LEMONADE_KV_CACHE_FLAGS,
   lemonadeSavesOptionsWithoutLoading,
   savedKvCacheType,
@@ -49,6 +50,7 @@ describe('savedKvCacheType', () => {
     expect(savedKvCacheType(`--parallel 1 ${LEMONADE_KV_CACHE_FLAGS.q8_0}`)).toBe('q8_0');
     expect(savedKvCacheType('-ctv q8_0')).toBe('q8_0');
     expect(savedKvCacheType('--cache-type-v=q8_0')).toBe('q8_0');
+    expect(savedKvCacheType(`--parallel 1 ${LEMONADE_KV_CACHE_FLAGS.q4_0}`)).toBe('q4_0');
   });
 
   it('is null for the 16-bit default, a K-only setting, or nothing saved', () => {
@@ -60,8 +62,12 @@ describe('savedKvCacheType', () => {
 });
 
 describe('KV_CACHE_SCALE', () => {
-  it('charges q8_0 at 34 bytes per 32 values against 64', () => {
+  it('charges q8_0 at 34 bytes per 32 values against 64, and q4_0 at 18', () => {
     expect(KV_CACHE_SCALE.q8_0).toBeCloseTo(0.53125, 5);
+    expect(KV_CACHE_SCALE.q4_0).toBeCloseTo(0.28125, 5);
+    expect(kvCacheScaleFor('f16')).toBe(1);
+    expect(kvCacheScaleFor(undefined)).toBe(1);
+    expect(kvCacheScaleFor('q4_0')).toBe(KV_CACHE_SCALE.q4_0);
   });
 });
 
