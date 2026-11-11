@@ -64,6 +64,14 @@ import { PoolPeerGuard } from './guards/pool-peer.guard';
   ],
   // HubPoolLoadService for the inference router: a load must know what this node's engines are
   // generating, which only the pool's proxy records, so it never evicts a model mid-turn.
-  exports: [HubPoolPeerService, PoolProxyService, HubPoolIdentityService, HubPoolMdnsService, HubPoolLoadService],
+  exports: [
+    HubPoolPeerService,
+    PoolProxyService,
+    HubPoolIdentityService,
+    HubPoolMdnsService,
+    HubPoolLoadService,
+    PoolPeerGuard,
+    HubPoolPeerRepository,
+  ],
 })
 export class HubPoolModule {}
