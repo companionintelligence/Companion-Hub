@@ -109,7 +109,7 @@ describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
     const { resolver, appsReadService } = makeResolver([]);
     appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('local'));
 
-    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true });
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true, onHostPort: true });
   });
 
   it('is local-only for a Tailscale-exposed provider — its MagicDNS consent page is not publicly reachable', async () => {
@@ -119,14 +119,14 @@ describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
     const { resolver, appsReadService } = makeResolver([]);
     appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('tailscale'));
 
-    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true });
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true, onHostPort: false });
   });
 
   it('is NOT local-only for a Cloudflare-exposed provider — a public browser can reach it', async () => {
     const { resolver, appsReadService } = makeResolver([]);
     appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('cloudflare'));
 
-    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: false });
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: false, onHostPort: false });
   });
 
   it('flags a Public web provider whose address the Portal refused (#2309)', async () => {
@@ -134,7 +134,12 @@ describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
     appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('cloudflare'));
     appsService.publicAddressRefusalFor.mockResolvedValue('subdomain_quota_exceeded');
 
-    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: false, publicAddressRefusal: 'subdomain_quota_exceeded' });
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({
+      status: 'ready',
+      localOnly: false,
+      onHostPort: false,
+      publicAddressRefusal: 'subdomain_quota_exceeded',
+    });
     expect(appsService.publicAddressRefusalFor).toHaveBeenCalledWith('ci-memory:ci-marketplace');
   });
 
@@ -145,7 +150,7 @@ describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
     appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('cloudflare', 'memory.acme.example'));
     appsService.publicAddressRefusalFor.mockResolvedValue('conflict');
 
-    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: false });
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: false, onHostPort: false });
   });
 
   it('does not ask about an address for a provider that has no public route', async () => {
@@ -153,7 +158,7 @@ describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
     appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('local'));
     appsService.publicAddressRefusalFor.mockResolvedValue('subdomain_quota_exceeded');
 
-    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true });
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true, onHostPort: true });
     expect(appsService.publicAddressRefusalFor).not.toHaveBeenCalled();
   });
 
@@ -161,7 +166,7 @@ describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
     const { resolver, appsReadService } = makeResolver([]);
     appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory(undefined));
 
-    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true });
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true, onHostPort: true });
   });
 });
 
@@ -226,6 +231,7 @@ describe('MemoryProviderResolver.findProvider', () => {
       appUrn: 'ci-memory:ci-marketplace',
       internalUrl: 'http://gateway:8642',
       publicUrl: 'https://ci-memory.example.com',
+      hostPortOnLoopback: false,
     });
   });
 
