@@ -50,6 +50,7 @@ import { MemoryConnectModule } from './modules/memory-connect/memory-connect.mod
 import { AgentNotifyModule } from './modules/agent-notify/agent-notify.module';
 import { InferenceModule } from './modules/inference/inference.module';
 import { HubPoolModule } from './modules/hub-pool/hub-pool.module';
+import { TrainingModule } from './modules/training/training.module';
 import { PortalModule } from './core/portal/portal.module';
 import { ErrorReportingModule } from './core/error-reporting/error-reporting.module';
 import { SentryModule } from '@sentry/nestjs/setup';
@@ -92,6 +93,7 @@ const imports: (DynamicModule | typeof I18nModule)[] = [
   AgentNotifyModule,
   InferenceModule,
   HubPoolModule,
+  TrainingModule,
   // SEC-MCP-8: always available (not gated on MCP_ENABLED) — AppsModule provisions companion-app
   // managed keys, and the operator key surface lives here, regardless of whether the MCP endpoint
   // is mounted. Keys are only ever created deliberately; nothing is seeded at boot.
