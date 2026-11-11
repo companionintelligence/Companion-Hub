@@ -139,9 +139,10 @@ export async function invokeRegistryTool(
       capability: mcpCallerCapability(),
       assertMayManageHub: (tool) => assertMcpKeyMayManageHub(whois, tool),
     });
-    logger.info('MCP tool call', toolName, `${Date.now() - start}ms`, 'ok');
     // An app tool's own result (hub_call_app_tool) keeps its content items and isError.
-    return isMarkedCallToolResult(result) ? toWireCallToolResult(result) : (formatToolSuccess(result) as CallToolResult);
+    const wire = isMarkedCallToolResult(result) ? toWireCallToolResult(result) : (formatToolSuccess(result) as CallToolResult);
+    logger.info('MCP tool call', toolName, `${Date.now() - start}ms`, wire.isError ? 'isError' : 'ok');
+    return wire;
   } catch (error) {
     const durationMs = Date.now() - start;
     if (error instanceof McpToolNotFoundError) {

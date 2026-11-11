@@ -5,7 +5,7 @@ import { ContentBlockSchema, type CallToolResult, type ContentBlock } from '@mod
  * tool's return is JSON-encoded into one text item (`formatToolSuccess`), which is right for the
  * Hub's own records and wrong for an app MCP server's result: that already has content items (text,
  * a file as a resource, an image) and its own `isError`. Encoding it again gave the agent JSON inside
- * JSON inside JSON, and a call the app refused looked like a success.
+ * JSON inside JSON. A call the app refused looked like a success.
  *
  * The mark is a non-enumerable symbol, so the admin tool runner, which hands the handler's value to the
  * Hub UI as JSON, still sees a plain `{ content, isError }` object.
@@ -32,10 +32,12 @@ export function toWireCallToolResult(result: CallToolResult): CallToolResult {
  *
  * - An upstream result, `{ content: [...], isError? }`: each content item the protocol defines is kept
  *   as it is; anything else becomes a text item holding its JSON, so one odd item can't fail the call.
- *   `structuredContent` is dropped: the Hub's tool declares no output schema, and the app's servers
- *   repeat it in the text anyway.
+ *   The Hub's tool declares no output schema, so `structuredContent` doesn't go out as a field. A
+ *   server should repeat it in a text item and most do. When the result has no content at all (a
+ *   2026-07-28 server may send `structuredContent` alone, which the client reads as `content: []`),
+ *   its JSON becomes the one text item so the agent still gets the data.
  * - A bridge refusal, `{ error: '...', isError: true }` (app not running, not installed, a timeout, the
- *   server's JSON-RPC error): one text item with the message, and `isError`.
+ *   server's JSON-RPC error): one text item with the message plus `isError`.
  */
 export function bridgedCallToolResult(raw: unknown): CallToolResult | null {
   if (typeof raw !== 'object' || raw === null) {
@@ -48,6 +50,9 @@ export function bridgedCallToolResult(raw: unknown): CallToolResult | null {
       const parsed = ContentBlockSchema.safeParse(item);
       return parsed.success ? parsed.data : { type: 'text', text: JSON.stringify(item) ?? 'null' };
     });
+    if (content.length === 0 && record.structuredContent !== undefined) {
+      content.push({ type: 'text', text: JSON.stringify(record.structuredContent) ?? 'null' });
+    }
     return record.isError === true ? { content, isError: true } : { content };
   }
 

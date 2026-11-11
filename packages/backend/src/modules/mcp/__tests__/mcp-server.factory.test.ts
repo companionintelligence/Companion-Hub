@@ -98,7 +98,7 @@ describe('McpServerFactory (real MCP client over in-memory transport)', () => {
   });
 
   // hub_call_app_tool hands back an app MCP server's own result. It has to reach the client as that
-  // result (its items and isError), and the SDK has to accept it, resource item included.
+  // result (its items and isError). The SDK has to accept it, resource item included.
   it("passes an app tool's own result through, content items and isError intact", async () => {
     const file = { uri: 'repo://github/github-mcp-server/contents/LICENSE', mimeType: 'text/plain', text: 'MIT License' };
     registry.register({

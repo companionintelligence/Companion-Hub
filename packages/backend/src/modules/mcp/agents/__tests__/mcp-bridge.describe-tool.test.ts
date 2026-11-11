@@ -67,6 +67,12 @@ describe('McpBridgeService.describeTool', () => {
     expect(service.describeTool(URN, 'github-mcp_ci-marketplace__list_issues')?.inputSchema).toEqual(LIST_ISSUES_SCHEMA);
   });
 
+  it('gives a tool the server listed without a schema an empty object schema', () => {
+    connectWith([{ name: 'ping', description: 'Ping' } as never]);
+
+    expect(service.describeTool(URN, 'ping')?.inputSchema).toEqual({ type: 'object', properties: {} });
+  });
+
   it('is undefined for a tool the server does not have', () => {
     connectWith([{ name: 'list_issues', description: 'List issues', inputSchema: LIST_ISSUES_SCHEMA }]);
 

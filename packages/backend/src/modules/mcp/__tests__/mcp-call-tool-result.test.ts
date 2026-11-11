@@ -49,6 +49,12 @@ describe('bridgedCallToolResult', () => {
     expect(result).toEqual({ content: [{ type: 'text', text: '1 issue' }] });
   });
 
+  it('sends structuredContent as text when the server returned no content beside it', () => {
+    const result = bridgedCallToolResult({ content: [], structuredContent: { issues: [1] } });
+
+    expect(result).toEqual({ content: [{ type: 'text', text: '{"issues":[1]}' }] });
+  });
+
   it("reads the bridge's own refusal as a failed call", () => {
     const refusal = { error: 'MCP error from github-mcp:ci-marketplace: failed to list issues: 422 Validation Failed', isError: true };
 

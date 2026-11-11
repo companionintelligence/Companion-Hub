@@ -196,6 +196,7 @@ describe('AppAgentTools', () => {
       } as any);
       mcpBridge.discoverTools.mockResolvedValue([]);
       openapiBridge.listToolInfo.mockResolvedValue([]);
+      openapiBridge.generateTools.mockResolvedValue([]);
     });
 
     it("returns a bridged tool's inputSchema after connecting the way the list does", async () => {
@@ -229,6 +230,22 @@ describe('AppAgentTools', () => {
       });
     });
 
+    it('takes the OpenAPI operation with that exact name, not one whose name ends in it', async () => {
+      mcpBridge.describeTool.mockReturnValue(undefined);
+      openapiBridge.listToolInfo.mockResolvedValue([
+        { name: 'ci-store_test__admin__users', description: 'Admin users', source: 'openapi', method: 'delete', path: '/admin/users' },
+        { name: 'ci-store_test__users', description: 'Users', source: 'openapi', method: 'get', path: '/users' },
+      ]);
+      openapiBridge.generateTools.mockResolvedValue([
+        { name: 'ci-store_test__admin__users', inputSchema: { type: 'object', properties: { force: { type: 'boolean' } } } } as any,
+        { name: 'ci-store_test__users', inputSchema: { type: 'object', properties: { limit: { type: 'number' } } } } as any,
+      ]);
+
+      const result = await asGrantedOperator(() => tools.describeAppTool({ appUrn: 'ci-store:test', tool: 'users' }));
+
+      expect(result.tool).toMatchObject({ name: 'ci-store_test__users', path: '/users' });
+    });
+
     it('names the missing tool and how to list the real ones', async () => {
       mcpBridge.describeTool.mockReturnValue(undefined);
 
@@ -246,7 +263,7 @@ describe('AppAgentTools', () => {
       );
     });
 
-    it('the registered tool looks one tool up when given tool, and lists them all otherwise', async () => {
+    it('the registered tool looks one tool up when given tool and lists them all otherwise', async () => {
       tools.onModuleInit();
       const definition = registry.register.mock.calls.map(([d]) => d).find((d) => d.name === 'hub_list_app_tools');
       if (!definition) {
