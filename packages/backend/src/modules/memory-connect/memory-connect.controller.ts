@@ -17,7 +17,7 @@ import { FORWARD_AUTH_SECRET_ENV } from '../auth/forward-auth-secret.resolver';
 import { EnvUtils } from '../env/env.utils';
 import { UserRepository } from '../user/user.repository';
 import { ManagedAppKeyGuard } from './managed-app-key.guard';
-import { MemoryConnectService } from './memory-connect.service';
+import { MemoryConnectService, MemoryConsentUnreachableException } from './memory-connect.service';
 
 /**
  * Endpoints backing the memory-connect flow.
@@ -94,6 +94,14 @@ export class MemoryConnectController {
       // until ci-memory is running, so this only covers the race where it goes down
       // between the status poll and the click — land the user back on the Hub with
       // an error marker (mirrors the callback's ?memoryConnect=error handling).
+      // A consent page this browser can't open says so, rather than "not ready yet".
+      if (err instanceof MemoryConsentUnreachableException) {
+        this.logger.warn(`[MemoryConnect] connect could not start for ${app}: ${err.message}`);
+        res.redirect('/?memoryConnect=local_only');
+
+        return;
+      }
+
       if (err instanceof BadRequestException) {
         this.logger.warn(`[MemoryConnect] connect could not start for ${app}: ${err.message}`);
         res.redirect('/?memoryConnect=unavailable');

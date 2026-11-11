@@ -22,6 +22,7 @@ function makeService(
   options: {
     tunnelHealth?: string;
     providerLocalOnly?: boolean;
+    providerOnHostPort?: boolean;
     providerAddressRefusal?: PublicDnsFailureReason;
     providerStatus?: string;
     internalIp?: string;
@@ -35,6 +36,7 @@ function makeService(
     getProviderRuntimeInfo: vi.fn().mockResolvedValue({
       status: options.providerStatus ?? 'ready',
       localOnly: options.providerLocalOnly ?? false,
+      onHostPort: options.providerOnHostPort ?? false,
       publicAddressRefusal: options.providerAddressRefusal,
     }),
     getProviderRuntimeStatus: vi.fn().mockResolvedValue(options.providerStatus ?? 'ready'),
@@ -403,6 +405,73 @@ describe('launcher selection — provider reachability (Problem 2)', () => {
     const status = await service.getStatus(APP, { host: LAN_HOST });
 
     expect(status.connectable).toBe(true);
+  });
+});
+
+/**
+ * A listen-all Hub addresses a local-only ci-memory as 127.0.0.1. `start` stands in the host the caller
+ * reached the Hub on, so only a caller with no usable host (the wrappers' state poll) has nowhere to go.
+ */
+describe('launcher selection — ci-memory addressed as loopback (listen-all Hub)', () => {
+  const listenAll = { providerLocalOnly: true, providerOnHostPort: true, internalIp: '0.0.0.0' };
+
+  it.each([
+    ['a LAN address', `${LAN_HOST}:5002`],
+    ['a single-label LAN name', 'hubbox:5002'],
+    ['a local-domain name', 'hub.ci.lan'],
+    ['loopback', '127.0.0.1:5002'],
+  ])('keeps Connect for a caller on %s', async (_label, host) => {
+    const { service } = makeService(listenAll);
+
+    const status = await service.getStatus(APP, { host });
+
+    expect(status.connectable).toBe(true);
+    expect(status.reason).toBeNull();
+  });
+
+  it('blocks a caller with no usable host instead of offering a flow that ends on its own machine', async () => {
+    const { service } = makeService(listenAll);
+
+    const status = await service.getStatus(APP);
+
+    expect(status.connectable).toBe(false);
+    expect(status.reason).toBe('memory_loopback_only');
+    expect(status.connectUrl).toBeNull();
+  });
+
+  it('still says provider_local_only to a confirmed remote caller', async () => {
+    const { service } = makeService(listenAll);
+
+    const status = await service.getStatus(APP, { host: PUBLIC_HOST });
+
+    expect(status.reason).toBe('provider_local_only');
+  });
+
+  it('does not apply when the Hub has a real LAN address', async () => {
+    const { service } = makeService({ ...listenAll, internalIp: LAN_HOST });
+
+    const status = await service.getStatus(APP);
+
+    expect(status.connectable).toBe(true);
+  });
+
+  it('does not apply to a Private VPN ci-memory, whose address is its tailnet name', async () => {
+    const { service } = makeService({ ...listenAll, providerOnHostPort: false });
+
+    const status = await service.getStatus(APP);
+
+    expect(status.connectable).toBe(true);
+  });
+});
+
+describe('caller locality — single-label names', () => {
+  it('treats a single-label host as on the network, which a public tunnel never forwards', async () => {
+    const { service } = makeService({ providerLocalOnly: true });
+
+    const status = await service.getStatus(APP, { host: 'hubbox:5002' });
+
+    expect(status.connectable).toBe(true);
+    expect(status.reason).toBeNull();
   });
 });
 

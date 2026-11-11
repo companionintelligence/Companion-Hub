@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { AppInfo } from '@ci-hub/common/schemas';
+import { type AppInfo, hostPortStaysOnLoopback } from '@ci-hub/common/schemas';
 import { type AppUrn, normalizeStoredHostname } from '@ci-hub/common/types';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import type { AppStatus } from '@/core/database/drizzle/types';
@@ -28,6 +28,11 @@ export interface ResolvedMemoryProvider {
   internalUrl: string;
   /** Browser-reachable public URL (base of the consent flow), unless the probe saw that route answer without ci-memory. */
   publicUrl?: string;
+  /**
+   * Whether ci-memory's host port is published on loopback only. When it is not, the port answers on
+   * every interface, so a browser that reached the Hub machine directly reaches ci-memory on that host.
+   */
+  hostPortOnLoopback?: boolean;
 }
 
 /** The env-var names a consumer app reads its memory URL + token from. */
@@ -54,6 +59,11 @@ export type MemoryProviderRuntimeStatus = 'ready' | 'starting' | 'offline' | 'ab
 export interface MemoryProviderRuntimeInfo {
   status: MemoryProviderRuntimeStatus;
   localOnly: boolean;
+  /**
+   * Whether ci-memory's consent page is its host-port address (`exposureMode` local). On a listen-all
+   * Hub that address is 127.0.0.1, which only a browser on the Hub machine can open as written.
+   */
+  onHostPort?: boolean;
   publicAddressRefusal?: PublicDnsFailureReason;
 }
 
@@ -217,17 +227,19 @@ export class MemoryProviderResolver {
       return { status: 'absent', localOnly: false };
     }
 
-    const localOnly = (row.exposureMode || 'local') !== 'cloudflare';
+    const exposureMode = row.exposureMode || 'local';
+    const localOnly = exposureMode !== 'cloudflare';
+    const onHostPort = exposureMode === 'local';
 
     if (row.status === 'running') {
       const publicAddressRefusal =
         !localOnly && !normalizeStoredHostname(row.customDomain)
           ? await this.appsService.publicAddressRefusalFor(createAppUrn(row.appName, row.appStoreSlug))
           : null;
-      return publicAddressRefusal ? { status: 'ready', localOnly, publicAddressRefusal } : { status: 'ready', localOnly };
+      return publicAddressRefusal ? { status: 'ready', localOnly, onHostPort, publicAddressRefusal } : { status: 'ready', localOnly, onHostPort };
     }
 
-    return { status: PROVIDER_STARTING_STATUSES.has(row.status) ? 'starting' : 'offline', localOnly };
+    return { status: PROVIDER_STARTING_STATUSES.has(row.status) ? 'starting' : 'offline', localOnly, onHostPort };
   }
 
   /**
@@ -279,6 +291,6 @@ export class MemoryProviderResolver {
       }
     }
 
-    return { appUrn, internalUrl: `http://${service}:${port}`, publicUrl };
+    return { appUrn, internalUrl: `http://${service}:${port}`, publicUrl, hostPortOnLoopback: hostPortStaysOnLoopback(provider.info) };
   }
 }

@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
+import net from 'node:net';
 import { BadRequestException, HttpStatus, Injectable, type OnApplicationBootstrap, type OnModuleDestroy } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 import { buildHubLocalOrigin, buildHubPublicOrigin, buildHubTailnetOrigin, isPrivateHostname, isTailnetHostname } from '@/common/helpers/hub-origin';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -107,6 +109,12 @@ export type ConnectBlockedReason =
   | 'hub_unreachable'
   /** ci-memory only has a LAN address and this caller is off-network. */
   | 'provider_local_only'
+  /**
+   * ci-memory's address is the Hub machine's loopback (a listen-all Hub with a local-only ci-memory), and
+   * this caller reached the Hub on a host that can't stand in for it, so its consent page has no address
+   * this browser can open.
+   */
+  | 'memory_loopback_only'
   /** The Portal refused ci-memory a public address, so its consent page has no address to reach. */
   | 'memory_address_refused';
 
@@ -155,6 +163,21 @@ export interface MemoryConnectUiStatus extends MemoryConnectStatus {
 /**
  * AppLifecycleService is resolved lazily because a static dependency would create a cycle through AppsModule.
  */
+/** Loopback names a browser resolves to its own machine. Takes a bare hostname (IPv6 without brackets). */
+function isLoopbackHostname(hostname: string | null | undefined): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+}
+
+/**
+ * `start` refused because ci-memory's consent page has no address this browser can open. The controller
+ * lands the browser on the Hub with its own marker rather than the generic "not ready yet" one.
+ */
+export class MemoryConsentUnreachableException extends BadRequestException {
+  constructor() {
+    super('CI Memory is only reachable on this Hub machine and its local network, and this browser reached the Hub another way');
+  }
+}
+
 @Injectable()
 export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDestroy {
   private rotationTimer: ReturnType<typeof setInterval> | null = null;
@@ -336,6 +359,18 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       throw new BadRequestException('CI Memory is not reachable yet; try again once it is running');
     }
 
+    // A local-only ci-memory on a listen-all Hub is addressed as 127.0.0.1, which is this browser's own
+    // machine unless the browser is on the Hub. Never send it there from anywhere else.
+    const consentOrigin = this.consentOriginFor(provider.publicUrl, provider.hostPortOnLoopback === true, origin?.host);
+
+    if (!consentOrigin) {
+      this.logger.warn(
+        `[MemoryConnect] ${appUrn}: CI Memory answers only on this machine's loopback, which a browser on ${this.hostnameOf(origin?.host) ?? 'an unknown host'} cannot open`,
+      );
+
+      throw new MemoryConsentUnreachableException();
+    }
+
     // Keep the callback, interstitial, and session cookie on one origin to avoid a second login.
     const hubOrigin = await this.resolveFlowOrigin(origin);
 
@@ -348,7 +383,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
     const state = this.pending.create(appUrn, safeNext, userId);
     const callbackUrl = `${hubOrigin}/api/memory-connect/callback`;
-    const consentUrl = new URL('/api/connect', new URL(provider.publicUrl).origin);
+    const consentUrl = new URL('/api/connect', consentOrigin);
 
     consentUrl.searchParams.set('app', appUrn);
     consentUrl.searchParams.set('state', state);
@@ -629,6 +664,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       appUrn,
       providerStatus: providerInfo.status,
       providerLocalOnly: providerInfo.localOnly,
+      providerOnHostPort: providerInfo.onHostPort,
       providerAddressRefusal: providerInfo.publicAddressRefusal,
       origin,
     });
@@ -707,6 +743,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       appUrn,
       providerStatus,
       providerLocalOnly: providerInfo.localOnly,
+      providerOnHostPort: providerInfo.onHostPort,
       providerAddressRefusal: providerInfo.publicAddressRefusal,
       origin,
     });
@@ -928,6 +965,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     providerStatus: MemoryProviderRuntimeStatus;
     origin?: RequestOriginContext;
     providerLocalOnly?: boolean;
+    providerOnHostPort?: boolean;
     providerAddressRefusal?: PublicDnsFailureReason;
   }): Promise<ConnectLaunchers> {
     const blocked = (reason: ConnectBlockedReason): ConnectLaunchers => ({
@@ -960,6 +998,18 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       );
 
       return blocked('provider_local_only');
+    }
+
+    // On a listen-all Hub a local-only ci-memory is addressed as 127.0.0.1. `start` can stand the caller's
+    // own host in for it when that host names the Hub machine (see consentOriginFor). A remote caller was
+    // refused above; one with no usable host (the wrappers' state poll) would be sent to its own machine.
+    // ci-memory's port is never loopback-bound, so this DB-only check leaves that case to `start`.
+    if (input.providerOnHostPort && this.hubAddressIsLoopback() && !this.callerReachesHubMachine(input.origin?.host)) {
+      this.logger.warn(
+        `[MemoryConnect] ${input.appUrn}: CI Memory answers only on this machine's loopback; a caller on ${this.hostnameOf(input.origin?.host) ?? 'an unknown host'} cannot open its consent page`,
+      );
+
+      return blocked('memory_loopback_only');
     }
 
     // Resolve VPN status only for tailnet callers so other polls avoid the extra read.
@@ -1042,6 +1092,12 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return 'unknown';
     }
 
+    // A single-label name (`core-5`, `hubbox`) only resolves through local DNS, search domains or
+    // MagicDNS; a public tunnel always forwards a dotted hostname.
+    if (net.isIP(candidate) === 0 && !candidate.includes('.')) {
+      return 'local';
+    }
+
     return isPrivateHostname(hostname) ? 'local' : 'remote';
   }
 
@@ -1056,9 +1112,62 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return true;
     }
 
+    return isLoopbackHostname(this.hostnameOf(callerHost));
+  }
+
+  /** Whether the Hub writes its own address as loopback: INTERNAL_IP unset, listen-all, or loopback itself. */
+  private hubAddressIsLoopback(): boolean {
+    return isLoopbackHostname(this.hostnameOf(resolveBrowserHost(this.config.getConfig().userSettings?.internalIp)));
+  }
+
+  /**
+   * Whether the host this caller opened the Hub on names the Hub machine itself: loopback, a LAN or tailnet
+   * address or name, or a name under the local domain. Only a confirmed remote host, or none, does not. The
+   * tunnel also forwards a local-domain Host, and a remote visitor can't resolve that name, but the loopback
+   * address was no better for them; for a visitor on the network it is the name they reached the Hub by.
+   */
+  private callerReachesHubMachine(callerHost: string | undefined): boolean {
+    const hostname = this.hostnameOf(callerHost);
+
+    if (!hostname) {
+      return false;
+    }
+
+    return isLoopbackHostname(hostname) || this.callerLocality(callerHost) !== 'remote';
+  }
+
+  /**
+   * The origin to send this browser to for ci-memory's consent page, or null when it has none the browser
+   * can open. Only a loopback provider address is ever changed. A browser on the Hub machine keeps it. A
+   * browser that reached the Hub machine directly gets the same host it used for the Hub, on ci-memory's
+   * port, because that port is published on every interface unless the manifest keeps it on loopback.
+   */
+  private consentOriginFor(providerUrl: string, hostPortOnLoopback: boolean, callerHost: string | undefined): string | null {
+    let consent: URL;
+
+    try {
+      consent = new URL(providerUrl);
+    } catch {
+      return null;
+    }
+
+    if (!isLoopbackHostname(this.hostnameOf(consent.origin))) {
+      return consent.origin;
+    }
+
     const callerHostname = this.hostnameOf(callerHost);
 
-    return callerHostname === 'localhost' || callerHostname === '127.0.0.1' || callerHostname === '::1';
+    if (isLoopbackHostname(callerHostname)) {
+      return consent.origin;
+    }
+
+    if (hostPortOnLoopback || !callerHostname || !this.callerReachesHubMachine(callerHost)) {
+      return null;
+    }
+
+    consent.hostname = net.isIP(callerHostname) === 6 ? `[${callerHostname}]` : callerHostname;
+
+    return consent.origin;
   }
 
   /**
@@ -1096,7 +1205,11 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   /** Restrict `next` to the Hub and connecting app origins to prevent an open redirect after consent. */
   private async resolveSafeNext(next: string | undefined, appUrn: AppUrn, hubOrigin: string, origin?: RequestOriginContext): Promise<string> {
     const appAccessUrls = await this.resolver.getAppAccessUrls(appUrn);
-    const appPublicUrl = appAccessUrls.publicUrl;
+    // An app whose host port stays on loopback (OpenClaw, Hermes) is addressed as 127.0.0.1. For any
+    // browser but one on the Hub machine that is its own machine, so it is neither allowed nor a default.
+    const reachable = (url: string | undefined): string | undefined => (url && this.localOriginReachableBy(url, origin?.host) ? url : undefined);
+    const appPublicUrl = reachable(appAccessUrls.publicUrl);
+    const appLocalUrl = reachable(appAccessUrls.localUrl);
     // Allow both Hub and app origins so a LAN flow is not relocated to a different cookie scope.
     // The memory provider is not a valid landing page.
     const allowedOrigins = new Set<string>([hubOrigin]);
@@ -1112,7 +1225,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       allowedOrigins.add(tailnetHubOrigin);
     }
 
-    for (const candidate of [appAccessUrls.publicUrl, appAccessUrls.localUrl]) {
+    for (const candidate of [appPublicUrl, appLocalUrl]) {
       if (!candidate) {
         continue;
       }
@@ -1142,7 +1255,26 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return appPublicUrl;
     }
 
-    return appAccessUrls.localUrl ?? appPublicUrl ?? hubOrigin;
+    const appUrl = appLocalUrl ?? appPublicUrl;
+
+    if (appUrl) {
+      return appUrl;
+    }
+
+    // Nothing of the app's own is reachable from here, or it was only a loopback address: end on the
+    // app's page in the Hub, on the flow's origin, rather than on a page this browser can't open.
+    return appAccessUrls.publicUrl || appAccessUrls.localUrl ? this.hubAppPage(hubOrigin, appUrn) : hubOrigin;
+  }
+
+  /** The app's page in the Hub (`/apps/<store>/<app>`), on the given Hub origin. */
+  private hubAppPage(hubOrigin: string, appUrn: AppUrn): string {
+    const [appName, storeSlug] = appUrn.split(':');
+
+    if (!appName || !storeSlug) {
+      return hubOrigin;
+    }
+
+    return `${hubOrigin}/apps/${encodeURIComponent(storeSlug)}/${encodeURIComponent(appName)}`;
   }
 
   /** Normalize Postgres timestamps because Safari rejects their space-separated representation. */

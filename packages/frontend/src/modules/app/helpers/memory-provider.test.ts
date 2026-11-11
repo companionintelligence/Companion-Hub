@@ -5,6 +5,7 @@ describe('memoryConnectResultToastKey', () => {
   it('names the toast for each result the Hub callback sends', () => {
     expect(memoryConnectResultToastKey('error')).toBe('MEMORY_CONNECT_ERROR_TOAST');
     expect(memoryConnectResultToastKey('unavailable')).toBe('MEMORY_CONNECT_UNAVAILABLE_TOAST');
+    expect(memoryConnectResultToastKey('local_only')).toBe('MEMORY_CONNECT_LOCAL_ONLY_TOAST');
     expect(memoryConnectResultToastKey('previous_removed')).toBe('MEMORY_CONNECT_PREVIOUS_REMOVED_TOAST');
     expect(memoryConnectResultToastKey('denied')).toBe('MEMORY_CONNECT_DENIED_TOAST');
     expect(memoryConnectResultToastKey('busy')).toBe('MEMORY_CONNECT_BUSY_TOAST');

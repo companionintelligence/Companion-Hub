@@ -10,6 +10,7 @@ import { FederatedIdentityRepository } from '@/modules/auth/federated-identity.r
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { UserRepository } from '@/modules/user/user.repository';
 import { MemoryConnectController } from '../memory-connect.controller';
+import { MemoryConsentUnreachableException } from '../memory-connect.service';
 
 /**
  * Connecting and disconnecting Memory both restart the app, so both take the app's `restart` grant,
@@ -83,6 +84,15 @@ describe('MemoryConnectController per-app grants', () => {
 
     expect(service.startConnect).toHaveBeenCalledWith(APP, undefined, '7', { host: 'hub.example.com' });
     expect(res.redirect).toHaveBeenCalledWith('https://memory.example.org/api/connect?app=ci-openclaw%3Aci-marketplace&state=s');
+  });
+
+  it("lands on the Hub with its own marker when CI Memory's consent page has no address this browser can open", async () => {
+    const res = response();
+    service.startConnect.mockRejectedValueOnce(new MemoryConsentUnreachableException());
+
+    await controller.start(APP, undefined, session(7), res);
+
+    expect(res.redirect).toHaveBeenCalledWith('/?memoryConnect=local_only');
   });
 
   it('refuses Disconnect with APP_ACTION_GRANT_DENIED to a person without the restart grant', async () => {

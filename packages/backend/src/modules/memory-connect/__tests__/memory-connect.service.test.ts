@@ -2,7 +2,7 @@ import { HttpStatus } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { RESTARTS_THAT_WAIT_FOR_THE_APP } from '@/modules/app-lifecycle/app-lifecycle.service';
-import { MemoryConnectService } from '../memory-connect.service';
+import { MemoryConnectService, MemoryConsentUnreachableException } from '../memory-connect.service';
 
 /**
  * Unit tests for the connect orchestration: consent-URL construction, the
@@ -160,6 +160,155 @@ describe('MemoryConnectService.startConnect', () => {
     resolver.findProvider.mockResolvedValue({ ...PROVIDER, publicUrl: undefined });
 
     await expect(service.startConnect('ci-openclaw:local', '/', 'user-1')).rejects.toThrow(/not reachable/);
+  });
+});
+
+/**
+ * A local-only ci-memory on a listen-all Hub is addressed as 127.0.0.1, which is the visitor's own machine
+ * unless the visitor is on the Hub. Its port answers on every interface, so a visitor who reached the Hub
+ * machine directly is sent to ci-memory on the same host; anyone else is refused rather than sent home.
+ */
+describe('MemoryConnectService.startConnect with a loopback ci-memory address', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const LOOPBACK_PROVIDER = {
+    appUrn: 'ci-memory:local',
+    internalUrl: 'http://gateway:8642',
+    publicUrl: 'http://127.0.0.1:8642',
+    hostPortOnLoopback: false,
+  };
+
+  function listenAllService() {
+    const made = makeService();
+    made.resolver.findProvider.mockResolvedValue(LOOPBACK_PROVIDER);
+    made.config.getConfig.mockReturnValue({ domain: 'example.org', localDomain: 'ci.lan', userSettings: { internalIp: '0.0.0.0', port: 80 } });
+    return made;
+  }
+
+  const consentOrigin = async (service: MemoryConnectService, host: string) =>
+    new URL(await service.startConnect('ci-openclaw:local', undefined, 'user-1', { host })).origin;
+
+  it('sends a LAN caller to ci-memory on the address it reached the Hub on', async () => {
+    const { service } = listenAllService();
+
+    expect(await consentOrigin(service, '192.168.1.9:5002')).toBe('http://192.168.1.9:8642');
+  });
+
+  it('treats a single-label LAN name as the Hub machine', async () => {
+    const { service } = listenAllService();
+
+    expect(await consentOrigin(service, 'hubbox:5002')).toBe('http://hubbox:8642');
+  });
+
+  it('sends a Private VPN caller to ci-memory on its tailnet name', async () => {
+    const { service } = listenAllService();
+
+    expect(await consentOrigin(service, 'hubbox.tail1234.ts.net')).toBe('http://hubbox.tail1234.ts.net:8642');
+  });
+
+  it('keeps the loopback address for a browser on the Hub machine', async () => {
+    const { service } = listenAllService();
+
+    expect(await consentOrigin(service, '127.0.0.1:5002')).toBe('http://127.0.0.1:8642');
+    expect(await consentOrigin(service, 'localhost:5002')).toBe('http://127.0.0.1:8642');
+  });
+
+  it('refuses a caller on the public origin instead of sending it to its own machine', async () => {
+    const { service, pending } = listenAllService();
+
+    await expect(service.startConnect('ci-openclaw:local', undefined, 'user-1', { host: 'core2-x.example.org' })).rejects.toBeInstanceOf(
+      MemoryConsentUnreachableException,
+    );
+    expect(pending.create).not.toHaveBeenCalled();
+  });
+
+  it('sends a caller on a local-domain name to ci-memory under that name', async () => {
+    const { service } = listenAllService();
+
+    expect(await consentOrigin(service, 'hub.ci.lan')).toBe('http://hub.ci.lan:8642');
+  });
+
+  it('refuses a caller whose host it cannot read', async () => {
+    const { service } = listenAllService();
+
+    await expect(service.startConnect('ci-openclaw:local', undefined, 'user-1', {})).rejects.toBeInstanceOf(MemoryConsentUnreachableException);
+    await expect(service.startConnect('ci-openclaw:local', undefined, 'user-1', { host: 'evil.com@192.168.1.9' })).rejects.toBeInstanceOf(
+      MemoryConsentUnreachableException,
+    );
+  });
+
+  it('refuses a LAN caller when ci-memory keeps its host port on loopback', async () => {
+    const { service, resolver } = listenAllService();
+    resolver.findProvider.mockResolvedValue({ ...LOOPBACK_PROVIDER, hostPortOnLoopback: true });
+
+    await expect(service.startConnect('ci-openclaw:local', undefined, 'user-1', { host: '192.168.1.9' })).rejects.toBeInstanceOf(
+      MemoryConsentUnreachableException,
+    );
+  });
+
+  it('leaves a routable ci-memory address alone for every caller', async () => {
+    const { service, resolver } = listenAllService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+
+    expect(await consentOrigin(service, '192.168.1.9')).toBe('https://ci-memory.example.org');
+    expect(await consentOrigin(service, 'core2-x.example.org')).toBe('https://ci-memory.example.org');
+  });
+});
+
+/**
+ * OpenClaw and Hermes keep their host port on loopback, so their own address is 127.0.0.1. After consent
+ * the flow must not land a browser elsewhere on that address: it is the browser's own machine.
+ */
+describe('MemoryConnectService.startConnect landing after consent for a loopback-only app', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function loopbackAppService() {
+    const made = makeService();
+    made.resolver.findProvider.mockResolvedValue(PROVIDER);
+    made.resolver.getAppAccessUrls.mockResolvedValue({ publicUrl: 'http://127.0.0.1:18789', primaryAvailable: true });
+    made.config.getConfig.mockReturnValue({ domain: 'example.org', userSettings: { internalIp: '0.0.0.0', port: 80 } });
+    return made;
+  }
+
+  it("lands a LAN caller on the app's Hub page instead of its loopback address", async () => {
+    const { service, pending } = loopbackAppService();
+
+    await service.startConnect('ci-openclaw:ci-marketplace', undefined, 'user-1', { host: '192.168.1.9' });
+
+    expect(pending.create).toHaveBeenCalledWith(
+      'ci-openclaw:ci-marketplace',
+      'https://core2-x.example.org/apps/ci-marketplace/ci-openclaw',
+      'user-1',
+    );
+  });
+
+  it('does not accept the loopback app address as `next` from a caller off the Hub machine', async () => {
+    const { service, pending } = loopbackAppService();
+
+    await service.startConnect('ci-openclaw:ci-marketplace', 'http://127.0.0.1:18789/chat', 'user-1', { host: 'core2-x.example.org' });
+
+    expect(pending.create).toHaveBeenCalledWith(
+      'ci-openclaw:ci-marketplace',
+      'https://core2-x.example.org/apps/ci-marketplace/ci-openclaw',
+      'user-1',
+    );
+  });
+
+  it('keeps the loopback app address for a browser on the Hub machine', async () => {
+    const { service, pending } = loopbackAppService();
+
+    await service.startConnect('ci-openclaw:ci-marketplace', undefined, 'user-1', { host: 'localhost:5002' });
+
+    expect(pending.create).toHaveBeenCalledWith('ci-openclaw:ci-marketplace', 'http://127.0.0.1:18789', 'user-1');
+  });
+
+  it('still lands on the Hub root when the app has no address at all', async () => {
+    const { service, pending, resolver } = loopbackAppService();
+    resolver.getAppAccessUrls.mockResolvedValue({});
+
+    await service.startConnect('ci-openclaw:ci-marketplace', undefined, 'user-1', { host: '192.168.1.9' });
+
+    expect(pending.create).toHaveBeenCalledWith('ci-openclaw:ci-marketplace', 'https://core2-x.example.org', 'user-1');
   });
 });
 
