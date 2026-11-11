@@ -128,6 +128,11 @@ export interface ContextCost {
    */
   fixedKvMb?: number;
   /**
+   * The part of `kvMbPerToken` that is not cache — Ollama's buffers beside it (`OLLAMA_EXTRA_MB_PER_TOKEN`)
+   * — which a smaller cache type does not shrink. Absent means none.
+   */
+  extraMbPerToken?: number;
+  /**
    * `general.architecture` from `/api/show` when the geometry was readable: Ollama runs some
    * families on one slot whatever `OLLAMA_NUM_PARALLEL` says, and this is how that is recognised.
    */

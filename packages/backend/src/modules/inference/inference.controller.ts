@@ -385,6 +385,7 @@ export class InferenceController {
       maxNumCtx: body.maxNumCtx,
       ollamaSlots: body.ollamaSlots,
       ollamaKeepAlive: body.ollamaKeepAlive,
+      ollamaKvCacheType: body.ollamaKvCacheType,
     });
 
     this.scheduleAiAppRestart('inference preferences changed');

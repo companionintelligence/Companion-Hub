@@ -30,6 +30,7 @@ import {
   ollamaKeepAliveSeconds,
   ollamaRuntimeApplyShell,
   ollamaRuntimeDropinContent,
+  ollamaRuntimeEnvironment,
   parseOllamaRuntimeValue,
   planOllamaRuntime,
   RUNTIME_DROPIN,
@@ -269,14 +270,16 @@ describe('describeRuntimeEnvironment', () => {
     // which is how OLLAMA_CONTEXT_LENGTH came to run 8192 … 65536 across this fleet unnoticed. The
     // input is the MERGED environment from `systemctl show`, never a drop-in file's own contents.
     expect(describeRuntimeEnvironment({ OLLAMA_CONTEXT_LENGTH: '65536' })).toBe(
-      'OLLAMA_NUM_PARALLEL=<unset> OLLAMA_KEEP_ALIVE=<unset> OLLAMA_CONTEXT_LENGTH=65536 OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=<unset>',
+      'OLLAMA_NUM_PARALLEL=<unset> OLLAMA_KEEP_ALIVE=<unset> OLLAMA_CONTEXT_LENGTH=65536 OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=<unset> ' +
+        'OLLAMA_KV_CACHE_TYPE=<unset> OLLAMA_FLASH_ATTENTION=<unset>',
     );
     // Fixed key order, so two nodes' lines line up column for column.
     expect(describeRuntimeEnvironment({ OLLAMA_MAX_LOADED_MODELS: '2', OLLAMA_NUM_PARALLEL: '4' })).toBe(
-      'OLLAMA_NUM_PARALLEL=4 OLLAMA_KEEP_ALIVE=<unset> OLLAMA_CONTEXT_LENGTH=<unset> OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=2',
+      'OLLAMA_NUM_PARALLEL=4 OLLAMA_KEEP_ALIVE=<unset> OLLAMA_CONTEXT_LENGTH=<unset> OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=2 ' +
+        'OLLAMA_KV_CACHE_TYPE=<unset> OLLAMA_FLASH_ATTENTION=<unset>',
     );
     // A node that sets nothing is still five words, never an empty line.
-    expect(describeRuntimeEnvironment({}).split(' ')).toHaveLength(5);
+    expect(describeRuntimeEnvironment({}).split(' ')).toHaveLength(OLLAMA_RUNTIME_KEYS.length);
   });
 });
 
@@ -516,14 +519,29 @@ describe.skipIf(!bash)('ollamaRuntimeApplyShell (sandboxed bash)', () => {
 });
 
 describe('OLLAMA_RUNTIME_KEYS', () => {
-  it('are the four the audit asked for plus the resident-model cap, and nothing about the bind', () => {
+  it('are the four the audit asked for, the resident-model cap and the KV cache pair, and nothing about the bind', () => {
     expect([...OLLAMA_RUNTIME_KEYS]).toEqual([
       'OLLAMA_NUM_PARALLEL',
       'OLLAMA_KEEP_ALIVE',
       'OLLAMA_CONTEXT_LENGTH',
       'OLLAMA_IGPU_ENABLE',
       'OLLAMA_MAX_LOADED_MODELS',
+      'OLLAMA_KV_CACHE_TYPE',
+      'OLLAMA_FLASH_ATTENTION',
     ]);
+  });
+
+  // Ollama quantizes the cache only with flash attention on, and leaves it 16-bit, silently, where it is off.
+  it('writes flash attention beside a quantized KV cache, and neither for 16-bit or unset', () => {
+    expect(ollamaRuntimeEnvironment({ kvCache: 'q8_0' })).toEqual([
+      ['OLLAMA_KV_CACHE_TYPE', 'q8_0'],
+      ['OLLAMA_FLASH_ATTENTION', '1'],
+    ]);
+    expect(ollamaRuntimeEnvironment({ kvCache: 'f16' })).toEqual([['OLLAMA_KV_CACHE_TYPE', 'f16']]);
+    expect(ollamaRuntimeEnvironment({ parallel: 2 })).toEqual([['OLLAMA_NUM_PARALLEL', '2']]);
+    expect(parseOllamaRuntimeValue('--ollama-kv-cache', 'q4_0')).toBe('q4_0');
+    expect(parseOllamaRuntimeValue('--ollama-kv-cache', 'unset')).toBeUndefined();
+    expect(() => parseOllamaRuntimeValue('--ollama-kv-cache', 'q5_1')).toThrow(/f16, q8_0 or q4_0/);
   });
 });
 

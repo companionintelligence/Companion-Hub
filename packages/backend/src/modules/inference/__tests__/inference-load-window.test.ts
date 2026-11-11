@@ -284,6 +284,8 @@ function world(opts: {
   ollama?: FakeOllama;
   lemonade?: FakeLemonade;
   ollamaSlots?: number | null;
+  /** The operator's `inferenceOllamaKvCacheType`. */
+  ollamaKvCacheType?: 'f16' | 'q8_0' | 'q4_0' | null;
   installedApps?: string[];
   /** Unified memory: MemAvailable with nothing resident; the live reading subtracts what the engines hold. */
   freeWithNothingLoadedMb?: number;
@@ -339,7 +341,12 @@ function world(opts: {
     }),
   } as unknown as ModelPullerService;
   const configuration = {
-    getInferencePreferences: () => ({ maxNumCtx: null, ollamaSlots: opts.ollamaSlots ?? null, preferredModel: null }),
+    getInferencePreferences: () => ({
+      maxNumCtx: null,
+      ollamaSlots: opts.ollamaSlots ?? null,
+      ollamaKvCacheType: opts.ollamaKvCacheType ?? null,
+      preferredModel: null,
+    }),
   } as unknown as ConfigurationService;
   const apps = { getApps: async () => (opts.installedApps ?? []).map((appName) => ({ appName })) } as unknown as AppsRepository;
   // The pool's real record of what is in flight, which the eviction plan (and so the floor decision) reads.
@@ -672,6 +679,53 @@ describe('the load window on the fleet', () => {
     });
 
     // 2026-11-10 on this card: the 27B's 16-bit cache holds 32768, so Hermes refused; with q8_0 it holds 65536.
+    // Ollama runs one cache for every model (OLLAMA_KV_CACHE_TYPE), which the Hub cannot set: it sizes at
+    // what the operator stated and says which setting would reach an app's floor. gemma4:e4b here costs
+    // Ollama's own 0.09375 MB a token (the header table is stubbed out in this file).
+    describe("Ollama's server-wide KV cache", () => {
+      it('recommends the 8-bit cache where 16-bit falls short of Hermes floor and 8-bit reaches it', async () => {
+        const { router, registry } = world({ profile: BETA_RED, installedApps: ['ci-hermes'] });
+        const plan = await router.contextPlanFor(registry.getCuratedModel('gemma4-e4b') as CuratedModel, BETA_RED);
+
+        expect(plan).toMatchObject({ kvCacheType: 'f16', kvCacheSetBy: 'server', floor: { minContextLength: 64_000, met: false } });
+        expect(plan?.window).toBeLessThan(64_000);
+        expect(plan?.kvCacheAdvice).toMatchObject({ type: 'q8_0', setting: 'OLLAMA_KV_CACHE_TYPE=q8_0' });
+        expect(plan?.kvCacheAdvice?.window).toBeGreaterThanOrEqual(64_000);
+      });
+
+      it('sizes at the cache the operator stated, and has nothing to advise once it reaches the floor', async () => {
+        const { router, registry } = world({ profile: BETA_RED, installedApps: ['ci-hermes'], ollamaKvCacheType: 'q8_0' });
+        const plan = await router.contextPlanFor(registry.getCuratedModel('gemma4-e4b') as CuratedModel, BETA_RED);
+
+        expect(plan).toMatchObject({ kvCacheType: 'q8_0', kvCacheSetBy: 'server', kvCacheAdvice: null, floor: { met: true } });
+      });
+
+      it('advises nothing where no cache reaches the floor, or no installed app has one', async () => {
+        const small = world({ profile: BETA_3_GLASS, installedApps: ['ci-hermes'] });
+        await expect(small.router.contextPlanFor(small.registry.getCuratedModel('gemma4-e4b') as CuratedModel, BETA_3_GLASS)).resolves.toMatchObject({
+          kvCacheAdvice: null,
+          floor: { met: false },
+        });
+        const noFloor = world({ profile: BETA_RED, installedApps: ['ci-openclaw'] });
+        await expect(noFloor.router.contextPlanFor(noFloor.registry.getCuratedModel('gemma4-e4b') as CuratedModel, BETA_RED)).resolves.toMatchObject({
+          kvCacheAdvice: null,
+          floor: null,
+        });
+      });
+
+      it('says which setting to use when it loads the model, once', async () => {
+        const { router, logger } = world({ profile: BETA_RED, installedApps: ['ci-hermes'] });
+        await router.loadTrackedModel('gemma4-e4b', { origin: 'operator' });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        await router.loadTrackedModel('gemma4-e4b', { origin: 'operator' });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        const advice = logger.warn.mock.calls.filter(([message]) => String(message).includes('OLLAMA_KV_CACHE_TYPE=q8_0'));
+        expect(advice).toHaveLength(1);
+        expect(String(advice[0]?.[0])).toContain('"ollamaKvCacheType":"q8_0"');
+      });
+    });
+
     describe('a KV cache sized to the floor', () => {
       it('plans the 27B with a q8_0 cache when 16-bit cannot reach Hermes floor on the card', async () => {
         const lemonade = new FakeLemonade({ offersQ8: true });
@@ -774,6 +828,8 @@ describe('the load window on the fleet', () => {
         await expect(router.contextPlanFor(model, BETA_1)).resolves.toEqual({
           window: 65_536,
           kvCacheType: 'q8_0',
+          kvCacheSetBy: 'hub',
+          kvCacheAdvice: null,
           basis: 'measured',
           kvCacheMeasured: true,
           floor: { minContextLength: 64_000, apps: ['ci-hermes'], met: true },

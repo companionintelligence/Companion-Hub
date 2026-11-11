@@ -33,11 +33,22 @@ export async function probeContextCost(backend: InferenceBackend, model: Curated
   const cost = await probeEngineAndCatalog(backend, model);
   if (!cost) return null;
   const scale = kvCacheType === undefined ? kvCacheScaleOf(backend, model) : kvCacheType === 'f16' ? 1 : KV_CACHE_SCALE[kvCacheType];
-  const scaled =
-    scale < 1
-      ? { ...cost, kvMbPerToken: cost.kvMbPerToken * scale, ...(cost.fixedKvMb !== undefined && { fixedKvMb: cost.fixedKvMb * scale }) }
-      : cost;
+  const scaled = scaleCacheCost(cost, scale);
   return model.runtime.footprintMeasured ? { ...scaled, weightMb: null } : scaled;
+}
+
+/**
+ * `cost` with its cache at `scale` of the 16-bit size: the per-token cache and the fixed sliding-window
+ * cache shrink, the non-cache share of the per-token cost (`extraMbPerToken`, Ollama's buffers) does not.
+ */
+export function scaleCacheCost(cost: ContextCost, scale: number): ContextCost {
+  if (!(scale < 1)) return cost;
+  const extra = cost.extraMbPerToken ?? 0;
+  return {
+    ...cost,
+    kvMbPerToken: (cost.kvMbPerToken - extra) * scale + extra,
+    ...(cost.fixedKvMb !== undefined && { fixedKvMb: cost.fixedKvMb * scale }),
+  };
 }
 
 /** The engine's {@link InferenceBackend.kvCacheScale} for `model`, kept to (0, 1]; 1 when it says nothing usable. */
@@ -88,7 +99,10 @@ async function probeEngineAndCatalog(backend: InferenceBackend, model: CuratedMo
   if (typeof catalogKv !== 'number' || !Number.isFinite(catalogKv) || catalogKv <= 0) {
     const header = model.backend === 'lemonade' || model.backend === 'ollama' ? ggufContextCost(model) : null;
     if (!header) return measured;
-    const gguf = model.backend === 'ollama' ? { ...header, kvMbPerToken: header.kvMbPerToken + OLLAMA_EXTRA_MB_PER_TOKEN } : header;
+    const gguf =
+      model.backend === 'ollama'
+        ? { ...header, kvMbPerToken: header.kvMbPerToken + OLLAMA_EXTRA_MB_PER_TOKEN, extraMbPerToken: OLLAMA_EXTRA_MB_PER_TOKEN }
+        : header;
     if (measured) {
       // A cost calibrated from what the engine was seen holding wins when smaller: it is this model on this
       // engine. Ollama's own geometry does not: it is the same cache arithmetic with less to go on — it

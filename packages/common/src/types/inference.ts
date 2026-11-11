@@ -190,6 +190,17 @@ export interface ModelContextPlan {
   window: number | null;
   /** Quantized only when the 16-bit cache cannot reach an installed app's floor and the engine offers it: `q8_0`, or `q4_0` when only it reaches the floor. */
   kvCacheType: 'f16' | 'q8_0' | 'q4_0';
+  /**
+   * Who sets the cache: `hub` (Lemonade, per model, as the Hub plans) or `server` (Ollama, one setting for
+   * every model, `OLLAMA_KV_CACHE_TYPE`, as the operator stated it to the Hub).
+   */
+  kvCacheSetBy: 'hub' | 'server';
+  /**
+   * For an Ollama model short of an installed app's floor: the server cache setting that would reach it,
+   * and the window it would give. The Hub cannot change it; the operator sets it on the daemon and states
+   * it (`inferenceOllamaKvCacheType`). Null when nothing is short, or nothing more compact would reach it.
+   */
+  kvCacheAdvice: { type: 'q8_0' | 'q4_0'; window: number; setting: string } | null;
   /** `measured`: the per-token cost is measured (catalog or engine). `estimated`: a fixed assumption stood in. */
   basis: 'measured' | 'estimated';
   /** The model's catalog row was measured running with q8_0 (`runtime.kvCacheType`). */

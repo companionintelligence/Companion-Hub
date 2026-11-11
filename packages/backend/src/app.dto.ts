@@ -109,6 +109,11 @@ const inferenceOllamaSlotsSchema = z
 const inferenceOllamaKeepAliveSchema = z
   .union([z.number().int(), z.string().transform(Number)])
   .pipe(z.number().int().min(MIN_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS).max(MAX_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS));
+/**
+ * The KV cache this node's Ollama runs (`OLLAMA_KV_CACHE_TYPE`), as the operator stated it: the Hub cannot
+ * read the daemon's environment, and sizes Ollama's windows at this cache. Absent means 16-bit, Ollama's default.
+ */
+export const inferenceOllamaKvCacheTypeSchema = z.enum(['f16', 'q8_0', 'q4_0']);
 /** Same read/write split as the two pool knobs above, for the inference observation interval. */
 const inferenceSupervisionPollSecondsSchema = z
   .union([z.number().int(), z.string().transform(Number)])
@@ -192,6 +197,9 @@ export const settingsSchema = z.object({
   // stated it. Absent means not stated, which ranks exactly as the build before it. Same read-path
   // `.catch(undefined)` as the cap above.
   inferenceOllamaSlots: inferenceOllamaSlotsSchema.optional().catch(undefined),
+  // The KV cache this node's Ollama runs (`OLLAMA_KV_CACHE_TYPE`), as the operator stated it. Absent means
+  // 16-bit; an unknown value degrades to that on the read path, like the knobs around it.
+  inferenceOllamaKvCacheType: inferenceOllamaKvCacheTypeSchema.optional().catch(undefined),
   // How long this node's Ollama keeps an idle model (`OLLAMA_KEEP_ALIVE`), in seconds, as the
   // operator stated it. What an unpinned model is handed back to; absent means Ollama's 5 minutes.
   inferenceOllamaKeepAlive: inferenceOllamaKeepAliveSchema.optional().catch(undefined),
@@ -446,6 +454,7 @@ const APP_CONTEXT_SETTINGS = {
   inferenceEncodeEndpoint: true,
   inferenceMaxNumCtx: true,
   inferenceOllamaSlots: true,
+  inferenceOllamaKvCacheType: true,
   inferenceOllamaKeepAlive: true,
   hubPoolEnabled: true,
   hubPoolOutboundEnabled: true,
@@ -529,6 +538,7 @@ export class UserSettingsBody extends createZodDto(
     inferenceSupervisionPollSeconds: inferenceSupervisionPollSecondsSchema.optional(),
     inferenceMaxNumCtx: inferenceMaxNumCtxSchema.optional(),
     inferenceOllamaSlots: inferenceOllamaSlotsSchema.optional(),
+    inferenceOllamaKvCacheType: inferenceOllamaKvCacheTypeSchema.optional(),
     inferenceOllamaKeepAlive: inferenceOllamaKeepAliveSchema.optional(),
     hubPoolPins: poolPinsSchema.optional(),
   }),

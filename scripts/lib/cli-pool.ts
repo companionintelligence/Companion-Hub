@@ -18,6 +18,8 @@ import {
   fetchPoolStatus,
   formatContextCapResultLines,
   formatMdnsPairRefusalLines,
+  formatOllamaKvCacheResultLines,
+  type OllamaKvCacheType,
   formatOllamaSlotsResultLines,
   formatPoolPeersLines,
   formatPoolProbeLines,
@@ -34,6 +36,7 @@ import {
   resolvePoolPeerTarget,
   runPoolDiscover,
   setInferenceContextCap,
+  setInferenceOllamaKvCacheType,
   setInferenceOllamaSlots,
   setPoolEnabledSetting,
   setPoolMaxPromptTokens,
@@ -91,6 +94,7 @@ export const POOL_SUBCOMMANDS = [
   'ceiling',
   'context-cap',
   'slots',
+  'kv-cache',
   // Four places in this repo and two in docs/CLI.md already tell the operator to run
   // `cihub pool pairing-pin`; until now it was not a subcommand and exited as an unknown one.
   'pairing-pin',
@@ -112,6 +116,7 @@ const POOL_TARGET_SUBCOMMANDS: readonly PoolSubcommand[] = [
   'ceiling',
   'context-cap',
   'slots',
+  'kv-cache',
 ];
 
 const POOL_USAGE = `Usage: ${BASE_COMMAND} pool <${POOL_SUBCOMMANDS.join('|')}> [env]`;
@@ -306,6 +311,13 @@ export function parseOllamaSlotsArg(raw: string | undefined): number | null | un
   if (!/^\d+$/.test(value)) return undefined;
   const slots = Number(value);
   return slots >= MIN_OLLAMA_SLOTS && slots <= MAX_OLLAMA_SLOTS ? slots : undefined;
+}
+
+/** `f16`, `q8_0`, `q4_0` or `clear` (null); anything else is undefined, a usage error. */
+export function parseOllamaKvCacheArg(raw: string | undefined): OllamaKvCacheType | null | undefined {
+  const value = raw?.trim().toLowerCase() ?? '';
+  if (value === 'clear') return null;
+  return value === 'f16' || value === 'q8_0' || value === 'q4_0' ? value : undefined;
 }
 
 /** Exactly six digits, checked here so a typo is a usage error rather than a 400 from the Hub. */
@@ -553,6 +565,11 @@ export async function runPoolCommand(args: string[]) {
 
     if (parsed.subcommand === 'slots') {
       await runPoolSlotsCommand(ctx, parsed);
+      return;
+    }
+
+    if (parsed.subcommand === 'kv-cache') {
+      await runPoolKvCacheCommand(ctx, parsed);
       return;
     }
 
@@ -1129,6 +1146,39 @@ async function runPoolSlotsCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
     after = await fetchInferencePreferences(envFile).catch(() => patched);
   }
   const result = formatOllamaSlotsResultLines(requested, before, after, written);
+  printMessageBox(`${result.title}  [${env}]`, result.lines, result.tone);
+  if (result.tone === 'red') process.exitCode = 1;
+}
+
+/**
+ * `cihub pool kv-cache <f16|q8_0|q4_0>|clear`: state the KV cache this node's Ollama runs
+ * (`OLLAMA_KV_CACHE_TYPE`), which its API does not expose, so the Hub sizes windows for it. The same
+ * shape as `pool slots`: confirm, read, write only when it changes, read back, and say what to match.
+ */
+async function runPoolKvCacheCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
+  const { env, envFile } = ctx;
+  const requested = parseOllamaKvCacheArg(parsed.target);
+  if (requested === undefined) {
+    usageAndExit(`Usage: ${BASE_COMMAND} pool kv-cache <f16|q8_0|q4_0>|clear [env] [--yes] — the node's OLLAMA_KV_CACHE_TYPE`);
+  }
+
+  const describe = requested === null ? 'Clear the Ollama KV cache setting' : `State that Ollama runs a ${requested} KV cache`;
+  const confirmed = await confirmDestructiveAction(`${describe} on this node`, parsed.yes, `${describe} on this node? [y/N]: `, 'a state change');
+  if (!confirmed) {
+    printMessageBox('Cancelled', ['Left the KV cache setting untouched.'], 'yellow');
+    return;
+  }
+
+  const before = await fetchInferencePreferences(envFile);
+  const supported = 'ollamaKvCacheType' in before;
+  const alreadyInForce = supported && (before.ollamaKvCacheType ?? null) === requested;
+  const written = supported && !alreadyInForce;
+  let after: InferencePreferencesResponse | null = null;
+  if (written) {
+    const patched = await setInferenceOllamaKvCacheType(envFile, before.preferredBackend ?? 'ollama', requested);
+    after = await fetchInferencePreferences(envFile).catch(() => patched);
+  }
+  const result = formatOllamaKvCacheResultLines(requested, before, after, written);
   printMessageBox(`${result.title}  [${env}]`, result.lines, result.tone);
   if (result.tone === 'red') process.exitCode = 1;
 }

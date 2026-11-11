@@ -564,11 +564,18 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
       isFlag('--ollama-keep-alive') ||
       isFlag('--ollama-context') ||
       isFlag('--ollama-igpu') ||
-      isFlag('--ollama-max-loaded')
+      isFlag('--ollama-max-loaded') ||
+      isFlag('--ollama-kv-cache')
     ) {
       // Validated here, like --ollama-version: a typo is refused before any machine is dialled. The
       // first of the five to appear is what turns the runtime step on for this run.
-      const flag = arg.split('=')[0] as '--ollama-parallel' | '--ollama-keep-alive' | '--ollama-context' | '--ollama-igpu' | '--ollama-max-loaded';
+      const flag = arg.split('=')[0] as
+        | '--ollama-parallel'
+        | '--ollama-keep-alive'
+        | '--ollama-context'
+        | '--ollama-igpu'
+        | '--ollama-max-loaded'
+        | '--ollama-kv-cache';
       const runtime = args.ollamaRuntime ?? {};
       try {
         if (flag === '--ollama-parallel') {
@@ -584,6 +591,9 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
           // The same number goes to the node's Hub as `inferenceMaxNumCtx`; `unset` clears it there too.
           args.hubContextCap = runtime.contextLength ?? null;
         } else if (flag === '--ollama-max-loaded') runtime.maxLoaded = parseOllamaRuntimeValue(flag, readValue(flag));
+        // No Hub half written here: the Hub's setting is text, which the numeric Hub-half step cannot carry.
+        // The operator states it per node with `cihub pool kv-cache <type>`; until then the Hub sizes for 16-bit.
+        else if (flag === '--ollama-kv-cache') runtime.kvCache = parseOllamaRuntimeValue(flag, readValue(flag));
         else runtime.igpu = parseOllamaRuntimeValue(flag, readValue(flag));
       } catch (error) {
         if (error instanceof OllamaRuntimeFlagError) throw new FleetArgError(error.message);
@@ -677,7 +687,7 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
   }
   if (args.ollamaRuntime && args.subcommand !== 'backends') {
     throw new FleetArgError(
-      '--ollama-parallel, --ollama-keep-alive, --ollama-context, --ollama-igpu and --ollama-max-loaded only apply to `fleet backends`.',
+      '--ollama-parallel, --ollama-keep-alive, --ollama-context, --ollama-igpu, --ollama-kv-cache and --ollama-max-loaded only apply to `fleet backends`.',
     );
   }
   if (args.llamacppModel !== undefined && args.subcommand !== 'backends') {

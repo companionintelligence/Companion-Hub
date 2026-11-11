@@ -13,6 +13,8 @@ const plan = (overrides: Partial<ModelContextPlan> = {}): ModelContextPlan => ({
   kvCacheType: 'f16',
   basis: 'measured',
   kvCacheMeasured: false,
+  kvCacheSetBy: 'hub',
+  kvCacheAdvice: null,
   floor: null,
   ...overrides,
 });
@@ -49,6 +51,28 @@ describe('ModelContextNote', () => {
     expect(badge.textContent).toContain('MODEL_CONTEXT_4BIT');
     expect(badge.getAttribute('title')).toBe('MODEL_CONTEXT_4BIT_TITLE {"floor":"64k"}');
     expect(screen.queryByTestId('model-context-8bit')).toBeNull();
+  });
+
+  it("names Ollama's server cache as the server's, not the Hub's choice", () => {
+    render(<ModelContextNote plan={plan({ kvCacheType: 'q8_0', kvCacheSetBy: 'server' })} />);
+    expect(screen.getByTestId('model-context-8bit').getAttribute('title')).toBe('MODEL_CONTEXT_SERVER_8BIT_TITLE');
+  });
+
+  it('recommends the Ollama setting that would reach the floor, with how to set it', () => {
+    render(
+      <ModelContextNote
+        plan={plan({
+          window: 32_768,
+          kvCacheSetBy: 'server',
+          floor: { minContextLength: 64_000, apps: ['ci-hermes'], met: false },
+          kvCacheAdvice: { type: 'q8_0', window: 65_536, setting: 'OLLAMA_KV_CACHE_TYPE=q8_0' },
+        })}
+      />,
+    );
+    const advice = screen.getByTestId('model-context-advice');
+    expect(advice.textContent).toContain('MODEL_CONTEXT_ADVICE_8BIT {"window":"64k"}');
+    expect(advice.getAttribute('title')).toBe('MODEL_CONTEXT_ADVICE_TITLE {"setting":"OLLAMA_KV_CACHE_TYPE=q8_0","type":"q8_0"}');
+    expect(screen.getByTestId('model-context-floor-unmet')).toBeTruthy();
   });
 
   // Most people run none of the apps that set a floor, so the warning says what, not which.

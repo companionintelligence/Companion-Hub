@@ -9,6 +9,7 @@ import {
   OLLAMA_SINGLE_SLOT_ARCHITECTURES,
   probeContextCost,
   probeLocalSizing,
+  scaleCacheCost,
 } from '../context-cost.util';
 
 const model = (kvMbPerToken?: number) => ({ id: 'm', backendModelId: 'engine-m', runtime: { kvMbPerToken } }) as unknown as CuratedModel;
@@ -148,9 +149,23 @@ describe('the cost read from an Ollama model file header', () => {
   it('charges a model not yet downloaded its cache plus what Ollama holds beside it', async () => {
     await expect(probeContextCost({} as InferenceBackend, ollamaRow('qwen3-5-9b', 'qwen3.5:9b'))).resolves.toEqual({
       kvMbPerToken: 0.03125 + OLLAMA_EXTRA_MB_PER_TOKEN,
+      extraMbPerToken: OLLAMA_EXTRA_MB_PER_TOKEN,
       weightMb: null,
       source: 'gguf',
       architecture: 'qwen35',
+    });
+  });
+
+  // OLLAMA_KV_CACHE_TYPE shrinks the cache; the buffers beside it stay (OLLAMA_EXTRA_MB_PER_TOKEN).
+  it("scales only the cache share at Ollama's stated cache type, keeping the buffers beside it", async () => {
+    const stated = { kvCacheScale: () => 34 / 64 } as unknown as InferenceBackend;
+    const cost = await probeContextCost(stated, ollamaRow('qwen3-5-9b', 'qwen3.5:9b'));
+    expect(cost?.kvMbPerToken).toBeCloseTo(0.03125 * (34 / 64) + OLLAMA_EXTRA_MB_PER_TOKEN, 12);
+    expect(scaleCacheCost({ kvMbPerToken: 0.1, fixedKvMb: 40, weightMb: null, source: 'geometry' }, 0.5)).toEqual({
+      kvMbPerToken: 0.05,
+      fixedKvMb: 20,
+      weightMb: null,
+      source: 'geometry',
     });
   });
 
