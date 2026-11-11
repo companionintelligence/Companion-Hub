@@ -411,9 +411,9 @@ export class AppStatusSyncService {
   }
 
   /**
-   * Report a marketplace app crash with the same container-log trail post_start
-   * already attaches. Without logs, Sentry only said "transitioned from running
-   * to stopped" — useless for figuring out why the app died.
+   * Report a marketplace app crash. The report names the unhealthy containers and their states.
+   * Container logs are not attached: app-controlled output can carry private data, so the report
+   * says which containers failed and how, and nothing from inside them.
    */
   private async reportAppCrash(appUrn: AppUrn, previousStatus: AppStatus, newStatus: AppStatus): Promise<void> {
     let containers: Array<{ name: string; state: string; logs?: string }> | undefined;
@@ -428,7 +428,7 @@ export class AppStatusSyncService {
           message = `${message}\n${containerSummary}`;
         }
       } catch (diagError) {
-        this.logger.warn(`Failed to capture container logs for crashed app ${appUrn}: ${String(diagError)}`);
+        this.logger.warn(`Failed to diagnose containers for crashed app ${appUrn}: ${String(diagError)}`);
       }
     }
 

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CONSENT_REFRESH_INTERVAL_MS } from './telemetry-consent';
 
 type MutableImportMetaEnv = {
   -readonly [K in keyof ImportMetaEnv]: ImportMetaEnv[K];
@@ -34,6 +35,16 @@ const {
   replayIntegration: vi.fn(() => ({ name: 'Replay' })),
 }));
 
+const { consoleIntegration, makeFetchTransport, transportSend } = vi.hoisted(() => {
+  const transportSend = vi.fn(async () => ({ statusCode: 200 }));
+
+  return {
+    transportSend,
+    consoleIntegration: vi.fn((options: object) => ({ name: 'Console', ...options })),
+    makeFetchTransport: vi.fn(() => ({ send: transportSend, flush: vi.fn(async () => true) })),
+  };
+});
+
 vi.mock('@sentry/react', () => ({
   addBreadcrumb,
   captureMessage,
@@ -44,6 +55,8 @@ vi.mock('@sentry/react', () => ({
   withScope,
   browserTracingIntegration,
   replayIntegration,
+  consoleIntegration,
+  makeFetchTransport,
 }));
 
 vi.mock('./registration-api', () => ({
@@ -63,6 +76,7 @@ const { telemetryAllowed, refreshTelemetryConsent, refreshTelemetryConsentIfStal
 }));
 
 vi.mock('./telemetry-consent', () => ({
+  CONSENT_REFRESH_INTERVAL_MS: 60_000,
   isTelemetryAllowed: () => telemetryAllowed.value,
   refreshTelemetryConsent,
   refreshTelemetryConsentIfStale,
@@ -131,10 +145,11 @@ describe('frontend sentry', () => {
     );
     expect(browserTracingIntegration).toHaveBeenCalledOnce();
     // Factories being called is not enough — dropping their return values from
-    // `init` silently disables production tracing.
+    // `init` silently disables production tracing. The console integration is the
+    // same-named replacement that switches off console breadcrumbs.
     expect(init).toHaveBeenCalledWith(
       expect.objectContaining({
-        integrations: [{ name: 'BrowserTracing' }],
+        integrations: [{ name: 'BrowserTracing' }, { name: 'Console', levels: [] }],
       }),
     );
     /*
@@ -463,5 +478,85 @@ describe('frontend sentry', () => {
     beforeSend?.({ exception: { values: [{ value: 'a real bug' }] } });
     // Also refreshed on the dropped path, so an opt-in is noticed.
     expect(refreshTelemetryConsentIfStale).toHaveBeenCalled();
+  });
+
+  it('switches off console breadcrumbs with the SDK console integration', async () => {
+    await import('./sentry');
+
+    // A same-named integration replaces the SDK default, so the levels option is the switch.
+    expect(consoleIntegration).toHaveBeenCalledWith({ levels: [] });
+  });
+
+  it('sends no trace, session or replay envelope while consent is off', async () => {
+    await import('./sentry');
+
+    type TransportLike = { send: (envelope: unknown) => Promise<unknown>; flush: (timeout?: number) => Promise<boolean> };
+    const createTransport = init.mock.calls[0]?.[0]?.transport as ((options: object) => TransportLike) | undefined;
+    expect(createTransport).toBeTypeOf('function');
+
+    const options = { url: 'https://example.ingest.sentry.io/api/1/envelope/' };
+    const transport = createTransport?.(options);
+    expect(makeFetchTransport).toHaveBeenCalledWith(options);
+    const envelope = [{ event_id: 'abc' }, [[{ type: 'span' }, { items: [] }]]];
+
+    // Span envelopes never reach beforeSend, so the transport is what keeps them in the browser.
+    telemetryAllowed.value = false;
+    await expect(transport?.send(envelope)).resolves.toEqual({});
+    expect(transportSend).not.toHaveBeenCalled();
+
+    telemetryAllowed.value = true;
+    await transport?.send(envelope);
+    expect(transportSend).toHaveBeenCalledWith(envelope);
+  });
+
+  it('scrubs span URLs, identity attributes and secrets before a span is sent', async () => {
+    await import('./sentry');
+
+    type SpanLike = { name: string; attributes: Record<string, unknown> };
+    const beforeSendSpan = init.mock.calls[0]?.[0]?.beforeSendSpan as ((span: SpanLike) => SpanLike) | undefined;
+    expect(beforeSendSpan).toBeTypeOf('function');
+
+    const scrubbed = beforeSendSpan?.({
+      name: 'GET /Users/bennett/devel/api',
+      attributes: {
+        'http.url': 'https://hub.ci.localhost/auth/join?token=one-time-secret',
+        'http.target': '/auth/join?token=one-time-secret',
+        'http.query': '?token=one-time-secret',
+        'user.email': 'bennett@example.com',
+        'user.ip_address': '203.0.113.7',
+        'http.request.header.authorization': 'Bearer abc123',
+        'http.response.status_code': 200,
+      },
+    });
+
+    expect(scrubbed?.name).toBe('GET ~/devel/api');
+    expect(scrubbed?.attributes['http.url']).toBe('https://hub.ci.localhost/auth/join');
+    expect(scrubbed?.attributes['http.target']).toBe('/auth/join');
+    expect(scrubbed?.attributes['http.query']).toBe('[Filtered]');
+    expect(scrubbed?.attributes).not.toHaveProperty('user.email');
+    expect(scrubbed?.attributes).not.toHaveProperty('user.ip_address');
+    expect(scrubbed?.attributes).not.toHaveProperty('http.request.header.authorization');
+    expect(scrubbed?.attributes['http.response.status_code']).toBe(200);
+  });
+
+  it('re-asks the Hub for consent on a timer, so a switch flipped elsewhere reaches an idle page', async () => {
+    // Only the interval is faked, so the module import itself is not affected.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+
+    try {
+      await import('./sentry');
+      refreshTelemetryConsent.mockClear();
+
+      vi.advanceTimersByTime(CONSENT_REFRESH_INTERVAL_MS - 1);
+      expect(refreshTelemetryConsent).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(1);
+      expect(refreshTelemetryConsent).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(CONSENT_REFRESH_INTERVAL_MS);
+      expect(refreshTelemetryConsent).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

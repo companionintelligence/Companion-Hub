@@ -36,7 +36,10 @@
  * unscrubbed for so long.
  */
 
-import type { ErrorEvent, EventHint } from '@sentry/node';
+import type { ErrorEvent, EventHint, NodeOptions } from '@sentry/node';
+
+/** One streamed span, as the SDK passes it to `beforeSendSpan`. */
+type StreamedSpan = Parameters<NonNullable<NodeOptions['beforeSendSpan']>>[0];
 import { ApiKeyStoreUnavailableError, isDatabaseCredentialError, isTransientDbError } from '@/modules/api-keys/api-key.errors';
 
 const SECRET_PATTERNS = [
@@ -408,4 +411,36 @@ export function scrubEvent(event: ErrorEvent, hint: EventHint): ErrorEvent | nul
   }
 
   return event;
+}
+
+/** Span attributes the Node SDK fills with a full URL, query string included. */
+const URL_VALUED_SPAN_ATTRIBUTES = new Set(['url', 'url.full', 'http.url', 'http.target']);
+
+/** Span attributes that hold a bare query string or fragment. */
+const QUERY_VALUED_SPAN_ATTRIBUTES = new Set(['http.query', 'url.query', 'http.fragment', 'url.fragment']);
+
+/**
+ * Scrub one streamed span in place. Spans are the trace payload in the default
+ * `stream` lifecycle, where `beforeSendTransaction` is never called, so they get
+ * the same URL and value rules as events.
+ */
+export function scrubSpan(span: StreamedSpan): StreamedSpan {
+  span.name = scrubString(span.name);
+
+  // Widened, not cast: this is the same attributes object the SDK serialises next.
+  const attributes: Record<string, unknown> = span.attributes;
+
+  for (const key of Object.keys(attributes)) {
+    if (key === 'user.ip_address' || isSensitiveKey(key)) {
+      delete attributes[key];
+    } else if (QUERY_VALUED_SPAN_ATTRIBUTES.has(key)) {
+      attributes[key] = '[Filtered]';
+    } else if (URL_VALUED_SPAN_ATTRIBUTES.has(key) && typeof attributes[key] === 'string') {
+      attributes[key] = scrubUrl(attributes[key]);
+    } else {
+      attributes[key] = scrubValue(attributes[key]);
+    }
+  }
+
+  return span;
 }
