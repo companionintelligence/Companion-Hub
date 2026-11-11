@@ -873,6 +873,7 @@ export const AiSetupStep = ({
 
           <RecommendedModels
             tier={profile.tier}
+            contextPlans={profile.contextPlans}
             recommendedModels={backendRecommendedModels}
             availableModels={backendAvailableModels}
             installedCatalogIds={installedCatalogIds}

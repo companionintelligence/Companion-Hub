@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  What the app shows from its first frame until the WebView exists. Tauri builds the WebView only
+  once its Rust side has started (seconds, on a cold start, and far longer in a debug build), and
+  wry then attaches it with setContentView, which replaces this layout: nothing removes it by hand.
+  Colours match the launch background (themes.xml) and the web app's dark theme accent.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FF041620">
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:gravity="center_horizontal"
+        android:orientation="vertical">
+
+        <!-- The adaptive icon's foreground: the Hub mark centred in transparent padding. -->
+        <ImageView
+            android:layout_width="160dp"
+            android:layout_height="160dp"
+            android:contentDescription="@string/app_name"
+            android:src="@mipmap/ic_launcher_foreground" />
+
+        <ProgressBar
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:layout_marginTop="4dp"
+            android:contentDescription="@string/launch_loading"
+            android:indeterminate="true"
+            android:indeterminateTint="#FFC5E8DC" />
+    </LinearLayout>
+</FrameLayout>

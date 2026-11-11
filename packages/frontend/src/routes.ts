@@ -18,6 +18,9 @@ export default [
   // Memory-connect finishing interstitial: the connect callback lands here while
   // the app restarts to pick up its new creds (full-page, self-gated).
   route('memory-connect/finishing', './modules/app/pages/memory-connect-finishing-page.tsx', { id: 'memory-connect-finishing' }),
+  // Where a connect started in the phone app ends, in the browser it handed the consent to:
+  // a "Back to the Hub app" button (full-page, self-gated like the finishing page).
+  route('memory-connect/return-to-app', './modules/app/pages/memory-connect-return-page.tsx', { id: 'memory-connect-return' }),
   // Authenticated routes
   layout('./components/routes/authenticated-route.tsx', [
     route('home', './modules/dashboard/pages/dashboard.tsx', { id: 'dashboard' }),

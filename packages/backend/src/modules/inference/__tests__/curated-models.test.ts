@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { LEMONADE_REGISTRATIONS } from '../backends/lemonade.backend';
 import { CURATED_MODELS } from '../catalog/curated-models';
+import { GGUF_KV_GEOMETRY } from '../catalog/kv-geometry.generated';
 
 /**
  * The LLM catalog is authored as a pipe-delimited TOON table and decoded at module load. These tests
  * exercise the decoder + derivation: counts, derived requirements, real context windows, and the
  * Artificial Analysis metadata (creator / intelligence index / capabilities / perf).
  */
+/** A row's files in MiB, from the header table: the download size the catalog now carries. */
+const fileMb = (id: string) => {
+  const bytes = GGUF_KV_GEOMETRY[id]?.fileBytes;
+  return bytes ? Math.round(bytes / 1024 ** 2) : undefined;
+};
+
 describe('curated-models (TOON catalog)', () => {
   const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
@@ -27,7 +34,8 @@ describe('curated-models (TOON catalog)', () => {
     const expected = [
       ['mimo-v2-6-9b', 'mimo-v2.6:9b', 9, 256_000, 'Xiaomi', true, true, true],
       ['flint-40b', 'flint:40b', 39.8, 256_000, 'Recursive', true, false, true],
-      ['nemotron-3-5-bolt-e4b', 'nemotron-3.5-bolt:e4b', 4, 128_000, 'NVIDIA', true, true, true],
+      // 128000 on its model card; its file's context_length is 65536, and the catalog caps it there.
+      ['nemotron-3-5-bolt-e4b', 'nemotron-3.5-bolt:e4b', 4, 65_536, 'NVIDIA', true, true, true],
       ['lfm3-1-7b', 'lfm3:1.7b', 1.7, 256_000, 'Liquid AI', true, false, true],
     ] as const;
 
@@ -43,10 +51,16 @@ describe('curated-models (TOON catalog)', () => {
       });
     }
     expect(byId.get('flint-40b')?.activeParameterScale).toBe(2.5);
-    expect(byId.get('mimo-v2-6-9b')?.requirements.diskMb).toBe(Math.round(6.6 * 1024));
-    expect(byId.get('flint-40b')?.requirements.diskMb).toBe(Math.round(23 * 1024));
-    expect(byId.get('nemotron-3-5-bolt-e4b')?.requirements.diskMb).toBe(Math.round(7.9 * 1024));
-    expect(byId.get('lfm3-1-7b')?.requirements.diskMb).toBe(Math.round(1.1 * 1024));
+    // Download sizes come from the registry's files (kv-geometry.generated.ts), within 10 % of the TOON's gb column.
+    for (const [id, gb] of [
+      ['mimo-v2-6-9b', 6.6],
+      ['flint-40b', 23],
+      ['nemotron-3-5-bolt-e4b', 7.9],
+      ['lfm3-1-7b', 1.1],
+    ] as const) {
+      expect(byId.get(id)?.requirements.diskMb, id).toBe(fileMb(id));
+      expect(Math.abs((fileMb(id) ?? 0) / (gb * 1024) - 1), id).toBeLessThan(0.1);
+    }
   });
 
   it('declares the native host platform matrix for every curated backend', () => {
@@ -65,17 +79,46 @@ describe('curated-models (TOON catalog)', () => {
     expect(llms.filter((m) => m.backend === 'vllm').every((m) => !m.requirements.supportedPlatforms?.includes('darwin'))).toBe(true);
   });
 
-  it('leaves every row without a ramGb column on the historical diskMb x 1.1 footprint', () => {
+  it('leaves every row without a ramGb column on the historical diskMb x 1.1 footprint, or a Lemonade or Ollama row on its files', () => {
     // Regression guard for the optional `ramGb` column: only a row that states a measured figure
     // may leave the derived numbers, so adding one must not shift any other row.
     const measured = CURATED_MODELS.filter((m) => m.runtime.footprintMeasured).map((m) => m.id);
     expect(measured.sort()).toEqual(['gemma4-26b', 'gemma4-31b', 'gemma4-e4b', 'qwen3-8-27b-lemonade']);
     for (const m of CURATED_MODELS.filter((m) => m.modality === 'llm' && !m.runtime.footprintMeasured)) {
       expect(m.runtime, `${m.id} runtime`).not.toHaveProperty('footprintMeasured');
-      expect(m.runtime.memoryFootprintMb, `${m.id} footprint`).toBe(Math.round(m.requirements.diskMb * 1.1));
+      const fileBytes = m.backend === 'lemonade' || m.backend === 'ollama' ? GGUF_KV_GEOMETRY[m.id]?.fileBytes : undefined;
+      expect(m.runtime.memoryFootprintMb, `${m.id} footprint`).toBe(
+        fileBytes ? Math.ceil(fileBytes / 1024 ** 2 + 768) : Math.round(m.requirements.diskMb * 1.1),
+      );
       expect(m.requirements.minVramMb, `${m.id} minVram`).toBe(m.requirements.diskMb);
-      expect(m.requirements.recommendedVramMb, `${m.id} recVram`).toBe(Math.round(m.requirements.diskMb * 1.1 + 1024));
+      expect(m.requirements.recommendedVramMb, `${m.id} recVram`).toBe(
+        fileBytes ? m.runtime.memoryFootprintMb + 1024 : Math.round(m.requirements.diskMb * 1.1 + 1024),
+      );
       expect(m.requirements.minRamMb, `${m.id} minRam`).toBe(Math.round(m.requirements.diskMb * 1.15));
+    }
+  });
+
+  // The 10 % rule put the same-size Qwen 3.5 27B 2.4 GB above Qwen 3.8 27B's measured 18,473 MB.
+  it("charges an unmeasured Lemonade or Ollama row its files plus the runner's overhead", () => {
+    const footprint = (id: string) => CURATED_MODELS.find((m) => m.id === id)?.runtime.memoryFootprintMb;
+    expect(footprint('qwen3-5-27b-lemonade')).toBe(18_458);
+    expect(footprint('qwen3-8-27b-lemonade')).toBe(18_473); // measured: left alone
+    const ollama = CURATED_MODELS.find((m) => m.id === 'qwen3-5-27b');
+    expect(footprint('qwen3-5-27b')).toBe(Math.ceil((GGUF_KV_GEOMETRY['qwen3-5-27b']?.fileBytes ?? 0) / 1024 ** 2 + 768)); // Ollama: its registry files
+    expect(ollama?.requirements.diskMb).toBe(fileMb('qwen3-5-27b'));
+  });
+
+  // Lemonade refused every 58k-token prompt to Qwen3-8B (2026-11-10): its file runs at 40960, and the
+  // 131072 on the row needs YaRN, which neither engine switches on. The Hub would have handed out 64k.
+  it("caps a row's window at its file's context_length, and leaves one inside it alone", () => {
+    const window = (id: string) => byId.get(id)?.runtime.contextWindow;
+    expect(window('qwen3-8b-lemonade')).toBe(40_960);
+    expect(window('qwen3-4b-lemonade')).toBe(40_960);
+    expect(window('command-a-111b')).toBe(16_384);
+    expect(window('qwen3-8-27b-lemonade')).toBe(256_000); // inside its file's 262144: unchanged
+    for (const m of CURATED_MODELS) {
+      const fileWindow = GGUF_KV_GEOMETRY[m.id]?.contextLength;
+      if (fileWindow) expect(m.runtime.contextWindow, m.id).toBeLessThanOrEqual(fileWindow);
     }
   });
 
@@ -142,9 +185,10 @@ describe('curated-models (TOON catalog)', () => {
     expect(g).toBeDefined();
     expect(g?.backendModelId).toBe('gemma4:12b');
     expect(g?.parameterScale).toBe(12);
-    // gb=7.6 → diskMb 7.6*1024, footprint ~1.1x: no node has it downloaded, so nothing was measured.
-    expect(g?.requirements.diskMb).toBe(7782);
-    expect(g?.runtime.memoryFootprintMb).toBe(Math.round(7782 * 1.1));
+    // Nothing measured: its download is its registry files (7,650 MiB; the TOON's gb=7.6 said 7,782), and its
+    // footprint those files plus the runner's 768 MB, the base the load estimate charges once it is pulled.
+    expect(g?.requirements.diskMb).toBe(7_650);
+    expect(g?.runtime.memoryFootprintMb).toBe(7_650 + 769);
     expect(g?.runtime.footprintMeasured).toBeUndefined();
     // ctxK=256 → 256000 (not the 131072 default).
     expect(g?.runtime.contextWindow).toBe(256000);
@@ -154,10 +198,10 @@ describe('curated-models (TOON catalog)', () => {
   // its KV cache and compute buffers. The disk figure stays the download, which is what a pull writes.
   it.each([
     // id, measured footprint MB, download MB
-    ['gemma4-e4b', 4_362, 9_830],
-    ['gemma4-26b', 18_780, 18_432],
-    ['gemma4-31b', 19_651, 20_480],
-  ])('carries the measured footprint of %s and keeps its download as the disk size', (id, footprintMb, diskMb) => {
+    ['gemma4-e4b', 4_362, 6_279],
+    ['gemma4-26b', 18_780, 17_863],
+    ['gemma4-31b', 19_651, 19_441],
+  ])('carries the measured footprint of %s and takes its download from the registry files', (id, footprintMb, diskMb) => {
     const m = byId.get(id);
     expect(m?.runtime.memoryFootprintMb).toBe(footprintMb);
     expect(m?.runtime.footprintMeasured).toBe(true);
@@ -170,25 +214,35 @@ describe('curated-models (TOON catalog)', () => {
   // Its load logs suggest about 2,925 MB (e4b's reading less the weight difference), but no node has
   // held it to read, and the column is for readings. A derived 2,925 made it the auto-installed default
   // on 4 GB cards (a 7.2 GB download the load estimate then refused there); model-registry pins that.
-  it('keeps gemma4 E2B on the footprint derived from its download until a node measures it', () => {
+  // It is charged its files instead — the tag shrank to 4,375 MiB — plus the runner's 768: what the load
+  // estimate charges once it is pulled, so the two cannot disagree, and still over a 4 GB card.
+  it('keeps gemma4 E2B unmeasured, on its files plus the runner, where the load estimate charges it', () => {
     const e2b = byId.get('gemma4-e2b');
     expect(e2b?.runtime.footprintMeasured).toBeUndefined();
-    expect(e2b?.requirements.diskMb).toBe(7_373);
-    expect(e2b?.runtime.memoryFootprintMb).toBe(8_110);
+    expect(e2b?.requirements.diskMb).toBe(4_375);
+    expect(e2b?.runtime.memoryFootprintMb).toBe(5_143);
   });
 
-  it('puts gemma4 E4B well under half its download, the ratio that refused it on 8 and 10 GB cards', () => {
+  it('puts gemma4 E4B under its download, never raised back to it', () => {
     const e4b = byId.get('gemma4-e4b');
-    // 10,813 MB when derived from the 9.6 GB download; weights, encoders and runtime hold 4,046-4,357 MiB.
-    expect(Math.round((e4b?.requirements.diskMb ?? 0) * 1.1)).toBe(10_813);
-    expect(e4b?.runtime.memoryFootprintMb).toBeLessThan((e4b?.requirements.diskMb ?? 0) / 2);
+    // 10,813 MB when derived from the 9.6 GB download it once was; weights, encoders and runtime hold 4,046-4,357 MiB.
+    expect(e4b?.runtime.memoryFootprintMb).toBe(4_362);
+    expect(e4b?.runtime.memoryFootprintMb).toBeLessThan(e4b?.requirements.diskMb ?? 0);
   });
 
   // F7 in the #1679 audit: the row carried 17.2, its files measured in GiB, where every other Lemonade
   // row carries the registry's size. The measurement now sets the footprint through `ramGb` instead.
-  it("gives qwen3-8-27b-lemonade the registry's 18.8 GB and its measured footprint", () => {
+  it('runs only the measured Lemonade 27B with a q8_0 KV cache', () => {
+    const quantized = CURATED_MODELS.filter((m) => m.runtime.kvCacheType).map((m) => m.id);
+    expect(quantized).toEqual(['qwen3-8-27b-lemonade']);
+    // The per-token figure stays the 16-bit one: the engine scales it when it applies the type.
+    expect(byId.get('qwen3-8-27b-lemonade')?.runtime.kvMbPerToken).toBe(0.0667);
+  });
+
+  // Lemonade's registry states 18.8; the files it downloads (weights and projector) are 17,630 MiB.
+  it("gives qwen3-8-27b-lemonade its files' 17,630 MiB and its measured footprint", () => {
     const m = byId.get('qwen3-8-27b-lemonade');
-    expect(m?.requirements.diskMb).toBe(Math.round(18.8 * 1024));
+    expect(m?.requirements.diskMb).toBe(17_630);
     // 19,017 MiB held at 8192 tokens, less 0.0667 MiB/token of KV for that window.
     expect(m?.runtime.memoryFootprintMb).toBe(18_473);
     expect(m?.runtime.footprintMeasured).toBe(true);
@@ -231,7 +285,8 @@ describe('curated-models (TOON catalog)', () => {
       expect(mtp?.metadata?.intelligenceIndex).toBe(base?.metadata?.intelligenceIndex);
       expect(mtp?.metadata?.capabilities).toEqual(base?.metadata?.capabilities);
       expect(mtp?.runtime.contextWindow).toBe(base?.runtime.contextWindow);
-      // The MTP tag is its own download and a little larger; the size column must be the tag's, not the base's.
+      // The MTP tag is its own download, at least as large (the registry now serves some base tags as the MTP
+      // build itself); the size column must be the tag's, not the base's.
       expect(mtp?.requirements.diskMb).toBeGreaterThanOrEqual(base?.requirements.diskMb ?? Number.POSITIVE_INFINITY);
     }
   });
@@ -261,7 +316,7 @@ describe('curated-models (TOON catalog)', () => {
     expect(muse?.metadata?.capabilities?.vision).toBe(true);
     expect(muse?.metadata?.capabilities?.tools).toBe(true);
     expect(muse?.metadata?.capabilities?.reasoning).toBe(true);
-    expect(muse?.requirements.diskMb).toBe(18 * 1024);
+    expect(muse?.requirements.diskMb).toBe(fileMb('muse-glimmer-30b'));
     expect(muse?.tiers.medium).toBe('recommended');
   });
 
@@ -271,7 +326,7 @@ describe('curated-models (TOON catalog)', () => {
     expect(nemotron?.backendModelId).toBe('nemotron-3.5-lightning:30b');
     expect(nemotron?.metadata?.creator).toBe('NVIDIA');
     expect(nemotron?.activeParameterScale).toBe(3);
-    expect(nemotron?.requirements.diskMb).toBe(25 * 1024);
+    expect(nemotron?.requirements.diskMb).toBe(fileMb('nemotron-3-5-lightning-30b'));
     expect(nemotron?.tiers.medium).toBe('recommended');
   });
 

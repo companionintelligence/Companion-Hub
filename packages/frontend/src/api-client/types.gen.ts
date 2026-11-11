@@ -79,6 +79,7 @@ export type AppContextDto = {
         inferenceEncodeEndpoint?: string;
         inferenceMaxNumCtx?: number;
         inferenceOllamaSlots?: number;
+        inferenceOllamaKvCacheType?: 'f16' | 'q8_0' | 'q4_0';
         inferenceOllamaKeepAlive?: number;
         hubPoolEnabled?: boolean;
         hubPoolOutboundEnabled?: boolean;
@@ -185,6 +186,7 @@ export type UserSettingsBody = {
     inferenceEncodeEndpoint?: string;
     inferenceMaxNumCtx?: number;
     inferenceOllamaSlots?: number;
+    inferenceOllamaKvCacheType?: 'f16' | 'q8_0' | 'q4_0';
     inferenceOllamaKeepAlive?: number;
     hubPoolEnabled?: boolean;
     hubPoolOutboundEnabled?: boolean;
@@ -1514,6 +1516,7 @@ export type UpdateInferencePreferencesBody = {
     maxNumCtx?: number;
     ollamaSlots?: number;
     ollamaKeepAlive?: number;
+    ollamaKvCacheType?: 'f16' | 'q8_0' | 'q4_0';
 };
 
 export type UpdateRocmInstallStateBody = {
@@ -3623,6 +3626,17 @@ export type ConsumeBrowserHandoffData = {
 
 export type ConsumeBrowserHandoffResponses = {
     200: unknown;
+};
+
+export type ConfirmBrowserHandoffData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/browser-handoff/confirm';
+};
+
+export type ConfirmBrowserHandoffResponses = {
+    201: unknown;
 };
 
 export type StartPortalLoginData = {

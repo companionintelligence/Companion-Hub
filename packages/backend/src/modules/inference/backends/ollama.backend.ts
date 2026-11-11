@@ -1,7 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { InferenceBackend, LoadModelOptions } from './backend.interface';
-import type { BackendHealthStatus, BackendResidency, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
+import type { BackendHealthStatus, BackendResidency, BackendModelInfo, CuratedModel, PullProgress } from '@ci-hub/common/types';
+import { KV_CACHE_SCALE } from './lemonade-kv-cache.util';
 import axios from 'axios';
 // Shared with the Lemonade backend: both mount the same AMD device nodes and
 // so need the same host GIDs. See that module for the full rationale.
@@ -71,7 +73,10 @@ export class OllamaBackend implements InferenceBackend {
 
   private static readonly GEOMETRY_TTL_MS = 5 * 60 * 1000;
 
-  constructor(private readonly logger: LoggerService) {
+  constructor(
+    private readonly logger: LoggerService,
+    @Optional() private readonly configuration?: ConfigurationService,
+  ) {
     // OLLAMA_URL is injected by docker-compose as http://host.docker.internal:11434 (the Hub
     // container reaches the host's native Ollama over the host-gateway bridge). When the backend
     // runs directly on the host (`pnpm dev`), there is no compose env and no ci-hub-ollama
@@ -226,6 +231,22 @@ export class OllamaBackend implements InferenceBackend {
    * Null when the engine cannot describe the model (not pulled, unreachable, no geometry); the
    * ladder then keeps its fixed heuristic. Never throws.
    */
+  /**
+   * The share of the 16-bit KV cost an Ollama model costs here: the scale of the cache this node's Ollama
+   * runs, as the operator stated it (`inferenceOllamaKvCacheType`, the daemon's `OLLAMA_KV_CACHE_TYPE`,
+   * which the API does not expose). Server-wide, so the same for every model; 1 when not stated.
+   */
+  kvCacheScale(model: CuratedModel): number {
+    if (model.backend !== 'ollama') return 1;
+    let stated: string | null | undefined;
+    try {
+      stated = this.configuration?.getInferencePreferences()?.ollamaKvCacheType;
+    } catch {
+      return 1;
+    }
+    return stated === 'q8_0' || stated === 'q4_0' ? KV_CACHE_SCALE[stated] : 1;
+  }
+
   async contextCostForModel(modelId: string): Promise<ContextCost | null> {
     const cached = this.geometryCache.get(modelId);
     if (cached && Date.now() - cached.at < OllamaBackend.GEOMETRY_TTL_MS) {

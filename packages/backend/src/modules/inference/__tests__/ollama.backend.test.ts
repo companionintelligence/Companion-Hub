@@ -792,3 +792,28 @@ describe('OllamaBackend', () => {
     });
   });
 });
+
+// OLLAMA_KV_CACHE_TYPE is server-wide and the API does not expose it: the operator states it to the Hub.
+describe("OllamaBackend.kvCacheScale (the operator's stated OLLAMA_KV_CACHE_TYPE)", () => {
+  const row = (backend: 'ollama' | 'lemonade' = 'ollama') => ({ backend }) as never;
+  const withStated = (ollamaKvCacheType: string | null) =>
+    new OllamaBackend(mock<LoggerService>(), { getInferencePreferences: () => ({ ollamaKvCacheType }) } as never);
+
+  it('is the stated cache type scale for an Ollama model, and 1 when nothing is stated', () => {
+    expect(withStated('q8_0').kvCacheScale(row())).toBeCloseTo(34 / 64, 10);
+    expect(withStated('q4_0').kvCacheScale(row())).toBeCloseTo(18 / 64, 10);
+    expect(withStated('f16').kvCacheScale(row())).toBe(1);
+    expect(withStated(null).kvCacheScale(row())).toBe(1);
+    expect(new OllamaBackend(mock<LoggerService>()).kvCacheScale(row())).toBe(1);
+  });
+
+  it('is 1 for a model another engine serves, and when the settings cannot be read', () => {
+    expect(withStated('q8_0').kvCacheScale(row('lemonade'))).toBe(1);
+    const broken = new OllamaBackend(mock<LoggerService>(), {
+      getInferencePreferences: () => {
+        throw new Error('settings not loaded');
+      },
+    } as never);
+    expect(broken.kvCacheScale(row())).toBe(1);
+  });
+});

@@ -81,6 +81,11 @@ export interface ModelMemoryInput {
   kvSlots?: number | null;
   /** What this node's engine was seen holding for the model, which replaces the base when present. */
   sighting?: FootprintSighting | null;
+  /**
+   * KV cache MB per sequence that does not grow with the window (`ContextCost.fixedKvMb`: sliding-window
+   * layers). Charged with the per-token cost on the measured path; a sighting already holds it.
+   */
+  fixedKvMb?: number | null;
 }
 
 export interface ContextLengthInput extends ModelMemoryInput {
@@ -165,7 +170,8 @@ export function estimateLoadedFootprintMb(input: ModelMemoryInput & { numCtx: nu
   const footprint = Math.max(0, modelFootprintMb || 0);
   if (measuredKv !== null) {
     const measuredBase = typeof weightMb === 'number' && weightMb > 0 ? weightMb + MEASURED_FIXED_OVERHEAD_MB : 0;
-    return Math.ceil(Math.max(footprint, measuredBase) + numCtx * perToken + MEASURED_SAFETY_MARGIN_MB + visionReserve(input));
+    const fixedKv = fixedKvMb(input) * kvSlots(input);
+    return Math.ceil(Math.max(footprint, measuredBase) + fixedKv + numCtx * perToken + MEASURED_SAFETY_MARGIN_MB + visionReserve(input));
   }
   return Math.ceil(footprint + numCtx * perToken + visionReserve(input));
 }
@@ -206,6 +212,11 @@ export function largestFittingWindow(input: ModelMemoryInput & { from: number; b
 function measuredKvMbPerToken(input: { kvMbPerToken?: number | null }): number | null {
   const kv = input.kvMbPerToken;
   return typeof kv === 'number' && Number.isFinite(kv) && kv > 0 ? kv : null;
+}
+
+function fixedKvMb(input: { fixedKvMb?: number | null }): number {
+  const mb = input.fixedKvMb;
+  return typeof mb === 'number' && Number.isFinite(mb) && mb > 0 ? mb : 0;
 }
 
 function kvSlots(input: { kvSlots?: number | null }): number {

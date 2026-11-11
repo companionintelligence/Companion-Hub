@@ -1,6 +1,8 @@
 import { client } from '@/api-client/client.gen';
 import { openExternalWithHubSession } from '@/lib/hub-browser-handoff';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
+import { isTauriMobileSync } from '@/lib/mobile-connection';
+import { returnToAppNext } from '@/lib/return-to-hub-app';
 import { isMemoryProviderUrn } from '@/modules/app/helpers/memory-provider';
 import { isI18nKey } from '@/lib/format-api-error';
 import { TranslatableError } from '@/types/error.types';
@@ -261,7 +263,15 @@ export function useMemoryConnection(appUrn: string) {
         return;
       }
 
-      void openExternalWithHubSession(desktopLauncher);
+      // On the phone, end the flow on a Hub page whose button brings this app back (the
+      // consent finishes in Chrome, and otherwise left the person on the app's web page there).
+      // The desktop keeps the backend's default: the app's own public URL.
+      const returnNext = isTauriMobileSync() ? returnToAppNext(desktopLauncher, appUrn) : null;
+      const launcher = returnNext
+        ? `${desktopLauncher}${desktopLauncher.includes('?') ? '&' : '?'}next=${encodeURIComponent(returnNext)}`
+        : desktopLauncher;
+
+      void openExternalWithHubSession(launcher);
 
       // The consent completes in that separate browser, so this webview never
       // reloads (unlike the web path's full-page return to `next`). Refetch this

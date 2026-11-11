@@ -16,6 +16,8 @@ vi.mock('sonner', () => ({ toast: toasts }));
 const ext = vi.hoisted(() => ({ openExternalWithHubSession: vi.fn(), getTauriInvoke: vi.fn() }));
 vi.mock('@/lib/hub-browser-handoff', () => ({ openExternalWithHubSession: ext.openExternalWithHubSession }));
 vi.mock('@/lib/helpers/tauri-invoke', () => ({ getTauriInvoke: ext.getTauriInvoke }));
+const mobile = vi.hoisted(() => ({ isTauriMobileSync: vi.fn(() => false) }));
+vi.mock('@/lib/mobile-connection', () => ({ isTauriMobileSync: mobile.isTauriMobileSync }));
 
 const wrapper = () => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -118,6 +120,20 @@ describe('useMemoryConnection connect()', () => {
     // system browser before opening; use-memory-connection just delegates to it.
     expect(ext.openExternalWithHubSession).toHaveBeenCalledWith(CONNECT_URL);
     expect(window.location.href).toBe(CURRENT_HREF); // webview stayed put
+  });
+
+  it('phone: asks for the flow to end on the Hub page that brings the app back', async () => {
+    ext.getTauriInvoke.mockReturnValue(vi.fn());
+    mobile.isTauriMobileSync.mockReturnValue(true);
+    const result = await renderReady();
+
+    result.current.connect();
+
+    const launched = ext.openExternalWithHubSession.mock.calls[0]?.[0] as string;
+    const next = new URL(launched).searchParams.get('next');
+    expect(launched.startsWith(CONNECT_URL)).toBe(true);
+    expect(next).toBe(`${new URL(CONNECT_URL).origin}/memory-connect/return-to-app?app=${encodeURIComponent(NORMAL)}`);
+    mobile.isTauriMobileSync.mockReturnValue(false);
   });
 
   it('desktop: refetches this app status the first time the window regains focus after connect', async () => {

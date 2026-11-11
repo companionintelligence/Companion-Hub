@@ -273,6 +273,8 @@ export interface ContextHandoutInput {
    * Absent, `recommendContextLength` falls back to its footprint heuristic.
    */
   kvMbPerToken?: number | null;
+  /** Sliding-window KV MB that does not grow with the window (`ContextCost.fixedKvMb`); local path only. */
+  fixedKvMb?: number | null;
   weightMb?: number | null;
   /** Sequences the engine allocates a KV cache for (`kvSequencesFor`); local path only, like the cost. */
   kvSlots?: number | null;
@@ -310,6 +312,7 @@ function uncappedContextLength(input: ContextHandoutInput): number {
       modelContextWindow: model.runtime.contextWindow,
       minContextLength,
       kvMbPerToken: input.kvMbPerToken ?? null,
+      fixedKvMb: input.fixedKvMb ?? null,
       weightMb: input.weightMb ?? null,
       kvSlots: input.kvSlots ?? null,
       sighting: input.sighting ?? null,

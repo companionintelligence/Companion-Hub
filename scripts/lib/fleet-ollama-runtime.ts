@@ -67,6 +67,8 @@ export const OLLAMA_RUNTIME_KEYS = [
   'OLLAMA_CONTEXT_LENGTH',
   'OLLAMA_IGPU_ENABLE',
   'OLLAMA_MAX_LOADED_MODELS',
+  'OLLAMA_KV_CACHE_TYPE',
+  'OLLAMA_FLASH_ATTENTION',
 ] as const;
 export type OllamaRuntimeKey = (typeof OLLAMA_RUNTIME_KEYS)[number];
 
@@ -84,6 +86,13 @@ export interface OllamaRuntimeSettings {
   contextLength?: number;
   igpu?: boolean;
   maxLoaded?: number;
+  /**
+   * `OLLAMA_KV_CACHE_TYPE`, from `--ollama-kv-cache`. A quantized type also writes
+   * `OLLAMA_FLASH_ATTENTION=1`: Ollama quantizes the cache only with flash attention on, and leaves it at
+   * 16-bit — silently — where it is off. Server-wide: every model on the node runs it. The Hub sizes for
+   * it only once told (`cihub pool kv-cache <type>`); until then it sizes for 16-bit, the safe direction.
+   */
+  kvCache?: 'f16' | 'q8_0' | 'q4_0';
 }
 
 /** The word that leaves a key out. Accepted by every runtime flag. */
@@ -111,6 +120,7 @@ export function parseOllamaRuntimeValue(flag: '--ollama-context', raw: string): 
 export function parseOllamaRuntimeValue(flag: '--ollama-keep-alive', raw: string): string | undefined;
 export function parseOllamaRuntimeValue(flag: '--ollama-igpu', raw: string): boolean | undefined;
 export function parseOllamaRuntimeValue(flag: '--ollama-max-loaded', raw: string): number | undefined;
+export function parseOllamaRuntimeValue(flag: '--ollama-kv-cache', raw: string): 'f16' | 'q8_0' | 'q4_0' | undefined;
 export function parseOllamaRuntimeValue(flag: string, raw: string): number | string | boolean | undefined {
   const value = raw.trim();
   if (value === RUNTIME_UNSET) return undefined;
@@ -133,6 +143,9 @@ export function parseOllamaRuntimeValue(flag: string, raw: string): number | str
       // Ollama reads 0 as "3 × GPU count" — not a cap, and not what an operator typing 0 means; the
       // way to hand the key back to Ollama is `unset`. 16 is past any node's memory for real models.
       return parseBoundedInt(flag, value, 1, 16);
+    case '--ollama-kv-cache':
+      if (value === 'f16' || value === 'q8_0' || value === 'q4_0') return value;
+      throw new OllamaRuntimeFlagError(`${flag} must be f16, q8_0 or q4_0, or '${RUNTIME_UNSET}' (got '${raw}').`);
     default:
       throw new OllamaRuntimeFlagError(`Unknown Ollama runtime flag '${flag}'.`);
   }
@@ -146,6 +159,10 @@ export function ollamaRuntimeEnvironment(settings: OllamaRuntimeSettings): Array
   if (settings.contextLength !== undefined) env.push(['OLLAMA_CONTEXT_LENGTH', String(settings.contextLength)]);
   if (settings.igpu !== undefined) env.push(['OLLAMA_IGPU_ENABLE', settings.igpu ? '1' : '0']);
   if (settings.maxLoaded !== undefined) env.push(['OLLAMA_MAX_LOADED_MODELS', String(settings.maxLoaded)]);
+  if (settings.kvCache !== undefined) {
+    env.push(['OLLAMA_KV_CACHE_TYPE', settings.kvCache]);
+    if (settings.kvCache !== 'f16') env.push(['OLLAMA_FLASH_ATTENTION', '1']);
+  }
   return env;
 }
 

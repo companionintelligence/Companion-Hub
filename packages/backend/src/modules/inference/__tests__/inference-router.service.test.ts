@@ -23,6 +23,12 @@ import { firstByteBudgetMs, lastLocalBudgetMs } from '@/modules/hub-pool/hub-poo
 import { InferenceRouteError } from '../inference-error-reply';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '@/modules/hub-pool/hub-pool-load.service';
 
+// These scenarios pin the floor and eviction arithmetic to the context ladder, which a Lemonade model
+// with no measured cost used to fall back to. The header-derived cost (`catalog/kv-geometry.generated.ts`)
+// makes most of them fit trivially, so it is off here unless a test puts a row in.
+const ggufTable = vi.hoisted(() => ({}) as Record<string, unknown>);
+vi.mock('../catalog/kv-geometry.generated', () => ({ GGUF_KV_GEOMETRY: ggufTable }));
+
 vi.mock('axios');
 
 /**
@@ -542,7 +548,7 @@ describe('InferenceRouterService', () => {
       expect(modelPuller.unloadModel).not.toHaveBeenCalled();
       // The first re-measure still showed the old model; the second, after a settle wait, did not.
       expect(memoryManager.canFitModel).toHaveBeenCalledTimes(3);
-      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 16_384 });
+      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 16_384, kvCacheType: 'f16' });
     });
 
     it("tells the plan what the pool has in flight on each engine, turns and embedding batches, from the pool's own record", async () => {
@@ -996,7 +1002,7 @@ describe('InferenceRouterService', () => {
       // 24064 (the card less its display reserve) - 18000 = 6064 MB free for context → the 16k rung,
       // charged at the ladder's 0.25 MB/token.
       expect(memoryManager.canFitModel).toHaveBeenCalledWith(defaultProfile, 18_000 + 16_384 * 0.25);
-      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 16_384 });
+      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 16_384, kvCacheType: 'f16' });
     });
 
     it("uses the engine's measured per-token cost when it has one", async () => {
@@ -1032,7 +1038,7 @@ describe('InferenceRouterService', () => {
 
       await service.loadTrackedModel(lemonadeModel.id, { origin: 'operator' });
 
-      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 8192 });
+      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 8192, kvCacheType: 'f16' });
     });
 
     it('sends no window for an embedding model', async () => {
@@ -1055,7 +1061,7 @@ describe('InferenceRouterService', () => {
 
       expect(memoryManager.canFitModel).toHaveBeenCalledWith(defaultProfile, 18_000 + 8_192 * 0.25);
       expect(memoryManager.planEviction).not.toHaveBeenCalled();
-      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 8_192 });
+      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 8_192, kvCacheType: 'f16' });
     });
 
     it('sizes an eviction for the largest window an empty card holds when not even 4096 fits now', async () => {
@@ -1073,7 +1079,7 @@ describe('InferenceRouterService', () => {
         { backend: 'lemonade', backendModelId: 'Qwen3.8-27B-GGUF' },
         { scope: 'operator', inUse: expect.any(Function) },
       );
-      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 16_384 });
+      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 16_384, kvCacheType: 'f16' });
     });
 
     it('steps an operator load down to the window its measurement scales to, rather than loading the sighted window over budget', async () => {

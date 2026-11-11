@@ -1,5 +1,7 @@
-import type { BackendHealthStatus, BackendModelInfo, BackendResidency, InferenceBackendType, PullProgress } from '@ci-hub/common/types';
+import type { QuantizedKvCacheType } from './lemonade-kv-cache.util';
+import type { BackendHealthStatus, BackendModelInfo, BackendResidency, CuratedModel, InferenceBackendType, PullProgress } from '@ci-hub/common/types';
 import type { ContextCost } from '../model-geometry.util';
+import type { KvCacheChoice } from './lemonade-kv-cache.util';
 
 export interface LoadModelOptions {
   embedding?: boolean;
@@ -18,6 +20,13 @@ export interface LoadModelOptions {
    * model. Absent leaves the engine's own choice.
    */
   device?: 'cpu';
+  /**
+   * The KV cache the window was sized for (`InferenceRouterService.planLoad`), for a text model:
+   * `q8_0` when 16-bit cannot reach an installed app's floor on this card, `f16` otherwise. An engine
+   * that sets the cache per model applies it, and `f16` takes away a quantized type an earlier load
+   * left. Absent: the engine keeps whatever the model has. Ignored by engines that cannot set it.
+   */
+  kvCacheType?: KvCacheChoice;
 }
 
 /**
@@ -118,6 +127,28 @@ export interface InferenceBackend {
    * lists them but cannot say what a token of context costs. Optional; null when it cannot say.
    */
   weightsOnDiskMb?(modelId: string): Promise<number | null>;
+
+  /**
+   * The share of the catalog's 16-bit `kvMbPerToken` this engine allocates per token of `model`'s
+   * context AS THE MODEL IS SET NOW: below 1 when its next load runs a quantized cache (Lemonade: the
+   * model's saved flags, whoever saved them), 1 otherwise. Optional; absent means 1. App handouts size
+   * with it, so they agree with the cache the engine really has.
+   */
+  kvCacheScale?(model: CuratedModel): number;
+
+  /**
+   * The quantized KV cache types this engine may run `model` with, for `planLoad` to choose from when
+   * 16-bit cannot reach an installed app's floor. Optional; absent or empty means 16-bit only. An
+   * engine leaves out a type it cannot set (its version) or one the model failed to load with before
+   * ({@link markKvCacheUnsupported}).
+   */
+  kvCacheTypesFor?(model: CuratedModel): readonly QuantizedKvCacheType[];
+
+  /**
+   * Records that `model` failed to load with a quantized cache while it loaded at 16-bit straight
+   * after, so {@link kvCacheTypesFor} stops offering it. Optional.
+   */
+  markKvCacheUnsupported?(model: CuratedModel): void;
 
   /**
    * Whether the engine's server can supply a catalog `backendModelId` — has it, or can download it —

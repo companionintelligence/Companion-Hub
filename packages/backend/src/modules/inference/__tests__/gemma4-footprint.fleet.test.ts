@@ -7,7 +7,7 @@ import { HubPoolLoadService } from '@/modules/hub-pool/hub-pool-load.service';
 import { CURATED_MODELS } from '../catalog/curated-models';
 import { handoutContextLength, visionReserveMbFor } from '../app-model-handout';
 import { estimateLoadedFootprintMb } from '../context-length.util';
-import { probeContextCost } from '../context-cost.util';
+import { OLLAMA_EXTRA_MB_PER_TOKEN, probeContextCost } from '../context-cost.util';
 import { estimateContextCost, parseModelGeometry } from '../model-geometry.util';
 import { InferenceRouterService } from '../inference-router.service';
 import { MemoryManagerService, modelMemoryCeilingMb } from '../memory-manager.service';
@@ -60,12 +60,14 @@ describe('gemma4:e4b on the cards the fleet runs it on', () => {
     expect(Math.round(GEMMA4_E4B_COST?.weightMb ?? 0)).toBe(9_163);
   });
 
-  it('is sized from its measured footprint, not raised back to the 9,163 MiB file', async () => {
+  // The engine's 0.09375 counts gemma4's 512-token sliding layers in full and loses its per-layer head
+  // counts. The file's header says 0.015625 MB a token in the global layers and 40 MB in the sliding
+  // ones; Ollama holds OLLAMA_EXTRA_MB_PER_TOKEN beside that. Measured 2026-11-10 (7900 XTX, Ollama
+  // 0.34.1): 4,434 MB at 4096, 5,063 at 32768, 5,638 at 65536 — 0.0196 MB a token.
+  it('is sized from its measured footprint, not raised back to the 9,163 MiB file, at the cost its file header gives', async () => {
     const cost = await probeContextCost(ollamaReporting(GEMMA4_E4B_COST), gemma4E4b());
 
-    // Matched, not equal: the cost carries more than these (the architecture, since #1686), and what
-    // this pins is that the file size is gone while the engine's per-token cost stays.
-    expect(cost).toMatchObject({ kvMbPerToken: 0.09375, weightMb: null, source: 'geometry' });
+    expect(cost).toMatchObject({ kvMbPerToken: 0.015625 + OLLAMA_EXTRA_MB_PER_TOKEN, fixedKvMb: 40, weightMb: null, source: 'gguf' });
   });
 
   it('did not fit any of them at even the smallest window with the footprint derived from its download', () => {
@@ -86,8 +88,8 @@ describe('gemma4:e4b on the cards the fleet runs it on', () => {
   // the weights, so the handout fell to the 4096 floor on every card below 24 GB. Sized, as the env
   // resolver and the credentials handout size it, against what the card gives a model.
   it.each([
-    ['an 8 GB card (beta-3-glass)', 8_192, 8_192],
-    ['a 10 GB card (beta-red)', 10_240, 32_768],
+    ['an 8 GB card (beta-3-glass)', 8_192, 32_768],
+    ['a 10 GB card (beta-red)', 10_240, 65_536],
   ])("hands %s's apps a larger window than the 4096 floor", async (_card, vramMb, window) => {
     const model = gemma4E4b();
     const cost = await probeContextCost(ollamaReporting(GEMMA4_E4B_COST), model);
@@ -97,6 +99,7 @@ describe('gemma4:e4b on the cards the fleet runs it on', () => {
       servedLocally: true,
       effectiveInferenceMemoryMb: modelMemoryCeilingMb(discrete('nvidia', vramMb)),
       kvMbPerToken: cost?.kvMbPerToken ?? null,
+      fixedKvMb: cost?.fixedKvMb ?? null,
       weightMb: cost?.weightMb ?? null,
     });
 
@@ -183,13 +186,14 @@ function freshCard(vramMb: number) {
 
 describe('a fresh 8, 10 or 12 GB card loads and pins gemma4-e4b', () => {
   // The real load path, which sizes the window against what the card gives a model (the card less the
-  // 512 MB kept for the display) and steps down to the largest window its estimate fits. beta-3-glass
-  // (RTX 3070) gets 8192: 16384 is 7,946 MB against 7,680. beta-red (RTX 3080) and a 12 GB card get
-  // 32768: 9,482 MB against 9,728, and 65536 would be 12,554.
+  // 512 MB kept for the display) and steps down to the largest window its estimate fits: 4,362 + 40 MB
+  // of sliding cache + 0.028125 MB a token + the 1,024 margin and 1,024 vision reserve. beta-3-glass
+  // (RTX 3070) gets 32768 (7,372 MB against 7,680; 65536 would be 8,293). beta-red (RTX 3080) and a 12 GB
+  // card get 65536, the most either path picks unprompted. Under the engine's 0.09375 they were 8192 and 32768.
   it.each([
-    ['an 8 GB card (beta-3-glass)', 8_192, 8_192],
-    ['a 10 GB card (beta-red)', 10_240, 32_768],
-    ['a 12 GB card', 12_288, 32_768],
+    ['an 8 GB card (beta-3-glass)', 8_192, 32_768],
+    ['a 10 GB card (beta-red)', 10_240, 65_536],
+    ['a 12 GB card', 12_288, 65_536],
   ])("loads on %s (%d MB) at the window the load path's fit check sizes, %d tokens", async (_card, vramMb, window) => {
     const { router, registry, loads, logger } = freshCard(vramMb);
 
@@ -207,18 +211,18 @@ describe('a fresh 8, 10 or 12 GB card loads and pins gemma4-e4b', () => {
     const { router, loads } = freshCard(8_192);
 
     await expect(router.loadTrackedModel('gemma4-e4b', { origin: 'agent' })).resolves.toEqual({ loaded: true });
-    expect(loads).toEqual([{ id: 'gemma4:e4b', contextLength: 8_192 }]);
+    expect(loads).toEqual([{ id: 'gemma4:e4b', contextLength: 32_768 }]);
   });
 
-  // The boundary: with the reserves the estimate adds (KV at 0.09375 MB a token, the 1,024 MB margin
-  // and the 1,024 MB vision reserve), a 6 GB card is still over at 4096 — 6,794 MB against 5,632 —
+  // The boundary: with the reserves the estimate adds (KV at 0.028125 MB a token plus 40 MB, the 1,024 MB
+  // margin and the 1,024 MB vision reserve), a 6 GB card is still over at 4096 — 6,566 MB against 5,632 —
   // so an agent's load is refused there on the catalog.
   it('is still refused for an agent on a 6 GB card, which the estimate puts it over at 4096', async () => {
     const { router, loads } = freshCard(6_144);
 
     await expect(router.loadTrackedModel('gemma4-e4b', { origin: 'agent' })).resolves.toMatchObject({
       loaded: false,
-      reason: expect.stringContaining('gemma4-e4b needs 6794 MB but only 5632 MB is free'),
+      reason: expect.stringContaining('gemma4-e4b needs 6566 MB but only 5632 MB is free'),
     });
     expect(loads).toEqual([]);
   });

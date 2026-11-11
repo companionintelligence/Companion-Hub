@@ -21,6 +21,9 @@ class MainActivity : TauriActivity() {
     }
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    // The Hub mark and a spinner until the WebView exists. wry attaches the WebView with
+    // setContentView, which replaces this, so nothing has to take it down.
+    setContentView(R.layout.launch_loading)
     // The launch background is the dark shell colour (themes.xml); match the bar icons
     // to it until the page reports its own.
     SystemBars.paint(window, LAUNCH_BACKGROUND)

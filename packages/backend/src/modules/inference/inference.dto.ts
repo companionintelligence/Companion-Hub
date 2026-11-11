@@ -50,6 +50,9 @@ export const inferencePreferencesSchema = z.object({
   // `OLLAMA_KEEP_ALIVE` (-1 for forever) so an unpinned model goes back to that. `null` clears it.
   // An unpin then names Ollama's built-in 5 minutes.
   ollamaKeepAlive: z.number().int().min(MIN_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS).max(MAX_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS).nullable().optional(),
+  // The KV cache this node's Ollama runs — set it to the daemon's `OLLAMA_KV_CACHE_TYPE` so windows are
+  // sized for it (an 8-bit cache holds about twice the context). `null` clears it: sized as 16-bit again.
+  ollamaKvCacheType: z.enum(['f16', 'q8_0', 'q4_0']).nullable().optional(),
 });
 
 export class UpdateInferencePreferencesBody extends createZodDto(inferencePreferencesSchema) {}

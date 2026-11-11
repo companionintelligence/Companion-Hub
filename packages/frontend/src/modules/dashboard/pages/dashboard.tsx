@@ -96,6 +96,19 @@ export default () => {
     setSearchParams(next, { replace: true });
   }, [appsPending, installedApps, searchParams, setSearchParams, t]);
 
+  // A refused browser handoff lands here at `/?handoff=failed`: the Hub app opened this browser to
+  // sign it in and continue somewhere, and the Hub would not sign it in. Without this the click
+  // just looked like it went to the Hub's main page. Same once-and-strip pattern as above.
+  useEffect(() => {
+    if (searchParams.get('handoff') !== 'failed') return;
+
+    toast.error(t('BROWSER_HANDOFF_FAILED_TOAST'), { id: 'browser-handoff-result' });
+
+    const next = new URLSearchParams(searchParams);
+    next.delete('handoff');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams, t]);
+
   /*
    * The installed-apps payload carries `pendingRestart`, which is enough for the
    * per-app badge. It cannot say WHY, and only one reason is worth interrupting an

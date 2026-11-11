@@ -636,6 +636,7 @@ cihub pool unpin [--model <id>]               # drop that preference and rank by
 cihub pool ceiling <tokens>|clear [env]       # longer prompts go to another node when one can serve them
 cihub pool context-cap <tokens>|clear [env]   # cap the num_ctx handed to this node's apps at the engine's context
 cihub pool slots <n>|clear [env]              # state how many requests this node's Ollama runs at once (OLLAMA_NUM_PARALLEL)
+cihub pool kv-cache <f16|q8_0|q4_0>|clear [env] # state the KV cache this node's Ollama runs (OLLAMA_KV_CACHE_TYPE)
 cihub pool log [env] [--limit N]              # recent routing decisions, failovers marked
 cihub pool enable [env] | cihub pool disable  # flip the persisted kill switch
 cihub pool enable --outbound | --inbound      # ...or just one direction
@@ -748,6 +749,27 @@ given and `--ollama-parallel N` alone would drop `OLLAMA_KEEP_ALIVE` and `OLLAMA
 from every node it touches; this command is the single-node form, and touches no daemon.
 
 The value is a whole number from 1 to 64, digits only, the bounds `--ollama-parallel` accepts.
+
+### `cihub pool kv-cache`
+
+`cihub pool kv-cache q8_0` states that this node's Ollama runs an 8-bit KV cache; `clear` withdraws the
+statement, and the Hub sizes for Ollama's default 16-bit cache again. It is the Hub's half of
+`OLLAMA_KV_CACHE_TYPE`, which Ollama's API does not expose: the Hub sizes every Ollama window it hands out
+or loads at the cache stated here — an 8-bit cache holds about twice the context in the same memory, a
+4-bit one nearly four times. The setting is server-wide, so it applies to every model the node's Ollama
+serves.
+
+The model picker recommends it. When an installed app's minimum window (Hermes' 64000) is out of a
+model's reach at the cache stated, and 8-bit — or, last, 4-bit — would reach it, the card says so and
+names the setting, and the Hub log says it once when the model loads. 4-bit is the last step for the
+reason the Lemonade planner gives (`QUANTIZED_KV_CACHE_TYPES`): on small models it kept long-context
+recall and short labels and noticeably changed long structured extraction.
+
+Stating it does not set it: put `OLLAMA_KV_CACHE_TYPE` (and `OLLAMA_FLASH_ATTENTION=1`, without which
+Ollama keeps the cache 16-bit) in the Ollama service's environment — across a fleet,
+`cihub fleet backends --ollama-kv-cache q8_0` with the node's other runtime flags — then state it here
+on each node. Stated but not set, the Hub hands apps windows the daemon cannot hold; set but not stated,
+it sizes for 16-bit, which only under-uses the card.
 Confirmed like `context-cap`, because it is a state change — though unlike the cap it restarts
 nothing: it changes what this node advertises to peers and how the pool ranks it, not any app's
 environment. The command reads `GET /api/inference/preferences` before the write (a count already in
@@ -1028,7 +1050,7 @@ cihub fleet status [--nodes a,b] [--json]              # re-probe every rostered
 cihub fleet preflight [--nodes a,b] [--touches-boot]   # is each node safe to hand a package transaction?
 cihub fleet backends [--backends a,b] [--execute]      # what each node can run for inference, then install it
 cihub fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]  # what each node can run for inference, then install it
-cihub fleet backends --ollama-parallel 4 --ollama-keep-alive 24h [--ollama-context N] [--ollama-igpu on|off] [--ollama-max-loaded N] [--execute]  # Ollama's runtime env, one file, restart only on change
+cihub fleet backends --ollama-parallel 4 --ollama-keep-alive 24h [--ollama-context N] [--ollama-igpu on|off] [--ollama-max-loaded N] [--ollama-kv-cache f16|q8_0|q4_0] [--execute]  # Ollama's runtime env, one file, restart only on change
 cihub fleet backends --backends omlx|vllm|lemonade|ollama [--execute]  # install only an engine this machine can run
 cihub fleet install [--user <acct>] [--cihub-binary <path>] [--pairing-gap <s>] [--execute]   # stand a Hub up on each node and register it
 cihub fleet update [--hub] [--ollama] [--gpu-probe] [--models a,b] [--execute]  # refresh the Hub image, pin Ollama, install the GPU probe timer, pull models
@@ -1449,6 +1471,7 @@ can never touch it:
 | `--ollama-context N` | `OLLAMA_CONTEXT_LENGTH` | 512–1048576 |
 | `--ollama-igpu on\|off` | `OLLAMA_IGPU_ENABLE` | `1` or `0` — the operator override; on gfx1151 the bind file already sets `1`, see [above](#strix-halo-vulkan-and-the-igpu-key-in-the-bind-file) |
 | `--ollama-max-loaded N` | `OLLAMA_MAX_LOADED_MODELS` | 1–16 (`0` is refused: Ollama reads it as 3 × GPUs, not a cap — use `unset`) |
+| `--ollama-kv-cache T` | `OLLAMA_KV_CACHE_TYPE`, and `OLLAMA_FLASH_ATTENTION=1` beside `q8_0` or `q4_0` | `f16`, `q8_0` or `q4_0`. No Hub half is written: state it per node with [`cihub pool kv-cache`](#cihub-pool-kv-cache) |
 
 Every flag also accepts **`unset`**, which leaves that key out of the file. The file is rendered
 whole from the five values on every run: a key you did not pass is not in it, and falls back to

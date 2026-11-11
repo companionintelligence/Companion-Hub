@@ -263,6 +263,8 @@ interface ModelCardProps {
    * `preventDefault` its click: the card is a `<label>`, and a click inside one toggles the model.
    */
   footer?: ReactNode;
+  /** What the model gets on this hardware: its context window and KV cache, and an unmet app floor (`ModelContextNote`). */
+  contextNote?: ReactNode;
   testId?: string;
   checkboxTestId?: string;
 }
@@ -296,6 +298,7 @@ export function ModelCard({
   metaInline = false,
   scores,
   footer,
+  contextNote,
   testId,
   checkboxTestId,
 }: ModelCardProps) {
@@ -358,6 +361,7 @@ export function ModelCard({
         </span>
       )}
       {meta && !metaInline && <span className="block text-xs text-muted-foreground">{meta}</span>}
+      {contextNote}
       {footer && (
         <span className="mt-auto flex min-h-8 items-center justify-between gap-2 pt-1" data-testid="model-card-footer">
           {footer}

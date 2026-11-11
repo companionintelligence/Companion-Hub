@@ -688,15 +688,17 @@ describe('MemoryManagerService', () => {
             kvSlots: 2,
           });
 
-        // Not loaded: 92428 MB free.
-        expect(handout(await service.modelCeilingMb(coreSeven(92_428), 'ollama', minimax))).toBe(32_768);
+        // Not loaded: 92428 MB free. 65536 since its footprint is its registry files plus the runner (32768 on
+        // the TOON's download size plus 10 %).
+        const unloaded = handout(await service.modelCeilingMb(coreSeven(92_428), 'ollama', minimax));
+        expect(unloaded).toBe(65_536);
 
         // Loaded: the same host with its 56 GB out of MemAvailable.
         minimaxResident();
         service.invalidateObservation();
         const loaded = coreSeven(92_428 - 56_000);
         expect(handout(modelMemoryCeilingMb(loaded))).toBe(4_096);
-        expect(handout(await service.modelCeilingMb(loaded, 'ollama', minimax))).toBe(32_768);
+        expect(handout(await service.modelCeilingMb(loaded, 'ollama', minimax))).toBe(unloaded);
       });
 
       it("never goes past what the APU's GPU addresses", async () => {

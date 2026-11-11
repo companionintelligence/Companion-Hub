@@ -7,6 +7,8 @@ import type {
   ModelPurpose,
   TierRecommendation,
 } from '@ci-hub/common/types';
+import { FIXED_RUNNER_OVERHEAD_MB } from '../model-geometry.util';
+import { GGUF_KV_GEOMETRY } from './kv-geometry.generated';
 
 // ─── LLM catalog (TOON) ──────────────────────────────────────────────────────
 // The LLM catalog is authored as a TOON table (https://toonformat.dev) — one compact, pipe-delimited
@@ -941,9 +943,77 @@ const MEASURED_KV_MB_PER_TOKEN: Record<string, number> = {
   'qwen3-8-27b-lemonade': 0.0667,
 };
 
+/**
+ * Rows measured to run with an 8-bit KV cache (see `CuratedModel.runtime.kvCacheType`).
+ *
+ * Qwen 3.8 27B on Lemonade 2026.45.3, measured 2026-11-10 on a 7900 XTX (ROCm, llama.cpp b11836, MTP
+ * draft on): 22.01 GiB in use at 32768 with the 16-bit cache, 22.50 GiB at 65536 with
+ * `-fa on --cache-type-k q8_0 --cache-type-v q8_0`. Prompt 924 vs 937 tok/s, generation 63.8 vs 64.8
+ * tok/s, the same greedy answer word for word, and a 55,812-token prompt recalled 4 of 4 facts placed
+ * through it. Hermes needs 64000, which the 16-bit cache cannot give on that card. Only the Lemonade
+ * row: the Hub sets a Lemonade model's cache type per model, while Ollama's is the server-wide
+ * `OLLAMA_KV_CACHE_TYPE`, a provisioning setting the Hub does not read.
+ */
+const MEASURED_KV_CACHE_TYPE: Record<string, NonNullable<CuratedModel['runtime']['kvCacheType']>> = {
+  'qwen3-8-27b-lemonade': 'q8_0',
+};
+
 function withMeasuredKv(model: CuratedModel): CuratedModel {
   const kvMbPerToken = MEASURED_KV_MB_PER_TOKEN[model.id];
-  return kvMbPerToken === undefined ? model : { ...model, runtime: { ...model.runtime, kvMbPerToken } };
+  const kvCacheType = MEASURED_KV_CACHE_TYPE[model.id];
+  if (kvMbPerToken === undefined && kvCacheType === undefined) return model;
+  return {
+    ...model,
+    runtime: {
+      ...model.runtime,
+      ...(kvMbPerToken !== undefined && { kvMbPerToken }),
+      ...(kvCacheType !== undefined && { kvCacheType }),
+    },
+  };
 }
 
-export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...lemonadeLlms, ...vllmLlms, ...omlxLlms, ...extraModels].map(withMeasuredKv);
+/**
+ * A Lemonade or Ollama row whose footprint was not measured is charged its files plus the runner's fixed
+ * overhead (`kv-geometry.generated.ts`, from Hugging Face and Ollama's registry), not the TOON's download
+ * size plus 10 % — the same base the sizing charges once the files are on disk (`weightMb` + 768). Its
+ * download size becomes the files' too: five rows were more than 10 % off (gemma4:e2b's tag shrank from
+ * 7,373 to 4,375 MiB). Qwen 3.8
+ * 27B's files are 17,630 MiB, which with the 768 MB overhead is 18,398 against the 18,473 measured; the
+ * 10 % rule put the same-size Qwen 3.5 27B at 20,838, and with its context that left it 16k on a 24 GB
+ * card that holds 32k. The KV cost from the same table is applied where the cost is probed
+ * (`probeContextCost`), not here, so a measured `kvMbPerToken` stays distinguishable from a computed one.
+ */
+function withFileFootprint(row: CuratedModel): CuratedModel {
+  if (row.backend !== 'lemonade' && row.backend !== 'ollama') return row;
+  const model = withFileWindow(row);
+  const fileBytes = GGUF_KV_GEOMETRY[model.id]?.fileBytes;
+  if (!fileBytes || fileBytes <= 0) return model;
+  // A measured footprint stays: only its download size, a fact about the files, is taken from them.
+  if (model.runtime.footprintMeasured) return { ...model, requirements: { ...model.requirements, diskMb: Math.round(fileBytes / 1024 ** 2) } };
+  // The requirements the TOON derives from its download size are derived from the files instead, by the
+  // same expressions (buildLlmModel), so the download gate's weights floor (`weightsFloorMb`, from
+  // `diskMb`) stays at or under the footprint.
+  const diskMb = Math.round(fileBytes / 1024 ** 2);
+  const footprintMb = Math.ceil(fileBytes / 1024 ** 2 + FIXED_RUNNER_OVERHEAD_MB);
+  return {
+    ...model,
+    requirements: { ...model.requirements, diskMb, minVramMb: diskMb, recommendedVramMb: footprintMb + 1024, minRamMb: Math.round(diskMb * 1.15) },
+    runtime: { ...model.runtime, memoryFootprintMb: footprintMb },
+  };
+}
+
+/**
+ * A row's window capped at its file's `context_length`, the most it runs at as configured. The TOON's
+ * ctxK is the model card's figure, which for some families is reached only with rope scaling neither
+ * engine switches on: Lemonade's Qwen3-8B said 131072 and its file 40960, and Lemonade refused every
+ * 58k-token prompt to it (2026-11-10), while the Hub would have handed an app 64k.
+ */
+function withFileWindow(model: CuratedModel): CuratedModel {
+  const fileWindow = GGUF_KV_GEOMETRY[model.id]?.contextLength;
+  if (!fileWindow || !(model.runtime.contextWindow > fileWindow)) return model;
+  return { ...model, runtime: { ...model.runtime, contextWindow: fileWindow } };
+}
+
+export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...lemonadeLlms, ...vllmLlms, ...omlxLlms, ...extraModels]
+  .map(withMeasuredKv)
+  .map(withFileFootprint);

@@ -1,4 +1,5 @@
 <resources>
     <string name="app_name">Companion Hub</string>
     <string name="main_activity_title">Companion Hub</string>
+    <string name="launch_loading">Loading</string>
 </resources>

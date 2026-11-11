@@ -696,7 +696,11 @@ export interface InferencePreferencesResponse {
   preferredBackend: string | null;
   maxNumCtx?: number | null;
   ollamaSlots?: number | null;
+  ollamaKvCacheType?: OllamaKvCacheType | null;
 }
+
+/** The daemon's `OLLAMA_KV_CACHE_TYPE` as the Hub accepts it stated (`inferenceOllamaKvCacheType`). */
+export type OllamaKvCacheType = 'f16' | 'q8_0' | 'q4_0';
 
 export async function fetchInferencePreferences(envFileName: string): Promise<InferencePreferencesResponse> {
   return hubApiFetch<InferencePreferencesResponse>(envFileName, '/inference/preferences', { signal: AbortSignal.timeout(POOL_GET_TIMEOUT_MS) });
@@ -731,6 +735,22 @@ export async function setInferenceOllamaSlots(
   return hubApiFetch<InferencePreferencesResponse>(envFileName, '/inference/preferences', {
     method: 'PATCH',
     body: JSON.stringify({ backend, ollamaSlots }),
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
+/**
+ * State the KV cache this node's Ollama runs, or clear it with `null`, through the same route and for the
+ * same reasons as the slot count: it can remove the key, and it answers with the preferences as stored.
+ */
+export async function setInferenceOllamaKvCacheType(
+  envFileName: string,
+  backend: string,
+  ollamaKvCacheType: OllamaKvCacheType | null,
+): Promise<InferencePreferencesResponse> {
+  return hubApiFetch<InferencePreferencesResponse>(envFileName, '/inference/preferences', {
+    method: 'PATCH',
+    body: JSON.stringify({ backend, ollamaKvCacheType }),
     signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
   });
 }
@@ -1579,6 +1599,74 @@ export function formatOllamaSlotsResultLines(
       `cihub fleet backends --ollama-parallel ${requested} --ollama-context <n> --ollama-keep-alive <d> --execute sets both —`,
       "passed with the node's other runtime flags: that file is rendered whole from the flags on the line, so",
       `--ollama-parallel ${requested} alone would drop OLLAMA_KEEP_ALIVE and OLLAMA_CONTEXT_LENGTH from every node it touches.`,
+      '',
+      'Check it: cihub pool status',
+    ],
+  };
+}
+
+/** `8-bit` / `4-bit` / `16-bit`, for the boxes `cihub pool kv-cache` prints. */
+function kvCacheWords(type: OllamaKvCacheType | null | undefined): string {
+  return type === 'q8_0' ? '8-bit (q8_0)' : type === 'q4_0' ? '4-bit (q4_0)' : '16-bit (f16)';
+}
+
+/**
+ * The box `cihub pool kv-cache` prints. Same outcomes as the slot count's box: not supported, unchanged,
+ * not in force, cleared, set — and on a set, the daemon half the operator must match.
+ */
+export function formatOllamaKvCacheResultLines(
+  requested: OllamaKvCacheType | null,
+  before: InferencePreferencesResponse,
+  after: InferencePreferencesResponse | null,
+  written: boolean,
+): { title: string; lines: string[]; tone: 'green' | 'yellow' | 'red' | 'cyan' } {
+  if (!('ollamaKvCacheType' in before)) {
+    return {
+      title: 'KV cache setting not supported',
+      tone: 'red',
+      lines: [`${FAIL} This Hub's build predates the Ollama KV cache setting, so nothing was written.`, 'Update it first: cihub pool update'],
+    };
+  }
+  if (!written) {
+    return {
+      title: 'KV cache setting unchanged',
+      tone: 'cyan',
+      lines:
+        requested === null
+          ? ['No Ollama KV cache is stated on this node; nothing to clear.']
+          : [`The Ollama KV cache is already stated as ${kvCacheWords(requested)}; nothing was written.`],
+    };
+  }
+  const inForce = after?.ollamaKvCacheType ?? null;
+  if (after && inForce !== requested) {
+    return {
+      title: 'KV cache setting not in force',
+      tone: 'red',
+      lines: [
+        `${FAIL} Asked for ${requested ?? 'none'}, but the Hub reads back ${inForce ?? 'none'}.`,
+        'Read the Hub log around the write: cihub logs',
+      ],
+    };
+  }
+  if (requested === null) {
+    return {
+      title: 'KV cache setting cleared',
+      tone: 'yellow',
+      lines: ["This node states no Ollama KV cache again: the Hub sizes Ollama's windows for its default 16-bit cache."],
+    };
+  }
+  return {
+    title: 'KV cache setting stated',
+    tone: 'green',
+    lines: [
+      `The Hub now sizes this node's Ollama windows for a ${kvCacheWords(requested)} cache: an 8-bit cache holds about`,
+      'twice the context of 16-bit in the same memory, a 4-bit one nearly four times.',
+      '',
+      `Match it to the daemon: OLLAMA_KV_CACHE_TYPE=${requested}${requested === 'f16' ? '' : ' and OLLAMA_FLASH_ATTENTION=1'} in the Ollama service's`,
+      `environment (across the fleet: cihub fleet backends --ollama-kv-cache ${requested} with the node's other runtime flags,`,
+      '--execute). It applies to every model this Ollama serves. Stated but not set there, the Hub hands apps',
+      'windows the daemon cannot hold.',
+      ...(requested === 'q4_0' ? ['', '4-bit can change long structured outputs noticeably (Memory relationship extraction, 2026-11-10).'] : []),
       '',
       'Check it: cihub pool status',
     ],

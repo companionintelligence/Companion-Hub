@@ -11,13 +11,14 @@ import type {
   InferenceModelInfo,
   InferenceStatus,
   TrackedModel,
+  ModelContextPlan,
 } from '@ci-hub/common/types';
 import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import { inventoryListsModel, sameModelId } from '@/common/helpers/hub-pool';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { appInferenceRequirements, checkModelRequirements } from './app-inference-requirements';
 import { handoutContextLength, visionReserveMbFor } from './app-model-handout';
-import { kvSequencesFor, probeContextCost } from './context-cost.util';
+import { kvSequencesFor, probeContextCost, scaleCacheCost } from './context-cost.util';
 import { estimateLoadedFootprintMb, FLOOR_CONTEXT, largestFittingWindow, type ModelMemoryInput } from './context-length.util';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { ModelRegistryService } from './model-registry.service';
@@ -33,6 +34,7 @@ import { CloudFallbackService, speaksOpenAiCompletions } from './cloud-fallback.
 import { ModelPullerService } from './model-puller.service';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 import type { InferenceBackend } from './backends/backend.interface';
+import { type KvCacheChoice, KvCacheLoadError, kvCacheScaleFor, QUANTIZED_KV_CACHE_TYPES } from './backends/lemonade-kv-cache.util';
 import { isCatalogModelInstalled, isServedModelForCatalog, resolveInstalledCatalogIds, trackedPullCounts } from './model-availability.util';
 import { InferenceRouteError, modelNotFound } from './inference-error-reply';
 import { firstByteBudgetMs, forwardBudgetMs, lastLocalBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
@@ -97,6 +99,11 @@ export type LoadOptions = ({ origin: 'operator' | 'agent' } | { origin: 'request
    * must not go on to evict and load for nobody.
    */
   signal?: AbortSignal;
+  /**
+   * Plan for the 16-bit KV cache whatever an installed app's floor asks: the one retry after a load
+   * with a quantized cache failed (see {@link KvCacheLoadError}).
+   */
+  kvCacheFallback?: true;
 };
 
 /** What a load from `origin` may unload: only a signed-in operator may clear a model an app loaded. */
@@ -148,6 +155,12 @@ type LoadPlan = {
    * request's or an agent's load (see {@link LoadOrigin}).
    */
   unmeasured?: { ceilingMb: number };
+  /**
+   * The KV cache the window was sized for, on an engine that sets it per model (Lemonade): `q8_0` when
+   * the 16-bit cache cannot reach an installed app's floor even on an empty card and the engine offers
+   * q8_0 for the model, `f16` otherwise. Absent on other engines.
+   */
+  kvCacheType?: KvCacheChoice;
 };
 
 /**
@@ -1174,16 +1187,47 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     try {
       await this.modelPuller.loadModel(
         catalogId,
-        contextLength === null ? undefined : { contextLength, ...(plan.provisionalWindow ? { provisionalWindow: true } : {}) },
+        contextLength === null && !plan.kvCacheType
+          ? undefined
+          : {
+              ...(contextLength !== null && { contextLength }),
+              ...(plan.provisionalWindow ? { provisionalWindow: true } : {}),
+              ...(plan.kvCacheType && { kvCacheType: plan.kvCacheType }),
+            },
       );
       return { loaded: true };
     } catch (err) {
+      if (err instanceof KvCacheLoadError && !options.kvCacheFallback) {
+        return this.retryWithoutQuantizedCache(catalogId, options, curated, backend, err);
+      }
       const msg = err instanceof Error ? err.message : String(err);
       return { loaded: false, reason: `Loading ${catalogId} failed: ${msg}` };
     } finally {
       // The next plan must see this model's memory, not the 5 s-old reading from before it loaded.
       this.memoryManager.invalidateObservation();
     }
+  }
+
+  /**
+   * A load with a quantized KV cache failed, and the engine took the flags back out: the same load again,
+   * planned for 16-bit — a smaller window, re-checked against what is free. Only when THAT loads was the
+   * cache the cause, so only then is the model marked to stay 16-bit (`markKvCacheUnsupported`). When it
+   * fails too, the cause was something else and nothing is marked; both reasons are reported.
+   */
+  private async retryWithoutQuantizedCache(
+    catalogId: string,
+    options: LoadOptions,
+    curated: CuratedModel | undefined,
+    backend: InferenceBackend,
+    err: KvCacheLoadError,
+  ): Promise<LoadOutcome> {
+    this._logger.warn(`[Inference] ${catalogId}: ${err.message}; loading it again with the 16-bit KV cache`);
+    const retry = await this.loadTrackedModelLocked(catalogId, { ...options, kvCacheFallback: true });
+    if (retry.loaded && curated) {
+      backend.markKvCacheUnsupported?.(curated);
+      return retry;
+    }
+    return retry.loaded ? retry : { loaded: false, reason: `${err.message}; at 16-bit: ${retry.reason}` };
   }
 
   /**
@@ -1428,7 +1472,8 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     }
     const backend = this.backends.get(target.backend);
     const [cost, sighting, availableMb, ceilingMb] = await Promise.all([
-      probeContextCost(backend, { ...curated, backendModelId: target.backendModelId }),
+      // Lemonade's cache is this plan's to choose (below), so it starts from the 16-bit cost.
+      probeContextCost(backend, { ...curated, backendModelId: target.backendModelId }, target.backend === 'lemonade' ? 'f16' : undefined),
       this.memoryManager.footprintSighting(profile, target.backend, target.backendModelId),
       this.memoryManager.loadHeadroomMb(profile),
       // Not counting what the model itself holds now: a resident model is not its own competition.
@@ -1437,9 +1482,30 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     ]);
     const slots = this.statedSlots(target.backend, backend);
     this.warnSlotsUnstated(target.backend, slots, profile);
+    const floor = target.backend === 'lemonade' ? await this.installedAppFloor(curated) : null;
+    const kvCacheType = this.chooseKvCacheType(backend, curated, {
+      floor,
+      ceilingMb,
+      fallback: options.kvCacheFallback === true,
+      sizing: {
+        modelFootprintMb: catalogFootprint,
+        kvMbPerToken: cost?.kvMbPerToken ?? null,
+        fixedKvMb: cost?.fixedKvMb ?? null,
+        weightMb: cost?.weightMb ?? null,
+        visionReserveMb: visionReserveMbFor(curated),
+        kvSlots: kvSequencesFor(target.backend, cost, slots),
+        sighting,
+      },
+      windowCap: Math.min(
+        curated.runtime.contextWindow > 0 ? Math.floor(curated.runtime.contextWindow) : Number.POSITIVE_INFINITY,
+        this.localContextCap() ?? Number.POSITIVE_INFINITY,
+      ),
+    });
+    const kvScale = kvCacheScaleFor(kvCacheType);
     const sizing: ModelMemoryInput = {
       modelFootprintMb: catalogFootprint,
-      kvMbPerToken: cost?.kvMbPerToken ?? null,
+      kvMbPerToken: cost?.kvMbPerToken == null ? null : cost.kvMbPerToken * kvScale,
+      fixedKvMb: cost?.fixedKvMb == null ? null : cost.fixedKvMb * kvScale,
       weightMb: cost?.weightMb ?? null,
       visionReserveMb: visionReserveMbFor(curated),
       kvSlots: kvSequencesFor(target.backend, cost, slots),
@@ -1451,6 +1517,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       servedLocally: true,
       effectiveInferenceMemoryMb: ceilingMb,
       kvMbPerToken: sizing.kvMbPerToken,
+      fixedKvMb: sizing.fixedKvMb,
       weightMb: sizing.weightMb,
       kvSlots: sizing.kvSlots,
       sighting,
@@ -1471,7 +1538,6 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       return { contextLength: request.numCtx, footprintMb: estimateLoadedFootprintMb({ ...sizing, numCtx: window }) };
     }
 
-    const floor = target.backend === 'lemonade' ? await this.installedAppFloor(curated) : null;
     let wanted = floor ? Math.max(handout, floor.minContextLength) : handout;
     if (modelWindow !== null) wanted = Math.min(wanted, modelWindow);
     if (localCap !== null) wanted = Math.min(wanted, localCap);
@@ -1537,12 +1603,192 @@ export class InferenceRouterService implements OnApplicationBootstrap {
           (provisionalWindow ? '; a larger window Lemonade already has saved for it is kept for its next load.' : '.'),
       );
     }
+    if (target.backend === 'ollama') void this.adviseOllamaKvCache(curated, profile);
     return {
       contextLength,
       footprintMb,
       ...(unmeasured ? { unmeasured } : {}),
       ...(provisionalWindow ? { provisionalWindow: true as const } : {}),
+      ...(kvCacheType ? { kvCacheType } : {}),
     };
+  }
+
+  /** Models and settings {@link adviseOllamaKvCache} has already logged, so it says each once per process. */
+  private readonly ollamaKvAdviceLogged = new Set<string>();
+
+  /**
+   * Off the load path: when an installed app's floor is out of this Ollama model's reach at the cache the
+   * server runs, and another server setting would reach it ({@link contextPlanFor}'s `kvCacheAdvice`),
+   * says which, once per model and setting. The Hub cannot set `OLLAMA_KV_CACHE_TYPE` itself.
+   */
+  private async adviseOllamaKvCache(curated: CuratedModel, profile: HardwareProfile): Promise<void> {
+    try {
+      const plan = await this.contextPlanFor(curated, profile);
+      const advice = plan?.kvCacheAdvice;
+      if (!plan || !advice || !plan.floor) return;
+      const key = `${curated.id}:${advice.type}`;
+      if (this.ollamaKvAdviceLogged.has(key)) return;
+      this.ollamaKvAdviceLogged.add(key);
+      const bits = advice.type === 'q8_0' ? '8-bit' : '4-bit';
+      this._logger.warn(
+        `[Inference] ${curated.backendModelId} reaches ${plan.window ?? 'no'} tokens on this node with Ollama's ${plan.kvCacheType} KV cache, short of the ` +
+          `${plan.floor.minContextLength} ${plan.floor.apps.join(', ')} needs. With Ollama's ${bits} cache it would reach ${advice.window}: set ` +
+          `${advice.setting} and OLLAMA_FLASH_ATTENTION=1 in the Ollama service's environment, restart it, then tell the Hub with ` +
+          `PATCH /api/inference/preferences {"ollamaKvCacheType":"${advice.type}"}. It applies to every model this Ollama serves` +
+          (advice.type === 'q4_0' ? ', and 4-bit can change long structured outputs noticeably.' : '.'),
+      );
+    } catch (err) {
+      this._logger.debug(`[Inference] Could not work out Ollama cache advice for ${curated.id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * What a load of `curated` would get on this node's EMPTY card, for the model picker: the window, the
+   * KV cache it would use, and the installed apps' floor it could serve. The same steps as
+   * {@link planLoad} — 16-bit cost first, {@link chooseKvCacheType}, the handout, the floor, the largest
+   * window that fits — against the card's ceiling rather than what is free now, so it answers "what
+   * does this model get here", not "what would it get this second". Null for anything but a text model
+   * on a local engine this node runs (Ollama, Lemonade).
+   */
+  async contextPlanFor(curated: CuratedModel, profile: HardwareProfile): Promise<ModelContextPlan | null> {
+    if (curated.modality !== 'llm' || (curated.backend !== 'ollama' && curated.backend !== 'lemonade')) return null;
+    const backend = this.backends.get(curated.backend);
+    const [cost16, sighting, ceilingMb, floor] = await Promise.all([
+      probeContextCost(backend, curated, 'f16'),
+      this.memoryManager.footprintSighting(profile, curated.backend, curated.backendModelId),
+      this.memoryManager.modelCeilingMb(profile, curated.backend, curated.backendModelId),
+      this.installedAppFloor(curated),
+    ]);
+    const localCap = this.localContextCap();
+    const modelWindow = curated.runtime.contextWindow > 0 ? Math.floor(curated.runtime.contextWindow) : null;
+    const sizingAt = (choice: KvCacheChoice): ModelMemoryInput => {
+      const cost = cost16 ? scaleCacheCost(cost16, kvCacheScaleFor(choice)) : null;
+      return {
+        modelFootprintMb: curated.runtime.memoryFootprintMb || 0,
+        kvMbPerToken: cost?.kvMbPerToken ?? null,
+        fixedKvMb: cost?.fixedKvMb ?? null,
+        weightMb: cost?.weightMb ?? null,
+        visionReserveMb: visionReserveMbFor(curated),
+        kvSlots: kvSequencesFor(curated.backend, cost16, this.statedSlots(curated.backend, backend)),
+        sighting,
+      };
+    };
+    /** The window a load at `choice` would get: the handout, raised to the floor, fitted to an empty card. */
+    const windowAt = (choice: KvCacheChoice): number | null => {
+      const sizing = sizingAt(choice);
+      const handout = handoutContextLength({
+        model: curated,
+        servedLocally: true,
+        effectiveInferenceMemoryMb: ceilingMb,
+        kvMbPerToken: sizing.kvMbPerToken,
+        fixedKvMb: sizing.fixedKvMb,
+        weightMb: sizing.weightMb,
+        kvSlots: sizing.kvSlots,
+        sighting,
+        maxContextLength: localCap,
+      });
+      let wanted = floor ? Math.max(handout, floor.minContextLength) : handout;
+      if (modelWindow !== null) wanted = Math.min(wanted, modelWindow);
+      if (localCap !== null) wanted = Math.min(wanted, localCap);
+      return largestFittingWindow({ ...sizing, from: wanted, budgetMb: ceilingMb });
+    };
+
+    // Lemonade: the Hub picks the cache per model. Ollama: the server runs one cache for every model, the
+    // one the operator stated (`inferenceOllamaKvCacheType`), and the Hub can only recommend another.
+    const kvCacheType: KvCacheChoice =
+      curated.backend === 'ollama'
+        ? this.statedOllamaKvCacheType()
+        : (this.chooseKvCacheType(backend, curated, {
+            floor,
+            ceilingMb,
+            fallback: false,
+            sizing: sizingAt('f16'),
+            windowCap: Math.min(modelWindow ?? Number.POSITIVE_INFINITY, localCap ?? Number.POSITIVE_INFINITY),
+          }) ?? 'f16');
+    const window = windowAt(kvCacheType);
+    const met = floor !== null && window !== null && window >= floor.minContextLength;
+    return {
+      window,
+      kvCacheType,
+      kvCacheSetBy: curated.backend === 'ollama' ? 'server' : 'hub',
+      kvCacheAdvice: curated.backend === 'ollama' && floor && !met ? this.ollamaKvCacheAdvice(kvCacheType, floor.minContextLength, windowAt) : null,
+      // Computed from the file rather than seen loaded: the cache is exact, the catalog's weights figure may not be.
+      basis: cost16?.kvMbPerToken == null || (cost16.source === 'gguf' && !curated.runtime.footprintMeasured) ? 'estimated' : 'measured',
+      kvCacheMeasured: kvCacheType !== 'f16' && curated.runtime.kvCacheType === kvCacheType,
+      floor: floor ? { ...floor, met } : null,
+    };
+  }
+
+  /**
+   * The cache this node's Ollama runs, as the operator stated it (`inferenceOllamaKvCacheType`, the
+   * daemon's `OLLAMA_KV_CACHE_TYPE`): 16-bit, Ollama's default, when not stated.
+   */
+  private statedOllamaKvCacheType(): KvCacheChoice {
+    try {
+      return this.configuration?.getInferencePreferences()?.ollamaKvCacheType ?? 'f16';
+    } catch {
+      return 'f16';
+    }
+  }
+
+  /**
+   * The Ollama cache setting that would let a model reach an installed app's floor here, when the one the
+   * server runs does not: q8_0, else q4_0, the same order and the same reasons as Lemonade's per-model
+   * choice (see `QUANTIZED_KV_CACHE_TYPES`), only more compact than what runs now. It is server-wide, so
+   * it is advice for the operator, not something the Hub applies. Null when neither reaches the floor.
+   */
+  private ollamaKvCacheAdvice(
+    current: KvCacheChoice,
+    floor: number,
+    windowAt: (choice: KvCacheChoice) => number | null,
+  ): ModelContextPlan['kvCacheAdvice'] {
+    const currentScale = kvCacheScaleFor(current);
+    for (const type of QUANTIZED_KV_CACHE_TYPES) {
+      if (!(kvCacheScaleFor(type) < currentScale)) continue;
+      const window = windowAt(type);
+      if (window !== null && window >= floor) return { type, window, setting: `OLLAMA_KV_CACHE_TYPE=${type}` };
+    }
+    return null;
+  }
+
+  /**
+   * The KV cache a Lemonade load plans for: quantized only when it is needed — the 16-bit cache cannot
+   * hold an installed app's floor (Hermes' 64000) even on an empty card here — and then q8_0, or q4_0
+   * when only q4_0 reaches the floor (see `QUANTIZED_KV_CACHE_TYPES` for what each costs in quality);
+   * the engine must offer the type for
+   * the model (`InferenceBackend.kvCacheTypesFor`: a llama.cpp model on a Lemonade that can save it,
+   * not one that failed with it before). 16-bit otherwise, so a model that fits its floor keeps the
+   * cache measured to extract a little more from long multi-record prompts (2026-11-10). Decided
+   * against an empty card rather than what is free now: it is a property of the model and the card,
+   * and a cache that flipped with every idle model would reload the model to flip back.
+   *
+   * Undefined for other engines, which leave the cache to their own settings (Ollama's is the
+   * server-wide `OLLAMA_KV_CACHE_TYPE`).
+   */
+  private chooseKvCacheType(
+    backend: InferenceBackend,
+    model: CuratedModel,
+    input: { floor: { minContextLength: number } | null; ceilingMb: number; fallback: boolean; sizing: ModelMemoryInput; windowCap: number },
+  ): KvCacheChoice | undefined {
+    if (model.backend !== 'lemonade' || model.modality !== 'llm') return undefined;
+    if (input.fallback || !input.floor || input.sizing.kvMbPerToken == null) return 'f16';
+    const offered = backend.kvCacheTypesFor?.(model) ?? [];
+    if (offered.length === 0) return 'f16';
+    const floorWindow = Math.min(input.floor.minContextLength, input.windowCap);
+    const reaches = (choice: KvCacheChoice) => {
+      const scale = kvCacheScaleFor(choice);
+      const sizing = {
+        ...input.sizing,
+        kvMbPerToken: (input.sizing.kvMbPerToken as number) * scale,
+        fixedKvMb: input.sizing.fixedKvMb == null ? null : input.sizing.fixedKvMb * scale,
+      };
+      const window = largestFittingWindow({ ...sizing, from: floorWindow, budgetMb: input.ceilingMb });
+      return window !== null && window >= floorWindow;
+    };
+    if (reaches('f16')) return 'f16';
+    // Most precise first; when none reaches the floor, the first (q8_0) as before: q4_0 is worth its cost
+    // only for the window it wins.
+    return offered.find(reaches) ?? offered[0] ?? 'f16';
   }
 
   /**

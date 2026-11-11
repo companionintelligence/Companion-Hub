@@ -476,6 +476,12 @@ async function runClientLoader(request: Request) {
     return redirect(`/home?memoryConnect=${memoryConnect}${app ? `&app=${encodeURIComponent(app)}` : ''}`);
   }
 
+  // The same for a refused browser handoff (the Hub app signing this browser in for Open or a
+  // Memory connect), so the person sees why they are here instead of on the page they asked for.
+  if (url.searchParams.get('handoff') === 'failed') {
+    return redirect('/home?handoff=failed');
+  }
+
   return redirect('/home');
 }
 

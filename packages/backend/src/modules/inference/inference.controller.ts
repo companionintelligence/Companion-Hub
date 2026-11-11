@@ -46,7 +46,7 @@ import { AuthGuard } from '@/modules/auth/auth.guard';
 import { InferenceAccessGuard } from '@/modules/auth/inference-access.guard';
 import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import type { CloudProviderStatus, CloudProviderType } from '@ci-hub/common/types';
+import type { CloudProviderStatus, CloudProviderType, ModelContextPlan } from '@ci-hub/common/types';
 import {
   LoadModelBody,
   UnloadModelBody,
@@ -385,6 +385,7 @@ export class InferenceController {
       maxNumCtx: body.maxNumCtx,
       ollamaSlots: body.ollamaSlots,
       ollamaKeepAlive: body.ollamaKeepAlive,
+      ollamaKvCacheType: body.ollamaKvCacheType,
     });
 
     this.scheduleAiAppRestart('inference preferences changed');
@@ -823,11 +824,24 @@ export class InferenceController {
       installedCatalogIds = ollamaInstalled;
     }
 
+    // What each text model of the engine being set up would get here: window, KV cache, and the installed
+    // apps' floor (Hermes' 64000). From the load path's own arithmetic; a model it cannot plan is left out.
+    const contextPlans: Record<string, ModelContextPlan> = {};
+    await Promise.all(
+      availableModels
+        .filter((m) => m.modality === 'llm' && m.backend === installBackend)
+        .map(async (m) => {
+          const plan = await this.router.contextPlanFor(m, profile).catch(() => null);
+          if (plan) contextPlans[m.id] = plan;
+        }),
+    );
+
     return {
       hardware: profile,
       tier,
       recommendedModels,
       availableModels,
+      contextPlans,
       installedCatalogIds,
       memoryBudget: budget,
       backends: {

@@ -1832,6 +1832,20 @@
         ]
       }
     },
+    "/api/auth/browser-handoff/confirm": {
+      "post": {
+        "operationId": "confirmBrowserHandoff",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/api/auth/portal/start": {
       "get": {
         "operationId": "startPortalLogin",
@@ -7570,6 +7584,14 @@
                 "minimum": 1,
                 "maximum": 64
               },
+              "inferenceOllamaKvCacheType": {
+                "type": "string",
+                "enum": [
+                  "f16",
+                  "q8_0",
+                  "q4_0"
+                ]
+              },
               "inferenceOllamaKeepAlive": {
                 "type": "integer",
                 "minimum": -1,
@@ -8081,6 +8103,14 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 64
+          },
+          "inferenceOllamaKvCacheType": {
+            "type": "string",
+            "enum": [
+              "f16",
+              "q8_0",
+              "q4_0"
+            ]
           },
           "inferenceOllamaKeepAlive": {
             "type": "integer",
@@ -14074,6 +14104,15 @@
             "type": "integer",
             "minimum": -1,
             "maximum": 31536000
+          },
+          "ollamaKvCacheType": {
+            "nullable": true,
+            "type": "string",
+            "enum": [
+              "f16",
+              "q8_0",
+              "q4_0"
+            ]
           }
         },
         "required": [

@@ -160,6 +160,7 @@ type PersistedSettingsValues = {
   inferenceEncodeEndpoint: string | undefined;
   inferenceMaxNumCtx: number | undefined;
   inferenceOllamaSlots: number | undefined;
+  inferenceOllamaKvCacheType: 'f16' | 'q8_0' | 'q4_0' | undefined;
   inferenceOllamaKeepAlive: number | undefined;
   inferenceCloudProviders: CloudProviderConfig[] | undefined;
   hubPoolEnabled: boolean | undefined;
@@ -206,6 +207,7 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   inferenceEncodeEndpoint: undefined,
   inferenceMaxNumCtx: undefined,
   inferenceOllamaSlots: undefined,
+  inferenceOllamaKvCacheType: undefined,
   inferenceOllamaKeepAlive: undefined,
   inferenceCloudProviders: undefined,
   hubPoolEnabled: undefined,
@@ -249,6 +251,7 @@ function userSettingsFromFile(settingsValues: PersistedSettingsValues) {
     inferenceEncodeEndpoint: settingsValues.inferenceEncodeEndpoint,
     inferenceMaxNumCtx: settingsValues.inferenceMaxNumCtx,
     inferenceOllamaSlots: settingsValues.inferenceOllamaSlots,
+    inferenceOllamaKvCacheType: settingsValues.inferenceOllamaKvCacheType,
     inferenceOllamaKeepAlive: settingsValues.inferenceOllamaKeepAlive,
     inferenceCloudProviders: settingsValues.inferenceCloudProviders,
     // Left tri-state on purpose: `undefined` (never touched) and `false` (operator turned it
@@ -294,6 +297,8 @@ export interface SetInferencePreferencesOptions {
   maxNumCtx?: number | null;
   ollamaSlots?: number | null;
   ollamaKeepAlive?: number | null;
+  /** The daemon's `OLLAMA_KV_CACHE_TYPE`; `null` clears it (sized as 16-bit). Options form only. */
+  ollamaKvCacheType?: 'f16' | 'q8_0' | 'q4_0' | null;
 }
 
 @Injectable()
@@ -384,6 +389,7 @@ export class ConfigurationService {
       inferenceEncodeEndpoint: settings.inferenceEncodeEndpoint,
       inferenceMaxNumCtx: settings.inferenceMaxNumCtx,
       inferenceOllamaSlots: settings.inferenceOllamaSlots,
+      inferenceOllamaKvCacheType: settings.inferenceOllamaKvCacheType,
       inferenceOllamaKeepAlive: settings.inferenceOllamaKeepAlive,
       inferenceCloudProviders: settings.inferenceCloudProviders,
       hubPoolEnabled: settings.hubPoolEnabled,
@@ -716,6 +722,8 @@ export class ConfigurationService {
       // `null` is not stated: an unpinned model is handed back with Ollama's 5-minute default.
       // Clamped on read for the reason the cap is. See `inference-ollama-keep-alive.ts`.
       ollamaKeepAlive: clampOllamaKeepAliveSeconds(this.config.userSettings.inferenceOllamaKeepAlive),
+      // `null` is not stated, which sizes as Ollama's default 16-bit cache. See `OllamaBackend.kvCacheScale`.
+      ollamaKvCacheType: this.config.userSettings.inferenceOllamaKvCacheType ?? null,
     };
   }
 
@@ -787,6 +795,7 @@ export class ConfigurationService {
       inferenceEncodeEndpoint?: string;
       inferenceMaxNumCtx?: number;
       inferenceOllamaSlots?: number;
+      inferenceOllamaKvCacheType?: 'f16' | 'q8_0' | 'q4_0';
       inferenceOllamaKeepAlive?: number;
     } = { inferenceBackend: opts.backend };
     if (opts.model !== undefined) {
@@ -821,6 +830,9 @@ export class ConfigurationService {
     }
     if (opts.ollamaKeepAlive !== undefined) {
       settings.inferenceOllamaKeepAlive = opts.ollamaKeepAlive ?? undefined;
+    }
+    if (opts.ollamaKvCacheType !== undefined) {
+      settings.inferenceOllamaKvCacheType = opts.ollamaKvCacheType ?? undefined;
     }
     await this.setUserSettings(settings);
     return this.getInferencePreferences();
