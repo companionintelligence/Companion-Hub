@@ -128,6 +128,12 @@ export interface KvGeometry {
   kvLayers: number;
   slidingLayers: number;
   blockCount: number;
+  /**
+   * `<arch>.context_length`: the window the file says the model runs at as configured — after any rope
+   * scaling the file itself sets. Engines load larger windows without complaint, but past it the model
+   * is outside its training (Qwen3-8B: 40960; the catalog said 131072, which needs YaRN switched on).
+   */
+  contextLength: number | null;
 }
 
 /**
@@ -159,7 +165,8 @@ export function kvGeometryFromGguf(meta: Map<string, GgufValue>): KvGeometry | n
   if (blockCount === null) return null;
   const headCount = int(key('attention.head_count'));
   const embedding = int(key('embedding_length'));
-  const none = { slidingKvBytesPerToken: 0, slidingWindow: 0, slidingLayers: 0 };
+  const contextLength = int(key('context_length'));
+  const none = { slidingKvBytesPerToken: 0, slidingWindow: 0, slidingLayers: 0, contextLength };
 
   const loraRank = int(key('attention.kv_lora_rank'));
   if (loraRank !== null) {
@@ -219,5 +226,6 @@ export function kvGeometryFromGguf(meta: Map<string, GgufValue>): KvGeometry | n
     kvLayers,
     slidingLayers,
     blockCount,
+    contextLength,
   };
 }

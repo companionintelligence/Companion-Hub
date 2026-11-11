@@ -983,8 +983,9 @@ function withMeasuredKv(model: CuratedModel): CuratedModel {
  * card that holds 32k. The KV cost from the same table is applied where the cost is probed
  * (`probeContextCost`), not here, so a measured `kvMbPerToken` stays distinguishable from a computed one.
  */
-function withFileFootprint(model: CuratedModel): CuratedModel {
-  if (model.backend !== 'lemonade' && model.backend !== 'ollama') return model;
+function withFileFootprint(row: CuratedModel): CuratedModel {
+  if (row.backend !== 'lemonade' && row.backend !== 'ollama') return row;
+  const model = withFileWindow(row);
   const fileBytes = GGUF_KV_GEOMETRY[model.id]?.fileBytes;
   if (!fileBytes || fileBytes <= 0) return model;
   // A measured footprint stays: only its download size, a fact about the files, is taken from them.
@@ -999,6 +1000,18 @@ function withFileFootprint(model: CuratedModel): CuratedModel {
     requirements: { ...model.requirements, diskMb, minVramMb: diskMb, recommendedVramMb: footprintMb + 1024, minRamMb: Math.round(diskMb * 1.15) },
     runtime: { ...model.runtime, memoryFootprintMb: footprintMb },
   };
+}
+
+/**
+ * A row's window capped at its file's `context_length`, the most it runs at as configured. The TOON's
+ * ctxK is the model card's figure, which for some families is reached only with rope scaling neither
+ * engine switches on: Lemonade's Qwen3-8B said 131072 and its file 40960, and Lemonade refused every
+ * 58k-token prompt to it (2026-11-10), while the Hub would have handed an app 64k.
+ */
+function withFileWindow(model: CuratedModel): CuratedModel {
+  const fileWindow = GGUF_KV_GEOMETRY[model.id]?.contextLength;
+  if (!fileWindow || !(model.runtime.contextWindow > fileWindow)) return model;
+  return { ...model, runtime: { ...model.runtime, contextWindow: fileWindow } };
 }
 
 export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...lemonadeLlms, ...vllmLlms, ...omlxLlms, ...extraModels]

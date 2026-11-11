@@ -99,6 +99,7 @@ describe('kvGeometryFromGguf', () => {
         'gemma3.attention.key_length': 256,
         'gemma3.attention.value_length': 256,
         'gemma3.attention.sliding_window': 1024,
+        'gemma3.context_length': 131_072,
       }),
     ).toEqual({
       architecture: 'gemma3',
@@ -108,6 +109,7 @@ describe('kvGeometryFromGguf', () => {
       kvLayers: 48,
       slidingLayers: 40,
       blockCount: 48,
+      contextLength: 131_072,
     });
   });
 
@@ -153,6 +155,18 @@ describe('kvGeometryFromGguf', () => {
         'deepseek2.rope.dimension_count': 64,
       }),
     ).toMatchObject({ kvBytesPerToken: 47 * 576 * 2 });
+  });
+
+  it("reports the file's own context length, and null when it has none", () => {
+    const base = {
+      'general.architecture': 'qwen3',
+      'qwen3.block_count': 36,
+      'qwen3.attention.head_count': 32,
+      'qwen3.attention.head_count_kv': 8,
+      'qwen3.attention.key_length': 128,
+    };
+    expect(geometry({ ...base, 'qwen3.context_length': 40_960 })?.contextLength).toBe(40_960);
+    expect(geometry(base)?.contextLength).toBeNull();
   });
 
   it('returns null without the geometry keys', () => {

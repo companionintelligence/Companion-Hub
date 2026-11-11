@@ -140,7 +140,7 @@ async function main() {
     .map((id) => {
       const r = results[id] as KvGeometry & { fileBytes: number };
       const swa = r.slidingLayers ? `, slidingKvBytesPerToken: ${r.slidingKvBytesPerToken}, slidingWindow: ${r.slidingWindow}` : '';
-      const file = r.fileBytes > 0 ? `, fileBytes: ${r.fileBytes}` : '';
+      const file = (r.fileBytes > 0 ? `, fileBytes: ${r.fileBytes}` : '') + (r.contextLength ? `, contextLength: ${r.contextLength}` : '');
       return `  ${JSON.stringify(id)}: { architecture: ${JSON.stringify(r.architecture)}, kvBytesPerToken: ${r.kvBytesPerToken}${swa}${file} },`;
     })
     .join('\n');
@@ -164,6 +164,8 @@ export interface GgufKvGeometry {
   slidingWindow?: number;
   /** What a load maps: the weights (every shard) plus the vision projector. */
   fileBytes?: number;
+  /** The file's \`context_length\`: the most the model runs at as configured (the catalog caps its window here). */
+  contextLength?: number;
 }
 
 export const GGUF_KV_GEOMETRY: Readonly<Record<string, GgufKvGeometry>> = {

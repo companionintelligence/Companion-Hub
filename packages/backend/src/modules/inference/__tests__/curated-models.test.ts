@@ -34,7 +34,8 @@ describe('curated-models (TOON catalog)', () => {
     const expected = [
       ['mimo-v2-6-9b', 'mimo-v2.6:9b', 9, 256_000, 'Xiaomi', true, true, true],
       ['flint-40b', 'flint:40b', 39.8, 256_000, 'Recursive', true, false, true],
-      ['nemotron-3-5-bolt-e4b', 'nemotron-3.5-bolt:e4b', 4, 128_000, 'NVIDIA', true, true, true],
+      // 128000 on its model card; its file's context_length is 65536, and the catalog caps it there.
+      ['nemotron-3-5-bolt-e4b', 'nemotron-3.5-bolt:e4b', 4, 65_536, 'NVIDIA', true, true, true],
       ['lfm3-1-7b', 'lfm3:1.7b', 1.7, 256_000, 'Liquid AI', true, false, true],
     ] as const;
 
@@ -105,6 +106,20 @@ describe('curated-models (TOON catalog)', () => {
     const ollama = CURATED_MODELS.find((m) => m.id === 'qwen3-5-27b');
     expect(footprint('qwen3-5-27b')).toBe(Math.ceil((GGUF_KV_GEOMETRY['qwen3-5-27b']?.fileBytes ?? 0) / 1024 ** 2 + 768)); // Ollama: its registry files
     expect(ollama?.requirements.diskMb).toBe(fileMb('qwen3-5-27b'));
+  });
+
+  // Lemonade refused every 58k-token prompt to Qwen3-8B (2026-11-10): its file runs at 40960, and the
+  // 131072 on the row needs YaRN, which neither engine switches on. The Hub would have handed out 64k.
+  it("caps a row's window at its file's context_length, and leaves one inside it alone", () => {
+    const window = (id: string) => byId.get(id)?.runtime.contextWindow;
+    expect(window('qwen3-8b-lemonade')).toBe(40_960);
+    expect(window('qwen3-4b-lemonade')).toBe(40_960);
+    expect(window('command-a-111b')).toBe(16_384);
+    expect(window('qwen3-8-27b-lemonade')).toBe(256_000); // inside its file's 262144: unchanged
+    for (const m of CURATED_MODELS) {
+      const fileWindow = GGUF_KV_GEOMETRY[m.id]?.contextLength;
+      if (fileWindow) expect(m.runtime.contextWindow, m.id).toBeLessThanOrEqual(fileWindow);
+    }
   });
 
   it('gives every model a real, pullable backend tag and sane derived requirements', () => {
