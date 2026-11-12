@@ -53,7 +53,7 @@ export const trainingJobManifestSchema = z
       device: z.enum(['cpu', 'gpu', 'any']).default('any'),
       minMemoryMb: z.number().int().positive(),
       images: z.array(z.enum(TRAINING_IMAGE_VARIANTS)).min(1),
-      framework: z.enum(['pytorch', 'mlx', 'tinygrad']).default('pytorch'),
+      framework: z.enum(['pytorch', 'mlx', 'tinygrad', 'unsloth']).default('pytorch'),
     }),
 
     trigger: z.object({
