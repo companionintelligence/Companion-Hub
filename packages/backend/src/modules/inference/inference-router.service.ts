@@ -30,7 +30,7 @@ import {
   MemoryManagerService,
   modelPoolFor,
 } from './memory-manager.service';
-import { CloudFallbackService, speaksOpenAiCompletions } from './cloud-fallback.service';
+import { CloudFallbackService, isCloudFallbackAllowed, speaksOpenAiCompletions } from './cloud-fallback.service';
 import { ModelPullerService } from './model-puller.service';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 import type { InferenceBackend } from './backends/backend.interface';
@@ -699,13 +699,13 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     const resolvedModel = requestedModel === 'auto' ? await this.resolveAutoModel(probeOnce) : requestedModel;
 
     if (!resolvedModel) {
-      // No local model, try cloud
-      const provider = this.cloudFallback.getEnabledProviders()[0];
+      // Fail closed by default: only fall back to cloud when explicitly opted in.
+      const provider = isCloudFallbackAllowed() ? this.cloudFallback.getEnabledProviders()[0] : undefined;
       if (provider) {
         const result = await this.cloudFallback.proxyChatCompletion(provider, { ...body, model: provider.defaultModel }, clientClosed);
         return { data: result.data, stream: result.stream, headers: result.headers, backend: `cloud:${provider.provider}` };
       }
-      throw new Error('No models available — no local models loaded and no cloud providers configured');
+      throw new Error('No local models available — automatic cloud fallback is disabled');
     }
 
     // 2 + 3. A tracked model: serve it if loaded, else make room and load it. Shared with the pool
@@ -830,7 +830,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       }
     }
 
-    const provider = this.cloudFallback.getEnabledProviders()[0];
+    const provider = isCloudFallbackAllowed() ? this.cloudFallback.getEnabledProviders()[0] : undefined;
     if (provider) {
       const data = await this.cloudFallback.proxyTts(provider, body);
       return { data, backend: `cloud:${provider.provider}` };
@@ -860,7 +860,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       }
     }
 
-    const provider = this.cloudFallback.getEnabledProviders()[0];
+    const provider = isCloudFallbackAllowed() ? this.cloudFallback.getEnabledProviders()[0] : undefined;
     if (provider) {
       const data = await this.cloudFallback.proxyStt(provider, formData);
       return { data, backend: `cloud:${provider.provider}` };
@@ -897,7 +897,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       }
     }
 
-    const provider = this.cloudFallback.getEnabledProviders()[0];
+    const provider = isCloudFallbackAllowed() ? this.cloudFallback.getEnabledProviders()[0] : undefined;
     if (provider) {
       const res = await this.cloudFallback.proxyImageGeneration(provider, body);
       return { data: res.data, backend: `cloud:${provider.provider}` };
@@ -959,7 +959,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       }
     }
 
-    const provider = this.cloudFallback.getEnabledProviders()[0];
+    const provider = isCloudFallbackAllowed() ? this.cloudFallback.getEnabledProviders()[0] : undefined;
     if (provider) {
       const baseUrl = provider.baseUrl || 'https://api.openai.com/v1';
       try {

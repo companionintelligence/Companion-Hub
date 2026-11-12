@@ -929,31 +929,51 @@ describe('AppCredentialsService', () => {
       CI_CLOUD_OPENAI_MODEL: 'gpt-4o',
     };
 
-    it('keeps the local backend as primary and attaches cloud provider env', async () => {
+    it('keeps the local backend as primary and attaches cloud provider env only when CI_HUB_ALLOW_CLOUD_FALLBACK=true', async () => {
       cloudFallback.getEnabledProviders.mockReturnValue([cloudProvider]);
       cloudFallback.toAppEnv.mockReturnValue(cloudEnv);
 
-      const config = await service.getCredentials('hermes-agent');
+      const defaultConfig = await service.getCredentials('hermes-agent');
+      expect(defaultConfig.provider).toBe('ollama');
+      expect(defaultConfig.env.CI_CLOUD_OPENAI_API_KEY).toBeUndefined();
 
-      expect(config.provider).toBe('ollama');
-      expect(config.env.HERMES_OPENAI_API_KEY).toBe('ollama');
-      expect(config.env.CI_INFERENCE_BACKEND).toBe('ollama');
-      expect(config.env.CI_CLOUD_OPENAI_API_KEY).toBe('sk-operator-key');
-      expect(config.env.OLLAMA_HOST).toBe(OLLAMA_BASE_URL);
+      service.invalidateCache();
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        const config = await service.getCredentials('hermes-agent');
+
+        expect(config.provider).toBe('ollama');
+        expect(config.env.HERMES_OPENAI_API_KEY).toBe('ollama');
+        expect(config.env.CI_INFERENCE_BACKEND).toBe('ollama');
+        expect(config.env.CI_CLOUD_OPENAI_API_KEY).toBe('sk-operator-key');
+        expect(config.env.OLLAMA_HOST).toBe(OLLAMA_BASE_URL);
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
     });
 
-    it('uses the first cloud provider as primary when the local backend is down', async () => {
+    it('uses the first cloud provider as primary when the local backend is down and CI_HUB_ALLOW_CLOUD_FALLBACK=true', async () => {
       ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
       cloudFallback.getEnabledProviders.mockReturnValue([cloudProvider]);
       cloudFallback.toAppEnv.mockReturnValue(cloudEnv);
 
-      const config = await service.getCredentials('openclaw');
+      const defaultConfig = await service.getCredentials('openclaw');
+      expect(defaultConfig.provider).toBe('ollama');
+      expect(defaultConfig.env.OPENAI_API_KEY).not.toBe('sk-operator-key');
 
-      expect(config.provider).toBe('cloud');
-      expect(config.env.OPENAI_API_BASE).toBe('https://api.openai.com/v1');
-      expect(config.env.OPENAI_API_KEY).toBe('sk-operator-key');
-      expect(config.env.CI_CLOUD_OPENAI_API_KEY).toBe('sk-operator-key');
-      expect(config.env.OLLAMA_HOST).toBe(OLLAMA_BASE_URL);
+      service.invalidateCache();
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        const config = await service.getCredentials('openclaw');
+
+        expect(config.provider).toBe('cloud');
+        expect(config.env.OPENAI_API_BASE).toBe('https://api.openai.com/v1');
+        expect(config.env.OPENAI_API_KEY).toBe('sk-operator-key');
+        expect(config.env.CI_CLOUD_OPENAI_API_KEY).toBe('sk-operator-key');
+        expect(config.env.OLLAMA_HOST).toBe(OLLAMA_BASE_URL);
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
     });
   });
 
@@ -1028,10 +1048,15 @@ describe('AppCredentialsService', () => {
       ] as CloudProviderConfig[]);
       service.invalidateCache();
 
-      const config = await service.getCredentials('openclaw');
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        const config = await service.getCredentials('openclaw');
 
-      expect(config.provider).toBe('cloud');
-      expect(config.env.OPENAI_API_BASE).toBe('https://api.openai.com/v1');
+        expect(config.provider).toBe('cloud');
+        expect(config.env.OPENAI_API_BASE).toBe('https://api.openai.com/v1');
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
     });
   });
 
@@ -1332,48 +1357,58 @@ describe('AppCredentialsService', () => {
       // App containers keep running through a Hub restart and fetch bootstrap.env only when they
       // start. A record lost with the process made every such app read as stale, and the next
       // refresh restarted it for nothing.
-      cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-operator-secret' });
-      const served = await service.getCredentials('openclaw');
-      await service.onApplicationShutdown();
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-operator-secret' });
+        const served = await service.getCredentials('openclaw');
+        await service.onApplicationShutdown();
 
-      const restarted = new AppCredentialsService(
-        logger,
-        hardwareInspector,
-        modelRegistry,
-        modelPuller,
-        cloudFallback,
-        ollamaBackend,
-        configurationService,
-        testingModule.get(InferenceEndpointService),
-      );
-      const record = await restarted.lastHandout('openclaw');
+        const restarted = new AppCredentialsService(
+          logger,
+          hardwareInspector,
+          modelRegistry,
+          modelPuller,
+          cloudFallback,
+          ollamaBackend,
+          configurationService,
+          testingModule.get(InferenceEndpointService),
+        );
+        const record = await restarted.lastHandout('openclaw');
 
-      expect(record).toMatchObject({ chatModelId: served.chatModelId, endpointUrl: served.endpointUrl });
-      expect(differingHandoutKeys(record as RecordedHandout, await restarted.previewCredentials('openclaw'))).toEqual([]);
-      expect(await fs.promises.readFile(HANDOUT_RECORDS_PATH, 'utf8')).not.toContain('sk-operator-secret');
+        expect(record).toMatchObject({ chatModelId: served.chatModelId, endpointUrl: served.endpointUrl });
+        expect(differingHandoutKeys(record as RecordedHandout, await restarted.previewCredentials('openclaw'))).toEqual([]);
+        expect(await fs.promises.readFile(HANDOUT_RECORDS_PATH, 'utf8')).not.toContain('sk-operator-secret');
 
-      cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-rotated' });
-      expect(differingHandoutKeys(record as RecordedHandout, await restarted.previewCredentials('openclaw'))).toEqual(['CI_CLOUD_OPENAI_API_KEY']);
+        cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-rotated' });
+        expect(differingHandoutKeys(record as RecordedHandout, await restarted.previewCredentials('openclaw'))).toEqual(['CI_CLOUD_OPENAI_API_KEY']);
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
     });
 
     // A factory reset removes the apps. The records stayed and the next app to fetch wrote them back.
     it('forgets every record (in memory and on disk) with the credentials it cached', async () => {
-      cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-before-the-reset' });
-      await service.getCredentials('openclaw');
-      expect((await service.getCredentials('hermes-agent')).env).toHaveProperty('CI_CLOUD_OPENAI_API_KEY', 'sk-before-the-reset');
-      await service.onApplicationShutdown();
-      expect(fs.existsSync(HANDOUT_RECORDS_PATH)).toBe(true);
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-before-the-reset' });
+        await service.getCredentials('openclaw');
+        expect((await service.getCredentials('hermes-agent')).env).toHaveProperty('CI_CLOUD_OPENAI_API_KEY', 'sk-before-the-reset');
+        await service.onApplicationShutdown();
+        expect(fs.existsSync(HANDOUT_RECORDS_PATH)).toBe(true);
 
-      await service.forgetHandouts();
+        await service.forgetHandouts();
 
-      expect(await service.lastHandout('openclaw')).toBeNull();
-      expect(fs.existsSync(HANDOUT_RECORDS_PATH)).toBe(false);
+        expect(await service.lastHandout('openclaw')).toBeNull();
+        expect(fs.existsSync(HANDOUT_RECORDS_PATH)).toBe(false);
 
-      // Resolved again rather than served from the cache, which held the key from before the reset.
-      cloudFallback.toAppEnv.mockReturnValue({});
-      expect((await service.getCredentials('hermes-agent')).env).not.toHaveProperty('CI_CLOUD_OPENAI_API_KEY');
-      await service.onApplicationShutdown();
-      expect(Object.keys(JSON.parse(await fs.promises.readFile(HANDOUT_RECORDS_PATH, 'utf8')))).toEqual(['hermes-agent']);
+        // Resolved again rather than served from the cache, which held the key from before the reset.
+        cloudFallback.toAppEnv.mockReturnValue({});
+        expect((await service.getCredentials('hermes-agent')).env).not.toHaveProperty('CI_CLOUD_OPENAI_API_KEY');
+        await service.onApplicationShutdown();
+        expect(Object.keys(JSON.parse(await fs.promises.readFile(HANDOUT_RECORDS_PATH, 'utf8')))).toEqual(['hermes-agent']);
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
     });
 
     // A fetch still resolving at the reset read the old Hub's keys. Cached, they went to the next app for 30 s.
@@ -1462,25 +1497,39 @@ describe('AppCredentialsService', () => {
       cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-operator-key' });
       service.invalidateCache();
 
-      const config = await service.getCredentials('openclaw');
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        const config = await service.getCredentials('openclaw');
 
-      expect(config.provider).toBe('ollama');
-      expect(config.env.OPENAI_API_BASE).toBe(OLLAMA_OPENAI_URL);
-      // The cloud provider stays attached as a secondary — it just stops being primary.
-      expect(config.env.CI_CLOUD_OPENAI_API_KEY).toBe('sk-operator-key');
+        expect(config.provider).toBe('ollama');
+        expect(config.env.OPENAI_API_BASE).toBe(OLLAMA_OPENAI_URL);
+        // The cloud provider stays attached as a secondary when explicitly opted in.
+        expect(config.env.CI_CLOUD_OPENAI_API_KEY).toBe('sk-operator-key');
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
     });
 
-    it('still falls through to cloud when nothing local is running at all', async () => {
+    it('falls through to cloud only when nothing local is running at all and CI_HUB_ALLOW_CLOUD_FALLBACK=true', async () => {
       ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
       cloudFallback.getEnabledProviders.mockReturnValue([
         { provider: 'openai', apiKey: 'sk-operator-key', enabled: true, baseUrl: 'https://api.openai.com/v1', defaultModel: 'gpt-4o' },
       ] as CloudProviderConfig[]);
       service.invalidateCache();
 
-      const config = await service.getCredentials('openclaw');
+      const defaultConfig = await service.getCredentials('openclaw');
+      expect(defaultConfig.provider).not.toBe('cloud');
 
-      expect(config.provider).toBe('cloud');
-      expect(config.env.OPENAI_API_BASE).toBe('https://api.openai.com/v1');
+      service.invalidateCache();
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        const config = await service.getCredentials('openclaw');
+
+        expect(config.provider).toBe('cloud');
+        expect(config.env.OPENAI_API_BASE).toBe('https://api.openai.com/v1');
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
     });
   });
 

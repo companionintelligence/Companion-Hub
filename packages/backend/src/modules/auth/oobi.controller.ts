@@ -1,7 +1,9 @@
-import { BadRequestException, Controller, Get, Param, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Param, ServiceUnavailableException, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { KeriOobiFlagGuard } from './keri-oobi.guard';
 
 @ApiTags('KERI / Trust Over IP')
+@UseGuards(KeriOobiFlagGuard)
 @Controller()
 export class OobiController {
   @Get('.well-known/keri/oobi')
