@@ -1,10 +1,15 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table';
+import { parseHubTimestamp } from '@/components/ui/dense/dense';
 import type { AppRuntimeMonitorSnapshot } from '@/lib/app-runtime-monitor';
+import { BACKEND_DISPLAY_NAMES } from '@/lib/inference/backend-names';
 import { cn } from '@/lib/utils';
+import type { InferenceBackendType } from '@ci-hub/common/types';
 import {
   type BackendResidencySummary,
+  countedInModelMemory,
+  gpuProcessOwner,
   type HardwareSummary,
   hostRamUsedMb,
   type InferenceBackendStatus,
@@ -49,8 +54,7 @@ interface Tile {
   percent: number | null;
 }
 
-const ENGINE_NAMES: Record<string, string> = { ollama: 'Ollama', vllm: 'vLLM', lemonade: 'Lemonade', omlx: 'oMLX', localai: 'LocalAI' };
-export const engineName = (type: string) => ENGINE_NAMES[type] ?? type;
+export const engineName = (type: string) => BACKEND_DISPLAY_NAMES[type as InferenceBackendType] ?? type;
 
 function Meter({ percent, className }: { percent: number; className?: string }) {
   return (
@@ -128,21 +132,34 @@ function clock(iso: string | undefined, span: TelemetrySpan) {
 }
 
 /**
- * The Hub stores whole percents every 5 seconds, which draws a quiet machine as a comb. The 30-minute
- * span arrives as raw points, so average each 30 seconds as Task Manager smooths its own graph; the
- * longer spans arrive already averaged.
+ * The Hub stores whole percents every 5 seconds, which draws a quiet machine as a comb. Spans under
+ * an hour arrive as 5- or 10-second points, so average each 30 seconds as Task Manager smooths its
+ * own graph; the longer spans arrive already averaged.
+ *
+ * Slotted by TIME, not by position: the Hub serves only the buckets that hold a reading, so a stretch
+ * it was down for is simply missing. Each empty slot between the first reading and the last is a
+ * `null`, which the chart draws as a break rather than closing the gap or reading it as 0%.
  */
 export function smoothCpu(points: TelemetryPoint[], bucketSeconds: number | null): (number | null)[] {
-  const per = bucketSeconds && bucketSeconds >= 30 ? 1 : 6;
-  const series: (number | null)[] = [];
-  for (let i = 0; i < points.length; i += per) {
-    const chunk = points
-      .slice(i, i + per)
-      .map((point) => point.cpuLoad)
-      .filter((value): value is number => value !== null && Number.isFinite(value));
-    series.push(chunk.length ? chunk.reduce((sum, value) => sum + value, 0) / chunk.length : null);
+  const slotMs = Math.max(30, bucketSeconds ?? 0) * 1000;
+  const slots = new Map<number, number[]>();
+  let first = Number.POSITIVE_INFINITY;
+  let last = Number.NEGATIVE_INFINITY;
+  for (const point of points) {
+    const at = parseHubTimestamp(point.sampledAt);
+    if (!Number.isFinite(at)) continue;
+    const slot = Math.floor(at / slotMs);
+    first = Math.min(first, slot);
+    last = Math.max(last, slot);
+    const values = slots.get(slot) ?? [];
+    if (point.cpuLoad !== null && Number.isFinite(point.cpuLoad)) values.push(point.cpuLoad);
+    slots.set(slot, values);
   }
-  return series;
+  if (!Number.isFinite(first)) return [];
+  return Array.from({ length: last - first + 1 }, (_, index) => {
+    const values = slots.get(first + index) ?? [];
+    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+  });
 }
 
 export interface PerformanceTabProps {
@@ -156,7 +173,10 @@ export interface PerformanceTabProps {
   hardware: HardwareSummary | undefined;
   hardwareState: QueryState;
   memory: MemoryBudgetSummary | undefined;
+  /** `/inference/memory`: what models hold. Not answered is "unknown", never 0 MB. */
+  budgetState: QueryState;
   residency: ResidencyReportSummary | undefined;
+  residencyState: QueryState;
   modelsState: QueryState;
   engines: InferenceBackendStatus[] | undefined;
   diskModels: DiskModel[];
@@ -168,7 +188,9 @@ export interface PerformanceTabProps {
 }
 
 export function PerformanceTab(props: PerformanceTabProps) {
-  const { load, loadState, telemetry, telemetryState, bucketSeconds, span, onSpanChange, hardware, hardwareState, memory, residency } = props;
+  const { load, loadState, telemetry, telemetryState, bucketSeconds, span, onSpanChange, hardware, hardwareState, memory, budgetState, residency } =
+    props;
+  const { residencyState } = props;
   const { modelsState, engines, diskModels, monitor, monitorState, appName, now, onShowApps } = props;
   const { t } = useTranslation();
   const [selected, setSelected] = useState<ResourceKey>('cpu');
@@ -187,9 +209,12 @@ export function PerformanceTab(props: PerformanceTabProps) {
 
   const gpu = hardware?.gpu;
   const unified = gpu?.unifiedMemory === true;
-  const modelsMb = (memory?.modelUsedRamMb ?? 0) + (memory?.modelUsedVramMb ?? 0);
+  // `null` until `/inference/memory` answers: a failed or pending read must not show as 0 MB.
+  const budgetKnown = !budgetState.pending && !budgetState.failed;
+  const vramUsedMb = budgetKnown ? (memory?.modelUsedVramMb ?? 0) : null;
+  const modelsMb = budgetKnown ? (memory?.modelUsedRamMb ?? 0) + (memory?.modelUsedVramMb ?? 0) : null;
   const vramTotalMb = unified ? null : memory?.totalVramMb || gpu?.vramMb || null;
-  const vramPercent = vramTotalMb ? ((memory?.modelUsedVramMb ?? 0) / vramTotalMb) * 100 : null;
+  const vramPercent = vramTotalMb && vramUsedMb !== null ? (vramUsedMb / vramTotalMb) * 100 : null;
 
   const resident = (residency?.backends ?? []).flatMap((backend: BackendResidencySummary) =>
     (backend.models ?? []).map((model) => ({ ...model, backend: backend.backend })),
@@ -238,9 +263,7 @@ export function PerformanceTab(props: PerformanceTabProps) {
             icon: MonitorCog,
             name: t('RESOURCES_GPU'),
             value: unified ? formatMb(modelsMb) : formatPercent(vramPercent),
-            detail: unified
-              ? t('RESOURCES_GPU_SHARED')
-              : t('RESOURCES_X_OF_Y', { used: formatMb(memory?.modelUsedVramMb ?? 0), total: formatMb(vramTotalMb) }),
+            detail: unified ? t('RESOURCES_GPU_SHARED') : t('RESOURCES_X_OF_Y', { used: formatMb(vramUsedMb), total: formatMb(vramTotalMb) }),
             percent: unified ? null : vramPercent,
           },
         ]
@@ -259,13 +282,13 @@ export function PerformanceTab(props: PerformanceTabProps) {
       name: t('RESOURCES_MODELS'),
       value: t('RESOURCES_X_OF_Y', { used: resident.length, total: modelRows.length }),
       detail: t('RESOURCES_MODELS_IN_MEMORY'),
-      percent: modelBudgetMb > 0 ? (modelsMb / modelBudgetMb) * 100 : null,
+      percent: modelBudgetMb > 0 && modelsMb !== null ? (modelsMb / modelBudgetMb) * 100 : null,
     },
   ];
   const tilePending: Record<ResourceKey, boolean> = {
     cpu: loadState.pending,
     memory: memoryState.pending,
-    gpu: hardwareState.pending,
+    gpu: hardwareState.pending || budgetState.pending,
     disk: loadState.pending,
     models: modelsState.pending,
   };
@@ -276,10 +299,11 @@ export function PerformanceTab(props: PerformanceTabProps) {
   const cpuPeak = Math.max(0, ...cpuSeries.filter((value): value is number => value !== null));
   const busiest = [...apps].sort((a, b) => b.cpuPercent - a.cpuPercent)[0];
 
-  const modelsInRamMb = (memory?.modelUsedRamMb ?? 0) + (unified ? (memory?.modelUsedVramMb ?? 0) : 0);
+  // Unknown when `/inference/memory` has not answered; "Everything else" then holds the models too.
+  const modelsInRamMb = budgetKnown ? (memory?.modelUsedRamMb ?? 0) + (unified ? (memory?.modelUsedVramMb ?? 0) : 0) : null;
   const appsMb = appsMemoryBytes / (1024 * 1024);
-  const otherMb = ramUsedMb === null ? 0 : Math.max(0, ramUsedMb - appsMb - modelsInRamMb);
-  const composition = [
+  const otherMb = ramUsedMb === null ? 0 : Math.max(0, ramUsedMb - appsMb - (modelsInRamMb ?? 0));
+  const composition: { key: string; label: string; mb: number | null; className: string }[] = [
     { key: 'apps', label: t('RESOURCES_MEMORY_APPS'), mb: appsMb, className: 'bg-chart-2' },
     { key: 'models', label: t('RESOURCES_MODELS'), mb: modelsInRamMb, className: 'bg-chart-1' },
     // Not "System": it also holds whatever apps this person can't see, and on a machine whose GPU
@@ -287,6 +311,15 @@ export function PerformanceTab(props: PerformanceTabProps) {
     { key: 'other', label: t('RESOURCES_MEMORY_OTHER'), mb: otherMb, className: 'bg-muted-foreground/45' },
     { key: 'free', label: t('RESOURCES_MEMORY_AVAILABLE'), mb: ramAvailableMb ?? 0, className: 'bg-foreground/10' },
   ];
+  // The parts can add up past the RAM Linux sees, when models sit in a BIOS carve-out the host does
+  // not count (core-1). Scaled to their sum then, so "Available" is not cut off the end of the bar.
+  const compositionTotal = Math.max(
+    ramTotalMb ?? 0,
+    composition.reduce((sum, part) => sum + (part.mb ?? 0), 0),
+  );
+  const unattributedGpu = (monitor?.unattributedGpu ?? []).filter(
+    (process) => !countedInModelMemory(gpuProcessOwner(process.processName, memory?.usage?.backends)),
+  );
   const topMemory = [...apps].sort((a, b) => b.memoryUsageBytes - a.memoryUsageBytes).slice(0, 5);
   const topMemoryMax = Math.max(1, ...topMemory.map((app) => app.memoryUsageBytes));
   const os = [hardware?.os?.name, hardware?.os?.version].filter(Boolean).join(' ') || hardware?.os?.platform;
@@ -309,27 +342,28 @@ export function PerformanceTab(props: PerformanceTabProps) {
 
       {active === 'cpu' ? (
         <DetailCard title={t('RESOURCES_CPU')} subtitle={hardware?.cpu?.model}>
-          <CardBody state={loadState} error={t('RESOURCES_LOAD_FAILED')}>
-            <Hero
-              value={formatPercent(load?.cpuLoad)}
-              caption={t('RESOURCES_IN_USE_NOW')}
-              aside={
-                <Select value={String(span)} onValueChange={(value) => onSpanChange(Number(value) as TelemetrySpan)}>
-                  <SelectTrigger className="w-40" aria-label={t('RESOURCES_SPAN_LABEL')} data-testid="resources-span">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {TELEMETRY_SPANS.map((value) => (
-                      <SelectItem key={value} value={String(value)}>
-                        {spanLabel(value)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              }
-            />
-            {vm ? <p className="text-sm text-muted-foreground">{t('RESOURCES_CPU_VM_NOTE')}</p> : null}
-          </CardBody>
+          {/* The range picker sits outside the load's CardBody: it drives the telemetry graph, which
+              still works when `/system/load` does not. */}
+          <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+            <div className="min-w-0 flex-1">
+              <CardBody state={loadState} error={t('RESOURCES_LOAD_FAILED')}>
+                <Hero value={formatPercent(load?.cpuLoad)} caption={t('RESOURCES_IN_USE_NOW')} />
+              </CardBody>
+            </div>
+            <Select value={String(span)} onValueChange={(value) => onSpanChange(Number(value) as TelemetrySpan)}>
+              <SelectTrigger className="w-40" aria-label={t('RESOURCES_SPAN_LABEL')} data-testid="resources-span">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {TELEMETRY_SPANS.map((value) => (
+                  <SelectItem key={value} value={String(value)}>
+                    {spanLabel(value)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {vm && !loadState.failed ? <p className="text-sm text-muted-foreground">{t('RESOURCES_CPU_VM_NOTE')}</p> : null}
           <CardBody state={telemetryState} error={t('RESOURCES_TELEMETRY_FAILED')} lines={4}>
             {cpuSeries.length > 1 ? (
               <AreaChart
@@ -345,7 +379,10 @@ export function PerformanceTab(props: PerformanceTabProps) {
             )}
           </CardBody>
           <dl className="grid grid-cols-2 gap-x-6 gap-y-4 lg:grid-cols-4">
-            <Stat label={t('RESOURCES_PEAK', { span: spanLabel(span) })} value={cpuSeries.length > 1 ? formatPercent(cpuPeak) : '—'} />
+            <Stat
+              label={t('RESOURCES_PEAK', { span: spanLabel(span) })}
+              value={cpuSeries.length > 1 && !telemetryState.failed ? formatPercent(cpuPeak) : '—'}
+            />
             <Stat
               label={vm ? t('RESOURCES_HOST_CORES_LABEL') : t('RESOURCES_CORES_LABEL')}
               value={cores ? [cores, hardware?.cpu?.arch].filter(Boolean).join(' · ') : '—'}
@@ -366,8 +403,8 @@ export function PerformanceTab(props: PerformanceTabProps) {
             <div className="space-y-3">
               <div className="flex h-7 w-full overflow-hidden rounded-md" role="img" aria-label={t('RESOURCES_MEMORY_SPLIT')}>
                 {composition.map((part) =>
-                  ramTotalMb && part.mb > 0 ? (
-                    <div key={part.key} className={part.className} style={{ width: `${(part.mb / ramTotalMb) * 100}%` }} />
+                  compositionTotal > 0 && part.mb !== null && part.mb > 0 ? (
+                    <div key={part.key} className={part.className} style={{ width: `${(part.mb / compositionTotal) * 100}%` }} />
                   ) : null,
                 )}
               </div>
@@ -412,29 +449,32 @@ export function PerformanceTab(props: PerformanceTabProps) {
 
       {active === 'gpu' && gpu ? (
         <DetailCard title={t('RESOURCES_GPU')} subtitle={gpu.model}>
-          {unified ? (
-            <Hero
-              value={formatMb(modelsMb)}
-              caption={t('RESOURCES_GPU_HELD_BY_MODELS')}
-              aside={ramTotalMb ? t('RESOURCES_GPU_SHARES', { size: formatMb(ramTotalMb) }) : null}
-            />
-          ) : (
-            <>
+          <CardBody state={budgetState} error={t('RESOURCES_MODELS_FAILED')}>
+            {unified ? (
               <Hero
-                value={formatPercent(vramPercent)}
-                caption={t('RESOURCES_GPU_VRAM_IN_USE')}
-                aside={t('RESOURCES_X_OF_Y', { used: formatMb(memory?.modelUsedVramMb ?? 0), total: formatMb(vramTotalMb) })}
+                value={formatMb(modelsMb)}
+                caption={t('RESOURCES_GPU_HELD_BY_MODELS')}
+                aside={ramTotalMb ? t('RESOURCES_GPU_SHARES', { size: formatMb(ramTotalMb) }) : null}
               />
-              {vramPercent === null ? null : <Meter percent={vramPercent} className="h-2.5" />}
-            </>
-          )}
-          <ModelsInMemory models={resident} now={now} />
-          {(monitor?.unattributedGpu ?? []).length > 0 ? (
+            ) : (
+              <>
+                <Hero
+                  value={formatPercent(vramPercent)}
+                  caption={t('RESOURCES_GPU_VRAM_IN_USE')}
+                  aside={t('RESOURCES_X_OF_Y', { used: formatMb(vramUsedMb), total: formatMb(vramTotalMb) })}
+                />
+                {vramPercent === null ? null : <Meter percent={vramPercent} className="h-2.5" />}
+              </>
+            )}
+          </CardBody>
+          <CardBody state={residencyState} error={t('RESOURCES_MODELS_FAILED')}>
+            <ModelsInMemory models={resident} now={now} />
+          </CardBody>
+          {/* Not the engines' own runners: those are the models listed above, already counted. */}
+          {unattributedGpu.length > 0 ? (
             <p className="text-sm text-muted-foreground">
               {t('RESOURCES_GPU_OUTSIDE_APPS', {
-                list: (monitor?.unattributedGpu ?? [])
-                  .map((process) => `${process.processName.split('/').pop()} (${formatMb(process.vramMb)})`)
-                  .join(', '),
+                list: unattributedGpu.map((process) => `${process.processName.split('/').pop()} (${formatMb(process.vramMb)})`).join(', '),
               })}
             </p>
           ) : null}
@@ -473,7 +513,11 @@ export function PerformanceTab(props: PerformanceTabProps) {
             <Hero
               value={t('RESOURCES_X_OF_Y', { used: resident.length, total: modelRows.length })}
               caption={t('RESOURCES_MODELS_IN_MEMORY')}
-              aside={modelBudgetMb > 0 ? t('RESOURCES_MODELS_BUDGET', { used: formatMb(modelsMb), total: formatMb(modelBudgetMb) }) : null}
+              aside={
+                modelBudgetMb > 0 && modelsMb !== null
+                  ? t('RESOURCES_MODELS_BUDGET', { used: formatMb(modelsMb), total: formatMb(modelBudgetMb) })
+                  : null
+              }
             />
             {modelRows.length === 0 ? (
               <p className="rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
@@ -494,7 +538,7 @@ export function PerformanceTab(props: PerformanceTabProps) {
                   <TableBody>
                     {modelRows.map((model) => {
                       const inMemory = resident.find((entry) => entry.id === model.id && entry.backend === model.backend);
-                      const until = inMemory?.expiresAt ? Date.parse(inMemory.expiresAt) - now : null;
+                      const until = inMemory?.expiresAt ? parseHubTimestamp(inMemory.expiresAt) - now : null;
                       return (
                         <TableRow key={`${model.backend}:${model.id}`} data-testid="resources-model-row">
                           <TableCell className="max-w-[14rem] truncate px-4 py-2.5 font-medium">{model.id}</TableCell>
@@ -504,11 +548,7 @@ export function PerformanceTab(props: PerformanceTabProps) {
                             {inMemory ? formatBytes(inMemory.totalBytes) : '—'}
                           </TableCell>
                           <TableCell className="hidden px-4 py-2.5 text-right text-muted-foreground md:table-cell">
-                            {inMemory
-                              ? until !== null && until > 0
-                                ? t('RESOURCES_IN_TIME', { time: formatDuration(until) })
-                                : t('RESOURCES_STAYS_LOADED')
-                              : ''}
+                            {inMemory ? unloadWords(until, t, 'RESOURCES_IN_TIME') : ''}
                           </TableCell>
                         </TableRow>
                       );
@@ -529,6 +569,15 @@ export function PerformanceTab(props: PerformanceTabProps) {
   );
 }
 
+/**
+ * When a model in memory unloads. No expiry is "stays loaded"; an expiry already past is not: the
+ * engine evicts it on its next sweep.
+ */
+function unloadWords(untilMs: number | null, t: (key: string, vars?: Record<string, unknown>) => string, inKey: string): string {
+  if (untilMs === null || Number.isNaN(untilMs)) return t('RESOURCES_STAYS_LOADED');
+  return untilMs > 0 ? t(inKey, { time: formatDuration(untilMs) }) : t('RESOURCES_UNLOADING');
+}
+
 function ModelsInMemory({
   models,
   now,
@@ -543,15 +592,13 @@ function ModelsInMemory({
       <h4 className="text-sm font-medium">{t('RESOURCES_MODELS_IN_MEMORY_TITLE')}</h4>
       <ul className="divide-y divide-border rounded-md border border-border">
         {models.map((model) => {
-          const until = model.expiresAt ? Date.parse(model.expiresAt) - now : null;
+          const until = model.expiresAt ? parseHubTimestamp(model.expiresAt) - now : null;
           return (
             <li key={`${model.backend}:${model.id}`} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-sm">
               <span className="min-w-0 flex-1 truncate font-medium">{model.id}</span>
               <span className="text-muted-foreground">{engineName(model.backend)}</span>
               <span className="tabular-nums">{formatBytes(model.totalBytes)}</span>
-              <span className="w-36 text-right text-muted-foreground">
-                {until !== null && until > 0 ? t('RESOURCES_UNLOADS_IN', { time: formatDuration(until) }) : t('RESOURCES_STAYS_LOADED')}
-              </span>
+              <span className="w-36 text-right text-muted-foreground">{unloadWords(until, t, 'RESOURCES_UNLOADS_IN')}</span>
             </li>
           );
         })}

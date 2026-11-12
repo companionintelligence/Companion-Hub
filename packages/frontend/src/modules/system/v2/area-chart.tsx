@@ -18,6 +18,10 @@ export interface AreaSeries {
 const VIEW_W = 1000;
 const VIEW_H = 240;
 
+/**
+ * One path per run of measured points. `null` is a gap, never a zero: the line and the fill break
+ * there, so a stretch nobody measured does not read as an idle machine.
+ */
 function stackedPaths(series: AreaSeries[], max: number) {
   const length = Math.max(0, ...series.map((s) => s.values.length));
   const step = length > 1 ? VIEW_W / (length - 1) : VIEW_W;
@@ -26,13 +30,31 @@ function stackedPaths(series: AreaSeries[], max: number) {
 
   return series.map((s) => {
     const lower = [...base];
-    const upper = base.map((b, i) => b + (s.values[i] ?? 0));
+    const measured = (i: number) => {
+      const value = s.values[i];
+      return typeof value === 'number' && Number.isFinite(value) ? value : null;
+    };
+    const upper = base.map((b, i) => b + (measured(i) ?? 0));
     upper.forEach((value, i) => {
       base[i] = value;
     });
-    const top = upper.map((value, i) => `${i * step},${y(value)}`);
-    const bottom = lower.map((value, i) => `${i * step},${y(value)}`).reverse();
-    return { key: s.key, colorClass: s.colorClass, area: `M${top.join(' L')} L${bottom.join(' L')} Z`, line: `M${top.join(' L')}` };
+
+    const runs: number[][] = [];
+    for (let i = 0; i < length; i += 1) {
+      if (measured(i) === null) continue;
+      const run = runs.at(-1);
+      if (run && run.at(-1) === i - 1) run.push(i);
+      else runs.push([i]);
+    }
+    const area = runs
+      .map((run) => {
+        const top = run.map((i) => `${i * step},${y(upper[i] ?? 0)}`);
+        const bottom = run.map((i) => `${i * step},${y(lower[i] ?? 0)}`).reverse();
+        return `M${top.join(' L')} L${bottom.join(' L')} Z`;
+      })
+      .join(' ');
+    const line = runs.map((run) => `M${run.map((i) => `${i * step},${y(upper[i] ?? 0)}`).join(' L')}`).join(' ');
+    return { key: s.key, colorClass: s.colorClass, area, line };
   });
 }
 

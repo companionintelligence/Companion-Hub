@@ -689,3 +689,56 @@ export function hostRamUsedMb(hardware: HardwareSummary | undefined): number | n
   if (typeof ram?.totalMb === 'number' && typeof ram?.availableMb === 'number') return Math.max(0, ram.totalMb - ram.availableMb);
   return null;
 }
+
+/**
+ * Whose a GPU process row is, when no app's container holds it.
+ *
+ *   `{ engine, inModelMemory }`  an engine the Hub manages. `inModelMemory` is `true` when
+ *                                `/inference/memory` sized that engine from this very process
+ *                                (`source: 'process'`), so the models it holds already show it.
+ *   `'unmanaged'`                a process no managed engine accounts for, such as fzzy's `dflash_server`.
+ *   `null`                       can't say: a bare `llama-server` when both llama.cpp engines (or
+ *                                neither) hold a model, or `/inference/memory` has not answered.
+ *
+ * Mirrors `ENGINE_PROCESS_PATTERNS`, `LLAMA_SERVER_ENGINES` and `llamaServerOwner` in
+ * `memory-manager.service.ts`. The container sampler reports an engine's runners as unattributed
+ * because no app's container holds them, while the backend already counts them as that engine's
+ * model memory. Without the same rule the page shows one runner twice: core-2, 2026-09-27, Ollama's
+ * 24 GB of models beside "llama-server 24 GB" outside any app.
+ */
+export type GpuProcessOwner = { engine: string; inModelMemory: boolean } | 'unmanaged' | null;
+
+const ENGINE_PROCESS_PATTERNS: Record<string, RegExp> = {
+  ollama: /ollama/,
+  vllm: /vllm/,
+  lemonade: /lemonade|lemond/,
+  omlx: /omlx/,
+};
+const LLAMA_SERVER_COMM = 'llama-server';
+const LLAMA_SERVER_ENGINES = ['ollama', 'lemonade'];
+
+export function gpuProcessOwner(processName: string, engines: ModelMemoryUsageEntrySummary[] | undefined): GpuProcessOwner {
+  const name = processName.toLowerCase();
+  const entryFor = (engine: string) => engines?.find((entry) => entry.backend === engine);
+  const owned = (engine: string) => ({ engine, inModelMemory: entryFor(engine)?.source === 'process' });
+
+  for (const [engine, pattern] of Object.entries(ENGINE_PROCESS_PATTERNS)) {
+    if (pattern.test(name)) return owned(engine);
+  }
+  if (name !== LLAMA_SERVER_COMM) return 'unmanaged';
+  if (!engines) return null;
+
+  // "Holding" as the backend reads it: sized by process, by the engine or not at all, but not
+  // `registry`, which is the Hub's bookkeeping for an engine it could not ask.
+  const holding = LLAMA_SERVER_ENGINES.filter((engine) => {
+    const entry = entryFor(engine);
+    return entry !== undefined && entry.source !== 'registry';
+  });
+
+  return holding.length === 1 && holding[0] ? owned(holding[0]) : null;
+}
+
+/** `true` when a GPU process row is memory the models in memory already account for. */
+export function countedInModelMemory(owner: GpuProcessOwner): boolean {
+  return owner !== null && owner !== 'unmanaged' && owner.inModelMemory;
+}

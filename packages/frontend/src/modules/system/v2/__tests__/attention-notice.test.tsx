@@ -45,4 +45,38 @@ describe('Attention notice', () => {
     renderNotice([peers(3)]);
     expect(screen.getByTestId('resources-notice')).toBeTruthy();
   });
+
+  it('comes back for a different app with the same count', () => {
+    const apps = (key: string): Notice => ({ id: 'apps', key, tone: 'bad', text: "1 app isn't responding." });
+    const { unmount } = renderNotice([apps('immich:ci-marketplace')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    unmount();
+
+    renderNotice([apps('actual:ci-marketplace')]);
+    expect(screen.getByTestId('resources-notice')).toBeTruthy();
+  });
+
+  it('forgets a dismissal once every check is clean, so the same fault returning is shown', () => {
+    const first = renderNotice([peers(2)]);
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    first.unmount();
+
+    // Still loading: no notices, but nothing has been checked, so the dismissal stands.
+    render(
+      <MemoryRouter>
+        <AttentionNotice notices={[]} />
+      </MemoryRouter>,
+    ).unmount();
+    const loading = renderNotice([peers(2)]);
+    expect(screen.queryByTestId('resources-notice')).toBeNull();
+    loading.unmount();
+
+    render(
+      <MemoryRouter>
+        <AttentionNotice notices={[]} allClear />
+      </MemoryRouter>,
+    ).unmount();
+    renderNotice([peers(2)]);
+    expect(screen.getByTestId('resources-notice')).toBeTruthy();
+  });
 });

@@ -10,12 +10,13 @@ import {
   localContainerRollup,
   poolNodeCards,
   routingBuckets,
+  routingWindowPartial,
   unloggedCalls,
   waitingNow,
 } from '@/modules/system/pool-node-series';
 import { pageVerdict } from '@/modules/system/triage';
 import { loadState, poolModelIndex, poolReach, useDashboardData } from '@/modules/system/use-dashboard-data';
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 import { AppsTab } from './apps-tab';
@@ -79,7 +80,8 @@ export default function ResourcesPage() {
   const poolState = loadState(pool);
   const routingState = loadState(routingLog);
 
-  const firstByte = useMemo(() => firstByteByNode(entries, { now, windowMs: WINDOW_MS }), [entries, now]);
+  // Not memoised: `now` is read every render, so a memo keyed on it would never hit.
+  const firstByte = firstByteByNode(entries, { now, windowMs: WINDOW_MS });
   const cards = poolNodeCards(pool.data?.localNode, peers, {
     localLabel,
     localContainers: localContainerRollup(containers.data?.apps),
@@ -88,17 +90,31 @@ export default function ResourcesPage() {
     firstByte,
   });
   const reach = poolReach(peers, pool.data?.localNode);
-  const buckets = useMemo(() => routingBuckets(entries, { now, bucketMs: BUCKET_MS, buckets: BUCKET_COUNT }), [entries, now]);
-  const span30 = useMemo(() => bucketWindow(buckets, BUCKET_MS), [buckets]);
-  const own = useMemo(() => inferenceFromHere(entries, span30 ?? { from: now - WINDOW_MS, to: now }), [entries, span30, now]);
+  const buckets = routingBuckets(entries, { now, bucketMs: BUCKET_MS, buckets: BUCKET_COUNT });
+  // The Requests card's figures count outbound rows only (`inferenceFromHere`), so its bars must too:
+  // with every direction a Hub that mostly serves its peers drew busy bars under "Requests 0".
+  const outboundBuckets = routingBuckets(
+    entries.filter((entry) => entry.direction === 'outbound'),
+    { now, bucketMs: BUCKET_MS, buckets: BUCKET_COUNT },
+  );
+  const span30 = bucketWindow(buckets, BUCKET_MS);
+  const own = inferenceFromHere(entries, span30 ?? { from: now - WINDOW_MS, to: now });
+  // The ring dropped rows from the window, or the Hub started inside it: the counts are a floor.
+  const startedAt = parseHubTimestamp(routingLog.data?.summary?.startedAt);
+  const routingPartial =
+    routingWindowPartial(routingLog.data, { now, windowMs: WINDOW_MS }) ||
+    (Number.isFinite(startedAt) && startedAt > (span30?.from ?? now - WINDOW_MS));
   const models = poolModelIndex(pool.data?.localNode, peers, localLabel);
   const configWarnings = poolConfigWarnings(pool.data);
   const waiting = waitingNow(entries, now);
   const unlogged = unloggedCalls(pool.data, poolState);
 
+  const unplaced = buckets.reduce((sum, bucket) => sum + bucket.unplaced, 0);
+
   const sampledAtMs = parseHubTimestamp(containers.data?.sampledAt);
   const sampleAgeMs = containers.data && Number.isFinite(sampledAtMs) ? Math.max(0, containers.dataUpdatedAt - sampledAtMs) : null;
-  const degraded = apps.filter((app) => app.degraded).length;
+  const degradedApps = apps.filter((app) => app.degraded);
+  const degraded = degradedApps.length;
 
   const verdict = pageVerdict({
     containers: { state: containerState, degraded, sampleAgeMs },
@@ -112,7 +128,7 @@ export default function ResourcesPage() {
     },
     routing: {
       state: routingState,
-      unplaced: buckets.reduce((sum, bucket) => sum + bucket.unplaced, 0),
+      unplaced,
       waiting: waiting.oldest
         ? {
             ageMs: waiting.oldest.ageMs,
@@ -135,9 +151,15 @@ export default function ResourcesPage() {
   // The faults the previous page raised as chips, said once each in words, with where to go next.
   const ids = new Set(verdict.faults.map((fault) => fault.id));
   const notices: Notice[] = [];
+  // Each notice's `key` names WHICH apps or Hubs it is about, so dismissing "1 app isn't responding"
+  // for one app does not also hide it next week for another.
   if (ids.has('workloads-degraded')) {
     notices.push({
       id: 'apps',
+      key: degradedApps
+        .map((app) => app.appUrn)
+        .sort()
+        .join(','),
       tone: 'bad',
       text: t('RESOURCES_NOTICE_APPS', { count: degraded }),
       action: { label: t('RESOURCES_NOTICE_SHOW_APPS'), onClick: () => setTab('apps') },
@@ -146,17 +168,24 @@ export default function ResourcesPage() {
   if (ids.has('stale-sample')) notices.push({ id: 'stale', tone: 'warn', text: t('RESOURCES_NOTICE_STALE') });
   if (ids.has('peers-unreachable') || ids.has('probe-failures')) {
     // One count over both checks: a peer that is down usually fails its probes too, and is one Hub.
-    const count = peers.filter((peer) => peer.enabled !== false && (peer.status === 'unreachable' || (peer.consecutiveFailures ?? 0) > 0)).length;
+    const affected = peers.filter((peer) => peer.enabled !== false && (peer.status === 'unreachable' || (peer.consecutiveFailures ?? 0) > 0));
+    const unreachable = ids.has('peers-unreachable');
     notices.push({
       id: 'peers',
-      tone: ids.has('peers-unreachable') ? 'bad' : 'warn',
-      text: t('RESOURCES_NOTICE_PEERS', { count }),
+      key: affected
+        .map((peer) => peer.id)
+        .sort()
+        .join(','),
+      tone: unreachable ? 'bad' : 'warn',
+      // Only failing probes, with every peer still connected, is not "can't be reached".
+      text: t(unreachable ? 'RESOURCES_NOTICE_PEERS' : 'RESOURCES_NOTICE_PEER_CHECKS', { count: affected.length }),
       action: { label: t('RESOURCES_NOTICE_SHOW_POOL'), onClick: () => setTab('pool') },
     });
   }
   if (ids.has('stale-pins') || ids.has('env-disabled') || ids.has('capabilities-error')) {
     notices.push({
       id: 'config',
+      key: `${configWarnings.stalePins},${configWarnings.envDisabledDirections},${configWarnings.capabilitiesError}`,
       tone: 'warn',
       text: t('RESOURCES_NOTICE_CONFIG'),
       action: manageHub ? { label: t('RESOURCES_POOL_SETTINGS'), to: '/settings?tab=ai' } : undefined,
@@ -165,6 +194,7 @@ export default function ResourcesPage() {
   if (ids.has('unplaced')) {
     notices.push({
       id: 'unplaced',
+      key: String(unplaced),
       tone: 'bad',
       text: t('RESOURCES_NOTICE_UNPLACED'),
       action: { label: t('RESOURCES_NOTICE_SHOW_REQUESTS'), onClick: () => setTab('requests') },
@@ -192,7 +222,7 @@ export default function ResourcesPage() {
 
   return (
     <div className="mx-auto w-full min-w-0 max-w-5xl space-y-4 pb-12">
-      <AttentionNotice notices={notices} />
+      <AttentionNotice notices={notices} allClear={verdict.kind === 'clear'} />
 
       <Tabs value={tab} onValueChange={setTab} className="w-full min-w-0">
         <TabsList className="w-full min-w-0 justify-center border border-border/50 bg-card/50 max-md:justify-start max-md:overflow-x-auto max-md:[scrollbar-width:none]">
@@ -215,7 +245,12 @@ export default function ResourcesPage() {
             hardwareState={loadState(hardware)}
             memory={memory.data}
             residency={residency.data}
-            modelsState={{ pending: loadState(inference).pending || disk.pending, failed: loadState(inference).failed }}
+            budgetState={loadState(memory)}
+            residencyState={loadState(residency)}
+            modelsState={{
+              pending: loadState(inference).pending || loadState(residency).pending || disk.pending,
+              failed: loadState(inference).failed || disk.failed,
+            }}
             engines={inference.data?.backends}
             diskModels={disk.models}
             monitor={containers.data}
@@ -242,10 +277,11 @@ export default function ResourcesPage() {
           <RequestsTab
             entries={entries}
             state={routingState}
-            buckets={buckets}
+            buckets={outboundBuckets}
             own={own}
             hubName={hubName}
             unlogged={unlogged === 'v1' || unlogged === 'apps'}
+            partial={routingPartial}
             now={now}
           />
         </TabsContent>

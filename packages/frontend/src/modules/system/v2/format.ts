@@ -1,3 +1,5 @@
+import { parseHubTimestamp } from '@/components/ui/dense/dense';
+
 /*
  * Number formatting for the Resources page. One place, so a figure reads the same on every tab.
  */
@@ -41,10 +43,14 @@ export function formatDuration(ms: number | null | undefined): string {
 
 type Translate = (key: string, vars?: Record<string, unknown>) => string;
 
-/** `5 min ago`, `just now`, `never`, in the page's language. */
+/**
+ * `5 min ago`, `just now`, `never`, in the page's language. Read through `parseHubTimestamp`, because
+ * a time from a Postgres column (a peer's `lastSeenAt`) has no zone and `Date.parse` would read it
+ * as the viewer's local time.
+ */
 export function formatAgo(iso: string | null | undefined, now: number, t: Translate): string {
   if (!iso) return t('RESOURCES_NEVER');
-  const at = Date.parse(iso);
+  const at = parseHubTimestamp(iso);
   if (!Number.isFinite(at)) return '—';
   const ms = Math.max(0, now - at);
   if (ms < 60_000) return t('RESOURCES_JUST_NOW');

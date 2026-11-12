@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table';
 import { cn } from '@/lib/utils';
-import type { OwnInference, RoutingBucket } from '@/modules/system/pool-node-series';
+import { type OwnInference, type RoutingBucket, settledOutcome } from '@/modules/system/pool-node-series';
 import { estimatedPromptTokens, type RoutingLogEntry, routingLogKeys } from '@/modules/system/use-dashboard-data';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -30,13 +30,15 @@ function resultOf(
   ranOn: string | null,
   t: (key: string, vars?: Record<string, unknown>) => string,
 ): { label: string; tone: Tone } {
-  if (entry.outcome === 'served')
-    return { label: ranOn ? t('RESOURCES_RESULT_SERVED_BY', { hub: ranOn }) : t('RESOURCES_RESULT_SERVED'), tone: 'ok' };
-  if (entry.outcome === 'pending')
-    return { label: ranOn ? t('RESOURCES_RESULT_WORKING_ON', { hub: ranOn }) : t('RESOURCES_RESULT_WORKING'), tone: 'wait' };
+  // `settledOutcome`, as the bars above count it: a refusal the Hub wrote as `served` (an inbound
+  // row, or a Hub predating the change) is a failure, not a green "Served".
+  const outcome = settledOutcome(entry);
+  if (outcome === 'served') return { label: ranOn ? t('RESOURCES_RESULT_SERVED_BY', { hub: ranOn }) : t('RESOURCES_RESULT_SERVED'), tone: 'ok' };
+  if (outcome === 'pending') return { label: ranOn ? t('RESOURCES_RESULT_WORKING_ON', { hub: ranOn }) : t('RESOURCES_RESULT_WORKING'), tone: 'wait' };
   if (entry.clientClosed) return { label: t('RESOURCES_RESULT_CALLER_LEFT'), tone: 'muted' };
   if (entry.requestError?.basis === 'node') return { label: t('RESOURCES_RESULT_CUT_OFF'), tone: 'bad' };
-  return { label: entry.reason ? t('RESOURCES_RESULT_FAILED_BECAUSE', { reason: entry.reason }) : t('RESOURCES_RESULT_FAILED'), tone: 'bad' };
+  const reason = entry.reason ?? (typeof entry.status === 'number' ? String(entry.status) : null);
+  return { label: reason ? t('RESOURCES_RESULT_FAILED_BECAUSE', { reason }) : t('RESOURCES_RESULT_FAILED'), tone: 'bad' };
 }
 
 const TONE: Record<Tone, string> = { ok: 'bg-success', bad: 'bg-destructive', wait: 'bg-warning', muted: 'bg-muted-foreground' };
@@ -66,14 +68,18 @@ export function RequestsTab({
   own,
   hubName,
   unlogged,
+  partial = false,
   now,
 }: {
   entries: RoutingLogEntry[];
   state: QueryState;
+  /** Outbound rows only, so the bars count the requests the figures above them count. */
   buckets: RoutingBucket[];
   own: OwnInference;
   hubName: (node: string) => string;
   unlogged: boolean;
+  /** The log may be missing rows from the window, so every count above is a floor. */
+  partial?: boolean;
   now: number;
 }) {
   const { t } = useTranslation();
@@ -111,6 +117,7 @@ export function RequestsTab({
                 {t('RESOURCES_REQUESTS_WINDOW_EMPTY')}
               </p>
             )}
+            {partial ? <p className="text-sm text-warning">{t('RESOURCES_REQUESTS_PARTIAL')}</p> : null}
             {unlogged ? <p className="text-sm text-muted-foreground">{t('RESOURCES_REQUESTS_UNLOGGED')}</p> : null}
           </CardBody>
         </CardContent>

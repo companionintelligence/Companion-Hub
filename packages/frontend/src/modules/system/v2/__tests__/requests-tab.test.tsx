@@ -64,6 +64,41 @@ describe('Requests tab', () => {
     expect(screen.getByText('No AI requests in the last 30 minutes.')).toBeTruthy();
   });
 
+  it('shows a refusal the Hub wrote as served as failed, as the bars count it', () => {
+    render(
+      <RequestsTab
+        entries={[{ ...entry('inbound', 'beta-max.capybara.ts.net'), status: 400 }]}
+        state={{ pending: false, failed: false }}
+        buckets={[]}
+        own={own}
+        hubName={hubName}
+        unlogged={false}
+        now={NOW}
+      />,
+    );
+
+    const row = screen.getByTestId('resources-request-row');
+    expect(row.textContent).toContain('Failed: 400');
+    expect(row.textContent).not.toContain('Served');
+  });
+
+  it('says when the log does not cover the whole half hour', () => {
+    render(
+      <RequestsTab
+        entries={[]}
+        state={{ pending: false, failed: false }}
+        buckets={[]}
+        own={own}
+        hubName={hubName}
+        unlogged={false}
+        partial
+        now={NOW}
+      />,
+    );
+
+    expect(screen.getByText(/doesn't reach back the whole 30 minutes/)).toBeTruthy();
+  });
+
   it('says so when the log could not be read', () => {
     render(<RequestsTab entries={[]} state={{ pending: false, failed: true }} buckets={[]} own={own} hubName={hubName} unlogged={false} now={NOW} />);
 

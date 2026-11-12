@@ -1,7 +1,7 @@
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/utils';
 import { AlertTriangle, X } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 
@@ -10,13 +10,17 @@ import { Link } from 'react-router';
  * it, in the amber card Home uses for "1 Hub wants to join your pool". It replaces the old rail's
  * fault chips.
  *
- * Dismissing it hides the notice until what it says changes. The signature is the problems and
- * their counts, so "2 Hubs can't be reached" dismissed today comes back as "3 Hubs can't be
- * reached", or when an app stops responding, but not on every visit while nothing has changed.
+ * Dismissing it hides the notice until what it says changes. The signature is the problems, their
+ * counts and which apps or Hubs each is about, so "2 Hubs can't be reached" dismissed today comes
+ * back as "3 Hubs can't be reached", or when a different app stops responding, but not on every
+ * visit while nothing has changed. Once every check answers clean the dismissal is forgotten, so a
+ * fault that clears and later returns is shown again.
  */
 
 export interface Notice {
   id: string;
+  /** What the notice is about (app URNs, peer ids), for the dismissal signature. Never shown. */
+  key?: string;
   text: string;
   tone: 'warn' | 'bad';
   action?: { label: string; onClick?: () => void; to?: string };
@@ -32,22 +36,34 @@ function readDismissed(): string | null {
   }
 }
 
-function writeDismissed(signature: string) {
+function writeDismissed(signature: string | null) {
   try {
-    window.localStorage.setItem(STORAGE_KEY, signature);
+    if (signature === null) window.localStorage.removeItem(STORAGE_KEY);
+    else window.localStorage.setItem(STORAGE_KEY, signature);
   } catch {
     // Private mode or blocked storage: the dismissal lasts until the page reloads.
   }
 }
 
 export function noticeSignature(notices: Notice[]): string {
-  return notices.map((notice) => `${notice.id}:${notice.text}`).join('|');
+  return notices.map((notice) => `${notice.id}:${notice.key ?? ''}:${notice.text}`).join('|');
 }
 
-export function AttentionNotice({ notices }: { notices: Notice[] }) {
+/**
+ * `allClear` is the page's verdict that every check answered and found nothing. Not merely "no
+ * notices": while the queries are still loading there are none either, and forgetting the dismissal
+ * then would bring it back on every visit.
+ */
+export function AttentionNotice({ notices, allClear = false }: { notices: Notice[]; allClear?: boolean }) {
   const { t } = useTranslation();
   const [dismissed, setDismissed] = useState<string | null>(readDismissed);
   const signature = noticeSignature(notices);
+
+  useEffect(() => {
+    if (!allClear || dismissed === null) return;
+    writeDismissed(null);
+    setDismissed(null);
+  }, [allClear, dismissed]);
 
   if (notices.length === 0 || dismissed === signature) return null;
 

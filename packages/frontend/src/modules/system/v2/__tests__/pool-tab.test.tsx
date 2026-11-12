@@ -64,6 +64,19 @@ describe('AI pool tab', () => {
     );
   });
 
+  it("shows a peer's own load under Working on, not the requests this Hub forwarded to it", () => {
+    renderTab({
+      cards: [
+        { ...card('local', 'local', true), inFlight: 2 },
+        { ...card('core-14', 'connected'), inFlight: 5, peerReportedInFlight: 1 },
+      ],
+    });
+
+    // Hub, status, models, working on.
+    const workingOn = screen.getAllByTestId('resources-pool-row').map((row) => row.querySelectorAll('td')[3]?.textContent);
+    expect(workingOn).toEqual(['2', '1']);
+  });
+
   it('offers pool settings only to someone who manages the Hub', () => {
     const { unmount } = renderTab();
     expect(screen.getByRole('link', { name: 'Pool settings' })).toBeTruthy();

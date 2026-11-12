@@ -167,7 +167,11 @@ export function PoolTab({
                       </span>
                     </TableCell>
                     <TableCell className="py-2.5 pr-4 text-right tabular-nums sm:pr-6 md:pr-4">{card.models ?? '—'}</TableCell>
-                    <TableCell className="hidden py-2.5 text-right tabular-nums md:table-cell">{card.inFlight ?? '—'}</TableCell>
+                    {/* What the node's own engines are serving. A peer card's `inFlight` is something else,
+                        the work THIS Hub forwarded there (see `inFlightMeaning`), so a peer reads its own report. */}
+                    <TableCell className="hidden py-2.5 text-right tabular-nums md:table-cell">
+                      {(card.local ? card.inFlight : card.peerReportedInFlight) ?? '—'}
+                    </TableCell>
                     <TableCell className="hidden py-2.5 text-right tabular-nums md:table-cell">
                       {card.firstByte ? formatDuration(card.firstByte.p50Ms) : '—'}
                     </TableCell>

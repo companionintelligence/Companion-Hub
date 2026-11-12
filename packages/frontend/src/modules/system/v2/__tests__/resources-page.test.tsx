@@ -102,6 +102,14 @@ describe('Resources page', () => {
     expect(screen.getByText("2 Hubs in your pool can't be reached.")).toBeTruthy();
   });
 
+  it("doesn't call a connected Hub that is only failing probes unreachable", () => {
+    data.peers = [{ ...unreachable, status: 'connected', consecutiveFailures: 2 }];
+    renderAt('/resource-monitor');
+
+    expect(screen.getByText('1 Hub in your pool is failing its health checks.')).toBeTruthy();
+    expect(screen.queryByText(/can't be reached/)).toBeNull();
+  });
+
   it('shows a member the pool without the buttons that change it', () => {
     access.manageHub = false;
     renderAt('/resource-monitor?tab=pool');

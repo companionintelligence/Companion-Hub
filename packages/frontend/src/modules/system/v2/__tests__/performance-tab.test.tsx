@@ -22,6 +22,8 @@ function props(overrides: Partial<PerformanceTabProps> = {}): PerformanceTabProp
     },
     hardwareState: ready,
     memory: { modelUsedRamMb: 5.7 * GB, modelBudgetRamMb: 101 * GB },
+    budgetState: ready,
+    residencyState: ready,
     residency: {
       backends: [
         {
@@ -100,9 +102,60 @@ describe('Performance tab', () => {
   });
 
   it('averages raw 5-second CPU readings into 30-second points and leaves averaged ones alone', () => {
-    const raw = Array.from({ length: 12 }, (_, i) => ({ sampledAt: `t${i}`, cpuLoad: i < 6 ? 0 : 6, memoryUsed: null, memoryTotal: null }));
+    const at = (seconds: number) => new Date(Date.parse('2026-11-12T04:00:00Z') + seconds * 1000).toISOString();
+    const raw = Array.from({ length: 12 }, (_, i) => ({ sampledAt: at(i * 5), cpuLoad: i < 6 ? 0 : 6, memoryUsed: null, memoryTotal: null }));
+    const averaged = [0, 1, 2].map((i) => ({ sampledAt: at(i * 240), cpuLoad: 0, memoryUsed: null, memoryTotal: null }));
 
     expect(smoothCpu(raw, 5)).toEqual([0, 6]);
-    expect(smoothCpu(raw.slice(0, 3), 240)).toEqual([0, 0, 0]);
+    expect(smoothCpu(averaged, 240)).toEqual([0, 0, 0]);
+  });
+
+  it('leaves a gap where the Hub took no reading, rather than closing it up or calling it 0%', () => {
+    const at = (minutes: number) => new Date(Date.parse('2026-11-12T04:00:00Z') + minutes * 60_000).toISOString();
+    const points = [0, 4, 5].map((minute) => ({ sampledAt: at(minute * 4), cpuLoad: 20, memoryUsed: null, memoryTotal: null }));
+
+    expect(smoothCpu(points, 240)).toEqual([20, null, null, null, 20, 20]);
+  });
+
+  it("doesn't show an engine's own runner as outside every app beside the models it holds", () => {
+    render(
+      <PerformanceTab
+        {...props({
+          memory: {
+            modelUsedRamMb: 5.7 * GB,
+            modelBudgetRamMb: 101 * GB,
+            usage: { backends: [{ backend: 'ollama', usedMb: 5.7 * GB, source: 'process' }] },
+          },
+          monitor: {
+            sampledAt: '2026-11-12T05:00:00Z',
+            apps: [],
+            history: [],
+            unattributedGpu: [
+              { processName: 'llama-server', vramMb: 5_800 },
+              { processName: '/opt/dflash/dflash_server', vramMb: 42_000 },
+            ],
+            gpuVramSource: 'host-file',
+          },
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('resource-tile-gpu'));
+
+    const detail = screen.getByTestId('resource-detail');
+    expect(detail.textContent).toContain('dflash_server');
+    expect(detail.textContent).not.toContain('llama-server');
+  });
+
+  it('says a model past its expiry is unloading, not that it stays loaded, and shows no 0 MB when the model memory read failed', () => {
+    const base = props();
+    const residency = base.residency as NonNullable<typeof base.residency>;
+    const past = { ...residency.backends[0], models: [{ ...residency.backends[0]?.models?.[0], expiresAt: '2026-11-12T04:59:00Z' }] };
+    render(<PerformanceTab {...props({ residency: { ...residency, backends: [past] } as never, budgetState: { pending: false, failed: true } })} />);
+    fireEvent.click(screen.getByTestId('resource-tile-gpu'));
+
+    const detail = screen.getByTestId('resource-detail');
+    expect(detail.textContent).toContain('Unloading now');
+    expect(detail.textContent).not.toContain('Stays loaded');
+    expect(detail.textContent).not.toContain('0 GB');
   });
 });

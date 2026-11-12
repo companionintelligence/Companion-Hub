@@ -37,6 +37,11 @@ describe('Resources number formatting', () => {
     expect(formatAgo('2026-11-12T04:50:00Z', now, t)).toBe('RESOURCES_AGO:{"time":"10 min"}');
   });
 
+  it("reads a Postgres time with no zone as the UTC it is, not as the viewer's local time", () => {
+    const now = Date.parse('2026-11-12T05:00:00Z');
+    expect(formatAgo('2026-11-12 04:50:00', now, t)).toBe('RESOURCES_AGO:{"time":"10 min"}');
+  });
+
   it('colours a meter as Home does', () => {
     expect(meterTone(40)).toBe('bg-primary');
     expect(meterTone(75)).toBe('bg-warning');
