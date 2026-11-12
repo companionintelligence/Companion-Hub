@@ -1767,4 +1767,72 @@ describe('InferenceRouterService', () => {
       }
     });
   });
+
+  describe('CI_HUB_ALLOW_CLOUD_FALLBACK fail-closed routing', () => {
+    const originalFlag = process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+    const openaiProvider: CloudProviderConfig = {
+      provider: 'openai',
+      apiKey: 'sk-test',
+      enabled: true,
+      baseUrl: 'https://api.openai.com/v1',
+      defaultModel: 'gpt-4o',
+    };
+
+    beforeEach(() => {
+      delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      cloudFallback.getEnabledProviders.mockReturnValue([openaiProvider]);
+    });
+
+    afterEach(() => {
+      if (originalFlag === undefined) {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      } else {
+        process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = originalFlag;
+      }
+    });
+
+    it('refuses cloud fallback on model="auto" unless CI_HUB_ALLOW_CLOUD_FALLBACK=true', async () => {
+      await expect(service.routeChatCompletion({ model: 'auto', messages: [{ role: 'user', content: 'hi' }] })).rejects.toThrow();
+      expect(cloudFallback.proxyChatCompletion).not.toHaveBeenCalled();
+
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'false';
+      await expect(service.routeChatCompletion({ model: 'auto', messages: [{ role: 'user', content: 'hi' }] })).rejects.toThrow();
+      expect(cloudFallback.proxyChatCompletion).not.toHaveBeenCalled();
+
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      cloudFallback.proxyChatCompletion.mockResolvedValueOnce({
+        data: { id: 'chatcmpl-1', choices: [{ message: { role: 'assistant', content: 'ok' } }] },
+        headers: {},
+      });
+
+      const result = await service.routeChatCompletion({
+        model: 'auto',
+        messages: [{ role: 'user', content: 'hi' }],
+      });
+      expect(result.backend).toBe('cloud:openai');
+      expect(cloudFallback.proxyChatCompletion).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses cloud fallback on TTS, STT, and embeddings unless CI_HUB_ALLOW_CLOUD_FALLBACK=true', async () => {
+      await expect(service.routeTts({ input: 'hello', voice: 'alloy' })).rejects.toThrow('No TTS backend available');
+      expect(cloudFallback.proxyTts).not.toHaveBeenCalled();
+
+      const form = new FormData();
+      await expect(service.routeStt(form)).rejects.toThrow('No STT backend available');
+      expect(cloudFallback.proxyStt).not.toHaveBeenCalled();
+
+      await expect(service.routeEmbeddings({ input: 'hello', model: 'nomic-embed-text' })).rejects.toThrow('No embeddings backend available');
+
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      cloudFallback.proxyTts.mockResolvedValueOnce(Buffer.from('audio'));
+      expect((await service.routeTts({ input: 'hello', voice: 'alloy' })).backend).toBe('cloud:openai');
+
+      cloudFallback.proxyStt.mockResolvedValueOnce({ text: 'hello' });
+      expect((await service.routeStt(form)).backend).toBe('cloud:openai');
+
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { data: [{ embedding: [0.1, 0.2] }] } });
+      expect((await service.routeEmbeddings({ input: 'hello', model: 'text-embedding-3-small' })).backend).toBe('cloud:openai');
+    });
+  });
 });

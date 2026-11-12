@@ -4,7 +4,7 @@ import { PassThrough } from 'node:stream';
 import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
 import axios from 'axios';
 import type { CloudProviderConfig } from '@ci-hub/common/types';
-import { CloudFallbackService } from '../cloud-fallback.service';
+import { CloudFallbackService, isCloudFallbackAllowed } from '../cloud-fallback.service';
 import { MASKED_API_KEY } from '../inference.dto';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -566,5 +566,59 @@ describe('CloudFallbackService — request budgets', () => {
     expect(post).toHaveBeenCalledWith(url, expect.anything(), expect.objectContaining({ timeout: COMPLETION_TIMEOUT_MS }));
     expect(COMPLETION_TIMEOUT_MS).toBeGreaterThanOrEqual(300_000);
     expect(post.mock.calls[0]?.[2]).not.toHaveProperty('responseType', 'stream');
+  });
+});
+
+describe('isCloudFallbackAllowed & CloudFallbackService.resolveProvider', () => {
+  const originalFlag = process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+
+  afterEach(() => {
+    if (originalFlag === undefined) {
+      delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+    } else {
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = originalFlag;
+    }
+  });
+
+  it('requires CI_HUB_ALLOW_CLOUD_FALLBACK strictly equal to "true"', () => {
+    delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+    expect(isCloudFallbackAllowed()).toBe(false);
+
+    for (const falsy of ['', 'false', '0', '1', 'TRUE', 'yes']) {
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = falsy;
+      expect(isCloudFallbackAllowed()).toBe(false);
+    }
+
+    process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+    expect(isCloudFallbackAllowed()).toBe(true);
+  });
+
+  it('routes explicit cloud models and configured defaultModel directly, while failing closed on unrecognized local models by default', async () => {
+    delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+    const configuration = mock<ConfigurationService>();
+    configuration.getInferenceCloudProviders.mockReturnValue([]);
+    configuration.setInferenceCloudProviders.mockResolvedValue([]);
+    const service = new CloudFallbackService(mock<LoggerService>(), configuration);
+    service.onModuleInit();
+
+    await service.setProvider({ provider: 'openai', apiKey: 'sk-oai', enabled: true, defaultModel: 'custom-oai-ft' });
+    await service.setProvider({ provider: 'anthropic', apiKey: 'sk-ant', enabled: true, defaultModel: 'claude-opus-4' });
+    await service.setProvider({ provider: 'google', apiKey: 'g-key', enabled: true, defaultModel: 'gemini-2.5-pro' });
+
+    // Explicit provider model prefixes and configured defaultModel still match their provider
+    expect(service.resolveProvider('gpt-4o')?.provider).toBe('openai');
+    expect(service.resolveProvider('o3-mini')?.provider).toBe('openai');
+    expect(service.resolveProvider('claude-sonnet-4')?.provider).toBe('anthropic');
+    expect(service.resolveProvider('gemini-2.5-flash')?.provider).toBe('google');
+    expect(service.resolveProvider('custom-oai-ft')?.provider).toBe('openai');
+
+    // Unrecognized local model names must NOT leak to an arbitrary cloud provider when fallback is off
+    expect(service.resolveProvider('qwen3:30b')).toBeUndefined();
+    process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'false';
+    expect(service.resolveProvider('llama3.2:latest')).toBeUndefined();
+
+    // Only falls back to first enabled provider when explicitly opted in
+    process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+    expect(service.resolveProvider('qwen3:30b')?.provider).toBe('openai');
   });
 });
