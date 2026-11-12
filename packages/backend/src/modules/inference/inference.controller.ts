@@ -66,7 +66,13 @@ import { buildVllmRemediation, resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, V
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { buildLemonadeRemediation, classifyLemonadeFailure } from './backends/lemonade-remediation';
 import { resolveBridgeTopology, resolveHostPlatform } from './backends/ollama-host-bridge';
-import { buildOmlxRemediation, OMLX_PROBE_API_KEY_HEADER, OmlxBackend, resolveOmlxProbeUrl } from './backends/omlx.backend';
+import {
+  buildOmlxCudaHelperRemediation,
+  buildOmlxRemediation,
+  OMLX_PROBE_API_KEY_HEADER,
+  OmlxBackend,
+  resolveOmlxProbeUrl,
+} from './backends/omlx.backend';
 import { OpenAiCompatibleClient } from './backends/openai-compatible.client';
 import {
   resolveInstalledCatalogIds,
@@ -969,7 +975,10 @@ export class InferenceController {
       error: err instanceof Error ? err.message : String(err),
     }));
     const ready = !!(health.running && health.healthy);
-    const remediation = ready ? undefined : buildOmlxRemediation();
+    // An NVIDIA host cannot serve oMLX, but it can speed up a Mac's: say that, and whether its helper runs.
+    const prefillHelper = ready ? null : await this.omlxBackend.cudaHelperStatus();
+    const remediation = ready ? undefined : prefillHelper ? buildOmlxCudaHelperRemediation(prefillHelper) : buildOmlxRemediation();
+    const containerNote = ` Hub probes from inside its container — use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`;
     return {
       ready,
       running: health.running,
@@ -978,9 +987,8 @@ export class InferenceController {
       loadedModels: health.modelsLoaded,
       remediationCommand: remediation?.command,
       error: ready ? undefined : health.error,
-      hint: remediation
-        ? `${remediation.hint} Hub probes from inside its container — use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`
-        : undefined,
+      hint: remediation ? `${remediation.hint}${prefillHelper ? '' : containerNote}` : undefined,
+      ...(prefillHelper ? { prefillHelper } : {}),
     };
   }
 

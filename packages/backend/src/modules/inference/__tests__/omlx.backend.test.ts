@@ -6,7 +6,14 @@ import type { HardwareProfile } from '@ci-hub/common/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { HardwareInspectorService } from '../hardware-inspector.service';
-import { isOmlxHealthBody, OMLX_NOT_APPLE_SILICON_ERROR, OmlxBackend } from '../backends/omlx.backend';
+import {
+  buildOmlxCudaHelperRemediation,
+  isOmlxHealthBody,
+  OMLX_CUDA_HELPER_PAIRING_COMMAND,
+  OMLX_CUDA_HELPER_RUN_COMMAND,
+  OMLX_NOT_APPLE_SILICON_ERROR,
+  OmlxBackend,
+} from '../backends/omlx.backend';
 
 // Only `get` is faked. `isAxiosError` stays real, so the 401 case below is classified the way a
 // live axios rejection would be.
@@ -18,7 +25,7 @@ vi.mock('axios', async (importOriginal) => {
 const get = vi.mocked(axios.get);
 
 /** A reply per path suffix. An Error is thrown as the request failing; anything else is the response. */
-type Replies = Partial<Record<'/health' | '/v1/models', { status?: number; data?: unknown } | Error>>;
+type Replies = Partial<Record<'/health' | '/v1/models' | '/api/cluster/node_id', { status?: number; data?: unknown } | Error>>;
 
 function serve(replies: Replies) {
   get.mockImplementation(async (url: string) => {
@@ -321,6 +328,79 @@ describe('OmlxBackend', () => {
 
         expect(health.error).toContain('sent only to the configured oMLX URL');
       });
+    });
+  });
+
+  describe("oMLX's CUDA helper on an NVIDIA host", () => {
+    // `identity()` in jundot/omlx apps/omlx-cuda-helper/omlx_cuda_helper/discovery.py, as json.dumps writes it.
+    const HELPER_IDENTITY = {
+      node_id: '6f1c2a90-1d2b-4b8e-9b55-0d6f8e7c1a42',
+      version: '0.1.3',
+      cluster_name: 'omlx',
+      friendly_name: 'core-1',
+      caps: {
+        chip: '2x NVIDIA RTX A6000',
+        ram_gb: 96.0,
+        backends: ['cuda'],
+        thunderbolt: false,
+        jaccl: false,
+        loopback_only: false,
+        control: 'agent',
+      },
+      control_port: 8851,
+    };
+
+    beforeEach(() => {
+      hardwareInspector.getProfile.mockResolvedValue(profileWithGpu('nvidia'));
+    });
+
+    it('reads the helper on :8850 and names its cards', async () => {
+      serve({ '/api/cluster/node_id': { data: HELPER_IDENTITY } });
+
+      await expect(backend.cudaHelperStatus()).resolves.toEqual({
+        running: true,
+        name: 'core-1',
+        version: '0.1.3',
+        chip: '2x NVIDIA RTX A6000',
+        gpuMemoryGb: 96,
+      });
+      expect(get).toHaveBeenCalledWith(expect.stringMatching(/:8850\/api\/cluster\/node_id$/), expect.objectContaining({ timeout: 3000 }));
+    });
+
+    it('reports it stopped when nothing answers, or when what answers is not the helper', async () => {
+      serve({});
+      await expect(backend.cudaHelperStatus()).resolves.toEqual({ running: false });
+
+      // A Mac's oMLX answers the same route, with Metal rather than CUDA.
+      serve({ '/api/cluster/node_id': { data: { ...HELPER_IDENTITY, caps: { ...HELPER_IDENTITY.caps, backends: ['metal'] } } } });
+      await expect(backend.cudaHelperStatus()).resolves.toEqual({ running: false });
+    });
+
+    it.each(['apple', 'amd', 'none'] as const)('never probes for it on a host whose GPU is %s', async (vendor) => {
+      hardwareInspector.getProfile.mockResolvedValue(profileWithGpu(vendor));
+
+      await expect(backend.cudaHelperStatus()).resolves.toBeNull();
+      expect(get).not.toHaveBeenCalled();
+    });
+
+    it('stays out of the health check, which the pool runs on every request', async () => {
+      serve({ '/api/cluster/node_id': { data: HELPER_IDENTITY } });
+
+      await backend.healthCheck();
+
+      expect(get).not.toHaveBeenCalled();
+    });
+
+    it('hands out the run command until the helper answers, then the pairing command', () => {
+      const stopped = buildOmlxCudaHelperRemediation({ running: false });
+      expect(stopped.command).toBe(OMLX_CUDA_HELPER_RUN_COMMAND);
+      expect(stopped.hint).toContain('driver 580 or newer');
+      expect(stopped.hint).toContain('only on a network you trust');
+
+      const running = buildOmlxCudaHelperRemediation({ running: true, name: 'core-1', version: '0.1.3', chip: '2x NVIDIA RTX A6000' });
+      expect(running.command).toBe(OMLX_CUDA_HELPER_PAIRING_COMMAND);
+      expect(running.hint).toContain('(helper 0.1.3, 2x NVIDIA RTX A6000)');
+      expect(running.hint).toContain('press Pair on "core-1"');
     });
   });
 });

@@ -197,6 +197,7 @@ import {
   summariseOllamaVersions,
   upgradeOllamaOnNode,
 } from './fleet-ollama-version.js';
+import { OmlxHelperVersionError, resolveOmlxHelperVersion } from './fleet-omlx-helper.js';
 import {
   type CpuResidentFinding,
   describeCpuResident,
@@ -380,6 +381,11 @@ export interface FleetArgs {
    * whose nodes pin different models gets each node's own. Ignored unless `--backends` names llamacpp.
    */
   llamacppModel?: string;
+  /**
+   * `backends` only: the `jundot/omlx-cuda-helper` tag a fresh helper gets, already validated.
+   * Absent means the pin in `fleet-omlx-helper.ts`; `latest` is refused, as it is for Ollama.
+   */
+  omlxHelperVersion?: string;
 }
 
 /** The two Hub halves a runtime flag carries, in the order they are planned and applied after the drop-in. */
@@ -559,6 +565,13 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
         if (error instanceof OllamaVersionError) throw new FleetArgError(error.message);
         throw error;
       }
+    } else if (isFlag('--omlx-helper-version')) {
+      try {
+        args.omlxHelperVersion = resolveOmlxHelperVersion(readValue('--omlx-helper-version'));
+      } catch (error) {
+        if (error instanceof OmlxHelperVersionError) throw new FleetArgError(error.message);
+        throw error;
+      }
     } else if (
       isFlag('--ollama-parallel') ||
       isFlag('--ollama-keep-alive') ||
@@ -692,6 +705,9 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
   }
   if (args.llamacppModel !== undefined && args.subcommand !== 'backends') {
     throw new FleetArgError('--llamacpp-model only applies to `fleet backends`.');
+  }
+  if (args.omlxHelperVersion !== undefined && args.subcommand !== 'backends') {
+    throw new FleetArgError('--omlx-helper-version only applies to `fleet backends --backends omlx-helper`.');
   }
 
   // Read last, and only where it means something. Parsed with the defaults, a malformed value left in
@@ -1686,6 +1702,7 @@ async function runBackends(args: FleetArgs): Promise<void> {
     const plans = planAllBackends(facts, args.dataDir, args.backends.length ? args.backends : undefined, {
       ollamaBind: args.bind,
       ollamaVersion: args.ollamaVersion,
+      omlxHelperVersion: args.omlxHelperVersion,
       ...(llamacppOpts ? { llamacpp: llamacppOpts } : {}),
     });
     // The Hub halves (`inferenceOllamaSlots`, `inferenceMaxNumCtx`) follow whichever engine this run

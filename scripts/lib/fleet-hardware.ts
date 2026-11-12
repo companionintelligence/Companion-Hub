@@ -42,6 +42,10 @@ export interface GpuInfo {
   driverWorking: boolean;
   /** Why `driverWorking` is false, in the operator's words. */
   driverNote?: string;
+  /** NVIDIA: the driver's version as nvidia-smi prints it, e.g. `580.95.05`. */
+  driverVersion?: string;
+  /** NVIDIA: the LOWEST compute capability among the cards, e.g. `8.6`. A gate must hold for every card it may be given. */
+  computeCapability?: string;
 }
 
 export interface HostFacts {
@@ -71,6 +75,14 @@ export interface HostFacts {
    * never heard of), `failed`. Absent on a node where the probe could not ask.
    */
   managedUnits?: Record<string, string>;
+  /**
+   * NVIDIA hosts only: whether `docker run --gpus` can work. Docker looks for the NVIDIA Container
+   * Toolkit's `nvidia-container-runtime-hook` on PATH, so the probe does too. Absent where nothing
+   * was asked (no nvidia-smi).
+   */
+  nvidiaContainerHook?: boolean;
+  /** The version oMLX's CUDA helper reports on :8850, when that is what answers there. */
+  omlxHelperVersion?: string;
   /** Raw probe output, for a report that needs to show its working. */
   notes: string[];
 }
@@ -103,6 +115,12 @@ const PROBE_SCRIPT = [
   // whose user is not in the docker group, and that difference decides whether an install can work.
   'echo "docker_info=$(docker info >/dev/null 2>&1 && echo ok || echo fail)"',
   'echo "nvidia_smi=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || echo none)"',
+  // Asked only where nvidia-smi exists, so other nodes pay nothing: the driver and every card's
+  // compute capability, which oMLX's CUDA helper gates on, and whether Docker can pass a GPU through.
+  // A driver too old to know `compute_cap` refuses the whole query, so the second try asks for the
+  // driver alone. Separate from the line above, which an unknown field would otherwise break.
+  "command -v nvidia-smi >/dev/null 2>&1 && echo \"nvidia_info=$({ nvidia-smi --query-gpu=driver_version,compute_cap --format=csv,noheader 2>/dev/null || nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null; } | tr '\\n' ';')\"",
+  'command -v nvidia-smi >/dev/null 2>&1 && { hook=none; for b in nvidia-container-runtime-hook nvidia-container-toolkit; do command -v "$b" >/dev/null 2>&1 && { hook="$b"; break; }; done; echo "nvidia_ctk_hook=$hook"; }',
   // Present-but-not-working: the card is on the bus even when its driver is not answering.
   'echo "lspci_gpu=$(lspci 2>/dev/null | grep -iE \'vga|3d controller|display\' | head -1 || echo none)"',
   // Every KFD topology node carries a gfx_target_version, and node 0 is the CPU — its value is 0.
@@ -117,10 +135,13 @@ const PROBE_SCRIPT = [
   // default) answers nothing on 127.0.0.1, and a loopback-only probe would have the planner
   // re-install a healthy engine on every such node.
   'ts_ip="$(tailscale ip -4 2>/dev/null | head -1)"',
-  'for p in 11434 13305 8080 8081 8000 8216 8020; do for a in 127.0.0.1 $ts_ip; do (echo > /dev/tcp/$a/$p) >/dev/null 2>&1 && { echo "listening=$p"; break; }; done; done',
+  'for p in 11434 13305 8080 8081 8000 8216 8020 8850; do for a in 127.0.0.1 $ts_ip; do (echo > /dev/tcp/$a/$p) >/dev/null 2>&1 && { echo "listening=$p"; break; }; done; done',
   // Who is on llamacpp's port. Port evidence adopts an Ollama; here it must not, because a unit this
   // CLI wrote may be the listener (then it is converged, not adopted) and a stranger may be too.
   'owner="$(curl -s --max-time 3 http://127.0.0.1:8081/v1/models 2>/dev/null | grep -o \'"owned_by":"[^"]*"\' | head -1 | cut -d\'"\' -f4)"; [ -n "$owner" ] && echo "owner_8081=$owner"',
+  // oMLX's CUDA helper on its discovery port. `GET /api/cluster/node_id` is what the Mac's Cluster tab
+  // reads; the helper names itself there with `caps.backends: ["cuda"]` and gives its version.
+  'helper="$(curl -s --max-time 3 http://127.0.0.1:8850/api/cluster/node_id 2>/dev/null)"; if printf \'%s\' "$helper" | grep -q \'"backends": *\\[ *"cuda"\'; then echo "owner_8850=omlx-cuda-helper"; echo "omlx_helper_version=$(printf \'%s\' "$helper" | sed -n \'s/.*"version": *"\\([^"]*\\)".*/\\1/p\')"; fi',
   `for u in ${MANAGED_UNITS.join(' ')}; do st="$(systemctl is-active "$u" 2>/dev/null)"; [ -n "$st" ] && echo "unit_$u=$st"; done`,
   // The probe's exit status is meaningless — it is a sequence of independent best-effort reads, and
   // the last one is a port test that fails whenever that port is idle. Without this the whole script
@@ -221,7 +242,7 @@ export function parseHostFacts(raw: string): HostFacts {
   const lspci = first(map, 'lspci_gpu');
   if (nvidia && nvidia !== 'none') {
     const [name, mib] = nvidia.split(',').map((s) => s.trim());
-    gpus.push({ vendor: 'nvidia', name, reportedVramMib: num(mib), driverWorking: true });
+    gpus.push({ vendor: 'nvidia', name, reportedVramMib: num(mib), driverWorking: true, ...nvidiaDriverFacts(first(map, 'nvidia_info')) });
   } else if (lspci && lspci !== 'none' && /nvidia/i.test(lspci)) {
     // The exact state that ran a node CPU-only for weeks: card on the bus, driver not answering.
     gpus.push({
@@ -275,6 +296,9 @@ export function parseHostFacts(raw: string): HostFacts {
     if (unit && state && state !== 'unknown') managedUnits[unit] = state;
   }
 
+  const hook = first(map, 'nvidia_ctk_hook');
+  const helperVersion = first(map, 'omlx_helper_version');
+
   return {
     os,
     arch,
@@ -288,8 +312,28 @@ export function parseHostFacts(raw: string): HostFacts {
     enginesListening: (map.get('listening') ?? []).map(Number).filter((n) => Number.isFinite(n)),
     ...(Object.keys(engineOwners).length ? { engineOwners } : {}),
     ...(Object.keys(managedUnits).length ? { managedUnits } : {}),
+    ...(hook ? { nvidiaContainerHook: hook !== 'none' } : {}),
+    ...(helperVersion ? { omlxHelperVersion: helperVersion } : {}),
     notes,
   };
+}
+
+/**
+ * `nvidia_info` is one `driver, compute_cap` row per card, joined by `;`. The driver is one per host.
+ * The compute capability kept is the lowest, because a gate has to hold for every card a container
+ * given `--gpus all` may use.
+ */
+function nvidiaDriverFacts(raw: string | undefined): Pick<GpuInfo, 'driverVersion' | 'computeCapability'> {
+  const rows = (raw ?? '')
+    .split(';')
+    .map((row) => row.split(',').map((cell) => cell.trim()))
+    .filter((cells) => cells[0]);
+  const driverVersion = rows.map(([driver]) => driver ?? '').find((driver) => /^\d+(?:\.\d+)+$/.test(driver));
+  const lowest = rows
+    .map(([, cc]) => cc ?? '')
+    .filter((cc) => /^\d+\.\d+$/.test(cc))
+    .sort((a, b) => Number(a) - Number(b))[0];
+  return { ...(driverVersion ? { driverVersion } : {}), ...(lowest ? { computeCapability: lowest } : {}) };
 }
 
 /** Read one node's hardware facts over SSH. */

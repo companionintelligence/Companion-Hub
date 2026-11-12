@@ -1032,3 +1032,63 @@ describe('retired backends', () => {
     }
   });
 });
+
+// ─── oMLX's prefill helper ─────────────────────────────────────────────────────────────────────────
+
+describe('fleet backends --backends omlx-helper', () => {
+  const a6000Node = () =>
+    facts({
+      gpus: [
+        {
+          vendor: 'nvidia',
+          name: 'NVIDIA RTX A6000',
+          reportedVramMib: 49140,
+          driverWorking: true,
+          driverVersion: '580.95.05',
+          computeCapability: '8.6',
+        },
+      ],
+      nvidiaContainerHook: true,
+    });
+  const helperCalls = () =>
+    mocks.sshCapture.mock.calls
+      .filter(([, command]) => String(command).includes('CIHUB_OMLX_HELPER_EOF'))
+      .map(([t, c]) => ({ host: (t as SshTarget).host, command: String(c) }));
+
+  beforeEach(() => {
+    mocks.readHostFacts.mockImplementation(async () => ({ facts: a6000Node() }));
+  });
+
+  it('plans the pinned image on an NVIDIA node, and a dry run starts nothing', async () => {
+    await runFleetCommand(['backends', '--backends', 'omlx-helper', '--nodes', 'core-1']);
+    expect(printed()).toMatch(
+      /omlx-helper would install — NVIDIA RTX A6000, driver 580\.95\.05, compute 8\.6 — pulling jundot\/omlx-cuda-helper:0\.1\.3/,
+    );
+    expect(helperCalls()).toHaveLength(0);
+    expect(sudoCalls()).toHaveLength(0);
+  });
+
+  it('is never planned by a run that does not name it', async () => {
+    await runFleetCommand(['backends', '--nodes', 'core-1']);
+    expect(printed()).toContain('vllm');
+    expect(printed()).not.toContain('omlx-helper');
+  });
+
+  it('runs the install as the SSH account on --execute, and says how to pair', async () => {
+    const answer = mocks.sshCapture.getMockImplementation();
+    mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+      if (command.includes('CIHUB_OMLX_HELPER_EOF')) {
+        return ok(
+          ['omlx-helper-version: 0.1.3', 'omlx-helper-name: core-1', 'omlx-helper-chip: NVIDIA RTX A6000', 'omlx-helper-install-complete'].join('\n'),
+        );
+      }
+      return answer?.(t, command);
+    });
+    await runFleetCommand(['backends', '--backends', 'omlx-helper', '--execute', '--nodes', 'core-1']);
+    expect(helperCalls()).toHaveLength(1);
+    expect(helperCalls()[0]?.command.startsWith("bash <<'CIHUB_OMLX_HELPER_EOF'\n")).toBe(true);
+    expect(printed()).toMatch(/omlx-helper installed/);
+    expect(printed()).toContain('Cluster tab → Pair on core-1');
+    expect(process.exitCode).toBeUndefined();
+  });
+});
