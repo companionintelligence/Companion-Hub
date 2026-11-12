@@ -34,6 +34,8 @@ export interface SystemLoad {
   cpuCores: number;
   memoryTotal: number;
   memoryUsed: number;
+  /** Where the Hub runs. In Docker Desktop's or WSL2's VM, the CPU figures are the VM's, not the computer's. */
+  runtimeKind?: string;
 }
 
 type ResourceKey = 'cpu' | 'memory' | 'gpu' | 'disk' | 'models';
@@ -173,6 +175,7 @@ export function PerformanceTab(props: PerformanceTabProps) {
 
   const apps = monitor?.apps ?? [];
   const cores = hardware?.cpu?.cores ?? load?.cpuCores ?? null;
+  const vm = load?.runtimeKind === 'docker-desktop-vm' ? 'docker' : load?.runtimeKind === 'wsl2-vm' ? 'wsl' : null;
 
   // Total minus MemAvailable, as `free` and every Hub page since 0.3.11 count it.
   const ramTotalMb = hardware?.ram?.totalMb ?? (load ? load.memoryTotal * 1024 : null);
@@ -209,7 +212,15 @@ export function PerformanceTab(props: PerformanceTabProps) {
       icon: Cpu,
       name: t('RESOURCES_CPU'),
       value: formatPercent(load?.cpuLoad),
-      detail: cores ? t('RESOURCES_CORES', { count: cores }) : '—',
+      // In a VM the load is the VM's but the core count is the computer's, so the tile names the VM instead.
+      detail:
+        vm === 'docker'
+          ? t('RESOURCES_CPU_IN_DOCKER_VM')
+          : vm === 'wsl'
+            ? t('RESOURCES_CPU_IN_WSL_VM')
+            : cores
+              ? t('RESOURCES_CORES', { count: cores })
+              : '—',
       percent: load?.cpuLoad ?? null,
     },
     {
@@ -271,12 +282,9 @@ export function PerformanceTab(props: PerformanceTabProps) {
   const composition = [
     { key: 'apps', label: t('RESOURCES_MEMORY_APPS'), mb: appsMb, className: 'bg-chart-2' },
     { key: 'models', label: t('RESOURCES_MODELS'), mb: modelsInRamMb, className: 'bg-chart-1' },
-    {
-      key: 'other',
-      label: unified ? t('RESOURCES_MEMORY_SYSTEM_GPU') : t('RESOURCES_MEMORY_SYSTEM'),
-      mb: otherMb,
-      className: 'bg-muted-foreground/45',
-    },
+    // Not "System": it also holds whatever apps this person can't see, and on a machine whose GPU
+    // shares memory, what the GPU holds outside the models.
+    { key: 'other', label: t('RESOURCES_MEMORY_OTHER'), mb: otherMb, className: 'bg-muted-foreground/45' },
     { key: 'free', label: t('RESOURCES_MEMORY_AVAILABLE'), mb: ramAvailableMb ?? 0, className: 'bg-foreground/10' },
   ];
   const topMemory = [...apps].sort((a, b) => b.memoryUsageBytes - a.memoryUsageBytes).slice(0, 5);
@@ -320,6 +328,7 @@ export function PerformanceTab(props: PerformanceTabProps) {
                 </Select>
               }
             />
+            {vm ? <p className="text-sm text-muted-foreground">{t('RESOURCES_CPU_VM_NOTE')}</p> : null}
           </CardBody>
           <CardBody state={telemetryState} error={t('RESOURCES_TELEMETRY_FAILED')} lines={4}>
             {cpuSeries.length > 1 ? (
@@ -337,7 +346,10 @@ export function PerformanceTab(props: PerformanceTabProps) {
           </CardBody>
           <dl className="grid grid-cols-2 gap-x-6 gap-y-4 lg:grid-cols-4">
             <Stat label={t('RESOURCES_PEAK', { span: spanLabel(span) })} value={cpuSeries.length > 1 ? formatPercent(cpuPeak) : '—'} />
-            <Stat label={t('RESOURCES_CORES_LABEL')} value={cores ? [cores, hardware?.cpu?.arch].filter(Boolean).join(' · ') : '—'} />
+            <Stat
+              label={vm ? t('RESOURCES_HOST_CORES_LABEL') : t('RESOURCES_CORES_LABEL')}
+              value={cores ? [cores, hardware?.cpu?.arch].filter(Boolean).join(' · ') : '—'}
+            />
             <Stat
               label={t('RESOURCES_BUSIEST_APP')}
               value={busiest ? `${formatPercent(cores ? busiest.cpuPercent / cores : null)} ${appName(busiest.appUrn, busiest.appName)}` : '—'}

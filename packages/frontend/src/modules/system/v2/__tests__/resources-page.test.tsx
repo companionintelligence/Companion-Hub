@@ -91,6 +91,17 @@ describe('Resources page', () => {
     expect(screen.getByRole('tab', { name: 'AI pool' }).getAttribute('aria-selected')).toBe('true');
   });
 
+  it('counts a Hub that is down and failing its probes once, and a second Hub failing probes too', () => {
+    data.peers = [
+      unreachable,
+      { ...unreachable, id: 'p2', nodeFqdn: 'core-7.capybara.ts.net', status: 'connected', consecutiveFailures: 2 },
+      { ...unreachable, id: 'p3', nodeFqdn: 'core-9.capybara.ts.net', status: 'unreachable', enabled: false },
+    ];
+    renderAt('/resource-monitor');
+
+    expect(screen.getByText("2 Hubs in your pool can't be reached.")).toBeTruthy();
+  });
+
   it('shows a member the pool without the buttons that change it', () => {
     access.manageHub = false;
     renderAt('/resource-monitor?tab=pool');

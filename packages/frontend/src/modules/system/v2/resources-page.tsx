@@ -89,8 +89,8 @@ export default function ResourcesPage() {
   });
   const reach = poolReach(peers, pool.data?.localNode);
   const buckets = useMemo(() => routingBuckets(entries, { now, bucketMs: BUCKET_MS, buckets: BUCKET_COUNT }), [entries, now]);
-  const window = useMemo(() => bucketWindow(buckets, BUCKET_MS), [buckets]);
-  const own = useMemo(() => inferenceFromHere(entries, window ?? { from: now - WINDOW_MS, to: now }), [entries, window, now]);
+  const span30 = useMemo(() => bucketWindow(buckets, BUCKET_MS), [buckets]);
+  const own = useMemo(() => inferenceFromHere(entries, span30 ?? { from: now - WINDOW_MS, to: now }), [entries, span30, now]);
   const models = poolModelIndex(pool.data?.localNode, peers, localLabel);
   const configWarnings = poolConfigWarnings(pool.data);
   const waiting = waitingNow(entries, now);
@@ -145,10 +145,11 @@ export default function ResourcesPage() {
   }
   if (ids.has('stale-sample')) notices.push({ id: 'stale', tone: 'warn', text: t('RESOURCES_NOTICE_STALE') });
   if (ids.has('peers-unreachable') || ids.has('probe-failures')) {
-    const count = Math.max(reach.unreachable, reach.probeFailures);
+    // One count over both checks: a peer that is down usually fails its probes too, and is one Hub.
+    const count = peers.filter((peer) => peer.enabled !== false && (peer.status === 'unreachable' || (peer.consecutiveFailures ?? 0) > 0)).length;
     notices.push({
       id: 'peers',
-      tone: 'warn',
+      tone: ids.has('peers-unreachable') ? 'bad' : 'warn',
       text: t('RESOURCES_NOTICE_PEERS', { count }),
       action: { label: t('RESOURCES_NOTICE_SHOW_POOL'), onClick: () => setTab('pool') },
     });

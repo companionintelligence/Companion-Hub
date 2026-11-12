@@ -62,12 +62,12 @@ describe('Performance tab', () => {
     expect(screen.getByText('Ubuntu 26.04.1 LTS')).toBeTruthy();
   });
 
-  it('splits memory into apps, models, the system and what is free', () => {
+  it('splits memory into apps, models, everything else and what is free', () => {
     render(<PerformanceTab {...props()} />);
     fireEvent.click(screen.getByTestId('resource-tile-memory'));
 
     const detail = screen.getByTestId('resource-detail');
-    expect(detail.textContent).toContain('System and GPU');
+    expect(detail.textContent).toContain('Everything else');
     expect(detail.textContent).toContain('AI models5.7 GB');
     expect(detail.textContent).toContain('Available12 GB');
   });
@@ -82,6 +82,15 @@ describe('Performance tab', () => {
     expect(rows[1]?.textContent).toContain('777 MB');
     expect(rows[1]?.textContent).toContain('—');
     expect(screen.getByText('Not running: vLLM.')).toBeTruthy();
+  });
+
+  it("says when the CPU figures are a VM's, as on Docker Desktop", () => {
+    const base = props();
+    render(<PerformanceTab {...props({ load: { ...(base.load as NonNullable<typeof base.load>), runtimeKind: 'docker-desktop-vm' } })} />);
+
+    expect(screen.getByTestId('resource-tile-cpu').textContent).toContain('In the Docker VM');
+    expect(screen.getByText("Computer's cores")).toBeTruthy();
+    expect(screen.getByText(/the VM's share of the CPU/)).toBeTruthy();
   });
 
   it('says the CPU reading failed instead of showing a zero', () => {

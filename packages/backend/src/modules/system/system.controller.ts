@@ -1,8 +1,10 @@
 import { LoggerService } from '@/core/logger/logger.service';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
+import { HUB_RUNTIME_URN } from '@/modules/apps/app-runtime-monitor.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import { ApiQuery, ApiResponse } from '@nestjs/swagger';
-import { Controller, Get, Query, Res, UseGuards } from '@nestjs/common';
-import type { Response } from 'express';
+import { Controller, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
+import type { Request, Response } from 'express';
 import { pipeline } from 'node:stream/promises';
 import { AuthGuard } from '../auth/auth.guard';
 import { HubManagerGuard } from '../auth/hub-manager.guard';
@@ -27,6 +29,7 @@ export class SystemController {
     private readonly resourceAllocator: ResourceAllocatorService,
     private readonly hostTelemetry: HostTelemetryService,
     private readonly logger: LoggerService,
+    private readonly whois: MarketplaceWhoIsService,
   ) {}
 
   @UseGuards(AuthGuard)
@@ -54,7 +57,7 @@ export class SystemController {
     description: 'Host CPU and memory over this many minutes, averaged to at most 360 points. Without it, the newest 288 raw samples.',
   })
   @ApiResponse({ type: HostTelemetryHistoryDto })
-  async hostTelemetryHistory(@Query('minutes') minutes?: string) {
+  async hostTelemetryHistory(@Req() req: Request, @Query('minutes') minutes?: string) {
     if (minutes !== undefined && minutes !== '') {
       const window = await this.hostTelemetry.getWindow(Number(minutes));
       return HostTelemetryHistoryDto.parse(
@@ -62,8 +65,13 @@ export class SystemController {
         { reportOnly: true },
       );
     }
+    // Raw rows carry every app's CPU and memory. Filter them by the same view check as
+    // `GET /apps/resource-monitor`, so this route can't show a member an app Home hides.
     const samples = await this.hostTelemetry.getRecentSamples();
-    return HostTelemetryHistoryDto.parse({ samples }, { reportOnly: true });
+    const urns = [...new Set(samples.flatMap((sample) => (sample.apps ?? []).map((app) => app.appUrn)))];
+    const visible = new Set(await this.whois.filterSessionByView(req, urns, (urn) => (urn === HUB_RUNTIME_URN ? undefined : urn), 'hub'));
+    const filtered = samples.map((sample) => (sample.apps ? { ...sample, apps: sample.apps.filter((app) => visible.has(app.appUrn)) } : sample));
+    return HostTelemetryHistoryDto.parse({ samples: filtered }, { reportOnly: true });
   }
 
   @UseGuards(AuthGuard)

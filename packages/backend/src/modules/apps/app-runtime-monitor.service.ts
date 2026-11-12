@@ -162,7 +162,8 @@ export type AppRuntimeMonitorSnapshot = {
   gpuVramSource: GpuProcessSampleSource | 'absent' | null;
 };
 
-const HUB_RUNTIME_URN = 'ci-hub:system';
+/** The Hub's own row in the monitor. Not an installed app, so no grant covers it. */
+export const HUB_RUNTIME_URN = 'ci-hub:system';
 
 /**
  * Whether the samples, oldest first, end in a run of high CPU that has lasted {@link SUSTAINED_HIGH_CPU_MS}

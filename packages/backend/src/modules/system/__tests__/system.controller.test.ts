@@ -1,6 +1,8 @@
 import { LoggerService } from '@/core/logger/logger.service';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import { Get } from '@nestjs/common';
+import type { Request } from 'express';
 import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { Test } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -21,8 +23,11 @@ describe('SystemController', () => {
   let systemService: MockProxy<SystemService>;
   let dockerService: MockProxy<DockerService>;
   let hostTelemetry: MockProxy<HostTelemetryService>;
+  let whois: MockProxy<MarketplaceWhoIsService>;
 
   beforeEach(async () => {
+    whois = mock<MarketplaceWhoIsService>();
+    whois.filterSessionByView.mockImplementation(async (_req, items) => items);
     const moduleRef = await Test.createTestingModule({
       controllers: [SystemController],
       providers: [
@@ -31,6 +36,7 @@ describe('SystemController', () => {
         { provide: ResourceAllocatorService, useValue: mock<ResourceAllocatorService>() },
         { provide: HostTelemetryService, useValue: mock<HostTelemetryService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
+        { provide: MarketplaceWhoIsService, useValue: whois },
       ],
     }).compile();
 
@@ -234,12 +240,56 @@ describe('SystemController', () => {
         },
       ]);
 
-      await expect(controller.hostTelemetryHistory()).resolves.toEqual({
+      await expect(controller.hostTelemetryHistory({} as Request)).resolves.toEqual({
         samples: [expect.objectContaining({ sampledAt: '2026-08-18T12:00:00.000Z', dockerAvailable: true, source: 'collector' })],
       });
       await expect(controller.hostEventLog()).resolves.toEqual({
         events: [expect.objectContaining({ source: 'hub.api', message: 'Hub API started' })],
       });
+    });
+
+    it("leaves out of the raw rows every app the session can't view, and keeps the Hub's own", async () => {
+      const point = (appUrn: string) => ({ appUrn, appName: appUrn, status: 'running', cpuPercent: 1, memoryUsageBytes: 1, containerCount: 1 });
+      hostTelemetry.getRecentSamples.mockResolvedValue([
+        {
+          sampledAt: '2026-08-18T12:00:00.000Z',
+          cpuLoad: 41,
+          cpuCores: 8,
+          memoryUsed: 20,
+          memoryTotal: 32,
+          diskUsed: 100,
+          diskTotal: 500,
+          percentUsedMemory: 62,
+          dockerAvailable: true,
+          dockerInfo: null,
+          apps: [point('ci-hub:system'), point('immich:ci-marketplace'), point('actual:ci-marketplace')],
+          source: 'runtime-monitor',
+        },
+      ]);
+      whois.filterSessionByView.mockImplementation(async (_req, items, urnOf) =>
+        items.filter((item) => {
+          const urn = urnOf(item);
+          return urn === undefined || urn === 'immich:ci-marketplace';
+        }),
+      );
+
+      const result = await controller.hostTelemetryHistory({} as Request);
+
+      expect(result.samples[0]?.apps?.map((app) => app.appUrn)).toEqual(['ci-hub:system', 'immich:ci-marketplace']);
+    });
+
+    it('serves averaged points without app figures when asked for a span', async () => {
+      hostTelemetry.getWindow.mockResolvedValue({
+        points: [{ sampledAt: '2026-08-18T12:00:00.000Z', cpuLoad: 12.5, memoryUsed: 20, memoryTotal: 32 }],
+        bucketSeconds: 60,
+        minutes: 360,
+      });
+
+      const result = await controller.hostTelemetryHistory({} as Request, '360');
+
+      expect(hostTelemetry.getWindow).toHaveBeenCalledWith(360);
+      expect(hostTelemetry.getRecentSamples).not.toHaveBeenCalled();
+      expect(result).toEqual({ samples: [expect.objectContaining({ cpuLoad: 12.5 })], minutes: 360, bucketSeconds: 60 });
     });
   });
 });

@@ -11,9 +11,10 @@ import { FactoryResetService } from './factory-reset.service';
 import { RegistrationModule } from '../registration/registration.module';
 import { NetworkModule } from '../network/network.module';
 import { DockerModule } from '../docker/docker.module';
+import { PortalModule } from '@/core/portal/portal.module';
 
 @Module({
-  imports: [forwardRef(() => NetworkModule), forwardRef(() => DockerModule), forwardRef(() => RegistrationModule)],
+  imports: [forwardRef(() => NetworkModule), forwardRef(() => DockerModule), forwardRef(() => RegistrationModule), forwardRef(() => PortalModule)],
   controllers: [SystemController, SystemInspectorController, FactoryResetController],
   providers: [SystemService, SystemInspectorService, HostMetricsService, ResourceAllocatorService, HostTelemetryService, FactoryResetService],
   exports: [SystemService, SystemInspectorService, HostMetricsService, ResourceAllocatorService, FactoryResetService, HostTelemetryService],
