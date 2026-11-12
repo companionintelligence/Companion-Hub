@@ -1,9 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import type { TrainingJobManifest, TrainingJobStatus, TrainingProgressEvent } from './training.types';
+import { TRAINING_JOB_ID_PATTERN, type TrainingJobManifest, type TrainingJobStatus, type TrainingProgressEvent } from './training.types';
 import { TrainingGovernorService } from './training-governor.service';
 
 @Injectable()
@@ -11,6 +11,8 @@ export class TrainingRunnerService {
   private readonly logger = new Logger(TrainingRunnerService.name);
   private readonly activeProcesses = new Map<string, ChildProcess>();
   private readonly jobStatuses = new Map<string, TrainingJobStatus>();
+  /** Ids whose lifecycle has not returned yet. See {@link assertJobIdAvailable}. */
+  private readonly lifecycles = new Set<string>();
   public readonly events = new EventEmitter();
 
   constructor(private readonly governor: TrainingGovernorService) {}
@@ -20,9 +22,10 @@ export class TrainingRunnerService {
    */
   async submitJob(manifest: TrainingJobManifest): Promise<TrainingJobStatus> {
     const jobId = manifest.jobId;
-    if (!/^[a-zA-Z0-9_-]+$/.test(jobId)) {
-      throw new Error(`Invalid jobId "${jobId}": must contain only alphanumeric characters, dashes, and underscores`);
+    if (!TRAINING_JOB_ID_PATTERN.test(jobId)) {
+      throw new BadRequestException(`Invalid jobId "${jobId}": must contain only alphanumeric characters, dashes, and underscores`);
     }
+    this.assertJobIdAvailable(jobId);
 
     const now = new Date().toISOString();
 
@@ -43,11 +46,27 @@ export class TrainingRunnerService {
     };
 
     this.jobStatuses.set(jobId, initialStatus);
+    this.lifecycles.add(jobId);
 
     // Run async execution in background
     void this.executeJobLifecycle(manifest);
 
     return initialStatus;
+  }
+
+  /**
+   * Refuses, with 409, an id whose job is still queued or running.
+   *
+   * Accepting it would replace the first job's status while its lifecycle carried on, and overwrite
+   * its process handle, leaving a trainer nothing can cancel. The test is the lifecycle rather than
+   * the state, because a job cancelled while it waits for resources is marked `CANCELLED` before its
+   * lifecycle reaches the next point that notices. Once a job has completed, failed, been cancelled
+   * or been deferred, its id may be used again.
+   */
+  assertJobIdAvailable(jobId: string): void {
+    if (this.lifecycles.has(jobId)) {
+      throw new ConflictException(`Training job ${jobId} is already queued or running`);
+    }
   }
 
   getJobStatus(jobId: string): TrainingJobStatus | undefined {
@@ -146,6 +165,7 @@ export class TrainingRunnerService {
       this.updateState(jobId, 'FAILED', { errorMessage: errorMsg });
     } finally {
       this.activeProcesses.delete(jobId);
+      this.lifecycles.delete(jobId);
     }
   }
 

@@ -66,7 +66,7 @@ export class TrainingGovernorService {
         signal: AbortSignal.timeout(3000),
       }).catch(() => null);
 
-      if (response && response.ok) {
+      if (response?.ok) {
         this.logger.log('Successfully evicted idle Ollama models from VRAM');
         return true;
       }

@@ -109,6 +109,7 @@ import { UpdateBlocksDto } from './modules/system-update/dto/update-blocks.dto';
 import { GetUserConfigDto, UpdateUserConfigDto } from './modules/user-config/dto/user-config.dto';
 import { PublicWebRepairBody } from './modules/public-web/public-web.dto';
 import { TailscaleStatusDto } from './modules/tailscale/tailscale.dto';
+import { TrainingJobManifestBody } from './modules/training/training.dto';
 
 /** Every Zod-backed DTO referenced in OpenAPI `components.schemas`. */
 export const SWAGGER_ZOD_DTOS: ZodDto[] = [
@@ -225,4 +226,5 @@ export const SWAGGER_ZOD_DTOS: ZodDto[] = [
   UpdateUserConfigDto,
   PublicWebRepairBody,
   TailscaleStatusDto,
+  TrainingJobManifestBody,
 ];

@@ -16,15 +16,7 @@ export const TRAINING_JOB_STATES = [
 ] as const;
 export type TrainingJobState = (typeof TRAINING_JOB_STATES)[number];
 
-export type TrainingJobEvent =
-  | 'resources_granted'
-  | 'data_ready'
-  | 'steps_done'
-  | 'gate_passed'
-  | 'gate_rejected'
-  | 'promoted'
-  | 'error'
-  | 'cancel';
+export type TrainingJobEvent = 'resources_granted' | 'data_ready' | 'steps_done' | 'gate_passed' | 'gate_rejected' | 'promoted' | 'error' | 'cancel';
 
 const TERMINAL: ReadonlySet<TrainingJobState> = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
 

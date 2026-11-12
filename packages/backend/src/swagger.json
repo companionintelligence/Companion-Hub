@@ -6855,6 +6855,163 @@
         ]
       }
     },
+    "/api/training/jobs": {
+      "post": {
+        "operationId": "submitTrainingJob",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrainingJobManifestBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      },
+      "get": {
+        "operationId": "listTrainingJobs",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/training/jobs/{id}": {
+      "get": {
+        "operationId": "getTrainingJob",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/training/jobs/{id}/cancel": {
+      "post": {
+        "operationId": "cancelTrainingJob",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/training/pool/peers": {
+      "get": {
+        "operationId": "listTrainingPeers",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/training/pool/capabilities": {
+      "get": {
+        "operationId": "getPeerCapabilities",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/training/pool/jobs": {
+      "post": {
+        "operationId": "receivePeerJob",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrainingJobManifestBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/training/pool/jobs/{id}": {
+      "get": {
+        "operationId": "getPeerJobStatus",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
     "/api/memory-connect/start": {
       "get": {
         "operationId": "start",
@@ -17557,6 +17714,218 @@
         "required": [
           "latestVersion",
           "downloadUrl"
+        ],
+        "additionalProperties": false
+      },
+      "TrainingJobManifestBody": {
+        "type": "object",
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-zA-Z0-9_-]+$"
+          },
+          "appId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "jobType": {
+            "type": "string",
+            "enum": [
+              "hbpe_bootstrap_hmt",
+              "hbpe_nightly_lora",
+              "llm_lora_finetune",
+              "embedding_adaptation",
+              "unsloth_decision_train"
+            ]
+          },
+          "userId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "model": {
+            "type": "object",
+            "properties": {
+              "backboneId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "framework": {
+                "type": "string",
+                "enum": [
+                  "pytorch",
+                  "mlx",
+                  "tinygrad",
+                  "unsloth"
+                ]
+              },
+              "targetFormat": {
+                "type": "string",
+                "enum": [
+                  "onnx_int8",
+                  "pytorch_lora",
+                  "mlx_adapter",
+                  "unsloth_decision_lora"
+                ]
+              },
+              "baseCheckpointPath": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "backboneId",
+              "framework",
+              "targetFormat"
+            ],
+            "additionalProperties": false
+          },
+          "dataset": {
+            "type": "object",
+            "properties": {
+              "format": {
+                "type": "string",
+                "enum": [
+                  "token_stream_jsonl",
+                  "arrow",
+                  "parquet"
+                ]
+              },
+              "dataPath": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "trainDaysCount": {
+                "type": "integer",
+                "minimum": 0,
+                "exclusiveMinimum": true,
+                "maximum": 9007199254740991
+              },
+              "valFraction": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "exclusiveMaximum": true
+              }
+            },
+            "required": [
+              "format",
+              "dataPath",
+              "valFraction"
+            ],
+            "additionalProperties": false
+          },
+          "hyperparameters": {
+            "type": "object",
+            "properties": {
+              "batchSize": {
+                "type": "integer",
+                "minimum": 0,
+                "exclusiveMinimum": true,
+                "maximum": 9007199254740991
+              },
+              "learningRate": {
+                "type": "number",
+                "minimum": 0,
+                "exclusiveMinimum": true
+              },
+              "epochs": {
+                "type": "integer",
+                "minimum": 0,
+                "exclusiveMinimum": true,
+                "maximum": 9007199254740991
+              },
+              "weightDecay": {
+                "type": "number",
+                "minimum": 0
+              },
+              "loraRank": {
+                "type": "integer",
+                "minimum": 0,
+                "exclusiveMinimum": true,
+                "maximum": 9007199254740991
+              },
+              "loraAlpha": {
+                "type": "number",
+                "minimum": 0,
+                "exclusiveMinimum": true
+              },
+              "patience": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "mixedPrecision": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "batchSize",
+              "learningRate",
+              "epochs",
+              "mixedPrecision"
+            ],
+            "additionalProperties": false
+          },
+          "resourcePolicy": {
+            "type": "object",
+            "properties": {
+              "devicePreference": {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "cuda",
+                  "mps",
+                  "cpu"
+                ]
+              },
+              "maxVramMb": {
+                "type": "integer",
+                "minimum": 0,
+                "exclusiveMinimum": true,
+                "maximum": 9007199254740991
+              },
+              "allowRemoteOffload": {
+                "type": "boolean"
+              },
+              "priority": {
+                "type": "string",
+                "enum": [
+                  "interactive",
+                  "normal",
+                  "nightly_idle"
+                ]
+              },
+              "timeoutSeconds": {
+                "type": "integer",
+                "minimum": 0,
+                "exclusiveMinimum": true,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "devicePreference",
+              "allowRemoteOffload",
+              "priority",
+              "timeoutSeconds"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "jobId",
+          "appId",
+          "jobType",
+          "model",
+          "dataset",
+          "hyperparameters",
+          "resourcePolicy"
         ],
         "additionalProperties": false
       },
