@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   ForbiddenException,
@@ -14,6 +15,7 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { describeHubPoolDisabled, describeHubPoolInboundRefused } from '@/common/helpers/hub-pool';
+import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
 import { PoolPeerGuard } from '@/modules/hub-pool/guards/pool-peer.guard';
@@ -21,6 +23,7 @@ import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import { isPairingIncomplete } from '@/modules/hub-pool/hub-pool.types';
 import { TrainingJobManifestBody } from './training.dto';
 import type { TrainingJobStatus, TrainingPeerCapability } from './training.types';
+import { peerPathRefusal } from './training-peer-paths';
 import { TrainingRunnerService } from './training-runner.service';
 import { TrainingPoolService } from './training-pool.service';
 import { TrainingGovernorService } from './training-governor.service';
@@ -111,16 +114,22 @@ export class TrainingController {
   @Post('pool/jobs')
   @HttpCode(HttpStatus.ACCEPTED)
   async receivePeerJob(@Req() req: Request, @Body() manifest: TrainingJobManifestBody): Promise<TrainingJobStatus> {
-    this.admitPeer(req);
-    // A peer dispatched this job to us — execute locally
-    return this.runner.submitJob(manifest);
+    const peer = this.admitPeer(req);
+    // The operator's own route takes any path. A peer's paths are opened here by this node's trainer.
+    const refusedField = await peerPathRefusal(manifest);
+    if (refusedField) {
+      throw new BadRequestException(`${refusedField} must name an existing path in this Hub's training data directory`);
+    }
+    // Run here, on behalf of the peer. The job is recorded against that peer, so only it reads the status back.
+    return this.runner.submitJob(manifest, peer.id);
   }
 
+  /** Answers only the peer that dispatched the job. Any other job, a local one included, is a 404 like an id never used. */
   @UseGuards(PoolPeerGuard)
   @Get('pool/jobs/:id')
   getPeerJobStatus(@Req() req: Request, @Param('id') id: string): TrainingJobStatus {
-    this.admitPeer(req);
-    const status = this.runner.getJobStatus(id);
+    const peer = this.admitPeer(req);
+    const status = this.runner.getPeerJobStatus(id, peer.id);
     if (!status) {
       throw new NotFoundException(`Training job ${id} not found`);
     }
@@ -140,8 +149,10 @@ export class TrainingController {
    *      reverse. Hub-pool's `capabilities` answers this case with a 200 that accepts no work, because
    *      that route is the pool's health probe. This one is not: a refusal only takes this node out of
    *      the caller's offload choice, and its free memory is not reported to a peer it will not work for.
+   *
+   * Returns the admitted peer.
    */
-  private admitPeer(req: Request): void {
+  private admitPeer(req: Request): HubPoolPeer {
     const enabled = this.peerService.enabledState();
     if (!enabled.enabled) {
       throw new ServiceUnavailableException(describeHubPoolDisabled(enabled.disabledBy));
@@ -154,5 +165,6 @@ export class TrainingController {
     if (refusal) {
       throw new ServiceUnavailableException(describeHubPoolInboundRefused(refusal));
     }
+    return peer;
   }
 }

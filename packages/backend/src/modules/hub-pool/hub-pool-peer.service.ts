@@ -78,14 +78,14 @@ import {
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 
 /**
- * The reason a peer gave for declining a pairing request, when it gave one.
+ * The reason a peer gave for refusing a request, such as a pairing request or a training job, when it gave one.
  *
  * Nest serializes an `HttpException` as `{ message, statusCode }`; `error` is the fallback shape.
  * Bounded, because this string is authored by the far end and ends up in an operator-facing message.
  * A translation key (a peer's `INTERNAL_SERVER_ERROR`, say) is dropped: it is copy for that Hub's own
  * page, and quoted on this one it reads as the raw key.
  */
-async function peerRefusalDetail(response: Response): Promise<string | null> {
+export async function peerRefusalDetail(response: Response): Promise<string | null> {
   try {
     const body = (await response.json()) as { message?: unknown; error?: unknown };
     const detail = typeof body.message === 'string' ? body.message : typeof body.error === 'string' ? body.error : null;

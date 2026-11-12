@@ -13,14 +13,22 @@ export class TrainingRunnerService {
   private readonly jobStatuses = new Map<string, TrainingJobStatus>();
   /** Ids whose lifecycle has not returned yet. See {@link assertJobIdAvailable}. */
   private readonly lifecycles = new Set<string>();
+  /**
+   * The pool peer, by `hub_pool_peer.id`, that dispatched each job it sent here. A job this Hub's
+   * operator submitted has no entry. See {@link getPeerJobStatus}.
+   */
+  private readonly peerSubmitters = new Map<string, string>();
   public readonly events = new EventEmitter();
 
   constructor(private readonly governor: TrainingGovernorService) {}
 
   /**
    * Submit and start executing a training job locally.
+   *
+   * `fromPeerId` is the `hub_pool_peer.id` of the pool peer that dispatched the job here. It is left
+   * out for a job this Hub's operator submitted.
    */
-  async submitJob(manifest: TrainingJobManifest): Promise<TrainingJobStatus> {
+  async submitJob(manifest: TrainingJobManifest, fromPeerId?: string): Promise<TrainingJobStatus> {
     const jobId = manifest.jobId;
     if (!TRAINING_JOB_ID_PATTERN.test(jobId)) {
       throw new BadRequestException(`Invalid jobId "${jobId}": must contain only alphanumeric characters, dashes, and underscores`);
@@ -46,6 +54,12 @@ export class TrainingRunnerService {
     };
 
     this.jobStatuses.set(jobId, initialStatus);
+    // Written with the status, so an id used again once its job has ended belongs to whoever used it last.
+    if (fromPeerId === undefined) {
+      this.peerSubmitters.delete(jobId);
+    } else {
+      this.peerSubmitters.set(jobId, fromPeerId);
+    }
     this.lifecycles.add(jobId);
 
     // Run async execution in background
@@ -71,6 +85,14 @@ export class TrainingRunnerService {
 
   getJobStatus(jobId: string): TrainingJobStatus | undefined {
     return this.jobStatuses.get(jobId);
+  }
+
+  /**
+   * A job's status as the pool peer `peerId` may read it: only for a job that peer dispatched here.
+   * A local job or another peer's job reads as no job at all, the same answer as an id never used.
+   */
+  getPeerJobStatus(jobId: string, peerId: string): TrainingJobStatus | undefined {
+    return this.peerSubmitters.get(jobId) === peerId ? this.jobStatuses.get(jobId) : undefined;
   }
 
   listJobs(): TrainingJobStatus[] {
