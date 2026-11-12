@@ -1,6 +1,6 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadGatewayException, ConflictException, type HttpException, HttpStatus, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
-import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
+import { HubPoolPeerService, peerRefusalDetail } from '@/modules/hub-pool/hub-pool-peer.service';
 import type { TrainingJobManifest, TrainingJobStatus, TrainingPeerCapability } from './training.types';
 import { TrainingRunnerService } from './training-runner.service';
 import { TrainingGovernorService } from './training-governor.service';
@@ -99,21 +99,41 @@ export class TrainingPoolService {
     };
 
     this.logger.log(`Dispatching training job ${manifest.jobId} to peer ${peer.nodeFqdn}`);
-    const response = await fetch(`https://${peer.nodeFqdn}${TRAINING_POOL_JOBS_PATH}`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(manifest),
-      signal: AbortSignal.timeout(10000),
-    });
+    let response: Response;
+    try {
+      response = await fetch(`https://${peer.nodeFqdn}${TRAINING_POOL_JOBS_PATH}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(manifest),
+        signal: AbortSignal.timeout(10000),
+      });
+    } catch (err) {
+      // A timeout can end the wait after the peer took the job, so the message claims only that no answer came back.
+      this.logger.warn(`Peer ${peer.nodeFqdn} did not answer the dispatch of training job ${manifest.jobId}: ${(err as Error).message}`);
+      throw new BadGatewayException(`Peer ${peer.nodeFqdn} did not answer the dispatch of training job ${manifest.jobId}`);
+    }
 
     if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Failed to dispatch job to peer ${peer.nodeFqdn}: ${response.status} ${errText}`);
+      throw await this.dispatchRefusal(peer, manifest.jobId, response);
     }
 
     const remoteStatus = (await response.json()) as TrainingJobStatus;
     remoteStatus.executedOnNode = peer.nodeFqdn;
     return remoteStatus;
+  }
+
+  /**
+   * A 409 passes through: the peer already has a job under this id in flight, and the operator handles
+   * that like this node's own 409, with another id. Any other refusal is a 502 naming the peer's status
+   * and reason, because the request was valid here and the Hub it was sent on to refused it.
+   */
+  private async dispatchRefusal(peer: HubPoolPeer, jobId: string, response: Response): Promise<HttpException> {
+    const detail = await peerRefusalDetail(response);
+    this.logger.warn(`Peer ${peer.nodeFqdn} refused training job ${jobId} (${response.status})${detail ? `: ${detail}` : ''}`);
+    if (response.status === HttpStatus.CONFLICT) {
+      return new ConflictException(`Peer ${peer.nodeFqdn} already has training job ${jobId} queued or running`);
+    }
+    return new BadGatewayException(`Peer ${peer.nodeFqdn} refused training job ${jobId} with HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
   }
 
   /**
