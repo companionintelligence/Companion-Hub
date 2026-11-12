@@ -1173,7 +1173,14 @@ export const wake = <ThrowOnError extends boolean = false>(options?: Options<Wak
 
 export const listTrainingJobs = <ThrowOnError extends boolean = false>(options?: Options<ListTrainingJobsData, ThrowOnError>): RequestResult<ListTrainingJobsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListTrainingJobsResponses, unknown, ThrowOnError>({ url: '/api/training/jobs', ...options });
 
-export const submitTrainingJob = <ThrowOnError extends boolean = false>(options?: Options<SubmitTrainingJobData, ThrowOnError>): RequestResult<SubmitTrainingJobResponses, unknown, ThrowOnError> => (options?.client ?? client).post<SubmitTrainingJobResponses, unknown, ThrowOnError>({ url: '/api/training/jobs', ...options });
+export const submitTrainingJob = <ThrowOnError extends boolean = false>(options: Options<SubmitTrainingJobData, ThrowOnError>): RequestResult<SubmitTrainingJobResponses, unknown, ThrowOnError> => (options.client ?? client).post<SubmitTrainingJobResponses, unknown, ThrowOnError>({
+    url: '/api/training/jobs',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
 
 export const getTrainingJob = <ThrowOnError extends boolean = false>(options: Options<GetTrainingJobData, ThrowOnError>): RequestResult<GetTrainingJobResponses, unknown, ThrowOnError> => (options.client ?? client).get<GetTrainingJobResponses, unknown, ThrowOnError>({ url: '/api/training/jobs/{id}', ...options });
 
@@ -1183,7 +1190,14 @@ export const listTrainingPeers = <ThrowOnError extends boolean = false>(options?
 
 export const getPeerCapabilities = <ThrowOnError extends boolean = false>(options?: Options<GetPeerCapabilitiesData, ThrowOnError>): RequestResult<GetPeerCapabilitiesResponses, unknown, ThrowOnError> => (options?.client ?? client).get<GetPeerCapabilitiesResponses, unknown, ThrowOnError>({ url: '/api/training/pool/capabilities', ...options });
 
-export const receivePeerJob = <ThrowOnError extends boolean = false>(options?: Options<ReceivePeerJobData, ThrowOnError>): RequestResult<ReceivePeerJobResponses, unknown, ThrowOnError> => (options?.client ?? client).post<ReceivePeerJobResponses, unknown, ThrowOnError>({ url: '/api/training/pool/jobs', ...options });
+export const receivePeerJob = <ThrowOnError extends boolean = false>(options: Options<ReceivePeerJobData, ThrowOnError>): RequestResult<ReceivePeerJobResponses, unknown, ThrowOnError> => (options.client ?? client).post<ReceivePeerJobResponses, unknown, ThrowOnError>({
+    url: '/api/training/pool/jobs',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
 
 export const getPeerJobStatus = <ThrowOnError extends boolean = false>(options: Options<GetPeerJobStatusData, ThrowOnError>): RequestResult<GetPeerJobStatusResponses, unknown, ThrowOnError> => (options.client ?? client).get<GetPeerJobStatusResponses, unknown, ThrowOnError>({ url: '/api/training/pool/jobs/{id}', ...options });
 

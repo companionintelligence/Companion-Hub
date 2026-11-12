@@ -1,17 +1,23 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import type { HubPoolPeer } from '@/core/database/drizzle/types';
+import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import type { TrainingJobManifest, TrainingJobStatus, TrainingPeerCapability } from './training.types';
-import { HubPoolPeerRepository } from '@/modules/hub-pool/hub-pool-peer.repository';
-import { HubPoolIdentityService } from '@/modules/hub-pool/hub-pool-identity.service';
 import { TrainingRunnerService } from './training-runner.service';
 import { TrainingGovernorService } from './training-governor.service';
+
+/**
+ * The peer-facing training routes, as sent. A signed request covers the path, `/api` included, and the
+ * receiving guard checks it against the path it was reached on, so these are not built anywhere else.
+ */
+const TRAINING_POOL_CAPABILITIES_PATH = '/api/training/pool/capabilities';
+const TRAINING_POOL_JOBS_PATH = '/api/training/pool/jobs';
 
 @Injectable()
 export class TrainingPoolService {
   private readonly logger = new Logger(TrainingPoolService.name);
 
   constructor(
-    private readonly peerRepo: HubPoolPeerRepository,
-    private readonly identityService: HubPoolIdentityService,
+    private readonly peerService: HubPoolPeerService,
     private readonly runner: TrainingRunnerService,
     private readonly governor: TrainingGovernorService,
   ) {}
@@ -34,25 +40,17 @@ export class TrainingPoolService {
   }
 
   /**
-   * Query all connected peers in Hub Pool to discover available training capacity.
+   * Query the peers this node may send work to for their training capacity.
    */
   async discoverTrainingPeers(): Promise<TrainingPeerCapability[]> {
-    const peers = await this.peerRepo.listByStatus('connected');
+    const peers = await this.usablePeers();
     const results: TrainingPeerCapability[] = [];
 
     for (const peer of peers) {
       try {
-        const url = `https://${peer.nodeFqdn}/api/training/pool/capabilities`;
-        const headers: Record<string, string> = {};
-        const peerRecord = peer as Record<string, unknown>;
-        const token = typeof peerRecord.outboundBearerToken === 'string' ? peerRecord.outboundBearerToken : peer.presentTokenEncrypted;
-        if (token) {
-          headers.Authorization = `Bearer ${token}`;
-        }
-
-        const response = await fetch(url, {
+        const response = await fetch(`https://${peer.nodeFqdn}${TRAINING_POOL_CAPABILITIES_PATH}`, {
           method: 'GET',
-          headers,
+          headers: await this.peerService.peerAuthHeaders(peer, 'GET', TRAINING_POOL_CAPABILITIES_PATH),
           signal: AbortSignal.timeout(3000),
         });
 
@@ -87,23 +85,21 @@ export class TrainingPoolService {
    * Dispatch a training job to a selected remote peer across the tailnet.
    */
   async dispatchJobToPeer(peerFqdn: string, manifest: TrainingJobManifest): Promise<TrainingJobStatus> {
-    const peer = await this.peerRepo.findByNodeFqdn(peerFqdn);
+    // Looked up among the usable peers, not by name alone, so a peer switched off between discovery
+    // and dispatch is not sent the job.
+    const peer = (await this.usablePeers()).find((candidate) => candidate.nodeFqdn === peerFqdn);
     if (!peer) {
-      throw new NotFoundException(`Peer ${peerFqdn} not found in paired pool peers`);
+      throw new NotFoundException(`Peer ${peerFqdn} is not a connected pool peer this node may send work to`);
     }
 
-    const url = `https://${peer.nodeFqdn}/api/training/pool/jobs`;
+    // The body is signed along with the path, so the object signed is the one serialized below.
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      ...(await this.peerService.peerAuthHeaders(peer, 'POST', TRAINING_POOL_JOBS_PATH, manifest)),
     };
-    const peerRecord = peer as Record<string, unknown>;
-    const token = typeof peerRecord.outboundBearerToken === 'string' ? peerRecord.outboundBearerToken : peer.presentTokenEncrypted;
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-    }
 
     this.logger.log(`Dispatching training job ${manifest.jobId} to peer ${peer.nodeFqdn}`);
-    const response = await fetch(url, {
+    const response = await fetch(`https://${peer.nodeFqdn}${TRAINING_POOL_JOBS_PATH}`, {
       method: 'POST',
       headers,
       body: JSON.stringify(manifest),
@@ -118,5 +114,18 @@ export class TrainingPoolService {
     const remoteStatus = (await response.json()) as TrainingJobStatus;
     remoteStatus.executedOnNode = peer.nodeFqdn;
     return remoteStatus;
+  }
+
+  /**
+   * The peers this node may send training work to: connected, not switched off by the operator, and
+   * none at all while outbound pooling (or the pool) is off. The rule hub-pool's proxy applies before
+   * it routes inference to a peer (`PoolProxyService.usablePeers`).
+   */
+  private async usablePeers(): Promise<HubPoolPeer[]> {
+    if (!this.peerService.directions().outbound.enabled) {
+      return [];
+    }
+    // `!== false`: the column is NOT NULL DEFAULT true, so only an operator's decision removes a peer.
+    return (await this.peerService.listConnectedPeers()).filter((peer) => peer.enabled !== false);
   }
 }

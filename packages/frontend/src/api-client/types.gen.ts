@@ -2274,6 +2274,42 @@ export type DesktopReleaseDto = {
     downloadUrl: string;
 };
 
+export type TrainingJobManifestBody = {
+    jobId: string;
+    appId: string;
+    jobType: 'hbpe_bootstrap_hmt' | 'hbpe_nightly_lora' | 'llm_lora_finetune' | 'embedding_adaptation' | 'unsloth_decision_train';
+    userId?: string;
+    model: {
+        backboneId: string;
+        framework: 'pytorch' | 'mlx' | 'tinygrad' | 'unsloth';
+        targetFormat: 'onnx_int8' | 'pytorch_lora' | 'mlx_adapter' | 'unsloth_decision_lora';
+        baseCheckpointPath?: string;
+    };
+    dataset: {
+        format: 'token_stream_jsonl' | 'arrow' | 'parquet';
+        dataPath: string;
+        trainDaysCount?: number;
+        valFraction: number;
+    };
+    hyperparameters: {
+        batchSize: number;
+        learningRate: number;
+        epochs: number;
+        weightDecay?: number;
+        loraRank?: number;
+        loraAlpha?: number;
+        patience?: number;
+        mixedPrecision: boolean;
+    };
+    resourcePolicy: {
+        devicePreference: 'auto' | 'cuda' | 'mps' | 'cpu';
+        maxVramMb?: number;
+        allowRemoteOffload: boolean;
+        priority: 'interactive' | 'normal' | 'nightly_idle';
+        timeoutSeconds: number;
+    };
+};
+
 export type McpToolCallBody = {
     arguments?: {
         [key: string]: unknown;
@@ -6352,7 +6388,7 @@ export type ListTrainingJobsResponses = {
 };
 
 export type SubmitTrainingJobData = {
-    body?: never;
+    body: TrainingJobManifestBody;
     path?: never;
     query?: never;
     url: '/api/training/jobs';
@@ -6411,7 +6447,7 @@ export type GetPeerCapabilitiesResponses = {
 };
 
 export type ReceivePeerJobData = {
-    body?: never;
+    body: TrainingJobManifestBody;
     path?: never;
     query?: never;
     url: '/api/training/pool/jobs';

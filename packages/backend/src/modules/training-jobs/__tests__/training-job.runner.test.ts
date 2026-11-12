@@ -48,9 +48,13 @@ describe('runSteps', () => {
   });
 
   it('turns a missing handler into a step failure, not a crash', async () => {
-    const report = await runSteps({ steps: steps.slice(0, 2) }, { a: async () => undefined }, {
-      signal: new AbortController().signal,
-    });
+    const report = await runSteps(
+      { steps: steps.slice(0, 2) },
+      { a: async () => undefined },
+      {
+        signal: new AbortController().signal,
+      },
+    );
     expect(report.steps[1]).toMatchObject({ name: 'b', outcome: 'failed', error: 'no handler registered' });
   });
 
