@@ -160,6 +160,27 @@ IPHONEOS_DEPLOYMENT_TARGET=16.0 \
 > callback from a previous attempt can also re-open the app on `cihub://` —
 > delete the app from the Simulator and relaunch `ios:dev` after rebuilding.
 
+## Home-screen widget
+
+The iOS WidgetKit extension and Android AppWidget provide four fixed quick
+actions: **Open**, **Connect**, **Switch**, and **Settings**. The small iOS
+layout shows Open and Connect, while the medium iOS layout shows all four.
+Android displays all four actions in two rows. Each action opens a fixed
+`cihub://intent/<route>` destination handled by the existing mobile app router.
+
+These widgets do not read Hub status, container state, or credentials. Live
+system information stays in the authenticated dashboard. The native source and
+generated project wiring are committed under `src-tauri/gen/apple/WidgetExtension/`
+and `src-tauri/gen/android/app/`; do not run either `*:init` command to build
+them, because those commands regenerate the committed native projects.
+
+Build checks:
+
+```bash
+pnpm --filter mobile exec tauri android build --debug --apk --ci
+pnpm --filter mobile exec tauri ios build --debug --no-sign --ci --target aarch64
+```
+
 ## Building in CI (GitHub Actions)
 
 The mobile app builds in CI the same way the desktop app does — via

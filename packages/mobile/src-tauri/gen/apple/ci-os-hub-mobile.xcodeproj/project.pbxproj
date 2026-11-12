@@ -8,8 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		014BF31D80EB0AC7F4EF9068 /* CompanionHubAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D061B03AEB8D2A04CC4FE6D /* CompanionHubAppIntents.swift */; };
-		2E8A1C9D4B6F7E8A9C0D1E2F /* AuthSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F4E2C1A8B7D6E5F4C3B2A10 /* AuthSession.swift */; };
-		6B7C8D9E0F1A2B3C4D5E6F70 /* AuthenticationServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5A6B7C8D9E0F1A2B3C4D5E6F /* AuthenticationServices.framework */; };
 		089F337E3D45B7F886583B8D /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4BBEBC74C5D46FA449BD8DC8 /* UIKit.framework */; };
 		12E01263B2CA8E8B5FCC61BE /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 19504980A96F1EB169B60D7E /* WebKit.framework */; };
 		1693E3D5B4349EB4110852BE /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 6D392AFB5EB613D062CB37FF /* libapp.a */; };
@@ -18,12 +16,40 @@
 		3B16D219B61EF9C7167E1B39 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 916A0DDB3ACCBED1DB6CBE2B /* MetalKit.framework */; };
 		4C9E7FA103D2E689913F12C9 /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = B0383C943636A1376A38F184 /* main.mm */; };
 		59B13AB2444A52DD65A208D2 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 95EC4B87E7C760D8012742F3 /* CoreGraphics.framework */; };
+		5A45CE0B2F3B5B3598371F91 /* AuthSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20A2BBF78907AB3B43CE46D /* AuthSession.swift */; };
+		647F49DE425B573FCA0A1EE8 /* HubQuickActionsWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0B5D5F98F664D64051BA0F /* HubQuickActionsWidget.swift */; };
 		6A4C459E688BEE5F125D0429 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7A4DB32945F336FC5CF023F7 /* Security.framework */; };
 		75318803EB8E93CF09E91A2F /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 250314429D9F32E2F8DF0F7A /* Metal.framework */; };
+		75D9FCDAB44B06A008E1B025 /* CompanionHubWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E7F68BDAD632FD0BFC6B57C7 /* CompanionHubWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		8A9C2DA3085061DF45DF6B20 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B8BDE4DD8FD81BC09A2FAD50 /* PrivacyInfo.xcprivacy */; };
 		C016559BE676D88A8D67C74F /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 122EE36778473B804E1F00E9 /* QuartzCore.framework */; };
+		E4BED4FCED327FE4782AF153 /* AuthenticationServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 89127D0D75D599D665B6AD2D /* AuthenticationServices.framework */; };
 		E83CCA3A60D765EEE68FD7D5 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = DF7B083C1647FAB3D7140197 /* LaunchScreen.storyboard */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A85DF6F0DD2D42D6A156828A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = D9E4EAD9A4CD01755F49B060 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = CB6DD78354F1C786C82296C9;
+			remoteInfo = CompanionHubWidgets;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		7583DC12DBBD646D72FB5358 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				75D9FCDAB44B06A008E1B025 /* CompanionHubWidgets.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		0C41CD1F4167F52CD6888611 /* ci-os-hub-mobile_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "ci-os-hub-mobile_iOS.entitlements"; sourceTree = "<group>"; };
@@ -34,19 +60,23 @@
 		29487BAB3F4CE9A9ABB2E0EC /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
 		33595B11B6D233BA851B8065 /* ci-os-hub-mobile_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "ci-os-hub-mobile_iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		3DA568AC0055DA5D3510122B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		3E1182EE6B9D23A33B1761F3 /* auth_session.rs */ = {isa = PBXFileReference; path = auth_session.rs; sourceTree = "<group>"; };
 		474644A6FEB0A5E62CEDA00A /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
 		4BBEBC74C5D46FA449BD8DC8 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		5339289DD699732B41FDB951 /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
 		6D392AFB5EB613D062CB37FF /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
+		7233F00A2E266C409E5B0759 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		7A4DB32945F336FC5CF023F7 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
-		5A6B7C8D9E0F1A2B3C4D5E6F /* AuthenticationServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AuthenticationServices.framework; path = System/Library/Frameworks/AuthenticationServices.framework; sourceTree = SDKROOT; };
+		89127D0D75D599D665B6AD2D /* AuthenticationServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AuthenticationServices.framework; path = System/Library/Frameworks/AuthenticationServices.framework; sourceTree = SDKROOT; };
 		8D061B03AEB8D2A04CC4FE6D /* CompanionHubAppIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionHubAppIntents.swift; sourceTree = "<group>"; };
-		9F4E2C1A8B7D6E5F4C3B2A10 /* AuthSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthSession.swift; sourceTree = "<group>"; };
 		916A0DDB3ACCBED1DB6CBE2B /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
 		95EC4B87E7C760D8012742F3 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		A20A2BBF78907AB3B43CE46D /* AuthSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthSession.swift; sourceTree = "<group>"; };
+		AC0B5D5F98F664D64051BA0F /* HubQuickActionsWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubQuickActionsWidget.swift; sourceTree = "<group>"; };
 		B0383C943636A1376A38F184 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
 		B8BDE4DD8FD81BC09A2FAD50 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		DF7B083C1647FAB3D7140197 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		E7F68BDAD632FD0BFC6B57C7 /* CompanionHubWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = CompanionHubWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		EE09F9A3AA7528C1D45D4DD7 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -56,7 +86,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				1693E3D5B4349EB4110852BE /* libapp.a in Frameworks */,
-				6B7C8D9E0F1A2B3C4D5E6F70 /* AuthenticationServices.framework in Frameworks */,
 				59B13AB2444A52DD65A208D2 /* CoreGraphics.framework in Frameworks */,
 				75318803EB8E93CF09E91A2F /* Metal.framework in Frameworks */,
 				3B16D219B61EF9C7167E1B39 /* MetalKit.framework in Frameworks */,
@@ -64,6 +93,7 @@
 				6A4C459E688BEE5F125D0429 /* Security.framework in Frameworks */,
 				089F337E3D45B7F886583B8D /* UIKit.framework in Frameworks */,
 				12E01263B2CA8E8B5FCC61BE /* WebKit.framework in Frameworks */,
+				E4BED4FCED327FE4782AF153 /* AuthenticationServices.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -73,7 +103,7 @@
 		1267B5F8B3E446CEAFE7940D /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
-				5A6B7C8D9E0F1A2B3C4D5E6F /* AuthenticationServices.framework */,
+				89127D0D75D599D665B6AD2D /* AuthenticationServices.framework */,
 				95EC4B87E7C760D8012742F3 /* CoreGraphics.framework */,
 				6D392AFB5EB613D062CB37FF /* libapp.a */,
 				250314429D9F32E2F8DF0F7A /* Metal.framework */,
@@ -90,7 +120,7 @@
 			isa = PBXGroup;
 			children = (
 				A42A14BE22AD4E5C5CEC26F1 /* AppIntents */,
-				3C4D5E6F7A8B9C0D1E2F3A4B /* AuthSession */,
+				5255E39ABA2D333F6CF6A6D2 /* AuthSession */,
 				7A4C4DD1AF1266AC3769E9C4 /* ci-os-hub-mobile */,
 			);
 			path = Sources;
@@ -114,9 +144,18 @@
 				2FF896ADA45FAB86D6F5CE8C /* Externals */,
 				27CA3D1555F94FD0520F6055 /* Sources */,
 				9D98772B2A66AECB382B3625 /* src */,
+				B03D4683CB64A733CC7A6C7F /* WidgetExtension */,
 				1267B5F8B3E446CEAFE7940D /* Frameworks */,
 				8FCAED452492B3C7655E52CC /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		5255E39ABA2D333F6CF6A6D2 /* AuthSession */ = {
+			isa = PBXGroup;
+			children = (
+				A20A2BBF78907AB3B43CE46D /* AuthSession.swift */,
+			);
+			path = AuthSession;
 			sourceTree = "<group>";
 		};
 		7A4C4DD1AF1266AC3769E9C4 /* ci-os-hub-mobile */ = {
@@ -132,6 +171,7 @@
 			isa = PBXGroup;
 			children = (
 				33595B11B6D233BA851B8065 /* ci-os-hub-mobile_iOS.app */,
+				E7F68BDAD632FD0BFC6B57C7 /* CompanionHubWidgets.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -139,6 +179,7 @@
 		9D98772B2A66AECB382B3625 /* src */ = {
 			isa = PBXGroup;
 			children = (
+				3E1182EE6B9D23A33B1761F3 /* auth_session.rs */,
 				474644A6FEB0A5E62CEDA00A /* lib.rs */,
 				5339289DD699732B41FDB951 /* main.rs */,
 			);
@@ -153,14 +194,6 @@
 				3DA568AC0055DA5D3510122B /* Info.plist */,
 			);
 			path = "ci-os-hub-mobile_iOS";
-			sourceTree = "<group>";
-		};
-		3C4D5E6F7A8B9C0D1E2F3A4B /* AuthSession */ = {
-			isa = PBXGroup;
-			children = (
-				9F4E2C1A8B7D6E5F4C3B2A10 /* AuthSession.swift */,
-			);
-			path = AuthSession;
 			sourceTree = "<group>";
 		};
 		A42A14BE22AD4E5C5CEC26F1 /* AppIntents */ = {
@@ -179,6 +212,15 @@
 			path = bindings;
 			sourceTree = "<group>";
 		};
+		B03D4683CB64A733CC7A6C7F /* WidgetExtension */ = {
+			isa = PBXGroup;
+			children = (
+				AC0B5D5F98F664D64051BA0F /* HubQuickActionsWidget.swift */,
+				7233F00A2E266C409E5B0759 /* Info.plist */,
+			);
+			path = WidgetExtension;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -190,10 +232,12 @@
 				48834CAB0B6C178A0B2610A6 /* Sources */,
 				D70D1F5A3C5B18EEA82CC96C /* Resources */,
 				2B73838646D5E796D354F5AC /* Frameworks */,
+				7583DC12DBBD646D72FB5358 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				ACB9A1FF8180E0231612F9B8 /* PBXTargetDependency */,
 			);
 			name = "ci-os-hub-mobile_iOS";
 			packageProductDependencies = (
@@ -201,6 +245,23 @@
 			productName = "ci-os-hub-mobile_iOS";
 			productReference = 33595B11B6D233BA851B8065 /* ci-os-hub-mobile_iOS.app */;
 			productType = "com.apple.product-type.application";
+		};
+		CB6DD78354F1C786C82296C9 /* CompanionHubWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 74A2ED95704C40A8CEEAD502 /* Build configuration list for PBXNativeTarget "CompanionHubWidgets" */;
+			buildPhases = (
+				209958B06D392A9414E6018B /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = CompanionHubWidgets;
+			packageProductDependencies = (
+			);
+			productName = CompanionHubWidgets;
+			productReference = E7F68BDAD632FD0BFC6B57C7 /* CompanionHubWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -211,6 +272,9 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					1EA148E83861CD4F0DBBAFF0 = {
+						DevelopmentTeam = 68U45V853Y;
+					};
 				};
 			};
 			buildConfigurationList = 933AA3C1717AC384B22F36B9 /* Build configuration list for PBXProject "ci-os-hub-mobile" */;
@@ -228,6 +292,7 @@
 			projectRoot = "";
 			targets = (
 				1EA148E83861CD4F0DBBAFF0 /* ci-os-hub-mobile_iOS */,
+				CB6DD78354F1C786C82296C9 /* CompanionHubWidgets */,
 			);
 		};
 /* End PBXProject section */
@@ -271,19 +336,54 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		209958B06D392A9414E6018B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				647F49DE425B573FCA0A1EE8 /* HubQuickActionsWidget.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		48834CAB0B6C178A0B2610A6 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5A45CE0B2F3B5B3598371F91 /* AuthSession.swift in Sources */,
 				014BF31D80EB0AC7F4EF9068 /* CompanionHubAppIntents.swift in Sources */,
-				2E8A1C9D4B6F7E8A9C0D1E2F /* AuthSession.swift in Sources */,
 				4C9E7FA103D2E689913F12C9 /* main.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		ACB9A1FF8180E0231612F9B8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = CB6DD78354F1C786C82296C9 /* CompanionHubWidgets */;
+			targetProxy = A85DF6F0DD2D42D6A156828A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		0678934F9EEC89A4A3AE343D /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				INFOPLIST_FILE = WidgetExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.companionintelligence.hub.widgets;
+				PRODUCT_NAME = CompanionHubWidgets;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = release;
+		};
 		0981A4355B077A7A1B588864 /* release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -348,9 +448,9 @@
 					arm64,
 				);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES;
 				CODE_SIGN_ENTITLEMENTS = "ci-os-hub-mobile_iOS/ci-os-hub-mobile_iOS.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = "68U45V853Y";
 				ENABLE_BITCODE = NO;
 				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -364,7 +464,6 @@
 				);
 				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
 				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
-				DEVELOPMENT_TEAM = "68U45V853Y";
 				PRODUCT_BUNDLE_IDENTIFIER = computer.ci.app.hub;
 				PRODUCT_NAME = "Companion Hub";
 				SDKROOT = iphoneos;
@@ -381,9 +480,9 @@
 					arm64,
 				);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES;
 				CODE_SIGN_ENTITLEMENTS = "ci-os-hub-mobile_iOS/ci-os-hub-mobile_iOS.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = "68U45V853Y";
 				ENABLE_BITCODE = NO;
 				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -397,7 +496,6 @@
 				);
 				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
 				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
-				DEVELOPMENT_TEAM = "68U45V853Y";
 				PRODUCT_BUNDLE_IDENTIFIER = computer.ci.app.hub;
 				PRODUCT_NAME = "Companion Hub";
 				SDKROOT = iphoneos;
@@ -469,9 +567,37 @@
 			};
 			name = debug;
 		};
+		FF2A542CC1D5B794ACC68ECA /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				INFOPLIST_FILE = WidgetExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.companionintelligence.hub.widgets;
+				PRODUCT_NAME = CompanionHubWidgets;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		74A2ED95704C40A8CEEAD502 /* Build configuration list for PBXNativeTarget "CompanionHubWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FF2A542CC1D5B794ACC68ECA /* debug */,
+				0678934F9EEC89A4A3AE343D /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
 		832D8B62B5EBEDA277F1C390 /* Build configuration list for PBXNativeTarget "ci-os-hub-mobile_iOS" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

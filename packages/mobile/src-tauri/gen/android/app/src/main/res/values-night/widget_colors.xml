@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="widget_hub_background">#111B1E</color>
+    <color name="widget_hub_border">#2E4447</color>
+    <color name="widget_hub_action_background">#213633</color>
+    <color name="widget_hub_text">#E5F4EF</color>
+    <color name="widget_hub_muted">#A4C0B7</color>
+</resources>
