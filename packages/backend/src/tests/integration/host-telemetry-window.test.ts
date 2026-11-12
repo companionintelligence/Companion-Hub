@@ -59,6 +59,17 @@ describe('Host telemetry window', () => {
     expect(window.points.find((point) => point.cpuLoad === 50)?.memoryUsed).toBe(50);
   });
 
+  it('serves at most 360 points when every bucket holds a reading', async () => {
+    // A reading every 5 seconds for 31 minutes, and one a minute for 6 hours and 10 minutes.
+    await db.insert(hostTelemetrySample).values(Array.from({ length: 31 * 12 }, (_, i) => row(5_000 * i, 10, 40)));
+    expect((await service.getWindow(30)).points.length).toBeLessThanOrEqual(360);
+
+    await db.delete(hostTelemetrySample);
+    await db.insert(hostTelemetrySample).values(Array.from({ length: 370 }, (_, i) => row(60_000 * i, 10, 40)));
+    expect((await service.getWindow(360)).points.length).toBeLessThanOrEqual(360);
+    expect((await service.getWindow(360)).points.length).toBeGreaterThan(350);
+  });
+
   it('clamps a span past the retention and averages nulls away', async () => {
     await db.insert(hostTelemetrySample).values([row(5_000, null, null), row(5_000, 8, 12)]);
 

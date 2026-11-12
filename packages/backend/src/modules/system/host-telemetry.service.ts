@@ -232,7 +232,8 @@ export class HostTelemetryService implements OnModuleInit, OnModuleDestroy {
    * collector's own 5-second points; 48 hours is 8-minute averages.
    *
    * `sampled_at` holds UTC wall-clock time with no zone (see {@link toUtcIso}), so the window is
-   * measured against `now()` read in UTC, never against the session's own zone.
+   * measured against `now()` read in UTC, never against the session's own zone. It starts at the
+   * first whole bucket, so a partial bucket at the far end doesn't make it 361 points.
    */
   async getWindow(minutes: number): Promise<{ points: HostTelemetryWindowPoint[]; bucketSeconds: number; minutes: number }> {
     const retentionMinutes = HOST_TELEMETRY_RETENTION_MS / 60_000;
@@ -246,7 +247,8 @@ export class HostTelemetryService implements OnModuleInit, OnModuleDestroy {
              avg(${table.memoryUsed})::float8 AS memory_used,
              max(${table.memoryTotal}) AS memory_total
         FROM ${table}
-       WHERE ${table.sampledAt} >= (now() AT TIME ZONE 'UTC') - make_interval(mins => ${span})
+       WHERE ${table.sampledAt} >= date_bin(make_interval(secs => ${bucketSeconds}), (now() AT TIME ZONE 'UTC') - make_interval(mins => ${span}), TIMESTAMP '2000-01-01')
+                                  + make_interval(secs => ${bucketSeconds})
        GROUP BY 1
        ORDER BY 1`);
     const points = result.rows.map((row) => ({
