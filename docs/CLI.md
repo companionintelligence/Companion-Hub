@@ -1642,10 +1642,10 @@ After the install, pair the helper from the Mac:
 3. In the model's settings, under **Acceleration**, choose the node as **Prefill Accelerator**.
 
 The helper uses host networking so that the Mac's Cluster tab can find it over mDNS. It listens on
-`:8850` (discovery and pairing), `:8851` (control), and `:8852` (prefill data) on every interface, and
-its pairing exchange is plain HTTP, so run it only on a network you trust. If ufw is active on the
-node, allow the Mac to reach those three TCP ports and UDP 5353 for mDNS. The link sets the speedup:
-upstream's checks warn below 5 GbE.
+`:8850` (discovery and pairing) and `:8851` (control) on every interface from the start, and on
+`:8852` (prefill data) while a Mac uses it. Its pairing exchange is plain HTTP, so run it only on a
+network you trust. If ufw is active on the node, allow the Mac to reach those three TCP ports and
+UDP 5353 for mDNS. The link sets the speedup: upstream's checks warn below 5 GbE.
 
 On an NVIDIA node, the oMLX section of **Settings → AI** says whether the helper is running, and shows
 the command to start it or to read its pairing code.
