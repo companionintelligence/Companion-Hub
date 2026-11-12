@@ -1532,15 +1532,28 @@ describe('InferenceRouterService', () => {
       expect(poolLoad.activeMediaWork()).toBe(0);
     });
 
-    it('falls back to cloud provider when LocalAI is unhealthy', async () => {
+    it('fails closed by default when LocalAI is unhealthy even if a cloud provider is configured', async () => {
       localaiBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
       cloudFallback.getEnabledProviders.mockReturnValue([{ provider: 'openai', apiKey: 'sk-test' } as any]);
-      cloudFallback.proxyImageGeneration.mockResolvedValueOnce({ data: { data: [{ url: 'cloud.png' }] }, headers: {} });
 
-      const result = await service.routeImageGen({ prompt: 'cloud render' });
-      expect(result.backend).toBe('cloud:openai');
-      expect(result.data).toEqual({ data: [{ url: 'cloud.png' }] });
-      expect(cloudFallback.proxyImageGeneration).toHaveBeenCalled();
+      await expect(service.routeImageGen({ prompt: 'cloud render' })).rejects.toThrow('No image generation backend available');
+      expect(cloudFallback.proxyImageGeneration).not.toHaveBeenCalled();
+    });
+
+    it('falls back to cloud provider when LocalAI is unhealthy and CI_HUB_ALLOW_CLOUD_FALLBACK=true', async () => {
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        localaiBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+        cloudFallback.getEnabledProviders.mockReturnValue([{ provider: 'openai', apiKey: 'sk-test' } as any]);
+        cloudFallback.proxyImageGeneration.mockResolvedValueOnce({ data: { data: [{ url: 'cloud.png' }] }, headers: {} });
+
+        const result = await service.routeImageGen({ prompt: 'cloud render' });
+        expect(result.backend).toBe('cloud:openai');
+        expect(result.data).toEqual({ data: [{ url: 'cloud.png' }] });
+        expect(cloudFallback.proxyImageGeneration).toHaveBeenCalled();
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
     });
 
     it('throws when no image generation backend is available', async () => {

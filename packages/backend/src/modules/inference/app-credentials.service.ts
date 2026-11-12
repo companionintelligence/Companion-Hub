@@ -6,7 +6,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ModelPullerService } from './model-puller.service';
-import { CloudFallbackService } from './cloud-fallback.service';
+import { CloudFallbackService, isCloudFallbackAllowed } from './cloud-fallback.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import { InferenceEndpointService } from './inference-endpoint.service';
 import type { CuratedModel, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
@@ -380,8 +380,10 @@ export class AppCredentialsService implements OnApplicationShutdown {
     const poolServesChat = Boolean(poolChoice?.engineId);
 
     // A pool that serves the app is local inference too — peers this operator paired, over the
-    // tailnet — so cloud only becomes primary when neither this node nor the pool can serve chat.
-    const cloudProviders = this.cloudFallback.getEnabledProviders();
+    // tailnet — so cloud only becomes primary when neither this node nor the pool can serve chat
+    // AND automatic cloud fallback is explicitly allowed.
+    const allowCloudFallback = isCloudFallbackAllowed();
+    const cloudProviders = allowCloudFallback ? this.cloudFallback.getEnabledProviders() : [];
     const cloudProvider = endpointReady || poolServesChat ? undefined : cloudProviders[0];
 
     const keys = APP_ENV_KEYS[slug];
@@ -479,7 +481,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
       [keys.baseUrl]: endpointUrl,
       [keys.apiKey]: apiKey,
       CI_INFERENCE_BACKEND: provider,
-      ...this.cloudFallback.toAppEnv(),
+      ...(allowCloudFallback ? this.cloudFallback.toAppEnv() : {}),
     };
     if (chatModelId) {
       env[keys.model] = chatModelId;

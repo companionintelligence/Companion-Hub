@@ -5,7 +5,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { ModelRegistryService } from './model-registry.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { OllamaBackend } from './backends/ollama.backend';
-import { CloudFallbackService } from './cloud-fallback.service';
+import { CloudFallbackService, isCloudFallbackAllowed } from './cloud-fallback.service';
 import { InferenceEndpointService } from './inference-endpoint.service';
 import { isCatalogModelInstalled, isServedModelForCatalog, trackedPullCounts } from './model-availability.util';
 import { appInferenceRequirements, checkModelRequirements, type AppInferenceRequirements } from './app-inference-requirements';
@@ -126,8 +126,9 @@ export class InferenceEnvResolver {
   async resolve(options?: InferenceEnvResolveOptions): Promise<StandardizedAiEnv> {
     const requirements = resolveRequirements(options);
     const appLabel = options?.appSlug || 'this app';
-    const cloudProviderEnv = this.cloudFallback.toAppEnv();
-    const cloudProviders = this.cloudFallback.getEnabledProviders();
+    const allowCloudFallback = isCloudFallbackAllowed();
+    const cloudProviderEnv = allowCloudFallback ? this.cloudFallback.toAppEnv() : {};
+    const cloudProviders = allowCloudFallback ? this.cloudFallback.getEnabledProviders() : [];
     const fallbackCloud = cloudProviders[0];
 
     const preferences = this.config.getInferencePreferences();

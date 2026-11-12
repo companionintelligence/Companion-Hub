@@ -275,21 +275,30 @@ describe('InferenceEnvResolver', () => {
       CI_CLOUD_OPENAI_BASE_URL: 'https://api.openai.com/v1',
       CI_CLOUD_OPENAI_MODEL: 'gpt-4o',
     });
-    const env = await service.resolve();
 
-    expect(env).toMatchObject({
-      CI_LLM_BASE_URL: 'https://api.openai.com/v1',
-      CI_LLM_API_KEY: 'sk-test',
-      CI_CHAT_MODEL: 'gpt-4o',
-      CI_INFERENCE_BACKEND: 'cloud',
-    });
-    expect(env.cloudProviderEnv).toEqual({
-      CI_CLOUD_OPENAI_API_KEY: 'sk-test',
-      CI_CLOUD_OPENAI_BASE_URL: 'https://api.openai.com/v1',
-      CI_CLOUD_OPENAI_MODEL: 'gpt-4o',
-    });
-    expect(env.CI_EMBEDDING_MODEL).toBeUndefined();
-    expect(env.OLLAMA_HOST).toBeUndefined();
+    // Fail-closed by default when CI_HUB_ALLOW_CLOUD_FALLBACK is not 'true'
+    expect(await service.resolve()).toEqual({});
+
+    process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+    try {
+      const env = await service.resolve();
+
+      expect(env).toMatchObject({
+        CI_LLM_BASE_URL: 'https://api.openai.com/v1',
+        CI_LLM_API_KEY: 'sk-test',
+        CI_CHAT_MODEL: 'gpt-4o',
+        CI_INFERENCE_BACKEND: 'cloud',
+      });
+      expect(env.cloudProviderEnv).toEqual({
+        CI_CLOUD_OPENAI_API_KEY: 'sk-test',
+        CI_CLOUD_OPENAI_BASE_URL: 'https://api.openai.com/v1',
+        CI_CLOUD_OPENAI_MODEL: 'gpt-4o',
+      });
+      expect(env.CI_EMBEDDING_MODEL).toBeUndefined();
+      expect(env.OLLAMA_HOST).toBeUndefined();
+    } finally {
+      delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+    }
   });
 
   it('keeps the local backend as primary and attaches every cloud provider', async () => {
@@ -308,16 +317,21 @@ describe('InferenceEnvResolver', () => {
       ANTHROPIC_API_KEY: 'sk-ant',
     });
 
-    const env = await service.resolve();
+    process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+    try {
+      const env = await service.resolve();
 
-    expect(env.CI_INFERENCE_BACKEND).toBe('ollama');
-    expect(env.CI_LLM_API_KEY).toBe('ollama');
-    expect(env.cloudProviderEnv).toEqual({
-      CI_CLOUD_ANTHROPIC_API_KEY: 'sk-ant',
-      CI_CLOUD_ANTHROPIC_BASE_URL: 'https://api.anthropic.com/v1',
-      CI_CLOUD_ANTHROPIC_MODEL: 'claude-opus-4',
-      ANTHROPIC_API_KEY: 'sk-ant',
-    });
+      expect(env.CI_INFERENCE_BACKEND).toBe('ollama');
+      expect(env.CI_LLM_API_KEY).toBe('ollama');
+      expect(env.cloudProviderEnv).toEqual({
+        CI_CLOUD_ANTHROPIC_API_KEY: 'sk-ant',
+        CI_CLOUD_ANTHROPIC_BASE_URL: 'https://api.anthropic.com/v1',
+        CI_CLOUD_ANTHROPIC_MODEL: 'claude-opus-4',
+        ANTHROPIC_API_KEY: 'sk-ant',
+      });
+    } finally {
+      delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+    }
   });
 
   it('prefers an installed recommended model over an unpulled higher-ranked one', async () => {
@@ -830,12 +844,17 @@ describe('InferenceEnvResolver', () => {
       cloudFallback.getEnabledProviders.mockReturnValue([provider]);
       cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-test' });
 
-      const env = await service.resolve();
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        const env = await service.resolve();
 
-      expect(env.CI_INFERENCE_BACKEND).toBe('ollama');
-      expect(env.CI_LLM_BASE_URL).toBe(`${OLLAMA_BASE_URL}/v1`);
-      // Cloud stays attached as a secondary; it just stops being primary.
-      expect(env.cloudProviderEnv).toEqual({ CI_CLOUD_OPENAI_API_KEY: 'sk-test' });
+        expect(env.CI_INFERENCE_BACKEND).toBe('ollama');
+        expect(env.CI_LLM_BASE_URL).toBe(`${OLLAMA_BASE_URL}/v1`);
+        // Cloud stays attached as a secondary; it just stops being primary.
+        expect(env.cloudProviderEnv).toEqual({ CI_CLOUD_OPENAI_API_KEY: 'sk-test' });
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
     });
 
     it('still routes the fallback backend through the pool when peers are connected', async () => {
@@ -858,10 +877,15 @@ describe('InferenceEnvResolver', () => {
       };
       cloudFallback.getEnabledProviders.mockReturnValue([provider]);
 
-      const env = await service.resolve();
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        const env = await service.resolve();
 
-      expect(env.CI_INFERENCE_BACKEND).toBe('cloud');
-      expect(env.CI_LLM_BASE_URL).toBe('https://api.openai.com/v1');
+        expect(env.CI_INFERENCE_BACKEND).toBe('cloud');
+        expect(env.CI_LLM_BASE_URL).toBe('https://api.openai.com/v1');
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
     });
   });
 

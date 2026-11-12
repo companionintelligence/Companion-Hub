@@ -45,6 +45,14 @@ export function speaksOpenAiCompletions(provider: CloudProviderType): boolean {
 }
 
 /**
+ * Automatic cloud fallback is disabled by default so raw memory/prompts never leave the appliance
+ * silently when local inference is down. Operators must explicitly opt in via CI_HUB_ALLOW_CLOUD_FALLBACK=true.
+ */
+export function isCloudFallbackAllowed(): boolean {
+  return process.env.CI_HUB_ALLOW_CLOUD_FALLBACK === 'true';
+}
+
+/**
  * A base URL as the log may show it: origin and path, so a missing or extra `/v1` stays visible. A user
  * name, password, query string or fragment in a base URL can hold a secret, so they are left out.
  */
