@@ -1052,6 +1052,7 @@ cihub fleet backends [--backends a,b] [--execute]      # what each node can run 
 cihub fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]  # what each node can run for inference, then install it
 cihub fleet backends --ollama-parallel 4 --ollama-keep-alive 24h [--ollama-context N] [--ollama-igpu on|off] [--ollama-max-loaded N] [--ollama-kv-cache f16|q8_0|q4_0] [--execute]  # Ollama's runtime env, one file, restart only on change
 cihub fleet backends --backends omlx|vllm|lemonade|ollama [--execute]  # install only an engine this machine can run
+cihub fleet backends --backends omlx-helper [--omlx-helper-version x.y.z] [--execute]  # oMLX's prefill helper on NVIDIA nodes, for a Mac running oMLX
 cihub fleet install [--user <acct>] [--cihub-binary <path>] [--pairing-gap <s>] [--execute]   # stand a Hub up on each node and register it
 cihub fleet update [--hub] [--ollama] [--gpu-probe] [--models a,b] [--execute]  # refresh the Hub image, pin Ollama, install the GPU probe timer, pull models
 cihub fleet update [--hub] [--models a,b|recommended] [--execute]  # refresh the Hub image, pull models (per node's own Hub with `recommended`)
@@ -1165,7 +1166,7 @@ all installed on. To act on some nodes only, pass `--nodes`.
 | `--concurrency <n>` | Parallel **probes**, 1–32 (default 4). The runners stay serialised regardless |
 | `--force` | `install`/`update` only: proceed on a node whose preflight said `block`. The finding is still printed, marked as overridden |
 | `--touches-boot` | `preflight`/`install`/`update`: rate the boot-recovery and grub-customizer findings as `block` rather than `warn`, as they are before anything that touches the kernel, initramfs or GRUB |
-| `--backends a,b` | `backends` only: from `ollama`, `omlx`, `vllm`, `lemonade`. Omit to plan every engine this machine can run |
+| `--backends a,b` | `backends` only: from `ollama`, `omlx`, `vllm`, `lemonade`, `omlx-helper`. Omit to plan every engine this machine can run, except `omlx-helper`, which runs only when named |
 | `--bind tailnet\|all\|local` | `backends` only: where Ollama listens (default `all` — `0.0.0.0` behind `ollama-tailnet-guard.service`, which admits the tailnet, loopback and the Docker bridges the Hub container arrives on; `tailnet` is the node's Tailscale IPv4 from `tailscale ip -4`). Written to one drop-in and read back after the restart — see [Ollama's bind](#ollamas-bind-one-file-read-back) |
 | `--data-dir <path>` | Where the Hub keeps runner venvs and model dirs on the **remote** machine (default `/var/lib/companion-hub`) |
 | `--code <code>` | `install` only: one Portal pairing code, which enrolls exactly one node |
@@ -1180,6 +1181,7 @@ all installed on. To act on some nodes only, pass `--nodes`.
 | `--to-majority` | `update --hub` only: pin every targeted node to the build most of the **whole roster** runs. Refused unless that is a strict majority — more than half of all rostered nodes, unknown ones included — and refused on a tie |
 | `--models a,b` | `update` only: pull these models on each node |
 | `--ollama` | `update` only: bring each node's Ollama to the pinned release via `ollama.com/install.sh`, confirmed at `/api/version` on the node's own bind. Nodes already there are left alone; a node with no Ollama is reported, not installed |
+| `--omlx-helper-version <x.y.z>` | `backends --backends omlx-helper` only: the `jundot/omlx-cuda-helper` tag a fresh helper gets, instead of the pin (`OMLX_HELPER_PINNED_VERSION` in `fleet-omlx-helper.ts`). `latest` is refused |
 | `--ollama-version <x.y.z>` | `backends`, `update --ollama`, `status`: use this exact release instead of the pin (`OLLAMA_PINNED_VERSION` in `fleet-ollama-version.ts`). `latest` is refused |
 | `--apps a,b` | `apps` only: from `hermes-agent`, `openclaw`. Omit for both |
 | `--endpoint pool\|local` | `apps` only: which endpoint the report is labelled for (default `pool`). The check itself is the same either way — see below |
@@ -1593,7 +1595,60 @@ leaves that node's daemon at N slots with its Hub stating nothing.
 
 #### llama-server is not a Hub backend
 
-The fleet does not install a separate llama-server. Ollama is how that engine ships. `--backends` accepts `ollama`, `omlx`, `vllm`, and `lemonade`. oMLX is Apple Silicon (`brew install jundot/omlx/omlx`, then `omlx start`). vLLM is NVIDIA only. Lemonade is AMD or NPU and stays operator-managed.
+The fleet does not install a separate llama-server. Ollama is how that engine ships. `--backends` accepts `ollama`, `omlx`, `vllm`, `lemonade`, and `omlx-helper`. oMLX is Apple Silicon (`brew install jundot/omlx/omlx`, then `omlx start`). vLLM is NVIDIA only. Lemonade is AMD or NPU and stays operator-managed. `omlx-helper` is not an engine; see the next section.
+
+#### oMLX's prefill helper on NVIDIA nodes
+
+oMLX 0.8.0 adds a Prefill Accelerator. A machine with NVIDIA GPUs runs the first layers of each long
+prompt for a Mac that serves the model, and the Mac runs the rest, decodes, and keeps the KV cache.
+Upstream measured prefill on a 64K prompt going from 352 to 1,879 tokens per second for Qwen3.8 27B on
+an M3 Ultra with two RTX A6000 cards over 2.5 GbE. Decode speed stays about the same. The NVIDIA side is
+`omlx-cuda-helper`, an image from [jundot/omlx](https://github.com/jundot/omlx/tree/main/apps/omlx-cuda-helper)
+(Apache-2.0). It serves no OpenAI API, so the Hub never routes requests to it.
+
+`--backends omlx-helper` runs upstream's command on each node that can use it, with the tag pinned
+(`0.1.3`, the helper published with oMLX 0.8.0rc1) and a label that marks the container as this CLI's:
+
+```bash
+docker run -d --name omlx-helper --label ci-hub.fleet-backend=omlx-helper --restart unless-stopped \
+  --gpus all --network host -v omlx-helper:/data jundot/omlx-cuda-helper:0.1.3
+```
+
+- **Opt-in.** A run that does not name `omlx-helper` never plans it. It pulls about 2.3 GB, and it
+  listens on every interface.
+- **Gates.** The node needs Linux; an NVIDIA driver of 580 or newer, because the image is CUDA 13; an
+  Ampere or newer GPU (compute capability 8.0, judged by the lowest card) or a GB10; Docker that the
+  SSH account can use; and the NVIDIA Container Toolkit, whose `nvidia-container-runtime-hook`
+  `docker run --gpus` needs. The container checks neither the driver nor the card at start, so a node
+  that fails either would install, pair, and then fail the first long prompt.
+- **Adoption.** A helper that already answers on `:8850` is adopted as it is, whatever its version,
+  and the plan line names that version beside the pin. To move a node to a new pin, run
+  `docker rm -f omlx-helper` on it and run `backends` again. The `omlx-helper` volume keeps the
+  helper's identity and its pairings.
+- **Other people's containers.** A stopped `omlx-helper` container without the label is left alone,
+  and the node is reported as skipped. A stopped one with the label is replaced.
+- **Failures.** If the helper does not answer on `:8850` within 90 seconds, or restarts, the run
+  prints its last log lines and stops the container so it does not restart in a loop.
+- **Another tag.** `--omlx-helper-version x.y.z` installs it. The Mac checks the helper per model
+  family, not per oMLX version, and names the side to update when they disagree.
+
+After the install, pair the helper from the Mac:
+
+1. In oMLX 0.8.0 or later, turn on **Global Settings > Advanced > Enable Distributed Inference** and
+   restart oMLX.
+2. In the Cluster tab, press **Pair** on the node. The helper prints `PAIRING CODE 123456` in its log.
+   Read it on the node with `docker logs omlx-helper 2>&1 | grep 'PAIRING CODE'` and type it on the Mac
+   within 10 minutes.
+3. In the model's settings, under **Acceleration**, choose the node as **Prefill Accelerator**.
+
+The helper uses host networking so that the Mac's Cluster tab can find it over mDNS. It listens on
+`:8850` (discovery and pairing), `:8851` (control), and `:8852` (prefill data) on every interface, and
+its pairing exchange is plain HTTP, so run it only on a network you trust. If ufw is active on the
+node, allow the Mac to reach those three TCP ports and UDP 5353 for mDNS. The link sets the speedup:
+upstream's checks warn below 5 GbE.
+
+On an NVIDIA node, the oMLX section of **Settings → AI** says whether the helper is running, and shows
+the command to start it or to read its pairing code.
 
 #### Firewall rules for the Hub's engine probes
 

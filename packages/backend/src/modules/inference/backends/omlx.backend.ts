@@ -44,6 +44,78 @@ export const OMLX_NOT_APPLE_SILICON_ERROR =
   'To use an oMLX server on another machine, set its URL in Settings → AI or OMLX_URL.';
 
 /**
+ * oMLX's Prefill Accelerator helper for NVIDIA GPUs (oMLX 0.8.0 and later). A Linux machine with
+ * NVIDIA GPUs runs the first layers of each long prompt for a Mac that serves the model; the Mac runs
+ * the rest, decodes, and keeps the KV cache. The NVIDIA half is the `jundot/omlx-cuda-helper` image,
+ * started with this command from jundot/omlx's 0.8.0rc1 release notes. It serves no OpenAI API, so
+ * the Hub never routes to it: on an NVIDIA host, the oMLX status only says whether it runs and how
+ * to start or pair it. `cihub fleet backends --backends omlx-helper` installs it on fleet nodes.
+ */
+export const OMLX_CUDA_HELPER_RUN_COMMAND =
+  'docker run -d --name omlx-helper --restart unless-stopped --gpus all --network host -v omlx-helper:/data jundot/omlx-cuda-helper';
+
+/** The helper prints `PAIRING CODE 123456` in its log once a Mac presses Pair; the code expires in ten minutes. */
+export const OMLX_CUDA_HELPER_PAIRING_COMMAND = "docker logs omlx-helper 2>&1 | grep 'PAIRING CODE'";
+
+/** Discovery and pairing. `GET /api/cluster/node_id` there is what the Mac's Cluster tab reads. */
+export const OMLX_CUDA_HELPER_HTTP_PORT = 8850;
+
+export interface OmlxCudaHelperStatus {
+  running: boolean;
+  /** The name the Mac's Cluster tab shows for this host. */
+  name?: string;
+  version?: string;
+  /** The cards, as the helper names them: `2x NVIDIA RTX A6000`. */
+  chip?: string;
+  /** GPU memory across those cards, in whole GiB. */
+  gpuMemoryGb?: number;
+}
+
+/**
+ * The helper's identity, from `GET /api/cluster/node_id` (`identity()` in jundot/omlx
+ * apps/omlx-cuda-helper/omlx_cuda_helper/discovery.py). `caps.backends` of `["cuda"]` is what sets it
+ * apart from a Mac's oMLX on the same route. Null for any other body.
+ */
+export function readOmlxCudaHelperIdentity(body: unknown): Omit<OmlxCudaHelperStatus, 'running'> | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const { node_id: nodeId, version, friendly_name: name, caps } = body as Record<string, unknown>;
+  if (typeof nodeId !== 'string' || !caps || typeof caps !== 'object' || Array.isArray(caps)) return null;
+  const { backends, chip, ram_gb: gpuMemoryGb } = caps as Record<string, unknown>;
+  if (!Array.isArray(backends) || !backends.includes('cuda')) return null;
+  return {
+    ...(typeof name === 'string' && name ? { name } : {}),
+    ...(typeof version === 'string' && version ? { version } : {}),
+    ...(typeof chip === 'string' && chip ? { chip } : {}),
+    ...(typeof gpuMemoryGb === 'number' && Number.isFinite(gpuMemoryGb) ? { gpuMemoryGb } : {}),
+  };
+}
+
+/**
+ * What the oMLX status says on an NVIDIA host, where oMLX itself cannot run. The probe error already
+ * says that oMLX needs Apple Silicon, so this starts at what the host can do instead.
+ */
+export function buildOmlxCudaHelperRemediation(helper: OmlxCudaHelperStatus): { command: string; hint: string } {
+  if (helper.running) {
+    const about = [helper.version && `helper ${helper.version}`, helper.chip].filter(Boolean).join(', ');
+    return {
+      command: OMLX_CUDA_HELPER_PAIRING_COMMAND,
+      hint:
+        `oMLX's Prefill Accelerator helper is running on this host${about ? ` (${about})` : ''}. ` +
+        `On a Mac running oMLX 0.8.0 or later with Distributed Inference on, press Pair on ${helper.name ? `"${helper.name}"` : 'this host'} in the Cluster tab, ` +
+        'then type the code that the command below prints.',
+    };
+  }
+  return {
+    command: OMLX_CUDA_HELPER_RUN_COMMAND,
+    hint:
+      "This host's NVIDIA GPU can run oMLX's Prefill Accelerator helper instead, which speeds up long prompts for a Mac running oMLX 0.8.0 or later. " +
+      'It needs NVIDIA driver 580 or newer, an Ampere or newer GPU or a DGX Spark, and the NVIDIA Container Toolkit. ' +
+      "Start it with the command below, then press Pair on this host in the Mac's oMLX Cluster tab and type the code that `docker logs omlx-helper` prints. " +
+      'Its pairing runs over plain HTTP, so run it only on a network you trust.',
+  };
+}
+
+/**
  * oMLX's own `GET /health` body: `status` "healthy" (or "loading", with a 503, while pinned models
  * preload) beside an `engine_pool` key, per `health()` in jundot/omlx server.py from v0.2.10 on.
  * It identifies oMLX where `/v1/models` cannot: that list has no `owned_by` to read until a model
@@ -150,6 +222,24 @@ export class OmlxBackend implements InferenceBackend {
       };
     }
     return { running: true, healthy: true, modelsLoaded: openAiModelIds(body) };
+  }
+
+  /**
+   * oMLX's CUDA helper on this host, or null on a host whose GPU is not NVIDIA, which is never
+   * probed. Asked only by the oMLX status route, never per request: the helper serves no model, and
+   * a firewall that drops the probe would otherwise cost every pooled request this timeout.
+   */
+  async cudaHelperStatus(): Promise<OmlxCudaHelperStatus | null> {
+    const profile = await this.hardwareInspector.getProfile().catch(() => null);
+    if (profile?.gpu.vendor !== 'nvidia') return null;
+    const host = detectHubContainer() ? 'host.docker.internal' : 'localhost';
+    try {
+      const res = await axios.get(`http://${host}:${OMLX_CUDA_HELPER_HTTP_PORT}/api/cluster/node_id`, { timeout: 3000 });
+      const identity = readOmlxCudaHelperIdentity(res.data);
+      return identity ? { running: true, ...identity } : { running: false };
+    } catch {
+      return { running: false };
+    }
   }
 
   /** From {@link healthCheck}, so the model list and the status agree on whose server this is. */
