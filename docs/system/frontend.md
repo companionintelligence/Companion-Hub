@@ -141,6 +141,19 @@ The iOS/Android thin client signs into the Portal with PKCE and a `cihub://auth/
 
 Tests: `packages/frontend/src/modules/mobile-connect/oidc.test.ts`, `connect-page.test.tsx`
 
+## Mobile home-screen widget
+
+The mobile shell has a small native launcher widget alongside the React dashboard. iOS declares
+the `CompanionHubWidgets` WidgetKit extension in `packages/mobile/src-tauri/gen/apple/`; Android
+declares `HubQuickActionsWidgetProvider` in `packages/mobile/src-tauri/gen/android/`. Both expose
+the fixed `cihub://intent/home`, `cihub://intent/connect`, `cihub://intent/switch`, and
+`cihub://intent/settings` destinations and hand them to the app's existing deep-link router.
+
+The widget contains no live Hub status or account data. It is deliberately a quick-action surface;
+CPU, memory, container and app state stay in the authenticated dashboard. The Android unit tests
+pin the supported destination list and reject arbitrary actions at
+`packages/mobile/src-tauri/gen/android/app/src/test/java/computer/ci/app/hub/HubQuickActionsWidgetTest.kt`.
+
 ## Onboarding inference setup
 
 `AiSetupStep` owns Step 3 of the FTUE: one “Set up inference” panel contains the backend choice,

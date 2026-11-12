@@ -24,7 +24,7 @@
 				<string>cihub</string>
 			</array>
 			<key>CFBundleURLName</key>
-			<string>cihub</string>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER).cihub</string>
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
@@ -39,11 +39,9 @@
 		<true/>
 		<key>NSExceptionDomains</key>
 		<dict>
-			<key>lvh.me</key>
+			<key>127.0.0.1</key>
 			<dict>
 				<key>NSExceptionAllowsInsecureHTTPLoads</key>
-				<true/>
-				<key>NSIncludesSubdomains</key>
 				<true/>
 			</dict>
 			<key>localhost</key>
@@ -51,9 +49,11 @@
 				<key>NSExceptionAllowsInsecureHTTPLoads</key>
 				<true/>
 			</dict>
-			<key>127.0.0.1</key>
+			<key>lvh.me</key>
 			<dict>
 				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
 				<true/>
 			</dict>
 		</dict>

@@ -2,6 +2,8 @@
 
 Rolling notes on the CI-Hub agent workflow. See [session worksheets](sessions/README.md) for context.
 
+> 2026-11-11 — mobile-widgets-implementation: Added and emulator-checked fixed Hub quick actions; recorded Tauri build and generated Xcode path pitfalls.
+
 > 2026-11-01 — qa-procfs-fast-readiness: Require IPv4 published reachability and an IPv4 wildcard/container listener on known protocol ports, preserve HTTP probes elsewhere, and keep unverified IPv6-only binds unknown.
 
 > 2026-11-01 — qa-procfs-probe: Read Linux container sockets through trusted host procfs, constrain SQL Server image evidence, and test unsupported-platform uncertainty.

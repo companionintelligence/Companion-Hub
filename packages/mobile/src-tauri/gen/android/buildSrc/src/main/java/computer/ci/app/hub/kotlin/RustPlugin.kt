@@ -24,6 +24,7 @@ open class RustPlugin : Plugin<Project> {
         val archList = (findProperty("archList") as? String)?.split(',') ?: defaultArchList
 
         val targetsList = (findProperty("targetList") as? String)?.split(',') ?: listOf("aarch64", "armv7", "i686", "x86_64")
+        val androidProjectDir = project.projectDir.absolutePath
 
         extensions.configure<ApplicationExtension> {
             @Suppress("UnstableApiUsage")
@@ -70,6 +71,7 @@ open class RustPlugin : Plugin<Project> {
                         group = TASK_GROUP
                         description = "Build dynamic library in $profile mode for $targetArch"
                         rootDirRel = config.rootDirRel
+                        projectDir = androidProjectDir
                         target = targetName
                         release = profile == "release"
                     }

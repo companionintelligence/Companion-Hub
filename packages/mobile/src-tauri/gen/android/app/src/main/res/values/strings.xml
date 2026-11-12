@@ -2,4 +2,11 @@
     <string name="app_name">Companion Hub</string>
     <string name="main_activity_title">Companion Hub</string>
     <string name="launch_loading">Loading</string>
+    <string name="widget_hub_label">Hub actions</string>
+    <string name="widget_hub_actions_header">QUICK ACTIONS</string>
+    <string name="widget_hub_description">Open or connect to a Hub, switch Hubs, or open settings.</string>
+    <string name="widget_hub_open">Open</string>
+    <string name="widget_hub_connect">Connect a Hub</string>
+    <string name="widget_hub_switch">Switch Hub</string>
+    <string name="widget_hub_settings">Hub settings</string>
 </resources>
