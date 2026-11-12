@@ -3239,7 +3239,12 @@ export type SystemResourcesResponse = SystemResourcesResponses[keyof SystemResou
 export type HostTelemetryHistoryData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Host CPU and memory over this many minutes, averaged to at most 360 points. Without it, the newest 288 raw samples.
+         */
+        minutes?: number;
+    };
     url: '/api/system/telemetry';
 };
 
@@ -6333,6 +6338,100 @@ export type WakeData = {
 
 export type WakeResponses = {
     201: unknown;
+};
+
+export type ListTrainingJobsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/training/jobs';
+};
+
+export type ListTrainingJobsResponses = {
+    200: unknown;
+};
+
+export type SubmitTrainingJobData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/training/jobs';
+};
+
+export type SubmitTrainingJobResponses = {
+    202: unknown;
+};
+
+export type GetTrainingJobData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/training/jobs/{id}';
+};
+
+export type GetTrainingJobResponses = {
+    200: unknown;
+};
+
+export type CancelTrainingJobData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/training/jobs/{id}/cancel';
+};
+
+export type CancelTrainingJobResponses = {
+    201: unknown;
+};
+
+export type ListTrainingPeersData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/training/pool/peers';
+};
+
+export type ListTrainingPeersResponses = {
+    200: unknown;
+};
+
+export type GetPeerCapabilitiesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/training/pool/capabilities';
+};
+
+export type GetPeerCapabilitiesResponses = {
+    200: unknown;
+};
+
+export type ReceivePeerJobData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/training/pool/jobs';
+};
+
+export type ReceivePeerJobResponses = {
+    202: unknown;
+};
+
+export type GetPeerJobStatusData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/training/pool/jobs/{id}';
+};
+
+export type GetPeerJobStatusResponses = {
+    200: unknown;
 };
 
 export type StartData = {

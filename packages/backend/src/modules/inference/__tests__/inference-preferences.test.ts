@@ -347,8 +347,17 @@ describe('InferenceController — preferences', () => {
     expect(result).toEqual({
       backend: 'ollama',
       discoveryUnavailable: false,
-      models: [{ id: 'mistral:latest', name: 'mistral:latest', state: 'available', resident: false }],
+      models: [{ id: 'mistral:latest', name: 'mistral:latest', state: 'available', resident: false, sizeBytes: null }],
     });
+  });
+
+  it('passes on the size the engine reports for a model on disk', async () => {
+    ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true } as never);
+    ollamaBackend.listModels.mockResolvedValue([{ id: 'qwen3.5:9b', name: 'qwen3.5:9b', size: 6_550_825_550, loaded: true }]);
+
+    const result = await controller.getRuntimeModels({ backend: 'ollama' } as never);
+
+    expect(result.models).toEqual([expect.objectContaining({ id: 'qwen3.5:9b', sizeBytes: 6_550_825_550 })]);
   });
 
   it('marks a runtime model resident only when the engine says it is loaded', async () => {
@@ -366,8 +375,8 @@ describe('InferenceController — preferences', () => {
     const result = await controller.getRuntimeModels({ backend: 'ollama' });
 
     expect(result.models).toEqual([
-      { id: 'mistral:latest', name: 'mistral:latest', state: 'available', resident: true },
-      { id: 'other:latest', name: 'other:latest', state: 'available', resident: false },
+      { id: 'mistral:latest', name: 'mistral:latest', state: 'available', resident: true, sizeBytes: null },
+      { id: 'other:latest', name: 'other:latest', state: 'available', resident: false, sizeBytes: null },
     ]);
   });
 

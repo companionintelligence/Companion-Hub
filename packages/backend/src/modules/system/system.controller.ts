@@ -1,7 +1,7 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { DockerService } from '@/modules/docker/docker.service';
-import { ApiResponse } from '@nestjs/swagger';
-import { Controller, Get, Res, UseGuards } from '@nestjs/common';
+import { ApiQuery, ApiResponse } from '@nestjs/swagger';
+import { Controller, Get, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { pipeline } from 'node:stream/promises';
 import { AuthGuard } from '../auth/auth.guard';
@@ -47,8 +47,21 @@ export class SystemController {
 
   @UseGuards(AuthGuard)
   @Get('/telemetry')
+  @ApiQuery({
+    name: 'minutes',
+    required: false,
+    type: Number,
+    description: 'Host CPU and memory over this many minutes, averaged to at most 360 points. Without it, the newest 288 raw samples.',
+  })
   @ApiResponse({ type: HostTelemetryHistoryDto })
-  async hostTelemetryHistory() {
+  async hostTelemetryHistory(@Query('minutes') minutes?: string) {
+    if (minutes !== undefined && minutes !== '') {
+      const window = await this.hostTelemetry.getWindow(Number(minutes));
+      return HostTelemetryHistoryDto.parse(
+        { samples: window.points, minutes: window.minutes, bucketSeconds: window.bucketSeconds },
+        { reportOnly: true },
+      );
+    }
     const samples = await this.hostTelemetry.getRecentSamples();
     return HostTelemetryHistoryDto.parse({ samples }, { reportOnly: true });
   }

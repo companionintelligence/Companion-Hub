@@ -1169,7 +1169,17 @@
     "/api/system/telemetry": {
       "get": {
         "operationId": "hostTelemetryHistory",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "minutes",
+            "required": false,
+            "in": "query",
+            "description": "Host CPU and memory over this many minutes, averaged to at most 360 points. Without it, the newest 288 raw samples.",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "",
@@ -6852,6 +6862,143 @@
         },
         "tags": [
           "AgentNotify"
+        ]
+      }
+    },
+    "/api/training/jobs": {
+      "post": {
+        "operationId": "submitTrainingJob",
+        "parameters": [],
+        "responses": {
+          "202": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      },
+      "get": {
+        "operationId": "listTrainingJobs",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/training/jobs/{id}": {
+      "get": {
+        "operationId": "getTrainingJob",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/training/jobs/{id}/cancel": {
+      "post": {
+        "operationId": "cancelTrainingJob",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/training/pool/peers": {
+      "get": {
+        "operationId": "listTrainingPeers",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/training/pool/capabilities": {
+      "get": {
+        "operationId": "getPeerCapabilities",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/training/pool/jobs": {
+      "post": {
+        "operationId": "receivePeerJob",
+        "parameters": [],
+        "responses": {
+          "202": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/training/pool/jobs/{id}": {
+      "get": {
+        "operationId": "getPeerJobStatus",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
         ]
       }
     },
