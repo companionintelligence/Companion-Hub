@@ -1169,7 +1169,17 @@
     "/api/system/telemetry": {
       "get": {
         "operationId": "hostTelemetryHistory",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "minutes",
+            "required": false,
+            "in": "query",
+            "description": "Host CPU and memory over this many minutes, averaged to at most 360 points. Without it, the newest 288 raw samples.",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "",

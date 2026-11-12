@@ -46,20 +46,17 @@
  *    past the spring's settle time.
  *
  * 4. RESOURCE MONITOR — NO LONGER SHOT, and the reason is worth keeping.
- *    modules/system/pages/resource-monitor-page.tsx sums its totals from live
- *    container stats (app-runtime-monitor.service.ts -> dockerService
- *    .getAppRuntimeStats). The stage below seeds DB rows only, with no Docker
- *    install in flight, so every column reads 0.0% / 0 B / 0 containers and the
- *    chart falls back to "Collecting enough samples to draw the CPU history
- *    chart." (`history.length < 2`). Its `waitFor` was the <h1>, so nothing
- *    stopped the empty shot from being taken under a caption promising live
- *    per-app CPU and memory. The scene was cut from storyboard.json rather than
- *    shipped as zeros. To bring it back you need at least one genuinely running
- *    installed app during the pass — and then `RESOURCE_MONITOR_LAST_SAMPLED`
- *    ("Last sampled {{time}}") is rendered from the SERVER's timestamp, so
- *    `context.clock.install` will not freeze it and the shot needs
- *    `mask: ["text=Last sampled"]` plus a mask over the volatile CPU/memory
- *    columns.
+ *    The Resources page (modules/system/v2/resources-page.tsx) reads live
+ *    container stats for its Apps tab (app-runtime-monitor.service.ts ->
+ *    dockerService.getAppRuntimeStats) and the host telemetry table for its CPU
+ *    graph. The stage below seeds DB rows only, with no Docker install in flight
+ *    and no telemetry history, so the shot would show an empty Apps table and a
+ *    CPU card still collecting samples under a caption promising live per-app
+ *    CPU and memory. The scene was cut from storyboard.json rather than shipped
+ *    as zeros. To bring it back you need at least one running installed app and
+ *    a few minutes of telemetry during the pass, plus a mask over the volatile
+ *    CPU and memory figures, which `context.clock.install` does not freeze
+ *    because they come from the server.
  *
  * 5. DEVICE ID — the device-registration page prints the Hub's device id.
  *    HANDLED: masked via `text=Device ID`. On the E2E stage it is pinned to

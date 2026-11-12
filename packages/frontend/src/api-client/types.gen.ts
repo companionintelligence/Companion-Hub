@@ -3275,7 +3275,12 @@ export type SystemResourcesResponse = SystemResourcesResponses[keyof SystemResou
 export type HostTelemetryHistoryData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Host CPU and memory over this many minutes, averaged to at most 360 points. Without it, the newest 288 raw samples.
+         */
+        minutes?: number;
+    };
     url: '/api/system/telemetry';
 };
 

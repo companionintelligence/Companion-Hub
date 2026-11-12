@@ -49,7 +49,7 @@ export default [
 
     // Settings route
     ...prefix('settings', [index('./modules/settings/pages/settings-page.tsx', { id: 'settings' })]),
-    route('resource-monitor', './modules/system/pages/resource-monitor-page.tsx', { id: 'resource-monitor' }),
+    route('resource-monitor', './modules/system/v2/resources-page.tsx', { id: 'resource-monitor' }),
     // Inside the signed-in layout so a page that doesn't exist keeps the Hub's header and navigation.
     // A visitor who isn't signed in gets what the layout gives them: sign-in, or the guest dashboard.
     route('*', './routes/not-found.tsx'),

@@ -9,7 +9,7 @@ import { settingsReadAction } from '@/core/portal/local-app-reads';
 import { AuthGuard } from '../auth/auth.guard';
 import { GuestDashboardGuard } from '../auth/guest-dashboard.guard';
 import { ObservabilityRead, ObservabilityReadGuard } from '../auth/observability-read.guard';
-import { AppRuntimeMonitorService } from './app-runtime-monitor.service';
+import { AppRuntimeMonitorService, HUB_RUNTIME_URN } from './app-runtime-monitor.service';
 import { appStartingPageHeaders, appStartingPageStatus, renderAppStartingPage } from './app-starting-page';
 import { AppStartingPageService } from './app-starting-page.service';
 import { AppsReadService } from './apps-read.service';
@@ -128,12 +128,21 @@ export class AppsController {
     return GetRandomPortDto.parse({ port }, { reportOnly: true });
   }
 
+  /**
+   * Every app's CPU, memory and containers, filtered to the apps this session may view, as
+   * `GET /apps/installed` is. A member who sees two apps on Home sees the same two here, in the
+   * snapshot and in every history sample. The Hub's own row ({@link HUB_RUNTIME_URN}) is not an app
+   * anyone holds a grant on, so it stays for everyone.
+   */
   @Get('resource-monitor')
   @UseGuards(AuthGuard)
   @ApiResponse({ type: AppRuntimeMonitorDto })
-  async getResourceMonitor() {
+  async getResourceMonitor(@Req() req: Request) {
     const snapshot = await this.runtimeMonitor.getRuntimeMonitorSnapshot();
-    return AppRuntimeMonitorDto.parse(snapshot, { reportOnly: true });
+    const apps = await this.whois.filterSessionByView(req, snapshot.apps, (app) => (app.appUrn === HUB_RUNTIME_URN ? undefined : app.appUrn), 'hub');
+    const visible = new Set(apps.map((app) => app.appUrn));
+    const history = snapshot.history.map((sample) => ({ ...sample, apps: sample.apps.filter((app) => visible.has(app.appUrn)) }));
+    return AppRuntimeMonitorDto.parse({ ...snapshot, apps, history }, { reportOnly: true });
   }
 
   /**

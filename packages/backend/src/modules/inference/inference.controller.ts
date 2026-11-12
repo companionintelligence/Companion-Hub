@@ -469,6 +469,9 @@ export class InferenceController {
          */
         state: model.loaded ? 'available' : 'unknown',
         resident: residentIds.has(model.id),
+        // What the engine says the model takes on disk. An engine that does not say reports 0, which is
+        // not a size, so it is sent as null for the page to show as unknown.
+        sizeBytes: model.size > 0 ? model.size : null,
       })),
     };
   }
