@@ -17,16 +17,23 @@ import { formatAgo, formatDuration, formatTokens } from './format';
  * top, the log below, newest first. What the old page explained in paragraphs is behind the "?"
  * beside each title.
  *
- * Where a request came from and where it ran are two columns because they are two facts. A row the
- * Hub logged as `inbound` was SENT here by the Hub its `node` names and served here; an `outbound`
- * row started here and ran on its `node` (`local` for this Hub, nothing when no Hub took it).
+ * A row the Hub logged as `inbound` was sent here by the Hub its `node` names and ran here. An
+ * `outbound` row started here and ran on its `node`: `local` for this Hub, a peer's address, or
+ * nothing when no Hub took it. Nearly every row runs on this Hub, so there is no "served by" column:
+ * the Result cell names the other Hub on the rare row that ran on one.
  */
 
 type Tone = 'ok' | 'bad' | 'wait' | 'muted';
 
-function resultOf(entry: RoutingLogEntry, t: (key: string, vars?: Record<string, unknown>) => string): { label: string; tone: Tone } {
-  if (entry.outcome === 'served') return { label: t('RESOURCES_RESULT_SERVED'), tone: 'ok' };
-  if (entry.outcome === 'pending') return { label: t('RESOURCES_RESULT_WORKING'), tone: 'wait' };
+function resultOf(
+  entry: RoutingLogEntry,
+  ranOn: string | null,
+  t: (key: string, vars?: Record<string, unknown>) => string,
+): { label: string; tone: Tone } {
+  if (entry.outcome === 'served')
+    return { label: ranOn ? t('RESOURCES_RESULT_SERVED_BY', { hub: ranOn }) : t('RESOURCES_RESULT_SERVED'), tone: 'ok' };
+  if (entry.outcome === 'pending')
+    return { label: ranOn ? t('RESOURCES_RESULT_WORKING_ON', { hub: ranOn }) : t('RESOURCES_RESULT_WORKING'), tone: 'wait' };
   if (entry.clientClosed) return { label: t('RESOURCES_RESULT_CALLER_LEFT'), tone: 'muted' };
   if (entry.requestError?.basis === 'node') return { label: t('RESOURCES_RESULT_CUT_OFF'), tone: 'bad' };
   return { label: entry.reason ? t('RESOURCES_RESULT_FAILED_BECAUSE', { reason: entry.reason }) : t('RESOURCES_RESULT_FAILED'), tone: 'bad' };
@@ -34,11 +41,13 @@ function resultOf(entry: RoutingLogEntry, t: (key: string, vars?: Record<string,
 
 const TONE: Record<Tone, string> = { ok: 'bg-success', bad: 'bg-destructive', wait: 'bg-warning', muted: 'bg-muted-foreground' };
 
-/** Where a row came from and where it ran, as the names this page uses for Hubs. */
-export function requestRoute(entry: RoutingLogEntry, hubName: (node: string) => string, thisHub: string, nobody: string) {
-  if (entry.direction === 'inbound') return { from: entry.node ? hubName(entry.node) : nobody, servedBy: thisHub };
-  const node = entry.node;
-  return { from: thisHub, servedBy: node ? (node === 'local' ? thisHub : hubName(node)) : nobody };
+/**
+ * Where a row came from, and the other Hub it ran on when that wasn't this one, as the names this
+ * page uses for Hubs.
+ */
+export function requestRoute(entry: RoutingLogEntry, hubName: (node: string) => string, thisHub: string): { from: string; ranOn: string | null } {
+  if (entry.direction === 'inbound') return { from: entry.node ? hubName(entry.node) : '—', ranOn: null };
+  return { from: thisHub, ranOn: entry.node && entry.node !== 'local' ? hubName(entry.node) : null };
 }
 
 function Figure({ label, value, tone }: { label: string; value: string; tone?: 'bad' }) {
@@ -73,7 +82,6 @@ export function RequestsTab({
   const keys = routingLogKeys(entries);
   const bars = buckets.map((b) => ({ at: b.at, ok: b.served + b.pending, bad: b.failed }));
   const thisHub = t('RESOURCES_THIS_HUB');
-  const nobody = t('RESOURCES_NO_HUB');
 
   return (
     <div className="space-y-4">
@@ -133,8 +141,7 @@ export function RequestsTab({
                 <TableRow className="hover:bg-transparent">
                   <TableHead className="pl-4 sm:pl-6">{t('RESOURCES_WHEN')}</TableHead>
                   <TableHead>{t('RESOURCES_MODEL')}</TableHead>
-                  <TableHead className="hidden md:table-cell">{t('RESOURCES_FROM')}</TableHead>
-                  <TableHead className="hidden sm:table-cell">{t('RESOURCES_SERVED_BY')}</TableHead>
+                  <TableHead className="hidden sm:table-cell">{t('RESOURCES_FROM')}</TableHead>
                   <TableHead className="hidden text-right lg:table-cell">{t('RESOURCES_PROMPT')}</TableHead>
                   <TableHead className="hidden text-right sm:table-cell">{t('RESOURCES_FIRST_REPLY')}</TableHead>
                   <TableHead className="pr-4 sm:pr-6">{t('RESOURCES_RESULT')}</TableHead>
@@ -142,15 +149,14 @@ export function RequestsTab({
               </TableHeader>
               <TableBody>
                 {shown.map((entry, index) => {
-                  const result = resultOf(entry, t);
-                  const route = requestRoute(entry, hubName, thisHub, nobody);
+                  const route = requestRoute(entry, hubName, thisHub);
+                  const result = resultOf(entry, route.ranOn, t);
                   const prompt = estimatedPromptTokens(entry);
                   return (
                     <TableRow key={keys[index]} data-testid="resources-request-row">
                       <TableCell className="py-2.5 pl-4 whitespace-nowrap text-muted-foreground sm:pl-6">{formatAgo(entry.at, now, t)}</TableCell>
                       <TableCell className="max-w-[12rem] truncate py-2.5 font-medium">{entry.model ?? '—'}</TableCell>
-                      <TableCell className="hidden py-2.5 md:table-cell">{route.from}</TableCell>
-                      <TableCell className="hidden py-2.5 sm:table-cell">{route.servedBy}</TableCell>
+                      <TableCell className="hidden py-2.5 sm:table-cell">{route.from}</TableCell>
                       <TableCell className="hidden py-2.5 text-right tabular-nums text-muted-foreground lg:table-cell">
                         {prompt ? t('RESOURCES_TOKENS', { value: formatTokens(prompt) }) : '—'}
                       </TableCell>

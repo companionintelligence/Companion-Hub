@@ -1,11 +1,10 @@
 import { HintText } from '@/components/ui/field-hint/field-hint';
 import { cn } from '@/lib/utils';
 import type { ReactNode } from 'react';
-import { useTranslation } from 'react-i18next';
 
 /*
- * Dense read-out primitives, shared by the Network settings tab and the resource
- * dashboard.
+ * Dense read-out primitives for the Network and AI settings tabs. The Resources page's Apps table
+ * borrows the sparkline.
  *
  * The idiom is the fleet-QA dashboard's: a value is large and a label is small,
  *  and quiet, so a glance reads the numbers and only a second look reads
@@ -325,217 +324,20 @@ export const StackedBar = ({ segments, className }: { segments: { label: string;
   );
 };
 
-/**
- * A watched count over time, drawn as steps and filled to the baseline.
- *
- * STEPS, NEVER A SMOOTHED LINE, and that is the whole reason this exists beside `Sparkline`.
- * Each point is one poll; between two polls the Hub was not observed at all. A diagonal joining
- * 0 to 3 draws two intermediate request counts that were never measured, and on a page whose job
- * is to say what the pool is doing, a drawn value nothing measured is the failure mode. A step
- * holds the last observation until the next one replaces it, which is exactly what was known.
- *
- * `null` is a GAP, not a zero: the poll landed and this node was not in it. The path breaks and
- * the fill stops, so an absent node reads as absent rather than as idle.
- *
- * The axis is passed in rather than derived from the series, so every card in a grid shares one
- * scale and two cards can be compared by height.
- */
-export const StepAreaChart = ({
-  points,
-  max,
-  tone = 'ok',
-  height = 96,
-  label,
-  className,
-  variant = 'panel',
-}: {
-  points: (number | null)[];
-  max: number;
-  tone?: Tone;
-  height?: number;
-  label?: string;
-  className?: string;
-  /**
-   * `'row'` is the same chart at list scale — one per workload, stacked, 38px tall.
-   *
-   * Gridlines, a card ground and a border are legible at 84px and are pure noise at 38, where
-   * they out-weigh the series they are supposed to frame. What `'row'` does NOT drop is the
-   * baseline or the fill: the baseline is what makes a low value readable as low rather than as
-   * a line floating in a box, and the fill is what separates a measured run from a gap.
-   */
-  variant?: 'panel' | 'row';
-}) => {
-  const width = 480;
-  const ceiling = max > 0 ? max : 1;
-  const observed = points.filter((point): point is number => point !== null && Number.isFinite(point));
-
-  // One observation is a reading, not a trend — but it is still a fact, so it is drawn as a
-  // single step rather than withheld. Zero observations has nothing to draw at all.
-  if (observed.length === 0) {
-    // Dashed means WAITING FOR SAMPLES and nothing else on this page — see the coverage tile,
-    // which deliberately refuses the same border because "never built" is not "not yet observed".
-    // At row scale a dashed box beside four drawn rows reads as broken rather than as empty, so
-    // the row variant states the same fact with a plain empty track.
-    return (
-      <div
-        className={cn(
-          variant === 'row' ? 'w-full rounded-sm bg-muted/20' : 'h-[96px] w-full rounded-md border border-dashed border-border/70 bg-muted/20',
-          className,
-        )}
-        style={{ height }}
-      />
-    );
-  }
-
-  // A single observation cannot span an interval, so the axis always reserves at least two slots.
-  // One reading then fills half the box rather than all of it, which is the honest picture: the
-  // rest of that window has not been watched yet.
-  const slots = Math.max(points.length, 2);
-  const slot = width / slots;
-  const y = (value: number) => height - (Math.min(value, ceiling) / ceiling) * (height - 2) - 1;
-
-  // `start` is the index the run begins at, which is unique across runs and therefore its key.
-  const runs: { start: number; d: string; fill: string }[] = [];
-  let line: string[] = [];
-  let area: string[] = [];
-  let runStart = 0;
-
-  const flush = (endIndex: number) => {
-    if (line.length > 0) {
-      runs.push({ start: runStart, d: line.join(' '), fill: `${area.join(' ')} L ${endIndex * slot},${height} L ${runStart * slot},${height} Z` });
-    }
-    line = [];
-    area = [];
-  };
-
-  points.forEach((point, index) => {
-    const x0 = index * slot;
-    const x1 = (index + 1) * slot;
-
-    if (point === null || !Number.isFinite(point)) {
-      flush(index);
-      return;
-    }
-
-    const yValue = y(point);
-    if (line.length === 0) {
-      runStart = index;
-      line.push(`M ${x0},${yValue}`);
-      area.push(`M ${x0},${yValue}`);
-    } else {
-      // The vertical riser first, then the horizontal hold: a step, not a ramp.
-      line.push(`L ${x0},${yValue}`);
-      area.push(`L ${x0},${yValue}`);
-    }
-    line.push(`L ${x1},${yValue}`);
-    area.push(`L ${x1},${yValue}`);
-  });
-  flush(points.length);
-
-  return (
-    <svg
-      viewBox={`0 0 ${width} ${height}`}
-      preserveAspectRatio="none"
-      className={cn('w-full', variant === 'panel' && 'rounded-md border border-border/60 bg-muted/20', className)}
-      style={{ height }}
-      role="img"
-      aria-label={label}
-    >
-      <title>{label}</title>
-      {/* No <text> ever goes in here. `preserveAspectRatio="none"` stretches the viewBox to the
-          container's width, and glyphs stretch with it — every axis label on this page is HTML
-          sitting outside the SVG for exactly that reason. */}
-      {variant === 'panel'
-        ? [0.25, 0.5, 0.75].map((fraction) => (
-            <line key={fraction} x1="0" y1={height * fraction} x2={width} y2={height * fraction} stroke="currentColor" strokeOpacity="0.1" />
-          ))
-        : null}
-      <line x1="0" y1={height - 1} x2={width} y2={height - 1} stroke="currentColor" strokeOpacity="0.25" vectorEffect="non-scaling-stroke" />
-      {runs.map((run) => (
-        <g key={run.start} className={TONE_TEXT[tone] || 'text-foreground/70'}>
-          <path d={run.fill} fill="currentColor" fillOpacity="0.18" stroke="none" />
-          <path d={run.d} fill="none" stroke="currentColor" strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
-        </g>
-      ))}
-    </svg>
-  );
-};
-
-/**
- * A discrete band, drawn as pips rather than as a percentage.
- *
- * GPU pressure is a smoothed 0-3 band and there is no percentage anywhere in this product to
- * convert it into. Four pips say "band 2 of 3" and cannot be misread as "66% utilised", which a
- * meter would be. `value === null` means the node could not measure — most of the fleet, since
- * the signal is AMD-only and the sampler is disarmed entirely on an unpaired Hub — and it renders
- * as hollow pips plus the caller's own unknown label. Band 0 is a real measurement and renders as
- * a filled first pip, so "measured, idle" never looks like "unmeasured".
- */
-export const BandMeter = ({ value, bands = 3, className }: { value: number | null; bands?: number; className?: string }) => (
-  <span className={cn('inline-flex items-center gap-0.5 align-middle', className)}>
-    {Array.from({ length: bands + 1 }, (_, band) => ({ id: `band-${band}`, band })).map(({ id, band }) => (
-      <span
-        key={id}
-        className={cn(
-          'h-2.5 w-1.5 rounded-[1px] border',
-          value === null
-            ? 'border-muted-foreground/40 bg-transparent'
-            : band <= value
-              ? band >= bands
-                ? 'border-destructive bg-destructive'
-                : band >= bands - 1
-                  ? 'border-warning bg-warning'
-                  : 'border-success bg-success'
-              : 'border-border bg-muted/50',
-        )}
-      />
-    ))}
-  </span>
-);
-
 // ── Layout ───────────────────────────────────────────────────────────────────
 
-/**
- * Panel inside a dashboard section: small muted heading, optional right-side slot.
- *
- * `density` defaults to what every existing caller already renders, so the Network settings tab
- * is untouched. `'compact'` is the resource board's setting: on a twelve-column grid of ten
- * panels, 4px of padding per side is ~80px of vertical page, and the board is dense enough that
- * the grid gap already does the separating the padding used to.
- */
-export const Panel = ({
-  title,
-  actions,
-  children,
-  className,
-  density = 'default',
-}: {
-  title: string;
-  actions?: ReactNode;
-  children: ReactNode;
-  className?: string;
-  density?: 'default' | 'compact';
-}) => (
+/** A titled panel: small muted heading, optional right-side slot. */
+export const Panel = ({ title, actions, children, className }: { title: string; actions?: ReactNode; children: ReactNode; className?: string }) => (
   /*
    * `@container` makes every panel a query container, so the tables inside can drop columns against
    * THEIR OWN width instead of the viewport's.
    *
-   * That distinction became load-bearing when this page moved to a 12-column board. A column keyed
-   * to `md:table-cell` appears at a 768px VIEWPORT — but the panel showing it may be sitting in a
-   * `col-span-5` track only 510px wide, so the column arrives in a box that cannot hold it and the
-   * table scrolls sideways inside its own card at every desktop width. The viewport says "there is
-   * room"; the track is what actually has to hold the column.
+   * A column keyed to `md:table-cell` appears at a 768px VIEWPORT, but the panel showing it may sit
+   * in a track far narrower than that, so the column would arrive in a box that cannot hold it.
    *
-   * Native in Tailwind v4 (no plugin), and inert for every panel that uses no `@` variant, so this
-   * is safe for the settings module that shares these primitives.
+   * Native in Tailwind v4 (no plugin), and inert for every panel that uses no `@` variant.
    */
-  <section
-    className={cn(
-      '@container rounded-lg border border-border bg-card',
-      density === 'compact' ? 'space-y-1.5 px-3 py-2.5' : 'space-y-2.5 px-4 py-3',
-      className,
-    )}
-  >
+  <section className={cn('@container space-y-2.5 rounded-lg border border-border bg-card px-4 py-3', className)}>
     <div className="flex items-center gap-2">
       <h3 className="text-[11px] font-medium   text-muted-foreground">{title}</h3>
       {actions ? <div className="ml-auto flex items-center gap-2">{actions}</div> : null}
@@ -543,171 +345,6 @@ export const Panel = ({
     {children}
   </section>
 );
-
-/**
- * The three states of a panel, kept apart on purpose.
- *
- * "Still loading", "the request failed" and "it loaded and there is genuinely nothing"
- * are three different facts that send an operator to three different places, and on a
- * monitoring dashboard the failure mode that matters is the middle one collapsing into
- * the last. A panel that renders a failed fetch as an empty table — or worse, as `0` —
- * states something the Hub never said. So the body is REPLACED while pending or failed;
- * derived zeros computed from `undefined` data never reach the screen.
- *
- * `pending`, not `isLoading`: an errored query has `isLoading === false` and no data, so
- * a skeleton keyed off `isLoading` would sit there forever on a failed fetch.
- */
-export const PanelBody = ({
-  state,
-  error,
-  lines = 3,
-  children,
-}: {
-  state: { pending: boolean; failed: boolean };
-  error: string;
-  lines?: number;
-  children: ReactNode;
-}) => {
-  if (state.failed) {
-    return <p className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 text-[11px] text-destructive">{error}</p>;
-  }
-
-  if (state.pending) {
-    return (
-      <div className="space-y-1.5" aria-busy="true">
-        {Array.from({ length: lines }, (_, index) => 100 - index * 12).map((width) => (
-          <div key={width} className="h-3  rounded-sm bg-muted/60" style={{ width: `${width}%` }} />
-        ))}
-      </div>
-    );
-  }
-
-  return <>{children}</>;
-};
-
-/** Top-level dashboard section: a rule, a title, and its panels. */
-export const DashboardSection = ({ title, badge, children }: { title: string; badge?: ReactNode; children: ReactNode }) => (
-  <section className="space-y-4">
-    <div className="flex items-center gap-2 border-b border-border pb-2">
-      <h2 className="text-sm font-medium  ">{title}</h2>
-      {badge}
-    </div>
-    {children}
-  </section>
-);
-
-/**
- * A band label INSIDE a grid, rather than a section wrapped around one.
- *
- * {@link DashboardSection} owns its own children, so a page built from four of them is four
- * separate grids that cannot share a column track — a panel in one can never sit beside a panel
- * in the next, and each section pays for its own heading block and its own vertical rhythm. This
- * is the same label as a `col-span-full` row of the ONE grid: the bands still read as bands, and
- * every panel on the page is measured against the same twelve columns.
- *
- * `DashboardSection` stays exactly as it was; the settings tab still uses that shape.
- */
-export const BandHeader = ({ title, badge, className }: { title: string; badge?: ReactNode; className?: string }) => (
-  <div className={cn('col-span-full flex items-center gap-2 border-b border-border pb-1.5 pt-1', className)}>
-    <h2 className="text-[12px] font-medium  ">{title}</h2>
-    {badge}
-  </div>
-);
-
-/**
- * One figure in the page-top rail.
- *
- * `state` IS PER-STAT AND IT IS LOAD-BEARING. The rail mixes figures from four independently
- * failing queries, and the two obvious ways to state-manage it are both wrong: one {@link PanelBody}
- * around the whole rail blanks twelve healthy numbers because residency timed out, and no state at
- * all renders a confident dash from a FAILED fetch next to real pool counts — the absence/idleness
- * collision this dashboard exists to avoid, at the most-read spot on the page. So each stat carries
- * the state of the query that produced it, shows a skeleton while that query is in flight, and says
- * "unavailable" — not "0", not a bare dash — when it failed.
- */
-export interface RailStatData {
-  id: string;
-  /** Already formatted, and already {@link DASH} when the underlying value was never measured. */
-  value: ReactNode;
-  label: string;
-  sub?: ReactNode;
-  tone?: Tone;
-  state: { pending: boolean; failed: boolean };
-  /** Shown below `sm`. Six of the twelve earn a phone; the rest appear from `sm` up. */
-  mobile?: boolean;
-}
-
-export const RailStat = ({ stat }: { stat: RailStatData }) => {
-  const { t } = useTranslation();
-
-  return (
-    <div
-      className={cn(
-        'flex min-w-0 flex-col justify-center gap-0.5 rounded-md border border-border bg-muted/20 px-2.5 py-1.5',
-        !stat.mobile && 'hidden sm:flex',
-      )}
-    >
-      {stat.state.pending ? (
-        <span className="h-[18px] w-10  rounded-sm bg-muted/60" aria-busy="true" />
-      ) : stat.state.failed ? (
-        /* A FAILED query must not borrow {@link DASH}. `value` is already DASH whenever the figure
-           was never measured, so rendering DASH here too collapses "we asked and it broke" into
-           "nothing reported it" — the collision the doc above promises this component avoids. The
-           word is the distinction, so it has to be visible: as a `title` it was unreachable on
-           touch, and in `sub` it vanished entirely for the stats that carry no `sub`. Sized to the
-           label rather than the value because "unavailable" does not fit a 112px cell at 18px. */
-        <span className="truncate text-[11px] font-medium  leading-none text-muted-foreground" title={t('DASHBOARD_RAIL_UNAVAILABLE')}>
-          {t('DASHBOARD_RAIL_UNAVAILABLE')}
-        </span>
-      ) : (
-        <span className={cn('truncate text-[18px] font-medium leading-none tabular-nums', TONE_TEXT[stat.tone ?? 'plain'])}>{stat.value}</span>
-      )}
-      {/* `title` on both lines because both truncate: at twelve-up a cell is ~85px, and a sub like
-          "oldest 6m 11s · This Hub" is the part of the figure an operator most wants to read. */}
-      <span className="truncate text-[10px]  leading-tight  text-muted-foreground" title={stat.label}>
-        {stat.label}
-      </span>
-      {stat.sub ? (
-        <span
-          className="truncate text-[10px] leading-tight text-muted-foreground/80"
-          title={stat.state.failed ? undefined : typeof stat.sub === 'string' ? stat.sub : undefined}
-        >
-          {stat.state.failed ? t('DASHBOARD_RAIL_UNAVAILABLE') : stat.sub}
-        </span>
-      ) : null}
-    </div>
-  );
-};
-
-/**
- * The rail's stats, three-up on a phone and wrapped in a row from `sm`.
- *
- * Three columns at 360px is ~112px a cell, which fits an 18px tabular value over a 10px label
- * without shrinking either. Deliberately NOT a horizontal scroller: a figure an operator has to
- * swipe to find is a figure they will not look at, and the six that survive to a phone were
- * chosen so they do not have to.
- */
-/*
- * A GRID at every width, not a flex-wrap above `sm`.
- *
- * Wrapping laid the twelve figures out by their own content widths, so the last one landed alone on
- * a second row beside a full row's worth of empty card — the dead space this page was rebuilt to
- * remove, reintroduced in its most-read band. A fixed column count wraps to whole rows instead, and
- * equal tracks let a long `sub` ("Residency unknown for: lemonade, lucebox") take its share rather
- * than stretching one cell and pushing its neighbour over the edge.
- *
- * Three on a phone, then six and twelve: every count divides twelve, so no row is ever left ragged
- * however many stats the page passes.
- */
-export const KpiRail = ({ stats }: { stats: RailStatData[] }) => (
-  <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-6 sm:gap-2 xl:grid-cols-12">
-    {stats.map((stat) => (
-      <RailStat key={stat.id} stat={stat} />
-    ))}
-  </div>
-);
-
-// ── Formatting ───────────────────────────────────────────────────────────────
 
 export const DASH = '—';
 
@@ -759,21 +396,6 @@ export function humanDuration(ms: number | null | undefined): string {
 }
 
 /**
- * A token count as a short approximate figure: `850`, `7.6k`, `39k`.
- *
- * Only ever fed ESTIMATES (the pool's `bytes / 4`), which is why it has no exact form — a caller
- * prints it behind a `~`. A count an engine actually reported goes through `toLocaleString`.
- */
-export function compactTokens(tokens: number | null | undefined): string {
-  if (tokens === null || tokens === undefined || !Number.isFinite(tokens)) return DASH;
-  const value = Math.max(0, Math.round(tokens));
-  if (value < 1000) return String(value);
-  if (value < 10_000) return `${(value / 1000).toFixed(1)}k`;
-
-  return `${Math.round(value / 1000)}k`;
-}
-
-/**
  * Milliseconds since epoch for a timestamp as the Hub serves it, or `NaN`.
  *
  * ⚠ THE HUB SERVES TWO SHAPES, AND ONLY ONE OF THEM SAYS WHAT ZONE IT IS IN. Values the backend
@@ -800,20 +422,6 @@ export function formatHubDateTime(value: string | null | undefined): string {
   const parsed = parseHubTimestamp(value);
 
   return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : DASH;
-}
-
-/** Short countdown to a future timestamp, for "expires in" columns. */
-export function relativeUntil(iso: string | null | undefined, now: number): string {
-  if (!iso) return DASH;
-  const parsed = parseHubTimestamp(iso);
-  if (!Number.isFinite(parsed)) return DASH;
-  const seconds = Math.round((parsed - now) / 1000);
-  // Already past: the engine will evict on next sweep, which is not the same as "no expiry".
-  if (seconds <= 0) return 'now';
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
-
-  return `${Math.round(seconds / 3600)}h`;
 }
 
 /** Short relative age, for "last seen" columns. */

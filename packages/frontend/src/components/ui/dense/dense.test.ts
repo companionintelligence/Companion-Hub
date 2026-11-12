@@ -1,15 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import {
-  compactTokens,
-  DASH,
-  formatHubDateTime,
-  humanBytes,
-  humanCount,
-  humanDuration,
-  parseHubTimestamp,
-  relativeAge,
-  relativeUntil,
-} from './dense';
+import { DASH, formatHubDateTime, humanBytes, humanCount, humanDuration, parseHubTimestamp, relativeAge } from './dense';
 
 /*
  * The formatting helpers, which carry the dashboard's absence-vs-zero contract.
@@ -97,15 +87,6 @@ describe('humanDuration', () => {
   });
 });
 
-describe('compactTokens', () => {
-  it('shortens a prompt-size estimate', () => {
-    expect(compactTokens(850)).toBe('850');
-    expect(compactTokens(7_641)).toBe('7.6k');
-    expect(compactTokens(38_979)).toBe('39k');
-    expect(compactTokens(null)).toBe(DASH);
-  });
-});
-
 describe('parseHubTimestamp', () => {
   it("reads a zoneless timestamp from a Postgres column as UTC, not as the browser's local time", () => {
     // fzzy's restored history, 2026-09-27: the chart labelled this "10:22 AM" in a PDT browser.
@@ -144,36 +125,5 @@ describe('formatHubDateTime', () => {
   it('is a dash for nothing and for text that is not a date', () => {
     expect(formatHubDateTime(null)).toBe(DASH);
     expect(formatHubDateTime('yesterday')).toBe(DASH);
-  });
-});
-
-describe('relativeUntil', () => {
-  it('counts down to an engine expiry written with an offset and nanoseconds, as Ollama writes it', () => {
-    expect(relativeUntil('2026-09-27T16:55:51.867513154-07:00', Date.parse('2026-09-27T18:00:54Z'))).toBe('6h');
-  });
-
-  /*
-   * The case `parseHubTimestamp` changed. An offset (above) parsed the same either way; a ZONELESS
-   * Hub timestamp — Postgres `timestamp` columns, as the telemetry table serves them — is UTC, and
-   * `Date.parse` alone read it as browser-local. Pinned west of UTC because CI runs in UTC, where the
-   * two readings coincide and this would pass against the bug.
-   */
-  describe('in a browser west of UTC', () => {
-    beforeAll(() => {
-      vi.stubEnv('TZ', 'America/Los_Angeles');
-    });
-    afterAll(() => {
-      vi.unstubAllEnvs();
-    });
-
-    it('reads a zoneless Hub timestamp as UTC, not as browser-local time', () => {
-      const now = Date.parse('2026-09-27T18:00:54Z');
-      // The pin took: read as local time, the same string is seven hours later.
-      expect(Date.parse('2026-09-27T23:55:51')).toBe(Date.parse('2026-09-28T06:55:51Z'));
-
-      expect(relativeUntil('2026-09-27 23:55:51', now)).toBe('6h');
-      // The `T` form too, which `relativeAge` used to hand to `Date.parse` as it was.
-      expect(relativeAge('2026-09-27T17:55:54', now)).toBe('5m');
-    });
   });
 });

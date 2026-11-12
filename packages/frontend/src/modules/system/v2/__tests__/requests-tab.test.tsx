@@ -34,23 +34,17 @@ const own: OwnInference = {
 };
 
 describe('Requests tab', () => {
-  it('names where a request came from and where it ran', () => {
-    expect(requestRoute(entry('outbound', 'local'), hubName, 'This Hub', 'No Hub')).toEqual({ from: 'This Hub', servedBy: 'This Hub' });
-    expect(requestRoute(entry('outbound', 'beta-max.capybara.ts.net'), hubName, 'This Hub', 'No Hub')).toEqual({
-      from: 'This Hub',
-      servedBy: 'beta-max',
-    });
-    expect(requestRoute(entry('inbound', 'beta-max.capybara.ts.net'), hubName, 'This Hub', 'No Hub')).toEqual({
-      from: 'beta-max',
-      servedBy: 'This Hub',
-    });
-    expect(requestRoute(entry('outbound', null, 'failed'), hubName, 'This Hub', 'No Hub')).toEqual({ from: 'This Hub', servedBy: 'No Hub' });
+  it('names where a request came from, and the other Hub only when one ran it', () => {
+    expect(requestRoute(entry('outbound', 'local'), hubName, 'This Hub')).toEqual({ from: 'This Hub', ranOn: null });
+    expect(requestRoute(entry('outbound', 'beta-max.capybara.ts.net'), hubName, 'This Hub')).toEqual({ from: 'This Hub', ranOn: 'beta-max' });
+    expect(requestRoute(entry('inbound', 'beta-max.capybara.ts.net'), hubName, 'This Hub')).toEqual({ from: 'beta-max', ranOn: null });
+    expect(requestRoute(entry('outbound', null, 'failed'), hubName, 'This Hub')).toEqual({ from: 'This Hub', ranOn: null });
   });
 
-  it('lists the log with both columns', () => {
+  it('lists the log without a served-by column and says where a forwarded request ran', () => {
     render(
       <RequestsTab
-        entries={[entry('inbound', 'beta-max.capybara.ts.net'), entry('outbound', 'local')]}
+        entries={[entry('inbound', 'beta-max.capybara.ts.net'), entry('outbound', 'local'), entry('outbound', 'core-14.capybara.ts.net')]}
         state={{ pending: false, failed: false }}
         buckets={[]}
         own={own}
@@ -61,9 +55,12 @@ describe('Requests tab', () => {
     );
 
     const rows = screen.getAllByTestId('resources-request-row');
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
+    expect(screen.queryByRole('columnheader', { name: 'Served by' })).toBeNull();
     expect(rows[0]?.textContent).toContain('beta-max');
-    expect(rows[0]?.textContent).toContain('This Hub');
+    expect(rows[1]?.textContent).toContain('Served');
+    expect(rows[1]?.textContent).not.toContain('Served by');
+    expect(rows[2]?.textContent).toContain('Served by core-14');
     expect(screen.getByText('No AI requests in the last 30 minutes.')).toBeTruthy();
   });
 

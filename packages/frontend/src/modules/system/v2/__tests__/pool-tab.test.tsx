@@ -84,6 +84,15 @@ describe('AI pool tab', () => {
     expect(screen.getByText(/When the person who manages this Hub/)).toBeTruthy();
   });
 
+  it('says when this Hub sends work to no other Hub', () => {
+    const { unmount } = renderTab({ pool: { enabled: false } });
+    expect(screen.getByText(/Pooling is off/)).toBeTruthy();
+    unmount();
+
+    renderTab({ pool: { enabled: true, directions: { outbound: { enabled: false } } } as Parameters<typeof PoolTab>[0]['pool'] });
+    expect(screen.getByText(/Sending work to other Hubs is off/)).toBeTruthy();
+  });
+
   it('says the pool failed to load instead of showing an empty pool', () => {
     renderTab({ state: { pending: false, failed: true }, cards: [] });
 

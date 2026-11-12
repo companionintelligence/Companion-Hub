@@ -253,9 +253,8 @@ export interface RoutingLogEntry {
   failedOverFrom?: string[];
   /**
    * `true` when the app closed its connection before any candidate answered. Such a row still names
-   * the node it was waiting on, which is what keeps it out of {@link routingByNode}'s unplaced
-   * bucket and out of the `bad` "unplaced" fault in `triage.ts` — a caller that left is not a
-   * routing or capacity problem. Absent on a Hub predating the flag.
+   * the node it was waiting on, which is what keeps it out of {@link isUnplaced} and the `bad`
+   * "unplaced" fault in `triage.ts` — a caller that left is not a routing or capacity problem. Absent on a Hub predating the flag.
    */
   clientClosed?: boolean;
   /**
@@ -347,29 +346,12 @@ export interface RoutingLogPage {
  *
  * A Hub predating `candidates` gets the old test minus what we can rule out: a row that failed
  * over was tried, and a caller that hung up was waiting on a node.
- *
- * Defined here rather than in `pool-node-series.ts` beside `routingActivity` because
- * {@link routingByNode} needs it and that module already imports from this one.
  */
 export function isUnplaced(entry: RoutingLogEntry): boolean {
   if (entry.direction !== 'outbound') return false;
   if (typeof entry.candidates === 'number') return entry.candidates === 0;
 
   return !entry.node && !(entry.failedOverFrom?.length ?? 0) && !entry.clientClosed;
-}
-
-/**
- * An outbound request every candidate was tried for, and every one failed — see {@link isUnplaced}
- * for why this is not the same row. A caller that hung up is excluded: the pool did not fail it.
- *
- * "Failed" means neither served nor still pending, matching `routingActivity`, so an outcome
- * string this page does not know is never silently read as fine.
- */
-export function isExhausted(entry: RoutingLogEntry): boolean {
-  if (entry.direction !== 'outbound' || entry.node || entry.clientClosed) return false;
-  if (entry.outcome === 'served' || entry.outcome === 'pending') return false;
-
-  return typeof entry.candidates === 'number' ? entry.candidates > 0 : (entry.failedOverFrom?.length ?? 0) > 0;
 }
 
 /**
@@ -504,11 +486,6 @@ export interface LoadState {
 
 export function loadState(query: { isPending: boolean; isError: boolean }): LoadState {
   return { pending: query.isPending, failed: query.isError };
-}
-
-/** Both queries must have arrived for the panel to be honest; either failing fails the panel. */
-export function combineLoadState(...states: LoadState[]): LoadState {
-  return { pending: states.some((state) => state.pending), failed: states.some((state) => state.failed) };
 }
 
 export function useDashboardData() {
@@ -671,77 +648,6 @@ export interface PoolReach {
   peerInFlight: number | null;
 }
 
-/**
- * Where OUR OUTBOUND work actually went, as label→count.
- *
- * ⚠ `entry.node` DOES NOT MEAN THE SAME THING IN EVERY ROW, which is why this cannot just count
- * them. The field's doc on `hub-pool-routing-log.service.ts` states it: for `outbound` it is the
- * node that served the request (`'local'` for this one, `null` when nothing did); for `inbound`
- * it is the peer that SENT us work.
- *
- * Counting every row made two false claims at once — a peer that gave us work charted as having
- * done work for us (and on a fleet where every peer is inbound, those rows dominate), and each
- * request nobody would take credited to the local node via `?? 'local'`.
- *
- * A row with no node is one of TWO outcomes, and each gets its own label — see {@link isUnplaced}:
- * no candidate existed (`unplacedLabel`), or every candidate was tried and failed (`exhaustedLabel`).
- * Folding the second into the first is what had core-2 reporting "a request no node took" for a
- * request nine nodes each took and dropped. A nodeless row that is neither — a Hub too old to say
- * how many candidates it had, whose caller also hung up — keeps the old bucket.
- *
- * Both labels are passed in rather than hardcoded so the caller can translate them.
- */
-export function routingByNode(entries: RoutingLogEntry[], unplacedLabel: string, exhaustedLabel: string): Map<string, number> {
-  const byNode = new Map<string, number>();
-  let unplaced = 0;
-  let exhausted = 0;
-
-  for (const entry of entries) {
-    if (entry.direction !== 'outbound') continue;
-
-    const node = entry.node?.split('.')[0];
-
-    if (!node) {
-      if (isExhausted(entry)) exhausted += 1;
-      else unplaced += 1;
-      continue;
-    }
-
-    byNode.set(node, (byNode.get(node) ?? 0) + 1);
-  }
-
-  // Counted under their own labels rather than folded into a node or dropped: "we had nowhere to
-  // send it" and "everywhere we sent it failed" are real outcomes, and the ones most worth seeing.
-  if (unplaced > 0) byNode.set(unplacedLabel, unplaced);
-  if (exhausted > 0) byNode.set(exhaustedLabel, exhausted);
-
-  return byNode;
-}
-
-/**
- * Total tokens per model, summed from routing-log entries that actually carry a usage frame.
- *
- * Most entries carry none — capture only recognises Ollama's native NDJSON trailer and an
- * OpenAI-style `usage` object (opted into on the proxy's behalf for streamed requests), and only
- * for OUTBOUND work this Hub itself placed. An entry with no `usage.totalTokens` contributes
- * nothing to any model's total. Unlike {@link routingByNode}'s `unplacedLabel`, there is no
- * "unmeasured" bucket here: absence is the expected common case for most requests today, not an
- * operator-facing gap worth a row of its own — the partial coverage is visible instead in how much
- * smaller this sum reads than `RoutingActivity.served`.
- */
-export function tokensByModel(entries: RoutingLogEntry[]): Map<string, number> {
-  const byModel = new Map<string, number>();
-
-  for (const entry of entries) {
-    if (entry.direction !== 'outbound' || !entry.model) continue;
-    const total = entry.usage?.totalTokens;
-    if (typeof total !== 'number' || !Number.isFinite(total) || total <= 0) continue;
-    byModel.set(entry.model, (byModel.get(entry.model) ?? 0) + total);
-  }
-
-  return byModel;
-}
-
 export function poolReach(peers: PoolPeerSummary[], local: PoolNodeSummary | undefined): PoolReach {
   const connected = peers.filter((peer) => peer.status === 'connected' && peer.enabled !== false);
   const servable = (backends: PoolBackend[] | undefined) =>
@@ -769,22 +675,6 @@ export function poolReach(peers: PoolPeerSummary[], local: PoolNodeSummary | und
   };
 }
 
-/** One row of the model-memory budget: how much of a pool of memory models may use, and how much they hold. */
-export interface MemoryBudgetRow {
-  kind: 'vram' | 'ram';
-  total: number;
-  budget: number;
-  used: number;
-  pinned: number;
-  /**
-   * `true` when an engine holding a model in this pool could not be sized, so `used` is a floor.
-   * A caller rendering `used` must say so: the remainder is NOT known to be free.
-   */
-  incomplete: boolean;
-  /** The engines whose figures `used` is built from, in the order the backend lists them. */
-  engines: ModelMemoryUsageEntrySummary[];
-}
-
 /**
  * Host RAM in use, in MB, or `null` when the profile has no RAM figures at all.
  *
@@ -798,181 +688,4 @@ export function hostRamUsedMb(hardware: HardwareSummary | undefined): number | n
   if (typeof ram?.usedMb === 'number') return Math.max(0, ram.usedMb);
   if (typeof ram?.totalMb === 'number' && typeof ram?.availableMb === 'number') return Math.max(0, ram.totalMb - ram.availableMb);
   return null;
-}
-
-/**
- * The memory budget as bars, or the reason there are none.
- *
- * `totalVramMb` is 0 on every unified-memory machine BY DESIGN — the backend forces it to
- * zero when `gpu.unifiedMemory` is set and routes all model memory into the RAM counters,
- * because there is no separate pool of video memory to budget. Rendering an empty VRAM
- * meter there would read as "this machine has no GPU", which is the opposite of true. So a
- * zero total drops the row and the panel says why instead.
- */
-export function memoryBudgetRows(budget: MemoryBudgetSummary | undefined): MemoryBudgetRow[] {
-  if (!budget) return [];
-  const engines = budget.usage?.backends ?? [];
-  const enginesIn = (pool: 'vram' | 'ram') => engines.filter((entry) => entry.pool === pool);
-  const rows: MemoryBudgetRow[] = [
-    {
-      kind: 'vram',
-      total: budget.totalVramMb ?? 0,
-      budget: budget.modelBudgetVramMb ?? 0,
-      used: budget.modelUsedVramMb ?? 0,
-      pinned: budget.pinnedVramMb ?? 0,
-      incomplete: enginesIn('vram').some((entry) => entry.source === 'unmeasured'),
-      engines: enginesIn('vram'),
-    },
-    {
-      kind: 'ram',
-      total: budget.totalRamMb ?? 0,
-      budget: budget.modelBudgetRamMb ?? 0,
-      used: budget.modelUsedRamMb ?? 0,
-      pinned: budget.pinnedRamMb ?? 0,
-      incomplete: enginesIn('ram').some((entry) => entry.source === 'unmeasured'),
-      engines: enginesIn('ram'),
-    },
-  ];
-
-  return rows.filter((row) => row.total > 0);
-}
-
-/**
- * What the model-memory budget cannot see on a unified-memory machine, or `null` when it adds up.
- *
- * The budget is built from host `MemTotal`, and its "used" from per-process reads and the engines'
- * own accounting. On the fleet's Strix Halo APUs that picture is wrong in BOTH directions, measured
- * 2026-09-27 against `/sys/class/drm/card*` on the same nodes:
- *
- *   - core-1 sets a 96 GiB BIOS VRAM carve-out. Linux never sees that memory, so the host reports
- *     31 G total and 6 G in use — while Ollama reports 17 G of models loaded INTO the carve-out.
- *     The panel printed "17G of 29G" directly beside "Host RAM 6G of 31G in use", an on-screen
- *     contradiction, and a budget that does not describe the GPU at all.
- *   - fzzy's `dflash_server` (not an engine the Hub manages) and vLLM hold ~42 GiB of GTT: host RAM
- *     the GPU maps. None of it is in any figure the budget reads, so it said "0.3G of 121G · 0%" on
- *     a host with 50 G in use.
- *
- * Neither is fixable from here — the real figure is sysfs `mem_info_{vram,gtt}_*`, which nothing on
- * the wire carries yet — but both are DETECTABLE from here, by reconciling three numbers that are
- * each true on their own: host RAM in use, what the workloads' containers hold, and what the engines
- * report. When they cannot all be true of the same host, the panel says which way they disagree.
- *
- *   `outside-host`  the engines report more than the host has in use (after the workloads), by more
- *                   than 2 GiB of slack for sampling skew. The models are in memory the host does
- *                   not count.
- *   `unaccounted`   host RAM in use that neither the workloads nor the engines account for, above
- *                   max(8 GiB, 15% of the host). Page cache is not "used", so a gap this size is a
- *                   process — on these hosts, an engine's GTT mapping. Withheld when an engine holds
- *                   a model nobody could size: that engine may be exactly where it went.
- *
- * `null` unless the RAM figures are a LIVE reading (`sampledAt`, Linux `MemAvailable`) — on a Hub
- * that sends the app-start snapshot the arithmetic would reconcile a number from hours ago — and
- * unless the machine is unified-memory, where model memory and host RAM are the same pool. On a
- * discrete card, engines holding more VRAM than the host has RAM in use is normal. Also `null` until
- * the container rollup has arrived, since without it every workload byte would read as unaccounted.
- */
-export interface MemoryReconciliation {
-  kind: 'outside-host' | 'unaccounted';
-  /** MB beyond what the host has in use (`outside-host`), or MB in use that nothing reports (`unaccounted`). */
-  sizeMb: number;
-}
-
-const OUTSIDE_HOST_SLACK_MB = 2 * 1024;
-const UNACCOUNTED_FLOOR_MB = 8 * 1024;
-const UNACCOUNTED_SHARE = 0.15;
-
-export function memoryReconciliation(
-  hardware: HardwareSummary | undefined,
-  rollup: { memoryBytes: number } | null,
-  budget: MemoryBudgetSummary | undefined,
-): MemoryReconciliation | null {
-  const ram = hardware?.ram;
-  if (!ram?.sampledAt || typeof ram.usedMb !== 'number' || typeof ram.totalMb !== 'number' || ram.totalMb <= 0) return null;
-  if (hardware?.gpu?.unifiedMemory !== true || !budget || !rollup) return null;
-
-  const hostUsed = ram.usedMb;
-  const workloads = rollup.memoryBytes / 1024 ** 2;
-  const modelUsed = (budget.modelUsedRamMb ?? 0) + (budget.modelUsedVramMb ?? 0);
-
-  const beyondHost = modelUsed - (hostUsed - workloads);
-  if (beyondHost > OUTSIDE_HOST_SLACK_MB) return { kind: 'outside-host', sizeMb: Math.round(beyondHost) };
-
-  const incomplete = (budget.usage?.backends ?? []).some((entry) => entry.source === 'unmeasured');
-  const unaccounted = hostUsed - workloads - modelUsed;
-  if (!incomplete && unaccounted > Math.max(UNACCOUNTED_FLOOR_MB, UNACCOUNTED_SHARE * ram.totalMb)) {
-    return { kind: 'unaccounted', sizeMb: Math.round(unaccounted) };
-  }
-
-  return null;
-}
-
-/**
- * Whose a GPU process row is, when no workload's container holds it.
- *
- *   `{ engine, inModelMemory }`  an inference engine the Hub manages. `inModelMemory` is `true` when
- *                                the Model memory panel's figure for that engine IS this row's memory
- *                                (its `source` is `process`, i.e. the sum of rows like this one).
- *   `'unmanaged'`                a process no managed engine accounts for — fzzy's `dflash_server`.
- *                                The only memory on the page that nothing else shows.
- *   `null`                       cannot say: a bare `llama-server` when both llama.cpp-hosting
- *                                engines (or neither) hold a model, or when `/inference/memory` has
- *                                not answered.
- */
-export type GpuProcessOwner = { engine: string; inModelMemory: boolean } | 'unmanaged' | null;
-
-/*
- * MIRRORS `memory-manager.service.ts` (`ENGINE_PROCESS_PATTERNS`, `LLAMA_SERVER_ENGINES`,
- * `llamaServerOwner`) on purpose. The backend already decides which vendor-tool rows are an engine's
- * and sums them into `/inference/memory`; the container sampler reports the SAME rows as
- * `unattributedGpu`, because no workload's container holds them. Without applying the same rule here
- * the page showed one runner twice under two owners: core-2, 2026-09-27, Model memory read "ollama ·
- * 24,824 MB (process)" while the GPU tile listed "llama-server 24 GB / 493 MB" as held outside any
- * workload — 24,331 + 493 = 24,824, Ollama's qwen3.6:35b and nomic-embed runners, which rocm-smi
- * names by their bare `comm`. An operator either hunts for an unmanaged llama-server that does not
- * exist or adds the two panels up to ~49 GB.
- */
-const ENGINE_PROCESS_PATTERNS: Record<string, RegExp> = {
-  ollama: /ollama/,
-  vllm: /vllm/,
-  lemonade: /lemonade|lemond/,
-  omlx: /omlx/,
-};
-const LLAMA_SERVER_COMM = 'llama-server';
-const LLAMA_SERVER_ENGINES = ['ollama', 'lemonade'];
-
-/**
- * Attribute one unattributed GPU process row to the engine that owns it, by the backend's rule.
- *
- * `engines` is `/inference/memory`'s `usage.backends`. A bare `llama-server` belongs to whichever of
- * Ollama and Lemonade is the ONLY one holding a model — "holding" read the way the backend reads it:
- * an entry sized by its process, its own accounting, or not at all (`unmeasured`), but not `registry`,
- * which is the Hub's bookkeeping for an engine it could not ask. The two readings are not taken
- * together — the container sample is cached for up to a minute and a half, the memory reading for
- * five seconds — so across a model load or unload a bare `llama-server` can read as nobody's, or as
- * the engine holding a model NOW, for a poll. Rows named for their engine by process name cannot.
- */
-export function gpuProcessOwner(processName: string, engines: ModelMemoryUsageEntrySummary[] | undefined): GpuProcessOwner {
-  const name = processName.toLowerCase();
-  const entryFor = (engine: string) => engines?.find((entry) => entry.backend === engine);
-  const owned = (engine: string) => ({ engine, inModelMemory: entryFor(engine)?.source === 'process' });
-
-  for (const [engine, pattern] of Object.entries(ENGINE_PROCESS_PATTERNS)) {
-    if (pattern.test(name)) return owned(engine);
-  }
-  if (name !== LLAMA_SERVER_COMM) return 'unmanaged';
-  if (!engines) return null;
-
-  const holding = LLAMA_SERVER_ENGINES.filter((engine) => {
-    const entry = entryFor(engine);
-    return entry !== undefined && entry.source !== 'registry';
-  });
-
-  return holding.length === 1 && holding[0] ? owned(holding[0]) : null;
-}
-
-/** Share of a budget that is in use, 0-100, or `null` when there is no budget to be a share of. */
-export function budgetPercent(used: number, budget: number): number | null {
-  if (!Number.isFinite(budget) || budget <= 0) return null;
-
-  return Math.min(100, Math.max(0, Math.round((used / budget) * 100)));
 }

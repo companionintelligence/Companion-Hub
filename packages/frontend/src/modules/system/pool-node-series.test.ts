@@ -1,25 +1,18 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  appendPoolSample,
   bucketWindow,
-  computeCountChartScale,
-  EMPTY_SAMPLE_WINDOW,
   firstByteByNode,
   inferenceFromHere,
   isRefused,
   latestDecode,
   localContainerRollup,
-  nodeInFlightSeries,
-  observedPointCount,
   outputFault,
   peerReportedInFlight,
   poolNodeCards,
-  type PoolSampleWindow,
   routingActivity,
   routingBuckets,
   routingWindowPartial,
-  sampleInFlight,
   settledOutcome,
   unloggedCalls,
   waitingNow,
@@ -34,109 +27,6 @@ import type { PoolNodeSummary, PoolPeerSummary, PoolStatusSummary, RoutingLogEnt
  * arrived as `null`. Each has an obvious wrong answer — record it anyway, or render 0 — that
  * would look entirely normal on screen, and three shipped bugs on this page were exactly that.
  */
-
-const window = (...ats: number[]): PoolSampleWindow => ({
-  samples: ats.map((at) => ({ at, inFlight: { local: 1 } })),
-});
-
-describe('appendPoolSample', () => {
-  it('records a poll that is newer than the newest one held', () => {
-    const next = appendPoolSample(EMPTY_SAMPLE_WINDOW, { at: 1_000, inFlight: { local: 2 } });
-
-    expect(next.samples).toEqual([{ at: 1_000, inFlight: { local: 2 } }]);
-  });
-
-  it('refuses a repeat of the same fetch, so re-renders cannot manufacture a flat run', () => {
-    // React re-renders far more often than the query refetches. Counting each render as an
-    // observation draws measured idleness out of nothing at all.
-    const first = appendPoolSample(EMPTY_SAMPLE_WINDOW, { at: 1_000, inFlight: { local: 3 } });
-    const again = appendPoolSample(first, { at: 1_000, inFlight: { local: 3 } });
-
-    expect(again).toBe(first);
-    expect(again.samples).toHaveLength(1);
-  });
-
-  it('refuses a fetch timestamp that went backwards', () => {
-    const held = window(2_000);
-
-    expect(appendPoolSample(held, { at: 1_500, inFlight: {} })).toBe(held);
-  });
-
-  it('refuses a sample with no usable timestamp rather than inventing a position for it', () => {
-    expect(appendPoolSample(EMPTY_SAMPLE_WINDOW, { at: Number.NaN, inFlight: { local: 1 } })).toBe(EMPTY_SAMPLE_WINDOW);
-  });
-
-  it('drops the oldest sample once the window is full, keeping the most recent', () => {
-    let held: PoolSampleWindow = EMPTY_SAMPLE_WINDOW;
-    for (let at = 1; at <= 5; at += 1) held = appendPoolSample(held, { at, inFlight: { local: at } }, 3);
-
-    expect(held.samples.map((sample) => sample.at)).toEqual([3, 4, 5]);
-  });
-});
-
-describe('nodeInFlightSeries', () => {
-  it('reads one node out of the shared time axis', () => {
-    const held: PoolSampleWindow = {
-      samples: [
-        { at: 1, inFlight: { local: 0, 'peer-a': 2 } },
-        { at: 2, inFlight: { local: 1, 'peer-a': 3 } },
-      ],
-    };
-
-    expect(nodeInFlightSeries(held, 'peer-a')).toEqual([2, 3]);
-  });
-
-  it('gaps a poll a node was absent from, rather than reading it as idle', () => {
-    // A peer paired mid-session was not idle before it existed, and one that has been removed
-    // is not idle now. Both are "not observed", and a zero here would be a claim.
-    const held: PoolSampleWindow = {
-      samples: [
-        { at: 1, inFlight: { local: 1 } },
-        { at: 2, inFlight: { local: 1, 'peer-a': 4 } },
-      ],
-    };
-
-    expect(nodeInFlightSeries(held, 'peer-a')).toEqual([null, 4]);
-  });
-
-  it('gaps an explicit null, which is a poll that landed with no counter for the node', () => {
-    const held: PoolSampleWindow = { samples: [{ at: 1, inFlight: { 'peer-a': null } }] };
-
-    expect(nodeInFlightSeries(held, 'peer-a')).toEqual([null]);
-  });
-
-  it('counts only real observations, so a series of gaps is not a trend', () => {
-    expect(observedPointCount([null, 2, null])).toBe(1);
-    expect(observedPointCount([null, null])).toBe(0);
-  });
-});
-
-describe('computeCountChartScale', () => {
-  it('gives a small count an axis it is actually visible on', () => {
-    // The CPU scale floors its ceiling at 100, which would draw 3 in-flight requests as a flat
-    // line on the baseline — indistinguishable from no data.
-    expect(computeCountChartScale([0, 1, 3])).toEqual({ max: 3, ticks: [0, 1, 2, 3] });
-  });
-
-  it('never returns a zero-height axis for an idle node', () => {
-    expect(computeCountChartScale([0, 0, 0])).toEqual({ max: 1, ticks: [0, 1] });
-  });
-
-  it('defaults to a drawable axis when nothing has been observed', () => {
-    expect(computeCountChartScale([])).toEqual({ max: 1, ticks: [0, 1] });
-  });
-
-  it('ignores gaps rather than treating them as zero', () => {
-    expect(computeCountChartScale([null, 2, undefined])).toEqual({ max: 2, ticks: [0, 1, 2] });
-  });
-
-  it('rounds up to four even bands above a handful', () => {
-    const scale = computeCountChartScale([0, 17]);
-
-    expect(scale.max).toBe(20);
-    expect(scale.ticks).toEqual([0, 5, 10, 15, 20]);
-  });
-});
 
 describe('localContainerRollup — parity with what a peer publishes', () => {
   const c = (over: Record<string, unknown> = {}) =>
@@ -455,12 +345,6 @@ describe('poolNodeCards', () => {
 
   it('renders no local card at all when pool status has not reported one', () => {
     expect(poolNodeCards(undefined, [{ id: 'p' }], options).map((card) => card.key)).toEqual(['p']);
-  });
-
-  it('samples every card on screen, gapping the ones with no counter', () => {
-    const cards = poolNodeCards(local, [{ id: 'p' }], options);
-
-    expect(sampleInFlight(cards)).toEqual({ local: 2, p: null });
   });
 });
 

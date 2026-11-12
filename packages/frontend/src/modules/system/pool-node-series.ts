@@ -31,9 +31,6 @@ import { estimatedPromptTokens, isUnplaced, peerLabel } from '@/modules/system/u
  * behind 20-90s server caches and would draw a staircase of the poll rather than of the machine.
  */
 
-/** Samples kept per node: 40 x 15s poll ≈ 10 minutes of watched time. */
-export const POOL_SAMPLE_LIMIT = 40;
-
 /**
  * A peer's self-reported in-flight count is a remote machine's claim about itself, arriving
  * through free-form jsonb. Same ceiling reasoning as the backend's container clamps: above this
@@ -46,95 +43,6 @@ const CAPABILITIES_FRESHNESS_POLLS = 3;
 
 /** Default used when `/pool/status` did not report the operator's poll interval. */
 const DEFAULT_HEALTH_POLL_SECONDS = 30;
-
-/**
- * One poll of `/pool/status`, reduced to the only field worth a time axis.
- *
- * `inFlight` maps node key to that poll's count. A key with `null`, or a key absent from the
- * map entirely, means the poll succeeded and that node reported no counter — which renders as
- * a break in the line, never as zero.
- */
-export interface PoolSample {
-  /** The query's `dataUpdatedAt`. Both the x-position and the dedupe key. */
-  at: number;
-  inFlight: Record<string, number | null>;
-}
-
-export interface PoolSampleWindow {
-  samples: PoolSample[];
-}
-
-export const EMPTY_SAMPLE_WINDOW: PoolSampleWindow = { samples: [] };
-
-/**
- * Add one observed poll to the window, or return the window untouched.
- *
- * Returns the SAME object reference when the sample is rejected, so a `useState` updater can be
- * called on every render and React still bails out of the re-render.
- *
- * Rejects a sample whose timestamp is not strictly newer than the newest one held. That is the
- * dedupe rule, and it is a timestamp rule rather than a deep-equality one on purpose: two polls
- * 15s apart that both read 0 are two real observations and both belong on the axis, while one
- * payload re-read by three components in the same tick is one observation.
- */
-export function appendPoolSample(window: PoolSampleWindow, sample: PoolSample, limit = POOL_SAMPLE_LIMIT): PoolSampleWindow {
-  if (!Number.isFinite(sample.at)) return window;
-
-  const newest = window.samples.at(-1);
-  if (newest && sample.at <= newest.at) return window;
-
-  const samples = [...window.samples, sample];
-
-  return { samples: samples.length > limit ? samples.slice(samples.length - limit) : samples };
-}
-
-/**
- * One node's watched in-flight series, aligned to the window's shared time axis.
- *
- * `null` is a gap — the poll landed but this node was not in it (a peer that had not been paired
- * yet, or one that has since been removed). Callers must break the line there rather than joining
- * across it: the node was not idle during that minute, it was not observed.
- */
-export function nodeInFlightSeries(window: PoolSampleWindow, nodeKey: string): (number | null)[] {
-  return window.samples.map((sample) => {
-    const value = sample.inFlight[nodeKey];
-
-    return typeof value === 'number' && Number.isFinite(value) ? value : null;
-  });
-}
-
-/** How many of a series' points are real observations. Below 2 there is no trend to draw. */
-export function observedPointCount(series: (number | null)[]): number {
-  return series.filter((point) => point !== null).length;
-}
-
-/**
- * Y-axis for a small-integer COUNT — in-flight requests, decisions per bucket.
- *
- * Deliberately not `computeCpuChartScale`, which floors its ceiling at 100 because Docker CPU
- * percentages legitimately exceed one core. Feeding a 0-3 request count through that axis draws
- * every real value as a flat line hugging the baseline — visually identical to no data, which is
- * exactly the "wide empty box with one thin spike" this page is being fixed for.
- *
- * The floor is 1, not 0: an axis of height zero cannot be drawn, and a genuinely idle node should
- * read as a flat line along the bottom of a 0-1 axis rather than as a divide-by-zero.
- */
-export function computeCountChartScale(values: (number | null | undefined)[]): { max: number; ticks: number[] } {
-  const finite = values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0);
-  const dataMax = finite.length > 0 ? Math.max(...finite) : 0;
-  const max = Math.max(1, Math.ceil(dataMax));
-
-  if (max <= 4) {
-    return { max, ticks: Array.from({ length: max + 1 }, (_, tick) => tick) };
-  }
-
-  // Four bands above 4, rounded up so the top tick is the axis maximum rather than near it.
-  const step = Math.ceil(max / 4);
-  const ceiling = step * 4;
-  return { max: ceiling, ticks: [0, step, step * 2, step * 3, ceiling] };
-}
-
-// ── Node cards ───────────────────────────────────────────────────────────────
 
 /** The container rollup a node reports, or `null` for "not reported". Never zeros. */
 export interface NodeContainers {
@@ -444,13 +352,6 @@ export function latestDecode(estimates: PoolThroughputEstimate[] | null | undefi
   return best;
 }
 
-/** One poll's in-flight reading for every node on screen, ready for {@link appendPoolSample}. */
-export function sampleInFlight(cards: PoolNodeCard[]): Record<string, number | null> {
-  return Object.fromEntries(cards.map((card) => [card.key, card.inFlight]));
-}
-
-// ── Routing activity ─────────────────────────────────────────────────────────
-
 /**
  * One time bucket of routing decisions, oldest first.
  *
@@ -506,11 +407,6 @@ const EMPTY_BUCKET: Omit<RoutingBucket, 'at'> = {
 /** A bucket with nothing in it, at `at`. Exported for callers and tests that build buckets by hand. */
 export function emptyRoutingBucket(at: number): RoutingBucket {
   return { at, ...EMPTY_BUCKET };
-}
-
-/** Every decision placed in a bucket, whatever became of it. */
-export function bucketTotal(bucket: RoutingBucket): number {
-  return bucket.served + bucket.failed + bucket.pending;
 }
 
 /**

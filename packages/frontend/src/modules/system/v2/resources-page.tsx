@@ -1,7 +1,7 @@
 import { parseHubTimestamp } from '@/components/ui/dense/dense';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useHubAccess } from '@/lib/hooks/use-hub-access';
-import { poolConfigWarnings } from '@/modules/system/panels/pooling-misc';
+import { poolConfigWarnings } from '@/modules/system/pool-config-warnings';
 import {
   bucketWindow,
   firstByteByNode,

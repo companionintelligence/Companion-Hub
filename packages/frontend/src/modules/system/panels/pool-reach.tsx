@@ -1,5 +1,4 @@
-import { DASH, Panel, PanelBody, relativeAge } from '@/components/ui/dense/dense';
-import { HintText } from '@/components/ui/field-hint/field-hint';
+import { relativeAge } from '@/components/ui/dense/dense';
 import { cn } from '@/lib/utils';
 import type { PoolNodeCard } from '@/modules/system/pool-node-series';
 import {
@@ -18,7 +17,6 @@ import {
   reachPeers,
   textWidth,
 } from '@/modules/system/pool-reach';
-import type { LoadState, PoolReach as PoolReachFigures } from '@/modules/system/use-dashboard-data';
 import { useLayoutEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -28,7 +26,7 @@ import { useTranslation } from 'react-i18next';
  * It replaces a row of five count chips that answered "how many" and never "which". The question an
  * operator brings here is whether a node they know is in the pool is one THIS Hub can send work to;
  * a leaf paired with two hubs routes to those two and nowhere else, and a count of 3 does not say
- * which three. The counts survive as the legend under the drawing.
+ * which three.
  *
  * A spoke's status is carried three ways — line pattern, marker shape and the word under the name —
  * so it survives colour blindness, a greyscale screenshot and a screen reader. Only a spoke that can
@@ -37,7 +35,7 @@ import { useTranslation } from 'react-i18next';
  * line to a node that gets nothing is the drawing lying.
  *
  * The drawing is `role="img"`, and neither a keyboard nor a touch screen can open an SVG `<title>`,
- * so every per-peer fact is repeated in a native disclosure under the legend that both can.
+ * so the Resources page's AI pool tab lists every peer, with the same facts, in the table under it.
  */
 
 /** Stroke pattern per status. Connected is the only solid line: anything else is a spoke that may not carry work. */
@@ -141,25 +139,6 @@ function Marker({ status, concern, x, y }: { status: ReachStatus; concern: Reach
   return <rect x={x - 4.5} y={y - 4.5} width={9} height={9} rx={1.5} className="fill-card stroke-muted-foreground" strokeWidth={1.4} />;
 }
 
-/** A spoke's pattern drawn at legend size, so the legend is a key to the drawing and not a second vocabulary. */
-function LegendSwatch({ status, concern = null }: { status: ReachStatus; concern?: ReachConcern | null }) {
-  return (
-    <svg width="22" height="12" viewBox="0 0 22 12" aria-hidden="true" className="shrink-0">
-      <line
-        x1="1"
-        y1="6"
-        x2="13"
-        y2="6"
-        className={concern ? 'stroke-warning' : SPOKE_CLASS[status]}
-        strokeWidth={1.8}
-        strokeDasharray={concern ? HELD_DASH : SPOKE_DASH[status]}
-        strokeLinecap="round"
-      />
-      <Marker status={status} concern={concern} x={16.5} y={6} />
-    </svg>
-  );
-}
-
 /** The in-flight badge: a pill that grows with its number, so "99+" stays inside it. */
 function Badge({ x, y, label }: { x: number; y: number; label: string }) {
   const width = Math.max(14, textWidth(label, BADGE_PX, 700) + 7);
@@ -174,7 +153,7 @@ function Badge({ x, y, label }: { x: number; y: number; label: string }) {
   );
 }
 
-/** The words the drawing and its details list share, so a peer is described the same way in both. */
+/** The words the drawing uses for a peer: the line under its name and its tooltip. */
 function useReachWords() {
   const { t } = useTranslation();
   const statusWord = (status: ReachStatus) => t(STATUS_KEY[status]);
@@ -231,8 +210,8 @@ function useReachWords() {
 }
 
 /**
- * The drawing alone: this Hub in the middle and one spoke per paired peer. The Resources page's AI
- * pool tab shows it above its list of Hubs; {@link PoolReach} wraps it with its legend and details.
+ * This Hub in the middle and one spoke per paired peer. The Resources page's AI pool tab shows it
+ * above its list of Hubs.
  */
 export function PoolReachGraph({ cards, routingOff = null, className }: { cards: PoolNodeCard[]; routingOff?: ReachRoutingOff; className?: string }) {
   const { t } = useTranslation();
@@ -378,107 +357,5 @@ export function PoolReachGraph({ cards, routingOff = null, className }: { cards:
         </g>
       </svg>
     </div>
-  );
-}
-
-export function PoolReach({
-  cards,
-  figures,
-  routingOff = null,
-  state,
-  className,
-}: {
-  /** `poolNodeCards` as the page built it, so model counts and names here are the Pool nodes table's own. */
-  cards: PoolNodeCard[];
-  /** `poolReach` as the page built it — the rail reads the same object. */
-  figures: PoolReachFigures;
-  /** Set when this Hub routes to none of its peers whatever their state: pooling off, or outbound off. */
-  routingOff?: ReachRoutingOff;
-  state: LoadState;
-  className?: string;
-}) {
-  const { t } = useTranslation();
-  const now = Date.now();
-  const { statusWord, describe: describeAt } = useReachWords();
-  const describe = (peer: ReachPeer) => describeAt(peer, now);
-  // Counts and the peer list do not depend on the drawing's width, so the default one serves.
-  const layout = reachLayout(reachPeers(cards));
-
-  return (
-    <Panel title={t('DASHBOARD_REACH_TITLE')} density="compact" className={className}>
-      {/* Outside PanelBody: it is true whatever the query did, and it is the question the panel answers. */}
-      <p className="text-[11px] leading-snug text-muted-foreground">{t('DASHBOARD_REACH_CAPTION')}</p>
-      <PanelBody state={state} error={t('DASHBOARD_POOL_FAILED')} lines={6}>
-        {layout.peers.length === 0 ? (
-          <p data-testid="pool-reach-empty" className="py-5 text-center text-[13px]  text-muted-foreground">
-            {t('DASHBOARD_REACH_EMPTY')}
-          </p>
-        ) : (
-          <>
-            {routingOff ? (
-              <p data-testid="pool-reach-routing-off" className="text-[11px] leading-snug text-warning">
-                {routingOff === 'pool' ? t('DASHBOARD_REACH_OFF_POOL') : t('DASHBOARD_REACH_OFF_OUTBOUND')}
-              </p>
-            ) : null}
-            <PoolReachGraph cards={cards} routingOff={routingOff} />
-
-            {/* The old chip row's facts, kept as the key to the drawing. */}
-            <div
-              data-testid="pool-reach-legend"
-              className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border pt-1.5 text-[11px] text-muted-foreground"
-            >
-              {REACH_STATUSES.filter((status) => status === 'connected' || layout.counts[status] > 0).flatMap((status) => {
-                const item = (
-                  <span key={status} className="inline-flex items-center gap-1">
-                    <LegendSwatch status={status} />
-                    <span className="font-medium tabular-nums text-foreground">{layout.counts[status]}</span>
-                    {statusWord(status)}
-                  </span>
-                );
-                // Right after "connected", and worded as part of it: the rail counts these peers as connected too.
-                return status === 'connected' && layout.concerns > 0
-                  ? [
-                      item,
-                      <span key="concerns" className="inline-flex items-center gap-1">
-                        <LegendSwatch status="connected" concern="unreported" />
-                        <span className="font-medium tabular-nums text-foreground">{layout.concerns}</span>
-                        {t('DASHBOARD_REACH_CONCERNS')}
-                      </span>,
-                    ]
-                  : [item];
-              })}
-              <span>
-                <span className="font-medium tabular-nums text-foreground">{figures.reachableModels}</span> {t('DASHBOARD_REACH_MODELS_REACHABLE')}
-              </span>
-              <HintText
-                id="dashboard-exclusive-models"
-                hint={t('DASHBOARD_EXCLUSIVE_MODELS_HINT')}
-                className="underline decoration-dotted underline-offset-2"
-              >
-                <span className="font-medium tabular-nums text-foreground">{figures.exclusiveModels}</span> {t('DASHBOARD_REACH_PEER_ONLY')}
-              </HintText>
-              {/* A dash, not 0: no peer reporting the counter is unknown, not idle. */}
-              <span className="inline-flex items-center gap-1">
-                <svg data-testid="pool-reach-legend-badge" width="14" height="12" viewBox="0 0 14 12" aria-hidden="true" className="shrink-0">
-                  <rect x="0.75" y="0.75" width="12.5" height="10.5" rx="5.25" className="fill-primary" />
-                </svg>
-                <span className="font-medium tabular-nums text-foreground">{figures.peerInFlight ?? DASH}</span> {t('DASHBOARD_REACH_FORWARDED')}
-              </span>
-            </div>
-
-            <details data-testid="pool-reach-details" className="text-[11px] text-muted-foreground">
-              <summary className="cursor-pointer select-none py-0.5 hover:text-foreground">
-                {t('DASHBOARD_REACH_DETAILS', { count: layout.peers.length })}
-              </summary>
-              <ul data-testid="pool-reach-list" className="mt-1 space-y-0.5 leading-snug">
-                {layout.peers.map((peer) => (
-                  <li key={peer.key}>{describe(peer)}</li>
-                ))}
-              </ul>
-            </details>
-          </>
-        )}
-      </PanelBody>
-    </Panel>
   );
 }

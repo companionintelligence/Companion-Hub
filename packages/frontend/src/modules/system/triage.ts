@@ -5,8 +5,8 @@ import type { LoadState } from '@/modules/system/use-dashboard-data';
  * ONE VERDICT FOR THE WHOLE PAGE, and the only interesting thing about it is what it refuses
  * to say.
  *
- * `PanelBody` already keeps "still loading", "the request failed" and "it loaded and there is
- * genuinely nothing" apart at panel scale. This is that same contract promoted to page scale,
+ * Each card's `CardBody` (`v2/card-state.tsx`) keeps "still loading", "the request failed" and
+ * "it loaded and there is genuinely nothing" apart at card scale. This is that same contract promoted to page scale,
  * because the summary line at the top of a monitoring page is the one an operator reads INSTEAD
  * of the panels — and a green ALL CLEAR that was computed while four of the eight queries were
  * failing is worse than no summary at all. It states that everything was checked, when in truth
@@ -96,7 +96,7 @@ export interface VerdictInput {
   };
   routing: {
     state: LoadState;
-    /** Requests with no candidate at all, placed INSIDE the rail's window — never the whole ring. */
+    /** Requests with no candidate at all, placed INSIDE the page's 30-minute window — never the whole ring. */
     unplaced: number;
     /** The oldest request still waiting for its first byte, or `null`/absent when none is. */
     waiting?: WaitingRequest | null;
@@ -138,8 +138,6 @@ export function pageVerdict(input: VerdictInput): Verdict {
     if (pool.envDisabledDirections > 0) {
       faults.push({ id: 'env-disabled', tone: 'warn', label: t('DASHBOARD_VERDICT_ENV_DISABLED', { count: pool.envDisabledDirections }) });
     }
-    // Also surfaced inside the configuration drawer, which collapses. A collapsed drawer must
-    // never be the only place a fault is visible, so it is raised here as well.
     if (pool.capabilitiesError) {
       faults.push({ id: 'capabilities-error', tone: 'warn', label: t('DASHBOARD_VERDICT_CAPABILITIES_ERROR') });
     }
@@ -147,7 +145,7 @@ export function pageVerdict(input: VerdictInput): Verdict {
 
   // Unplaced is deliberately `bad` and deliberately separate from a failed request: nothing was
   // even tried at a node, which is a routing/capacity problem rather than a node problem. It is a
-  // count over the rail's WINDOW: summed over the whole ring it kept a Hub red for as long as one
+  // count over the page's WINDOW: summed over the whole ring it kept a Hub red for as long as one
   // bad row survived there, which on a quiet Hub is days.
   if (!routing.state.failed && routing.unplaced > 0) {
     faults.push({ id: 'unplaced', tone: 'bad', label: t('DASHBOARD_VERDICT_UNPLACED', { count: routing.unplaced }) });

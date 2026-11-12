@@ -156,9 +156,8 @@ export type AppRuntimeMonitorSnapshot = {
    * Where this tick's per-process VRAM came from: the host probe file, the vendor tool run by
    * this process, or `absent` — nothing on this node could answer, so every `gpuVramMb` above is
    * `null` for want of a measurement rather than for want of a workload. `null` only on the empty
-   * snapshot, when the collection itself did not happen. The dashboard says `absent` in words
-   * (`workload-trends.tsx`, `workload-coverage.tsx`) instead of drawing an empty chart that reads
-   * as "nothing holds VRAM".
+   * snapshot, when the collection itself did not happen. A client must read `absent` as "not
+   * measured" rather than as "nothing holds VRAM".
    */
   gpuVramSource: GpuProcessSampleSource | 'absent' | null;
 };
