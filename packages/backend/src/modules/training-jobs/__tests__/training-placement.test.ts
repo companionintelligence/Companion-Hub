@@ -32,10 +32,7 @@ const keys = (r: ReturnType<typeof rankNodesForJob>) => r.candidates.map((c) => 
 
 describe('rankNodesForJob', () => {
   it('prefers the less loaded node', () => {
-    const r = rankNodesForJob(req, [
-      node({ key: 'busy.ts.net', activeTrainingJobs: 2 }),
-      node({ key: 'idle.ts.net', activeTrainingJobs: 0 }),
-    ]);
+    const r = rankNodesForJob(req, [node({ key: 'busy.ts.net', activeTrainingJobs: 2 }), node({ key: 'idle.ts.net', activeTrainingJobs: 0 })]);
     expect(keys(r)).toEqual(['idle.ts.net', 'busy.ts.net']);
   });
 
@@ -66,10 +63,7 @@ describe('rankNodesForJob', () => {
   });
 
   it('charges inference load by priority', () => {
-    const nodes = [
-      node({ key: 'chatty.ts.net', inferenceInFlight: 3 }),
-      node({ key: 'quiet.ts.net', inferenceInFlight: 0, activeTrainingJobs: 1 }),
-    ];
+    const nodes = [node({ key: 'chatty.ts.net', inferenceInFlight: 3 }), node({ key: 'quiet.ts.net', inferenceInFlight: 0, activeTrainingJobs: 1 })];
     expect(keys(rankNodesForJob({ ...req, priority: 'interactive' }, nodes))[0]).toBe('chatty.ts.net');
     expect(keys(rankNodesForJob({ ...req, priority: 'nightly_idle' }, nodes))[0]).toBe('quiet.ts.net');
   });
@@ -102,20 +96,14 @@ describe('rankNodesForJob', () => {
   });
 
   it('pins to the data node unless offload is allowed', () => {
-    const nodes = [
-      node({ key: 'home.ts.net', activeTrainingJobs: 3 }),
-      node({ key: 'other.ts.net', activeTrainingJobs: 0 }),
-    ];
+    const nodes = [node({ key: 'home.ts.net', activeTrainingJobs: 3 }), node({ key: 'other.ts.net', activeTrainingJobs: 0 })];
     const pinned = rankNodesForJob({ ...req, dataHome: 'home.ts.net', allowRemoteOffload: false }, nodes);
     expect(keys(pinned)).toEqual(['home.ts.net']);
     expect(pinned.rejected).toEqual([{ key: 'other.ts.net', reason: 'data_pinned' }]);
   });
 
   it('makes remote nodes pay a transfer penalty when offload is allowed', () => {
-    const nodes = [
-      node({ key: 'home.ts.net', activeTrainingJobs: 1 }),
-      node({ key: 'other.ts.net', activeTrainingJobs: 0 }),
-    ];
+    const nodes = [node({ key: 'home.ts.net', activeTrainingJobs: 1 }), node({ key: 'other.ts.net', activeTrainingJobs: 0 })];
     const r = rankNodesForJob({ ...req, dataHome: 'home.ts.net', allowRemoteOffload: true }, nodes);
     // home: 1 + 0.5*0 + 0 = 1 ; other: 0 + 0 + 0 + penalty 1 = 1 ; tie falls to key order
     expect(keys(r)).toEqual(['home.ts.net', 'other.ts.net']);

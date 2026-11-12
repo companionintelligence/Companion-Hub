@@ -1,13 +1,25 @@
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { TrainingGovernorService } from '../training-governor.service';
+import { TrainingGovernorService, type GovernorCheckResult } from '../training-governor.service';
 import { TrainingRunnerService } from '../training-runner.service';
 import { TrainingPoolService } from '../training-pool.service';
 import { TrainingController } from '../training.controller';
 import type { TrainingJobManifest, TrainingPeerCapability } from '../training.types';
-import type { HubPoolPeerRepository } from '@/modules/hub-pool/hub-pool-peer.repository';
-import type { HubPoolIdentityService } from '@/modules/hub-pool/hub-pool-identity.service';
+import type { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
+
+function manifestFor(jobId: string): TrainingJobManifest {
+  return {
+    jobId,
+    appId: 'ci-memory',
+    jobType: 'hbpe_bootstrap_hmt',
+    model: { backboneId: 'ci/hmt-v1', framework: 'pytorch', targetFormat: 'onnx_int8' },
+    dataset: { format: 'token_stream_jsonl', dataPath: '/tmp/data.jsonl', valFraction: 0.15 },
+    hyperparameters: { batchSize: 16, learningRate: 1e-4, epochs: 20, mixedPrecision: true },
+    resourcePolicy: { devicePreference: 'cpu', allowRemoteOffload: false, priority: 'normal', timeoutSeconds: 3600 },
+  };
+}
 
 describe('Training Subsystem', () => {
   describe('TrainingGovernorService', () => {
@@ -105,22 +117,56 @@ describe('Training Subsystem', () => {
       const all = runner.listJobs();
       expect(all.length).toBe(1);
     });
+
+    it('refuses a second job under an id still in flight, and frees the id once that job ends', async () => {
+      const governed = mock<TrainingGovernorService>();
+      let decide: (result: GovernorCheckResult) => void = () => {};
+      governed.evaluateLocalCapacity.mockReturnValue(
+        new Promise((resolve) => {
+          decide = resolve;
+        }),
+      );
+      const held = new TrainingRunnerService(governed);
+
+      await held.submitJob(manifestFor('nightly'));
+      await expect(held.submitJob(manifestFor('nightly'))).rejects.toBeInstanceOf(ConflictException);
+
+      decide({ canExecuteLocal: false, recommendedAction: 'DEFER', reason: 'on battery' });
+      await vi.waitFor(() => expect(held.getJobStatus('nightly')?.state).toBe('DEFERRED'));
+
+      governed.evaluateLocalCapacity.mockReturnValue(new Promise(() => {}));
+      await expect(held.submitJob(manifestFor('nightly'))).resolves.toMatchObject({ jobId: 'nightly' });
+    });
+
+    it('answers an id that cannot name a directory with a 400, not a 500', async () => {
+      await expect(runner.submitJob(manifestFor('../escape'))).rejects.toBeInstanceOf(BadRequestException);
+    });
   });
 
   describe('TrainingPoolService', () => {
     let poolService: TrainingPoolService;
-    let peerRepo: MockProxy<HubPoolPeerRepository>;
-    let identityService: MockProxy<HubPoolIdentityService>;
+    let peerService: MockProxy<HubPoolPeerService>;
     let runner: MockProxy<TrainingRunnerService>;
     let governor: MockProxy<TrainingGovernorService>;
 
+    const peerA = { id: '1', nodeFqdn: 'laptop.ts.net', status: 'connected', enabled: true } as HubPoolPeer;
+    const peerB = { id: '2', nodeFqdn: 'desktop-rtx4090.ts.net', status: 'connected', enabled: true } as HubPoolPeer;
+
     beforeEach(() => {
-      peerRepo = mock<HubPoolPeerRepository>();
-      identityService = mock<HubPoolIdentityService>();
+      peerService = mock<HubPoolPeerService>();
       runner = mock<TrainingRunnerService>();
       governor = mock<TrainingGovernorService>();
 
-      poolService = new TrainingPoolService(peerRepo, identityService, runner, governor);
+      peerService.directions.mockReturnValue({ outbound: { enabled: true, disabledBy: null }, inbound: { enabled: true, disabledBy: null } });
+      peerService.listConnectedPeers.mockResolvedValue([peerA, peerB]);
+      // Stands in for hub-pool's signed headers. training.controller.http.test.ts proves a real peer accepts them.
+      peerService.peerAuthHeaders.mockImplementation(async (peer) => ({ 'X-Hub-Pool-Node': `node-of-${peer.nodeFqdn}` }));
+
+      poolService = new TrainingPoolService(peerService, runner, governor);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
     });
 
     it('reports local training capability accurately', async () => {
@@ -134,22 +180,6 @@ describe('Training Subsystem', () => {
     });
 
     it('selects the peer with the highest available VRAM when offloading', async () => {
-      const peerA: HubPoolPeer = {
-        id: '1',
-        nodeFqdn: 'laptop.ts.net',
-        status: 'connected',
-        outboundBearerToken: 'tokA',
-      } as HubPoolPeer;
-
-      const peerB: HubPoolPeer = {
-        id: '2',
-        nodeFqdn: 'desktop-rtx4090.ts.net',
-        status: 'connected',
-        outboundBearerToken: 'tokB',
-      } as HubPoolPeer;
-
-      peerRepo.listByStatus.mockResolvedValue([peerA, peerB]);
-
       // Mock fetch response for both peers
       const capA: TrainingPeerCapability = {
         nodeFqdn: 'laptop.ts.net',
@@ -188,6 +218,36 @@ describe('Training Subsystem', () => {
       expect(target).toBeDefined();
       expect(target?.nodeFqdn).toBe('desktop-rtx4090.ts.net');
       expect(target?.availableVramMb).toBe(24576);
+      // Each probe carries the credentials hub-pool builds for that peer and path.
+      expect(peerService.peerAuthHeaders).toHaveBeenCalledWith(peerA, 'GET', '/api/training/pool/capabilities');
+      expect(globalFetch).toHaveBeenCalledWith(
+        'https://laptop.ts.net/api/training/pool/capabilities',
+        expect.objectContaining({ headers: { 'X-Hub-Pool-Node': 'node-of-laptop.ts.net' } }),
+      );
+    });
+
+    it('probes no peer the operator disabled, and none at all while outbound pooling is off', async () => {
+      const globalFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 503 }));
+      vi.stubGlobal('fetch', globalFetch);
+      peerService.listConnectedPeers.mockResolvedValue([peerA, { ...peerB, enabled: false }]);
+
+      await poolService.discoverTrainingPeers();
+      expect(globalFetch.mock.calls.map(([url]) => url)).toEqual(['https://laptop.ts.net/api/training/pool/capabilities']);
+
+      globalFetch.mockClear();
+      peerService.directions.mockReturnValue({ outbound: { enabled: false, disabledBy: 'setting' }, inbound: { enabled: true, disabledBy: null } });
+      await expect(poolService.discoverTrainingPeers()).resolves.toEqual([]);
+      expect(globalFetch).not.toHaveBeenCalled();
+    });
+
+    it('will not dispatch to a peer it may no longer send work to', async () => {
+      const globalFetch = vi.fn();
+      vi.stubGlobal('fetch', globalFetch);
+      peerService.listConnectedPeers.mockResolvedValue([{ ...peerA, enabled: false }]);
+
+      await expect(poolService.dispatchJobToPeer('laptop.ts.net', manifestFor('offload'))).rejects.toBeInstanceOf(NotFoundException);
+      expect(peerService.peerAuthHeaders).not.toHaveBeenCalled();
+      expect(globalFetch).not.toHaveBeenCalled();
     });
   });
 
@@ -201,7 +261,7 @@ describe('Training Subsystem', () => {
       runner = mock<TrainingRunnerService>();
       pool = mock<TrainingPoolService>();
       governor = mock<TrainingGovernorService>();
-      controller = new TrainingController(runner, pool, governor);
+      controller = new TrainingController(runner, pool, governor, mock<HubPoolPeerService>());
     });
 
     it('dispatches to peer when local capacity is insufficient and offload is allowed', async () => {
