@@ -174,30 +174,9 @@ function Badge({ x, y, label }: { x: number; y: number; label: string }) {
   );
 }
 
-export function PoolReach({
-  cards,
-  figures,
-  routingOff = null,
-  state,
-  className,
-}: {
-  /** `poolNodeCards` as the page built it, so model counts and names here are the Pool nodes table's own. */
-  cards: PoolNodeCard[];
-  /** `poolReach` as the page built it — the rail reads the same object. */
-  figures: PoolReachFigures;
-  /** Set when this Hub routes to none of its peers whatever their state: pooling off, or outbound off. */
-  routingOff?: ReachRoutingOff;
-  state: LoadState;
-  className?: string;
-}) {
+/** The words the drawing and its details list share, so a peer is described the same way in both. */
+function useReachWords() {
   const { t } = useTranslation();
-  const [width, measure] = useRenderedWidth();
-  const now = Date.now();
-  const hubCard = cards.find((card) => card.local);
-  // Not memoised: `poolNodeCards` builds a new array every render, so a memo here would never hit.
-  const layout = reachLayout(reachPeers(cards), { width });
-  const hubName = hubCard?.fqdn?.split('.')[0] || t('DASHBOARD_THIS_HUB');
-
   const statusWord = (status: ReachStatus) => t(STATUS_KEY[status]);
   const probeWord = (kind: string) => t(PROBE_KEY[kind] ?? 'DASHBOARD_REACH_PROBE_OTHER');
   const modelsWord = (peer: ReachPeer) =>
@@ -208,7 +187,7 @@ export function PoolReach({
    * the slot whole. A concern replaces the model count, because it is the reason the count is
    * missing or does not matter.
    */
-  const detailOptions = (peer: ReachPeer): string[] => {
+  const detailOptions = (peer: ReachPeer, now: number): string[] => {
     if (peer.concern === 'unreported') return [peer.probeFailure ? probeWord(peer.probeFailure) : t('DASHBOARD_REACH_MODELS_UNREPORTED')];
     if (peer.concern === 'declining') return [t('DASHBOARD_REACH_DECLINING')];
     if (peer.concern === 'probe') return [probeWord(peer.probeFailure ?? '')];
@@ -226,7 +205,7 @@ export function PoolReach({
   };
 
   /** Everything known about one peer, for its tooltip and its line in the details list. */
-  const describe = (peer: ReachPeer): string =>
+  const describe = (peer: ReachPeer, now: number): string =>
     [
       peer.host ? `${peer.name} (${peer.host})` : peer.name,
       statusWord(peer.status),
@@ -247,6 +226,25 @@ export function PoolReach({
     ]
       .filter(Boolean)
       .join(' · ');
+
+  return { statusWord, describe, detailOptions };
+}
+
+/**
+ * The drawing alone: this Hub in the middle and one spoke per paired peer. The Resources page's AI
+ * pool tab shows it above its list of Hubs; {@link PoolReach} wraps it with its legend and details.
+ */
+export function PoolReachGraph({ cards, routingOff = null, className }: { cards: PoolNodeCard[]; routingOff?: ReachRoutingOff; className?: string }) {
+  const { t } = useTranslation();
+  const [width, measure] = useRenderedWidth();
+  const now = Date.now();
+  const { statusWord, describe: describeAt, detailOptions: detailOptionsAt } = useReachWords();
+  const describe = (peer: ReachPeer) => describeAt(peer, now);
+  const detailOptions = (peer: ReachPeer) => detailOptionsAt(peer, now);
+  const hubCard = cards.find((card) => card.local);
+  // Not memoised: `poolNodeCards` builds a new array every render, so a memo here would never hit.
+  const layout = reachLayout(reachPeers(cards), { width });
+  const hubName = hubCard?.fqdn?.split('.')[0] || t('DASHBOARD_THIS_HUB');
 
   /** The spoke's pattern and colour: the status's own, unless no work can travel it. */
   const spokeStyle = (peer: ReachPeer): { className: string; dash: string | undefined } => {
@@ -280,6 +278,133 @@ export function PoolReach({
   const { hub } = layout;
 
   return (
+    <div ref={measure} className={cn('w-full min-w-0', className)}>
+      <svg
+        data-testid="pool-reach-graph"
+        role="img"
+        aria-label={t('DASHBOARD_REACH_ARIA', { count: layout.peers.length, hub: hubName, summary })}
+        viewBox={`0 0 ${layout.width} ${layout.height}`}
+        // Visible overflow: a label is fitted to its slot in Manrope, and if the font has not
+        // arrived yet the few pixels a wider fallback adds land in the panel's padding, not cut.
+        className="block h-auto w-full overflow-visible"
+      >
+        <g fill="none" strokeLinecap="round">
+          {layout.placed.map((peer) => {
+            const spoke = spokeStyle(peer);
+
+            return (
+              <line
+                key={peer.key}
+                data-spoke={peer.name}
+                data-status={peer.status}
+                data-concern={peer.concern ?? undefined}
+                x1={hub.x}
+                y1={hub.y}
+                x2={peer.x}
+                y2={peer.y}
+                className={spoke.className}
+                strokeWidth={1.5}
+                strokeDasharray={spoke.dash}
+              />
+            );
+          })}
+          {layout.overflow ? (
+            <line x1={hub.x} y1={hub.y} x2={layout.overflow.x} y2={layout.overflow.y} className="stroke-muted-foreground/40" strokeWidth={1} />
+          ) : null}
+        </g>
+
+        {layout.placed.map((peer) => {
+          const outward = peer.side === 'right' ? 1 : -1;
+          const anchor = peer.side === 'right' ? 'start' : 'end';
+          const inFlight = peer.inFlight ?? 0;
+          const labelX = peer.x + outward * REACH_LABEL_GAP;
+          const badge = badgeCentre(peer, hub);
+
+          return (
+            <g key={peer.key} data-testid="pool-reach-peer" data-peer={peer.name} data-status={peer.status} data-concern={peer.concern ?? undefined}>
+              <title>{describe(peer)}</title>
+              <Marker status={peer.status} concern={peer.concern} x={peer.x} y={peer.y} />
+              <text x={labelX} y={peer.y - 2} textAnchor={anchor} className="fill-foreground text-[12px] font-medium">
+                {nameLine(peer)}
+              </text>
+              <text
+                x={labelX}
+                y={peer.y + 12}
+                textAnchor={anchor}
+                className={cn('text-[10px]', peer.concern ? 'fill-warning' : DETAIL_CLASS[peer.status])}
+              >
+                {fitFirst(detailOptions(peer), peer.room, DETAIL_PX)}
+              </text>
+              {inFlight > 0 ? (
+                // On the peer's own spoke, just inside its marker: work WE forwarded there, not the peer's own load.
+                <g data-testid="pool-reach-in-flight">
+                  <Badge x={badge.x} y={badge.y} label={inFlight > 99 ? '99+' : String(inFlight)} />
+                </g>
+              ) : null}
+            </g>
+          );
+        })}
+
+        {layout.overflow ? (
+          <g data-testid="pool-reach-overflow">
+            <title>
+              {t('DASHBOARD_REACH_MORE_HINT', {
+                names: layout.overflow.peers.map((peer) => `${peer.name} (${statusWord(peer.status)})`).join(', '),
+              })}
+            </title>
+            <circle cx={layout.overflow.x} cy={layout.overflow.y} r={5.5} className="fill-card stroke-muted-foreground" strokeWidth={1.2} />
+            <text
+              x={layout.overflow.x + (layout.overflow.side === 'right' ? REACH_LABEL_GAP : -REACH_LABEL_GAP)}
+              y={layout.overflow.y + 4}
+              textAnchor={layout.overflow.side === 'right' ? 'start' : 'end'}
+              className="fill-muted-foreground text-[11px] font-medium"
+            >
+              {t('DASHBOARD_REACH_MORE', { count: layout.overflow.peers.length })}
+            </text>
+          </g>
+        ) : null}
+
+        {/* The hub last, so every spoke starts under it. */}
+        <g data-testid="pool-reach-hub">
+          <title>{[t('DASHBOARD_THIS_HUB'), hubName, hubDetail].filter(Boolean).join(' · ')}</title>
+          <circle cx={hub.x} cy={hub.y} r={REACH_HUB_R} className="fill-card stroke-primary" strokeWidth={2} />
+          <circle cx={hub.x} cy={hub.y} r={REACH_HUB_R} className="fill-primary/10" />
+          <text x={hub.x} y={hub.y - 2} textAnchor="middle" className="fill-foreground text-[11px] font-medium">
+            {fitText(hubName, REACH_HUB_R * 2 - 4, 11, 700)}
+          </text>
+          <text x={hub.x} y={hub.y + 12} textAnchor="middle" className="fill-muted-foreground text-[10px]">
+            {t('DASHBOARD_REACH_HUB')}
+          </text>
+        </g>
+      </svg>
+    </div>
+  );
+}
+
+export function PoolReach({
+  cards,
+  figures,
+  routingOff = null,
+  state,
+  className,
+}: {
+  /** `poolNodeCards` as the page built it, so model counts and names here are the Pool nodes table's own. */
+  cards: PoolNodeCard[];
+  /** `poolReach` as the page built it — the rail reads the same object. */
+  figures: PoolReachFigures;
+  /** Set when this Hub routes to none of its peers whatever their state: pooling off, or outbound off. */
+  routingOff?: ReachRoutingOff;
+  state: LoadState;
+  className?: string;
+}) {
+  const { t } = useTranslation();
+  const now = Date.now();
+  const { statusWord, describe: describeAt } = useReachWords();
+  const describe = (peer: ReachPeer) => describeAt(peer, now);
+  // Counts and the peer list do not depend on the drawing's width, so the default one serves.
+  const layout = reachLayout(reachPeers(cards));
+
+  return (
     <Panel title={t('DASHBOARD_REACH_TITLE')} density="compact" className={className}>
       {/* Outside PanelBody: it is true whatever the query did, and it is the question the panel answers. */}
       <p className="text-[11px] leading-snug text-muted-foreground">{t('DASHBOARD_REACH_CAPTION')}</p>
@@ -295,119 +420,7 @@ export function PoolReach({
                 {routingOff === 'pool' ? t('DASHBOARD_REACH_OFF_POOL') : t('DASHBOARD_REACH_OFF_OUTBOUND')}
               </p>
             ) : null}
-            <div ref={measure} className="w-full min-w-0">
-              <svg
-                data-testid="pool-reach-graph"
-                role="img"
-                aria-label={t('DASHBOARD_REACH_ARIA', { count: layout.peers.length, hub: hubName, summary })}
-                viewBox={`0 0 ${layout.width} ${layout.height}`}
-                // Visible overflow: a label is fitted to its slot in Manrope, and if the font has not
-                // arrived yet the few pixels a wider fallback adds land in the panel's padding, not cut.
-                className="block h-auto w-full overflow-visible"
-              >
-                <g fill="none" strokeLinecap="round">
-                  {layout.placed.map((peer) => {
-                    const spoke = spokeStyle(peer);
-
-                    return (
-                      <line
-                        key={peer.key}
-                        data-spoke={peer.name}
-                        data-status={peer.status}
-                        data-concern={peer.concern ?? undefined}
-                        x1={hub.x}
-                        y1={hub.y}
-                        x2={peer.x}
-                        y2={peer.y}
-                        className={spoke.className}
-                        strokeWidth={1.5}
-                        strokeDasharray={spoke.dash}
-                      />
-                    );
-                  })}
-                  {layout.overflow ? (
-                    <line
-                      x1={hub.x}
-                      y1={hub.y}
-                      x2={layout.overflow.x}
-                      y2={layout.overflow.y}
-                      className="stroke-muted-foreground/40"
-                      strokeWidth={1}
-                    />
-                  ) : null}
-                </g>
-
-                {layout.placed.map((peer) => {
-                  const outward = peer.side === 'right' ? 1 : -1;
-                  const anchor = peer.side === 'right' ? 'start' : 'end';
-                  const inFlight = peer.inFlight ?? 0;
-                  const labelX = peer.x + outward * REACH_LABEL_GAP;
-                  const badge = badgeCentre(peer, hub);
-
-                  return (
-                    <g
-                      key={peer.key}
-                      data-testid="pool-reach-peer"
-                      data-peer={peer.name}
-                      data-status={peer.status}
-                      data-concern={peer.concern ?? undefined}
-                    >
-                      <title>{describe(peer)}</title>
-                      <Marker status={peer.status} concern={peer.concern} x={peer.x} y={peer.y} />
-                      <text x={labelX} y={peer.y - 2} textAnchor={anchor} className="fill-foreground text-[12px] font-medium">
-                        {nameLine(peer)}
-                      </text>
-                      <text
-                        x={labelX}
-                        y={peer.y + 12}
-                        textAnchor={anchor}
-                        className={cn('text-[10px]', peer.concern ? 'fill-warning' : DETAIL_CLASS[peer.status])}
-                      >
-                        {fitFirst(detailOptions(peer), peer.room, DETAIL_PX)}
-                      </text>
-                      {inFlight > 0 ? (
-                        // On the peer's own spoke, just inside its marker: work WE forwarded there, not the peer's own load.
-                        <g data-testid="pool-reach-in-flight">
-                          <Badge x={badge.x} y={badge.y} label={inFlight > 99 ? '99+' : String(inFlight)} />
-                        </g>
-                      ) : null}
-                    </g>
-                  );
-                })}
-
-                {layout.overflow ? (
-                  <g data-testid="pool-reach-overflow">
-                    <title>
-                      {t('DASHBOARD_REACH_MORE_HINT', {
-                        names: layout.overflow.peers.map((peer) => `${peer.name} (${statusWord(peer.status)})`).join(', '),
-                      })}
-                    </title>
-                    <circle cx={layout.overflow.x} cy={layout.overflow.y} r={5.5} className="fill-card stroke-muted-foreground" strokeWidth={1.2} />
-                    <text
-                      x={layout.overflow.x + (layout.overflow.side === 'right' ? REACH_LABEL_GAP : -REACH_LABEL_GAP)}
-                      y={layout.overflow.y + 4}
-                      textAnchor={layout.overflow.side === 'right' ? 'start' : 'end'}
-                      className="fill-muted-foreground text-[11px] font-medium"
-                    >
-                      {t('DASHBOARD_REACH_MORE', { count: layout.overflow.peers.length })}
-                    </text>
-                  </g>
-                ) : null}
-
-                {/* The hub last, so every spoke starts under it. */}
-                <g data-testid="pool-reach-hub">
-                  <title>{[t('DASHBOARD_THIS_HUB'), hubName, hubDetail].filter(Boolean).join(' · ')}</title>
-                  <circle cx={hub.x} cy={hub.y} r={REACH_HUB_R} className="fill-card stroke-primary" strokeWidth={2} />
-                  <circle cx={hub.x} cy={hub.y} r={REACH_HUB_R} className="fill-primary/10" />
-                  <text x={hub.x} y={hub.y - 2} textAnchor="middle" className="fill-foreground text-[11px] font-medium">
-                    {fitText(hubName, REACH_HUB_R * 2 - 4, 11, 700)}
-                  </text>
-                  <text x={hub.x} y={hub.y + 12} textAnchor="middle" className="fill-muted-foreground text-[10px]">
-                    {t('DASHBOARD_REACH_HUB')}
-                  </text>
-                </g>
-              </svg>
-            </div>
+            <PoolReachGraph cards={cards} routingOff={routingOff} />
 
             {/* The old chip row's facts, kept as the key to the drawing. */}
             <div
