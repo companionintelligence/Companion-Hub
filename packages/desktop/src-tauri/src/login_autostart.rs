@@ -138,14 +138,18 @@ pub fn plan(existing: Option<&str>, marker_present: bool, desired: &str) -> Plan
 /// Best effort: a failure is logged and never stops the app.
 #[cfg(target_os = "linux")]
 pub fn ensure(data_dir: &Path) {
+    // desktop.log, which View logs opens: a login start has no terminal, so stderr goes unseen.
+    let log = |message: &str| {
+        let _ = crate::hub_manager::append_desktop_log_for(data_dir, "login-autostart", message);
+    };
     let Some(binary) = crate::app_binary::launch_path() else {
-        eprintln!("[login-autostart] skipped: could not resolve this app's binary path");
+        log("Skipped: could not resolve this app's binary path.");
         return;
     };
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let xdg = std::env::var("XDG_CONFIG_HOME").ok();
     let Some(path) = autostart_path(xdg.as_deref(), home.as_deref()) else {
-        eprintln!("[login-autostart] skipped: HOME is not set");
+        log("Skipped: HOME is not set.");
         return;
     };
     let marker = data_dir.join(AUTOSTART_MARKER_FILE_NAME);
@@ -153,7 +157,9 @@ pub fn ensure(data_dir: &Path) {
     let existing = std::fs::read_to_string(&path).ok();
 
     match plan(existing.as_deref(), marker.exists(), &desired) {
-        Plan::Keep(_) => {}
+        // Quiet when current, so an ordinary launch adds nothing to the log.
+        Plan::Keep("already current") => {}
+        Plan::Keep(reason) => log(&format!("Left {} alone: {reason}.", path.display())),
         Plan::Write => {
             let result = path
                 .parent()
@@ -162,12 +168,12 @@ pub fn ensure(data_dir: &Path) {
             match result {
                 Ok(()) => {
                     let _ = std::fs::write(&marker, "");
-                    eprintln!("[login-autostart] wrote {}", path.display());
+                    log(&format!(
+                        "Wrote {} (starts the app in the tray at login).",
+                        path.display()
+                    ));
                 }
-                Err(error) => eprintln!(
-                    "[login-autostart] could not write {}: {error}",
-                    path.display()
-                ),
+                Err(error) => log(&format!("Could not write {}: {error}", path.display())),
             }
         }
     }
