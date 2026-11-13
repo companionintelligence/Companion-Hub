@@ -1,6 +1,6 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
-import { HUB_RUNTIME_URN } from '@/modules/apps/app-runtime-monitor.service';
+import { HUB_RUNTIME_URN } from '@/modules/apps/constants';
 import { DockerService } from '@/modules/docker/docker.service';
 import { ApiQuery, ApiResponse } from '@nestjs/swagger';
 import { Controller, Get, Query, Req, Res, UseGuards } from '@nestjs/common';

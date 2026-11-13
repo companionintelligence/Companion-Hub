@@ -41,6 +41,23 @@ function resultOf(
   return { label: reason ? t('RESOURCES_RESULT_FAILED_BECAUSE', { reason }) : t('RESOURCES_RESULT_FAILED'), tone: 'bad' };
 }
 
+/**
+ * The First reply cell. A streamed reply's `durationMs` is the wait for its first word. A reply that
+ * came all at once arrives only when it is done, so its `durationMs` is the whole answer's time, and
+ * the cell says so instead of passing it off as a first reply. A Hub too old to report `stream`
+ * can't say which, so those rows show the time alone, as before.
+ */
+function ReplyTime({ entry, t }: { entry: RoutingLogEntry; t: (key: string) => string }) {
+  const time = formatDuration(entry.durationMs);
+  if (entry.stream !== false) return <>{time}</>;
+  return (
+    <span className="inline-flex flex-col items-end leading-tight">
+      <span>{time}</span>
+      <span className="text-xs text-muted-foreground">{t('RESOURCES_WHOLE_ANSWER')}</span>
+    </span>
+  );
+}
+
 const TONE: Record<Tone, string> = { ok: 'bg-success', bad: 'bg-destructive', wait: 'bg-warning', muted: 'bg-muted-foreground' };
 
 /**
@@ -167,7 +184,9 @@ export function RequestsTab({
                       <TableCell className="hidden py-2.5 text-right tabular-nums text-muted-foreground lg:table-cell">
                         {prompt ? t('RESOURCES_TOKENS', { value: formatTokens(prompt) }) : '—'}
                       </TableCell>
-                      <TableCell className="hidden py-2.5 text-right tabular-nums sm:table-cell">{formatDuration(entry.durationMs)}</TableCell>
+                      <TableCell className="hidden py-2.5 text-right tabular-nums sm:table-cell">
+                        <ReplyTime entry={entry} t={t} />
+                      </TableCell>
                       <TableCell className="py-2.5 pr-4 sm:pr-6">
                         <span className={cn('inline-flex items-center gap-2', result.tone === 'bad' ? 'text-destructive' : 'text-muted-foreground')}>
                           <span className={cn('size-2 shrink-0 rounded-full', TONE[result.tone])} aria-hidden="true" />
