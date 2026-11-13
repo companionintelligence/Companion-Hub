@@ -1,4 +1,5 @@
 import { useAppContext } from '@/context/app-context';
+import { useOptionalUserContext } from '@/context/user-context';
 import { getFullInspectionOptions } from '@/api-client/@tanstack/react-query.gen';
 import { POLLING } from '@/lib/polling-budget';
 import { copyToClipboard } from '@/lib/copy-to-clipboard';
@@ -20,6 +21,7 @@ import {
   XCircle,
   Clock,
   Container,
+  ShieldCheck,
 } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -562,6 +564,119 @@ const StorageSection = ({ appDataRootHostPath }: { appDataRootHostPath: string }
 
 // ─── Main Container ──────────────────────────────────────────────────────────
 
+interface TrustProtocolSpec {
+  id: string;
+  name: string;
+  envFlag: string;
+  active: boolean;
+  identifierType: string;
+  keyRotation: string;
+  offlineVerification: string;
+  summary: string;
+}
+
+const TrustProtocolsSection = () => {
+  const userContext = useOptionalUserContext();
+  const didAuthEnabled = userContext?.didAuthEnabled === true;
+  const keriOobiEnabled = userContext?.keriOobiEnabled === true;
+  const allowCloudFallback = userContext?.allowCloudFallback === true;
+
+  const specs: TrustProtocolSpec[] = [
+    {
+      id: 'did-key-siop',
+      name: 'did:key (SIOPv2)',
+      envFlag: 'CI_HUB_DID_AUTH',
+      active: didAuthEnabled,
+      identifierType: 'did:key:z6Mk… (Ed25519)',
+      keyRotation: 'Immutable key (no log resolution)',
+      offlineVerification: 'Yes (zero network)',
+      summary: 'Cryptographic self-issued ID token auth; gated behind 404 when disabled.',
+    },
+    {
+      id: 'keri-oobi',
+      name: 'KERI OOBI (Experimental)',
+      envFlag: 'CI_HUB_KERI_OOBI',
+      active: keriOobiEnabled,
+      identifierType: 'Frozen pre-spec prefix',
+      keyRotation: 'Experimental (frozen KERI lib)',
+      offlineVerification: 'Partial (non-CESR JSON)',
+      summary: 'Isolated test surface; fails closed with 404 unless explicitly enabled.',
+    },
+    {
+      id: 'cloud-fallback',
+      name: 'Cloud Inference Fallback',
+      envFlag: 'CI_HUB_ALLOW_CLOUD_FALLBACK',
+      active: allowCloudFallback,
+      identifierType: 'Operator credential policy',
+      keyRotation: 'Per-provider API key',
+      offlineVerification: 'Local-only when disabled',
+      summary: 'Blocks automatic failover of local /v1 prompts to external cloud APIs unless opted in.',
+    },
+    {
+      id: 'forward-auth',
+      name: 'Forward-Auth EdDSA',
+      envFlag: 'Always On',
+      active: true,
+      identifierType: 'urn:ci-hub:<directoryId>',
+      keyRotation: 'Hub signing keypair',
+      offlineVerification: 'Yes (JWKS + Ed25519)',
+      summary: 'Production reverse-proxy SSO assertions for installed Companion apps.',
+    },
+  ];
+
+  return (
+    <section className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6" data-testid="trust-protocols-inspector">
+      <div className="flex items-center gap-3 mb-4">
+        <ShieldCheck className="h-6 w-6 text-primary" />
+        <div>
+          <h2 className="text-base font-medium sm:text-lg">Trust &amp; Protocol Boundaries</h2>
+          <p className="text-xs text-muted-foreground">
+            Provisional decentralized trust protocols remain fail-closed unless opted in via Hub environment flags.
+          </p>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-xs">
+          <thead>
+            <tr className="border-b border-border text-muted-foreground">
+              <th className="py-2 pr-3 font-medium">Protocol / Gate</th>
+              <th className="py-2 pr-3 font-medium">Status</th>
+              <th className="py-2 pr-3 font-medium">Flag</th>
+              <th className="py-2 pr-3 font-medium">Identifier</th>
+              <th className="py-2 pr-3 font-medium">Rotation</th>
+              <th className="py-2 font-medium">Offline Verify</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border/60">
+            {specs.map((spec) => (
+              <tr key={spec.id} data-testid={`trust-protocol-row-${spec.id}`}>
+                <td className="py-2 pr-3">
+                  <div className="font-medium text-foreground">{spec.name}</div>
+                  <div className="text-[11px] text-muted-foreground">{spec.summary}</div>
+                </td>
+                <td className="py-2 pr-3 whitespace-nowrap">
+                  <span
+                    className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                      spec.active ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground'
+                    }`}
+                  >
+                    {spec.active ? 'Active' : 'Fail-Closed'}
+                  </span>
+                </td>
+                <td className="py-2 pr-3 font-mono text-[11px] whitespace-nowrap">{spec.envFlag}</td>
+                <td className="py-2 pr-3 font-mono text-[11px]">{spec.identifierType}</td>
+                <td className="py-2 pr-3 text-[11px] text-muted-foreground">{spec.keyRotation}</td>
+                <td className="py-2 text-[11px] text-muted-foreground">{spec.offlineVerification}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+};
+
 export const SystemInspectorContainer = () => {
   const { t } = useTranslation();
   const { appDataRootHostPath } = useAppContext();
@@ -616,6 +731,7 @@ export const SystemInspectorContainer = () => {
       <SystemHealthSection health={data.health} />
       <ContainersSection containers={data.containers} />
       <PortManagementSection ports={data.ports} />
+      <TrustProtocolsSection />
     </div>
   );
 };

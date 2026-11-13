@@ -20,7 +20,7 @@ import {
 import { ModuleRef } from '@nestjs/core';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
-import { ApiHeader, ApiTags } from '@nestjs/swagger';
+import { ApiHeader, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { PoolProxyService } from '@/modules/hub-pool/hub-pool-proxy.service';
 import { POOL_SESSION_HEADER } from '@/modules/hub-pool/hub-pool-prefix-affinity';
 import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
@@ -33,7 +33,7 @@ import { ModelRegistryService } from './model-registry.service';
 import { ModelResidencyService } from './model-residency.service';
 import { reconcileTrackedWithResidency, trackedPullsNotListed } from './tracked-residency';
 import { ModelPullerService } from './model-puller.service';
-import { CloudFallbackService } from './cloud-fallback.service';
+import { CloudFallbackService, isCloudFallbackAllowed } from './cloud-fallback.service';
 import { cloudProviderStatus } from './cloud-provider-status';
 import { OllamaInstallerService } from './ollama-installer.service';
 import { RocmInstallerService } from './rocm-installer.service';
@@ -48,6 +48,7 @@ import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderStatus, CloudProviderType, ModelContextPlan } from '@ci-hub/common/types';
 import {
+  CloudFallbackPolicyDto,
   LoadModelBody,
   UnloadModelBody,
   RuntimeModelsQueryDto,
@@ -711,6 +712,18 @@ export class InferenceController {
   @Get('cloud-providers')
   async getCloudProviders(): Promise<CloudProviderStatus[]> {
     return this.cloudFallback.listProviders().map((p) => cloudProviderStatus(p, this.cloudFallback.getDefaultBaseUrl(p.provider)));
+  }
+
+  /** Whether `CI_HUB_ALLOW_CLOUD_FALLBACK` lets local inference failures fail over to configured cloud providers. */
+  @UseGuards(AuthGuard)
+  @Get('cloud-policy')
+  @ApiResponse({ type: CloudFallbackPolicyDto })
+  getCloudPolicy(): CloudFallbackPolicyDto {
+    return {
+      allowCloudFallback: isCloudFallbackAllowed(),
+      hasCloudFallback: this.cloudFallback.hasCloudFallback(),
+      envFlag: 'CI_HUB_ALLOW_CLOUD_FALLBACK',
+    };
   }
 
   @UseGuards(AuthGuard, HubManagerGuard)

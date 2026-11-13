@@ -10,8 +10,11 @@ import { AcknowledgeWelcomeBody, AppContextDto, HubAccessDto, UserSettingsBody, 
 import { AppService } from './app.service';
 import { AppsReadService } from './modules/apps/apps-read.service';
 import { AuthGuard } from './modules/auth/auth.guard';
+import { DID_AUTH_FLAG } from './modules/auth/did-auth.service';
+import { KERI_OOBI_FLAG } from './modules/auth/keri-oobi.guard';
 import { HubManagerGuard } from './modules/auth/hub-manager.guard';
 import { SESSION_REFRESH_AFTER_SECONDS, SESSION_TTL_SECONDS, SessionManager } from './modules/auth/session.manager';
+import { isCloudFallbackAllowed } from './modules/inference/cloud-fallback.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import type { UserDto } from './modules/user/dto/user.dto';
 import { ApiOperation, ApiResponse } from '@nestjs/swagger';
@@ -59,6 +62,23 @@ export class AppController {
     return {
       sessionExpiresAt,
       sessionRefreshRecommendedAt: sessionExpiresAt - (SESSION_TTL_SECONDS - SESSION_REFRESH_AFTER_SECONDS) * 1000,
+    };
+  }
+
+  private getProtocolPolicyFlags(req: Request): {
+    didAuthEnabled: boolean;
+    keriOobiEnabled?: boolean;
+    allowCloudFallback?: boolean;
+  } {
+    const didAuthEnabled = process.env[DID_AUTH_FLAG] === 'true';
+    if (!req.user) {
+      return { didAuthEnabled };
+    }
+
+    return {
+      didAuthEnabled,
+      keriOobiEnabled: process.env[KERI_OOBI_FLAG] === 'true',
+      allowCloudFallback: isCloudFallbackAllowed(),
     };
   }
 
@@ -130,6 +150,7 @@ export class AppController {
         domain,
         sslPort,
         ...this.getSessionMetadata(req),
+        ...this.getProtocolPolicyFlags(req),
       };
 
       // Try to parse with validation, but don't fail if it doesn't match
@@ -179,6 +200,7 @@ export class AppController {
         domain: resolveHubPublicDomainRoot({ domain: configuredDomain, userSettings: defaultSettings }),
         sslPort: defaultSettings?.sslPort ?? defaults.sslPort,
         ...this.getSessionMetadata(req),
+        ...this.getProtocolPolicyFlags(req),
       };
 
       // Try to parse, but return raw data if parsing fails

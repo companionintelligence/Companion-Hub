@@ -3837,6 +3837,27 @@
         }
       }
     },
+    "/api/inference/cloud-policy": {
+      "get": {
+        "operationId": "getCloudPolicy",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CloudFallbackPolicyDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
     "/api/inference/cloud-providers/{provider}": {
       "delete": {
         "operationId": "removeCloudProvider",
@@ -7529,6 +7550,15 @@
           },
           "sessionRefreshRecommendedAt": {
             "type": "number"
+          },
+          "didAuthEnabled": {
+            "type": "boolean"
+          },
+          "keriOobiEnabled": {
+            "type": "boolean"
+          },
+          "allowCloudFallback": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -14351,6 +14381,26 @@
         },
         "required": [
           "modelId"
+        ],
+        "additionalProperties": false
+      },
+      "CloudFallbackPolicyDto": {
+        "type": "object",
+        "properties": {
+          "allowCloudFallback": {
+            "type": "boolean"
+          },
+          "hasCloudFallback": {
+            "type": "boolean"
+          },
+          "envFlag": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "allowCloudFallback",
+          "hasCloudFallback",
+          "envFlag"
         ],
         "additionalProperties": false
       },

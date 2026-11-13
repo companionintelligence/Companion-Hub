@@ -716,4 +716,35 @@ describe('InferenceController — preferences', () => {
       expect(relResult).toEqual({ ok: true, activeMediaWork: 0 });
     });
   });
+
+  describe('GET cloud-policy', () => {
+    const savedFlag = process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+
+    afterEach(() => {
+      if (savedFlag === undefined) delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      else process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = savedFlag;
+    });
+
+    it('reports disabled cloud fallback by default alongside configured provider presence', () => {
+      delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      cloudFallback.hasCloudFallback.mockReturnValue(true);
+
+      expect(controller.getCloudPolicy()).toEqual({
+        allowCloudFallback: false,
+        hasCloudFallback: true,
+        envFlag: 'CI_HUB_ALLOW_CLOUD_FALLBACK',
+      });
+    });
+
+    it('reports enabled cloud fallback only when CI_HUB_ALLOW_CLOUD_FALLBACK === "true"', () => {
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      cloudFallback.hasCloudFallback.mockReturnValue(false);
+
+      expect(controller.getCloudPolicy()).toEqual({
+        allowCloudFallback: true,
+        hasCloudFallback: false,
+        envFlag: 'CI_HUB_ALLOW_CLOUD_FALLBACK',
+      });
+    });
+  });
 });

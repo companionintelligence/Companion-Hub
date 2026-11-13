@@ -25,6 +25,9 @@ export type UserContextDto = {
     sslPort: number;
     sessionExpiresAt?: number;
     sessionRefreshRecommendedAt?: number;
+    didAuthEnabled?: boolean;
+    keriOobiEnabled?: boolean;
+    allowCloudFallback?: boolean;
 };
 
 export type AppContextDto = {
@@ -1532,6 +1535,12 @@ export type LoadModelBody = {
 export type UnloadModelBody = {
     modelId: string;
     backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
+};
+
+export type CloudFallbackPolicyDto = {
+    allowCloudFallback: boolean;
+    hasCloudFallback: boolean;
+    envFlag: string;
 };
 
 export type UpdateHubPoolPreferencesBody = {
@@ -4772,6 +4781,19 @@ export type SetCloudProviderData = {
 export type SetCloudProviderResponses = {
     201: unknown;
 };
+
+export type GetCloudPolicyData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/cloud-policy';
+};
+
+export type GetCloudPolicyResponses = {
+    default: CloudFallbackPolicyDto;
+};
+
+export type GetCloudPolicyResponse = GetCloudPolicyResponses[keyof GetCloudPolicyResponses];
 
 export type RemoveCloudProviderData = {
     body?: never;
