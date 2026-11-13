@@ -99,6 +99,32 @@ describe('Requests tab', () => {
     expect(screen.getByText(/doesn't reach back the whole 30 minutes/)).toBeTruthy();
   });
 
+  it('marks a reply that came all at once as the whole answer, not a first reply', () => {
+    render(
+      <RequestsTab
+        entries={[
+          { ...entry('outbound', 'local'), stream: true, durationMs: 900 },
+          { ...entry('outbound', 'local'), stream: false, durationMs: 6200 },
+          { ...entry('outbound', 'local'), stream: null, durationMs: 700 },
+        ]}
+        state={{ pending: false, failed: false }}
+        buckets={[]}
+        own={own}
+        hubName={hubName}
+        unlogged={false}
+        now={NOW}
+      />,
+    );
+
+    const [streamed, whole, unknown] = screen.getAllByTestId('resources-request-row');
+    expect(streamed?.textContent).toContain('900 ms');
+    expect(streamed?.textContent).not.toContain('whole answer');
+    expect(whole?.textContent).toContain('6.2 s');
+    expect(whole?.textContent).toContain('whole answer');
+    // A Hub too old to say whether it streamed shows the time alone, as before.
+    expect(unknown?.textContent).not.toContain('whole answer');
+  });
+
   it('says so when the log could not be read', () => {
     render(<RequestsTab entries={[]} state={{ pending: false, failed: true }} buckets={[]} own={own} hubName={hubName} unlogged={false} now={NOW} />);
 
