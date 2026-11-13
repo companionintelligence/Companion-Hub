@@ -20,6 +20,7 @@ pub mod hub_env;
 pub mod hub_manager;
 mod hub_names;
 mod inference_runners;
+mod login_autostart;
 pub mod port_manager;
 mod portal_url;
 mod sentry_scrubber;
@@ -646,6 +647,11 @@ pub fn run() {
             {
                 return;
             }
+            // A second login start (the session restored twice, say) finds the app already in
+            // the tray. Leave it there rather than opening the window nobody asked for.
+            if login_autostart::is_login_start(&args) {
+                return;
+            }
             focus_main_window(app);
             for arg in &args {
                 handle_deep_link_url(app, arg);
@@ -777,9 +783,14 @@ pub fn run() {
 
             // Linux (and every other target that reads tauri.linux.conf.json) creates the
             // window hidden, so GTK first lays it out undecorated and at the restored size.
+            // Started by the login autostart entry, it stays in the tray: the launch check
+            // below brings the Hub back, and the tray (or opening the app) shows the window.
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {
-                let _ = window.show();
+                let args: Vec<String> = std::env::args().skip(1).collect();
+                if !login_autostart::is_login_start(&args) {
+                    let _ = window.show();
+                }
             }
 
             // Build system tray (also registers close-to-hide handler)
@@ -897,6 +908,9 @@ pub fn run() {
                         // the WSL engine, which an uninstall can remove and a reinstall over an
                         // engine that is already set up doesn't write again.
                         hub_manager::ensure_wsl_engine_logon_script(&data_for_decision);
+                        // Linux's counterpart: start the app at login, so a Hub on a home that is
+                        // only unlocked at login comes back after a reboot (see login_autostart).
+                        login_autostart::ensure(&data_for_decision);
                         // A reboot brings the containers back by their restart policy, so the start
                         // below doesn't run and nothing else writes nvidia.json for this boot. Rescan
                         // would keep saying a driver installed before the reboot isn't answering.
@@ -1730,6 +1744,7 @@ Companion Hub {version} — desktop app + headless launcher for the Companion In
 USAGE:
   companion-hub                   Launch the desktop app (requires a graphical session)
   companion-hub --detached        Start the Hub stack headless (no display needed) and exit
+  companion-hub --login-start     Start in the tray without opening the window (used at login)
   companion-hub update [--check]  Install (or just check for) desktop + stack updates
   companion-hub --help | -h       Show this help
   companion-hub --version | -V    Show the version
