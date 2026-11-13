@@ -237,8 +237,13 @@ export class CloudFallbackService implements OnModuleInit {
       return this.getEnabledProvider('google');
     }
 
-    // Fall back to first enabled provider
-    return this.getEnabledProviders()[0];
+    const explicitDefaultMatch = this.getEnabledProviders().find((p) => p.defaultModel === model);
+    if (explicitDefaultMatch) {
+      return explicitDefaultMatch;
+    }
+
+    // Only fall back to an arbitrary enabled provider for unrecognised model names when cloud fallback is explicitly allowed
+    return isCloudFallbackAllowed() ? this.getEnabledProviders()[0] : undefined;
   }
 
   /**
