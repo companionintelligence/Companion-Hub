@@ -27,6 +27,8 @@ export default [
 
     // App store routes
     ...prefix('store', [
+      route('openclaw', './modules/app/pages/legacy-openclaw-redirect.tsx', { id: 'legacy-openclaw' }),
+      route('hermes', './modules/app/pages/legacy-hermes-redirect.tsx', { id: 'legacy-hermes' }),
       layout('./modules/app/layouts/app-store-layout.tsx', [
         index('./modules/app/pages/app-store-page.tsx', { id: 'app-store' }),
         route(':storeId', './modules/app/pages/app-store-page.tsx', { id: 'app-store-id' }),
