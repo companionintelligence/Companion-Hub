@@ -19,6 +19,7 @@ import { HardwareInspectorService } from '@/modules/inference/hardware-inspector
 import { type GpuProcessSampleSource, GpuProcessSamplerService } from '@/modules/inference/gpu-process-sampler.service';
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
+import { HUB_RUNTIME_URN } from './constants';
 
 const HIGH_CPU_THRESHOLD_PERCENT = 90;
 const HIGH_CPU_SAMPLE_COUNT = 3;
@@ -161,9 +162,6 @@ export type AppRuntimeMonitorSnapshot = {
    */
   gpuVramSource: GpuProcessSampleSource | 'absent' | null;
 };
-
-/** The Hub's own row in the monitor. Not an installed app, so no grant covers it. */
-export const HUB_RUNTIME_URN = 'ci-hub:system';
 
 /**
  * Whether the samples, oldest first, end in a run of high CPU that has lasted {@link SUSTAINED_HIGH_CPU_MS}
