@@ -72,6 +72,7 @@ import {
   UpdatePortExposeAppDto,
 } from './modules/custom-apps/dto/custom-apps.dto';
 import {
+  CloudFallbackPolicyDto,
   LoadModelBody,
   OnboardingProfileQueryDto,
   RuntimeModelsQueryDto,
@@ -188,6 +189,7 @@ export const SWAGGER_ZOD_DTOS: ZodDto[] = [
   UpdateAppMetadataDto,
   UpdateCustomAppDto,
   UpdatePortExposeAppDto,
+  CloudFallbackPolicyDto,
   OnboardingProfileQueryDto,
   RuntimeModelsQueryDto,
   LoadModelBody,

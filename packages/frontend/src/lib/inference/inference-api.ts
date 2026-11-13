@@ -1,4 +1,5 @@
 import {
+  getCloudPolicy,
   getCloudProviders,
   getLemonadeStatus,
   getManualEndpointStatus,
@@ -115,6 +116,24 @@ export async function fetchConfiguredCloudProviders(): Promise<CloudProviderInpu
       }));
   } catch {
     return [];
+  }
+}
+
+export interface CloudFallbackPolicy {
+  allowCloudFallback: boolean;
+  hasCloudFallback: boolean;
+  envFlag: string;
+}
+
+/**
+ * Whether `CI_HUB_ALLOW_CLOUD_FALLBACK=true` allows automatic failover from local engines
+ * to configured cloud providers. Returns null if older test mocks stub out the SDK helper.
+ */
+export async function fetchCloudFallbackPolicy(): Promise<CloudFallbackPolicy | null> {
+  try {
+    return await unwrapSdkOrNull<CloudFallbackPolicy>(getCloudPolicy());
+  } catch {
+    return null;
   }
 }
 

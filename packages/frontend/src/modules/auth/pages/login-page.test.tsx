@@ -16,6 +16,8 @@ const {
   mockHubUrl,
   mockResolveHint,
   mockIsTauriDesktopApp,
+  mockDidChallenge,
+  mockDidVerify,
 } = vi.hoisted(() => ({
   mockUseUserContext: vi.fn(),
   mockUseMutation: vi.fn(),
@@ -36,6 +38,8 @@ const {
     }),
   ),
   mockIsTauriDesktopApp: vi.fn(() => false),
+  mockDidChallenge: vi.fn(),
+  mockDidVerify: vi.fn(),
 }));
 
 vi.mock('@/lib/hub-runtime-mode', () => ({
@@ -56,6 +60,8 @@ vi.mock('@/lib/portal-session-hint', () => ({
 
 vi.mock('@/api-client', () => ({
   userContext: vi.fn(),
+  didChallenge: (options: unknown) => mockDidChallenge(options),
+  didVerify: (options: unknown) => mockDidVerify(options),
 }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
@@ -71,6 +77,7 @@ vi.mock('@/api-client/client.gen', () => ({
 
 vi.mock('@/lib/api-fetch', () => ({
   apiFetch: vi.fn(),
+  markHubSessionIssuedAt: vi.fn(),
   setTauriSessionId: vi.fn(),
 }));
 
@@ -320,5 +327,53 @@ describe('LoginPage', () => {
         }),
       );
     });
+  });
+
+  it('hides the did:key sign-in option when didAuthEnabled is false or absent', () => {
+    render(<LoginPage />);
+
+    expect(screen.queryByTestId('did-sign-in-panel')).not.toBeInTheDocument();
+  });
+
+  it('renders did:key sign-in when didAuthEnabled is true and completes SIOPv2 sign-in', async () => {
+    const refreshUserContext = vi.fn();
+    const setUserContext = vi.fn();
+    mockUseUserContext.mockReturnValue({
+      isLoggedIn: false,
+      isConfigured: true,
+      didAuthEnabled: true,
+      refreshUserContext,
+      setUserContext,
+    });
+    mockDidChallenge.mockResolvedValue({
+      data: {
+        challengeId: '11111111-1111-1111-1111-111111111111',
+        nonce: 'nonce-abc',
+        audience: 'urn:ci-hub:test',
+        purpose: 'sign-in',
+        expiresAt: Date.now() + 60_000,
+      },
+    });
+    mockDidVerify.mockResolvedValue({
+      data: { success: true },
+    });
+
+    render(<LoginPage />);
+
+    await userEvent.click(screen.getByTestId('did-sign-in-toggle'));
+    await userEvent.click(screen.getByTestId('did-sign-in-challenge-btn'));
+
+    expect(mockDidChallenge).toHaveBeenCalledWith({ body: { purpose: 'sign-in' } });
+    await userEvent.type(await screen.findByTestId('did-sign-in-idtoken-input'), 'eyJhbGciOiJFZERTQSJ9.e30.c2ln');
+    await userEvent.click(screen.getByTestId('did-sign-in-submit-btn'));
+
+    expect(mockDidVerify).toHaveBeenCalledWith({
+      body: {
+        challengeId: '11111111-1111-1111-1111-111111111111',
+        idToken: 'eyJhbGciOiJFZERTQSJ9.e30.c2ln',
+      },
+    });
+    expect(setUserContext).toHaveBeenCalledWith({ isLoggedIn: true });
+    expect(mockNavigate).toHaveBeenCalledWith('/home');
   });
 });

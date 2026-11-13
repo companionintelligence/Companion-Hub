@@ -1,4 +1,6 @@
 import {
+  type CloudFallbackPolicy,
+  fetchCloudFallbackPolicy,
   fetchConfiguredCloudProviders,
   fetchInferenceOnboardingProfile,
   fetchInferencePreferences,
@@ -174,6 +176,7 @@ export const AiSettingsContainer = () => {
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
   const [cloudProviders, setCloudProviders] = useState<CloudProviderInput[]>([]);
+  const [cloudPolicy, setCloudPolicy] = useState<CloudFallbackPolicy | null>(null);
   const [pinnedModelIds, setPinnedModelIds] = useState<Set<string>>(new Set());
   const [trackedModels, setTrackedModels] = useState<Record<string, TrackedModel>>({});
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModelInfo[]>([]);
@@ -375,10 +378,11 @@ export const AiSettingsContainer = () => {
         void checkLemonadeStatus();
       }
 
-      const configured = await fetchConfiguredCloudProviders();
+      const [configured, policy] = await Promise.all([fetchConfiguredCloudProviders(), fetchCloudFallbackPolicy()]);
       if (configured.length > 0) {
         setCloudProviders(configured);
       }
+      setCloudPolicy(policy);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -1078,6 +1082,26 @@ export const AiSettingsContainer = () => {
             availableMemoryMb={inferenceMemory.freeMb}
           />
         </>
+      )}
+
+      {cloudPolicy && (
+        <div
+          className={`rounded-lg border p-4 text-xs ${
+            cloudPolicy.allowCloudFallback ? 'border-warning/40 bg-warning/10 text-foreground' : 'border-border bg-muted/30 text-muted-foreground'
+          }`}
+          data-testid="cloud-fallback-policy-banner"
+        >
+          <div className="font-medium text-foreground">
+            {cloudPolicy.allowCloudFallback
+              ? 'Cloud Inference Fallback Enabled (CI_HUB_ALLOW_CLOUD_FALLBACK=true)'
+              : 'Cloud Inference Boundary: Fail-Closed Local Routing (CI_HUB_ALLOW_CLOUD_FALLBACK=false)'}
+          </div>
+          <p className="mt-1">
+            {cloudPolicy.allowCloudFallback
+              ? 'Automatic failover to enabled cloud providers is permitted when local engines are unreachable.'
+              : 'Hub never forwards local inference prompts to external cloud APIs automatically when local engines are unavailable. Keys below are only injected into apps you explicitly authorize.'}
+          </p>
+        </div>
       )}
 
       <CloudProviderCard providers={cloudProviders} insufficientHardware={isInsufficient} onUpdate={setCloudProviders} />

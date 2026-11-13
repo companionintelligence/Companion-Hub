@@ -14,6 +14,7 @@ import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { Navigate, redirect, useNavigate, useSearchParams } from 'react-router';
 import { LoginForm } from '../components/login-form';
+import { DidSignInPanel } from '../components/did-sign-in-panel';
 import { TotpForm } from '../components/totp-form/totp-form';
 import { usePortalSignIn } from '../hooks/use-portal-sign-in';
 
@@ -64,7 +65,7 @@ export async function clientLoader({ request }: { request: Request }) {
 }
 
 export default () => {
-  const { isLoggedIn, refreshUserContext, setUserContext } = useUserContext();
+  const { isLoggedIn, didAuthEnabled, refreshUserContext, setUserContext } = useUserContext();
   const [totpSessionId, setTotpSessionId] = useState<string | null>(null);
 
   const [searchParams, setSearchParams] = useSearchParams();
@@ -193,6 +194,28 @@ export default () => {
         allowPasswordLogin={!isMobile}
         onSwitchAccount={switchAccount}
       />
+      {didAuthEnabled && !isMobile ? (
+        <DidSignInPanel
+          onSuccess={(data) => {
+            if (data?.success && data.totpSessionId) {
+              setTotpSessionId(data.totpSessionId);
+              return;
+            }
+            if ((data as Record<string, unknown>)?.sessionId) {
+              setTauriSessionId((data as Record<string, unknown>).sessionId as string);
+            } else {
+              markHubSessionIssuedAt();
+            }
+            setUserContext({ isLoggedIn: true });
+            refreshUserContext();
+
+            if (followSafeRedirect(redirect_url)) {
+              return;
+            }
+            navigate('/home');
+          }}
+        />
+      ) : null}
       {authPolicy.showSwitchHub ? (
         <button
           type="button"

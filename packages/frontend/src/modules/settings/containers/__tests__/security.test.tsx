@@ -25,5 +25,6 @@ describe('SecurityContainer', () => {
     expect(screen.getByText('Two-factor form')).toBeInTheDocument();
     expect(screen.getByText('Operators')).toBeInTheDocument();
     expect(screen.queryByText('API keys')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('did-links-card')).not.toBeInTheDocument();
   });
 });

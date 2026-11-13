@@ -11,6 +11,7 @@ const {
   fetchInferencePreferences,
   fetchInferenceTrackedModels,
   fetchInferenceRuntimeModels,
+  fetchCloudFallbackPolicy,
   fetchConfiguredCloudProviders,
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
@@ -29,6 +30,7 @@ const {
   fetchInferencePreferences: vi.fn(),
   fetchInferenceTrackedModels: vi.fn(),
   fetchInferenceRuntimeModels: vi.fn(),
+  fetchCloudFallbackPolicy: vi.fn(),
   fetchConfiguredCloudProviders: vi.fn(),
   fetchOllamaInstallStatus: vi.fn(),
   fetchVllmInstallStatus: vi.fn(),
@@ -49,6 +51,7 @@ vi.mock('@/lib/inference/inference-api', () => ({
   fetchInferencePreferences,
   fetchInferenceTrackedModels,
   fetchInferenceRuntimeModels,
+  fetchCloudFallbackPolicy,
   fetchConfiguredCloudProviders,
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
@@ -267,6 +270,7 @@ describe('AiSettingsContainer', () => {
       models: [{ id: 'llama3.2:latest', name: 'llama3.2:latest', state: 'loaded' }],
     });
     fetchConfiguredCloudProviders.mockResolvedValue([]);
+    fetchCloudFallbackPolicy.mockResolvedValue({ allowCloudFallback: false, hasCloudFallback: false, envFlag: 'CI_HUB_ALLOW_CLOUD_FALLBACK' });
     fetchOllamaInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:11434' });
     fetchVllmInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:8000' });
     fetchLemonadeInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:13305' });
@@ -1265,5 +1269,20 @@ describe('AiSettingsContainer', () => {
     });
 
     expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the fail-closed Cloud Inference Boundary notice when CI_HUB_ALLOW_CLOUD_FALLBACK is false', async () => {
+    renderAiSettings();
+
+    const banner = await screen.findByTestId('cloud-fallback-policy-banner');
+    expect(banner).toHaveTextContent('Cloud Inference Boundary: Fail-Closed Local Routing (CI_HUB_ALLOW_CLOUD_FALLBACK=false)');
+  });
+
+  it('shows the enabled Cloud Inference Fallback warning when CI_HUB_ALLOW_CLOUD_FALLBACK is true', async () => {
+    fetchCloudFallbackPolicy.mockResolvedValue({ allowCloudFallback: true, hasCloudFallback: true, envFlag: 'CI_HUB_ALLOW_CLOUD_FALLBACK' });
+    renderAiSettings();
+
+    const banner = await screen.findByTestId('cloud-fallback-policy-banner');
+    expect(banner).toHaveTextContent('Cloud Inference Fallback Enabled (CI_HUB_ALLOW_CLOUD_FALLBACK=true)');
   });
 });

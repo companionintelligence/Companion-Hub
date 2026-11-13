@@ -463,6 +463,7 @@ describe('the inference route table', () => {
       'InferenceController.pinModel': 'POST models/pin → AuthGuard, HubManagerGuard',
       'InferenceController.unpinModel': 'POST models/unpin → AuthGuard, HubManagerGuard',
       'InferenceController.getCloudProviders': 'GET cloud-providers → AuthGuard',
+      'InferenceController.getCloudPolicy': 'GET cloud-policy → AuthGuard',
       'InferenceController.setCloudProvider': 'POST cloud-providers → AuthGuard, HubManagerGuard',
       'InferenceController.removeCloudProvider': 'DELETE cloud-providers/:provider → AuthGuard, HubManagerGuard',
       'InferenceController.getOnboardingProfile': 'GET onboarding-profile → AuthGuard',

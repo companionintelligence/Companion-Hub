@@ -131,3 +131,11 @@ const updateRocmInstallStateSchema = z.object({
 });
 
 export class UpdateRocmInstallStateBody extends createZodDto(updateRocmInstallStateSchema) {}
+
+const cloudFallbackPolicySchema = z.object({
+  allowCloudFallback: z.boolean(),
+  hasCloudFallback: z.boolean(),
+  envFlag: z.string(),
+});
+
+export class CloudFallbackPolicyDto extends createZodDto(cloudFallbackPolicySchema) {}

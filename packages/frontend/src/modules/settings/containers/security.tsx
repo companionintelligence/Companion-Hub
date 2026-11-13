@@ -5,6 +5,7 @@ import { ChangePasswordForm } from '../components/change-password-form/change-pa
 import { ChangeUsernameForm } from '../components/change-username-form/change-username-form';
 import { OtpForm } from '../components/otp-form/otp-form';
 import { ApiKeysContainer } from './api-keys';
+import { DidLinksCard } from '../components/did-links-card';
 import { OperatorsList } from '../components/operators-list/operators-list';
 
 /** `manageHub`: whether this person may manage the Hub's API keys, an owner's or admin's (`useHubAccess`). */
@@ -58,6 +59,8 @@ export const SecurityContainer = (props: { totpEnabled: boolean; username?: stri
       </Card>
 
       <OperatorsList />
+
+      <DidLinksCard />
 
       {/* Hub-wide API keys (agents + apps). Renders its own Card; moved here from the MCP tab. */}
       {manageHub && <ApiKeysContainer />}

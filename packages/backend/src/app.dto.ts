@@ -566,6 +566,9 @@ const userContextDto = z.object({
   sslPort: z.number(),
   sessionExpiresAt: z.number().optional(),
   sessionRefreshRecommendedAt: z.number().optional(),
+  didAuthEnabled: z.boolean().optional(),
+  keriOobiEnabled: z.boolean().optional(),
+  allowCloudFallback: z.boolean().optional(),
 });
 
 export class UserContextDto extends createZodDto(userContextDto) {}
