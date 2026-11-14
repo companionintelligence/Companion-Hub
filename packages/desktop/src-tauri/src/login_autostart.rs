@@ -18,6 +18,10 @@
 //! writes `X-GNOME-Autostart-enabled=false`, KDE `Hidden=true`) keeps it off, and deleting the file
 //! keeps it deleted: a marker in the data dir records that the app wrote it once.
 
+// Only the Linux `ensure` uses the helpers below. On other platforms they compile for the tests, and
+// the release build's `-D dead_code` would otherwise fail on them.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 use std::path::{Path, PathBuf};
 
 /// Launch argument the autostart entry passes: open in the tray, without showing the window.
