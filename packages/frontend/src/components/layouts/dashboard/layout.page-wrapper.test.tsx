@@ -100,7 +100,9 @@ describe('DashboardLayout <main>', () => {
     // top of the scrollbar and hid the thumb at the top of the page.
     const main = screen.getByRole('main');
     expect(main).not.toHaveClass('no-scrollbar');
-    expect(main).toHaveStyle({ marginTop: 'var(--header-offset)' });
+    // Read the declared value. jsdom 31 resolves var() in computed styles, and this test never defines
+    // --header-offset, so the computed margin is 0px. The component sets this exact inline value.
+    expect(main.style.marginTop).toBe('var(--header-offset)');
   });
 
   it('spans the window and pads its content into the page column, so scrollbars sit at the window edge', () => {
