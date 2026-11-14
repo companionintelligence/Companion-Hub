@@ -15,6 +15,7 @@ import { SystemUpdateController } from '@/modules/system-update/system-update.co
 import { FactoryResetController } from '@/modules/system/factory-reset.controller';
 import { SystemController } from '@/modules/system/system.controller';
 import { TailscaleController } from '@/modules/tailscale/tailscale.controller';
+import { TrainingController } from '@/modules/training/training.controller';
 import { McpAdminController } from '../mcp-admin.controller';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 import { AppAgentTools } from '../tools/app-agent.tools';
@@ -128,6 +129,7 @@ const GUARDED_CONTROLLERS: Array<[file: string, controller: { name: string; prot
   ['modules/system/factory-reset.controller.ts', FactoryResetController],
   ['modules/system/system.controller.ts', SystemController],
   ['modules/tailscale/tailscale.controller.ts', TailscaleController],
+  ['modules/training/training.controller.ts', TrainingController],
 ];
 
 /**
@@ -189,6 +191,8 @@ const GUARDED_ROUTE_TOOLS: Record<string, string[]> = {
   'TailscaleController.disconnect': [],
   'TailscaleController.startAuth': [],
   'TailscaleController.syncExposure': [],
+  'TrainingController.cancelTrainingJob': [],
+  'TrainingController.submitTrainingJob': [],
 };
 
 /** `Controller.method` for each route handler a controller puts `HubManagerGuard` on, its class's guards included. */
