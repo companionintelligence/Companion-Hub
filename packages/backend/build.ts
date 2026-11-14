@@ -66,6 +66,11 @@ const knownMissingAtRuntime: Record<string, string> = {
   // the Hub never does, and catches the miss with a warning.
   '@mastra/observability':
     "@sentry/server-utils' Mastra integration, reached only when a Mastra instance is constructed (the Hub has none), inside try/catch",
+  // Arrived with the major-group dependency bump, which pulled proxy-agent-negotiate into the bundle.
+  // Its Kerberos loader is a dynamic import inside try/catch, reached only when a proxy answers with a
+  // Negotiate challenge. A missing module there throws a clear error on that path, and nothing loads it at startup.
+  'kerberos':
+    "proxy-agent-negotiate's Kerberos loader, reached only on a Negotiate proxy challenge, inside try/catch with a clear error when absent",
 };
 
 // Copy non-TypeScript asset files
