@@ -226,7 +226,7 @@ export function useMemoryConnection(appUrn: string) {
       await queryClient.invalidateQueries({ queryKey: memoryStatusQueryKey(appUrn) });
     },
     onError: async (error) => {
-      toast.error(t(disconnectErrorKey(error), error instanceof TranslatableError ? error.intlParams : undefined));
+      toast.error(t(disconnectErrorKey(error), (error instanceof TranslatableError ? error.intlParams : undefined) ?? {}));
       await queryClient.invalidateQueries({ queryKey: memoryStatusQueryKey(appUrn) });
     },
   });

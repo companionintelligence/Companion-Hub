@@ -28,7 +28,7 @@ export const InstallRetryButton: React.FC<InstallRetryButtonProps> = ({ urn, nam
   const retryMutation = useMutation({
     ...installAppMutation(),
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
       // Refetch, do NOT retract: unlike a first install, the row behind this button is a real
       // `install_failed` row that onMutate optimistically overwrote. Removing it would make the tile
       // disappear rather than return it to its failed state (with this retry button on it).

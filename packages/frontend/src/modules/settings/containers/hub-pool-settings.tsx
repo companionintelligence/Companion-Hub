@@ -28,6 +28,7 @@ import { ArrowRightLeft, ChevronRight, Network, RefreshCw } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
+import { asLegacyTranslate, type LegacyTranslate } from '@/lib/i18n/legacy-translate';
 import {
   Detail,
   DetailGrid,
@@ -115,7 +116,7 @@ const MAX_LOCAL_AFFINITY = 20;
 const MIN_HEALTH_POLL_SECONDS = 10;
 const MAX_HEALTH_POLL_SECONDS = 300;
 
-type Translate = (key: string, options?: Record<string, unknown>) => string;
+type Translate = LegacyTranslate;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -319,7 +320,7 @@ export const HubPoolSection = () => {
   const toastPoolError = (fallbackKey: string) => (error: unknown) => {
     const reason = poolErrorReason(error);
     if (reason) {
-      toast.error(t(fallbackKey), { description: t(reason.key, reason.params) });
+      toast.error(t(fallbackKey), { description: t(reason.key, reason.params ?? {}) });
     } else {
       toast.error(t(fallbackKey));
     }
@@ -772,7 +773,7 @@ export const HubPoolSection = () => {
             <Detail label={t('HUB_POOL_FIELD_TAILNET')} value={status.localNode.tailnet ?? t('COMMON_UNKNOWN')} mono />
             <Detail
               label={t('HUB_POOL_FIELD_LOCAL_BACKENDS')}
-              value={status.localNode.backends.length ? backendSummary(status.localNode.backends, t) : t('HUB_POOL_NO_BACKENDS')}
+              value={status.localNode.backends.length ? backendSummary(status.localNode.backends, asLegacyTranslate(t)) : t('HUB_POOL_NO_BACKENDS')}
             />
           </DetailGrid>
 
@@ -922,7 +923,7 @@ export const HubPoolSection = () => {
                 its margin is silently inert while the limit is 0 (beta-max, 2026-09-29, accepted a
                 margin of 3 at limit 0 and routed exactly as before), so the state is stated here.
                 Nothing renders at the defaults, where both are 0. */}
-            <PrefixAffinityNote settings={status.settings} t={t} />
+            <PrefixAffinityNote settings={status.settings} t={asLegacyTranslate(t)} />
 
             <Button
               type="button"
@@ -1066,7 +1067,12 @@ export const HubPoolSection = () => {
                     <div className="flex flex-col gap-0.5">
                       <span className="flex flex-wrap items-center gap-1.5">
                         <span className="break-all font-medium sm:truncate">{peerLabel(peer)}</span>
-                        <PeerStatusBadge status={peer.status} enabled={peer.enabled} probeFailureKind={peer.probeFailure?.kind} t={t} />
+                        <PeerStatusBadge
+                          status={peer.status}
+                          enabled={peer.enabled}
+                          probeFailureKind={peer.probeFailure?.kind}
+                          t={asLegacyTranslate(t)}
+                        />
                         {peer.enabled && peer.lastCapabilities?.acceptingWork === false ? (
                           <RowMark testId="hub-pool-peer-not-accepting" title={t('HUB_POOL_PEER_NOT_ACCEPTING')}>
                             {t('HUB_POOL_PEER_NOT_ACCEPTING_MARK')}
@@ -1108,9 +1114,11 @@ export const HubPoolSection = () => {
                   <Td align="right">{typeof peer.inFlightRequests === 'number' ? String(peer.inFlightRequests) : t('COMMON_UNKNOWN')}</Td>
                   <Td
                     className="max-w-[200px] truncate text-muted-foreground"
-                    title={peer.lastCapabilities?.backends.length ? backendSummary(peer.lastCapabilities.backends, t) : undefined}
+                    title={peer.lastCapabilities?.backends.length ? backendSummary(peer.lastCapabilities.backends, asLegacyTranslate(t)) : undefined}
                   >
-                    {peer.lastCapabilities?.backends.length ? backendSummary(peer.lastCapabilities.backends, t) : t('COMMON_UNKNOWN')}
+                    {peer.lastCapabilities?.backends.length
+                      ? backendSummary(peer.lastCapabilities.backends, asLegacyTranslate(t))
+                      : t('COMMON_UNKNOWN')}
                   </Td>
                   <Td align="right" className="whitespace-nowrap text-muted-foreground">
                     {peer.lastSeenAt ? formatHubDateTime(peer.lastSeenAt) : t('HUB_POOL_NEVER_SEEN')}
@@ -1342,7 +1350,7 @@ export const HubPoolSection = () => {
                       align="right"
                       className={cn('whitespace-nowrap', settledOutcome(entry) === 'failed' ? 'font-medium text-warning' : 'text-muted-foreground')}
                     >
-                      <RoutingResult entry={entry} t={t} />
+                      <RoutingResult entry={entry} t={asLegacyTranslate(t)} />
                     </Td>
                   </Tr>
                 ))}

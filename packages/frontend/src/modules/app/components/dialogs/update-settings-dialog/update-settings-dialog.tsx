@@ -38,7 +38,7 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
   const updateConfig = useMutation({
     ...updateAppConfigMutation(),
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
     onMutate: () => {
       onClose();

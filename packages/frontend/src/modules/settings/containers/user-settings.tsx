@@ -51,7 +51,7 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname, manage
   const updateSettings = useMutation({
     ...updateUserSettingsMutation(),
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
     onSuccess: () => {
       toast.success(requireRestart ? t('SETTINGS_GENERAL_SETTINGS_UPDATED_RESTART') : t('SETTINGS_GENERAL_SETTINGS_UPDATED'));
@@ -67,7 +67,7 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname, manage
     ...updateAdvancedModeMutation(),
     onError: (e: TranslatableError) => {
       setAdvancedModeDraft(null);
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
     onSuccess: async () => {
       toast.success(t('SETTINGS_GENERAL_SETTINGS_UPDATED'));

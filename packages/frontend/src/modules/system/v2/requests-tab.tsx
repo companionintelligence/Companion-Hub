@@ -7,6 +7,7 @@ import { type OwnInference, type RoutingBucket, settledOutcome } from '@/modules
 import { estimatedPromptTokens, type RoutingLogEntry, routingLogKeys } from '@/modules/system/use-dashboard-data';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import { MinuteBars } from './area-chart';
 import { CardBody, type QueryState } from './card-state';
 import { formatAgo, formatDuration, formatTokens } from './format';
@@ -174,11 +175,13 @@ export function RequestsTab({
               <TableBody>
                 {shown.map((entry, index) => {
                   const route = requestRoute(entry, hubName, thisHub);
-                  const result = resultOf(entry, route.ranOn, t);
+                  const result = resultOf(entry, route.ranOn, asLegacyTranslate(t));
                   const prompt = estimatedPromptTokens(entry);
                   return (
                     <TableRow key={keys[index]} data-testid="resources-request-row">
-                      <TableCell className="py-2.5 pl-4 whitespace-nowrap text-muted-foreground sm:pl-6">{formatAgo(entry.at, now, t)}</TableCell>
+                      <TableCell className="py-2.5 pl-4 whitespace-nowrap text-muted-foreground sm:pl-6">
+                        {formatAgo(entry.at, now, asLegacyTranslate(t))}
+                      </TableCell>
                       <TableCell className="max-w-[12rem] truncate py-2.5 font-medium">{entry.model ?? '—'}</TableCell>
                       <TableCell className="hidden py-2.5 sm:table-cell">{route.from}</TableCell>
                       <TableCell className="hidden py-2.5 text-right tabular-nums text-muted-foreground lg:table-cell">

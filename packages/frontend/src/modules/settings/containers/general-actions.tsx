@@ -177,7 +177,7 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
     (result: UpdateActionResult) =>
       result.defaultMessage
         ? t(result.messageKey, { defaultValue: result.defaultMessage, ...result.messageParams })
-        : t(result.messageKey, result.messageParams),
+        : t(result.messageKey, result.messageParams ?? {}),
     [t],
   );
 
@@ -249,7 +249,7 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
       toast.error(
         error instanceof TranslatableError &&
           (error.message === 'SETTINGS_FACTORY_RESET_FILES_LEFT' || error.message === 'SETTINGS_FACTORY_RESET_DATA_ROOT_REFUSED')
-          ? t(error.message, error.intlParams)
+          ? t(error.message, error.intlParams ?? {})
           : t('SETTINGS_FACTORY_RESET_ERROR'),
       );
     }

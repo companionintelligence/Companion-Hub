@@ -1,6 +1,7 @@
 import { formatApiError } from '@/lib/format-api-error';
 import { RotateCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import { Button } from '../ui/Button';
 
 type ErrorPageProps = {
@@ -10,7 +11,7 @@ type ErrorPageProps = {
 
 export const ErrorPage = ({ error, onReset }: ErrorPageProps) => {
   const { t } = useTranslation();
-  const userMessage = formatApiError(error, t);
+  const userMessage = formatApiError(error, asLegacyTranslate(t));
 
   return (
     <div className="flex min-h-dvh items-center justify-center bg-background px-4">

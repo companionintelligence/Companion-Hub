@@ -8,6 +8,7 @@ import { KeyRound, ShieldCheck, ShieldOff } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 
 /** Mirrors the backend hub-access view (GET /api/app-lifecycle/:urn/hub-access). Never carries raw values. */
 export interface HubAccessStatus {
@@ -67,7 +68,8 @@ export const HubAccess = ({ appUrn, hasUnsavedChanges = false }: HubAccessProps)
       await queryClient.invalidateQueries({ queryKey: hubAccessQueryKey(appUrn) });
     },
     // A 409 names the operation holding the app ("still starting, try again"); nothing was rotated.
-    onError: (error) => toast.error(isConflictError(error) ? formatApiError(error, t, 409) : t('APP_SETTINGS_HUB_ACCESS_ROTATE_ERROR')),
+    onError: (error) =>
+      toast.error(isConflictError(error) ? formatApiError(error, asLegacyTranslate(t), 409) : t('APP_SETTINGS_HUB_ACCESS_ROTATE_ERROR')),
   });
 
   const status = query.data ?? null;

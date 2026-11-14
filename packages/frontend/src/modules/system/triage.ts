@@ -1,4 +1,5 @@
 import { humanDuration } from '@/components/ui/dense/dense';
+import type { LegacyTranslate } from '@/lib/i18n/legacy-translate';
 import type { LoadState } from '@/modules/system/use-dashboard-data';
 
 /*
@@ -40,7 +41,7 @@ export interface Verdict {
   unavailable: number;
 }
 
-type Translate = (key: string, vars?: Record<string, unknown>) => string;
+type Translate = LegacyTranslate;
 
 /**
  * How old a container sample may be, when the Hub hands it over, before the page says so.

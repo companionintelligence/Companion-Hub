@@ -42,7 +42,7 @@ export const UninstallDialog = ({ info, isOpen, onClose, canReset = false, portE
   const uninstallMutation = useMutation({
     ...uninstallAppMutation(),
     onError: (error: TranslatableError) => {
-      toast.error(t(error.message, error.intlParams));
+      toast.error(t(error.message, error.intlParams ?? {}));
       // A pre-flight rejection (e.g. the memory-provider guard's 409) fails
       // synchronously and emits no lifecycle SSE event, and nothing polls the app
       // detail — so without this the optimistic 'uninstalling' status would spin

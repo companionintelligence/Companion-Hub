@@ -19,6 +19,7 @@ import {
 import { Bot, Cpu, HardDrive, type LucideIcon, MemoryStick, MonitorCog } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import { AreaChart } from './area-chart';
 import { CardBody, CardFailed, type QueryState } from './card-state';
 import { formatBytes, formatDuration, formatMb, formatPercent, meterTone, niceCeiling } from './format';
@@ -548,7 +549,7 @@ export function PerformanceTab(props: PerformanceTabProps) {
                             {inMemory ? formatBytes(inMemory.totalBytes) : '—'}
                           </TableCell>
                           <TableCell className="hidden px-4 py-2.5 text-right text-muted-foreground md:table-cell">
-                            {inMemory ? unloadWords(until, t, 'RESOURCES_IN_TIME') : ''}
+                            {inMemory ? unloadWords(until, asLegacyTranslate(t), 'RESOURCES_IN_TIME') : ''}
                           </TableCell>
                         </TableRow>
                       );
@@ -598,7 +599,7 @@ function ModelsInMemory({
               <span className="min-w-0 flex-1 truncate font-medium">{model.id}</span>
               <span className="text-muted-foreground">{engineName(model.backend)}</span>
               <span className="tabular-nums">{formatBytes(model.totalBytes)}</span>
-              <span className="w-36 text-right text-muted-foreground">{unloadWords(until, t, 'RESOURCES_UNLOADS_IN')}</span>
+              <span className="w-36 text-right text-muted-foreground">{unloadWords(until, asLegacyTranslate(t), 'RESOURCES_UNLOADS_IN')}</span>
             </li>
           );
         })}

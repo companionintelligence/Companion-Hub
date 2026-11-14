@@ -34,7 +34,7 @@ export const EditAppStoreDialog = ({ appStore }: Props) => {
   const editAppStore = useMutation({
     ...updateAppStoreMutation(),
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
     onSuccess: async () => {
       await invalidateStoreCatalogQueries(queryClient);

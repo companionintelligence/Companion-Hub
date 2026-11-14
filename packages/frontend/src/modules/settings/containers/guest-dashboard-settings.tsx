@@ -58,7 +58,7 @@ export const GuestDashboardSettings = () => {
   const [deleting, setDeleting] = useState<CustomLink | null>(null);
 
   const onError = (error: TranslatableError) => {
-    toast.error(t(error.message, error.intlParams));
+    toast.error(t(error.message, error.intlParams ?? {}));
   };
 
   // Saved on its own: settings merge on the Hub, so this leaves the rest of General settings alone.

@@ -150,7 +150,7 @@ function CheckRow({
           <span className="text-sm font-medium">{t(CHECK_LABEL_KEYS[check.id])}</span>
           <span className="text-xs text-muted-foreground">{t(STATE_LABEL_KEYS[display])}</span>
         </div>
-        {check.detailKey ? <p className="break-words text-xs text-muted-foreground">{t(check.detailKey, check.detailParams)}</p> : null}
+        {check.detailKey ? <p className="break-words text-xs text-muted-foreground">{t(check.detailKey, check.detailParams ?? {})}</p> : null}
         {waitingForSignIn ? <p className="text-xs text-muted-foreground">{t('HUB_POOL_SETUP_TAILSCALE_WAITING')}</p> : null}
         {check.remedy ? (
           <code

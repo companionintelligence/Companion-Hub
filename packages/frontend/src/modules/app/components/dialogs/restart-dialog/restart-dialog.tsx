@@ -26,7 +26,7 @@ export const RestartDialog: React.FC<IProps> = ({ info, isOpen, onClose, reason 
   const restartMutation = useMutation({
     ...restartAppMutation(),
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
       // A pre-flight rejection (e.g. restarting an app that was just removed) fails
       // synchronously and emits no lifecycle SSE event, and nothing polls the app
       // detail — so without this the optimistic 'restarting' status would spin

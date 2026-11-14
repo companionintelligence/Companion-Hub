@@ -1,3 +1,4 @@
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import {
   type CloudFallbackPolicy,
   fetchCloudFallbackPolicy,
@@ -904,7 +905,7 @@ export const AiSettingsContainer = () => {
                       checkboxTestId={`recommended-model-checkbox-${model.id}`}
                       title={model.displayName}
                       icon={<ModelIcon model={model} />}
-                      tags={modelTags(model, t)}
+                      tags={modelTags(model, asLegacyTranslate(t))}
                       selected={isSelected}
                       onToggle={() => handleToggleModel(model.id)}
                       meta={modelMeta(model)}

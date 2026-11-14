@@ -1,11 +1,10 @@
-import type { TFunction } from 'i18next';
 import { describe, expect, it } from 'vitest';
 
 import { TranslatableError } from '@/types/error.types';
 
 import { formatApiError } from './format-api-error';
 
-const t = ((key: string, options?: Record<string, unknown>) => {
+const t = (key: string, options?: Record<string, unknown>) => {
   const knownKeys = new Set([
     'AUTH_ERROR_INVALID_CREDENTIALS',
     'SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN',
@@ -15,7 +14,7 @@ const t = ((key: string, options?: Record<string, unknown>) => {
   if (knownKeys.has(key)) return key;
   const defaultValue = options?.defaultValue;
   return typeof defaultValue === 'string' ? defaultValue : key;
-}) as TFunction;
+};
 
 describe('formatApiError', () => {
   it('translates TranslatableError i18n keys', () => {

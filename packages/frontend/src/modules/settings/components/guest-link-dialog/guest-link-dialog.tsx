@@ -75,7 +75,7 @@ export const GuestLinkDialog = ({ isOpen, onClose, link }: GuestLinkDialogProps)
     close();
   };
   const onError = (error: TranslatableError) => {
-    toast.error(t(error.message, error.intlParams));
+    toast.error(t(error.message, error.intlParams ?? {}));
   };
 
   const createLink = useMutation({ ...createLinkMutation(), onError });
@@ -172,7 +172,7 @@ export const DeleteGuestLinkDialog = ({ isOpen, onClose, link }: DeleteGuestLink
   const deleteLink = useMutation({
     ...deleteLinkMutation(),
     onError: (error: TranslatableError) => {
-      toast.error(t(error.message, error.intlParams));
+      toast.error(t(error.message, error.intlParams ?? {}));
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: getLinksQueryKey() });

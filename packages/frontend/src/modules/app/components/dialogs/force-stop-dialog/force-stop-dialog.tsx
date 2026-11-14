@@ -2,6 +2,7 @@ import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { client } from '@/api-client/client.gen';
 import { formatApiError } from '@/lib/format-api-error';
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import { invalidateAppQueries } from '@/modules/app/helpers/app-sse-cache';
 import { useAppStatus } from '@/modules/app/helpers/use-app-status';
 import type { AppInfo } from '@/types/app.types';
@@ -27,7 +28,7 @@ export const ForceStopDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => 
     onError: (error: unknown) => {
       // formatApiError, not t(error.message): a network failure or raw backend English reaches here
       // now that the call rejects, and neither belongs on screen verbatim.
-      toast.error(formatApiError(error, t));
+      toast.error(formatApiError(error, asLegacyTranslate(t)));
       // A pre-flight rejection (e.g. force-stopping an app that was just removed)
       // fails synchronously and emits no lifecycle SSE event, and nothing polls the
       // app detail — so without this the optimistic 'stopping' status would spin

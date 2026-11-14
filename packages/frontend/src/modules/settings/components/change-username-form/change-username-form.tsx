@@ -43,7 +43,7 @@ export const ChangeUsernameForm = ({ username }: Props) => {
       window.location.assign(`/login?${SIGNED_OUT_PARAM}=username_changed`);
     },
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
   });
 

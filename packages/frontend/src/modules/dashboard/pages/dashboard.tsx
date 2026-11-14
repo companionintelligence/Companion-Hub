@@ -87,7 +87,7 @@ export default () => {
 
     const result = memoryConnectResultToast(marker, searchParams.get('app'), installedApps);
     if (result) {
-      toast.error(t(result.key, result.params), { id: 'memory-connect-result' });
+      toast.error(t(result.key, result.params ?? {}), { id: 'memory-connect-result' });
     }
 
     const next = new URLSearchParams(searchParams);

@@ -14,6 +14,7 @@ import { Input } from '@/components/ui/Input/Input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { useAppContext } from '@/context/app-context';
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { CloudflareSubdomainField } from '@/modules/app/components/install-form/cloudflare-subdomain-field';
 import { domainListNoteFor } from '@/modules/app/components/install-form/domain-list-note';
@@ -139,7 +140,7 @@ export default function PortExposeCreatePage() {
     checkDnsAvailability,
     setError,
     clearErrors,
-    t,
+    t: asLegacyTranslate(t),
   });
 
   // A Public web port waiting on the person to agree that anyone with the address can open it.

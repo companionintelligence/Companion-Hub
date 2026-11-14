@@ -31,7 +31,7 @@ export const ResetDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
   const resetMutation = useMutation({
     ...resetAppMutation(),
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
       // A pre-flight rejection (e.g. the memory-provider guard's 409) fails
       // synchronously and emits no lifecycle SSE event, so clear the optimistic
       // 'resetting' status by re-syncing from the server.

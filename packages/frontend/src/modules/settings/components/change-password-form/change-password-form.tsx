@@ -35,7 +35,7 @@ export const ChangePasswordForm = () => {
   const changePassword = useMutation({
     ...changePasswordMutation(),
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
     onSuccess: () => {
       // Changing the password revokes every session for this user server-side, and the

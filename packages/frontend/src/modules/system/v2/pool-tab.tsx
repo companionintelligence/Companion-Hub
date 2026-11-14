@@ -9,6 +9,7 @@ import { ChevronRight, ExternalLink, Network } from 'lucide-react';
 import { Fragment, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import { CardBody, type QueryState } from './card-state';
 import { formatAgo, formatDuration } from './format';
 
@@ -191,7 +192,7 @@ export function PoolTab({
                                 : t('RESOURCES_POOL_TAILSCALE_OFF')}
                             </Detail>
                           ) : (
-                            <Detail label={t('RESOURCES_POOL_LAST_SEEN')}>{formatAgo(card.lastSeenAt, now, t)}</Detail>
+                            <Detail label={t('RESOURCES_POOL_LAST_SEEN')}>{formatAgo(card.lastSeenAt, now, asLegacyTranslate(t))}</Detail>
                           )}
                           <Detail label={t('RESOURCES_ENGINES')}>
                             {card.backends
