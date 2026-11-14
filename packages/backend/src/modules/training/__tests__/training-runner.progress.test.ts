@@ -124,6 +124,26 @@ describe('TrainingRunnerService progress events', () => {
     expect(runner.getJobStatus('progress-epochs')).toMatchObject({ currentEpoch: 5, totalEpochs: 20, progressPercent: 25 });
   });
 
+  it('ignores a totalEpochs that is not finite, and keeps the epoch fields', async () => {
+    const { runner, progress } = await attachedJob('progress-total-infinite');
+    progress('CI_TRAIN_EVENT: {"epoch": 3, "totalEpochs": 10}');
+
+    // 1e400 parses to Infinity. Four over Infinity is a finite zero, so only the finiteness guard stops the write.
+    progress('CI_TRAIN_EVENT: {"epoch": 4, "totalEpochs": 1e400}');
+
+    expect(runner.getJobStatus('progress-total-infinite')).toMatchObject({ currentEpoch: 3, totalEpochs: 10, progressPercent: 30 });
+  });
+
+  it('ignores an epoch that is not a number, and keeps the epoch fields', async () => {
+    const { runner, progress } = await attachedJob('progress-epoch-string');
+    progress('CI_TRAIN_EVENT: {"epoch": 3, "totalEpochs": 10}');
+
+    // A string epoch divides to a finite percentage (40), so only the type guard stops the write.
+    progress('CI_TRAIN_EVENT: {"epoch": "4", "totalEpochs": 10}');
+
+    expect(runner.getJobStatus('progress-epoch-string')).toMatchObject({ currentEpoch: 3, totalEpochs: 10, progressPercent: 30 });
+  });
+
   it('ignores a payload that is not a JSON object', async () => {
     const { runner, progress } = await attachedJob('progress-shape');
 

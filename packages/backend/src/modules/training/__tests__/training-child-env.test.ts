@@ -2,7 +2,7 @@ import { Logger } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
-import { passesByRule, trainingChildEnv } from '../training-child-env';
+import { AT_SIGN_EXEMPT_NAMES, DENYLIST_EXEMPT_NAMES, TRAINING_CHILD_ENV_ALLOWLIST, trainingChildEnv } from '../training-child-env';
 import { TrainingGovernorService } from '../training-governor.service';
 import { TrainingRunnerService } from '../training-runner.service';
 import type { TrainingJobManifest } from '../training.types';
@@ -16,7 +16,8 @@ vi.mock('node:child_process', () => ({
   exec: (...args: unknown[]) => execMock(...args),
 }));
 
-const SPEC_ALLOWLIST = [
+/** The allowlist as the spec lists it, in order. It is compared with the exported constant. */
+const EXPECTED_ALLOWLIST = [
   'PATH',
   'HOME',
   'LANG',
@@ -41,45 +42,59 @@ const SPEC_ALLOWLIST = [
   'HF_HOME',
   'HF_HUB_CACHE',
   'TORCH_HOME',
-  'MODELS_DIR',
   'HSA_OVERRIDE_GFX_VERSION',
   'HIP_VISIBLE_DEVICES',
   'ROCR_VISIBLE_DEVICES',
   'ROCM_PATH',
   'HIP_PATH',
-  'QWEN_MAX_TOKENS_NO_THINK',
-  'TOKEN_CORPUS_DIR',
-  'CLUSTER_STALENESS_DAYS',
-  'FUNCTION_RUNNER_CONCURRENCY',
+  'MODELS_DIR',
   'CI_LLM_HOST_REWRITE',
   'CI_LLM_HOST_GATEWAY',
+  'API_URL',
+  'LLM_API_BASE',
+  'HBPE_LABEL_API_BASE',
+  'HBPE_LABEL_HTTP_TIMEOUT',
+  'TOKEN_CORPUS_DIR',
+  'HBPE_LABEL_MODEL',
+  'LLM_DEFAULT_CHAT_MODEL',
+  'QWEN_GGUF_PATH',
+  'QWEN_GGUF_REPO',
+  'QWEN_GGUF_FILE',
+  'QWEN_DISABLE_THINKING',
+  'QWEN_MAX_TOKENS_NO_THINK',
+  'HBPE_LABEL_REPROBE_SECONDS',
+  'QWEN_GGUF_BATCH',
+  'QWEN_GGUF_RECYCLE_CALLS',
+  'HBPE_LABEL_YIELD_TO_CHAT',
+  'HBPE_LABEL_YIELD_MAX_SECONDS',
+  'HBPE_LABEL_YIELD_POLL_SECONDS',
+  'HBPE_LABEL_MAX_REQUESTS_PER_MINUTE',
+  'HBPE_ENABLE_DECISION_MODELS',
+  'HBPE_DECISION_MODEL_ENDPOINT',
+  'HBPE_DECISION_CONFIDENCE_THRESHOLD',
+  'CLUSTER_STALENESS_DAYS',
+  'HBPE_LABEL_BUDGET_SECONDS',
+  'HBPE_LABEL_RECENCY_DAYS',
+  'HBPE_LABEL_RECENCY_SHARE',
+  'FUNCTION_RUNNER_CONCURRENCY',
+  'HBPE_API_PORT',
+  'HBPE_LOG_LEVEL',
+  'EMBEDDING_API_BASE',
+  'LLM_EMBEDDING_API_BASE',
+  'CI_EMBEDDING_BASE_URL',
+  'OLLAMA_HOST',
+  'OLLAMA_EMBED_HOST',
+  'CI_OLLAMA_EMBED_HOST',
 ];
+
+/** The substrings the denylist names. The test states them again, so a change to the list shows here. */
+const DENIED = ['KEY', 'SECRET', 'TOKEN', 'PASS', 'CREDENTIAL', 'CREDS', 'AUTH', 'COOKIE', 'DSN', 'DATABASE'];
 
 /** Set by the child environment itself, never copied from the Hub. */
 const MARKERS = ['PYTHONUNBUFFERED', 'CI_HUB_TRAINING_CHILD'];
 
-const CANARIES = ['JWT_SECRET', 'POSTGRES_PASSWORD', 'AGENT_WEBHOOK_TOKEN', 'INFERENCE_API_KEY', 'HF_TOKEN', 'DATABASE_URL'];
-
-/**
- * Rule-path names, one for each denied substring (KEY, SECRET, TOKEN, PASSWORD, PASS, CREDENTIAL, CREDS, AUTH,
- * COOKIE, DSN, DATABASE), plus a mixed-case name. None may be copied.
- */
-const DENIED_RULE_NAMES = [
-  'HBPE_LABEL_PASS',
-  'QWEN_DB_PASSWORD',
-  'HBPE_CREDENTIAL_FILE',
-  'HBPE_CREDS_PATH',
-  'QWEN_SESSION_COOKIE',
-  'HBPE_DSN',
-  'HBPE_AUTH_HEADER',
-  'HBPE_AUTHORIZATION_MODE',
-  'HBPE_DATABASE_URL',
-  'QWEN_DATABASE_URL',
-  'HBPE_LABEL_API_TOKEN',
-  'HBPE_LABEL_KEY',
-  'QWEN_CLIENT_SECRET',
-  'QWEN_Db_Password',
-];
+/** Hub secrets that must never reach a child, whatever the list says. */
+const CANARIES = ['JWT_SECRET', 'POSTGRES_PASSWORD', 'AGENT_WEBHOOK_TOKEN', 'INFERENCE_API_KEY', 'HF_TOKEN', 'SIDECAR_AUTH_SECRET', 'DATABASE_URL'];
 
 /** What each governor probe prints, so each one can be called back with a value. */
 const PROBE_OUTPUT: Record<string, string> = {
@@ -92,8 +107,8 @@ const PROBE_OUTPUT: Record<string, string> = {
 const OPT_IN = 'CI_HUB_TRAIN_CHILD_INHERIT_DATABASE';
 
 /**
- * Loads the helper fresh. The warning is once per process, so each test that depends on it needs a
- * module whose warning has not been logged yet.
+ * Loads the helper fresh. The warnings are once per process, so each test that depends on one needs a module
+ * whose warnings have not been logged yet.
  */
 async function loadHelper() {
   vi.resetModules();
@@ -157,14 +172,20 @@ describe('trainingChildEnv', () => {
     spawnMock.mockReset();
   });
 
-  it('allowlists exactly the names the spec lists', async () => {
-    const { TRAINING_CHILD_ENV_ALLOWLIST } = await loadHelper();
-    expect([...TRAINING_CHILD_ENV_ALLOWLIST]).toEqual(SPEC_ALLOWLIST);
+  it('allowlists exactly the names the spec lists, in order', () => {
+    expect([...TRAINING_CHILD_ENV_ALLOWLIST]).toEqual(EXPECTED_ALLOWLIST);
   });
 
-  it('names exactly the non-URL set, and every name in it is on the exact list', async () => {
-    const { NOT_URL_CHECKED, TRAINING_CHILD_ENV_ALLOWLIST } = await loadHelper();
-    expect([...NOT_URL_CHECKED]).toEqual([
+  it('exempts exactly three names from the denylist, and they are the only allowlisted names that contain a denied substring', () => {
+    expect([...DENYLIST_EXEMPT_NAMES]).toEqual(['TOKENIZERS_PARALLELISM', 'QWEN_MAX_TOKENS_NO_THINK', 'TOKEN_CORPUS_DIR']);
+
+    const denied = TRAINING_CHILD_ENV_ALLOWLIST.filter((name) => DENIED.some((substring) => name.toUpperCase().includes(substring)));
+
+    expect([...denied].sort()).toEqual([...DENYLIST_EXEMPT_NAMES].sort());
+  });
+
+  it('names exactly the path and locale names that may hold an at sign, and each is on the allowlist', () => {
+    expect([...AT_SIGN_EXEMPT_NAMES]).toEqual([
       'PATH',
       'PYTHONPATH',
       'PYTHONHOME',
@@ -181,12 +202,13 @@ describe('trainingChildEnv', () => {
       'MODELS_DIR',
       'ROCM_PATH',
       'HIP_PATH',
-      'TOKEN_CORPUS_DIR',
       'LANG',
       'LC_ALL',
       'LC_CTYPE',
+      'TOKEN_CORPUS_DIR',
+      'QWEN_GGUF_PATH',
     ]);
-    for (const name of NOT_URL_CHECKED) expect(TRAINING_CHILD_ENV_ALLOWLIST).toContain(name);
+    for (const name of AT_SIGN_EXEMPT_NAMES) expect(TRAINING_CHILD_ENV_ALLOWLIST).toContain(name);
   });
 
   it('leaves out the Hub secrets and DATABASE_URL', async () => {
@@ -202,371 +224,155 @@ describe('trainingChildEnv', () => {
     expect(env.HF_HOME).toBe('/cache/hf');
   });
 
-  it('copies each allowlisted name that is defined, with its value', async () => {
-    const { trainingChildEnv, TRAINING_CHILD_ENV_ALLOWLIST } = await loadHelper();
+  it('copies each allowlisted name that is set to a clean value', async () => {
+    const warn = silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
     const source: NodeJS.ProcessEnv = {};
     for (const name of TRAINING_CHILD_ENV_ALLOWLIST) source[name] = `value-of-${name}`;
-    // Defined in the source, so it is copied; the one left out is absent from the result.
-    delete source.TZ;
 
     const env = trainingChildEnv(source);
 
-    for (const name of TRAINING_CHILD_ENV_ALLOWLIST) {
-      if (name === 'TZ') {
-        expect(env).not.toHaveProperty(name);
-      } else {
-        expect(env[name]).toBe(`value-of-${name}`);
-      }
-    }
+    for (const name of TRAINING_CHILD_ENV_ALLOWLIST) expect(env[name]).toBe(`value-of-${name}`);
+    expect(warn).not.toHaveBeenCalled();
   });
 
-  it('copies nothing outside the allowlist and the two markers', async () => {
+  it('never copies a name that is not on the list, including new HBPE_ and QWEN_ names, so there is no prefix rule', async () => {
     silenceLogger();
-    const { trainingChildEnv, TRAINING_CHILD_ENV_ALLOWLIST } = await loadHelper();
+    const { trainingChildEnv } = await loadHelper();
     const source: NodeJS.ProcessEnv = {
+      HBPE_SOMETHING_NEW: 'clean-value',
+      QWEN_SOMETHING_NEW: 'clean-value',
+      SOME_OTHER_SETTING: 'clean-value',
       SSH_AUTH_SOCK: '/tmp/agent.sock',
-      AWS_SECRET_ACCESS_KEY: 'canary-aws',
-      CI_HUB_DATA_DIR: '/data',
-      HF_TOKEN: 'canary-hf',
-      OTHER_HBPE: 'not-listed',
-      OPT_IN_OTHER: 'not-listed',
-      SOME_OTHER_SETTING: 'not-listed',
     };
-    for (const name of TRAINING_CHILD_ENV_ALLOWLIST) source[name] = `value-of-${name}`;
-    for (const name of DENIED_RULE_NAMES) source[name] = `canary-${name.toLowerCase()}`;
 
     const env = trainingChildEnv(source);
 
-    const allowed = new Set<string>([...TRAINING_CHILD_ENV_ALLOWLIST, ...MARKERS]);
-    for (const name of Object.keys(env)) expect(allowed.has(name)).toBe(true);
+    expect(Object.keys(env).sort()).toEqual([...MARKERS].sort());
   });
 
-  it('copies the HBPE_ and QWEN_ names and the exact names that pass by rule', async () => {
-    const { trainingChildEnv } = await loadHelper();
-    const names = ['HBPE_LABEL_MAX_REQUESTS_PER_MINUTE', 'QWEN_GGUF_PATH', 'API_URL', 'LLM_API_BASE', 'LLM_DEFAULT_CHAT_MODEL'];
-    const source: NodeJS.ProcessEnv = {};
-    for (const name of names) source[name] = `value-of-${name}`;
-
-    const env = trainingChildEnv(source);
-
-    for (const name of names) expect(env[name]).toBe(`value-of-${name}`);
-  });
-
-  it('does not copy credential-looking names, even under a rule prefix', async () => {
-    const { trainingChildEnv } = await loadHelper();
-    const names = ['HBPE_LABEL_API_KEY', 'HBPE_LABEL_API_TOKEN', 'QWEN_HF_TOKEN', 'LLM_API_KEY', 'VLLM_API_KEY', 'SIDECAR_AUTH_SECRET'];
-    const source: NodeJS.ProcessEnv = {};
-    for (const name of names) source[name] = `canary-${name.toLowerCase()}`;
-
-    const env = trainingChildEnv(source);
-
-    for (const name of names) expect(env).not.toHaveProperty(name);
-  });
-
-  it('does not copy a rule-path name that contains a denied substring, in any case', async () => {
-    const { trainingChildEnv } = await loadHelper();
-    const source: NodeJS.ProcessEnv = {};
-    for (const name of DENIED_RULE_NAMES) source[name] = `canary-${name.toLowerCase()}`;
-
-    const env = trainingChildEnv(source);
-
-    for (const name of DENIED_RULE_NAMES) expect(env).not.toHaveProperty(name);
-    expect(Object.keys(env).sort()).toEqual(['CI_HUB_TRAINING_CHILD', 'PYTHONUNBUFFERED']);
-  });
-
-  it('copies MODELS_DIR, HIP_VISIBLE_DEVICES and the other ROCm names, which are exact names', async () => {
-    const { trainingChildEnv } = await loadHelper();
-    const names = ['MODELS_DIR', 'HSA_OVERRIDE_GFX_VERSION', 'HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'ROCM_PATH', 'HIP_PATH'];
-    const source: NodeJS.ProcessEnv = {};
-    for (const name of names) source[name] = `value-of-${name}`;
-
-    const env = trainingChildEnv(source);
-
-    for (const name of names) expect(env[name]).toBe(`value-of-${name}`);
-  });
-
-  it('copies the exact names that contain a denied substring, which passesByRule would refuse', async () => {
-    const { trainingChildEnv } = await loadHelper();
-    const names = ['QWEN_MAX_TOKENS_NO_THINK', 'TOKEN_CORPUS_DIR', 'TOKENIZERS_PARALLELISM', 'CLUSTER_STALENESS_DAYS', 'FUNCTION_RUNNER_CONCURRENCY'];
-    const source: NodeJS.ProcessEnv = {};
-    for (const name of names) source[name] = `value-of-${name}`;
-
-    const env = trainingChildEnv(source);
-
-    for (const name of names) expect(env[name]).toBe(`value-of-${name}`);
-    expect(passesByRule('QWEN_MAX_TOKENS_NO_THINK')).toBe(false);
-    expect(passesByRule('TOKEN_CORPUS_DIR')).toBe(false);
-  });
-
-  it('passesByRule takes a rule-path name only when it has no denied substring', () => {
-    expect(passesByRule('HBPE_LABEL_MAX_REQUESTS_PER_MINUTE')).toBe(true);
-    expect(passesByRule('LLM_DEFAULT_CHAT_MODEL')).toBe(true);
-    for (const name of DENIED_RULE_NAMES) expect(passesByRule(name)).toBe(false);
-    expect(passesByRule('SOME_OTHER_SETTING')).toBe(false);
-  });
-
-  it('does not copy an unrelated name', async () => {
-    const { trainingChildEnv } = await loadHelper();
-
-    const env = trainingChildEnv({ SOME_OTHER_SETTING: 'value-of-SOME_OTHER_SETTING' });
-
-    expect(env).not.toHaveProperty('SOME_OTHER_SETTING');
-  });
-
-  it('copies a plain endpoint URL on the rule path and on the exact list, because it has no at sign or question mark', async () => {
+  it('withholds a URL with credentials, and copies a path or a locale that contains an at sign', async () => {
     const warn = silenceLogger();
     const { trainingChildEnv } = await loadHelper();
 
     const env = trainingChildEnv({
-      HBPE_LABEL_API_BASE: 'http://example.invalid:8000/v1',
-      API_URL: 'https://example.invalid/v1',
-      LLM_API_BASE: 'http://example.invalid/v1',
-      PYTORCH_CUDA_ALLOC_CONF: 'http://example.invalid/cache',
+      API_URL: 'https://user:pw@example.invalid/x',
+      PATH: '/opt/homebrew/opt/openjdk@21/bin:/usr/bin',
+      LANG: 'de_DE@euro',
     });
-
-    expect(env.HBPE_LABEL_API_BASE).toBe('http://example.invalid:8000/v1');
-    expect(env.API_URL).toBe('https://example.invalid/v1');
-    expect(env.LLM_API_BASE).toBe('http://example.invalid/v1');
-    expect(env.PYTORCH_CUDA_ALLOC_CONF).toBe('http://example.invalid/cache');
-    expect(warn).not.toHaveBeenCalled();
-  });
-
-  it('copies a model tag with a colon on a rule name, which has no at sign and no question mark', async () => {
-    const warn = silenceLogger();
-    const { trainingChildEnv } = await loadHelper();
-
-    const env = trainingChildEnv({ LLM_DEFAULT_CHAT_MODEL: 'qwen3:8b', HBPE_LABEL_MODEL: ' qwen2.5:7b ' });
-
-    expect(env.LLM_DEFAULT_CHAT_MODEL).toBe('qwen3:8b');
-    // Copied as the Hub has it, so the padding stays: the rule reads the trimmed value only to decide.
-    expect(env.HBPE_LABEL_MODEL).toBe(' qwen2.5:7b ');
-    expect(warn).not.toHaveBeenCalled();
-  });
-
-  it('copies colon-separated paths on the exact list, which have no at sign or question mark', async () => {
-    const warn = silenceLogger();
-    const { trainingChildEnv } = await loadHelper();
-
-    const env = trainingChildEnv({ PATH: '/usr/local/bin:/usr/bin:/bin', HF_HOME: '/cache/a:/cache/b' });
-
-    expect(env.PATH).toBe('/usr/local/bin:/usr/bin:/bin');
-    expect(env.HF_HOME).toBe('/cache/a:/cache/b');
-    expect(warn).not.toHaveBeenCalled();
-  });
-
-  it('copies PATH unchanged when one of its directories has an at sign, as the Homebrew openjdk@21 directory does', async () => {
-    const warn = silenceLogger();
-    const { trainingChildEnv } = await loadHelper();
-    const value = '/opt/homebrew/opt/openjdk@21/bin:/usr/bin';
-
-    const env = trainingChildEnv({ PATH: value });
-
-    expect(env.PATH).toBe(value);
-    expect(warn).not.toHaveBeenCalled();
-  });
-
-  it('copies a path-valued rule name unchanged when its local path contains an at sign', async () => {
-    const warn = silenceLogger();
-    const { trainingChildEnv } = await loadHelper();
-    const value = '/srv/models/team@lab/qwen.gguf';
-
-    const env = trainingChildEnv({ QWEN_GGUF_PATH: value });
-
-    expect(env.QWEN_GGUF_PATH).toBe(value);
-    expect(warn).not.toHaveBeenCalled();
-  });
-
-  it('copies a rule-path name ending in _dir, matched case-insensitively, when its value has an at sign', async () => {
-    const warn = silenceLogger();
-    const { trainingChildEnv } = await loadHelper();
-    const value = '/srv/models/team@lab';
-
-    const env = trainingChildEnv({ HBPE_MODEL_dir: value });
-
-    expect(env.HBPE_MODEL_dir).toBe(value);
-    expect(warn).not.toHaveBeenCalled();
-  });
-
-  it('copies a locale with an at sign on LANG, which is in the non-URL set', async () => {
-    const warn = silenceLogger();
-    const { trainingChildEnv } = await loadHelper();
-
-    const env = trainingChildEnv({ LANG: 'de_DE@euro' });
-
-    expect(env.LANG).toBe('de_DE@euro');
-    expect(warn).not.toHaveBeenCalled();
-  });
-
-  it('copies a colon-separated search path on a rule name, and a model tag, with no at sign or question mark', async () => {
-    const warn = silenceLogger();
-    const { trainingChildEnv } = await loadHelper();
-
-    const env = trainingChildEnv({ HBPE_SEARCH_PATHS: '/usr/bin:/bin', LLM_DEFAULT_CHAT_MODEL: 'qwen3:8b' });
-
-    expect(env.HBPE_SEARCH_PATHS).toBe('/usr/bin:/bin');
-    expect(env.LLM_DEFAULT_CHAT_MODEL).toBe('qwen3:8b');
-    expect(warn).not.toHaveBeenCalled();
-  });
-
-  it('copies CI_LLM_HOST_REWRITE set to off, and CI_LLM_HOST_GATEWAY, which are exact names', async () => {
-    const warn = silenceLogger();
-    const { trainingChildEnv } = await loadHelper();
-
-    const env = trainingChildEnv({ CI_LLM_HOST_REWRITE: 'off', CI_LLM_HOST_GATEWAY: 'gateway.example.invalid' });
-
-    expect(env.CI_LLM_HOST_REWRITE).toBe('off');
-    expect(env.CI_LLM_HOST_GATEWAY).toBe('gateway.example.invalid');
-    expect(warn).not.toHaveBeenCalled();
-  });
-
-  it('withholds a value with a question mark on a rule name, and copies the same value without it', async () => {
-    const warn = silenceLogger();
-    const { trainingChildEnv } = await loadHelper();
-
-    // Without the question mark the same value is copied: it has no at sign and no question mark.
-    expect(trainingChildEnv({ HBPE_LABEL_ENDPOINT: 'example.invalid/v1' }).HBPE_LABEL_ENDPOINT).toBe('example.invalid/v1');
-
-    const env = trainingChildEnv({ HBPE_LABEL_ENDPOINT: 'example.invalid/v1?x=1' });
-
-    expect(env).not.toHaveProperty('HBPE_LABEL_ENDPOINT');
-    expect(warn).toHaveBeenCalledTimes(1);
-    const message = String(warn.mock.calls[0]?.[0]);
-    expect(message).toContain('HBPE_LABEL_ENDPOINT');
-    expect(message).toContain('its value contains an at sign or a question mark');
-    expect(message).not.toContain('example.invalid');
-  });
-
-  it('copies a backslash after the scheme colon when the value has no at sign and no question mark', async () => {
-    const warn = silenceLogger();
-    const { trainingChildEnv } = await loadHelper();
-    // The first string has one backslash and the second has two. Neither has an at sign or a question mark, so both are copied.
-    const values = ['https:\\example.invalid/v1', 'https:\\\\example.invalid/v1'];
-
-    for (const value of values) {
-      expect(value).not.toMatch(/[@?]/);
-      for (const name of ['LLM_API_BASE', 'HBPE_LABEL_ENDPOINT']) {
-        expect(trainingChildEnv({ [name]: value })[name]).toBe(value);
-      }
-    }
-    expect(warn).not.toHaveBeenCalled();
-  });
-
-  it('withholds a value with an at sign or a question mark in every form the rule names, on the rule path and on the exact list', async () => {
-    const warn = silenceLogger();
-    const { trainingChildEnv } = await loadHelper();
-    const values = [
-      ' https://user:pw@example.invalid/x', // a leading space before the scheme
-      'https:/user:pw@example.invalid/x', // one slash after the scheme colon
-      'https:\\user:pw@example.invalid/x', // a backslash in place of the second slash, with an at sign
-      'https:\\\\user\\:pw@example.invalid/x', // a backslash form with an at sign
-      'http://example.invalid/v1?x=1', // a query string, with no credentials
-      'example.invalid/v1?x=1', // a query string, with no scheme
-      'user:pw@example.invalid', // an at sign with no scheme
-      '​https://user:pw@example.invalid/x', // a credential URL preceded by a zero width space
-      '﻿https://user:pw@example.invalid/x', // a credential URL preceded by a byte order mark
-      'ht\ttps://user:pw@example.invalid/x', // a tab inside the scheme, and an at sign
-      '\u0001https://user:pw@example.invalid/x', // a leading control character
-    ];
-
-    for (const value of values) {
-      for (const name of ['API_URL', 'HBPE_LABEL_ENDPOINT', 'PYTORCH_CUDA_ALLOC_CONF', 'CI_LLM_HOST_GATEWAY']) {
-        expect(trainingChildEnv({ [name]: value })).not.toHaveProperty(name);
-      }
-    }
-
-    // One warning per variable, and none of them carries a value.
-    const messages = warn.mock.calls.map(([message]) => String(message));
-    expect(messages).toHaveLength(4);
-    for (const message of messages) {
-      expect(message).toContain('its value contains an at sign or a question mark, so it was withheld.');
-      expect(message).not.toContain('example.invalid');
-      expect(message).not.toContain('user:pw');
-    }
-  });
-
-  it('withholds a URL-valued setting with credentials or a query string, and warns once per name without the value', async () => {
-    const warn = silenceLogger();
-    const { trainingChildEnv } = await loadHelper();
-    const source: NodeJS.ProcessEnv = {
-      API_URL: 'https://user:canary-pw@example.invalid/v1',
-      LLM_API_BASE: 'http://example.invalid/v1?x=1',
-      PYTORCH_CUDA_ALLOC_CONF: 'https://user@example.invalid/cache',
-    };
-
-    const env = trainingChildEnv(source);
-    trainingChildEnv(source);
 
     expect(env).not.toHaveProperty('API_URL');
-    expect(env).not.toHaveProperty('LLM_API_BASE');
-    expect(env).not.toHaveProperty('PYTORCH_CUDA_ALLOC_CONF');
-    expect(warn).toHaveBeenCalledTimes(3);
-    const messages = warn.mock.calls.map(([message]) => String(message));
-    for (const name of ['API_URL', 'LLM_API_BASE', 'PYTORCH_CUDA_ALLOC_CONF']) {
-      expect(messages.filter((message) => message.startsWith(name))).toHaveLength(1);
-    }
-    for (const message of messages) {
-      expect(message).not.toContain('canary-pw');
-      expect(message).not.toContain('example.invalid');
-      expect(message).toContain('its value contains an at sign or a question mark, so it was withheld.');
-    }
+    expect(env.PATH).toBe('/opt/homebrew/opt/openjdk@21/bin:/usr/bin');
+    expect(env.LANG).toBe('de_DE@euro');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('API_URL');
   });
 
-  it('passes DATABASE_URL only when the opt-in is exactly true', async () => {
+  it('withholds a question mark for every name, path names included', async () => {
     const warn = silenceLogger();
-    const { trainingChildEnv } = await loadHelper();
-    const databaseUrl = 'postgres://canary.invalid/db';
-
-    expect(trainingChildEnv({ DATABASE_URL: databaseUrl, [OPT_IN]: 'true' }).DATABASE_URL).toBe(databaseUrl);
-
-    for (const optIn of [undefined, '', '1', 'yes', 'TRUE', 'false']) {
-      const env = trainingChildEnv({ DATABASE_URL: databaseUrl, [OPT_IN]: optIn });
-      expect(env).not.toHaveProperty('DATABASE_URL');
-    }
-    // The opt-in itself is never passed on to the child.
-    expect(trainingChildEnv({ [OPT_IN]: 'true' })).not.toHaveProperty(OPT_IN);
-    expect(warn).toHaveBeenCalled();
-  });
-
-  it('does not copy HBPE_DATABASE_URL or QWEN_DATABASE_URL when the database opt-in is true', async () => {
-    silenceLogger();
     const { trainingChildEnv } = await loadHelper();
 
     const env = trainingChildEnv({
-      HBPE_DATABASE_URL: 'postgres://example.invalid/db',
-      QWEN_DATABASE_URL: 'postgres://example.invalid/db',
-      [OPT_IN]: 'true',
+      HF_HOME: 'https://example.invalid/cache?token=x',
+      API_URL: 'example.invalid/v1?x=1',
     });
 
-    expect(env).not.toHaveProperty('HBPE_DATABASE_URL');
-    expect(env).not.toHaveProperty('QWEN_DATABASE_URL');
-    expect(Object.keys(env).sort()).toEqual(['CI_HUB_TRAINING_CHILD', 'PYTHONUNBUFFERED']);
+    expect(env).not.toHaveProperty('HF_HOME');
+    expect(env).not.toHaveProperty('API_URL');
+    expect(warn).toHaveBeenCalledTimes(2);
   });
 
-  it('passes every DATABASE_ name when the opt-in is true', async () => {
+  it('copies an endpoint that has no credential and no question mark', async () => {
     const warn = silenceLogger();
     const { trainingChildEnv } = await loadHelper();
 
-    const env = trainingChildEnv({ DATABASE_URL: 'postgres://canary.invalid/db', DATABASE_POOL_SIZE: '4', [OPT_IN]: 'true' });
+    const env = trainingChildEnv({ API_URL: 'https://example.invalid/v1', LLM_API_BASE: 'http://example.invalid:8000/v1' });
 
-    expect(env.DATABASE_URL).toBe('postgres://canary.invalid/db');
-    expect(env.DATABASE_POOL_SIZE).toBe('4');
+    expect(env.API_URL).toBe('https://example.invalid/v1');
+    expect(env.LLM_API_BASE).toBe('http://example.invalid:8000/v1');
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it('logs one warning per process when DATABASE_ names are set and the opt-in is off', async () => {
+  it('drops an injected name with a denied substring unless it is exempt, and copies an exempt one', async () => {
+    const warn = silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+    const injected = DENIED.map((substring) => `HBPE_TEST_${substring}_VALUE`);
+    const source: NodeJS.ProcessEnv = { TOKENIZERS_PARALLELISM: 'false', hbpe_test_key: 'clean-value' };
+    for (const name of injected) source[name] = 'clean-value';
+
+    const env = trainingChildEnv(source, [...injected, 'hbpe_test_key', 'TOKENIZERS_PARALLELISM']);
+
+    expect(Object.keys(env).sort()).toEqual(['CI_HUB_TRAINING_CHILD', 'PYTHONUNBUFFERED', 'TOKENIZERS_PARALLELISM'].sort());
+    expect(env.TOKENIZERS_PARALLELISM).toBe('false');
+    expect(warn).toHaveBeenCalledTimes(DENIED.length + 1);
+    for (const [message] of warn.mock.calls) {
+      expect(String(message)).toContain('its name contains a denied substring, so it was withheld.');
+    }
+  });
+
+  it('passes DATABASE_ names only when the opt-in is exactly true, and never HBPE_DATABASE_URL', async () => {
+    silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+    const source: NodeJS.ProcessEnv = {
+      DATABASE_URL: 'postgres://canary.invalid/db',
+      DATABASE_PASSWORD: 'canary-db-pw',
+      HBPE_DATABASE_URL: 'postgres://canary.invalid/db',
+    };
+
+    const defaults = trainingChildEnv(source);
+    expect(defaults).not.toHaveProperty('DATABASE_URL');
+    expect(defaults).not.toHaveProperty('DATABASE_PASSWORD');
+
+    for (const optIn of [undefined, '', '1', 'yes', 'TRUE', 'false']) {
+      const env = trainingChildEnv({ ...source, [OPT_IN]: optIn });
+      expect(env).not.toHaveProperty('DATABASE_URL');
+      expect(env).not.toHaveProperty('DATABASE_PASSWORD');
+    }
+
+    const enabled = trainingChildEnv({ ...source, [OPT_IN]: 'true' });
+    expect(enabled.DATABASE_URL).toBe('postgres://canary.invalid/db');
+    expect(enabled.DATABASE_PASSWORD).toBe('canary-db-pw');
+    expect(enabled).not.toHaveProperty('HBPE_DATABASE_URL');
+    expect(enabled).not.toHaveProperty(OPT_IN);
+  });
+
+  it('warns once per process that DATABASE_ variables are not passed to training children, and names the opt-in', async () => {
     const warn = silenceLogger();
     const { trainingChildEnv } = await loadHelper();
 
     trainingChildEnv({ DATABASE_URL: 'postgres://canary.invalid/db' });
-    trainingChildEnv({ DATABASE_URL: 'postgres://canary.invalid/db', DATABASE_POOL_SIZE: '4' });
+    trainingChildEnv({ DATABASE_URL: 'postgres://canary.invalid/db', DATABASE_NAME: 'canary-name' });
 
     expect(warn).toHaveBeenCalledTimes(1);
     const message = String(warn.mock.calls[0]?.[0]);
-    expect(message).toContain('DATABASE_ variables are set but not passed');
+    expect(message).toContain('DATABASE_ variables are set but not passed to training children');
+    expect(message).not.toContain('peer');
     expect(message).toContain(OPT_IN);
+    expect(message).not.toContain('canary');
   });
 
-  it('does not warn without DATABASE_ names', async () => {
+  it('logs one warning per withheld variable per process, and no warning carries the value', async () => {
+    const warn = silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+    const source: NodeJS.ProcessEnv = {
+      API_URL: 'https://user:canary-pw@example.invalid/v1',
+      HF_HOME: '/cache/hf?canary-query',
+    };
+
+    trainingChildEnv(source);
+    trainingChildEnv(source);
+
+    expect(warn).toHaveBeenCalledTimes(2);
+    const messages = warn.mock.calls.map(([message]) => String(message));
+    expect(messages.filter((message) => message.startsWith('API_URL'))).toHaveLength(1);
+    expect(messages.filter((message) => message.startsWith('HF_HOME'))).toHaveLength(1);
+    for (const message of messages) {
+      expect(message).toContain('so it was withheld.');
+      expect(message).not.toMatch(/canary|example\.invalid|cache/);
+    }
+  });
+
+  it('does not warn without DATABASE_ names or withheld values', async () => {
     const warn = silenceLogger();
     const { trainingChildEnv } = await loadHelper();
 
@@ -609,7 +415,7 @@ describe('the training child spawn', () => {
     spawnMock.mockReset();
   });
 
-  it('starts python3 with only the allowlisted environment and the names that pass by rule', async () => {
+  it('starts python3 with only the allowlisted environment', async () => {
     silenceLogger();
     const hubEnv: NodeJS.ProcessEnv = {
       PATH: '/usr/bin:/bin',
@@ -621,6 +427,7 @@ describe('the training child spawn', () => {
       API_URL: 'https://example.invalid/v1',
       HBPE_LABEL_API_BASE: 'https://user:canary-pw@example.invalid/v1',
       HBPE_LABEL_API_KEY: 'canary-hbpe-label-api-key',
+      HBPE_LABEL_NOT_LISTED: 'clean-value',
       [OPT_IN]: 'false',
     };
     for (const name of CANARIES) hubEnv[name] = `canary-${name.toLowerCase()}`;
@@ -635,13 +442,9 @@ describe('the training child spawn', () => {
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [command, , options] = spawnMock.mock.calls[0] as [string, string[], { env: Record<string, string> }];
     expect(command).toBe('python3');
-    for (const name of CANARIES) expect(options.env).not.toHaveProperty(name);
-    expect(options.env.PATH).toBe('/usr/bin:/bin');
-    expect(options.env.HF_HOME).toBe('/cache/hf');
-    expect(options.env.PYTHONUNBUFFERED).toBe('1');
-    expect(options.env.CI_HUB_TRAINING_CHILD).toBe('1');
     // A literal set of names and values. It is not computed from the helper under test.
     // API_URL and LLM_API_BASE are plain endpoints, so both are copied. HBPE_LABEL_API_BASE carries a credential, so it is withheld.
+    // HBPE_LABEL_API_KEY and HBPE_LABEL_NOT_LISTED are not on the list, so neither is copied.
     expect(options.env).toEqual({
       API_URL: 'https://example.invalid/v1',
       CI_HUB_TRAINING_CHILD: '1',
@@ -653,6 +456,7 @@ describe('the training child spawn', () => {
       PATH: '/usr/bin:/bin',
       PYTHONUNBUFFERED: '1',
     });
+    for (const name of CANARIES) expect(options.env).not.toHaveProperty(name);
 
     child.emit('close', 0);
     await expect(done).resolves.toBeUndefined();

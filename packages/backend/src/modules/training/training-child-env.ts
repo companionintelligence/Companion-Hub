@@ -1,13 +1,16 @@
 import { Logger } from '@nestjs/common';
 
 /**
- * The names a training child process may inherit from the Hub: the python3 trainer, and the probes the
- * governor runs. Matched exactly. A prefix such as `HF_` would also pass `HF_TOKEN`. A name here is copied even
- * when it contains a denied substring, as `TOKEN` does in `QWEN_MAX_TOKENS_NO_THINK`, `TOKEN_CORPUS_DIR` and
- * `TOKENIZERS_PARALLELISM`: the denylist is applied on the rule path only. Any other name passes only by
- * {@link passesByRule}.
+ * The only names a training child inherits from the Hub, matched exactly. A name reaches the child when the Hub
+ * defines it, its value is not withheld and its name is not denied. No prefix or pattern admits a name.
+ *
+ * Each name added from CI-Memory carries the line that reads it. Paths are relative to CI-Memory's `backend/`:
+ * `config.py` is `apps/hbpe/src/ci/hbpe/config.py`, `llm_host.py` is `packages/sidecar-core/src/ci/sidecar/llm_host.py`
+ * and `train_io.py` is `apps/hbpe/src/ci/hbpe/model/train_io.py`. The base names are read by Python, the dynamic
+ * loader, libc, and the CUDA, ROCm, OpenMP, MKL and Hugging Face libraries.
  */
 export const TRAINING_CHILD_ENV_ALLOWLIST = [
+  // Interpreter, loader, locale and temporary-directory names.
   'PATH',
   'HOME',
   'LANG',
@@ -19,12 +22,14 @@ export const TRAINING_CHILD_ENV_ALLOWLIST = [
   'PYTHONHOME',
   'VIRTUAL_ENV',
   'LD_LIBRARY_PATH',
+  // CUDA toolchain, device and allocator names.
   'CUDA_HOME',
   'CUDA_PATH',
-  'HBPE_TRAIN_SEED',
+  'HBPE_TRAIN_SEED', // apps/hbpe/src/ci/hbpe/model/train_io.py:189
   'CUDA_VISIBLE_DEVICES',
   'PYTORCH_CUDA_ALLOC_CONF',
   'PYTORCH_ENABLE_MPS_FALLBACK',
+  // Thread counts, the tokenizer switch and cache directories.
   'OMP_NUM_THREADS',
   'MKL_NUM_THREADS',
   'TOKENIZERS_PARALLELISM',
@@ -32,76 +37,82 @@ export const TRAINING_CHILD_ENV_ALLOWLIST = [
   'HF_HOME',
   'HF_HUB_CACHE',
   'TORCH_HOME',
-  'MODELS_DIR',
+  // ROCm accelerator names.
   'HSA_OVERRIDE_GFX_VERSION',
   'HIP_VISIBLE_DEVICES',
   'ROCR_VISIBLE_DEVICES',
   'ROCM_PATH',
   'HIP_PATH',
-  'QWEN_MAX_TOKENS_NO_THINK',
-  'TOKEN_CORPUS_DIR',
-  'CLUSTER_STALENESS_DAYS',
-  'FUNCTION_RUNNER_CONCURRENCY',
-  // The trainer's endpoint resolution reads these at import (llm_host.py), so they change the endpoints it receives.
-  'CI_LLM_HOST_REWRITE',
-  'CI_LLM_HOST_GATEWAY',
+  'MODELS_DIR', // apps/hbpe/src/ci/hbpe/config.py:82
+  // Endpoint correction switches.
+  'CI_LLM_HOST_REWRITE', // packages/sidecar-core/src/ci/sidecar/llm_host.py:73
+  'CI_LLM_HOST_GATEWAY', // packages/sidecar-core/src/ci/sidecar/llm_host.py:79
+  // Endpoints.
+  'API_URL', // apps/hbpe/src/ci/hbpe/config.py:271
+  'LLM_API_BASE', // apps/hbpe/src/ci/hbpe/config.py:103, packages/sidecar-core/src/ci/sidecar/llm_host.py:58
+  'HBPE_LABEL_API_BASE', // apps/hbpe/src/ci/hbpe/config.py:103, packages/sidecar-core/src/ci/sidecar/llm_host.py:59
+  // Settings read by config.py.
+  'HBPE_LABEL_HTTP_TIMEOUT', // apps/hbpe/src/ci/hbpe/config.py:66
+  'TOKEN_CORPUS_DIR', // apps/hbpe/src/ci/hbpe/config.py:91
+  'HBPE_LABEL_MODEL', // apps/hbpe/src/ci/hbpe/config.py:116
+  'LLM_DEFAULT_CHAT_MODEL', // apps/hbpe/src/ci/hbpe/config.py:116
+  'QWEN_GGUF_PATH', // apps/hbpe/src/ci/hbpe/config.py:119
+  'QWEN_GGUF_REPO', // apps/hbpe/src/ci/hbpe/config.py:121
+  'QWEN_GGUF_FILE', // apps/hbpe/src/ci/hbpe/config.py:124
+  'QWEN_DISABLE_THINKING', // apps/hbpe/src/ci/hbpe/config.py:133
+  'QWEN_MAX_TOKENS_NO_THINK', // apps/hbpe/src/ci/hbpe/config.py:139
+  'HBPE_LABEL_REPROBE_SECONDS', // apps/hbpe/src/ci/hbpe/config.py:150
+  'QWEN_GGUF_BATCH', // apps/hbpe/src/ci/hbpe/config.py:157
+  'QWEN_GGUF_RECYCLE_CALLS', // apps/hbpe/src/ci/hbpe/config.py:162
+  'HBPE_LABEL_YIELD_TO_CHAT', // apps/hbpe/src/ci/hbpe/config.py:172
+  'HBPE_LABEL_YIELD_MAX_SECONDS', // apps/hbpe/src/ci/hbpe/config.py:180
+  'HBPE_LABEL_YIELD_POLL_SECONDS', // apps/hbpe/src/ci/hbpe/config.py:183
+  'HBPE_LABEL_MAX_REQUESTS_PER_MINUTE', // apps/hbpe/src/ci/hbpe/config.py:194
+  'HBPE_ENABLE_DECISION_MODELS', // apps/hbpe/src/ci/hbpe/config.py:205
+  'HBPE_DECISION_MODEL_ENDPOINT', // apps/hbpe/src/ci/hbpe/config.py:210
+  'HBPE_DECISION_CONFIDENCE_THRESHOLD', // apps/hbpe/src/ci/hbpe/config.py:214
+  'CLUSTER_STALENESS_DAYS', // apps/hbpe/src/ci/hbpe/config.py:220
+  'HBPE_LABEL_BUDGET_SECONDS', // apps/hbpe/src/ci/hbpe/config.py:223
+  'HBPE_LABEL_RECENCY_DAYS', // apps/hbpe/src/ci/hbpe/config.py:253
+  'HBPE_LABEL_RECENCY_SHARE', // apps/hbpe/src/ci/hbpe/config.py:262
+  'FUNCTION_RUNNER_CONCURRENCY', // apps/hbpe/src/ci/hbpe/config.py:310
+  'HBPE_API_PORT', // apps/hbpe/src/ci/hbpe/config.py:315
+  'HBPE_LOG_LEVEL', // apps/hbpe/src/ci/hbpe/config.py:317
+  // Endpoints that llm_host.py resolve_env corrects at import.
+  'EMBEDDING_API_BASE', // packages/sidecar-core/src/ci/sidecar/llm_host.py:60
+  'LLM_EMBEDDING_API_BASE', // packages/sidecar-core/src/ci/sidecar/llm_host.py:61
+  'CI_EMBEDDING_BASE_URL', // packages/sidecar-core/src/ci/sidecar/llm_host.py:62
+  'OLLAMA_HOST', // packages/sidecar-core/src/ci/sidecar/llm_host.py:63
+  'OLLAMA_EMBED_HOST', // packages/sidecar-core/src/ci/sidecar/llm_host.py:64
+  'CI_OLLAMA_EMBED_HOST', // packages/sidecar-core/src/ci/sidecar/llm_host.py:65
 ] as const;
 
 /**
- * Names the trainer reads its settings from: CI-Memory's `hbpe` config.py. A name passes by rule when it
- * has one of these prefixes or is one of these exact names, and it contains no denied substring.
+ * Listed names that contain a denied substring and are still copied. Each is a setting that happens to contain the
+ * substring. None is a credential.
  */
-const RULE_PREFIXES: readonly string[] = ['HBPE_', 'QWEN_'];
-const RULE_NAMES: readonly string[] = ['API_URL', 'LLM_API_BASE', 'LLM_DEFAULT_CHAT_MODEL'];
+export const DENYLIST_EXEMPT_NAMES: ReadonlySet<string> = new Set([
+  // The tokenizers library's switch. `TOKEN` is part of the library's own name.
+  'TOKENIZERS_PARALLELISM',
+  // A count of tokens generated with thinking off. `TOKEN` names the unit.
+  'QWEN_MAX_TOKENS_NO_THINK',
+  // A directory of token-corpus files. `TOKEN` names the corpus.
+  'TOKEN_CORPUS_DIR',
+]);
 
 /**
- * A rule-path name containing one of these substrings, compared case-insensitively, is never copied. Each
- * looks like a credential, a session cookie, a DSN or a database URL. `DATABASE` stops `HBPE_DATABASE_URL`
- * and `QWEN_DATABASE_URL`. The `DATABASE_` opt-in is separate, and unchanged.
+ * Substrings that mark a name as a credential or a database handle, compared case-insensitively. This is a guard
+ * for future additions to the allowlist: a listed name that contains one of them, and is not exempt, is dropped.
+ * `PASS` also covers `PASSWORD`.
  */
-const DENIED_SUBSTRINGS: readonly string[] = [
-  'KEY',
-  'SECRET',
-  'TOKEN',
-  'PASSWORD',
-  'PASS',
-  'CREDENTIAL',
-  'CREDS',
-  'AUTH',
-  'COOKIE',
-  'DSN',
-  'DATABASE',
-];
+const DENIED_SUBSTRINGS: readonly string[] = ['KEY', 'SECRET', 'TOKEN', 'PASS', 'CREDENTIAL', 'CREDS', 'AUTH', 'COOKIE', 'DSN', 'DATABASE'];
 
 /**
- * True when the Hub variable `name` passes to a training child by rule. A name containing a denied
- * substring never passes. Names on the exact allowlist are not tested here.
+ * Names whose value may contain an at sign: local paths and locales. A path can hold one (the Homebrew OpenJDK
+ * directory is `openjdk@21`), and so can a locale (`de_DE@euro`). Every other name is withheld for an at sign. The
+ * question-mark check applies to every name, including these.
  */
-export function passesByRule(name: string): boolean {
-  const upper = name.toUpperCase();
-  const named = RULE_NAMES.includes(name);
-  const prefixed = RULE_PREFIXES.some((prefix) => name.startsWith(prefix));
-  const denied = DENIED_SUBSTRINGS.some((substring) => upper.includes(substring));
-  return (named || prefixed) && !denied;
-}
-
-/**
- * Read from the Hub's own environment, which only the operator sets. A peer cannot set it: a peer's job
- * manifest never writes to this process's environment.
- */
-const DATABASE_OPT_IN = 'CI_HUB_TRAIN_CHILD_INHERIT_DATABASE';
-const DATABASE_PREFIX = 'DATABASE_';
-
-const logger = new Logger('TrainingChildEnv');
-/** One warning per process. The governor starts several children on every job, so not one per child. */
-let databaseWarningLogged = false;
-
-/**
- * Names whose value is not URL-checked: a directory, a cache, a tool home, a search path or a locale. Each is copied
- * as the Hub has it, when it is set. A path or a locale can hold an at sign: the Homebrew PATH holds one in its
- * `openjdk@21` directory, and `de_DE@euro` is a locale. Matched exactly.
- */
-export const NOT_URL_CHECKED: ReadonlySet<string> = new Set([
+export const AT_SIGN_EXEMPT_NAMES: ReadonlySet<string> = new Set([
   'PATH',
   'PYTHONPATH',
   'PYTHONHOME',
@@ -118,106 +129,92 @@ export const NOT_URL_CHECKED: ReadonlySet<string> = new Set([
   'MODELS_DIR',
   'ROCM_PATH',
   'HIP_PATH',
-  'TOKEN_CORPUS_DIR',
   'LANG',
   'LC_ALL',
   'LC_CTYPE',
+  // Other allowlisted paths: a corpus directory and a local GGUF file.
+  'TOKEN_CORPUS_DIR',
+  'QWEN_GGUF_PATH',
 ]);
 
-/** A rule-path name ending in one of these, compared case-insensitively, is not URL-checked either. */
-const NOT_URL_CHECKED_SUFFIXES: readonly string[] = ['_PATH', '_DIR', '_HOME'];
-
 /**
- * True for a name whose value is not URL-checked: a name in {@link NOT_URL_CHECKED}, or a rule-path name with one of
- * the {@link NOT_URL_CHECKED_SUFFIXES}.
+ * Read from the Hub's own environment, which only the operator sets. A peer's job manifest never writes to it, so
+ * the opt-in cannot be set from a job.
  */
-function isNotUrlChecked(name: string): boolean {
-  if (NOT_URL_CHECKED.has(name)) return true;
-  const upper = name.toUpperCase();
-  return passesByRule(name) && NOT_URL_CHECKED_SUFFIXES.some((suffix) => upper.endsWith(suffix));
-}
+const DATABASE_OPT_IN = 'CI_HUB_TRAIN_CHILD_INHERIT_DATABASE';
+const DATABASE_PREFIX = 'DATABASE_';
 
-/**
- * The URL check. A value is withheld when its trimmed form contains an at sign or a question mark anywhere. An at sign
- * can introduce userinfo, which carries a credential, and a question mark starts a query, which can carry a secret. The
- * check does not parse the value, so the scheme does not matter. An endpoint with neither character is copied, because
- * the trainer uses it for labelling and for its GraphQL client.
- */
-function hasAtOrQuestionMark(trimmed: string): boolean {
-  return trimmed.includes('@') || trimmed.includes('?');
-}
+const logger = new Logger('TrainingChildEnv');
+
+/** Why a Hub value is not copied to a training child. */
+type WithholdReason = 'denied name' | 'question mark' | 'at sign';
+
+const REASON_TEXT: Record<WithholdReason, string> = {
+  'denied name': 'its name contains a denied substring',
+  'question mark': 'its value contains a question mark',
+  'at sign': 'its value contains an at sign',
+};
 
 /** The names whose withheld value has been warned about. One warning per variable per process. */
-const urlWarningsLogged = new Set<string>();
+const withheldWarned = new Set<string>();
+/** One warning per process. The governor starts several children on every job, so not one per child. */
+let databaseWarningLogged = false;
 
-/**
- * True for a character trimmed from either end of a value: an ASCII control or space, DEL, Unicode whitespace (U+0085
- * included), U+200B (zero width space) or U+FEFF (byte order mark).
- */
-function isEdgePadding(char: string): boolean {
-  const code = char.charCodeAt(0);
-  if (code <= 0x20 || code === 0x7f || code === 0x85 || code === 0x200b || code === 0xfeff) return true;
-  return char.trim() === '';
-}
-
-/** The value without its leading and trailing padding. {@link copyUnlessWithheld} computes it once per value. */
-function trimmedOf(value: string): string {
-  let start = 0;
-  let end = value.length;
-  while (start < end && isEdgePadding(value.charAt(start))) start += 1;
-  while (end > start && isEdgePadding(value.charAt(end - 1))) end -= 1;
-  return value.slice(start, end);
+function isDeniedName(name: string): boolean {
+  if (DENYLIST_EXEMPT_NAMES.has(name)) return false;
+  const upper = name.toUpperCase();
+  return DENIED_SUBSTRINGS.some((substring) => upper.includes(substring));
 }
 
 /**
- * Copies `value` into `env`, unless its trimmed form contains an at sign or a question mark and its name is not
- * URL-exempt (see {@link isNotUrlChecked}). The copy is the value as the Hub has it. A withheld value is never logged:
- * the warning names only the variable, once per process, and says that the value contains an at sign or a question mark.
+ * The reason a name's value is withheld, or undefined when it may be copied. The name is checked first, then the value
+ * for a question mark, then for an at sign. The value itself is never logged.
  */
-function copyUnlessWithheld(env: Record<string, string>, name: string, value: string | undefined): void {
-  if (value === undefined) return;
-  if (isNotUrlChecked(name) || !hasAtOrQuestionMark(trimmedOf(value))) {
-    env[name] = value;
-    return;
-  }
-  if (!urlWarningsLogged.has(name)) {
-    urlWarningsLogged.add(name);
-    logger.warn(`${name} is not passed to training children: its value contains an at sign or a question mark, so it was withheld.`);
-  }
+function withholdReason(name: string, value: string): WithholdReason | undefined {
+  if (isDeniedName(name)) return 'denied name';
+  if (value.includes('?')) return 'question mark';
+  if (value.includes('@') && !AT_SIGN_EXEMPT_NAMES.has(name)) return 'at sign';
+  return undefined;
+}
+
+function warnWithheld(name: string, reason: WithholdReason): void {
+  if (withheldWarned.has(name)) return;
+  withheldWarned.add(name);
+  logger.warn(`${name} is not passed to training children: ${REASON_TEXT[reason]}, so it was withheld.`);
 }
 
 /**
- * The environment for a training child, built from `source` (the Hub's own environment by default).
- *
- * It holds the allowlisted names that are defined and the names that pass by rule, and no other name from the Hub.
- * A value from either source is withheld when it contains an at sign or a question mark after its padding is trimmed.
- * That check is not applied to a name in {@link NOT_URL_CHECKED}, or to a rule-path name ending in `_PATH`, `_DIR` or
- * `_HOME`. `DATABASE_` names are the exception: they are passed unchanged, and without that check, only when the operator
- * sets {@link DATABASE_OPT_IN} to `true`, for hosts whose trainer builds its vocabulary from the database. `PYTHONUNBUFFERED`
- * is set so progress lines reach the runner as they are written, and `CI_HUB_TRAINING_CHILD` marks the child as one the
- * Hub started.
+ * The environment for a training child, built from `source` (the Hub's own environment by default) and the names in
+ * `allowlist` (the trainer's list by default). A listed name is copied when the Hub defines it and it is not withheld.
+ * The `DATABASE_` names are copied, unchanged, only when the operator sets the opt-in to exactly `true`, for hosts whose
+ * trainer builds its vocabulary from the database. `PYTHONUNBUFFERED` is set so progress lines reach the runner as they
+ * are written, and `CI_HUB_TRAINING_CHILD` marks the child as one the Hub started.
  */
-export function trainingChildEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+export function trainingChildEnv(
+  source: NodeJS.ProcessEnv = process.env,
+  allowlist: readonly string[] = TRAINING_CHILD_ENV_ALLOWLIST,
+): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const name of TRAINING_CHILD_ENV_ALLOWLIST) {
-    copyUnlessWithheld(env, name, source[name]);
+  for (const name of allowlist) {
+    const value = source[name];
+    if (value === undefined) continue;
+    const reason = withholdReason(name, value);
+    if (reason === undefined) {
+      env[name] = value;
+    } else {
+      warnWithheld(name, reason);
+    }
   }
 
-  for (const [name, value] of Object.entries(source)) {
-    if (passesByRule(name)) copyUnlessWithheld(env, name, value);
-  }
-
-  const databaseEntries: Array<[string, string]> = [];
-  for (const [name, value] of Object.entries(source)) {
-    if (name.startsWith(DATABASE_PREFIX) && value !== undefined) databaseEntries.push([name, value]);
-  }
-
+  const databaseEntries = Object.entries(source).filter(
+    (entry): entry is [string, string] => entry[0].startsWith(DATABASE_PREFIX) && entry[1] !== undefined,
+  );
   if (source[DATABASE_OPT_IN] === 'true') {
     for (const [name, value] of databaseEntries) env[name] = value;
   } else if (databaseEntries.length > 0 && !databaseWarningLogged) {
     databaseWarningLogged = true;
     logger.warn(
-      `DATABASE_ variables are set but not passed to peer training jobs. Set ${DATABASE_OPT_IN}=true in this Hub's environment to pass them to training children.`,
+      `DATABASE_ variables are set but not passed to training children. Set ${DATABASE_OPT_IN}=true in this Hub's environment to pass them to training children.`,
     );
   }
 
