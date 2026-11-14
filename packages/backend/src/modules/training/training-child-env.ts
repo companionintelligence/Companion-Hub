@@ -7,7 +7,7 @@ import { Logger } from '@nestjs/common';
  * Each name added from CI-Memory carries the line that reads it. Paths are relative to CI-Memory's `backend/`:
  * `config.py` is `apps/hbpe/src/ci/hbpe/config.py`, `llm_host.py` is `packages/sidecar-core/src/ci/sidecar/llm_host.py`
  * and `train_io.py` is `apps/hbpe/src/ci/hbpe/model/train_io.py`. The base names are read by Python, the dynamic
- * loader, libc, and the CUDA, ROCm, OpenMP, MKL and Hugging Face libraries.
+ * loader, libc, curl, and the CUDA, ROCm, OpenMP, MKL, requests and Hugging Face libraries.
  */
 export const TRAINING_CHILD_ENV_ALLOWLIST = [
   // Interpreter, loader, locale and temporary-directory names.
@@ -85,6 +85,24 @@ export const TRAINING_CHILD_ENV_ALLOWLIST = [
   'OLLAMA_HOST', // packages/sidecar-core/src/ci/sidecar/llm_host.py:63
   'OLLAMA_EMBED_HOST', // packages/sidecar-core/src/ci/sidecar/llm_host.py:64
   'CI_OLLAMA_EMBED_HOST', // packages/sidecar-core/src/ci/sidecar/llm_host.py:65
+  // Proxy settings, read by requests, urllib and huggingface_hub.
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'all_proxy',
+  'no_proxy',
+  // CA bundle paths, read by Python ssl, requests and curl.
+  'SSL_CERT_FILE',
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE',
+  // Hugging Face and transformers switches, read by huggingface_hub and transformers.
+  'HF_ENDPOINT',
+  'HF_HUB_OFFLINE',
+  'HF_HUB_DISABLE_TELEMETRY',
+  'TRANSFORMERS_OFFLINE',
 ] as const;
 
 /**
@@ -180,7 +198,7 @@ function withholdReason(name: string, value: string): WithholdReason | undefined
 function warnWithheld(name: string, reason: WithholdReason): void {
   if (withheldWarned.has(name)) return;
   withheldWarned.add(name);
-  logger.warn(`${name} is not passed to training children: ${REASON_TEXT[reason]}, so it was withheld.`);
+  logger.warn(`${name} is not passed to child processes: ${REASON_TEXT[reason]}, so it was withheld.`);
 }
 
 /**

@@ -85,6 +85,21 @@ const EXPECTED_ALLOWLIST = [
   'OLLAMA_HOST',
   'OLLAMA_EMBED_HOST',
   'CI_OLLAMA_EMBED_HOST',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'all_proxy',
+  'no_proxy',
+  'SSL_CERT_FILE',
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE',
+  'HF_ENDPOINT',
+  'HF_HUB_OFFLINE',
+  'HF_HUB_DISABLE_TELEMETRY',
+  'TRANSFORMERS_OFFLINE',
 ];
 
 /** The substrings the denylist names. The test states them again, so a change to the list shows here. */
@@ -251,6 +266,21 @@ describe('trainingChildEnv', () => {
     expect(Object.keys(env).sort()).toEqual([...MARKERS].sort());
   });
 
+  it('never copies a libpq PG* name, even when it is set, and no allowlisted name starts with PG', async () => {
+    silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+    expect(TRAINING_CHILD_ENV_ALLOWLIST.filter((name) => name.toUpperCase().startsWith('PG'))).toEqual([]);
+
+    const env = trainingChildEnv({
+      PGHOST: 'pg.example.invalid',
+      PGUSER: 'canary-pg-user',
+      PGPASSWORD: 'canary-pg-pw',
+      PGPASSFILE: '/canary/pgpass',
+    });
+
+    expect(Object.keys(env).sort()).toEqual([...MARKERS].sort());
+  });
+
   it('withholds a URL with credentials, and copies a path or a locale that contains an at sign', async () => {
     const warn = silenceLogger();
     const { trainingChildEnv } = await loadHelper();
@@ -290,6 +320,37 @@ describe('trainingChildEnv', () => {
 
     expect(env.API_URL).toBe('https://example.invalid/v1');
     expect(env.LLM_API_BASE).toBe('http://example.invalid:8000/v1');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('withholds a proxy URL that carries credentials', async () => {
+    const warn = silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+
+    const env = trainingChildEnv({ HTTP_PROXY: 'http://user:pw@proxy.example.invalid:3128' });
+
+    expect(env).not.toHaveProperty('HTTP_PROXY');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('HTTP_PROXY');
+  });
+
+  it('copies a plain proxy URL', async () => {
+    const warn = silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+
+    const env = trainingChildEnv({ HTTPS_PROXY: 'http://proxy.example.invalid:3128' });
+
+    expect(env.HTTPS_PROXY).toBe('http://proxy.example.invalid:3128');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('copies HF_ENDPOINT when it is a clean endpoint', async () => {
+    const warn = silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+
+    const env = trainingChildEnv({ HF_ENDPOINT: 'https://hf.example.invalid' });
+
+    expect(env.HF_ENDPOINT).toBe('https://hf.example.invalid');
     expect(warn).not.toHaveBeenCalled();
   });
 
@@ -367,6 +428,7 @@ describe('trainingChildEnv', () => {
     expect(messages.filter((message) => message.startsWith('API_URL'))).toHaveLength(1);
     expect(messages.filter((message) => message.startsWith('HF_HOME'))).toHaveLength(1);
     for (const message of messages) {
+      expect(message).toContain('is not passed to child processes:');
       expect(message).toContain('so it was withheld.');
       expect(message).not.toMatch(/canary|example\.invalid|cache/);
     }
