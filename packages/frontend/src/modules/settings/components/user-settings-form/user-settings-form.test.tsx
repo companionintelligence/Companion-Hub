@@ -49,7 +49,7 @@ it('lets a keyboard user focus a setting hint', () => {
   render(<UserSettingsForm initialValues={newHubSettings} onSubmit={vi.fn()} />);
 
   const hint = screen.getByRole('button', {
-    name: 'Error monitoring is used to track errors and improve Companion Hub. Keep this option enabled to help us improve Companion Hub.',
+    name: 'Off unless you turn it on. When on, anonymous crash reports, performance data and masked session recordings go to the Companion Hub team to help us fix bugs.',
   });
   expect(hint).toHaveTextContent('?');
   hint.focus();
