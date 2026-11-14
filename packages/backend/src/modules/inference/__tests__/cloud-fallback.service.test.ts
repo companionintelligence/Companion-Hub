@@ -593,7 +593,7 @@ describe('isCloudFallbackAllowed & CloudFallbackService.resolveProvider', () => 
     expect(isCloudFallbackAllowed()).toBe(true);
   });
 
-  it('routes explicit cloud models and configured defaultModel directly, while failing closed on unrecognized local models by default', async () => {
+  it('fails closed on named cloud models and the configured defaultModel unless the flag is true, and routes them as before when it is', async () => {
     delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
     const configuration = mock<ConfigurationService>();
     configuration.getInferenceCloudProviders.mockReturnValue([]);
@@ -605,20 +605,28 @@ describe('isCloudFallbackAllowed & CloudFallbackService.resolveProvider', () => 
     await service.setProvider({ provider: 'anthropic', apiKey: 'sk-ant', enabled: true, defaultModel: 'claude-opus-4' });
     await service.setProvider({ provider: 'google', apiKey: 'g-key', enabled: true, defaultModel: 'gemini-2.5-pro' });
 
-    // Explicit provider model prefixes and configured defaultModel still match their provider
+    // Flag unset: explicit provider model prefixes and the configured defaultModel are refused, like any other model
+    expect(service.resolveProvider('gpt-4o')).toBeUndefined();
+    expect(service.resolveProvider('o3-mini')).toBeUndefined();
+    expect(service.resolveProvider('claude-sonnet-4')).toBeUndefined();
+    expect(service.resolveProvider('gemini-2.5-flash')).toBeUndefined();
+    expect(service.resolveProvider('custom-oai-ft')).toBeUndefined();
+    expect(service.resolveProvider('qwen3:30b')).toBeUndefined();
+
+    // A value other than the exact string 'true' is still closed
+    process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'false';
+    expect(service.resolveProvider('gpt-4o')).toBeUndefined();
+    expect(service.resolveProvider('llama3.2:latest')).toBeUndefined();
+
+    // Flag 'true': explicit provider model prefixes and the configured defaultModel match their provider, as before
+    process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
     expect(service.resolveProvider('gpt-4o')?.provider).toBe('openai');
     expect(service.resolveProvider('o3-mini')?.provider).toBe('openai');
     expect(service.resolveProvider('claude-sonnet-4')?.provider).toBe('anthropic');
     expect(service.resolveProvider('gemini-2.5-flash')?.provider).toBe('google');
     expect(service.resolveProvider('custom-oai-ft')?.provider).toBe('openai');
 
-    // Unrecognized local model names must NOT leak to an arbitrary cloud provider when fallback is off
-    expect(service.resolveProvider('qwen3:30b')).toBeUndefined();
-    process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'false';
-    expect(service.resolveProvider('llama3.2:latest')).toBeUndefined();
-
-    // Only falls back to first enabled provider when explicitly opted in
-    process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+    // Only an unrecognized model falls back to the first enabled provider, and only when the flag is true
     expect(service.resolveProvider('qwen3:30b')?.provider).toBe('openai');
   });
 });

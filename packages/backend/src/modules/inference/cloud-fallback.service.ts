@@ -65,10 +65,9 @@ function loggableBaseUrl(url: string | undefined): string {
 /**
  * Cloud provider key store.
  *
- * The Hub no longer proxies inference requests, so this service no longer makes
- * any HTTP calls. It persists the operator's cloud-provider configuration
- * (base URL / API key / default model) to settings.json and hands those
- * credentials to AI apps, which then call the cloud API directly.
+ * It persists the operator's cloud-provider configuration (base URL / API key / default model) to
+ * settings.json. It makes HTTP calls to the cloud APIs, but forwards requests only while
+ * CI_HUB_ALLOW_CLOUD_FALLBACK is true. It also hands those credentials to AI apps through `toAppEnv`.
  */
 @Injectable()
 export class CloudFallbackService implements OnModuleInit {
@@ -224,8 +223,13 @@ export class CloudFallbackService implements OnModuleInit {
     return buildCloudProviderEnv(this.getEnabledProviders());
   }
 
-  /** Find which provider can serve a model */
+  /**
+   * Find which provider can serve a model. It fails closed: unless CI_HUB_ALLOW_CLOUD_FALLBACK is true,
+   * it returns undefined for every model, including the prefix matches (gpt-, o1, o3, o4, claude-, gemini-)
+   * and the configured defaultModel. With the flag true, an unrecognised model goes to the first enabled provider.
+   */
   resolveProvider(model: string): CloudProviderConfig | undefined {
+    if (!isCloudFallbackAllowed()) return undefined;
     // Check model prefix patterns
     if (model.startsWith('gpt-') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o4')) {
       return this.getEnabledProvider('openai');
