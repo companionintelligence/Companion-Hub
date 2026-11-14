@@ -48,7 +48,7 @@
     "dotenv": "^18.0.10",
     "drizzle-orm": "^0.45.4",
     "express": "^5.3.0",
-    "i18next": "^26.7.1",
+    "i18next": "^27.1.1",
     "i18next-fs-backend": "^2.6.10",
     "isomorphic-git": "^1.44.12",
     "jose": "^6.2.17",
@@ -64,7 +64,7 @@
     "slugify": "^1.6.9",
     "systeminformation": "^5.31.11",
     "validator": "^13.15.35",
-    "web-push": "^3.6.7",
+    "web-push": "^4.0.0",
     "winston": "^3.19.0",
     "yaml": "^2.9.1",
     "zod": "^4.6.7",
@@ -94,7 +94,7 @@
     "unplugin-swc": "^2.0.0",
     "vite-tsconfig-paths": "^6.1.1",
     "vitest": "^5.1.0",
-    "vitest-mock-extended": "^5.1.1",
+    "vitest-mock-extended": "^6.0.0",
     "wait-for-expect": "^4.0.0"
   }
 }
