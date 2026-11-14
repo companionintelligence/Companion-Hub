@@ -2,7 +2,8 @@ import { Logger } from '@nestjs/common';
 
 /**
  * The names a training child process may inherit from the Hub: the python3 trainer, and the probes the
- * governor runs. Matched exactly. A prefix such as `HF_` would also pass `HF_TOKEN`.
+ * governor runs. Matched exactly. A prefix such as `HF_` would also pass `HF_TOKEN`. Any other name
+ * passes only by {@link passesByRule}.
  */
 export const TRAINING_CHILD_ENV_ALLOWLIST = [
   'PATH',
@@ -32,6 +33,26 @@ export const TRAINING_CHILD_ENV_ALLOWLIST = [
 ] as const;
 
 /**
+ * Names the trainer reads its settings from: CI-Memory's `hbpe` config.py. A name passes by rule when it
+ * has one of these prefixes or is one of these exact names, and it does not look like a credential.
+ */
+const RULE_PREFIXES: readonly string[] = ['HBPE_', 'QWEN_'];
+const RULE_NAMES: readonly string[] = ['API_URL', 'LLM_API_BASE', 'LLM_DEFAULT_CHAT_MODEL'];
+
+/** A name matching this looks like a credential. No rule passes it, whatever its prefix. */
+const SECRET_LIKE = /KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|PASS/i;
+
+/**
+ * True when the Hub variable `name` passes to a training child by rule. A credential-looking name never
+ * passes. Names on the exact allowlist are not tested here.
+ */
+export function passesByRule(name: string): boolean {
+  const named = RULE_NAMES.includes(name);
+  const prefixed = RULE_PREFIXES.some((prefix) => name.startsWith(prefix));
+  return (named || prefixed) && !SECRET_LIKE.test(name);
+}
+
+/**
  * Read from the Hub's own environment, which only the operator sets. A peer cannot set it: a peer's job
  * manifest never writes to this process's environment.
  */
@@ -45,16 +66,20 @@ let databaseWarningLogged = false;
 /**
  * The environment for a training child, built from `source` (the Hub's own environment by default).
  *
- * It holds the allowlisted names that are defined, and no other name from the Hub. `DATABASE_` names
- * are passed only when the operator sets {@link DATABASE_OPT_IN} to `true`, for hosts whose trainer
- * builds its vocabulary from the database. `PYTHONUNBUFFERED` is set so progress lines reach the
- * runner as they are written, and `CI_HUB_TRAINING_CHILD` marks the child as one the Hub started.
+ * It holds the allowlisted names that are defined, the names that pass by rule, and no other name from
+ * the Hub. `DATABASE_` names are passed only when the operator sets {@link DATABASE_OPT_IN} to `true`,
+ * for hosts whose trainer builds its vocabulary from the database. `PYTHONUNBUFFERED` is set so progress lines
+ * reach the runner as they are written, and `CI_HUB_TRAINING_CHILD` marks the child as one the Hub started.
  */
 export function trainingChildEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = {};
   for (const name of TRAINING_CHILD_ENV_ALLOWLIST) {
     const value = source[name];
     if (value !== undefined) env[name] = value;
+  }
+
+  for (const [name, value] of Object.entries(source)) {
+    if (value !== undefined && passesByRule(name)) env[name] = value;
   }
 
   const databaseEntries: Array<[string, string]> = [];

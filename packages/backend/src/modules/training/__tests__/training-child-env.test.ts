@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
+import { passesByRule } from '../training-child-env';
 import { TrainingGovernorService } from '../training-governor.service';
 import { TrainingRunnerService } from '../training-runner.service';
 import type { TrainingJobManifest } from '../training.types';
@@ -136,7 +137,7 @@ describe('trainingChildEnv', () => {
       AWS_SECRET_ACCESS_KEY: 'canary-aws',
       CI_HUB_DATA_DIR: '/data',
       HF_TOKEN: 'canary-hf',
-      HBPE_OTHER: 'not-listed',
+      OTHER_HBPE: 'not-listed',
       OPT_IN_OTHER: 'not-listed',
     };
     for (const name of TRAINING_CHILD_ENV_ALLOWLIST) source[name] = `value-of-${name}`;
@@ -145,6 +146,36 @@ describe('trainingChildEnv', () => {
 
     const allowed = new Set<string>([...TRAINING_CHILD_ENV_ALLOWLIST, ...MARKERS]);
     for (const name of Object.keys(env)) expect(allowed.has(name)).toBe(true);
+  });
+
+  it('copies the HBPE_ and QWEN_ names and the exact names that pass by rule', async () => {
+    const { trainingChildEnv } = await loadHelper();
+    const names = ['HBPE_LABEL_MAX_REQUESTS_PER_MINUTE', 'QWEN_GGUF_PATH', 'API_URL', 'LLM_API_BASE', 'LLM_DEFAULT_CHAT_MODEL'];
+    const source: NodeJS.ProcessEnv = {};
+    for (const name of names) source[name] = `value-of-${name}`;
+
+    const env = trainingChildEnv(source);
+
+    for (const name of names) expect(env[name]).toBe(`value-of-${name}`);
+  });
+
+  it('does not copy credential-looking names, even under a rule prefix', async () => {
+    const { trainingChildEnv } = await loadHelper();
+    const names = ['HBPE_LABEL_API_KEY', 'HBPE_LABEL_API_TOKEN', 'QWEN_HF_TOKEN', 'LLM_API_KEY', 'VLLM_API_KEY', 'SIDECAR_AUTH_SECRET'];
+    const source: NodeJS.ProcessEnv = {};
+    for (const name of names) source[name] = `canary-${name.toLowerCase()}`;
+
+    const env = trainingChildEnv(source);
+
+    for (const name of names) expect(env).not.toHaveProperty(name);
+  });
+
+  it('does not copy an unrelated name', async () => {
+    const { trainingChildEnv } = await loadHelper();
+
+    const env = trainingChildEnv({ SOME_OTHER_SETTING: 'value-of-SOME_OTHER_SETTING' });
+
+    expect(env).not.toHaveProperty('SOME_OTHER_SETTING');
   });
 
   it('passes DATABASE_URL only when the opt-in is exactly true', async () => {
@@ -251,7 +282,7 @@ describe('the training child spawn', () => {
     expect(options.env.PYTHONUNBUFFERED).toBe('1');
     expect(options.env.CI_HUB_TRAINING_CHILD).toBe('1');
     const allowed = new Set<string>([...SPEC_ALLOWLIST, ...MARKERS]);
-    for (const name of Object.keys(options.env)) expect(allowed.has(name)).toBe(true);
+    for (const name of Object.keys(options.env)) expect(allowed.has(name) || passesByRule(name)).toBe(true);
 
     child.emit('close', 0);
     await expect(done).resolves.toBeUndefined();
