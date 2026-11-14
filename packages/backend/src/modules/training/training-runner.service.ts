@@ -5,6 +5,12 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { TRAINING_JOB_ID_PATTERN, type TrainingJobManifest, type TrainingJobStatus, type TrainingProgressEvent } from './training.types';
 import { TrainingGovernorService } from './training-governor.service';
+import { trainingChildEnv } from './training-child-env';
+
+/** `Number.isFinite` as a type guard. `JSON.parse` reads `1e400` as Infinity, which a `typeof` check alone passes. */
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
 
 @Injectable()
 export class TrainingRunnerService {
@@ -200,8 +206,9 @@ export class TrainingRunnerService {
       const args = ['-m', 'ci.hbpe.model.train_runner', '--manifest', manifestPath, '--dataset', datasetPath, '--output', artifactsDir];
 
       this.logger.log(`Spawning python3 ${args.join(' ')}`);
+      // The trainer runs with the allowlisted environment only. See training-child-env.ts.
       const child = spawn('python3', args, {
-        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+        env: trainingChildEnv(),
       });
 
       this.activeProcesses.set(jobId, child);
@@ -247,16 +254,25 @@ export class TrainingRunnerService {
 
   private handleProgressEvent(jobId: string, payload: Partial<TrainingProgressEvent>): void {
     const status = this.jobStatuses.get(jobId);
-    if (!status) return;
+    // Only a JSON object is an event. Null, a scalar and an array are dropped.
+    if (!status || typeof payload !== 'object' || payload === null || Array.isArray(payload)) return;
 
-    if (payload.epoch !== undefined && payload.totalEpochs !== undefined) {
-      status.currentEpoch = payload.epoch;
-      status.totalEpochs = payload.totalEpochs;
-      status.progressPercent = Math.round((payload.epoch / payload.totalEpochs) * 100);
+    // The payload is parsed from the trainer's stdout, so its types are not trusted. A peer reads this
+    // status, so a field is copied only when it holds a finite number, or null for the validation loss.
+    const { epoch, totalEpochs } = payload;
+    if (isFiniteNumber(epoch) && isFiniteNumber(totalEpochs) && totalEpochs > 0) {
+      // A huge epoch over a tiny total overflows to Infinity. Then none of the three fields is written, so the
+      // status keeps its last consistent epoch, total and percentage.
+      const percent = Math.round((epoch / totalEpochs) * 100);
+      if (Number.isFinite(percent)) {
+        status.currentEpoch = epoch;
+        status.totalEpochs = totalEpochs;
+        status.progressPercent = percent;
+      }
     }
-    if (payload.trainLoss !== undefined) status.trainLoss = payload.trainLoss;
-    if (payload.valLoss !== undefined) status.valLoss = payload.valLoss;
-    if (payload.etaSeconds !== undefined) status.etaSeconds = payload.etaSeconds;
+    if (isFiniteNumber(payload.trainLoss)) status.trainLoss = payload.trainLoss;
+    if (payload.valLoss === null || isFiniteNumber(payload.valLoss)) status.valLoss = payload.valLoss;
+    if (isFiniteNumber(payload.etaSeconds)) status.etaSeconds = payload.etaSeconds;
     status.updatedAt = new Date().toISOString();
 
     const progressEvent: TrainingProgressEvent = {
@@ -266,8 +282,8 @@ export class TrainingRunnerService {
       totalEpochs: status.totalEpochs,
       trainLoss: status.trainLoss,
       valLoss: status.valLoss,
-      learningRate: payload.learningRate ?? 0,
-      elapsedSeconds: payload.elapsedSeconds ?? 0,
+      learningRate: isFiniteNumber(payload.learningRate) ? payload.learningRate : 0,
+      elapsedSeconds: isFiniteNumber(payload.elapsedSeconds) ? payload.elapsedSeconds : 0,
       etaSeconds: status.etaSeconds,
       device: payload.device ?? 'unknown',
       timestamp: status.updatedAt,

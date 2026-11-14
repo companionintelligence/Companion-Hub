@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as fs from 'node:fs';
+import { trainingChildEnv } from './training-child-env';
 
 const execAsync = promisify(exec);
 
@@ -83,7 +84,7 @@ export class TrainingGovernorService {
     // Check macOS unified memory via sysctl / vm_stat
     if (process.platform === 'darwin') {
       try {
-        const { stdout } = await execAsync('sysctl -n hw.memsize');
+        const { stdout } = await execAsync('sysctl -n hw.memsize', { env: trainingChildEnv() });
         const totalBytes = Number.parseInt(stdout.trim(), 10);
         // On Apple Silicon, unified memory is shared; estimate ~50% usable for training safely
         return Math.floor((totalBytes / (1024 * 1024)) * 0.5);
@@ -95,7 +96,7 @@ export class TrainingGovernorService {
     // Check Linux / NVIDIA via nvidia-smi
     if (process.platform === 'linux') {
       try {
-        const { stdout } = await execAsync('nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits');
+        const { stdout } = await execAsync('nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits', { env: trainingChildEnv() });
         const firstLine = stdout.split('\n')[0] ?? '';
         const firstGpuFree = Number.parseInt(firstLine.trim(), 10);
         if (!Number.isNaN(firstGpuFree)) {
@@ -112,7 +113,7 @@ export class TrainingGovernorService {
   private async isOnBattery(): Promise<boolean> {
     if (process.platform === 'darwin') {
       try {
-        const { stdout } = await execAsync('pmset -g batt');
+        const { stdout } = await execAsync('pmset -g batt', { env: trainingChildEnv() });
         return stdout.includes("Now drawing from 'Battery Power'");
       } catch {
         return false;
@@ -136,7 +137,7 @@ export class TrainingGovernorService {
   private async checkThermalState(): Promise<boolean> {
     if (process.platform === 'darwin') {
       try {
-        const { stdout } = await execAsync('pmset -g therm');
+        const { stdout } = await execAsync('pmset -g therm', { env: trainingChildEnv() });
         const match = stdout.match(/CPU_Speed_Limit\s*=\s*(\d+)/);
         const limitStr = match?.[1];
         if (limitStr) {
