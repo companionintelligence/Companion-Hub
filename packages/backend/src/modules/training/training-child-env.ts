@@ -30,26 +30,50 @@ export const TRAINING_CHILD_ENV_ALLOWLIST = [
   'HF_HOME',
   'HF_HUB_CACHE',
   'TORCH_HOME',
+  'MODELS_DIR',
+  'HSA_OVERRIDE_GFX_VERSION',
+  'HIP_VISIBLE_DEVICES',
+  'ROCR_VISIBLE_DEVICES',
+  'ROCM_PATH',
+  'HIP_PATH',
 ] as const;
 
 /**
  * Names the trainer reads its settings from: CI-Memory's `hbpe` config.py. A name passes by rule when it
- * has one of these prefixes or is one of these exact names, and it does not look like a credential.
+ * has one of these prefixes or is one of these exact names, and it contains no denied substring.
  */
 const RULE_PREFIXES: readonly string[] = ['HBPE_', 'QWEN_'];
 const RULE_NAMES: readonly string[] = ['API_URL', 'LLM_API_BASE', 'LLM_DEFAULT_CHAT_MODEL'];
 
-/** A name matching this looks like a credential. No rule passes it, whatever its prefix. */
-const SECRET_LIKE = /KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|PASS/i;
+/**
+ * A rule-path name containing one of these substrings, compared case-insensitively, is never copied. Each
+ * looks like a credential, a session cookie, a DSN or a database URL. `DATABASE` stops `HBPE_DATABASE_URL`
+ * and `QWEN_DATABASE_URL`. The `DATABASE_` opt-in is separate, and unchanged.
+ */
+const DENIED_SUBSTRINGS: readonly string[] = [
+  'KEY',
+  'SECRET',
+  'TOKEN',
+  'PASSWORD',
+  'PASS',
+  'CREDENTIAL',
+  'CREDS',
+  'AUTH',
+  'COOKIE',
+  'DSN',
+  'DATABASE',
+];
 
 /**
- * True when the Hub variable `name` passes to a training child by rule. A credential-looking name never
- * passes. Names on the exact allowlist are not tested here.
+ * True when the Hub variable `name` passes to a training child by rule. A name containing a denied
+ * substring never passes. Names on the exact allowlist are not tested here.
  */
 export function passesByRule(name: string): boolean {
+  const upper = name.toUpperCase();
   const named = RULE_NAMES.includes(name);
   const prefixed = RULE_PREFIXES.some((prefix) => name.startsWith(prefix));
-  return (named || prefixed) && !SECRET_LIKE.test(name);
+  const denied = DENIED_SUBSTRINGS.some((substring) => upper.includes(substring));
+  return (named || prefixed) && !denied;
 }
 
 /**
@@ -63,23 +87,57 @@ const logger = new Logger('TrainingChildEnv');
 /** One warning per process. The governor starts several children on every job, so not one per child. */
 let databaseWarningLogged = false;
 
+/** A value that starts with a URL scheme, such as `https://`. Only these are tested for credentials or a query. */
+const URL_VALUED = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/** The names whose withheld URL has been warned about. One warning per variable per process. */
+const urlWarningsLogged = new Set<string>();
+
+/**
+ * True when `value` is a URL that must not reach a child: one with credentials (`scheme://user[:password]@host`),
+ * one with a query string, or one that does not parse. A value that does not start with a URL scheme is never
+ * withheld.
+ */
+function isWithheldUrl(value: string): boolean {
+  if (!URL_VALUED.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return url.username !== '' || url.password !== '' || value.includes('?');
+  } catch {
+    return true;
+  }
+}
+
+/** Copies `value` into `env`, unless it is a withheld URL. The warning names the variable, and never the value. */
+function copyUnlessWithheld(env: Record<string, string>, name: string, value: string | undefined): void {
+  if (value === undefined) return;
+  if (!isWithheldUrl(value)) {
+    env[name] = value;
+    return;
+  }
+  if (!urlWarningsLogged.has(name)) {
+    urlWarningsLogged.add(name);
+    logger.warn(`${name} is not passed to training children: its URL-valued setting has credentials or a query string, or does not parse.`);
+  }
+}
+
 /**
  * The environment for a training child, built from `source` (the Hub's own environment by default).
  *
- * It holds the allowlisted names that are defined, the names that pass by rule, and no other name from
- * the Hub. `DATABASE_` names are passed only when the operator sets {@link DATABASE_OPT_IN} to `true`,
- * for hosts whose trainer builds its vocabulary from the database. `PYTHONUNBUFFERED` is set so progress lines
- * reach the runner as they are written, and `CI_HUB_TRAINING_CHILD` marks the child as one the Hub started.
+ * It holds the allowlisted names that are defined and the names that pass by rule, and no other name from
+ * the Hub. A URL-valued setting from the allowlist or the rule path is withheld when it has credentials or a
+ * query string. `DATABASE_` names are passed only when the operator sets {@link DATABASE_OPT_IN} to `true`,
+ * for hosts whose trainer builds its vocabulary from the database. `PYTHONUNBUFFERED` is set so progress
+ * lines reach the runner as they are written, and `CI_HUB_TRAINING_CHILD` marks the child as one the Hub started.
  */
 export function trainingChildEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = {};
   for (const name of TRAINING_CHILD_ENV_ALLOWLIST) {
-    const value = source[name];
-    if (value !== undefined) env[name] = value;
+    copyUnlessWithheld(env, name, source[name]);
   }
 
   for (const [name, value] of Object.entries(source)) {
-    if (value !== undefined && passesByRule(name)) env[name] = value;
+    if (passesByRule(name)) copyUnlessWithheld(env, name, value);
   }
 
   const databaseEntries: Array<[string, string]> = [];

@@ -262,7 +262,9 @@ export class TrainingRunnerService {
     if (isFiniteNumber(epoch) && isFiniteNumber(totalEpochs) && totalEpochs > 0) {
       status.currentEpoch = epoch;
       status.totalEpochs = totalEpochs;
-      status.progressPercent = Math.round((epoch / totalEpochs) * 100);
+      // A huge epoch over a tiny total overflows to Infinity. That percentage is skipped, and the last one kept.
+      const percent = Math.round((epoch / totalEpochs) * 100);
+      if (Number.isFinite(percent)) status.progressPercent = percent;
     }
     if (isFiniteNumber(payload.trainLoss)) status.trainLoss = payload.trainLoss;
     if (payload.valLoss === null || isFiniteNumber(payload.valLoss)) status.valLoss = payload.valLoss;

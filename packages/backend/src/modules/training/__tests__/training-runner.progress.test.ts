@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { TrainingGovernorService } from '../training-governor.service';
 import { TrainingRunnerService } from '../training-runner.service';
-import type { TrainingJobManifest, TrainingProgressEvent } from '../training.types';
+import type { TrainingJobManifest, TrainingJobStatus, TrainingProgressEvent } from '../training.types';
 
 const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
 
@@ -15,6 +15,10 @@ vi.mock('node:child_process', () => ({
 
 type SpawnInternals = {
   spawnTrainingProcess(manifest: TrainingJobManifest, manifestPath: string, artifactsDir: string): Promise<void>;
+};
+
+type ProgressInternals = {
+  handleProgressEvent(jobId: string, payload: unknown): void;
 };
 
 function manifestFor(jobId: string): TrainingJobManifest {
@@ -142,5 +146,33 @@ describe('TrainingRunnerService progress events', () => {
     expect(events).toHaveLength(2);
     expect(events[0]).toMatchObject({ phase: 'validation', learningRate: 0, elapsedSeconds: 0, device: 'mps' });
     expect(events[1]).toMatchObject({ learningRate: 0.0003, elapsedSeconds: 42 });
+  });
+
+  it('keeps the last progressPercent when the percentage is not finite', async () => {
+    const { runner, progress } = await attachedJob('progress-overflow');
+    progress('CI_TRAIN_EVENT: {"epoch": 3, "totalEpochs": 10}');
+
+    // 1e308 over 1e-10 overflows to Infinity. The epoch is copied, and the percentage is skipped.
+    progress('CI_TRAIN_EVENT: {"epoch": 1e308, "totalEpochs": 1e-10}');
+
+    expect(runner.getJobStatus('progress-overflow')).toMatchObject({ progressPercent: 30 });
+  });
+
+  it('ignores a null, numeric or string payload, with no event and no change to updatedAt', async () => {
+    const { runner } = await attachedJob('progress-null');
+    const events: TrainingProgressEvent[] = [];
+    runner.events.on('progress.progress-null', (event: TrainingProgressEvent) => events.push(event));
+    // A sentinel, so any write to updatedAt shows even when it falls in the same millisecond as the last one.
+    const status = runner.getJobStatus('progress-null') as TrainingJobStatus;
+    status.updatedAt = '2000-01-01T00:00:00.000Z';
+    const handle = (runner as unknown as ProgressInternals).handleProgressEvent.bind(runner);
+
+    // Called directly: the stdout path would swallow a thrown TypeError, which would hide a missing guard.
+    for (const payload of [null, 7, 'text']) {
+      expect(() => handle('progress-null', payload)).not.toThrow();
+    }
+
+    expect(events).toHaveLength(0);
+    expect(runner.getJobStatus('progress-null')?.updatedAt).toBe('2000-01-01T00:00:00.000Z');
   });
 });

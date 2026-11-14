@@ -2,17 +2,18 @@ import { Logger } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
-import { passesByRule } from '../training-child-env';
+import { passesByRule, trainingChildEnv } from '../training-child-env';
 import { TrainingGovernorService } from '../training-governor.service';
 import { TrainingRunnerService } from '../training-runner.service';
 import type { TrainingJobManifest } from '../training.types';
 
-const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+const { spawnMock, execMock } = vi.hoisted(() => ({ spawnMock: vi.fn(), execMock: vi.fn() }));
 
-// The runner's spawn is where a training child is started. Mocked so the test sees the env it is given.
+// A training child is started by spawn, and the governor's probes run through exec. Both are mocked, so the
+// test sees the env each one is given.
 vi.mock('node:child_process', () => ({
   spawn: (...args: unknown[]) => spawnMock(...args),
-  exec: vi.fn(),
+  exec: (...args: unknown[]) => execMock(...args),
 }));
 
 const SPEC_ALLOWLIST = [
@@ -40,12 +41,47 @@ const SPEC_ALLOWLIST = [
   'HF_HOME',
   'HF_HUB_CACHE',
   'TORCH_HOME',
+  'MODELS_DIR',
+  'HSA_OVERRIDE_GFX_VERSION',
+  'HIP_VISIBLE_DEVICES',
+  'ROCR_VISIBLE_DEVICES',
+  'ROCM_PATH',
+  'HIP_PATH',
 ];
 
 /** Set by the child environment itself, never copied from the Hub. */
 const MARKERS = ['PYTHONUNBUFFERED', 'CI_HUB_TRAINING_CHILD'];
 
 const CANARIES = ['JWT_SECRET', 'POSTGRES_PASSWORD', 'AGENT_WEBHOOK_TOKEN', 'INFERENCE_API_KEY', 'HF_TOKEN', 'DATABASE_URL'];
+
+/**
+ * Rule-path names, one for each denied substring (KEY, SECRET, TOKEN, PASSWORD, PASS, CREDENTIAL, CREDS, AUTH,
+ * COOKIE, DSN, DATABASE), plus a mixed-case name. None may be copied.
+ */
+const DENIED_RULE_NAMES = [
+  'HBPE_LABEL_PASS',
+  'QWEN_DB_PASSWORD',
+  'HBPE_CREDENTIAL_FILE',
+  'HBPE_CREDS_PATH',
+  'QWEN_SESSION_COOKIE',
+  'HBPE_DSN',
+  'HBPE_AUTH_HEADER',
+  'HBPE_AUTHORIZATION_MODE',
+  'HBPE_DATABASE_URL',
+  'QWEN_DATABASE_URL',
+  'HBPE_LABEL_API_TOKEN',
+  'HBPE_LABEL_KEY',
+  'QWEN_CLIENT_SECRET',
+  'QWEN_Db_Password',
+];
+
+/** What each governor probe prints, so each one can be called back with a value. */
+const PROBE_OUTPUT: Record<string, string> = {
+  'pmset -g batt': "Now drawing from 'AC Power'\n",
+  'pmset -g therm': 'CPU_Speed_Limit = 100\n',
+  'sysctl -n hw.memsize': '17179869184\n',
+  'nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits': '8192\n',
+};
 
 const OPT_IN = 'CI_HUB_TRAIN_CHILD_INHERIT_DATABASE';
 
@@ -77,6 +113,28 @@ function manifestFor(jobId: string): TrainingJobManifest {
 
 function fakeChild() {
   return Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn() });
+}
+
+/** Runs `fn` with `process.env` replaced by `env`, so the test decides every name the child could inherit. */
+function withHubEnv<T>(env: NodeJS.ProcessEnv, fn: () => T): T {
+  const original = process.env;
+  process.env = env;
+  try {
+    return fn();
+  } finally {
+    process.env = original;
+  }
+}
+
+/** Runs `fn` as if `process.platform` were `platform`, then restores it. */
+async function withPlatform<T>(platform: NodeJS.Platform, fn: () => Promise<T>): Promise<T> {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: platform });
+  try {
+    return await fn();
+  } finally {
+    if (original) Object.defineProperty(process, 'platform', original);
+  }
 }
 
 type SpawnInternals = {
@@ -139,8 +197,12 @@ describe('trainingChildEnv', () => {
       HF_TOKEN: 'canary-hf',
       OTHER_HBPE: 'not-listed',
       OPT_IN_OTHER: 'not-listed',
+      SOME_OTHER_SETTING: 'not-listed',
+      CI_LLM_HOST_REWRITE: 'not-listed',
+      CI_LLM_HOST_GATEWAY: 'not-listed',
     };
     for (const name of TRAINING_CHILD_ENV_ALLOWLIST) source[name] = `value-of-${name}`;
+    for (const name of DENIED_RULE_NAMES) source[name] = `canary-${name.toLowerCase()}`;
 
     const env = trainingChildEnv(source);
 
@@ -170,12 +232,78 @@ describe('trainingChildEnv', () => {
     for (const name of names) expect(env).not.toHaveProperty(name);
   });
 
+  it('does not copy a rule-path name that contains a denied substring, in any case', async () => {
+    const { trainingChildEnv } = await loadHelper();
+    const source: NodeJS.ProcessEnv = {};
+    for (const name of DENIED_RULE_NAMES) source[name] = `canary-${name.toLowerCase()}`;
+
+    const env = trainingChildEnv(source);
+
+    for (const name of DENIED_RULE_NAMES) expect(env).not.toHaveProperty(name);
+    expect(Object.keys(env).sort()).toEqual(['CI_HUB_TRAINING_CHILD', 'PYTHONUNBUFFERED']);
+  });
+
+  it('copies MODELS_DIR, HIP_VISIBLE_DEVICES and the other ROCm names, which are exact names', async () => {
+    const { trainingChildEnv } = await loadHelper();
+    const names = ['MODELS_DIR', 'HSA_OVERRIDE_GFX_VERSION', 'HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'ROCM_PATH', 'HIP_PATH'];
+    const source: NodeJS.ProcessEnv = {};
+    for (const name of names) source[name] = `value-of-${name}`;
+
+    const env = trainingChildEnv(source);
+
+    for (const name of names) expect(env[name]).toBe(`value-of-${name}`);
+  });
+
+  it('passesByRule takes a rule-path name only when it has no denied substring', () => {
+    expect(passesByRule('HBPE_LABEL_MAX_REQUESTS_PER_MINUTE')).toBe(true);
+    expect(passesByRule('LLM_DEFAULT_CHAT_MODEL')).toBe(true);
+    for (const name of DENIED_RULE_NAMES) expect(passesByRule(name)).toBe(false);
+    expect(passesByRule('SOME_OTHER_SETTING')).toBe(false);
+  });
+
   it('does not copy an unrelated name', async () => {
     const { trainingChildEnv } = await loadHelper();
 
     const env = trainingChildEnv({ SOME_OTHER_SETTING: 'value-of-SOME_OTHER_SETTING' });
 
     expect(env).not.toHaveProperty('SOME_OTHER_SETTING');
+  });
+
+  it('copies a URL-valued setting that has neither credentials nor a query string', async () => {
+    const warn = silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+
+    const env = trainingChildEnv({ API_URL: 'http://example.invalid/v1', HF_HUB_CACHE: 'http://example.invalid/cache' });
+
+    expect(env.API_URL).toBe('http://example.invalid/v1');
+    expect(env.HF_HUB_CACHE).toBe('http://example.invalid/cache');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('withholds a URL-valued setting with credentials or a query string, and warns once per name without the value', async () => {
+    const warn = silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+    const source: NodeJS.ProcessEnv = {
+      API_URL: 'https://user:canary-pw@example.invalid/v1',
+      LLM_API_BASE: 'http://example.invalid/v1?x=1',
+      HF_HOME: 'https://user@example.invalid/cache',
+    };
+
+    const env = trainingChildEnv(source);
+    trainingChildEnv(source);
+
+    expect(env).not.toHaveProperty('API_URL');
+    expect(env).not.toHaveProperty('LLM_API_BASE');
+    expect(env).not.toHaveProperty('HF_HOME');
+    expect(warn).toHaveBeenCalledTimes(3);
+    const messages = warn.mock.calls.map(([message]) => String(message));
+    for (const name of ['API_URL', 'LLM_API_BASE', 'HF_HOME']) {
+      expect(messages.filter((message) => message.startsWith(name))).toHaveLength(1);
+    }
+    for (const message of messages) {
+      expect(message).not.toContain('canary-pw');
+      expect(message).not.toContain('example.invalid');
+    }
   });
 
   it('passes DATABASE_URL only when the opt-in is exactly true', async () => {
@@ -261,17 +389,27 @@ describe('the training child spawn', () => {
     spawnMock.mockReset();
   });
 
-  it('starts python3 with only the allowlisted environment', async () => {
+  it('starts python3 with only the allowlisted environment and the names that pass by rule', async () => {
     silenceLogger();
-    for (const name of CANARIES) vi.stubEnv(name, `canary-${name.toLowerCase()}`);
-    vi.stubEnv(OPT_IN, 'false');
-    vi.stubEnv('PATH', '/usr/bin:/bin');
-    vi.stubEnv('HF_HOME', '/cache/hf');
+    const hubEnv: NodeJS.ProcessEnv = {
+      PATH: '/usr/bin:/bin',
+      HF_HOME: '/cache/hf',
+      MODELS_DIR: '/models',
+      HIP_VISIBLE_DEVICES: '0',
+      HBPE_LABEL_MAX_REQUESTS_PER_MINUTE: '30',
+      LLM_API_BASE: 'http://example.invalid/v1',
+      API_URL: 'https://user:canary-pw@example.invalid/v1',
+      HBPE_LABEL_API_KEY: 'canary-hbpe-label-api-key',
+      [OPT_IN]: 'false',
+    };
+    for (const name of CANARIES) hubEnv[name] = `canary-${name.toLowerCase()}`;
     const child = fakeChild();
     spawnMock.mockReturnValue(child);
     const runner = new TrainingRunnerService(mock<TrainingGovernorService>());
 
-    const done = (runner as unknown as SpawnInternals).spawnTrainingProcess(manifestFor('env-job'), '/data/manifest.json', '/data/artifacts');
+    const done = withHubEnv(hubEnv, () =>
+      (runner as unknown as SpawnInternals).spawnTrainingProcess(manifestFor('env-job'), '/data/manifest.json', '/data/artifacts'),
+    );
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [command, , options] = spawnMock.mock.calls[0] as [string, string[], { env: Record<string, string> }];
@@ -281,10 +419,50 @@ describe('the training child spawn', () => {
     expect(options.env.HF_HOME).toBe('/cache/hf');
     expect(options.env.PYTHONUNBUFFERED).toBe('1');
     expect(options.env.CI_HUB_TRAINING_CHILD).toBe('1');
-    const allowed = new Set<string>([...SPEC_ALLOWLIST, ...MARKERS]);
-    for (const name of Object.keys(options.env)) expect(allowed.has(name) || passesByRule(name)).toBe(true);
+    // A literal set of names and values. It is not computed from the helper under test.
+    expect(options.env).toEqual({
+      CI_HUB_TRAINING_CHILD: '1',
+      HBPE_LABEL_MAX_REQUESTS_PER_MINUTE: '30',
+      HF_HOME: '/cache/hf',
+      HIP_VISIBLE_DEVICES: '0',
+      LLM_API_BASE: 'http://example.invalid/v1',
+      MODELS_DIR: '/models',
+      PATH: '/usr/bin:/bin',
+      PYTHONUNBUFFERED: '1',
+    });
 
     child.emit('close', 0);
     await expect(done).resolves.toBeUndefined();
+  });
+});
+
+describe('the governor probes', () => {
+  beforeEach(() => {
+    execMock.mockReset();
+    // Calls back as the real exec does, with the output of the probe that was asked for.
+    execMock.mockImplementation((command: string, ...rest: unknown[]) => {
+      const callback = rest[rest.length - 1] as (error: null, result: { stdout: string; stderr: string }) => void;
+      callback(null, { stdout: PROBE_OUTPUT[command] ?? '', stderr: '' });
+    });
+  });
+
+  it('gives each of the four probes trainingChildEnv(), and no canary from the Hub environment', async () => {
+    silenceLogger();
+    vi.stubEnv('JWT_SECRET', 'canary-jwt');
+    vi.stubEnv('HBPE_LABEL_MAX_REQUESTS_PER_MINUTE', '30');
+    const expected = trainingChildEnv();
+    const governor = new TrainingGovernorService();
+
+    // darwin runs three probes (battery, thermal and memory), and linux runs the GPU probe.
+    await withPlatform('darwin', () => governor.evaluateLocalCapacity());
+    await withPlatform('linux', () => governor.getEstimatedAvailableVramMb());
+
+    const calls = execMock.mock.calls;
+    expect(calls.map(([command]) => command).sort()).toEqual(Object.keys(PROBE_OUTPUT).sort());
+    for (const [, options] of calls) {
+      expect(options).toEqual({ env: expected });
+      expect(options.env).not.toHaveProperty('JWT_SECRET');
+    }
+    expect(Object.values(expected)).not.toContain('canary-jwt');
   });
 });
