@@ -93,57 +93,47 @@ const logger = new Logger('TrainingChildEnv');
 /** One warning per process. The governor starts several children on every job, so not one per child. */
 let databaseWarningLogged = false;
 
-/** A value with a scheme and a colon, such as `https:` or `https://`. Only these are parsed as URLs. */
-const SCHEME_AND_COLON = /^[a-z][a-z0-9+.-]*:/i;
+/**
+ * The URL rule. A value is URL-valued when its trimmed form matches this pattern: a letter, then letters, digits,
+ * plus, dot or hyphen, then a colon, then a slash or a backslash, at the start of the value; or an at sign anywhere;
+ * or a question mark anywhere. The scheme is anchored to the start of the value. Unanchored, `/usr/bin:/bin` would
+ * match, and PATH would never reach a child. A model tag such as `qwen3:8b` has no slash after its colon, so it is
+ * copied.
+ */
+const URL_VALUED = /^[a-z][a-z0-9+.-]*:[\\/]|@|\?/i;
 
 /** The names whose withheld URL has been warned about. One warning per variable per process. */
 const urlWarningsLogged = new Set<string>();
 
-/** True when the URL parser drops `char` from either end of a value: a C0 control, a space, or other whitespace. */
-function isUrlPadding(char: string): boolean {
-  return char.charCodeAt(0) <= 0x20 || char.trim() === '';
+/** True for a character that is trimmed from either end of a value: an ASCII control, DEL, a space, or other whitespace. */
+function isEdgePadding(char: string): boolean {
+  const code = char.charCodeAt(0);
+  return code <= 0x20 || code === 0x7f || char.trim() === '';
 }
 
-/**
- * The value as the WHATWG URL parser reads it: ASCII tab and line feed are removed wherever they occur, and
- * leading and trailing padding is trimmed. The check and the parse both use this form, so whitespace or a control
- * character in front of a scheme cannot hide it.
- */
-function urlFormOf(value: string): string {
-  const unbroken = value.replaceAll('\t', '').replaceAll('\n', '').replaceAll('\r', '');
+/** The value without its leading and trailing padding. {@link copyUnlessWithheld} computes it once per value. */
+function trimmedOf(value: string): string {
   let start = 0;
-  let end = unbroken.length;
-  while (start < end && isUrlPadding(unbroken.charAt(start))) start += 1;
-  while (end > start && isUrlPadding(unbroken.charAt(end - 1))) end -= 1;
-  return unbroken.slice(start, end);
+  let end = value.length;
+  while (start < end && isEdgePadding(value.charAt(start))) start += 1;
+  while (end > start && isEdgePadding(value.charAt(end - 1))) end -= 1;
+  return value.slice(start, end);
 }
 
 /**
- * True when `value` is a URL that must not reach a child. A value without a scheme and a colon is never withheld.
- * Any other value is parsed with the WHATWG URL constructor, and is withheld when parsing fails, when the parsed URL
- * has a username or a password, or when it has a query string (a `?`, even an empty one).
+ * Copies `value` into `env`, unless it is URL-valued. The rule reads the trimmed value, and the copy is the value as
+ * the Hub has it. A withheld value is never logged: the warning names only the variable, once per process.
  */
-function isWithheldUrl(value: string): boolean {
-  const form = urlFormOf(value);
-  if (!SCHEME_AND_COLON.test(form)) return false;
-  try {
-    const url = new URL(form);
-    return url.username !== '' || url.password !== '' || form.includes('?');
-  } catch {
-    return true;
-  }
-}
-
-/** Copies `value` into `env`, unless it is a withheld URL. The warning names the variable, and never the value. */
 function copyUnlessWithheld(env: Record<string, string>, name: string, value: string | undefined): void {
   if (value === undefined) return;
-  if (!isWithheldUrl(value)) {
+  const trimmed = trimmedOf(value);
+  if (!URL_VALUED.test(trimmed)) {
     env[name] = value;
     return;
   }
   if (!urlWarningsLogged.has(name)) {
     urlWarningsLogged.add(name);
-    logger.warn(`${name} is not passed to training children: its URL-valued setting has credentials or a query string, or does not parse.`);
+    logger.warn(`${name} is not passed to training children: its value looks like a URL, so it was withheld.`);
   }
 }
 
@@ -151,11 +141,12 @@ function copyUnlessWithheld(env: Record<string, string>, name: string, value: st
  * The environment for a training child, built from `source` (the Hub's own environment by default).
  *
  * It holds the allowlisted names that are defined and the names that pass by rule, and no other name from
- * the Hub. A setting from either source is withheld when its value has a scheme and a colon, and parsing it as
- * a URL shows credentials or a query string, or fails. `DATABASE_` names are passed only when the operator sets
- * {@link DATABASE_OPT_IN} to `true`, for hosts whose trainer builds its vocabulary from the database.
- * `PYTHONUNBUFFERED` is set so progress lines reach the runner as they are written, and `CI_HUB_TRAINING_CHILD`
- * marks the child as one the Hub started.
+ * the Hub. A value from either source is withheld when it is URL-valued (see {@link URL_VALUED}). Every URL-valued
+ * setting is withheld, whatever its scheme, because the training path does not use URL-valued settings. That covers
+ * the rule path and the exact list. `DATABASE_` names are the exception: they are passed only when the operator
+ * sets {@link DATABASE_OPT_IN} to `true`, for hosts whose trainer builds its vocabulary from the database, and the
+ * URL rule does not apply to them. `PYTHONUNBUFFERED` is set so progress lines reach the runner as they are
+ * written, and `CI_HUB_TRAINING_CHILD` marks the child as one the Hub started.
  */
 export function trainingChildEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = {};

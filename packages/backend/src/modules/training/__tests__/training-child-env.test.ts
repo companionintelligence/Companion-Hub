@@ -286,43 +286,52 @@ describe('trainingChildEnv', () => {
     expect(env).not.toHaveProperty('SOME_OTHER_SETTING');
   });
 
-  it('copies a URL-valued setting that has neither credentials nor a query string', async () => {
+  it('withholds a plain URL on the rule path and on the exact list, whatever its scheme', async () => {
     const warn = silenceLogger();
     const { trainingChildEnv } = await loadHelper();
 
     const env = trainingChildEnv({ API_URL: 'http://example.invalid/v1', HF_HUB_CACHE: 'http://example.invalid/cache' });
 
-    expect(env.API_URL).toBe('http://example.invalid/v1');
-    expect(env.HF_HUB_CACHE).toBe('http://example.invalid/cache');
-    expect(warn).not.toHaveBeenCalled();
+    expect(env).not.toHaveProperty('API_URL');
+    expect(env).not.toHaveProperty('HF_HUB_CACHE');
+    expect(warn).toHaveBeenCalledTimes(2);
   });
 
-  it('still copies a plain URL on the rule path and on the exact list, and a value with a colon but no scheme', async () => {
+  it('copies a model tag with a colon on a rule name, which has no slash after the colon, no at sign and no question mark', async () => {
     const warn = silenceLogger();
     const { trainingChildEnv } = await loadHelper();
 
-    const env = trainingChildEnv({
-      API_URL: 'http://example.invalid/v1',
-      HF_HOME: 'http://example.invalid/v1',
-      LLM_DEFAULT_CHAT_MODEL: 'qwen2.5:7b',
-    });
+    const env = trainingChildEnv({ LLM_DEFAULT_CHAT_MODEL: 'qwen3:8b', HBPE_LABEL_MODEL: ' qwen2.5:7b ' });
 
-    expect(env.API_URL).toBe('http://example.invalid/v1');
-    expect(env.HF_HOME).toBe('http://example.invalid/v1');
-    expect(env.LLM_DEFAULT_CHAT_MODEL).toBe('qwen2.5:7b');
+    expect(env.LLM_DEFAULT_CHAT_MODEL).toBe('qwen3:8b');
+    // Copied as the Hub has it, so the padding stays: the rule reads the trimmed value only to decide.
+    expect(env.HBPE_LABEL_MODEL).toBe(' qwen2.5:7b ');
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it('withholds a URL-valued setting that the URL parser reads as credentialed or as having a query, in any form', async () => {
+  it('copies colon-separated paths on the exact list, because the scheme check is anchored to the start', async () => {
+    const warn = silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+
+    const env = trainingChildEnv({ PATH: '/usr/local/bin:/usr/bin:/bin', HF_HOME: '/cache/a:/cache/b' });
+
+    expect(env.PATH).toBe('/usr/local/bin:/usr/bin:/bin');
+    expect(env.HF_HOME).toBe('/cache/a:/cache/b');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('withholds a URL-valued setting in every form the rule names, on the rule path and on the exact list', async () => {
     const warn = silenceLogger();
     const { trainingChildEnv } = await loadHelper();
     const values = [
-      ' https://u:p@example.invalid/x', // a leading space
-      'https:/u:p@example.invalid/x', // one slash: the parser still reads an authority
-      'https:\\u:p@example.invalid/x', // a backslash: the parser reads it as a slash
+      ' https://user:pw@example.invalid/x', // a leading space before the scheme
+      'https:/user:pw@example.invalid/x', // one slash after the scheme colon
+      'https:\\user:pw@example.invalid/x', // a backslash in place of the slash, and an at sign later
+      'http://example.invalid/v1', // a plain URL: no credentials and no query string, still withheld
       'http://example.invalid/v1?x=1', // a query string
-      'ht\ttps://u:p@example.invalid/x', // a tab inside the scheme, which the parser removes
-      '\u0001https://u:p@example.invalid/x', // a leading control character
+      'user:pw@example.invalid', // an at sign with no scheme
+      'ht\ttps://user:pw@example.invalid/x', // a tab inside the scheme, and an at sign
+      '\u0001https://user:pw@example.invalid/x', // a leading control character
     ];
 
     for (const value of values) {
@@ -335,7 +344,7 @@ describe('trainingChildEnv', () => {
     expect(messages.length).toBeGreaterThan(0);
     for (const message of messages) {
       expect(message).not.toContain('example.invalid');
-      expect(message).not.toContain('u:p');
+      expect(message).not.toContain('user:pw');
     }
   });
 
@@ -362,6 +371,7 @@ describe('trainingChildEnv', () => {
     for (const message of messages) {
       expect(message).not.toContain('canary-pw');
       expect(message).not.toContain('example.invalid');
+      expect(message).toContain('looks like a URL');
     }
   });
 
@@ -494,12 +504,12 @@ describe('the training child spawn', () => {
     expect(options.env.PYTHONUNBUFFERED).toBe('1');
     expect(options.env.CI_HUB_TRAINING_CHILD).toBe('1');
     // A literal set of names and values. It is not computed from the helper under test.
+    // LLM_API_BASE is a plain URL in the Hub environment, so it is withheld and not in this literal.
     expect(options.env).toEqual({
       CI_HUB_TRAINING_CHILD: '1',
       HBPE_LABEL_MAX_REQUESTS_PER_MINUTE: '30',
       HF_HOME: '/cache/hf',
       HIP_VISIBLE_DEVICES: '0',
-      LLM_API_BASE: 'http://example.invalid/v1',
       MODELS_DIR: '/models',
       PATH: '/usr/bin:/bin',
       PYTHONUNBUFFERED: '1',
