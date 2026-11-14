@@ -254,17 +254,21 @@ export class TrainingRunnerService {
 
   private handleProgressEvent(jobId: string, payload: Partial<TrainingProgressEvent>): void {
     const status = this.jobStatuses.get(jobId);
-    if (!status || typeof payload !== 'object' || payload === null) return;
+    // Only a JSON object is an event. Null, a scalar and an array are dropped.
+    if (!status || typeof payload !== 'object' || payload === null || Array.isArray(payload)) return;
 
     // The payload is parsed from the trainer's stdout, so its types are not trusted. A peer reads this
     // status, so a field is copied only when it holds a finite number, or null for the validation loss.
     const { epoch, totalEpochs } = payload;
     if (isFiniteNumber(epoch) && isFiniteNumber(totalEpochs) && totalEpochs > 0) {
-      status.currentEpoch = epoch;
-      status.totalEpochs = totalEpochs;
-      // A huge epoch over a tiny total overflows to Infinity. That percentage is skipped, and the last one kept.
+      // A huge epoch over a tiny total overflows to Infinity. Then none of the three fields is written, so the
+      // status keeps its last consistent epoch, total and percentage.
       const percent = Math.round((epoch / totalEpochs) * 100);
-      if (Number.isFinite(percent)) status.progressPercent = percent;
+      if (Number.isFinite(percent)) {
+        status.currentEpoch = epoch;
+        status.totalEpochs = totalEpochs;
+        status.progressPercent = percent;
+      }
     }
     if (isFiniteNumber(payload.trainLoss)) status.trainLoss = payload.trainLoss;
     if (payload.valLoss === null || isFiniteNumber(payload.valLoss)) status.valLoss = payload.valLoss;

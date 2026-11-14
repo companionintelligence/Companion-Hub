@@ -2,8 +2,10 @@ import { Logger } from '@nestjs/common';
 
 /**
  * The names a training child process may inherit from the Hub: the python3 trainer, and the probes the
- * governor runs. Matched exactly. A prefix such as `HF_` would also pass `HF_TOKEN`. Any other name
- * passes only by {@link passesByRule}.
+ * governor runs. Matched exactly. A prefix such as `HF_` would also pass `HF_TOKEN`. A name here is copied even
+ * when it contains a denied substring, as `TOKEN` does in `QWEN_MAX_TOKENS_NO_THINK`, `TOKEN_CORPUS_DIR` and
+ * `TOKENIZERS_PARALLELISM`: the denylist is applied on the rule path only. Any other name passes only by
+ * {@link passesByRule}.
  */
 export const TRAINING_CHILD_ENV_ALLOWLIST = [
   'PATH',
@@ -36,6 +38,10 @@ export const TRAINING_CHILD_ENV_ALLOWLIST = [
   'ROCR_VISIBLE_DEVICES',
   'ROCM_PATH',
   'HIP_PATH',
+  'QWEN_MAX_TOKENS_NO_THINK',
+  'TOKEN_CORPUS_DIR',
+  'CLUSTER_STALENESS_DAYS',
+  'FUNCTION_RUNNER_CONCURRENCY',
 ] as const;
 
 /**
@@ -87,22 +93,42 @@ const logger = new Logger('TrainingChildEnv');
 /** One warning per process. The governor starts several children on every job, so not one per child. */
 let databaseWarningLogged = false;
 
-/** A value that starts with a URL scheme, such as `https://`. Only these are tested for credentials or a query. */
-const URL_VALUED = /^[a-z][a-z0-9+.-]*:\/\//i;
+/** A value with a scheme and a colon, such as `https:` or `https://`. Only these are parsed as URLs. */
+const SCHEME_AND_COLON = /^[a-z][a-z0-9+.-]*:/i;
 
 /** The names whose withheld URL has been warned about. One warning per variable per process. */
 const urlWarningsLogged = new Set<string>();
 
+/** True when the URL parser drops `char` from either end of a value: a C0 control, a space, or other whitespace. */
+function isUrlPadding(char: string): boolean {
+  return char.charCodeAt(0) <= 0x20 || char.trim() === '';
+}
+
 /**
- * True when `value` is a URL that must not reach a child: one with credentials (`scheme://user[:password]@host`),
- * one with a query string, or one that does not parse. A value that does not start with a URL scheme is never
- * withheld.
+ * The value as the WHATWG URL parser reads it: ASCII tab and line feed are removed wherever they occur, and
+ * leading and trailing padding is trimmed. The check and the parse both use this form, so whitespace or a control
+ * character in front of a scheme cannot hide it.
+ */
+function urlFormOf(value: string): string {
+  const unbroken = value.replaceAll('\t', '').replaceAll('\n', '').replaceAll('\r', '');
+  let start = 0;
+  let end = unbroken.length;
+  while (start < end && isUrlPadding(unbroken.charAt(start))) start += 1;
+  while (end > start && isUrlPadding(unbroken.charAt(end - 1))) end -= 1;
+  return unbroken.slice(start, end);
+}
+
+/**
+ * True when `value` is a URL that must not reach a child. A value without a scheme and a colon is never withheld.
+ * Any other value is parsed with the WHATWG URL constructor, and is withheld when parsing fails, when the parsed URL
+ * has a username or a password, or when it has a query string (a `?`, even an empty one).
  */
 function isWithheldUrl(value: string): boolean {
-  if (!URL_VALUED.test(value)) return false;
+  const form = urlFormOf(value);
+  if (!SCHEME_AND_COLON.test(form)) return false;
   try {
-    const url = new URL(value);
-    return url.username !== '' || url.password !== '' || value.includes('?');
+    const url = new URL(form);
+    return url.username !== '' || url.password !== '' || form.includes('?');
   } catch {
     return true;
   }
@@ -125,10 +151,11 @@ function copyUnlessWithheld(env: Record<string, string>, name: string, value: st
  * The environment for a training child, built from `source` (the Hub's own environment by default).
  *
  * It holds the allowlisted names that are defined and the names that pass by rule, and no other name from
- * the Hub. A URL-valued setting from the allowlist or the rule path is withheld when it has credentials or a
- * query string. `DATABASE_` names are passed only when the operator sets {@link DATABASE_OPT_IN} to `true`,
- * for hosts whose trainer builds its vocabulary from the database. `PYTHONUNBUFFERED` is set so progress
- * lines reach the runner as they are written, and `CI_HUB_TRAINING_CHILD` marks the child as one the Hub started.
+ * the Hub. A setting from either source is withheld when its value has a scheme and a colon, and parsing it as
+ * a URL shows credentials or a query string, or fails. `DATABASE_` names are passed only when the operator sets
+ * {@link DATABASE_OPT_IN} to `true`, for hosts whose trainer builds its vocabulary from the database.
+ * `PYTHONUNBUFFERED` is set so progress lines reach the runner as they are written, and `CI_HUB_TRAINING_CHILD`
+ * marks the child as one the Hub started.
  */
 export function trainingChildEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = {};

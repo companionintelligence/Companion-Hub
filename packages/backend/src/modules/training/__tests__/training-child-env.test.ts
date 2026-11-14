@@ -47,6 +47,10 @@ const SPEC_ALLOWLIST = [
   'ROCR_VISIBLE_DEVICES',
   'ROCM_PATH',
   'HIP_PATH',
+  'QWEN_MAX_TOKENS_NO_THINK',
+  'TOKEN_CORPUS_DIR',
+  'CLUSTER_STALENESS_DAYS',
+  'FUNCTION_RUNNER_CONCURRENCY',
 ];
 
 /** Set by the child environment itself, never copied from the Hub. */
@@ -254,6 +258,19 @@ describe('trainingChildEnv', () => {
     for (const name of names) expect(env[name]).toBe(`value-of-${name}`);
   });
 
+  it('copies the exact names that contain a denied substring, which passesByRule would refuse', async () => {
+    const { trainingChildEnv } = await loadHelper();
+    const names = ['QWEN_MAX_TOKENS_NO_THINK', 'TOKEN_CORPUS_DIR', 'TOKENIZERS_PARALLELISM', 'CLUSTER_STALENESS_DAYS', 'FUNCTION_RUNNER_CONCURRENCY'];
+    const source: NodeJS.ProcessEnv = {};
+    for (const name of names) source[name] = `value-of-${name}`;
+
+    const env = trainingChildEnv(source);
+
+    for (const name of names) expect(env[name]).toBe(`value-of-${name}`);
+    expect(passesByRule('QWEN_MAX_TOKENS_NO_THINK')).toBe(false);
+    expect(passesByRule('TOKEN_CORPUS_DIR')).toBe(false);
+  });
+
   it('passesByRule takes a rule-path name only when it has no denied substring', () => {
     expect(passesByRule('HBPE_LABEL_MAX_REQUESTS_PER_MINUTE')).toBe(true);
     expect(passesByRule('LLM_DEFAULT_CHAT_MODEL')).toBe(true);
@@ -278,6 +295,48 @@ describe('trainingChildEnv', () => {
     expect(env.API_URL).toBe('http://example.invalid/v1');
     expect(env.HF_HUB_CACHE).toBe('http://example.invalid/cache');
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('still copies a plain URL on the rule path and on the exact list, and a value with a colon but no scheme', async () => {
+    const warn = silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+
+    const env = trainingChildEnv({
+      API_URL: 'http://example.invalid/v1',
+      HF_HOME: 'http://example.invalid/v1',
+      LLM_DEFAULT_CHAT_MODEL: 'qwen2.5:7b',
+    });
+
+    expect(env.API_URL).toBe('http://example.invalid/v1');
+    expect(env.HF_HOME).toBe('http://example.invalid/v1');
+    expect(env.LLM_DEFAULT_CHAT_MODEL).toBe('qwen2.5:7b');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('withholds a URL-valued setting that the URL parser reads as credentialed or as having a query, in any form', async () => {
+    const warn = silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+    const values = [
+      ' https://u:p@example.invalid/x', // a leading space
+      'https:/u:p@example.invalid/x', // one slash: the parser still reads an authority
+      'https:\\u:p@example.invalid/x', // a backslash: the parser reads it as a slash
+      'http://example.invalid/v1?x=1', // a query string
+      'ht\ttps://u:p@example.invalid/x', // a tab inside the scheme, which the parser removes
+      '\u0001https://u:p@example.invalid/x', // a leading control character
+    ];
+
+    for (const value of values) {
+      for (const name of ['API_URL', 'HBPE_LABEL_ENDPOINT', 'HF_HOME']) {
+        expect(trainingChildEnv({ [name]: value })).not.toHaveProperty(name);
+      }
+    }
+
+    const messages = warn.mock.calls.map(([message]) => String(message));
+    expect(messages.length).toBeGreaterThan(0);
+    for (const message of messages) {
+      expect(message).not.toContain('example.invalid');
+      expect(message).not.toContain('u:p');
+    }
   });
 
   it('withholds a URL-valued setting with credentials or a query string, and warns once per name without the value', async () => {
@@ -320,6 +379,21 @@ describe('trainingChildEnv', () => {
     // The opt-in itself is never passed on to the child.
     expect(trainingChildEnv({ [OPT_IN]: 'true' })).not.toHaveProperty(OPT_IN);
     expect(warn).toHaveBeenCalled();
+  });
+
+  it('does not copy HBPE_DATABASE_URL or QWEN_DATABASE_URL when the database opt-in is true', async () => {
+    silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+
+    const env = trainingChildEnv({
+      HBPE_DATABASE_URL: 'postgres://example.invalid/db',
+      QWEN_DATABASE_URL: 'postgres://example.invalid/db',
+      [OPT_IN]: 'true',
+    });
+
+    expect(env).not.toHaveProperty('HBPE_DATABASE_URL');
+    expect(env).not.toHaveProperty('QWEN_DATABASE_URL');
+    expect(Object.keys(env).sort()).toEqual(['CI_HUB_TRAINING_CHILD', 'PYTHONUNBUFFERED']);
   });
 
   it('passes every DATABASE_ name when the opt-in is true', async () => {

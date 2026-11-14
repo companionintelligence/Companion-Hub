@@ -148,14 +148,30 @@ describe('TrainingRunnerService progress events', () => {
     expect(events[1]).toMatchObject({ learningRate: 0.0003, elapsedSeconds: 42 });
   });
 
-  it('keeps the last progressPercent when the percentage is not finite', async () => {
+  it('keeps the last epoch fields and progressPercent when the percentage is not finite', async () => {
     const { runner, progress } = await attachedJob('progress-overflow');
     progress('CI_TRAIN_EVENT: {"epoch": 3, "totalEpochs": 10}');
 
-    // 1e308 over 1e-10 overflows to Infinity. The epoch is copied, and the percentage is skipped.
+    // 1e308 over 1e-10 overflows to Infinity. None of the three fields is written, so the status is not half updated.
     progress('CI_TRAIN_EVENT: {"epoch": 1e308, "totalEpochs": 1e-10}');
 
-    expect(runner.getJobStatus('progress-overflow')).toMatchObject({ progressPercent: 30 });
+    expect(runner.getJobStatus('progress-overflow')).toMatchObject({ currentEpoch: 3, totalEpochs: 10, progressPercent: 30 });
+  });
+
+  it('ignores an array payload, with no event and no change to updatedAt', async () => {
+    const { runner } = await attachedJob('progress-array');
+    const events: TrainingProgressEvent[] = [];
+    runner.events.on('progress.progress-array', (event: TrainingProgressEvent) => events.push(event));
+    // A sentinel, so any write to updatedAt shows even when it falls in the same millisecond as the last one.
+    const status = runner.getJobStatus('progress-array') as TrainingJobStatus;
+    status.updatedAt = '2000-01-01T00:00:00.000Z';
+    const handle = (runner as unknown as ProgressInternals).handleProgressEvent.bind(runner);
+
+    // Called directly, as the null test does, so a missing guard shows as a write rather than a swallowed error.
+    expect(() => handle('progress-array', [])).not.toThrow();
+
+    expect(events).toHaveLength(0);
+    expect(runner.getJobStatus('progress-array')?.updatedAt).toBe('2000-01-01T00:00:00.000Z');
   });
 
   it('ignores a null, numeric or string payload, with no event and no change to updatedAt', async () => {
