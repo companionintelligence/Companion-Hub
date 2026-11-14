@@ -1,6 +1,7 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card/Card';
 import { apiFetch } from '@/lib/api-fetch';
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import type { AppDetails, AppInfo } from '@/types/app.types';
 import { Copy, Plug, RefreshCw, Terminal, Wrench } from 'lucide-react';
 import clsx from 'clsx';
@@ -105,7 +106,7 @@ export function McpAccessCard({ app, info, mcpRuntime: initialRuntime }: Props) 
 
   const tools = mcp.manifest?.tools ?? [];
   const installed = Boolean(app);
-  const badge = bridgeStatusBadge(runtime, installed, t);
+  const badge = bridgeStatusBadge(runtime, installed, asLegacyTranslate(t));
 
   const copyToClipboard = async (value: string) => {
     try {

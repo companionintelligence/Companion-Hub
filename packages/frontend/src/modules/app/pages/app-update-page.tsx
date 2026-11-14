@@ -58,7 +58,7 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
   const update = useMutation({
     ...updateAppMutation(),
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
     onSuccess: () => {
       navigate(location.state?.from || '/apps');

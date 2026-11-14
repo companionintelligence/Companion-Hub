@@ -1,4 +1,5 @@
 import { parseHubTimestamp } from '@/components/ui/dense/dense';
+import type { LegacyTranslate } from '@/lib/i18n/legacy-translate';
 
 /*
  * Number formatting for the Resources page. One place, so a figure reads the same on every tab.
@@ -41,7 +42,7 @@ export function formatDuration(ms: number | null | undefined): string {
   return `${Math.floor(hours / 24)} d`;
 }
 
-type Translate = (key: string, vars?: Record<string, unknown>) => string;
+type Translate = LegacyTranslate;
 
 /**
  * `5 min ago`, `just now`, `never`, in the page's language. Read through `parseHubTimestamp`, because

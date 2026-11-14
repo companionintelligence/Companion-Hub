@@ -22,7 +22,7 @@ export const DeleteAppStoreDialog = ({ appStore }: Props) => {
   const deleteAppStore = useMutation({
     ...deleteAppStoreMutation(),
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
     onSuccess: async () => {
       // Close before the refetch because it removes this row and this dialog with it.

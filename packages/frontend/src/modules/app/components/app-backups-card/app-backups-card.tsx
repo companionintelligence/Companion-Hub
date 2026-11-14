@@ -101,13 +101,13 @@ export const AppBackupsCard = ({ appUrn, appName, status }: AppBackupsCardProps)
   // lifecycle event and nothing polls the app, so the busy status would stay on screen (and the buttons
   // disabled) until the page was reloaded: ask the server what the status really is.
   const onBusyError = (error: TranslatableError) => {
-    toast.error(t(error.message, error.intlParams));
+    toast.error(t(error.message, error.intlParams ?? {}));
     setPending(null);
     invalidateAppQueries(queryClient, appUrn);
   };
 
   const onError = (error: TranslatableError) => {
-    toast.error(t(error.message, error.intlParams));
+    toast.error(t(error.message, error.intlParams ?? {}));
     setPending(null);
   };
 

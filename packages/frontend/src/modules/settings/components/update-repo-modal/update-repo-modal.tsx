@@ -18,7 +18,7 @@ export const UpdateRepoModal = () => {
       UpdateRepoModalDisclosure.close();
     },
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
   });
 

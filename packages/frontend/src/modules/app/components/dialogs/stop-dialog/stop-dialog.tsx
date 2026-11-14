@@ -24,7 +24,7 @@ export const StopDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
   const stopMutation = useMutation({
     ...stopAppMutation(),
     onError: (error: TranslatableError) => {
-      toast.error(t(error.message, error.intlParams));
+      toast.error(t(error.message, error.intlParams ?? {}));
       // A pre-flight rejection (e.g. stopping an app that was just removed) fails
       // synchronously and emits no lifecycle SSE event, and nothing polls the app
       // detail — so without this the optimistic 'stopping' status would spin

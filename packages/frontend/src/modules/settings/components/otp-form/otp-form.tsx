@@ -36,7 +36,7 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
     },
     onError: (e: TranslatableError) => {
       setPassword('');
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
     onSuccess: (data) => {
       setPassword('');
@@ -50,7 +50,7 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
     ...setupTotpMutation(),
     onError: (e: TranslatableError) => {
       setTotpCode('');
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
     onSuccess: () => {
       setTotpCode('');
@@ -68,7 +68,7 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
     },
     onError: (e: TranslatableError) => {
       setPassword('');
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
     onSuccess: () => {
       setPassword('');

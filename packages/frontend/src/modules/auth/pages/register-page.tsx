@@ -69,7 +69,7 @@ export default () => {
       }
     },
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
       // The loader could not tell this Hub was paired. The backend could, so go where the toast says.
       if (e.message === 'AUTH_ERROR_REGISTER_PAIRED_HUB') {
         navigate(loginHref(redirectUrl), { replace: true });

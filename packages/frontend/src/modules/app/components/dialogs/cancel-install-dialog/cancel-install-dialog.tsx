@@ -67,7 +67,7 @@ export const CancelInstallDialog = ({ info, isOpen, onClose, onCancelStart, oper
       onClose();
     },
     onError: (error: TranslatableError) => {
-      toast.error(t(error.message, error.intlParams));
+      toast.error(t(error.message, error.intlParams ?? {}));
       onClose();
     },
   });

@@ -19,6 +19,7 @@ import { loadState, poolModelIndex, poolReach, useDashboardData } from '@/module
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import { AppsTab } from './apps-tab';
 import { AttentionNotice, type Notice } from './attention-notice';
 import { PerformanceTab, type SystemLoad } from './performance-tab';
@@ -145,7 +146,7 @@ export default function ResourcesPage() {
       loadState(residency),
       loadState(systemLoad),
     ],
-    t: (key: string, vars?: Record<string, unknown>) => t(key, vars),
+    t: asLegacyTranslate(t),
   });
 
   // The faults the previous page raised as chips, said once each in words, with where to go next.

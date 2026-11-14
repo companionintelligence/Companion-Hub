@@ -2,6 +2,7 @@ import { cn } from '@/lib/utils';
 import type { CuratedModel, HardwareTier, InferenceBackendType, ModelContextPlan } from '@ci-hub/common/types';
 import { ChevronRight, HardDrive, MemoryStick } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
+import { asLegacyTranslate, type LegacyTranslate } from '@/lib/i18n/legacy-translate';
 import { CubeModelsIcon, ModelIcon } from './icons';
 import { ARTIFICIAL_ANALYSIS_URL, type LevelColor, LEVEL_TAG, LEVEL_TEXT, resourceColor, scoreColor, TIER_TAG_COLOR, TIER_TAG_LABEL } from './levels';
 import { ModelCard, StepSection } from './primitives';
@@ -48,7 +49,7 @@ const MODALITY_FALLBACK_TAG: Record<string, string> = {
  * Reasoning / Vision / Tools / Audio (from catalog capability metadata) for LLMs, and a single
  * descriptive tag for non-LLM modalities (Embedding / Speech / Transcription).
  */
-type TranslateFn = (key: string, options?: Record<string, unknown>) => string;
+type TranslateFn = LegacyTranslate;
 
 export function modelTags(model: CuratedModel, t?: TranslateFn): string[] {
   if (model.modality && model.modality !== 'llm') {
@@ -139,7 +140,7 @@ export const RecommendedModels = ({
               checkboxTestId={`model-checkbox-${model.id}`}
               title={model.displayName}
               icon={<ModelIcon model={model} />}
-              tags={modelTags(model, t)}
+              tags={modelTags(model, asLegacyTranslate(t))}
               selected={selectedModelIds.includes(model.id)}
               onToggle={() => onToggleModel(model.id)}
               agentDefault={model.id === preferredModelId}
@@ -236,7 +237,7 @@ function ModelTableRow({
       </td>
       <td className="py-2 pr-3 align-middle">
         <span className="flex flex-wrap gap-1">
-          {modelTags(model, t).map((tag) => (
+          {modelTags(model, asLegacyTranslate(t)).map((tag) => (
             <span key={tag} className="rounded border border-primary/30 px-1.5 py-0.5 text-[10px] font-medium text-primary/90">
               {tag}
             </span>

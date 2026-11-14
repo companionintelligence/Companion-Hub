@@ -63,7 +63,7 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose, boundCu
     ...installAppMutation(),
     mutationKey: installRequestKey(info.urn),
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
       if (e.message === 'APP_ERROR_INSTALL_IN_PROGRESS') {
         // Refused because an install of this app is already under way. The read below shows it.
         markInstalling();

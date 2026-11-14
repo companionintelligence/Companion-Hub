@@ -43,6 +43,7 @@ import {
   recordLastUsedConfig,
   serializeInstallConfig,
 } from '@/modules/app/lib/install-config-storage';
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import { isInstallFormValid, mergeFormFieldDefaults, validateAppConfig } from './form-validators';
 import { HIDDEN_FIELD_TYPES } from '@ci-hub/common/validation';
 import { CloudflareSubdomainField } from './cloudflare-subdomain-field';
@@ -597,7 +598,7 @@ export const InstallForm: React.FC<IProps> = ({
       // `formatApiError`, not a fixed string: a repair the operator has no grant for
       // comes back as APP_ACTION_GRANT_DENIED, and "check the Hub logs" would send
       // them looking for a fault that is not there.
-      toast.error(formatApiError(error, t));
+      toast.error(formatApiError(error, asLegacyTranslate(t)));
     } finally {
       setIsRepairingPublicWeb(false);
     }
@@ -880,7 +881,7 @@ export const InstallForm: React.FC<IProps> = ({
   const _randomPortMutation = useMutation({
     ...getRandomPortMutation(),
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
     onSuccess: (data: GetRandomPortResponse) => {
       setValue('port', data.port.toString(), { shouldDirty: true });
@@ -895,7 +896,7 @@ export const InstallForm: React.FC<IProps> = ({
     checkDnsAvailability,
     setError,
     clearErrors,
-    t,
+    t: asLegacyTranslate(t),
   });
 
   const renderField = (field: FormField) => {
@@ -1098,7 +1099,7 @@ export const InstallForm: React.FC<IProps> = ({
             portalUrl={portalConfig?.portalUrl}
             onTakeoverChange={(confirmed) => setValue('customDomainTakeover', confirmed)}
             loading={loading}
-            t={t}
+            t={asLegacyTranslate(t)}
           />
         ) : null}
         {/*
@@ -1203,7 +1204,7 @@ export const InstallForm: React.FC<IProps> = ({
     const showValidationErrors = () => {
       for (const [key, value] of Object.entries(validationErrors)) {
         if (value) {
-          setError(key, { message: t(value.messageKey, value.params) });
+          setError(key, { message: t(value.messageKey, value.params ?? {}) });
         }
       }
 

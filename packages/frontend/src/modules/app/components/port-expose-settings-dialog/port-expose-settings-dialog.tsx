@@ -14,6 +14,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { Input } from '@/components/ui/Input/Input';
 import { useAppContext } from '@/context/app-context';
 import { fetchDnsAvailability } from '@/lib/cloudflare-api';
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import { CloudflareSubdomainField } from '@/modules/app/components/install-form/cloudflare-subdomain-field';
 import { domainListNoteFor } from '@/modules/app/components/install-form/domain-list-note';
 import { preselectedPublicDomain, publicDomainToUse } from '@/modules/app/components/install-form/preselected-public-domain';
@@ -154,7 +155,7 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
     checkDnsAvailability,
     setError,
     clearErrors,
-    t,
+    t: asLegacyTranslate(t),
   });
 
   // A move onto Public web waiting on the person to agree that anyone with the address can open the port.

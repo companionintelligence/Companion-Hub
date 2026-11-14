@@ -1,6 +1,7 @@
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import type { RegistrationStateDrift, StateDriftSignal } from '@/lib/registration-state-drift';
 import { cn } from '@/lib/utils';
 import { ArrowRightLeft, Laptop, PlusCircle, RefreshCw } from 'lucide-react';
@@ -155,7 +156,7 @@ export function RegistrationStateDriftDialog({
               <p className="text-xs font-medium   text-muted-foreground">{t('DEVICE_REGISTRATION_STATE_DRIFT_DETAILS_HEADING')}</p>
               <ul className="mt-2 space-y-1.5 text-sm text-muted-foreground">
                 {extraSignals.map((signal) => (
-                  <li key={`${signal.reason}-${signal.detail ?? ''}`}>{signalCopy(signal, t)}</li>
+                  <li key={`${signal.reason}-${signal.detail ?? ''}`}>{signalCopy(signal, asLegacyTranslate(t))}</li>
                 ))}
               </ul>
             </div>

@@ -417,7 +417,7 @@ export const AppActions = ({
   const startMutation = useMutation({
     ...startAppMutation(),
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
       // A pre-flight rejection (e.g. starting an app that was already removed, which
       // throws APP_ERROR_APP_NOT_FOUND before any status update) emits no lifecycle
       // SSE event, and the app-detail query has a 30s staleTime with no refetch
@@ -440,7 +440,7 @@ export const AppActions = ({
     },
     // The error is a translation key, as for Start: shown raw it read APP_ACTION_GRANT_DENIED (#2376).
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
   });
 
@@ -454,7 +454,7 @@ export const AppActions = ({
     },
     // The error is a translation key, as for Start: shown raw it read APP_ACTION_GRANT_DENIED (#2376).
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
   });
 

@@ -134,14 +134,14 @@ export default () => {
       }
     },
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
   });
 
   const verifyTotp = useMutation({
     ...verifyTotpMutation(),
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
 
       // The sign-in is over, so the code form has nothing left to submit to: go back to the password.
       if (TOTP_SESSION_ENDED_ERRORS.has(e.message)) {

@@ -1,4 +1,4 @@
-import type { TFunction } from 'i18next';
+import type { LegacyTranslate } from '@/lib/i18n/legacy-translate';
 
 import { TranslatableError } from '@/types/error.types';
 
@@ -18,7 +18,7 @@ export function isConflictError(error: unknown): error is TranslatableError {
 }
 
 /** Turn API or route errors into translated user-facing copy (fact + fix). Never surfaces raw backend English. */
-export function formatApiError(error: unknown, t: TFunction, status = 500): string {
+export function formatApiError(error: unknown, t: LegacyTranslate, status = 500): string {
   if (isChunkLoadError(error)) {
     return t('ERROR_PAGE_CHUNK_LOAD');
   }

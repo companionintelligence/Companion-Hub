@@ -46,7 +46,7 @@ export const BatchActionsMenu = ({ runningCount, stoppedCount, updatesAvailable 
     void queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
   };
   const onError = (error: TranslatableError) => {
-    toast.error(t(error.message, error.intlParams));
+    toast.error(t(error.message, error.intlParams ?? {}));
     setConfirming(null);
   };
 
