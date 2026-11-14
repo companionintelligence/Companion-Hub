@@ -192,6 +192,13 @@ ARG SENTRY_RELEASE=""
 ENV SENTRY_DSN=${SENTRY_DSN}
 ENV SENTRY_RELEASE=${SENTRY_RELEASE}
 
+# Cloud inference fallback. Only the production image build passes
+# CI_HUB_ALLOW_CLOUD_FALLBACK=true (build-container.yml). Other builds pass nothing, so the
+# variable stays empty, which the backend reads as off (it compares with === 'true').
+# An env_file or `docker run -e` value still overrides this default.
+ARG CI_HUB_ALLOW_CLOUD_FALLBACK
+ENV CI_HUB_ALLOW_CLOUD_FALLBACK=${CI_HUB_ALLOW_CLOUD_FALLBACK}
+
 # ---- Build identity (see packages/backend/src/core/build-info/hub-build-info.ts) ----
 #
 # A deployed Hub could not say which build it was. Three separate reasons, all fixed here:

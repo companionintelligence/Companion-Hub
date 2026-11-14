@@ -230,6 +230,7 @@ jobs:
             CI_CLOUD_URL=https://${{ steps.tags.outputs.portal_registry }}
             CI_HUB_VERSION=${{ steps.tags.outputs.version || steps.tags.outputs.channel_tag }}
             CI_HUB_ENVIRONMENT=${{ steps.tags.outputs.environment }}
+            CI_HUB_ALLOW_CLOUD_FALLBACK=${{ steps.tags.outputs.environment == 'production' && 'true' || '' }}
             CI_HUB_BUILD_VERSION=${{ steps.tags.outputs.version || steps.tags.outputs.channel_tag }}
             CI_HUB_BUILD_CHANNEL=${{ steps.tags.outputs.channel_tag }}
             CI_HUB_BUILD_SHA=${{ github.sha }}
