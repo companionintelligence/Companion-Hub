@@ -290,10 +290,11 @@ describe('trainingChildEnv', () => {
     const warn = silenceLogger();
     const { trainingChildEnv } = await loadHelper();
 
-    const env = trainingChildEnv({ API_URL: 'http://example.invalid/v1', HF_HUB_CACHE: 'http://example.invalid/cache' });
+    // A path-valued name is not URL-checked, so the exact-list case uses a name that is not path-valued.
+    const env = trainingChildEnv({ API_URL: 'http://example.invalid/v1', PYTORCH_CUDA_ALLOC_CONF: 'http://example.invalid/cache' });
 
     expect(env).not.toHaveProperty('API_URL');
-    expect(env).not.toHaveProperty('HF_HUB_CACHE');
+    expect(env).not.toHaveProperty('PYTORCH_CUDA_ALLOC_CONF');
     expect(warn).toHaveBeenCalledTimes(2);
   });
 
@@ -320,6 +321,59 @@ describe('trainingChildEnv', () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
+  it('copies PATH unchanged when one of its directories has an at sign, as the Homebrew openjdk@21 directory does', async () => {
+    const warn = silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+    const value = '/opt/homebrew/opt/openjdk@21/bin:/usr/bin';
+
+    const env = trainingChildEnv({ PATH: value });
+
+    expect(env.PATH).toBe(value);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('copies a path-valued rule name unchanged when its local path contains an at sign', async () => {
+    const warn = silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+    const value = '/srv/models/team@lab/qwen.gguf';
+
+    const env = trainingChildEnv({ QWEN_GGUF_PATH: value });
+
+    expect(env.QWEN_GGUF_PATH).toBe(value);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('withholds a no-scheme value with a question mark on a rule name, because of the question mark alone', async () => {
+    const warn = silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+
+    // Without the question mark the same value is copied: it has no scheme, no at sign and no question mark.
+    expect(trainingChildEnv({ HBPE_LABEL_ENDPOINT: 'example.invalid/v1' }).HBPE_LABEL_ENDPOINT).toBe('example.invalid/v1');
+
+    const env = trainingChildEnv({ HBPE_LABEL_ENDPOINT: 'example.invalid/v1?x=1' });
+
+    expect(env).not.toHaveProperty('HBPE_LABEL_ENDPOINT');
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = String(warn.mock.calls[0]?.[0]);
+    expect(message).toContain('carries a credential or query separator');
+    expect(message).not.toContain('the value looks like a URL');
+    expect(message).not.toContain('example.invalid');
+  });
+
+  it('withholds a backslash after the scheme colon on a rule name, with no at sign and no question mark', async () => {
+    silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+    // The first string has one backslash and the second has two. Neither has an at sign or a question mark.
+    const values = ['https:\\example.invalid/v1', 'https:\\\\example.invalid/v1'];
+
+    for (const value of values) {
+      expect(value).not.toMatch(/[@?]/);
+      for (const name of ['LLM_API_BASE', 'HBPE_LABEL_ENDPOINT']) {
+        expect(trainingChildEnv({ [name]: value })).not.toHaveProperty(name);
+      }
+    }
+  });
+
   it('withholds a URL-valued setting in every form the rule names, on the rule path and on the exact list', async () => {
     const warn = silenceLogger();
     const { trainingChildEnv } = await loadHelper();
@@ -335,7 +389,7 @@ describe('trainingChildEnv', () => {
     ];
 
     for (const value of values) {
-      for (const name of ['API_URL', 'HBPE_LABEL_ENDPOINT', 'HF_HOME']) {
+      for (const name of ['API_URL', 'HBPE_LABEL_ENDPOINT', 'PYTORCH_CUDA_ALLOC_CONF']) {
         expect(trainingChildEnv({ [name]: value })).not.toHaveProperty(name);
       }
     }
@@ -354,7 +408,7 @@ describe('trainingChildEnv', () => {
     const source: NodeJS.ProcessEnv = {
       API_URL: 'https://user:canary-pw@example.invalid/v1',
       LLM_API_BASE: 'http://example.invalid/v1?x=1',
-      HF_HOME: 'https://user@example.invalid/cache',
+      PYTORCH_CUDA_ALLOC_CONF: 'https://user@example.invalid/cache',
     };
 
     const env = trainingChildEnv(source);
@@ -362,16 +416,16 @@ describe('trainingChildEnv', () => {
 
     expect(env).not.toHaveProperty('API_URL');
     expect(env).not.toHaveProperty('LLM_API_BASE');
-    expect(env).not.toHaveProperty('HF_HOME');
+    expect(env).not.toHaveProperty('PYTORCH_CUDA_ALLOC_CONF');
     expect(warn).toHaveBeenCalledTimes(3);
     const messages = warn.mock.calls.map(([message]) => String(message));
-    for (const name of ['API_URL', 'LLM_API_BASE', 'HF_HOME']) {
+    for (const name of ['API_URL', 'LLM_API_BASE', 'PYTORCH_CUDA_ALLOC_CONF']) {
       expect(messages.filter((message) => message.startsWith(name))).toHaveLength(1);
     }
     for (const message of messages) {
       expect(message).not.toContain('canary-pw');
       expect(message).not.toContain('example.invalid');
-      expect(message).toContain('looks like a URL');
+      expect(message).toContain('looks like a URL or carries a credential or query separator');
     }
   });
 

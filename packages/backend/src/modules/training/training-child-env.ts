@@ -98,9 +98,43 @@ let databaseWarningLogged = false;
  * plus, dot or hyphen, then a colon, then a slash or a backslash, at the start of the value; or an at sign anywhere;
  * or a question mark anywhere. The scheme is anchored to the start of the value. Unanchored, `/usr/bin:/bin` would
  * match, and PATH would never reach a child. A model tag such as `qwen3:8b` has no slash after its colon, so it is
- * copied.
+ * copied. A path-valued name is not checked against this rule (see {@link isPathValued}).
  */
 const URL_VALUED = /^[a-z][a-z0-9+.-]*:[\\/]|@|\?/i;
+
+/**
+ * Names whose value is a path: a directory, a cache, a tool home or a search path. A path can hold an at sign, as the
+ * Homebrew PATH does with its `openjdk@21` directory, so these values are copied as the Hub has them and are never
+ * URL-checked.
+ */
+const PATH_VALUED: ReadonlySet<string> = new Set([
+  'PATH',
+  'PYTHONPATH',
+  'PYTHONHOME',
+  'LD_LIBRARY_PATH',
+  'VIRTUAL_ENV',
+  'CUDA_HOME',
+  'CUDA_PATH',
+  'HOME',
+  'TMPDIR',
+  'XDG_CACHE_HOME',
+  'HF_HOME',
+  'HF_HUB_CACHE',
+  'TORCH_HOME',
+  'MODELS_DIR',
+  'ROCM_PATH',
+  'HIP_PATH',
+  'TOKEN_CORPUS_DIR',
+]);
+
+/** A rule-path name ending in one of these is path-valued too. */
+const PATH_SUFFIXES: readonly string[] = ['_PATH', '_DIR', '_HOME'];
+
+/** True for a name whose value is a path, so the URL rule is not applied to its value. */
+function isPathValued(name: string): boolean {
+  if (PATH_VALUED.has(name)) return true;
+  return passesByRule(name) && PATH_SUFFIXES.some((suffix) => name.endsWith(suffix));
+}
 
 /** The names whose withheld URL has been warned about. One warning per variable per process. */
 const urlWarningsLogged = new Set<string>();
@@ -121,19 +155,22 @@ function trimmedOf(value: string): string {
 }
 
 /**
- * Copies `value` into `env`, unless it is URL-valued. The rule reads the trimmed value, and the copy is the value as
- * the Hub has it. A withheld value is never logged: the warning names only the variable, once per process.
+ * Copies `value` into `env`, unless it is URL-valued and its name is not path-valued. The rule reads the trimmed value,
+ * and the copy is the value as the Hub has it. A withheld value is never logged: the warning names only the variable,
+ * once per process, and says the setting looks like a URL or carries a credential or query separator. An at sign or a
+ * question mark alone can trigger the rule, so the warning does not say that the value looks like a URL.
  */
 function copyUnlessWithheld(env: Record<string, string>, name: string, value: string | undefined): void {
   if (value === undefined) return;
-  const trimmed = trimmedOf(value);
-  if (!URL_VALUED.test(trimmed)) {
+  if (isPathValued(name) || !URL_VALUED.test(trimmedOf(value))) {
     env[name] = value;
     return;
   }
   if (!urlWarningsLogged.has(name)) {
     urlWarningsLogged.add(name);
-    logger.warn(`${name} is not passed to training children: its value looks like a URL, so it was withheld.`);
+    logger.warn(
+      `${name} is not passed to training children: the setting looks like a URL or carries a credential or query separator, so it was withheld.`,
+    );
   }
 }
 
@@ -141,12 +178,13 @@ function copyUnlessWithheld(env: Record<string, string>, name: string, value: st
  * The environment for a training child, built from `source` (the Hub's own environment by default).
  *
  * It holds the allowlisted names that are defined and the names that pass by rule, and no other name from
- * the Hub. A value from either source is withheld when it is URL-valued (see {@link URL_VALUED}). Every URL-valued
- * setting is withheld, whatever its scheme, because the training path does not use URL-valued settings. That covers
- * the rule path and the exact list. `DATABASE_` names are the exception: they are passed only when the operator
- * sets {@link DATABASE_OPT_IN} to `true`, for hosts whose trainer builds its vocabulary from the database, and the
- * URL rule does not apply to them. `PYTHONUNBUFFERED` is set so progress lines reach the runner as they are
- * written, and `CI_HUB_TRAINING_CHILD` marks the child as one the Hub started.
+ * the Hub. A value from either source is withheld when it is URL-valued (see {@link URL_VALUED}), unless its name is
+ * path-valued (see {@link isPathValued}). Every other URL-valued setting is withheld, whatever its scheme, because the
+ * training path does not use URL-valued settings. That covers the rule path and the exact list. `DATABASE_` names are
+ * the exception: they are passed only when the operator sets {@link DATABASE_OPT_IN} to `true`, for hosts whose trainer
+ * builds its vocabulary from the database, and the URL rule does not apply to them. `PYTHONUNBUFFERED` is set so
+ * progress lines reach the runner as they are written, and `CI_HUB_TRAINING_CHILD` marks the child as one the Hub
+ * started.
  */
 export function trainingChildEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = {};
