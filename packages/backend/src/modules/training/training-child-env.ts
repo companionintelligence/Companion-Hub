@@ -42,6 +42,9 @@ export const TRAINING_CHILD_ENV_ALLOWLIST = [
   'TOKEN_CORPUS_DIR',
   'CLUSTER_STALENESS_DAYS',
   'FUNCTION_RUNNER_CONCURRENCY',
+  // The trainer's endpoint resolution reads these at import (llm_host.py), so they change the endpoints it receives.
+  'CI_LLM_HOST_REWRITE',
+  'CI_LLM_HOST_GATEWAY',
 ] as const;
 
 /**
@@ -94,20 +97,11 @@ const logger = new Logger('TrainingChildEnv');
 let databaseWarningLogged = false;
 
 /**
- * The URL rule. A value is URL-valued when its trimmed form matches this pattern: a letter, then letters, digits,
- * plus, dot or hyphen, then a colon, then a slash or a backslash, at the start of the value; or an at sign anywhere;
- * or a question mark anywhere. The scheme is anchored to the start of the value. Unanchored, `/usr/bin:/bin` would
- * match, and PATH would never reach a child. A model tag such as `qwen3:8b` has no slash after its colon, so it is
- * copied. A path-valued name is not checked against this rule (see {@link isPathValued}).
+ * Names whose value is not URL-checked: a directory, a cache, a tool home, a search path or a locale. Each is copied
+ * as the Hub has it, when it is set. A path or a locale can hold an at sign: the Homebrew PATH holds one in its
+ * `openjdk@21` directory, and `de_DE@euro` is a locale. Matched exactly.
  */
-const URL_VALUED = /^[a-z][a-z0-9+.-]*:[\\/]|@|\?/i;
-
-/**
- * Names whose value is a path: a directory, a cache, a tool home or a search path. A path can hold an at sign, as the
- * Homebrew PATH does with its `openjdk@21` directory, so these values are copied as the Hub has them and are never
- * URL-checked.
- */
-const PATH_VALUED: ReadonlySet<string> = new Set([
+export const NOT_URL_CHECKED: ReadonlySet<string> = new Set([
   'PATH',
   'PYTHONPATH',
   'PYTHONHOME',
@@ -125,24 +119,45 @@ const PATH_VALUED: ReadonlySet<string> = new Set([
   'ROCM_PATH',
   'HIP_PATH',
   'TOKEN_CORPUS_DIR',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
 ]);
 
-/** A rule-path name ending in one of these is path-valued too. */
-const PATH_SUFFIXES: readonly string[] = ['_PATH', '_DIR', '_HOME'];
+/** A rule-path name ending in one of these, compared case-insensitively, is not URL-checked either. */
+const NOT_URL_CHECKED_SUFFIXES: readonly string[] = ['_PATH', '_DIR', '_HOME'];
 
-/** True for a name whose value is a path, so the URL rule is not applied to its value. */
-function isPathValued(name: string): boolean {
-  if (PATH_VALUED.has(name)) return true;
-  return passesByRule(name) && PATH_SUFFIXES.some((suffix) => name.endsWith(suffix));
+/**
+ * True for a name whose value is not URL-checked: a name in {@link NOT_URL_CHECKED}, or a rule-path name with one of
+ * the {@link NOT_URL_CHECKED_SUFFIXES}.
+ */
+function isNotUrlChecked(name: string): boolean {
+  if (NOT_URL_CHECKED.has(name)) return true;
+  const upper = name.toUpperCase();
+  return passesByRule(name) && NOT_URL_CHECKED_SUFFIXES.some((suffix) => upper.endsWith(suffix));
 }
 
-/** The names whose withheld URL has been warned about. One warning per variable per process. */
+/**
+ * The URL check. A value is withheld when its trimmed form contains an at sign or a question mark anywhere. An at sign
+ * can introduce userinfo, which carries a credential, and a question mark starts a query, which can carry a secret. The
+ * check does not parse the value, so the scheme does not matter. An endpoint with neither character is copied, because
+ * the trainer uses it for labelling and for its GraphQL client.
+ */
+function hasAtOrQuestionMark(trimmed: string): boolean {
+  return trimmed.includes('@') || trimmed.includes('?');
+}
+
+/** The names whose withheld value has been warned about. One warning per variable per process. */
 const urlWarningsLogged = new Set<string>();
 
-/** True for a character that is trimmed from either end of a value: an ASCII control, DEL, a space, or other whitespace. */
+/**
+ * True for a character trimmed from either end of a value: an ASCII control or space, DEL, Unicode whitespace (U+0085
+ * included), U+200B (zero width space) or U+FEFF (byte order mark).
+ */
 function isEdgePadding(char: string): boolean {
   const code = char.charCodeAt(0);
-  return code <= 0x20 || code === 0x7f || char.trim() === '';
+  if (code <= 0x20 || code === 0x7f || code === 0x85 || code === 0x200b || code === 0xfeff) return true;
+  return char.trim() === '';
 }
 
 /** The value without its leading and trailing padding. {@link copyUnlessWithheld} computes it once per value. */
@@ -155,36 +170,32 @@ function trimmedOf(value: string): string {
 }
 
 /**
- * Copies `value` into `env`, unless it is URL-valued and its name is not path-valued. The rule reads the trimmed value,
- * and the copy is the value as the Hub has it. A withheld value is never logged: the warning names only the variable,
- * once per process, and says the setting looks like a URL or carries a credential or query separator. An at sign or a
- * question mark alone can trigger the rule, so the warning does not say that the value looks like a URL.
+ * Copies `value` into `env`, unless its trimmed form contains an at sign or a question mark and its name is not
+ * URL-exempt (see {@link isNotUrlChecked}). The copy is the value as the Hub has it. A withheld value is never logged:
+ * the warning names only the variable, once per process, and says that the value contains an at sign or a question mark.
  */
 function copyUnlessWithheld(env: Record<string, string>, name: string, value: string | undefined): void {
   if (value === undefined) return;
-  if (isPathValued(name) || !URL_VALUED.test(trimmedOf(value))) {
+  if (isNotUrlChecked(name) || !hasAtOrQuestionMark(trimmedOf(value))) {
     env[name] = value;
     return;
   }
   if (!urlWarningsLogged.has(name)) {
     urlWarningsLogged.add(name);
-    logger.warn(
-      `${name} is not passed to training children: the setting looks like a URL or carries a credential or query separator, so it was withheld.`,
-    );
+    logger.warn(`${name} is not passed to training children: its value contains an at sign or a question mark, so it was withheld.`);
   }
 }
 
 /**
  * The environment for a training child, built from `source` (the Hub's own environment by default).
  *
- * It holds the allowlisted names that are defined and the names that pass by rule, and no other name from
- * the Hub. A value from either source is withheld when it is URL-valued (see {@link URL_VALUED}), unless its name is
- * path-valued (see {@link isPathValued}). Every other URL-valued setting is withheld, whatever its scheme, because the
- * training path does not use URL-valued settings. That covers the rule path and the exact list. `DATABASE_` names are
- * the exception: they are passed only when the operator sets {@link DATABASE_OPT_IN} to `true`, for hosts whose trainer
- * builds its vocabulary from the database, and the URL rule does not apply to them. `PYTHONUNBUFFERED` is set so
- * progress lines reach the runner as they are written, and `CI_HUB_TRAINING_CHILD` marks the child as one the Hub
- * started.
+ * It holds the allowlisted names that are defined and the names that pass by rule, and no other name from the Hub.
+ * A value from either source is withheld when it contains an at sign or a question mark after its padding is trimmed.
+ * That check is not applied to a name in {@link NOT_URL_CHECKED}, or to a rule-path name ending in `_PATH`, `_DIR` or
+ * `_HOME`. `DATABASE_` names are the exception: they are passed unchanged, and without that check, only when the operator
+ * sets {@link DATABASE_OPT_IN} to `true`, for hosts whose trainer builds its vocabulary from the database. `PYTHONUNBUFFERED`
+ * is set so progress lines reach the runner as they are written, and `CI_HUB_TRAINING_CHILD` marks the child as one the
+ * Hub started.
  */
 export function trainingChildEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = {};

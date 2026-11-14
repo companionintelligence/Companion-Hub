@@ -51,6 +51,8 @@ const SPEC_ALLOWLIST = [
   'TOKEN_CORPUS_DIR',
   'CLUSTER_STALENESS_DAYS',
   'FUNCTION_RUNNER_CONCURRENCY',
+  'CI_LLM_HOST_REWRITE',
+  'CI_LLM_HOST_GATEWAY',
 ];
 
 /** Set by the child environment itself, never copied from the Hub. */
@@ -160,6 +162,33 @@ describe('trainingChildEnv', () => {
     expect([...TRAINING_CHILD_ENV_ALLOWLIST]).toEqual(SPEC_ALLOWLIST);
   });
 
+  it('names exactly the non-URL set, and every name in it is on the exact list', async () => {
+    const { NOT_URL_CHECKED, TRAINING_CHILD_ENV_ALLOWLIST } = await loadHelper();
+    expect([...NOT_URL_CHECKED]).toEqual([
+      'PATH',
+      'PYTHONPATH',
+      'PYTHONHOME',
+      'LD_LIBRARY_PATH',
+      'VIRTUAL_ENV',
+      'CUDA_HOME',
+      'CUDA_PATH',
+      'HOME',
+      'TMPDIR',
+      'XDG_CACHE_HOME',
+      'HF_HOME',
+      'HF_HUB_CACHE',
+      'TORCH_HOME',
+      'MODELS_DIR',
+      'ROCM_PATH',
+      'HIP_PATH',
+      'TOKEN_CORPUS_DIR',
+      'LANG',
+      'LC_ALL',
+      'LC_CTYPE',
+    ]);
+    for (const name of NOT_URL_CHECKED) expect(TRAINING_CHILD_ENV_ALLOWLIST).toContain(name);
+  });
+
   it('leaves out the Hub secrets and DATABASE_URL', async () => {
     silenceLogger();
     const { trainingChildEnv } = await loadHelper();
@@ -202,8 +231,6 @@ describe('trainingChildEnv', () => {
       OTHER_HBPE: 'not-listed',
       OPT_IN_OTHER: 'not-listed',
       SOME_OTHER_SETTING: 'not-listed',
-      CI_LLM_HOST_REWRITE: 'not-listed',
-      CI_LLM_HOST_GATEWAY: 'not-listed',
     };
     for (const name of TRAINING_CHILD_ENV_ALLOWLIST) source[name] = `value-of-${name}`;
     for (const name of DENIED_RULE_NAMES) source[name] = `canary-${name.toLowerCase()}`;
@@ -286,19 +313,25 @@ describe('trainingChildEnv', () => {
     expect(env).not.toHaveProperty('SOME_OTHER_SETTING');
   });
 
-  it('withholds a plain URL on the rule path and on the exact list, whatever its scheme', async () => {
+  it('copies a plain endpoint URL on the rule path and on the exact list, because it has no at sign or question mark', async () => {
     const warn = silenceLogger();
     const { trainingChildEnv } = await loadHelper();
 
-    // A path-valued name is not URL-checked, so the exact-list case uses a name that is not path-valued.
-    const env = trainingChildEnv({ API_URL: 'http://example.invalid/v1', PYTORCH_CUDA_ALLOC_CONF: 'http://example.invalid/cache' });
+    const env = trainingChildEnv({
+      HBPE_LABEL_API_BASE: 'http://example.invalid:8000/v1',
+      API_URL: 'https://example.invalid/v1',
+      LLM_API_BASE: 'http://example.invalid/v1',
+      PYTORCH_CUDA_ALLOC_CONF: 'http://example.invalid/cache',
+    });
 
-    expect(env).not.toHaveProperty('API_URL');
-    expect(env).not.toHaveProperty('PYTORCH_CUDA_ALLOC_CONF');
-    expect(warn).toHaveBeenCalledTimes(2);
+    expect(env.HBPE_LABEL_API_BASE).toBe('http://example.invalid:8000/v1');
+    expect(env.API_URL).toBe('https://example.invalid/v1');
+    expect(env.LLM_API_BASE).toBe('http://example.invalid/v1');
+    expect(env.PYTORCH_CUDA_ALLOC_CONF).toBe('http://example.invalid/cache');
+    expect(warn).not.toHaveBeenCalled();
   });
 
-  it('copies a model tag with a colon on a rule name, which has no slash after the colon, no at sign and no question mark', async () => {
+  it('copies a model tag with a colon on a rule name, which has no at sign and no question mark', async () => {
     const warn = silenceLogger();
     const { trainingChildEnv } = await loadHelper();
 
@@ -310,7 +343,7 @@ describe('trainingChildEnv', () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it('copies colon-separated paths on the exact list, because the scheme check is anchored to the start', async () => {
+  it('copies colon-separated paths on the exact list, which have no at sign or question mark', async () => {
     const warn = silenceLogger();
     const { trainingChildEnv } = await loadHelper();
 
@@ -343,11 +376,54 @@ describe('trainingChildEnv', () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it('withholds a no-scheme value with a question mark on a rule name, because of the question mark alone', async () => {
+  it('copies a rule-path name ending in _dir, matched case-insensitively, when its value has an at sign', async () => {
+    const warn = silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+    const value = '/srv/models/team@lab';
+
+    const env = trainingChildEnv({ HBPE_MODEL_dir: value });
+
+    expect(env.HBPE_MODEL_dir).toBe(value);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('copies a locale with an at sign on LANG, which is in the non-URL set', async () => {
     const warn = silenceLogger();
     const { trainingChildEnv } = await loadHelper();
 
-    // Without the question mark the same value is copied: it has no scheme, no at sign and no question mark.
+    const env = trainingChildEnv({ LANG: 'de_DE@euro' });
+
+    expect(env.LANG).toBe('de_DE@euro');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('copies a colon-separated search path on a rule name, and a model tag, with no at sign or question mark', async () => {
+    const warn = silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+
+    const env = trainingChildEnv({ HBPE_SEARCH_PATHS: '/usr/bin:/bin', LLM_DEFAULT_CHAT_MODEL: 'qwen3:8b' });
+
+    expect(env.HBPE_SEARCH_PATHS).toBe('/usr/bin:/bin');
+    expect(env.LLM_DEFAULT_CHAT_MODEL).toBe('qwen3:8b');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('copies CI_LLM_HOST_REWRITE set to off, and CI_LLM_HOST_GATEWAY, which are exact names', async () => {
+    const warn = silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+
+    const env = trainingChildEnv({ CI_LLM_HOST_REWRITE: 'off', CI_LLM_HOST_GATEWAY: 'gateway.example.invalid' });
+
+    expect(env.CI_LLM_HOST_REWRITE).toBe('off');
+    expect(env.CI_LLM_HOST_GATEWAY).toBe('gateway.example.invalid');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('withholds a value with a question mark on a rule name, and copies the same value without it', async () => {
+    const warn = silenceLogger();
+    const { trainingChildEnv } = await loadHelper();
+
+    // Without the question mark the same value is copied: it has no at sign and no question mark.
     expect(trainingChildEnv({ HBPE_LABEL_ENDPOINT: 'example.invalid/v1' }).HBPE_LABEL_ENDPOINT).toBe('example.invalid/v1');
 
     const env = trainingChildEnv({ HBPE_LABEL_ENDPOINT: 'example.invalid/v1?x=1' });
@@ -355,48 +431,54 @@ describe('trainingChildEnv', () => {
     expect(env).not.toHaveProperty('HBPE_LABEL_ENDPOINT');
     expect(warn).toHaveBeenCalledTimes(1);
     const message = String(warn.mock.calls[0]?.[0]);
-    expect(message).toContain('carries a credential or query separator');
-    expect(message).not.toContain('the value looks like a URL');
+    expect(message).toContain('HBPE_LABEL_ENDPOINT');
+    expect(message).toContain('its value contains an at sign or a question mark');
     expect(message).not.toContain('example.invalid');
   });
 
-  it('withholds a backslash after the scheme colon on a rule name, with no at sign and no question mark', async () => {
-    silenceLogger();
+  it('copies a backslash after the scheme colon when the value has no at sign and no question mark', async () => {
+    const warn = silenceLogger();
     const { trainingChildEnv } = await loadHelper();
-    // The first string has one backslash and the second has two. Neither has an at sign or a question mark.
+    // The first string has one backslash and the second has two. Neither has an at sign or a question mark, so both are copied.
     const values = ['https:\\example.invalid/v1', 'https:\\\\example.invalid/v1'];
 
     for (const value of values) {
       expect(value).not.toMatch(/[@?]/);
       for (const name of ['LLM_API_BASE', 'HBPE_LABEL_ENDPOINT']) {
-        expect(trainingChildEnv({ [name]: value })).not.toHaveProperty(name);
+        expect(trainingChildEnv({ [name]: value })[name]).toBe(value);
       }
     }
+    expect(warn).not.toHaveBeenCalled();
   });
 
-  it('withholds a URL-valued setting in every form the rule names, on the rule path and on the exact list', async () => {
+  it('withholds a value with an at sign or a question mark in every form the rule names, on the rule path and on the exact list', async () => {
     const warn = silenceLogger();
     const { trainingChildEnv } = await loadHelper();
     const values = [
       ' https://user:pw@example.invalid/x', // a leading space before the scheme
       'https:/user:pw@example.invalid/x', // one slash after the scheme colon
-      'https:\\user:pw@example.invalid/x', // a backslash in place of the slash, and an at sign later
-      'http://example.invalid/v1', // a plain URL: no credentials and no query string, still withheld
-      'http://example.invalid/v1?x=1', // a query string
+      'https:\\user:pw@example.invalid/x', // a backslash in place of the second slash, with an at sign
+      'https:\\\\user\\:pw@example.invalid/x', // a backslash form with an at sign
+      'http://example.invalid/v1?x=1', // a query string, with no credentials
+      'example.invalid/v1?x=1', // a query string, with no scheme
       'user:pw@example.invalid', // an at sign with no scheme
+      '​https://user:pw@example.invalid/x', // a credential URL preceded by a zero width space
+      '﻿https://user:pw@example.invalid/x', // a credential URL preceded by a byte order mark
       'ht\ttps://user:pw@example.invalid/x', // a tab inside the scheme, and an at sign
       '\u0001https://user:pw@example.invalid/x', // a leading control character
     ];
 
     for (const value of values) {
-      for (const name of ['API_URL', 'HBPE_LABEL_ENDPOINT', 'PYTORCH_CUDA_ALLOC_CONF']) {
+      for (const name of ['API_URL', 'HBPE_LABEL_ENDPOINT', 'PYTORCH_CUDA_ALLOC_CONF', 'CI_LLM_HOST_GATEWAY']) {
         expect(trainingChildEnv({ [name]: value })).not.toHaveProperty(name);
       }
     }
 
+    // One warning per variable, and none of them carries a value.
     const messages = warn.mock.calls.map(([message]) => String(message));
-    expect(messages.length).toBeGreaterThan(0);
+    expect(messages).toHaveLength(4);
     for (const message of messages) {
+      expect(message).toContain('its value contains an at sign or a question mark, so it was withheld.');
       expect(message).not.toContain('example.invalid');
       expect(message).not.toContain('user:pw');
     }
@@ -425,7 +507,7 @@ describe('trainingChildEnv', () => {
     for (const message of messages) {
       expect(message).not.toContain('canary-pw');
       expect(message).not.toContain('example.invalid');
-      expect(message).toContain('looks like a URL or carries a credential or query separator');
+      expect(message).toContain('its value contains an at sign or a question mark, so it was withheld.');
     }
   });
 
@@ -536,7 +618,8 @@ describe('the training child spawn', () => {
       HIP_VISIBLE_DEVICES: '0',
       HBPE_LABEL_MAX_REQUESTS_PER_MINUTE: '30',
       LLM_API_BASE: 'http://example.invalid/v1',
-      API_URL: 'https://user:canary-pw@example.invalid/v1',
+      API_URL: 'https://example.invalid/v1',
+      HBPE_LABEL_API_BASE: 'https://user:canary-pw@example.invalid/v1',
       HBPE_LABEL_API_KEY: 'canary-hbpe-label-api-key',
       [OPT_IN]: 'false',
     };
@@ -558,12 +641,14 @@ describe('the training child spawn', () => {
     expect(options.env.PYTHONUNBUFFERED).toBe('1');
     expect(options.env.CI_HUB_TRAINING_CHILD).toBe('1');
     // A literal set of names and values. It is not computed from the helper under test.
-    // LLM_API_BASE is a plain URL in the Hub environment, so it is withheld and not in this literal.
+    // API_URL and LLM_API_BASE are plain endpoints, so both are copied. HBPE_LABEL_API_BASE carries a credential, so it is withheld.
     expect(options.env).toEqual({
+      API_URL: 'https://example.invalid/v1',
       CI_HUB_TRAINING_CHILD: '1',
       HBPE_LABEL_MAX_REQUESTS_PER_MINUTE: '30',
       HF_HOME: '/cache/hf',
       HIP_VISIBLE_DEVICES: '0',
+      LLM_API_BASE: 'http://example.invalid/v1',
       MODELS_DIR: '/models',
       PATH: '/usr/bin:/bin',
       PYTHONUNBUFFERED: '1',
