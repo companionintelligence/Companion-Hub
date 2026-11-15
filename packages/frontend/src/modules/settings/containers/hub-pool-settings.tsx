@@ -104,8 +104,6 @@ interface PoolRoutingLog {
 
 /** How many routing decisions to render. The buffer holds 200; an operator reads the recent ones. */
 const ROUTING_LOG_LIMIT = 25;
-/** Above this the matrix is collapsed on first paint — 12 rows is ~340px, the scroll cap. */
-const MODEL_TABLE_OPEN_MAX = 12;
 /** Past six columns the matrix stops being readable at this card width, so it degrades to a node list. */
 const MODEL_MATRIX_MAX_NODES = 6;
 /** Hubs listed before "Show all": a fleet tailnet answers with sixteen, and each row is a Pair button. */
@@ -1054,8 +1052,10 @@ export const HubPoolSection = () => {
                 <>
                   <Th>{t('HUB_POOL_PEER_COL_NODE')}</Th>
                   <Th>{t('HUB_POOL_FIELD_HARDWARE')}</Th>
+                  <Th align="right">{t('HUB_POOL_FIELD_MODELS')}</Th>
                   <Th align="right">{t('HUB_POOL_FIELD_QUEUE')}</Th>
                   <Th>{t('HUB_POOL_FIELD_BACKENDS')}</Th>
+                  <Th align="right">{t('HUB_POOL_FIELD_FAILED_CHECKS')}</Th>
                   <Th align="right">{t('HUB_POOL_FIELD_LAST_SEEN')}</Th>
                   <Th align="right">{t('HUB_POOL_PEER_COL_ACTIONS')}</Th>
                 </>
@@ -1109,6 +1109,12 @@ export const HubPoolSection = () => {
                     </div>
                   </Td>
                   <Td className="text-muted-foreground">{peer.lastCapabilities?.hardwareTier ?? t('COMMON_UNKNOWN')}</Td>
+                  {/* Models on the peer's healthy engines, as its last capability report counted them; unknown until it has reported. */}
+                  <Td align="right" className="tabular-nums">
+                    {peer.lastCapabilities
+                      ? peer.lastCapabilities.backends.reduce((sum, backend) => (backend.healthy ? sum + backend.modelsLoaded.length : sum), 0)
+                      : t('COMMON_UNKNOWN')}
+                  </Td>
                   {/* Dash, not 0, when the probe has not landed: an idle peer and an unread
                       counter are different facts that send an operator to different places. */}
                   <Td align="right">{typeof peer.inFlightRequests === 'number' ? String(peer.inFlightRequests) : t('COMMON_UNKNOWN')}</Td>
@@ -1119,6 +1125,9 @@ export const HubPoolSection = () => {
                     {peer.lastCapabilities?.backends.length
                       ? backendSummary(peer.lastCapabilities.backends, asLegacyTranslate(t))
                       : t('COMMON_UNKNOWN')}
+                  </Td>
+                  <Td align="right" className={cn('tabular-nums', (peer.consecutiveFailures ?? 0) > 0 && 'text-destructive')}>
+                    {typeof peer.consecutiveFailures === 'number' ? String(peer.consecutiveFailures) : t('COMMON_UNKNOWN')}
                   </Td>
                   <Td align="right" className="whitespace-nowrap text-muted-foreground">
                     {peer.lastSeenAt ? formatHubDateTime(peer.lastSeenAt) : t('HUB_POOL_NEVER_SEEN')}
@@ -1169,7 +1178,7 @@ export const HubPoolSection = () => {
         */}
         <SubSection title={t('HUB_POOL_MODELS_TITLE')} help={t('HUB_POOL_MODELS_HELP')} helpId="hub-pool-models">
           {models.length ? (
-            <details className="group" open={models.length <= MODEL_TABLE_OPEN_MAX}>
+            <details className="group" open>
               <summary className="flex w-fit cursor-pointer list-none items-center gap-2 rounded-md text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
                 <ChevronRight className="h-4 w-4 shrink-0 transition-transform group-open:rotate-90" />
                 {/* Two plural forms, so a one-node pool doesn't read "1 nodes". */}
@@ -1191,7 +1200,6 @@ export const HubPoolSection = () => {
                   onChange={(event) => setModelFilter(event.target.value)}
                 />
                 <KpiTable
-                  className="max-h-[340px] overflow-y-auto"
                   head={
                     <>
                       <Th>{t('HUB_POOL_MODELS_COL_MODEL')}</Th>
@@ -1278,12 +1286,13 @@ export const HubPoolSection = () => {
                 })}
               </p>
               <KpiTable
-                className="max-h-[220px] overflow-y-auto"
                 head={
                   <>
                     <Th>{t('HUB_POOL_ROUTING_COL_WHEN')}</Th>
                     <Th>{t('HUB_POOL_ROUTING_COL_NODE')}</Th>
                     <Th>{t('HUB_POOL_ROUTING_COL_MODEL')}</Th>
+                    <Th>{t('HUB_POOL_ROUTING_COL_ENGINE')}</Th>
+                    <Th align="right">{t('HUB_POOL_ROUTING_COL_CANDIDATES')}</Th>
                     <Th align="right">{t('HUB_POOL_ROUTING_COL_RESULT')}</Th>
                   </>
                 }
@@ -1305,7 +1314,7 @@ export const HubPoolSection = () => {
                       ...(entry.failedOverFrom.length ? { failedover: entry.failedOverFrom.join(',') } : {}),
                     }}
                   >
-                    <Td className="whitespace-nowrap text-muted-foreground">{new Date(entry.at).toLocaleTimeString()}</Td>
+                    <Td className="whitespace-nowrap tabular-nums text-muted-foreground">{formatHubDateTime(entry.at)}</Td>
                     <Td className="max-w-[180px]">
                       <span className="flex items-center gap-1.5">
                         <ArrowRightLeft
@@ -1345,6 +1354,12 @@ export const HubPoolSection = () => {
                     </Td>
                     <Td className="max-w-[160px] truncate font-mono text-muted-foreground" title={entry.model ?? entry.path}>
                       {entry.model ?? entry.path}
+                    </Td>
+                    <Td className="max-w-[120px] truncate font-mono text-muted-foreground" title={entry.backend ?? undefined}>
+                      {entry.backend ?? '—'}
+                    </Td>
+                    <Td align="right" className="tabular-nums text-muted-foreground">
+                      {entry.candidates > 0 ? entry.candidates : '—'}
                     </Td>
                     <Td
                       align="right"

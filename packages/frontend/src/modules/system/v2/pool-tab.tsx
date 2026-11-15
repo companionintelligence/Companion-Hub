@@ -1,10 +1,18 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
+import { StepAreaChart } from '@/components/ui/dense/dense';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table';
 import { cn } from '@/lib/utils';
-import { PoolReachGraph } from '@/modules/system/panels/pool-reach';
-import type { PoolNodeCard } from '@/modules/system/pool-node-series';
-import type { PoolReach, PoolStatusSummary } from '@/modules/system/use-dashboard-data';
+import { PoolReachGraph, PoolReachLegend } from '@/modules/system/panels/pool-reach';
+import {
+  computeCountChartScale,
+  nodeInFlightSeries,
+  observedPointCount,
+  type PoolNodeCard,
+  type PoolSampleWindow,
+  type RoutingBucket,
+} from '@/modules/system/pool-node-series';
+import type { PoolReach, PoolStatusSummary, RoutingLogEntry } from '@/modules/system/use-dashboard-data';
 import { ChevronRight, ExternalLink, Network } from 'lucide-react';
 import { Fragment, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -12,12 +20,14 @@ import { Link } from 'react-router';
 import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import { CardBody, type QueryState } from './card-state';
 import { formatAgo, formatDuration } from './format';
+import { PoolActivityCard } from './pool-activity';
 
 /*
- * The pool, for the people who run one: the reach drawing (this Hub in the middle, a spoke per
- * paired Hub), one list of Hubs and one list of models. Pool settings live in Settings > AI, so the
- * old page's read-only configuration drawer becomes a link there, shown only to someone who may
- * change them. Everyone else sees the same facts and no buttons.
+ * The pool, for the people who run one: the reach drawing (this Hub in the middle, a spoke per paired
+ * Hub) with its key, one list of Hubs with each one's in-flight trend, the routing decisions of the
+ * last half hour, and one list of models. Pool settings live in Settings > AI, so the old page's
+ * read-only configuration drawer becomes a link there, shown only to someone who may change them.
+ * Everyone else sees the same facts and no buttons.
  */
 
 const STATE: Record<string, { key: string; dot: string; rank: number }> = {
@@ -46,6 +56,10 @@ export function PoolTab({
   models,
   manageHub,
   now,
+  samples,
+  buckets,
+  entries,
+  routingState,
 }: {
   pool: PoolStatusSummary | undefined;
   state: QueryState;
@@ -54,6 +68,12 @@ export function PoolTab({
   models: { model: string; nodes: string[] }[];
   manageHub: boolean;
   now: number;
+  /** The in-flight samples this browser has watched, one per fresh poll. See `usePoolSamples`. */
+  samples: PoolSampleWindow;
+  /** Routing decisions per minute over the last half hour, all directions. */
+  buckets: RoutingBucket[];
+  entries: RoutingLogEntry[];
+  routingState: QueryState;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState<string[]>([]);
@@ -76,25 +96,31 @@ export function PoolTab({
     );
   }
 
+  // The routing chart is the Hub's own record and is drawn with or without peers: this Hub routes too.
+  const activity = <PoolActivityCard buckets={buckets} entries={entries} state={routingState} />;
+
   if (peers.length === 0) {
     const off = pool?.enabled === false;
     return (
-      <Card data-testid="resources-pool-empty">
-        <CardContent className="flex flex-col items-start gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-start gap-3">
-            <Network className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />
-            <div className="space-y-1">
-              <h3 className="text-base font-medium">{off ? t('RESOURCES_POOL_OFF_TITLE') : t('RESOURCES_POOL_EMPTY_TITLE')}</h3>
-              <p className="text-sm text-muted-foreground">{manageHub ? t('RESOURCES_POOL_EMPTY_BODY') : t('RESOURCES_POOL_EMPTY_MEMBER')}</p>
+      <div className="space-y-4">
+        <Card data-testid="resources-pool-empty">
+          <CardContent className="flex flex-col items-start gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-3">
+              <Network className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />
+              <div className="space-y-1">
+                <h3 className="text-base font-medium">{off ? t('RESOURCES_POOL_OFF_TITLE') : t('RESOURCES_POOL_EMPTY_TITLE')}</h3>
+                <p className="text-sm text-muted-foreground">{manageHub ? t('RESOURCES_POOL_EMPTY_BODY') : t('RESOURCES_POOL_EMPTY_MEMBER')}</p>
+              </div>
             </div>
-          </div>
-          {manageHub ? (
-            <Button asChild variant="outline">
-              <Link to="/settings?tab=ai">{off ? t('RESOURCES_POOL_TURN_ON') : t('RESOURCES_POOL_ADD_HUB')}</Link>
-            </Button>
-          ) : null}
-        </CardContent>
-      </Card>
+            {manageHub ? (
+              <Button asChild variant="outline">
+                <Link to="/settings?tab=ai">{off ? t('RESOURCES_POOL_TURN_ON') : t('RESOURCES_POOL_ADD_HUB')}</Link>
+              </Button>
+            ) : null}
+          </CardContent>
+        </Card>
+        {activity}
+      </div>
     );
   }
 
@@ -102,6 +128,7 @@ export function PoolTab({
   const rows = [...cards].sort((a, b) => stateOf(a.status).rank - stateOf(b.status).rank || a.label.localeCompare(b.label));
   const toggle = (key: string) => setOpen((current) => (current.includes(key) ? current.filter((k) => k !== key) : [...current, key]));
   const shownModels = allModels ? models : models.slice(0, 8);
+  const inFlightLabel = (card: PoolNodeCard) => (card.local ? t('DASHBOARD_NODE_IN_FLIGHT_LOCAL') : t('DASHBOARD_NODE_IN_FLIGHT_FORWARDED'));
 
   return (
     <div className="space-y-4">
@@ -124,6 +151,7 @@ export function PoolTab({
             <p className="mb-3 text-sm text-warning">{routingOff === 'pool' ? t('RESOURCES_POOL_ROUTING_OFF') : t('RESOURCES_POOL_OUTBOUND_OFF')}</p>
           ) : null}
           <PoolReachGraph cards={cards} routingOff={routingOff} className="mx-auto max-w-2xl" />
+          <PoolReachLegend cards={cards} figures={reach} />
         </CardContent>
         <Table>
           <TableHeader>
@@ -132,6 +160,7 @@ export function PoolTab({
               <TableHead>{t('RESOURCES_STATUS')}</TableHead>
               <TableHead className="pr-4 text-right sm:pr-6 md:pr-4">{t('RESOURCES_POOL_MODELS')}</TableHead>
               <TableHead className="hidden text-right md:table-cell">{t('RESOURCES_POOL_WORKING_ON')}</TableHead>
+              <TableHead className="hidden md:table-cell">{t('DASHBOARD_COL_TREND')}</TableHead>
               <TableHead className="hidden text-right md:table-cell">{t('RESOURCES_FIRST_REPLY')}</TableHead>
               <TableHead className="hidden pr-6 text-right md:table-cell">{t('RESOURCES_POOL_SPEED')}</TableHead>
             </TableRow>
@@ -141,6 +170,11 @@ export function PoolTab({
               const status = stateOf(card.status);
               const expanded = open.includes(card.key);
               const label = card.local ? t('RESOURCES_THIS_HUB') : card.label;
+              // This node's in-flight count over the samples this browser watched; its own peak scale.
+              const series = nodeInFlightSeries(samples, card.key);
+              const { max } = computeCountChartScale(series);
+              const observed = observedPointCount(series);
+              const trendLabel = `${label} — ${inFlightLabel(card)}`;
               return (
                 <Fragment key={card.key}>
                   <TableRow className="cursor-pointer" onClick={() => toggle(card.key)} data-testid="resources-pool-row">
@@ -173,6 +207,9 @@ export function PoolTab({
                     <TableCell className="hidden py-2.5 text-right tabular-nums md:table-cell">
                       {(card.local ? card.inFlight : card.peerReportedInFlight) ?? '—'}
                     </TableCell>
+                    <TableCell className="hidden py-2.5 md:table-cell">
+                      <StepAreaChart variant="row" height={20} points={series} max={max} tone="ok" label={trendLabel} className="w-24" />
+                    </TableCell>
                     <TableCell className="hidden py-2.5 text-right tabular-nums md:table-cell">
                       {card.firstByte ? formatDuration(card.firstByte.p50Ms) : '—'}
                     </TableCell>
@@ -182,7 +219,19 @@ export function PoolTab({
                   </TableRow>
                   {expanded ? (
                     <TableRow className="bg-muted/30 hover:bg-muted/30">
-                      <TableCell colSpan={6} className="px-4 py-3 sm:px-6">
+                      <TableCell colSpan={7} className="px-4 py-3 sm:px-6">
+                        <div className="mb-3 space-y-1.5">
+                          <div className="flex items-center justify-between text-xs text-muted-foreground">
+                            <span>{inFlightLabel(card)}</span>
+                            <span className="tabular-nums">{t('DASHBOARD_NODE_CHART_PEAK', { max })}</span>
+                          </div>
+                          <StepAreaChart points={series} max={max} tone="ok" height={84} label={trendLabel} />
+                          <p className="text-xs text-muted-foreground">
+                            {observed < 2
+                              ? t('DASHBOARD_NODE_CHART_WAITING', { total: observed })
+                              : t('DASHBOARD_NODE_CHART_SESSION', { total: observed })}
+                          </p>
+                        </div>
                         <dl className="grid gap-x-8 gap-y-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
                           <Detail label={t('RESOURCES_POOL_ADDRESS')}>{(card.local ? local?.nodeFqdn : card.fqdn) ?? '—'}</Detail>
                           {card.local ? (
@@ -227,6 +276,8 @@ export function PoolTab({
           </TableBody>
         </Table>
       </Card>
+
+      {activity}
 
       <Card>
         <CardHeader>

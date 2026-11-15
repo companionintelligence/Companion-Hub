@@ -16,6 +16,7 @@ import {
 } from '@/modules/system/pool-node-series';
 import { pageVerdict } from '@/modules/system/triage';
 import { loadState, poolModelIndex, poolReach, useDashboardData } from '@/modules/system/use-dashboard-data';
+import { usePoolSamples } from '@/modules/system/use-pool-samples';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
@@ -90,6 +91,8 @@ export default function ResourcesPage() {
     now,
     firstByte,
   });
+  // The in-flight trend is the browser's own record of the pool, one sample per fresh poll (see usePoolSamples).
+  const samples = usePoolSamples(cards, pool.dataUpdatedAt, pool.isError);
   const reach = poolReach(peers, pool.data?.localNode);
   const buckets = routingBuckets(entries, { now, bucketMs: BUCKET_MS, buckets: BUCKET_COUNT });
   // The Requests card's figures count outbound rows only (`inferenceFromHere`), so its bars must too:
@@ -272,7 +275,19 @@ export default function ResourcesPage() {
           />
         </TabsContent>
         <TabsContent value="pool" className="mt-4">
-          <PoolTab pool={pool.data} state={poolState} cards={cards} reach={reach} models={models} manageHub={manageHub} now={now} />
+          <PoolTab
+            pool={pool.data}
+            state={poolState}
+            cards={cards}
+            reach={reach}
+            models={models}
+            manageHub={manageHub}
+            now={now}
+            samples={samples}
+            buckets={buckets}
+            entries={entries}
+            routingState={routingState}
+          />
         </TabsContent>
         <TabsContent value="requests" className="mt-4">
           <RequestsTab

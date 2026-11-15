@@ -1,4 +1,4 @@
-import type { PoolNodeCard } from '@/modules/system/pool-node-series';
+import { appendPoolSample, EMPTY_SAMPLE_WINDOW, emptyRoutingBucket, type PoolNodeCard } from '@/modules/system/pool-node-series';
 import type { PoolReach } from '@/modules/system/use-dashboard-data';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
@@ -44,6 +44,10 @@ function renderTab(props: Partial<Parameters<typeof PoolTab>[0]> = {}) {
         models={[{ model: 'gemma3:1b', nodes: ['This Hub', 'core-14'] }]}
         manageHub
         now={NOW}
+        samples={EMPTY_SAMPLE_WINDOW}
+        buckets={[]}
+        entries={[]}
+        routingState={ready}
         {...props}
       />
     </MemoryRouter>,
@@ -111,5 +115,21 @@ describe('AI pool tab', () => {
 
     expect(screen.getByText(/Couldn't load the pool/)).toBeTruthy();
     expect(screen.queryByTestId('resources-pool-empty')).toBeNull();
+  });
+
+  it("draws each Hub's in-flight trend from the samples this browser watched", () => {
+    const watched = appendPoolSample(appendPoolSample(EMPTY_SAMPLE_WINDOW, { at: NOW - 30_000, inFlight: { local: 0, 'core-14': 1 } }), {
+      at: NOW,
+      inFlight: { local: 1, 'core-14': 1 },
+    });
+    renderTab({ samples: watched });
+
+    expect(screen.getAllByRole('img', { name: /core-14/ }).length).toBeGreaterThan(0);
+  });
+
+  it('charts the routing decisions of the last half hour, and says how many', () => {
+    renderTab({ buckets: [{ ...emptyRoutingBucket(NOW), served: 5 }] });
+
+    expect(screen.getByTestId('decision-bars-total').textContent).toContain('5');
   });
 });

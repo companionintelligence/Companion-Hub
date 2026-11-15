@@ -324,6 +324,142 @@ export const StackedBar = ({ segments, className }: { segments: { label: string;
   );
 };
 
+/**
+ * A watched count over time, drawn as steps and filled to the baseline.
+ *
+ * STEPS, NEVER A SMOOTHED LINE, and that is the whole reason this exists beside `Sparkline`.
+ * Each point is one poll; between two polls the Hub was not observed at all. A diagonal joining
+ * 0 to 3 draws two intermediate request counts that were never measured, and on a page whose job
+ * is to say what the pool is doing, a drawn value nothing measured is the failure mode. A step
+ * holds the last observation until the next one replaces it, which is exactly what was known.
+ *
+ * `null` is a GAP, not a zero: the poll landed and this node was not in it. The path breaks and
+ * the fill stops, so an absent node reads as absent rather than as idle.
+ *
+ * The axis is passed in rather than derived from the series, so every card in a grid shares one
+ * scale and two cards can be compared by height.
+ */
+export const StepAreaChart = ({
+  points,
+  max,
+  tone = 'ok',
+  height = 96,
+  label,
+  className,
+  variant = 'panel',
+}: {
+  points: (number | null)[];
+  max: number;
+  tone?: Tone;
+  height?: number;
+  label?: string;
+  className?: string;
+  /**
+   * `'row'` is the same chart at list scale — one per workload, stacked, 38px tall.
+   *
+   * Gridlines, a card ground and a border are legible at 84px and are pure noise at 38, where
+   * they out-weigh the series they are supposed to frame. What `'row'` does NOT drop is the
+   * baseline or the fill: the baseline is what makes a low value readable as low rather than as
+   * a line floating in a box, and the fill is what separates a measured run from a gap.
+   */
+  variant?: 'panel' | 'row';
+}) => {
+  const width = 480;
+  const ceiling = max > 0 ? max : 1;
+  const observed = points.filter((point): point is number => point !== null && Number.isFinite(point));
+
+  // One observation is a reading, not a trend — but it is still a fact, so it is drawn as a
+  // single step rather than withheld. Zero observations has nothing to draw at all.
+  if (observed.length === 0) {
+    // Dashed means WAITING FOR SAMPLES and nothing else on this page — see the coverage tile,
+    // which deliberately refuses the same border because "never built" is not "not yet observed".
+    // At row scale a dashed box beside four drawn rows reads as broken rather than as empty, so
+    // the row variant states the same fact with a plain empty track.
+    return (
+      <div
+        className={cn(
+          variant === 'row' ? 'w-full rounded-sm bg-muted/20' : 'h-[96px] w-full rounded-md border border-dashed border-border/70 bg-muted/20',
+          className,
+        )}
+        style={{ height }}
+      />
+    );
+  }
+
+  // A single observation cannot span an interval, so the axis always reserves at least two slots.
+  // One reading then fills half the box rather than all of it, which is the honest picture: the
+  // rest of that window has not been watched yet.
+  const slots = Math.max(points.length, 2);
+  const slot = width / slots;
+  const y = (value: number) => height - (Math.min(value, ceiling) / ceiling) * (height - 2) - 1;
+
+  // `start` is the index the run begins at, which is unique across runs and therefore its key.
+  const runs: { start: number; d: string; fill: string }[] = [];
+  let line: string[] = [];
+  let area: string[] = [];
+  let runStart = 0;
+
+  const flush = (endIndex: number) => {
+    if (line.length > 0) {
+      runs.push({ start: runStart, d: line.join(' '), fill: `${area.join(' ')} L ${endIndex * slot},${height} L ${runStart * slot},${height} Z` });
+    }
+    line = [];
+    area = [];
+  };
+
+  points.forEach((point, index) => {
+    const x0 = index * slot;
+    const x1 = (index + 1) * slot;
+
+    if (point === null || !Number.isFinite(point)) {
+      flush(index);
+      return;
+    }
+
+    const yValue = y(point);
+    if (line.length === 0) {
+      runStart = index;
+      line.push(`M ${x0},${yValue}`);
+      area.push(`M ${x0},${yValue}`);
+    } else {
+      // The vertical riser first, then the horizontal hold: a step, not a ramp.
+      line.push(`L ${x0},${yValue}`);
+      area.push(`L ${x0},${yValue}`);
+    }
+    line.push(`L ${x1},${yValue}`);
+    area.push(`L ${x1},${yValue}`);
+  });
+  flush(points.length);
+
+  return (
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
+      className={cn('w-full', variant === 'panel' && 'rounded-md border border-border/60 bg-muted/20', className)}
+      style={{ height }}
+      role="img"
+      aria-label={label}
+    >
+      <title>{label}</title>
+      {/* No <text> ever goes in here. `preserveAspectRatio="none"` stretches the viewBox to the
+          container's width, and glyphs stretch with it — every axis label on this page is HTML
+          sitting outside the SVG for exactly that reason. */}
+      {variant === 'panel'
+        ? [0.25, 0.5, 0.75].map((fraction) => (
+            <line key={fraction} x1="0" y1={height * fraction} x2={width} y2={height * fraction} stroke="currentColor" strokeOpacity="0.1" />
+          ))
+        : null}
+      <line x1="0" y1={height - 1} x2={width} y2={height - 1} stroke="currentColor" strokeOpacity="0.25" vectorEffect="non-scaling-stroke" />
+      {runs.map((run) => (
+        <g key={run.start} className={TONE_TEXT[tone] || 'text-foreground/70'}>
+          <path d={run.fill} fill="currentColor" fillOpacity="0.18" stroke="none" />
+          <path d={run.d} fill="none" stroke="currentColor" strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
+        </g>
+      ))}
+    </svg>
+  );
+};
+
 // ── Layout ───────────────────────────────────────────────────────────────────
 
 /** A titled panel: small muted heading, optional right-side slot. */

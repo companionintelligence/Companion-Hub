@@ -11,7 +11,10 @@ import ResourcesPage from '../resources-page';
 const access = vi.hoisted(() => ({ manageHub: true }));
 const data = vi.hoisted(() => ({ peers: [] as Record<string, unknown>[] }));
 
-const answered = (value: unknown) => ({ data: value, isPending: false, isError: false, dataUpdatedAt: Date.now() });
+// One fetch time for the whole run, as react-query keeps `dataUpdatedAt` between renders of the same data.
+// A fresh timestamp per render would read as a new poll on every render, which the pool samples record.
+const FETCHED_AT = Date.now();
+const answered = (value: unknown) => ({ data: value, isPending: false, isError: false, dataUpdatedAt: FETCHED_AT });
 
 vi.mock('@/lib/hooks/use-hub-access', () => ({ useHubAccess: () => ({ manageHub: access.manageHub, isPending: false }) }));
 
