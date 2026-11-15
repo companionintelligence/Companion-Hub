@@ -59,7 +59,7 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         CFBundleShortVersionString: 0.1.1
-        CFBundleVersion: "0.1.1"
+        CFBundleVersion: "20261115"
         CFBundleURLTypes:
           - CFBundleURLName: computer.ci.app.hub
             CFBundleURLSchemes: [cihub]
