@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+  "config": {
+    "mediaType": "application/vnd.docker.container.image.v1+json",
+    "digest": "sha256:04d6796ac4f18613fecb301ecf5a519bf8f660ad1e6808d56240ad1f19e69e44",
+    "size": 220
+  },
+  "layers": [
+    {
+      "mediaType": "application/vnd.ollama.image.model",
+      "digest": "sha256:97cc8009ff9b132d5cf3c488e6767962bb5a5dc158a90ed661bbbddf876b8bde",
+      "size": 22863084160,
+      "from": "flint-nvfp4.gguf"
+    },
+    {
+      "mediaType": "application/vnd.ollama.image.template",
+      "digest": "sha256:b507b9c2f6ca642bffcd06665ea7c91f235fd32daeefdf875a0f938db05fb315",
+      "size": 13
+    },
+    {
+      "mediaType": "application/vnd.ollama.image.license",
+      "digest": "sha256:cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "size": 11358
+    },
+    {
+      "mediaType": "application/vnd.ollama.image.params",
+      "digest": "sha256:f6417cb1e26962991f8e875a93f3cb0f92bc9b4955e004881251ccbf934a19d2",
+      "size": 42
+    }
+  ],
+  "runner": "llamacpp",
+  "format": "gguf"
+}

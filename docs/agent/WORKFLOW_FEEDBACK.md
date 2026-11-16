@@ -2,6 +2,8 @@
 
 Rolling notes on the CI-Hub agent workflow. See [session worksheets](sessions/README.md) for context.
 
+> 2026-11-15 — catalog-row-checker: Probe the live registries with plain GETs before writing a registry reader, run the finished reader over the whole catalog before writing its tests, and keep recorded answers behind a replay `fetch` that refuses unknown URLs.
+
 > 2026-11-15 — curated-models-refresh: Read registry manifests and GGUF headers instead of page summaries, ask Hugging Face's registry the way Ollama does before listing an `hf.co/` row, sweep recommendations with and without new rows, and plant defects in the new tests one at a time.
 
 > 2026-11-11 — mobile-widgets-implementation: Added and emulator-checked fixed Hub quick actions; recorded Tauri build and generated Xcode path pitfalls.

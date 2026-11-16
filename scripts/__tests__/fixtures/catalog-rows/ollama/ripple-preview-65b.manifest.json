@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+  "config": {
+    "mediaType": "application/vnd.docker.container.image.v1+json",
+    "digest": "sha256:85b02aa76f764ebb0f31932c3cf541f20c08b85dc256ac3e3afb576a8e09ad78",
+    "size": 232
+  },
+  "layers": [
+    {
+      "mediaType": "application/vnd.ollama.image.model",
+      "digest": "sha256:a392aaeadf2a4ce839624a70f63f45a1a21bc8fd7466e8d3cba3f19209edf682",
+      "size": 38798821120,
+      "from": "Ripple-65B-Preview-Q4_K_M.gguf"
+    },
+    {
+      "mediaType": "application/vnd.ollama.image.license",
+      "digest": "sha256:2af71558e438db0b73a20beab92dc278a94e1bbe974c00c1a33e3ab62d53a608",
+      "size": 10
+    }
+  ],
+  "runner": "llamacpp",
+  "format": "gguf"
+}

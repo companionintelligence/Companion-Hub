@@ -26,11 +26,19 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { CURATED_MODELS } from '../../packages/backend/src/modules/inference/catalog/curated-models';
 import { type KvGeometry, kvGeometryFromGguf, NeedMoreBytes, readGgufMetadata } from './gguf-header';
+import {
+  hfGgufRef,
+  hfManifestUrl,
+  isHfGguf,
+  MANIFEST_ACCEPT,
+  OLLAMA_UA,
+  ollamaBlobUrl,
+  ollamaManifestUrl,
+  ollamaRef,
+  UA,
+} from './registry-endpoints';
 
 const OUT = path.resolve(__dirname, '../../packages/backend/src/modules/inference/catalog/kv-geometry.generated.ts');
-const UA = { 'User-Agent': 'ci-hub-catalog-tools' };
-/** What Ollama's pull sends to Hugging Face's registry endpoint, which answers a sharded repo with HTTP 400. */
-const OLLAMA_UA = 'ollama/0.34.0 (arm64 darwin) Go/go1.24.0';
 const PREFIXES = [1, 4, 16, 64].map((mb) => mb * 1024 * 1024);
 
 function argValue(name: string): string | undefined {
@@ -89,8 +97,8 @@ async function lemonadeGguf(checkpoint: string, mmproj: string | undefined): Pro
 /** Every layer Ollama would pull for `hf.co/<repo>:<quant>`, or undefined when Hugging Face serves no manifest for it. */
 async function huggingFaceLayers(repo: string, quant: string): Promise<{ size: number }[] | undefined> {
   try {
-    const manifest = (await getJson(`https://huggingface.co/v2/${repo}/manifests/${quant}`, {
-      Accept: 'application/vnd.docker.distribution.manifest.v2+json',
+    const manifest = (await getJson(hfManifestUrl({ repo, quant }), {
+      Accept: MANIFEST_ACCEPT,
       'User-Agent': OLLAMA_UA,
     })) as { layers?: { size: number }[] };
     return manifest.layers?.length ? manifest.layers : undefined;
@@ -107,17 +115,14 @@ async function huggingFaceLayers(repo: string, quant: string): Promise<{ size: n
  * sized by every layer of Hugging Face's manifest (a vision projector is one) or, for a repo that serves none, by its files.
  */
 async function ollamaGguf(tagged: string): Promise<{ url: string; fileBytes: number }> {
-  if (tagged.startsWith('hf.co/')) {
-    const [repo = '', quant = ''] = tagged.slice('hf.co/'.length).split(':');
+  if (isHfGguf(tagged)) {
+    const { repo, quant } = hfGgufRef(tagged);
     const file = await lemonadeGguf(`${repo}:${quant}`, undefined);
     const layers = await huggingFaceLayers(repo, quant);
     return { url: file.url, fileBytes: layers ? layers.reduce((sum, l) => sum + l.size, 0) : file.fileBytes };
   }
-  const colon = tagged.lastIndexOf(':');
-  const [nameWithNs, tag] = colon > 0 ? [tagged.slice(0, colon), tagged.slice(colon + 1)] : [tagged, 'latest'];
-  const name = nameWithNs.includes('/') ? nameWithNs : `library/${nameWithNs}`;
-  const accept = { Accept: 'application/vnd.docker.distribution.manifest.v2+json' };
-  const manifest = (await getJson(`https://registry.ollama.ai/v2/${name}/manifests/${tag}`, accept)) as {
+  const ref = ollamaRef(tagged);
+  const manifest = (await getJson(ollamaManifestUrl(ref), { Accept: MANIFEST_ACCEPT })) as {
     layers?: { mediaType: string; digest: string; size: number }[];
   };
   const layers = manifest.layers ?? [];
@@ -126,7 +131,7 @@ async function ollamaGguf(tagged: string): Promise<{ url: string; fileBytes: num
   // Every layer, as `/api/tags` reports a pulled model's size: the load estimate charges that once it is on
   // disk, so the catalog charging the same keeps the two from disagreeing (gemma4 adds a projector and a draft).
   const fileBytes = layers.reduce((sum, l) => sum + l.size, 0);
-  return { url: `https://registry.ollama.ai/v2/${name}/blobs/${model.digest}`, fileBytes };
+  return { url: ollamaBlobUrl(ref, model.digest), fileBytes };
 }
 
 /** One entry of the generated table, in the exact shape the file carries. */

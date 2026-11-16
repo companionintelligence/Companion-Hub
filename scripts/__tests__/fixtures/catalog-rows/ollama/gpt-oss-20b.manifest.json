@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+  "config": {
+    "mediaType": "application/vnd.docker.container.image.v1+json",
+    "digest": "sha256:e103573196b6deeff79ec124b4131b4fad700cee60b584a8f9d689ffed115038",
+    "size": 139
+  },
+  "layers": [
+    {
+      "mediaType": "application/vnd.ollama.image.model",
+      "digest": "sha256:8ecb5d4ad6172c63f9cbf1a07a04e525985a8a11a6e516da02b674c4010de716",
+      "size": 13793422816,
+      "from": "dhiltgen/gpt-oss:20b-llamacpp"
+    },
+    {
+      "mediaType": "application/vnd.ollama.image.template",
+      "digest": "sha256:fa6710a93d78da62641e192361344be7a8c0a1c3737f139cf89f20ce1626b99c",
+      "size": 7240,
+      "from": "dhiltgen/gpt-oss:20b-llamacpp"
+    },
+    {
+      "mediaType": "application/vnd.ollama.image.license",
+      "digest": "sha256:f60356777647e927149cbd4c0ec1314a90caba9400ad205ddc4ce47ed001c2d6",
+      "size": 11353,
+      "from": "dhiltgen/gpt-oss:20b-llamacpp"
+    },
+    {
+      "mediaType": "application/vnd.ollama.image.params",
+      "digest": "sha256:d8ba2f9a17b3bbdeb5690efaa409b3fcb0b56296a777c7a69c78aa33bbddf182",
+      "size": 18,
+      "from": "dhiltgen/gpt-oss:20b-llamacpp"
+    }
+  ],
+  "runner": "llamacpp",
+  "format": "gguf"
+}

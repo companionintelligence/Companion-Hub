@@ -238,6 +238,47 @@ DeepSeek R1 32B as the default on a 32 GB Mac, and that row was left out. Lines 
 40 GB Mac, a 70 GB card) are hints about ranking rather than changes to a real configuration. The new row
 appearing in a top-5 list is expected; only index 0 is flagged.
 
+### Step F: Check every row against its registry
+
+Run the checker on the rows you added, and on the whole catalog before you open the pull request:
+
+```bash
+pnpm exec tsx scripts/catalog/check-rows.ts --only newmodel-72b,newmodel-72b-mlx
+pnpm exec tsx scripts/catalog/check-rows.ts
+```
+
+For every LLM row it reads the same primary data as Step A, in about a minute, and prints one line per row. It only
+sends `GET` requests for small JSON: no pull, and no weights. Each backend gets its own checks:
+
+- **Ollama rows** (the library, `openbmb/`, `frob/`, and any other namespace): the manifest answers 200; its layers
+  add up to the row's `fileBytes` in `kv-geometry.generated.ts` and, within 10%, to its `gb`; the config blob's
+  `file_type` is the row's quant label (the table's three known exceptions are in `FILE_TYPE_EXCEPTIONS` in
+  `scripts/catalog/row-checks.ts`); its `requires` is not above `OLLAMA_PINNED_VERSION`; and it is not a cloud
+  proxy (`remote_host`, or a `cloud` tag).
+- **`hf.co/` rows**: Hugging Face answers the Ollama manifest request the way Step A shows, and a sharded repo (HTTP
+  400) is a failure. The layers, a vision projector among them, add up to `fileBytes` and, within 10%, to `gb`. The
+  pull tag is the row's quant label, because Hugging Face's config blob states no `file_type`; a row that pulls
+  another quant on purpose (such as `UD-Q4_K_XL`) goes in `FILE_TYPE_EXCEPTIONS` under the tag it pulls.
+- **oMLX and vLLM rows**: the repo exists and is not gated, its `.safetensors` at the repo root add up to `gb` (decimal
+  GB; a subfolder such as `original/` is not loaded and is not counted), and `config.json`'s
+  `max_position_embeddings` reaches the window the row advertises. A repo with no weight file at its root at all
+  fails; one whose weights are in another format (`.bin`, `.gguf`) warns, because the script cannot size them.
+- **Lemonade rows** are listed and skipped. They name a key in the server's own registry, which the script does not read.
+
+`FAIL` means the row cannot work as listed: its model cannot be pulled, its repo is missing, gated or empty, or it is a
+cloud proxy. `UNREAD` means the script could not read or make sense of the data, so nothing is known about the row: a
+registry did not answer (a network error, or HTTP 429 or 5xx after three tries; a `Retry-After` over 30 seconds is not
+waited for), or an answer lacked what a check needs (a layer with no size, a record with no `gated` field, a body that
+is not JSON). Run the check again; if the row stays `UNREAD`, the message says what was missing. Both make the command
+exit 1. `WARN` is drift: a size, a quant label, a window,
+or an Ollama version above the pin, which an older Ollama answers with HTTP 412. A warning exits 0 unless you pass
+`--strict`. Treat every finding as a decision, and write it down in the dated note: correct the row, change the pin,
+or, for a build that is not `q4_K_M` on purpose, add it to `FILE_TYPE_EXCEPTIONS` with the reason.
+
+`--format md` prints the table as GitHub Markdown for a pull request description, and `--format json` prints it for a
+script. `--concurrency <n>` changes how many reads run side by side (the default is 4; Hugging Face allows 500 API
+requests per 5 minutes without a token, and a whole-catalog run uses fewer than 200).
+
 No changes are needed in `model-registry.service.ts`, the frontend model-selection components, or
 `icons.tsx` for a model whose creator already has a brand mark in `packages/frontend/public/brands/`
 (check the `CREATOR_BRAND` map) — the new row is picked up automatically everywhere. A creator without
