@@ -10,6 +10,7 @@ import {
   hubVersionOnDownloadPage,
   INSTALLERS,
   isReleaseVersion,
+  livePlayReleases,
   maxVersion,
   missingFiles,
   normalizeVersion,
@@ -25,6 +26,12 @@ describe('release-check versions', () => {
     expect(normalizeVersion(null)).toBeNull();
     expect(compareVersions('0.3.13', '0.3.9')).toBe(1);
     expect(compareVersions('v0.3.13', '0.3.13')).toBe(0);
+  });
+
+  it('puts a pre-release before the release it leads up to', () => {
+    expect(compareVersions('0.3.14-rc1', '0.3.14')).toBe(-1);
+    expect(compareVersions('0.3.14-rc2', '0.3.14-rc1')).toBe(1);
+    expect(versionStatus('0.3.14', '0.3.14-rc1')).toBe('BEHIND');
   });
 
   it('marks each row by how the found version compares', () => {
@@ -43,6 +50,19 @@ describe('release-check versions', () => {
     expect(tauriVersionFromCode(1002)).toBe('0.1.2');
     expect(tauriVersionFromCode(3014)).toBe('0.3.14');
     expect(tauriVersionFromCode('x')).toBeNull();
+  });
+});
+
+describe('release-check Play tracks', () => {
+  it('keeps what each track serves, staged rollouts included, and skips drafts', () => {
+    const releases = [
+      { track: 'production', status: 'completed', name: '0.1.2', codes: ['1002'] },
+      { track: 'production', status: 'inProgress', name: '0.3.14', codes: ['3014'] },
+      { track: 'internal', status: 'draft', name: '0.3.15', codes: ['3015'] },
+      { track: 'beta', status: 'halted', name: '0.3.13', codes: ['3013'] },
+    ];
+    expect(livePlayReleases(releases).map((r: { track: string; name: string }) => `${r.track} ${r.name}`)).toEqual(['production 0.3.14']);
+    expect(livePlayReleases([{ track: 'internal', status: 'draft', name: 'x', codes: ['1'] }])).toEqual([]);
   });
 });
 
