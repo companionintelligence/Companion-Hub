@@ -140,11 +140,15 @@ engine*, and leaves a server that does not name itself alone. Whether Gufo or Ha
 
 Two catalog constraints also apply:
 
-- The catalog lists only models whose default `q4_K_M` tag exists on ollama.com. Gufo's Unsloth GGUFs and
-  Halogen's `.hgn` checkpoint need a new source type.
-- `qwen3.8-flash-next` is not in the catalog. Its only Ollama tags are Apple MLX and NVIDIA NVFP4, with no
-  GGUF build. Flash-Next therefore cannot be run through the Hub's Ollama path on Strix Halo, and
-  `qwen3.8:27b` (with its `-mtp-q4_K_M` variant) is the only like-for-like model between Ollama and Gufo.
+- The catalog lists models whose `q4_K_M` build Ollama can pull: the default tag on ollama.com, an explicit
+  `-q4_K_M` tag, or a single-file `hf.co/` GGUF. A few older rows are exceptions, such as `flint:40b`, whose
+  default is NVFP4. Gufo's Unsloth GGUFs and Halogen's `.hgn` checkpoint need a new source type.
+- `qwen3.8-flash-next:125b-a6b-q4_K_M` has been in the catalog since 2026-11-15. The family has no bare
+  default tag, so the row names this one, a llama.cpp GGUF (120 GB, `file_type` Q4_K_M, needs Ollama 0.33.3).
+  The family's other tags are q8_0 and bf16 GGUFs, plus Apple MLX and NVIDIA NVFP4 builds. No Strix Halo node has
+  loaded it, so it is untested whether 128 GB of unified memory holds it with a usable window.
+  `qwen3.8:27b` (with its `-mtp-q4_K_M` variant) remains the only model verified as a like-for-like pair
+  between Ollama and Gufo.
 
 ## What a fair test needs
 
