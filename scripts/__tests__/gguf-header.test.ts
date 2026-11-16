@@ -75,6 +75,31 @@ describe('kvGeometryFromGguf', () => {
     ).toMatchObject({ kvBytesPerToken: 69_632, kvLayers: 17, slidingLayers: 0 });
   });
 
+  // The registry's qwen3-next:80b file carries no full_attention_interval, and llama.cpp's qwen3next loader defaults it to 4:
+  // 12 of the 48 blocks keep a cache (24,576 bytes a token, as the qwen3-coder-next file with the key says), not all 48 (98,304).
+  // The qwen35, qwen35moe, and qwen4exp loaders default it to 4 as well.
+  it("applies llama.cpp's default interval of 4 to a file without one, an explicit one over it, and none to another family", () => {
+    const attention = (arch: string) => ({
+      'general.architecture': arch,
+      [`${arch}.block_count`]: 48,
+      [`${arch}.attention.head_count`]: 16,
+      [`${arch}.attention.head_count_kv`]: 2,
+      [`${arch}.attention.key_length`]: 256,
+      [`${arch}.attention.value_length`]: 256,
+    });
+    for (const arch of ['qwen3next', 'qwen35', 'qwen35moe', 'qwen4exp']) {
+      expect(geometry(attention(arch)), arch).toMatchObject({ kvBytesPerToken: 12 * 2 * 512 * 2, kvLayers: 12 });
+    }
+    expect(geometry({ ...attention('qwen3next'), 'qwen3next.full_attention_interval': 2 })).toMatchObject({ kvLayers: 24 });
+    // A per-layer head count is read as it stands, with 0 on the linear-attention layers as the real files carry it.
+    const perLayer = Array.from({ length: 48 }, (_, il) => ((il + 1) % 4 === 0 ? 2 : 0));
+    expect(geometry({ ...attention('qwen35'), 'qwen35.attention.head_count_kv': perLayer })).toMatchObject({
+      kvBytesPerToken: 12 * 2 * 512 * 2,
+      kvLayers: 12,
+    });
+    expect(geometry(attention('llama'))).toMatchObject({ kvBytesPerToken: 48 * 2 * 512 * 2, kvLayers: 48 });
+  });
+
   it('sums a per-layer head count, where 0 marks a layer with no per-token cache', () => {
     expect(
       geometry({

@@ -25,6 +25,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { CURATED_MODELS } from '../../packages/backend/src/modules/inference/catalog/curated-models';
+import { isShardedRefusal, type ManifestLayer, resolveHuggingFaceGguf, selectGguf } from './gguf-files';
 import { type KvGeometry, kvGeometryFromGguf, NeedMoreBytes, readGgufMetadata } from './gguf-header';
 import {
   hfGgufRef,
@@ -46,9 +47,20 @@ function argValue(name: string): string | undefined {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
+/** A non-2xx answer, with the start of its body: Hugging Face's endpoint says in the body why it answered 400. */
+class HttpError extends Error {
+  constructor(
+    readonly status: number,
+    url: string,
+    readonly body: string,
+  ) {
+    super(`${status} for ${url}: ${body}`);
+  }
+}
+
 async function getJson(url: string, headers: Record<string, string> = {}): Promise<unknown> {
   const res = await fetch(url, { headers: { ...UA, ...headers } });
-  if (!res.ok) throw new Error(`${res.status} for ${url}`);
+  if (!res.ok) throw new HttpError(res.status, url, (await res.text()).slice(0, 200));
   return res.json();
 }
 
@@ -73,39 +85,35 @@ async function readHeader(url: string): Promise<Map<string, unknown>> {
  * `repo:QUANT` naming a variant in the repo.
  */
 async function lemonadeGguf(checkpoint: string, mmproj: string | undefined): Promise<{ url: string; fileBytes: number }> {
-  const [repo, spec = ''] = checkpoint.split(':');
+  const [repo = '', spec = ''] = checkpoint.split(':');
+  const { wanted, fileBytes } = selectGguf(await huggingFaceTree(repo), spec, mmproj);
+  return { url: `https://huggingface.co/${repo}/resolve/main/${wanted.path}`, fileBytes };
+}
+
+/** Every file in a Hugging Face repo, with its size. */
+async function huggingFaceTree(repo: string): Promise<{ path: string; size?: number }[]> {
   const tree = (await getJson(`https://huggingface.co/api/models/${repo}/tree/main?recursive=true`)) as {
     path: string;
     type: string;
     size?: number;
   }[];
-  const files = tree.filter((f) => f.type === 'file' && f.path.toLowerCase().endsWith('.gguf'));
-  const weights = files.filter((f) => !/mmproj/i.test(f.path));
-  const wanted = spec.toLowerCase().endsWith('.gguf')
-    ? weights.find((f) => f.path.toLowerCase() === spec.toLowerCase() || f.path.toLowerCase().endsWith(`/${spec.toLowerCase()}`))
-    : (weights.find((f) => f.path.toLowerCase().includes(spec.toLowerCase()) && /-00001-of-\d{5}\.gguf$/i.test(f.path)) ??
-      weights.find((f) => f.path.toLowerCase().includes(spec.toLowerCase())));
-  if (!wanted) throw new Error(`no GGUF matching ${JSON.stringify(spec)} in ${repo}`);
-  // A split model's metadata is in its first shard; its weights are every shard.
-  const split = wanted.path.match(/^(.*)-00001-of-(\d{5})\.gguf$/i);
-  const shards = split ? weights.filter((f) => f.path.startsWith(`${split[1]}-`) && f.path.endsWith(`-of-${split[2]}.gguf`)) : [wanted];
-  const projector = mmproj ? files.find((f) => f.path === mmproj || f.path.endsWith(`/${mmproj}`)) : undefined;
-  const fileBytes = [...shards, ...(projector ? [projector] : [])].reduce((sum, f) => sum + (f.size ?? 0), 0);
-  return { url: `https://huggingface.co/${repo}/resolve/main/${wanted.path}`, fileBytes };
+  return tree.filter((f) => f.type === 'file');
 }
 
 /** Every layer Ollama would pull for `hf.co/<repo>:<quant>`, or undefined when Hugging Face serves no manifest for it. */
-async function huggingFaceLayers(repo: string, quant: string): Promise<{ size: number }[] | undefined> {
+async function huggingFaceLayers(repo: string, quant: string): Promise<ManifestLayer[] | undefined> {
   try {
     const manifest = (await getJson(hfManifestUrl({ repo, quant }), {
       Accept: MANIFEST_ACCEPT,
       'User-Agent': OLLAMA_UA,
-    })) as { layers?: { size: number }[] };
+    })) as { layers?: ManifestLayer[] };
     return manifest.layers?.length ? manifest.layers : undefined;
   } catch (err) {
-    // A sharded repo answers 400 here, and a quant the repo lacks answers 404. Any other failure (a 429, a 5xx, a
-    // timeout) must not pass for either: the row would be sized from the file tree, without its projector.
-    if (err instanceof Error && /^(400|404) /.test(err.message)) return undefined;
+    // A sharded repo answers 400 "sharded GGUF" here, which Ollama cannot pull, so the row is sized from the file tree. Every
+    // other refusal must stop the row: a quant the repo does not list, or that is no quantization scheme, answers 400 too (a
+    // missing repo is 401), and a 429, a 5xx, or a timeout is no answer. The tree would hand such a row another build's file,
+    // sized without its projector.
+    if (err instanceof HttpError && isShardedRefusal(err.status, err.body)) return undefined;
     throw err;
   }
 }
@@ -117,9 +125,9 @@ async function huggingFaceLayers(repo: string, quant: string): Promise<{ size: n
 async function ollamaGguf(tagged: string): Promise<{ url: string; fileBytes: number }> {
   if (isHfGguf(tagged)) {
     const { repo, quant } = hfGgufRef(tagged);
-    const file = await lemonadeGguf(`${repo}:${quant}`, undefined);
-    const layers = await huggingFaceLayers(repo, quant);
-    return { url: file.url, fileBytes: layers ? layers.reduce((sum, l) => sum + l.size, 0) : file.fileBytes };
+    // The header comes from the file picked in the tree, and the pull from the manifest: resolve checks they are one file.
+    const { wanted, fileBytes } = resolveHuggingFaceGguf(await huggingFaceTree(repo), tagged, quant, await huggingFaceLayers(repo, quant));
+    return { url: `https://huggingface.co/${repo}/resolve/main/${wanted.path}`, fileBytes };
   }
   const ref = ollamaRef(tagged);
   const manifest = (await getJson(ollamaManifestUrl(ref), { Accept: MANIFEST_ACCEPT })) as {

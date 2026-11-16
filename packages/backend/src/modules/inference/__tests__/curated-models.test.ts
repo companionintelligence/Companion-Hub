@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import path from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
 import { omlxModelKey } from '@/common/helpers/omlx-model-id';
 import { LEMONADE_REGISTRATIONS } from '../backends/lemonade.backend';
 import { CURATED_MODELS } from '../catalog/curated-models';
@@ -15,16 +16,31 @@ const fileMb = (id: string) => {
   return bytes ? Math.round(bytes / 1024 ** 2) : undefined;
 };
 
+// The shared test setup mocks `fs`; the `gb` check below is about the real catalog source on disk.
+const { readFileSync } = await vi.importActual<typeof import('node:fs')>('node:fs');
+const catalogSource = readFileSync(path.resolve(__dirname, '../catalog/curated-models.ts'), 'utf8');
+// The Ollama LLM table, which is the first TOON table in the file: the other tables lay their columns out differently.
+const ollamaTable = catalogSource.slice(
+  catalogSource.indexOf('const CATALOG_TOON = `'),
+  catalogSource.indexOf('`;', catalogSource.indexOf('const CATALOG_TOON = `')),
+);
+/**
+ * A row's `gb` as its TOON line in the Ollama table states it (NaN when the row is missing). The runtime ignores that column
+ * for a row with a geometry entry, whose size is its registry files, so only the source text can show a slipped decimal point.
+ */
+const toonGb = (id: string) =>
+  Number(new RegExp(`^  ${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\|[^|]*\\|[^|]*\\|[^|]*\\|[^|]*\\|([^|]*)\\|`, 'm').exec(ollamaTable)?.[1]);
+
 describe('curated-models (TOON catalog)', () => {
   const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
 
-  it('decodes the full catalog (125 Ollama LLMs + 41 Lemonade LLMs + 13 vLLM LLMs + 76 oMLX LLMs + voice + embeddings) with unique ids', () => {
-    expect(llms.filter((m) => m.backend === 'ollama').length).toBe(125);
+  it('decodes the full catalog (146 Ollama LLMs + 41 Lemonade LLMs + 13 vLLM LLMs + 76 oMLX LLMs + voice + embeddings) with unique ids', () => {
+    expect(llms.filter((m) => m.backend === 'ollama').length).toBe(146);
     expect(llms.filter((m) => m.backend === 'lemonade').length).toBe(41);
     expect(llms.filter((m) => m.backend === 'vllm').length).toBe(13);
     expect(llms.filter((m) => m.backend === 'omlx').length).toBe(76);
-    expect(llms.length).toBe(255);
+    expect(llms.length).toBe(276);
     // 4 Ollama embeddings + 2 Lemonade embeddings (v1.5, recommended; v1, kept for existing indexes).
     expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(6);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);
@@ -149,6 +165,189 @@ describe('curated-models (TOON catalog)', () => {
     expect(flashNext?.backendModelId).not.toMatch(/mlx|nvfp4/i);
     expect(GGUF_KV_GEOMETRY['qwen3-8-flash-next-125b']?.architecture).toBe('qwen4exp');
     expect(flashNext?.requirements.gpuVendors).toEqual(['nvidia', 'amd', 'apple', 'cpu']);
+  });
+
+  // 2026-11-15, second pass (the '2026-11-15, second pass' note above CATALOG_TOON): the older local models the first pass checked
+  // once and left out. Tags, sizes, and architectures were read from registry manifests, config blobs, and ranged GGUF headers
+  // (the two `hf.co/` rows from Hugging Face's Ollama manifest and the file's header). The flags are what the build offers
+  // through Ollama 0.34.0, the fleet's pin (0.40.16 for K2 Horizon, which 0.34.0 cannot pull), not the library page's badges,
+  // which join every build of a family: the config's `capabilities` or `parser`, else the Go template, unless the GGUF's chat
+  // template offers more. Only K2 Horizon 0.9B was run (Ollama 0.40.16); the other facts here come from the sources the note
+  // names and cannot be checked by this test.
+  it("pins the 21 second-pass rows' tags, purposes, tiers, sizes, windows, flags, and active parameters", () => {
+    const expected = [
+      // id, tag, purpose, tier, params, context window, creator, reasoning, vision, tools, gb
+      // devstral-small-2: a template with `.Tools` and in-file vision tensors. devstral-2: the `ministral` parser.
+      ['devstral-small-2-24b', 'devstral-small-2:24b', 'coding', 'medium', 24, 256_000, 'Mistral', false, true, true, 15.2],
+      ['devstral-2-123b', 'devstral-2:123b', 'coding', 'high', 123, 256_000, 'Mistral', false, false, true, 74.9],
+      // qwen3-next: a template with `.Tools` and think tags; its :80b is the thinking build. qwen3-coder-next has no size tag, so
+      // its q4_K_M tag, and its `qwen3-coder` parser offers tools and no thinking.
+      ['qwen3-next-80b', 'qwen3-next:80b', 'reasoning', 'high', 80, 256_000, 'Alibaba', true, false, true, 50.4],
+      ['qwen3-coder-next-80b', 'qwen3-coder-next:q4_K_M', 'coding', 'high', 80, 256_000, 'Alibaba', false, false, true, 51.7],
+      // olmo-3.1:32b is the Think build: its `olmo3-think` parser offers thinking and no tools, whatever the family page's badges say.
+      ['olmo-3-1-32b', 'olmo-3.1:32b', 'reasoning', 'medium', 32, 64_000, 'Allen Institute', true, false, false, 19.5],
+      ['rnj-1-8b', 'rnj-1:8b', 'coding', 'low', 8, 32_000, 'Essential AI', false, false, true, 5.1],
+      ['lfm2-5-thinking-1-2b', 'lfm2.5-thinking:1.2b', 'reasoning', 'cpu-only', 1.2, 32_000, 'Liquid AI', true, false, true, 0.7],
+      // qwen3-vl: the `qwen3-vl-thinking` parser, which offers tools and thinking, and vision from the model file or its projector.
+      ['qwen3-vl-2b', 'qwen3-vl:2b', 'general', 'cpu-only', 2, 256_000, 'Alibaba', true, true, true, 1.9],
+      ['qwen3-vl-4b', 'qwen3-vl:4b', 'general', 'cpu-only', 4, 256_000, 'Alibaba', true, true, true, 3.3],
+      ['qwen3-vl-8b', 'qwen3-vl:8b', 'general', 'low', 8, 256_000, 'Alibaba', true, true, true, 6.2],
+      ['qwen3-vl-30b', 'qwen3-vl:30b', 'general', 'medium', 30, 256_000, 'Alibaba', true, true, true, 19.6],
+      ['qwen3-vl-235b', 'qwen3-vl:235b', 'general', 'high', 235, 256_000, 'Alibaba', true, true, true, 143.3],
+      // The vendor's own Ollama namespace. Both builds carry one GGUF chat template that names tools and thinking, and their Go
+      // templates name neither tools nor `.Thinking`, so Ollama 0.34.0 prefers the GGUF's (the library page's badges differ).
+      ['minicpm5-1b', 'openbmb/minicpm5:q4_K_M', 'general', 'cpu-only', 1, 128_000, 'OpenBMB', true, false, true, 0.7],
+      ['minicpm5-2b', 'openbmb/minicpm5-2b:2b', 'general', 'cpu-only', 2, 128_000, 'OpenBMB', true, false, true, 1.6],
+      // IFM's Ollama namespace: thinking and tools by the registry config's `capabilities`, and every size by its explicit q4_K_M tag.
+      ['k2-horizon-0-9b', 'ifm/k2-horizon:0.9b-q4_K_M', 'reasoning', 'cpu-only', 0.9, 128_000, 'IFM', true, false, true, 0.7],
+      ['k2-horizon-3-7b', 'ifm/k2-horizon:3.7b-q4_K_M', 'reasoning', 'cpu-only', 3.7, 512_000, 'IFM', true, false, true, 3.2],
+      ['k2-horizon-7b', 'ifm/k2-horizon:7b-q4_K_M', 'reasoning', 'low', 7, 512_000, 'IFM', true, false, true, 5.6],
+      ['k2-horizon-32b', 'ifm/k2-horizon:32b-q4_K_M', 'reasoning', 'medium', 32, 512_000, 'IFM', true, false, true, 21.1],
+      ['k2-horizon-mova-36b', 'ifm/k2-horizon:36b-q4_K_M', 'reasoning', 'medium', 36, 512_000, 'IFM', true, false, true, 22.4],
+      // Single-file Hugging Face GGUFs: JetBrains' own repo (its template has `.Tools` and think tags), and AngelSlim, an unverified
+      // organization that Tencent's AngelSlim README links. Hy3 has no thinking flag: its manifest has no template layer, and its GGUF
+      // template builds its think tokens from a format string, which Ollama 0.34.0 does not read as thinking (it would answer
+      // `think: true` with HTTP 400); it reads tools from the template's `tools`.
+      [
+        'mellum2-1-12b',
+        'hf.co/JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF:Q4_K_M',
+        'coding',
+        'low',
+        12,
+        128_000,
+        'JetBrains',
+        true,
+        false,
+        true,
+        8.1,
+      ],
+      ['hy3-295b', 'hf.co/AngelSlim/Hy3-GGUF:Q4_K_M', 'general', 'high', 295, 256_000, 'Tencent', false, false, true, 182.3],
+    ] as const;
+    // The list names the 21 rows the note says were added, once each (a repeated entry would hide a missing one).
+    expect(expected.length).toBe(21);
+    expect(new Set(expected.map(([id]) => id)).size).toBe(21);
+
+    for (const [id, tag, purpose, tier, params, contextWindow, creator, reasoning, vision, tools, gb] of expected) {
+      const model = byId.get(id);
+      expect(model, id).toBeDefined();
+      // `quantization` is the table's default for an Ollama row, not read from the tag, so only the tag pins the build.
+      expect(model).toMatchObject({
+        backend: 'ollama',
+        backendModelId: tag,
+        purpose,
+        parameterScale: params,
+        requirements: { minTier: tier },
+        runtime: { contextWindow, reasoning, quantization: 'q4_K_M' },
+        metadata: { creator, capabilities: { reasoning, vision, tools, audio: false } },
+      });
+      // As in the first pass: the size is the registry's (or Hugging Face's manifest's) layers, and `gb` restates it to a tenth,
+      // on the row's TOON line as well, which the runtime does not read for a row with a geometry entry.
+      expect(model?.requirements.diskMb, id).toBe(fileMb(id));
+      expect(Math.abs((GGUF_KV_GEOMETRY[id]?.fileBytes ?? 0) / 1e9 - gb), id).toBeLessThan(0.05);
+      expect(toonGb(id), `${id} gb on its TOON line`).toBe(gb);
+      expect(model?.metadata?.intelligenceIndex, id).toBeUndefined();
+    }
+
+    // Mixture-of-experts rows state the vendor's active size (an estimate from the GGUFs' expert counts, embedding tables
+    // included, lands within about 1B of each, K2 Horizon MoVA aside). Every other row keeps its full parameter count.
+    const active = new Map<string, number>([
+      ['qwen3-next-80b', 3],
+      ['qwen3-coder-next-80b', 3],
+      ['qwen3-vl-30b', 3],
+      ['qwen3-vl-235b', 22],
+      ['k2-horizon-mova-36b', 4],
+      ['mellum2-1-12b', 2.5],
+      ['hy3-295b', 21],
+    ]);
+    for (const [id] of expected) {
+      expect(byId.get(id)?.activeParameterScale, id).toBe(active.get(id) ?? byId.get(id)?.parameterScale);
+    }
+  });
+
+  // Two files allow more than their vendors state. Devstral Small 2's GGUF runs to 393,216 tokens (Ollama's page says 384K)
+  // where Mistral's card says 256K, and LFM2.5 1.2B Thinking's runs to 128,000 (125K) where Liquid's card says 32,768. The
+  // rows carry the vendors' windows (256,000 and 32,000, as thousands), so the Hub never hands out one the vendor does not state.
+  it('holds Devstral Small 2 and LFM 2.5 Thinking to the window their vendors state, below what their files allow', () => {
+    expect(byId.get('devstral-small-2-24b')?.runtime.contextWindow).toBe(256_000);
+    expect(GGUF_KV_GEOMETRY['devstral-small-2-24b']?.contextLength).toBe(393_216);
+    expect(byId.get('lfm2-5-thinking-1-2b')?.runtime.contextWindow).toBe(32_000);
+    expect(GGUF_KV_GEOMETRY['lfm2-5-thinking-1-2b']?.contextLength).toBe(128_000);
+  });
+
+  // K2 Horizon is listed from IFM's own Ollama namespace, never `hf.co/`. The same 0.9B model layer through `hf.co/IFM/K2-Horizon-0.9B-GGUF`
+  // chats the same on Ollama 0.40.16 but reports tools and completion only, so `think: true` answers HTTP 400, where the registry
+  // build declares thinking and tools. Its sizes are named by `-q4_K_M` because the 0.9B and 3.7B defaults are Q8_0, and every
+  // build needs Ollama 0.40.4 (above the fleet's 0.34.0 pin). bartowski's 3.7B, 7B, 32B, MoVA, and 375B GGUFs carry a stricter template
+  // that raises on an assistant turn with no thinking field; IFM's five repos and five builds carry one that does not. Those facts, the
+  // HTTP statuses, and `requires` are in the note above CATALOG_TOON and cannot be checked here; this test pins the tags, the
+  // architecture the generated geometry read, and the flags.
+  it("lists K2 Horizon from IFM's Ollama namespace by explicit q4_K_M tags, as the k2-horizon architecture", () => {
+    const k2 = llms.filter((m) => m.id.startsWith('k2-horizon-'));
+    expect(k2.map((m) => m.backendModelId).sort()).toEqual([
+      'ifm/k2-horizon:0.9b-q4_K_M',
+      'ifm/k2-horizon:3.7b-q4_K_M',
+      'ifm/k2-horizon:32b-q4_K_M',
+      'ifm/k2-horizon:36b-q4_K_M',
+      'ifm/k2-horizon:7b-q4_K_M',
+    ]);
+    for (const m of k2) {
+      expect(GGUF_KV_GEOMETRY[m.id]?.architecture, m.id).toBe('k2-horizon');
+      expect(m.metadata?.capabilities, m.id).toEqual({ reasoning: true, vision: false, tools: true, audio: false });
+    }
+  });
+
+  // The generated geometry has to come from the file the tag pulls. AngelSlim's repo lists Hy3-Q4_K_M-mtp.gguf (81 blocks) before
+  // the plain Hy3-Q4_K_M.gguf (80 blocks, the one Hugging Face's registry endpoint serves for `Q4_K_M`), and the registry's
+  // qwen3-next:80b file has no `full_attention_interval`, which llama.cpp defaults to 4 (12 of its 48 blocks keep a cache).
+  // This pins the table as generated; the tool's own file pick and interval default are tested in scripts/__tests__.
+  it("holds Hy3's geometry from its plain 80-block file and 12 cached layers for Qwen3-Next, not 81 and 48", () => {
+    expect(GGUF_KV_GEOMETRY['hy3-295b']).toMatchObject({
+      architecture: 'hy_v3',
+      kvBytesPerToken: 80 * 4096,
+      fileBytes: 182_328_383_255,
+      contextLength: 262_144,
+    });
+    expect(GGUF_KV_GEOMETRY['qwen3-next-80b']).toMatchObject({ architecture: 'qwen3next', kvBytesPerToken: 12 * 2 * (256 + 256) * 2 });
+    // qwen3-coder-next's file carries the interval itself, so the two same-shape models agree.
+    expect(GGUF_KV_GEOMETRY['qwen3-coder-next-80b']?.kvBytesPerToken).toBe(GGUF_KV_GEOMETRY['qwen3-next-80b']?.kvBytesPerToken);
+  });
+
+  // What the generated table says about the 21 rows, read from each file's header by the tool and by a second parser: a
+  // regeneration that read another file, or miscounted the layers that keep a cache, changes the KV cost the Hub charges for a
+  // window without failing anything else. kvBytesPerToken is the full-attention layers' f16 cache per token.
+  it('pins the geometry read for the 21 rows: architecture, KV bytes per token, and the window their files allow', () => {
+    const expected = [
+      // id, architecture, kvBytesPerToken, file context_length
+      ['devstral-small-2-24b', 'mistral3', 163_840, 393_216],
+      ['devstral-2-123b', 'mistral3', 360_448, 262_144],
+      ['qwen3-next-80b', 'qwen3next', 24_576, 262_144],
+      ['qwen3-coder-next-80b', 'qwen3next', 24_576, 262_144],
+      ['olmo-3-1-32b', 'olmo3', 65_536, 65_536],
+      ['rnj-1-8b', 'gemma3', 131_072, 32_768],
+      ['lfm2-5-thinking-1-2b', 'lfm2', 12_288, 128_000],
+      ['qwen3-vl-2b', 'qwen3vl', 114_688, 262_144],
+      ['qwen3-vl-4b', 'qwen3vl', 147_456, 262_144],
+      ['qwen3-vl-8b', 'qwen3vl', 147_456, 262_144],
+      ['qwen3-vl-30b', 'qwen3vlmoe', 98_304, 262_144],
+      ['qwen3-vl-235b', 'qwen3vlmoe', 192_512, 262_144],
+      ['minicpm5-1b', 'llama', 24_576, 131_072],
+      ['minicpm5-2b', 'llama', 43_008, 131_072],
+      ['k2-horizon-0-9b', 'k2-horizon', 57_344, 131_072],
+      ['k2-horizon-3-7b', 'k2-horizon', 147_456, 524_288],
+      ['k2-horizon-7b', 'k2-horizon', 147_456, 524_288],
+      ['k2-horizon-32b', 'k2-horizon', 262_144, 524_288],
+      ['k2-horizon-mova-36b', 'k2-horizon', 196_608, 524_288],
+      ['mellum2-1-12b', 'mellum', 14_336, 131_072],
+      ['hy3-295b', 'hy_v3', 327_680, 262_144],
+    ] as const;
+    expect(expected.length).toBe(21);
+    for (const [id, architecture, kvBytesPerToken, contextLength] of expected) {
+      expect(GGUF_KV_GEOMETRY[id], id).toMatchObject({ architecture, kvBytesPerToken, contextLength });
+    }
+    // Two of the 21 rows keep a second, window-bound cache apart from the figure above (rnj-1's gemma3 file marks no layer as
+    // sliding, so all its layers are global).
+    expect(GGUF_KV_GEOMETRY['olmo-3-1-32b']).toMatchObject({ slidingKvBytesPerToken: 196_608, slidingWindow: 4096 });
+    expect(GGUF_KV_GEOMETRY['mellum2-1-12b']).toMatchObject({ slidingKvBytesPerToken: 43_008, slidingWindow: 1024 });
   });
 
   // The 2026-11-15 oMLX rows mirror an Ollama row (params, creator, purpose, reasoning, tools, and tier), and say so
@@ -588,9 +787,9 @@ describe('curated-models (TOON catalog)', () => {
   // GGUF via the registry" to Ollama's User-Agent (single-file repos answer 200). The official and
   // major-quantizer Q4-class builds of these are sharded, and the Hub hands the tag to Ollama's /api/pull
   // unchanged. Re-add one only after an actual pull succeeds. (`glm-5-2` and `inkling` predate this check and
-  // fail the same way; they are left as they were, for the Hub owners to decide. Command A+, Muse Spark Open,
-  // GLM 5.3 Flash, and MiMo-V2.6 Flash are not listed here because single-file builds of them exist, from
-  // individual re-quantizers nobody vetted.)
+  // fail the same way; they are left as they were, for the Hub owners to decide. Muse Spark Open, GLM 5.3 Flash, and
+  // MiMo-V2.6 Flash are not listed here because single-file builds of them exist, from individual re-quantizers
+  // nobody vetted; Command A+ was vetted and is kept out by the test below.)
   it('keeps the eight sharded-only Hugging Face GGUFs seen on 2026-11-15 out of the catalog', () => {
     const ids = new Set(CURATED_MODELS.map((m) => m.id));
     for (const sharded of [
@@ -607,10 +806,22 @@ describe('curated-models (TOON catalog)', () => {
     }
   });
 
-  // An `hf.co/` row has to pass the registry check above before it is listed, so this set changes only on purpose.
-  it('lists only the four hf.co/ rows that passed the registry check or predate it', () => {
+  // An `hf.co/` row has to pass the registry check above before it is listed, so this set changes only on purpose. The second
+  // pass added `mellum2-1-12b` and `hy3-295b`: single-file Q4_K_M files from JetBrains' own repo and from AngelSlim, an unverified
+  // organization that Tencent's AngelSlim README links.
+  it('lists only the six hf.co/ rows that passed the registry check or predate it', () => {
     const hfRows = CURATED_MODELS.filter((m) => m.backendModelId.startsWith('hf.co/')).map((m) => m.id);
-    expect(hfRows.sort()).toEqual(['arete-27b', 'glm-5-2', 'inkling', 'nanbeige4-3-33b']);
+    expect(hfRows.sort()).toEqual(['arete-27b', 'glm-5-2', 'hy3-295b', 'inkling', 'mellum2-1-12b', 'nanbeige4-3-33b']);
+  });
+
+  // Command A+ was vetted on 2026-11-15 (the '2026-11-15, second pass' note above CATALOG_TOON) and left out: the only single-file
+  // build found is coder543's 132 GB Q4_K_M, one person's upload (223 downloads in the past 30 days, 2,936 in all), and the GGUFs
+  // of bartowski, diablomike20, SixVolts, and DevQuasar are sharded. The check reads the name too, and spellings of it that an id
+  // or tag might use.
+  it('keeps Command A+ out of the catalog', () => {
+    for (const m of CURATED_MODELS) {
+      expect(`${m.id} ${m.backendModelId} ${m.displayName}`, m.id).not.toMatch(/command[-_ ]?a[-_ ]?(plus|\+)/i);
+    }
   });
 
   // Lemonade rows are scored like Ollama's: the Intelligence Index describes the model, not the engine

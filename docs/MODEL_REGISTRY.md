@@ -138,9 +138,18 @@ is Q8_0), so name any other build with a different `file_type` in the dated note
 build's `requires` gets HTTP 412 from the registry, so compare it with the fleet's pin
 (`scripts/lib/fleet-ollama-version.ts`) and name in the dated note any row the pin cannot pull.
 
-For a model Ollama's library does not carry, an `hf.co/<repo>:<quant>` row works only if Ollama can pull
-it, and it cannot pull a sharded GGUF. Ask Hugging Face's registry endpoint the way Ollama does, before
-anything else:
+For a model Ollama's library does not carry, look in the vendor's own Ollama namespace (`ollama.com/<vendor>`,
+as with `openbmb/minicpm-v4.7`, `openbmb/minicpm5`, and `ifm/k2-horizon`) before an `hf.co/` row, and read its
+manifests as you would a library row's. A vendor build's config blob can declare `capabilities` and a `requires`
+version that an `hf.co/` tag lacks. The config blob of `ifm/k2-horizon:0.9b-q4_K_M` declares thinking and tools.
+On Ollama 0.40.16, on 2026-11-15, `hf.co/IFM/K2-Horizon-0.9B-GGUF:Q4_K_M`, the same model layer, reported
+tools and completion only, and `think: true` answered HTTP 400. Read the GGUF's chat template too, because
+repos of one model can carry different ones: bartowski's K2 Horizon GGUFs for 3.7B, 7B, 32B, MoVA, and 375B
+carry a template that raises on an assistant turn with no thinking field, and IFM's five do not (checked
+2026-11-15).
+
+Otherwise an `hf.co/<repo>:<quant>` row works only if Ollama can pull it, and it cannot pull a sharded GGUF.
+Ask Hugging Face's registry endpoint the way Ollama does, before anything else:
 
 ```bash
 curl -s -w '\n%{http_code}\n' -A 'ollama/0.34.0 (arm64 darwin) Go/go1.24.0' \
@@ -168,8 +177,9 @@ newmodel-72b|newmodel:72b|NewModel 72B|reasoning|72|43|high|128|SomeLab||1|0|1|0
 
 - `id` — `${family}-${size}`, kebab-case, unique.
 - `backendModelId` — the exact `ollama pull` tag.
-- `params`/`gb` — parameter count (billions) and the *default* (`q4_K_M`) on-disk size in GB, exactly
-  as shown on the Ollama library page. These two columns drive every derived requirement
+- `params`/`gb` — parameter count (billions, the library's size label) and the *default* (`q4_K_M`)
+  download in decimal GB to one decimal: the sum of every layer in the manifest (Step A), which the library
+  page rounds further. These two columns drive every derived requirement
   (`minVramMb`/`recommendedVramMb`/`minRamMb`/`diskMb`/`memoryFootprintMb`) — don't hand-compute them.
   For a model named by its *effective* size, use that figure: the Gemma E4B row carries 4, not the
   8.0B Ollama reports, because the download gate reads `params` as a lower bound on what the engine
@@ -177,6 +187,25 @@ newmodel-72b|newmodel:72b|NewModel 72B|reasoning|72|43|high|128|SomeLab||1|0|1|0
 - `tier` — the lowest hardware tier this size should be offered as a default recommendation for
   (`cpu-only`/`low`/`medium`/`high`), based on the model's footprint relative to existing rows of
   similar size.
+- `reason`/`vision`/`tools` — what the build offers through Ollama, not the library page's badges, which
+  join every build of a family (`olmo-3.1` shows tools, but its Think build has none) and ignore a GGUF chat
+  template that Ollama prefers (MiniCPM5). Ollama (`Model.Capabilities` in `server/images.go`, read at v0.34.0
+  with `OLLAMA_GO_TEMPLATE` unset) adds up the config blob's `capabilities`, the tool and thinking support of
+  its `parser`, vision from a projector layer or from `<arch>.vision.block_count` in the model file, and the
+  tools and thinking of one template. The Go template layer offers `.Tools` and, inside the messages loop
+  between literal opening and closing tags, `.Thinking`. The GGUF's chat template offers a `tools` or
+  `tool_call` substring, and a literal `<think>` and `</think>` (or a split of `content` at `</think>`, in a
+  template with neither `reasoning_content` nor `<SPECIAL_12>`). A build with a Go template layer uses it,
+  unless the build has no `parser` or `renderer` and the GGUF's chat template offers more capabilities
+  (counted, so `.Suffix` counts too) while keeping any tool round trip the Go template has, or offers the same
+  and alone completes one (`shouldPreferChatTemplate`). A build with no Go template layer uses the GGUF's chat
+  template, but a build with a `parser` or `renderer` never has it read: `olmo-3.1`, with a parser and no
+  template layer, has only what its parser offers, and a parser build that has a Go template layer gets that
+  template's capabilities as well (`devstral-2`). Hy3's builds its think tokens from a format string, so it has
+  no thinking flag. Check with `/api/show` on a current Ollama when you can. The pool routes a request that
+  asks for tools or thinking by these flags (`pool-auto-model.ts`) and passes over a build whose flag is 0,
+  while Ollama refuses `think` for a build without the capability (HTTP 400). A flag that claims more than the
+  build offers sends requests to a refusal, and one that claims less hides the build.
 - `intel`/`tps`/`ttft`/`e2e` — leave blank (`|`). The columns are on AA's v4.3 index and AA now publishes
   v5.0.1 (see the note at the top), so a new number would rank on a different scale. Don't invent numbers.
 - `ramGb` — leave it blank. Fill it in only with a footprint you measured on a running engine, as
@@ -202,11 +231,17 @@ pnpm exec tsx scripts/catalog/gen-kv-geometry.ts --only newmodel-72b
 `--only` (comma-separated ids) reads only those rows' GGUF headers from the registry and merges them into
 the file, leaving every other entry byte for byte as it was. It needs network but, for Ollama rows, no
 Lemonade install. For an `hf.co/` row it sizes every layer of Hugging Face's Ollama manifest, so a vision
-projector counts as it does for a registry row. It lists at the end any row it could not resolve: check that
-row's tag or file again before you commit it. If a line in the table is not shaped like a generated entry (a
-comment or a hand-written line), the tool stops and writes nothing, because merging would drop that line; run
-it without `--only` to rebuild the whole file. A hand-edited value inside an entry is kept as it is. The date
-in the file's header is the last run's, so it does not say when each entry was read.
+projector counts as it does for a registry row. It reads the header of the file whose name ends with the
+quant (`Hy3-Q4_K_M.gguf`, not its `Hy3-Q4_K_M-mtp.gguf` sibling, which has one more block). A row with no
+such file, or whose file's size is not the model layer the manifest serves, is left unresolved. So is a row
+that Hugging Face's endpoint refuses for any reason but a sharded repo: a quant the repo does not list
+answers HTTP 400 too. A sharded repo (HTTP 400 "sharded GGUF") is sized from its files in the tree, and
+`check-rows.ts` is what reports that Ollama cannot pull it. The tool
+lists at the end any row it could not resolve: check that row's tag or file again before you commit it. If
+a line in the table is not shaped like a generated entry (a comment or a hand-written line), the tool stops
+and writes nothing, because merging would drop that line; run it without `--only` to rebuild the whole
+file. A hand-edited value inside an entry is kept as it is. The date in the file's header is the last
+run's, so it does not say when each entry was read.
 
 ### Step D: Update the catalog tests
 
