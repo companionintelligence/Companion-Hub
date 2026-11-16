@@ -11,9 +11,15 @@
  * reads it. Ollama's extra growth beside the cache is `OLLAMA_EXTRA_MB_PER_TOKEN`.
  *
  * Usage (needs network: Hugging Face and registry.ollama.ai):
- *   pnpm exec tsx scripts/catalog/gen-kv-geometry.ts [--lemonade-registry <server_models.json>]
+ *   pnpm exec tsx scripts/catalog/gen-kv-geometry.ts [--lemonade-registry <server_models.json>] [--only <id,id,...>]
  * The Lemonade registry maps a row's backendModelId to its Hugging Face checkpoint; the default is the
  * file a Lemonade install ships (/usr/share/lemonade-server/resources/server_models.json).
+ * `--only` reads only the named rows and merges them into the existing file, keeping every other entry
+ * byte for byte: use it when rows are added, so the rest of the table is not re-read from registries that
+ * may have moved since, and a machine without a Lemonade install (which only Lemonade rows need) can still
+ * add Ollama rows. The date in the file's header is the last run's, not each entry's.
+ * An `hf.co/` Ollama row is sized from Hugging Face's Ollama manifest, so a vision projector counts as it does
+ * for a registry row; a sharded repo, which that endpoint refuses, keeps the size of its files in the tree.
  * Only public model metadata is fetched. Re-run when catalog rows are added.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -23,6 +29,8 @@ import { type KvGeometry, kvGeometryFromGguf, NeedMoreBytes, readGgufMetadata } 
 
 const OUT = path.resolve(__dirname, '../../packages/backend/src/modules/inference/catalog/kv-geometry.generated.ts');
 const UA = { 'User-Agent': 'ci-hub-catalog-tools' };
+/** What Ollama's pull sends to Hugging Face's registry endpoint, which answers a sharded repo with HTTP 400. */
+const OLLAMA_UA = 'ollama/0.34.0 (arm64 darwin) Go/go1.24.0';
 const PREFIXES = [1, 4, 16, 64].map((mb) => mb * 1024 * 1024);
 
 function argValue(name: string): string | undefined {
@@ -78,11 +86,33 @@ async function lemonadeGguf(checkpoint: string, mmproj: string | undefined): Pro
   return { url: `https://huggingface.co/${repo}/resolve/main/${wanted.path}`, fileBytes };
 }
 
+/** Every layer Ollama would pull for `hf.co/<repo>:<quant>`, or undefined when Hugging Face serves no manifest for it. */
+async function huggingFaceLayers(repo: string, quant: string): Promise<{ size: number }[] | undefined> {
+  try {
+    const manifest = (await getJson(`https://huggingface.co/v2/${repo}/manifests/${quant}`, {
+      Accept: 'application/vnd.docker.distribution.manifest.v2+json',
+      'User-Agent': OLLAMA_UA,
+    })) as { layers?: { size: number }[] };
+    return manifest.layers?.length ? manifest.layers : undefined;
+  } catch (err) {
+    // A sharded repo answers 400 here, and a quant the repo lacks answers 404. Any other failure (a 429, a 5xx, a
+    // timeout) must not pass for either: the row would be sized from the file tree, without its projector.
+    if (err instanceof Error && /^(400|404) /.test(err.message)) return undefined;
+    throw err;
+  }
+}
+
 /**
- * An Ollama row's GGUF in Ollama's registry, and its size: every layer of the manifest. `hf.co/<repo>:<quant>` rows are Hugging Face files.
+ * An Ollama row's GGUF in Ollama's registry, and its size: every layer of the manifest. `hf.co/<repo>:<quant>` rows are Hugging Face files,
+ * sized by every layer of Hugging Face's manifest (a vision projector is one) or, for a repo that serves none, by its files.
  */
 async function ollamaGguf(tagged: string): Promise<{ url: string; fileBytes: number }> {
-  if (tagged.startsWith('hf.co/')) return lemonadeGguf(tagged.slice('hf.co/'.length), undefined);
+  if (tagged.startsWith('hf.co/')) {
+    const [repo = '', quant = ''] = tagged.slice('hf.co/'.length).split(':');
+    const file = await lemonadeGguf(`${repo}:${quant}`, undefined);
+    const layers = await huggingFaceLayers(repo, quant);
+    return { url: file.url, fileBytes: layers ? layers.reduce((sum, l) => sum + l.size, 0) : file.fileBytes };
+  }
   const colon = tagged.lastIndexOf(':');
   const [nameWithNs, tag] = colon > 0 ? [tagged.slice(0, colon), tagged.slice(colon + 1)] : [tagged, 'latest'];
   const name = nameWithNs.includes('/') ? nameWithNs : `library/${nameWithNs}`;
@@ -99,10 +129,31 @@ async function ollamaGguf(tagged: string): Promise<{ url: string; fileBytes: num
   return { url: `https://registry.ollama.ai/v2/${name}/blobs/${model.digest}`, fileBytes };
 }
 
+/** One entry of the generated table, in the exact shape the file carries. */
+function formatRow(id: string, r: KvGeometry & { fileBytes: number }): string {
+  const swa = r.slidingLayers ? `, slidingKvBytesPerToken: ${r.slidingKvBytesPerToken}, slidingWindow: ${r.slidingWindow}` : '';
+  const file = (r.fileBytes > 0 ? `, fileBytes: ${r.fileBytes}` : '') + (r.contextLength ? `, contextLength: ${r.contextLength}` : '');
+  return `  ${JSON.stringify(id)}: { architecture: ${JSON.stringify(r.architecture)}, kvBytesPerToken: ${r.kvBytesPerToken}${swa}${file} },`;
+}
+
 async function main() {
   const registryPath = argValue('--lemonade-registry') ?? '/usr/share/lemonade-server/resources/server_models.json';
-  const registry = JSON.parse(readFileSync(registryPath, 'utf8')) as Record<string, { checkpoint?: string; recipe?: string; mmproj?: string }>;
-  const rows = CURATED_MODELS.filter((m) => m.modality === 'llm' && (m.backend === 'lemonade' || m.backend === 'ollama'));
+  const only = argValue('--only')
+    ?.split(',')
+    .map((id) => id.trim())
+    .filter(Boolean);
+  if (process.argv.includes('--only') && !only?.length) throw new Error('usage: --only <id,id,...> (comma-separated catalog row ids)');
+  let rows = CURATED_MODELS.filter((m) => m.modality === 'llm' && (m.backend === 'lemonade' || m.backend === 'ollama'));
+  if (only) {
+    const known = new Set(rows.map((m) => m.id));
+    const unknown = only.filter((id) => !known.has(id));
+    if (unknown.length) throw new Error(`--only names no Ollama or Lemonade LLM row: ${unknown.join(', ')}`);
+    rows = rows.filter((m) => only.includes(m.id));
+  }
+  // Only a Lemonade row needs the registry, so Ollama rows can be added on a machine without a Lemonade install.
+  const registry = rows.some((m) => m.backend === 'lemonade')
+    ? (JSON.parse(readFileSync(registryPath, 'utf8')) as Record<string, { checkpoint?: string; recipe?: string; mmproj?: string }>)
+    : {};
 
   const results: Record<string, KvGeometry & { fileBytes: number }> = {};
   const failures: string[] = [];
@@ -135,19 +186,30 @@ async function main() {
   };
   await Promise.all(Array.from({ length: 4 }, worker));
 
-  const ids = Object.keys(results).sort();
-  const body = ids
-    .map((id) => {
-      const r = results[id] as KvGeometry & { fileBytes: number };
-      const swa = r.slidingLayers ? `, slidingKvBytesPerToken: ${r.slidingKvBytesPerToken}, slidingWindow: ${r.slidingWindow}` : '';
-      const file = (r.fileBytes > 0 ? `, fileBytes: ${r.fileBytes}` : '') + (r.contextLength ? `, contextLength: ${r.contextLength}` : '');
-      return `  ${JSON.stringify(id)}: { architecture: ${JSON.stringify(r.architecture)}, kvBytesPerToken: ${r.kvBytesPerToken}${swa}${file} },`;
-    })
-    .join('\n');
+  // Every entry as the file carries it. With `--only` the other entries are kept exactly as they are.
+  const lines = new Map<string, string>();
+  if (only) {
+    const raw = readFileSync(OUT, 'utf8');
+    if (raw.includes('\r')) throw new Error(`cannot merge into ${OUT}: it has CRLF line endings (convert them to LF, or run without --only)`);
+    const text = raw.split('\n');
+    const start = text.findIndex((line) => line.startsWith('export const GGUF_KV_GEOMETRY'));
+    const end = text.indexOf('};', start);
+    if (start < 0 || end < 0) throw new Error(`${OUT} has no GGUF_KV_GEOMETRY table to merge into`);
+    for (const line of text.slice(start + 1, end)) {
+      if (!line.trim()) continue;
+      const entry = line.match(/^ {2}("(?:[^"\\]|\\.)*"): \{.*\},$/);
+      // A line this reader cannot parse would vanish from the rewritten file, so stop before writing.
+      if (!entry?.[1]) throw new Error(`cannot merge into ${OUT}: this line is not a generated entry (run without --only to rebuild):\n${line}`);
+      lines.set(JSON.parse(entry[1]) as string, line);
+    }
+  }
+  for (const [id, r] of Object.entries(results)) lines.set(id, formatRow(id, r));
+  const ids = [...lines.keys()].sort();
+  const body = ids.map((id) => lines.get(id)).join('\n');
   writeFileSync(
     OUT,
     `/**
- * GENERATED by scripts/catalog/gen-kv-geometry.ts on ${new Date().toISOString().slice(0, 10)} — do not hand-edit; re-run it.
+ * GENERATED by scripts/catalog/gen-kv-geometry.ts (last run ${new Date().toLocaleDateString('en-CA')}) — do not hand-edit; re-run it.
  *
  * Each catalog text model's 16-bit KV-cache bytes per token of context, read from the GGUF header of
  * the file its engine serves: Lemonade's registry checkpoint on Hugging Face, or the Ollama registry's model layer.
