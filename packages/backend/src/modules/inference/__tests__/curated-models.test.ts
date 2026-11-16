@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { omlxModelKey } from '@/common/helpers/omlx-model-id';
 import { LEMONADE_REGISTRATIONS } from '../backends/lemonade.backend';
 import { CURATED_MODELS } from '../catalog/curated-models';
 import { GGUF_KV_GEOMETRY } from '../catalog/kv-geometry.generated';
@@ -308,6 +309,21 @@ describe('curated-models (TOON catalog)', () => {
       expect(m.backendModelId, `${m.id} tag`).toMatch(/^[\w.-]+\/[\w.-]+$/);
       expect(['mlx-4bit', 'mlx-8bit', 'mlx-2.4bit', 'mxfp4'], `${m.id} quantization`).toContain(m.runtime.quantization);
     }
+  });
+
+  // The Hub finds an oMLX row among oMLX's listing by the model's own name (`omlxModelsMatch`): oMLX lists a model by its
+  // directory or as `<org>--<name>`, never as the repo id. That holds while a repo id has no `--` (Hugging Face bars it,
+  // and a cache id splits on the first one) and no two rows share a model name under different organizations.
+  it('keeps every oMLX row apart by the model name oMLX lists it under', () => {
+    const rows = llms.filter((m) => m.backend === 'omlx');
+    const owners = new Map<string, string>();
+    for (const m of rows) {
+      expect(m.backendModelId, `${m.id} repo id`).not.toContain('--');
+      const name = omlxModelKey(m.backendModelId);
+      expect(owners.get(name), `${m.id} shares its model name with ${owners.get(name)}`).toBeUndefined();
+      owners.set(name, m.id);
+    }
+    expect(owners.size).toBe(rows.length);
   });
 
   it('gates oMLX rows to Apple Silicon only, never an NVIDIA VRAM budget', () => {

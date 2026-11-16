@@ -1047,6 +1047,38 @@ describe('HubPoolPeerService', () => {
       expect(capabilities.backends).toEqual([{ type: 'lemonade', healthy: true, modelsLoaded: ['user.nomic-embed-text-v1.5-GGUF'] }]);
     });
 
+    // oMLX does not list the catalog's `mlx-community/<name>` that a tracked row carries (0.7.3.dev1, measured): a
+    // model directory is listed by its own name, the Hugging Face cache by `<org>--<name>`.
+    it("treats oMLX's own spellings as the same model when it advertises a tracked one", async () => {
+      inferenceRouter.getStatus.mockResolvedValue({
+        ...ownStatus,
+        backends: [{ ...ownStatus.backends[0], type: 'omlx' }],
+      });
+      const row = {
+        object: 'model',
+        created: 0,
+        owned_by: 'local:omlx',
+        state: 'loaded',
+        backend: 'omlx',
+        modality: ['text'],
+        local: true,
+      } as const;
+      inferenceRouter.listModels.mockResolvedValue([
+        { ...row, id: 'qwen3-8b-mlx', backend_model_id: 'mlx-community/Qwen3-8B-4bit' },
+        { ...row, id: 'Qwen3-8B-4bit' },
+        { ...row, id: 'llama3-2-3b-mlx', backend_model_id: 'mlx-community/Llama-3.2-3B-Instruct-4bit' },
+        { ...row, id: 'mlx-community--Llama-3.2-3B-Instruct-4bit' },
+        // oMLX does not list this one, so the catalog id is all there is to advertise.
+        { ...row, id: 'gemma4-e4b-mlx', backend_model_id: 'mlx-community/gemma-4-e4b-it-4bit', state: 'pulled' },
+      ]);
+
+      const capabilities = await service.getOwnCapabilities();
+
+      expect(capabilities.backends).toEqual([
+        { type: 'omlx', healthy: true, modelsLoaded: ['Qwen3-8B-4bit', 'mlx-community--Llama-3.2-3B-Instruct-4bit', 'gemma4-e4b-mlx'] },
+      ]);
+    });
+
     it('keeps a model when both of its spellings are tracked rows', async () => {
       const row = {
         object: 'model',

@@ -10,7 +10,7 @@ import { CloudFallbackService, isCloudFallbackAllowed } from './cloud-fallback.s
 import { OllamaBackend } from './backends/ollama.backend';
 import { InferenceEndpointService } from './inference-endpoint.service';
 import type { CuratedModel, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
-import { isCatalogModelInstalled, isServedModelForCatalog, trackedPullCounts } from './model-availability.util';
+import { handoutIdForCatalogModel, isCatalogModelInstalled, isServedModelForCatalog, trackedPullCounts } from './model-availability.util';
 import { appBearerFor } from './engine-credential-scope';
 import { cloudProviderManagedKeys } from './cloud-provider-env';
 import { appInferenceRequirements, checkModelRequirements, type AppInferenceRequirements } from './app-inference-requirements';
@@ -428,7 +428,10 @@ export class AppCredentialsService implements OnApplicationShutdown {
       );
       chatModel = localChat.model;
       namedEngineId = localChat.engineId ?? null;
-      chatModelId = namedEngineId ?? localChat.model?.backendModelId ?? null;
+      // The engine's own spelling of a catalog row it lists under another name: oMLX does not list the
+      // catalog's `mlx-community/<name>`, and answers it with a 404 when it serves from the HF cache.
+      // Only oMLX is named this way: every other engine is handed the catalog's id, as before.
+      chatModelId = namedEngineId ?? (localChat.model ? handoutIdForCatalogModel(localChat.model, endpointHealth.modelsLoaded) : null);
       // vLLM and oMLX are both host-managed servers with no Hub pull registry — an
       // operator can serve a model outside the catalog, so fall back to whatever it reports rather
       // than leaving chatModelId empty. A served model the catalog knows fails the app is skipped.
@@ -508,7 +511,11 @@ export class AppCredentialsService implements OnApplicationShutdown {
       if (servedContextLength && servedContextLength > 0) {
         env[keys.numCtx] = String(servedContextLength);
       }
-    } else if (provider !== 'cloud' && chatModel && chatModelId === chatModel.backendModelId) {
+    } else if (
+      provider !== 'cloud' &&
+      chatModel &&
+      (chatModelId === chatModel.backendModelId || chatModelId === handoutIdForCatalogModel(chatModel, endpointHealth.modelsLoaded))
+    ) {
       // Same measured-first sizing as InferenceEnvResolver; see `probeLocalSizing`. Only a
       // model this node serves can be measured, so a pool-served one keeps the heuristic.
       const askOllama = chatServedLocally && backendType === 'ollama';

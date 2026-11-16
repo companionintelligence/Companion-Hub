@@ -3,6 +3,7 @@ import axios from 'axios';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
+import { servedOmlxId } from '@/common/helpers/omlx-model-id';
 import { HardwareInspectorService } from '../hardware-inspector.service';
 import type { InferenceBackend } from './backend.interface';
 import { detectHubContainer, normalizeHostBackendUrl, resolveHostBackendProbeUrl } from './host-url.util';
@@ -132,6 +133,8 @@ export function isOmlxHealthBody(body: unknown): boolean {
 export class OmlxBackend implements InferenceBackend {
   readonly type = 'omlx' as const;
   private readonly api = new OpenAiCompatibleClient();
+  /** What the last health probe found oMLX listing (`/v1/models`), for {@link engineModelId}. */
+  private listed: { baseUrl: string; ids: readonly string[] } | null = null;
 
   constructor(
     private readonly logger: LoggerService,
@@ -221,7 +224,10 @@ export class OmlxBackend implements InferenceBackend {
           `is not oMLX's. Point Settings → AI or OMLX_URL at the oMLX server, or add any other OpenAI-compatible server as a decode endpoint.`,
       };
     }
-    return { running: true, healthy: true, modelsLoaded: openAiModelIds(body) };
+    const modelsLoaded = openAiModelIds(body);
+    // Only the configured server's listing: a Re-check of another URL must not replace it.
+    if (baseUrl === this.getBaseUrl()) this.listed = { baseUrl, ids: [...modelsLoaded] };
+    return { running: true, healthy: true, modelsLoaded };
   }
 
   /**
@@ -261,9 +267,26 @@ export class OmlxBackend implements InferenceBackend {
     this.logger.info(`[oMLX] Unload ${modelId} from the oMLX admin UI`);
   }
 
+  /**
+   * Whether oMLX lists `modelId`: the catalog's `mlx-community/<name>`, or any spelling oMLX gives that
+   * model (see {@link servedOmlxId}). oMLX lists the models it has discovered, loaded or not, and loads
+   * one on its first request, so "listed" is the most a probe can say, as it is for vLLM. An exact match
+   * found no catalog row, because oMLX does not list the catalog's spelling.
+   */
   async isModelLoaded(modelId: string): Promise<boolean> {
     const health = await this.healthCheck();
-    return health.modelsLoaded.includes(modelId);
+    return servedOmlxId(modelId, health.modelsLoaded) !== null;
+  }
+
+  /**
+   * The name oMLX lists `modelId` under, from the last health probe of the configured server, else
+   * `modelId` itself (before the first probe, or for a model oMLX does not list). A request must use it
+   * where oMLX serves the model from the Hugging Face cache (`mlx-community--<name>`):
+   * `mlx-community/<name>` is a 404 there, although both model directory layouts accept it.
+   */
+  engineModelId(modelId: string): string {
+    const ids = this.listed?.baseUrl === this.getBaseUrl() ? this.listed.ids : [];
+    return servedOmlxId(modelId, ids) ?? modelId;
   }
 
   getDockerImage(): string {

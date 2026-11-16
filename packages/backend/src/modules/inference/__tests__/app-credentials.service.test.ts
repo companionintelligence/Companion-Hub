@@ -729,6 +729,8 @@ describe('AppCredentialsService', () => {
     });
   });
 
+  // oMLX does not list the catalog's `mlx-community/<name>` (0.7.3.dev1, measured on /v1/models): a model directory is
+  // listed by its own name, the Hugging Face cache by `<org>--<name>`, the one name the cache answers to.
   describe('getCredentials — host-served oMLX', () => {
     it('hands the API key to direct sibling-app clients', async () => {
       const model = makeLlm('qwen-omlx', 'mlx-community/Qwen3-8B-4bit', 8000, 16000, 'omlx');
@@ -740,7 +742,7 @@ describe('AppCredentialsService', () => {
       });
       omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
       omlxBackend.getApiKey.mockReturnValue('managed-omlx-key');
-      omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [model.backendModelId] });
+      omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3-8B-4bit'] });
       modelRegistry.getRecommendedModelsForHardware.mockReturnValue([model]);
       modelRegistry.getCuratedModel.mockImplementation((id) => (id === model.id ? model : undefined));
       service.invalidateCache();
@@ -762,7 +764,7 @@ describe('AppCredentialsService', () => {
       configurationService.getHubPoolPreferences.mockReturnValue({ poolRouteAppsAlways: true } as never);
       omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
       omlxBackend.getApiKey.mockReturnValue('managed-omlx-key');
-      omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [model.backendModelId] });
+      omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3-8B-4bit'] });
       modelRegistry.getRecommendedModelsForHardware.mockReturnValue([model]);
       modelRegistry.getCuratedModel.mockImplementation((id) => (id === model.id ? model : undefined));
       service.invalidateCache();
@@ -771,6 +773,62 @@ describe('AppCredentialsService', () => {
 
       expect(config.routedThroughPool).toBe(true);
       expect(config.env.HERMES_OPENAI_API_KEY).toBe('omlx');
+    });
+
+    it.each([
+      ['a model directory', 'Qwen3-8B-4bit'],
+      ['the Hugging Face cache', 'mlx-community--Qwen3-8B-4bit'],
+    ])("hands the operator's model out by the name oMLX lists it under, from %s", async (_layout, listed) => {
+      const preferred = makeLlm('qwen-omlx', 'mlx-community/Qwen3-8B-4bit', 8000, 16000, 'omlx');
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'omlx',
+        preferredModel: 'qwen-omlx',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+      // Listed first, so a handout that did not recognise the model would fall back to it.
+      omlxBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16', listed],
+      });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([preferred]);
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === preferred.id ? preferred : undefined));
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.chatModelId).toBe(listed);
+      expect(config.chatModelReady).toBe(true);
+      // The window is sized from the catalog row, which the handout still recognises under the listed name.
+      expect(config.env.CI_LLM_NUM_CTX).toMatch(/^\d+$/);
+    });
+
+    it('does not credit a catalog model oMLX does not list, and falls back to the first one it does', async () => {
+      const preferred = makeLlm('qwen-omlx', 'mlx-community/Qwen3-8B-4bit', 8000, 16000, 'omlx');
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'omlx',
+        preferredModel: 'qwen-omlx',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+      // What the fallback hands out is the first one listed. A lookalike behind it, another build or another
+      // publisher's of the same name, would come out instead if the handout took it for the preferred model.
+      omlxBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16', 'Qwen3-8B-8bit', 'lmstudio-community--Qwen3-8B-4bit'],
+      });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([preferred]);
+      modelRegistry.getModelsForHardware.mockReturnValue([preferred]);
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === preferred.id ? preferred : undefined));
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.chatModelId).toBe('LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16');
     });
   });
 

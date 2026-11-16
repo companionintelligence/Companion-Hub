@@ -15,6 +15,7 @@ import type {
 } from '@ci-hub/common/types';
 import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import { inventoryListsModel, sameModelId } from '@/common/helpers/hub-pool';
+import { omlxModelsMatch, servedOmlxId } from '@/common/helpers/omlx-model-id';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { appInferenceRequirements, checkModelRequirements } from './app-inference-requirements';
 import { handoutContextLength, visionReserveMbFor } from './app-model-handout';
@@ -609,7 +610,9 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     for (const [backendType, , health] of await probe()) {
       if (!health.running || !health.healthy) continue;
       if (curated && curated.backend !== backendType) continue;
-      if (health.modelsLoaded.includes(engineId)) return engineId;
+      // As oMLX lists it: not the catalog's `mlx-community/<name>`, which it does not list.
+      const listed = backendType === 'omlx' ? servedOmlxId(engineId, health.modelsLoaded) : engineId;
+      if (listed && health.modelsLoaded.includes(listed)) return listed;
     }
     return undefined;
   }
@@ -1012,9 +1015,13 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     options: { numCtx?: number | null; signal?: AbortSignal } = {},
   ): Promise<{ backend: InferenceBackendType; backendModelId: string } | null> {
     // Folded like every other engine-id comparison on this path: an app may send `nomic-embed-text`
-    // or `nomic-embed-text:latest` for the one model.
+    // or `nomic-embed-text:latest` for the one model, and an app handed oMLX's name for a model
+    // (`Qwen3-8B-4bit`) sends that, where the registry holds the catalog's `mlx-community/Qwen3-8B-4bit`.
     const tracked =
-      this.modelRegistry.getTrackedModel(model) ?? this.modelRegistry.getTrackedModels().find((entry) => sameModelId(entry.backendModelId, model));
+      this.modelRegistry.getTrackedModel(model) ??
+      this.modelRegistry
+        .getTrackedModels()
+        .find((entry) => sameModelId(entry.backendModelId, model) || (entry.backend === 'omlx' && omlxModelsMatch(entry.backendModelId, model)));
     if (!tracked) {
       return null;
     }
@@ -1951,7 +1958,12 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     const backend = this.backends.get(backendType);
     const url = `${backend.getBaseUrl()}${endpointPath}`;
 
-    const requestBody: Record<string, unknown> = { ...body, model: backendModelId };
+    // oMLX only: it answers the catalog's `mlx-community/<name>` with a 404 when it serves the model
+    // from the Hugging Face cache, where the name is `mlx-community--<name>` (or, with its
+    // `model_fallback` on, from its default model). The other engines keep the id the registry holds;
+    // Lemonade's own spelling is applied where the Hub registers a model.
+    const requestModel = backendType === 'omlx' ? (backend.engineModelId?.(backendModelId) ?? backendModelId) : backendModelId;
+    const requestBody: Record<string, unknown> = { ...body, model: requestModel };
 
     // Find catalog ID for recording usage
     const allTracked = this.modelRegistry.getTrackedModels();

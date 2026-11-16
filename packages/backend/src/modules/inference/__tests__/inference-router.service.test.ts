@@ -399,6 +399,45 @@ describe('InferenceRouterService', () => {
       expect(await service.resolveAutoModel()).toBe('pinned-llm');
       expect(ollamaBackend.healthCheck).not.toHaveBeenCalled();
     });
+
+    // oMLX does not list the catalog's `mlx-community/<name>` (0.7.3.dev1, measured on /v1/models): a model directory is
+    // listed by its own name, the Hugging Face cache by `<org>--<name>`.
+    describe('on oMLX', () => {
+      const curatedQwen = {
+        catalogId: 'qwen3-8b-mlx',
+        backend: 'omlx',
+        backendModelId: 'mlx-community/Qwen3-8B-4bit',
+        modality: 'llm',
+      } as unknown as CuratedModel;
+
+      beforeEach(() => {
+        configuration.getInferencePreferences.mockReturnValue({ ...NO_PREFERENCES, preferredBackend: 'omlx', preferredModel: 'qwen3-8b-mlx' });
+        modelRegistry.getCuratedModel.mockImplementation((id) => (id === 'qwen3-8b-mlx' ? curatedQwen : undefined));
+      });
+
+      it.each([
+        ['a model directory', 'Qwen3-8B-4bit'],
+        ['the Hugging Face cache', 'mlx-community--Qwen3-8B-4bit'],
+      ])('returns the preferred model by the name oMLX lists it under, from %s', async (_layout, listed) => {
+        omlxBackend.healthCheck.mockResolvedValue({
+          running: true,
+          healthy: true,
+          modelsLoaded: ['LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16', listed],
+        });
+
+        expect(await service.resolveAutoModel()).toBe(listed);
+      });
+
+      it("falls through to the first chat model when oMLX lists no spelling of the preferred one, however alike another build or another publisher's is", async () => {
+        omlxBackend.healthCheck.mockResolvedValue({
+          running: true,
+          healthy: true,
+          modelsLoaded: ['LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16', 'Qwen3-8B-8bit', 'lmstudio-community--Qwen3-8B-4bit'],
+        });
+
+        expect(await service.resolveAutoModel()).toBe('LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16');
+      });
+    });
   });
 
   // ─── prepareTrackedModel ───────────────────────────────
@@ -504,6 +543,37 @@ describe('InferenceRouterService', () => {
       await expect(service.prepareTrackedModel('nomic-embed-text:latest')).resolves.toEqual({
         backend: 'ollama',
         backendModelId: 'nomic-embed-text',
+      });
+    });
+
+    // An app handed oMLX's name for a model sends that (`Qwen3-8B-4bit`, or `mlx-community--Qwen3-8B-4bit` from the
+    // Hugging Face cache), where the registry holds the catalog's `mlx-community/Qwen3-8B-4bit`.
+    describe('a tracked oMLX model, by the name oMLX lists it under', () => {
+      const omlxTracked = {
+        catalogId: 'qwen3-8b-mlx',
+        backendModelId: 'mlx-community/Qwen3-8B-4bit',
+        backend: 'omlx',
+        state: 'loaded',
+      } as TrackedModel;
+
+      beforeEach(() => {
+        modelRegistry.getTrackedModel.mockReturnValue(undefined);
+        modelRegistry.getTrackedModels.mockReturnValue([omlxTracked]);
+      });
+
+      it.each(['Qwen3-8B-4bit', 'mlx-community--Qwen3-8B-4bit', 'qwen3-8b-4bit'])('finds it as %s', async (sent) => {
+        await expect(service.prepareTrackedModel(sent)).resolves.toEqual({ backend: 'omlx', backendModelId: 'mlx-community/Qwen3-8B-4bit' });
+      });
+
+      it("does not find it as another build of the name, or another publisher's", async () => {
+        await expect(service.prepareTrackedModel('Qwen3-8B-8bit')).resolves.toBeNull();
+        await expect(service.prepareTrackedModel('lmstudio-community--Qwen3-8B-4bit')).resolves.toBeNull();
+      });
+
+      it("folds nothing for another engine's row", async () => {
+        modelRegistry.getTrackedModels.mockReturnValue([{ ...omlxTracked, backend: 'vllm' } as TrackedModel]);
+
+        await expect(service.prepareTrackedModel('Qwen3-8B-4bit')).resolves.toBeNull();
       });
     });
   });
@@ -825,6 +895,46 @@ describe('InferenceRouterService', () => {
 
       await expect(service.loadTrackedModel(lemonadeModel.id, { origin: 'request', numCtx: null })).resolves.toEqual({ loaded: true });
       expect(modelPuller.loadModel).toHaveBeenCalled();
+    });
+
+    // oMLX does not list the catalog's `mlx-community/<name>` (0.7.3.dev1, measured on /v1/models): a model directory is
+    // listed by its own name, the Hugging Face cache by `<org>--<name>`. Matched exactly, a model oMLX served read as
+    // not downloaded here, and a Hub load of it was refused.
+    describe('an oMLX target', () => {
+      const omlxModel = {
+        id: 'qwen3-8b-mlx',
+        backend: 'omlx',
+        backendModelId: 'mlx-community/Qwen3-8B-4bit',
+        runtime: { memoryFootprintMb: 4_600, contextWindow: 40_960 },
+      } as CuratedModel;
+
+      beforeEach(() => {
+        modelRegistry.getTrackedModel.mockReturnValue(undefined);
+        modelRegistry.getCuratedModel.mockImplementation((id) => (id === omlxModel.id ? omlxModel : undefined));
+        omlxBackend.isModelLoaded.mockResolvedValue(false);
+        memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 4_600 });
+      });
+
+      it.each([
+        ['a model directory', 'Qwen3-8B-4bit'],
+        ['the Hugging Face cache', 'mlx-community--Qwen3-8B-4bit'],
+      ])('loads an untracked model oMLX lists from %s', async (_layout, listed) => {
+        omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [listed] });
+
+        await expect(service.loadTrackedModel(omlxModel.id, { origin: 'request', numCtx: null })).resolves.toEqual({ loaded: true });
+        expect(modelPuller.loadModel).toHaveBeenCalled();
+      });
+
+      it('refuses a model oMLX does not list before planning or unloading anything', async () => {
+        omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3-8B-8bit'] });
+
+        await expect(service.loadTrackedModel(omlxModel.id, { origin: 'request', numCtx: null })).resolves.toEqual({
+          loaded: false,
+          reason: `${omlxModel.id} is not downloaded on this node; pull it first`,
+        });
+        expect(memoryManager.planEviction).not.toHaveBeenCalled();
+        expect(modelPuller.loadModel).not.toHaveBeenCalled();
+      });
     });
 
     it("answers a failed load as a refusal with the engine's reason, not a throw", async () => {
@@ -1162,6 +1272,67 @@ describe('InferenceRouterService', () => {
       expect(modelRegistry.trackModel).toHaveBeenCalledWith(lemonadeModel.id, 'loaded');
       expect(memoryManager.canFitModel).not.toHaveBeenCalled();
       expect(modelPuller.loadModel).not.toHaveBeenCalled();
+    });
+  });
+
+  // oMLX answers the catalog's `mlx-community/<name>` with a 404 when it serves the model from the Hugging Face cache,
+  // where `mlx-community--<name>` is the only name (0.7.3.dev1, measured). Both model directory layouts accept it.
+  describe('naming a tracked model to oMLX', () => {
+    const tracked = { catalogId: 'qwen3-8b-mlx', backendModelId: 'mlx-community/Qwen3-8B-4bit', backend: 'omlx', state: 'loaded' } as TrackedModel;
+    const OMLX_CHAT_URL = 'http://host.docker.internal:8000/v1/chat/completions';
+
+    beforeEach(() => {
+      modelRegistry.getTrackedModel.mockReturnValue(tracked);
+      modelRegistry.getTrackedModels.mockReturnValue([tracked]);
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { id: 'chatcmpl-1', choices: [] }, headers: {} });
+    });
+
+    it('sends the name oMLX lists the model under', async () => {
+      omlxBackend.engineModelId.mockReturnValue('mlx-community--Qwen3-8B-4bit');
+
+      const res = await service.routeChatCompletion({ model: 'qwen3-8b-mlx', messages: [] });
+
+      expect(res.backend).toBe('omlx');
+      expect(axios.post).toHaveBeenCalledWith(OMLX_CHAT_URL, expect.objectContaining({ model: 'mlx-community--Qwen3-8B-4bit' }), expect.anything());
+      expect(omlxBackend.engineModelId).toHaveBeenCalledWith('mlx-community/Qwen3-8B-4bit');
+    });
+
+    it('sends the catalog id while oMLX has not been seen listing the model', async () => {
+      omlxBackend.engineModelId.mockImplementation((id) => id);
+
+      await service.routeChatCompletion({ model: 'qwen3-8b-mlx', messages: [] });
+
+      expect(axios.post).toHaveBeenCalledWith(OMLX_CHAT_URL, expect.objectContaining({ model: 'mlx-community/Qwen3-8B-4bit' }), expect.anything());
+    });
+
+    it('still records the use against the tracked model, by the catalog id the registry holds', async () => {
+      omlxBackend.engineModelId.mockReturnValue('mlx-community--Qwen3-8B-4bit');
+
+      await service.routeChatCompletion({ model: 'qwen3-8b-mlx', messages: [] });
+
+      expect(modelRegistry.recordUsage).toHaveBeenCalledWith('qwen3-8b-mlx');
+    });
+
+    it("sends another engine's model as the registry holds it, though that engine could name it otherwise", async () => {
+      const lemonadeTracked = {
+        catalogId: 'qwen3-8-27b-lemonade',
+        backendModelId: 'Qwen3.8-27B-GGUF',
+        backend: 'lemonade',
+        state: 'loaded',
+      } as TrackedModel;
+      modelRegistry.getTrackedModel.mockReturnValue(lemonadeTracked);
+      modelRegistry.getTrackedModels.mockReturnValue([lemonadeTracked]);
+      lemonadeBackend.engineModelId.mockReturnValue('user.Qwen3.8-27B-GGUF');
+
+      const res = await service.routeChatCompletion({ model: 'qwen3-8-27b-lemonade', messages: [] });
+
+      expect(res.backend).toBe('lemonade');
+      expect(axios.post).toHaveBeenCalledWith(
+        'http://ci-hub-lemonade:13305/v1/chat/completions',
+        expect.objectContaining({ model: 'Qwen3.8-27B-GGUF' }),
+        expect.anything(),
+      );
+      expect(lemonadeBackend.engineModelId).not.toHaveBeenCalled();
     });
   });
 

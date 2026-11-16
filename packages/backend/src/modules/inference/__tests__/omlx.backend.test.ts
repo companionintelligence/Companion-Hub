@@ -231,6 +231,101 @@ describe('OmlxBackend', () => {
     });
   });
 
+  // What oMLX 0.7.3.dev1 listed on GET /v1/models for one model laid out each way, measured on a live server: the
+  // directory's own name, or `<org>--<name>` for the Hugging Face cache. Never the catalog's `mlx-community/<name>`.
+  describe('finding a catalog model among what oMLX lists', () => {
+    const CATALOG_ID = 'mlx-community/Qwen3-8B-4bit';
+    const FROM_MODEL_DIR = 'Qwen3-8B-4bit';
+    const FROM_HF_CACHE = 'mlx-community--Qwen3-8B-4bit';
+    const listing = (...ids: string[]) => ({
+      object: 'list',
+      data: ids.map((id) => ({ id, object: 'model', owned_by: 'omlx', max_model_len: 40960 })),
+    });
+    const serving = (...ids: string[]) => serve({ '/v1/models': { data: listing(...ids) }, '/health': { data: OMLX_HEALTH } });
+
+    describe('isModelLoaded', () => {
+      it.each([
+        ['a model directory', FROM_MODEL_DIR],
+        ['the Hugging Face cache', FROM_HF_CACHE],
+        ['a model directory spelled in another case', 'qwen3-8b-4bit'],
+      ])('finds the catalog id when oMLX lists the model from %s', async (_layout, listed) => {
+        serving('LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16', listed);
+
+        await expect(backend.isModelLoaded(CATALOG_ID)).resolves.toBe(true);
+      });
+
+      it('finds the id oMLX itself lists', async () => {
+        serving(FROM_HF_CACHE);
+
+        await expect(backend.isModelLoaded(FROM_HF_CACHE)).resolves.toBe(true);
+      });
+
+      it("does not find a model oMLX does not list, nor another build of it, nor another publisher's of the same name", async () => {
+        serving('Qwen3-8B-8bit', 'mlx-community--Llama-3.2-3B-Instruct-4bit', 'lmstudio-community--Qwen3-8B-4bit');
+
+        await expect(backend.isModelLoaded(CATALOG_ID)).resolves.toBe(false);
+      });
+
+      it('finds nothing when oMLX is not running', async () => {
+        serve({});
+
+        await expect(backend.isModelLoaded(CATALOG_ID)).resolves.toBe(false);
+      });
+    });
+
+    describe('engineModelId', () => {
+      it('is the catalog id until a probe has read what oMLX lists', () => {
+        expect(backend.engineModelId(CATALOG_ID)).toBe(CATALOG_ID);
+      });
+
+      it.each([
+        ['a model directory', FROM_MODEL_DIR],
+        ['the Hugging Face cache', FROM_HF_CACHE],
+      ])('is the name oMLX lists the model under when it serves it from %s', async (_layout, listed) => {
+        serving(listed);
+        await backend.healthCheck();
+
+        expect(backend.engineModelId(CATALOG_ID)).toBe(listed);
+        expect(backend.engineModelId(listed)).toBe(listed);
+      });
+
+      it('keeps the catalog id for a model oMLX does not list', async () => {
+        serving(FROM_MODEL_DIR);
+        await backend.healthCheck();
+
+        expect(backend.engineModelId('mlx-community/Llama-3.2-3B-Instruct-4bit')).toBe('mlx-community/Llama-3.2-3B-Instruct-4bit');
+      });
+
+      it("does not take another server's listing for this one's", async () => {
+        serving(FROM_HF_CACHE);
+        await backend.healthCheck('http://other-mac.lan:8000');
+
+        expect(backend.engineModelId(CATALOG_ID)).toBe(CATALOG_ID);
+      });
+
+      // Settings → AI and onboarding probe a URL the operator is still typing. That Re-check must not cost the
+      // configured server's listing: a request after it would name the model as the catalog does, which the
+      // Hugging Face cache answers with a 404.
+      it("keeps the configured server's listing through a Re-check of another URL", async () => {
+        serving(FROM_HF_CACHE);
+        await backend.healthCheck();
+        serve({ '/v1/models': { data: listing('Qwen3-8B-8bit') }, '/health': { data: OMLX_HEALTH } });
+        await backend.healthCheck('http://other-mac.lan:8000');
+
+        expect(backend.engineModelId(CATALOG_ID)).toBe(FROM_HF_CACHE);
+      });
+
+      it('follows the configured server when it lists the model under another name later', async () => {
+        serving(FROM_MODEL_DIR);
+        await backend.healthCheck();
+        serving(FROM_HF_CACHE);
+        await backend.healthCheck();
+
+        expect(backend.engineModelId(CATALOG_ID)).toBe(FROM_HF_CACHE);
+      });
+    });
+  });
+
   describe('isOmlxHealthBody', () => {
     it('accepts oMLX /health bodies, ready or loading, with or without a model pool', () => {
       expect(isOmlxHealthBody(OMLX_HEALTH)).toBe(true);
