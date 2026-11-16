@@ -599,8 +599,8 @@ const TrustProtocolsSection = () => {
       active: keriOobiEnabled,
       identifierType: 'Frozen pre-spec prefix',
       keyRotation: 'Experimental (frozen KERI lib)',
-      offlineVerification: 'Partial (non-CESR JSON)',
-      summary: 'Isolated test surface; fails closed with 404 unless explicitly enabled.',
+      offlineVerification: 'None (nothing to verify)',
+      summary: 'Publishes nothing: 404 when off, 503 when on (no persisted key event log).',
     },
     {
       id: 'cloud-fallback',
@@ -610,16 +610,17 @@ const TrustProtocolsSection = () => {
       identifierType: 'Operator credential policy',
       keyRotation: 'Per-provider API key',
       offlineVerification: 'Local-only when disabled',
-      summary: 'Blocks automatic failover of local /v1 prompts to external cloud APIs unless opted in.',
+      summary:
+        "When active, local /v1 prompts can fail over to a cloud provider enabled in Settings → AI, and AI apps are given those providers' keys.",
     },
     {
       id: 'forward-auth',
-      name: 'Forward-Auth EdDSA',
+      name: 'Forward-Auth (HMAC-SHA256)',
       envFlag: 'Always On',
       active: true,
       identifierType: 'urn:ci-hub:<directoryId>',
-      keyRotation: 'Hub signing keypair',
-      offlineVerification: 'Yes (JWKS + Ed25519)',
+      keyRotation: "Key in each app's app.env",
+      offlineVerification: 'Yes for apps with a key (no network)',
       summary: 'Production reverse-proxy SSO assertions for installed Companion apps.',
     },
   ];

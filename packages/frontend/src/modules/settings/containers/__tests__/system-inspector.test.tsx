@@ -84,4 +84,24 @@ describe('SystemInspectorContainer Trust & Protocol Boundaries', () => {
     expect(screen.getByTestId('trust-protocol-row-keri-oobi')).toHaveTextContent('Active');
     expect(screen.getByTestId('trust-protocol-row-cloud-fallback')).toHaveTextContent('Active');
   });
+
+  it('describes forward auth as HMAC-signed and the KERI OOBI routes as publishing nothing', () => {
+    mockUseOptionalUserContext.mockReturnValue({
+      didAuthEnabled: false,
+      keriOobiEnabled: false,
+      allowCloudFallback: false,
+    });
+
+    render(<SystemInspectorContainer />);
+
+    const forwardAuth = screen.getByTestId('trust-protocol-row-forward-auth');
+    expect(forwardAuth).toHaveTextContent('HMAC');
+    expect(forwardAuth).not.toHaveTextContent('EdDSA');
+    expect(forwardAuth).not.toHaveTextContent('Ed25519');
+    expect(forwardAuth).not.toHaveTextContent('JWKS');
+
+    const keriOobi = screen.getByTestId('trust-protocol-row-keri-oobi');
+    expect(keriOobi).toHaveTextContent('503');
+    expect(keriOobi).not.toHaveTextContent('Partial');
+  });
 });
