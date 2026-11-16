@@ -18,12 +18,12 @@ describe('curated-models (TOON catalog)', () => {
   const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
 
-  it('decodes the full catalog (109 Ollama LLMs + 41 Lemonade LLMs + 8 vLLM LLMs + 64 oMLX LLMs + voice + embeddings) with unique ids', () => {
-    expect(llms.filter((m) => m.backend === 'ollama').length).toBe(109);
+  it('decodes the full catalog (125 Ollama LLMs + 41 Lemonade LLMs + 13 vLLM LLMs + 76 oMLX LLMs + voice + embeddings) with unique ids', () => {
+    expect(llms.filter((m) => m.backend === 'ollama').length).toBe(125);
     expect(llms.filter((m) => m.backend === 'lemonade').length).toBe(41);
-    expect(llms.filter((m) => m.backend === 'vllm').length).toBe(8);
-    expect(llms.filter((m) => m.backend === 'omlx').length).toBe(64);
-    expect(llms.length).toBe(222);
+    expect(llms.filter((m) => m.backend === 'vllm').length).toBe(13);
+    expect(llms.filter((m) => m.backend === 'omlx').length).toBe(76);
+    expect(llms.length).toBe(255);
     // 4 Ollama embeddings + 2 Lemonade embeddings (v1.5, recommended; v1, kept for existing indexes).
     expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(6);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);
@@ -60,6 +60,167 @@ describe('curated-models (TOON catalog)', () => {
     ] as const) {
       expect(byId.get(id)?.requirements.diskMb, id).toBe(fileMb(id));
       expect(Math.abs((fileMb(id) ?? 0) / (gb * 1024) - 1), id).toBeLessThan(0.1);
+    }
+  });
+
+  // 2026-11-15 refresh (see the note above CATALOG_TOON). Each row's tag, size, and architecture were read
+  // from registry.ollama.ai manifests, config blobs, and ranged GGUF headers (or, for `hf.co/` rows, Hugging
+  // Face's Ollama manifest and the GGUF in its file tree), and every row was re-derived by a second pass;
+  // nothing was pulled or loaded.
+  it('includes the 2026-11-15 rows with accurate tags, windows, and capabilities', () => {
+    const expected = [
+      // id, tag, params, context window (the GGUF's context_length caps it), creator, reasoning, vision, tools, gb
+      ['ripple-preview-65b', 'ripple-preview:65b', 65, 1_000_000, 'Ricursive', true, false, true, 38.8],
+      ['nemotron-3-5-super-120b', 'nemotron-3.5-super:120b', 120, 1_000_000, 'NVIDIA', true, true, true, 90.2],
+      ['granite4-2-3b', 'granite4.2:3b', 3, 128_000, 'IBM', true, false, true, 2.2],
+      ['granite4-2-8b', 'granite4.2:8b', 8, 128_000, 'IBM', true, false, true, 5.3],
+      ['granite4-2-30b', 'granite4.2:30b', 30, 128_000, 'IBM', true, false, true, 17.7],
+      ['lfm3-vl-2b', 'lfm3-vl:2b', 1.92, 128_000, 'Liquid AI', true, true, true, 1.5],
+      ['lfm2-5-24b', 'lfm2.5:24b', 24, 128_000, 'Liquid AI', true, false, true, 14.5],
+      ['ornith-1-5-122b', 'ornith-1.5:122b', 122, 256_000, 'Deep Reinforce', true, true, true, 76.8],
+      ['nemotron-cascade-2-30b', 'nemotron-cascade-2:30b', 30, 256_000, 'NVIDIA', true, false, true, 24.3],
+      ['mistral-medium-3-5-128b', 'mistral-medium-3.5:128b', 128, 256_000, 'Mistral', true, true, true, 80.2],
+      // No bare default tag exists for this family, so the q4_K_M GGUF is named explicitly.
+      ['qwen3-8-flash-next-125b', 'qwen3.8-flash-next:125b-a6b-q4_K_M', 125, 256_000, 'Alibaba', true, true, true, 120.1],
+      // Community re-host on Ollama's registry: one merged UD-Q4_K_M blob (Mistral Small 4 has no library page).
+      ['mistral-small-4-119b', 'frob/mistral-small-4:119b', 119, 256_000, 'Mistral', true, true, true, 74.6],
+      // Single-file Hugging Face GGUFs; Arete's size includes the vision projector that its pull also fetches.
+      ['nanbeige4-3-33b', 'hf.co/bartowski/Nanbeige_Nanbeige4.3-33B-GGUF:Q4_K_M', 33, 512_000, 'Nanbeige', true, false, true, 20.8],
+      ['arete-27b', 'hf.co/bartowski/NousResearch_Arete-27B-GGUF:Q4_K_M', 27, 262_000, 'Nous Research', true, true, true, 18.1],
+      // The vendor's own Ollama namespace; the library page shows a vision badge only.
+      ['minicpm-v4-7-35b-a3b', 'openbmb/minicpm-v4.7:35b-a3b', 35, 256_000, 'OpenBMB', false, true, false, 22.3],
+      ['minicpm-v4-7-1b', 'openbmb/minicpm-v4.7:1b', 1, 256_000, 'OpenBMB', false, true, false, 1.8],
+    ] as const;
+
+    for (const [id, tag, params, contextWindow, creator, reasoning, vision, tools, gb] of expected) {
+      const model = byId.get(id);
+      expect(model, id).toBeDefined();
+      expect(model).toMatchObject({
+        backend: 'ollama',
+        backendModelId: tag,
+        parameterScale: params,
+        runtime: { contextWindow, reasoning, quantization: 'q4_K_M' },
+        metadata: { creator, capabilities: { reasoning, vision, tools, audio: false } },
+      });
+      // The size comes from the registry's file (kv-geometry.generated.ts). `gb` above restates the figure on the row's TOON line
+      // (decimal GB, one decimal), which the runtime uses only for a row with no file entry; this test cannot read the TOON,
+      // so a typo there is not caught.
+      expect(model?.requirements.diskMb, id).toBe(fileMb(id));
+      expect(Math.abs((GGUF_KV_GEOMETRY[id]?.fileBytes ?? 0) / 1e9 - gb), id).toBeLessThan(0.05);
+      // New rows carry no Artificial Analysis figures: its index moved to v5.0.1 and this column is on v4.3.
+      expect(model?.metadata?.intelligenceIndex, id).toBeUndefined();
+    }
+
+    // Mixture-of-experts rows state their active size (vendor figure, or the GGUF's expert counts).
+    for (const [id, active] of [
+      ['nemotron-3-5-super-120b', 12],
+      ['lfm2-5-24b', 2.45],
+      ['ornith-1-5-122b', 10],
+      ['ornith-1-5-397b', 17],
+      ['nemotron-cascade-2-30b', 3],
+      ['qwen3-8-flash-next-125b', 6],
+      ['mistral-small-4-119b', 6.5],
+      ['minicpm-v4-7-35b-a3b', 3],
+    ] as const) {
+      expect(byId.get(id)?.activeParameterScale, id).toBe(active);
+    }
+    // Dense rows keep their full parameter count.
+    for (const id of ['ripple-preview-65b', 'granite4-2-30b', 'mistral-medium-3-5-128b', 'arete-27b']) {
+      expect(byId.get(id)?.activeParameterScale, id).toBe(byId.get(id)?.parameterScale);
+    }
+  });
+
+  // The ornith-1.5 library page showed only a vision badge on 2026-08-29, so those flags were left unset; it now
+  // shows vision + tools + thinking, as the vendor cards say, and the 122B row was added with all three.
+  it('flags every Ornith 1.5 row as a reasoning, tool-calling, vision model, and the 35B, 122B, and 397B as MoE', () => {
+    for (const id of ['ornith-1-5-9b', 'ornith-1-5-35b', 'ornith-1-5-122b', 'ornith-1-5-397b']) {
+      expect(byId.get(id)?.metadata?.capabilities, id).toEqual({ reasoning: true, vision: true, tools: true, audio: false });
+    }
+    expect(byId.get('ornith-1-5-35b')?.activeParameterScale).toBe(3);
+    expect(byId.get('ornith-1-5-122b')?.activeParameterScale).toBe(10);
+    expect(byId.get('ornith-1-5-397b')?.activeParameterScale).toBe(17);
+  });
+
+  // The 2026-08-29 note kept this family out for lack of a GGUF tag; the explicit q4_K_M tag exists.
+  it('lists Qwen 3.8 Flash-Next through its llama.cpp GGUF, not the MLX or NVFP4 tags', () => {
+    const flashNext = byId.get('qwen3-8-flash-next-125b');
+    expect(flashNext?.backendModelId).toBe('qwen3.8-flash-next:125b-a6b-q4_K_M');
+    expect(flashNext?.backendModelId).not.toMatch(/mlx|nvfp4/i);
+    expect(GGUF_KV_GEOMETRY['qwen3-8-flash-next-125b']?.architecture).toBe('qwen4exp');
+    expect(flashNext?.requirements.gpuVendors).toEqual(['nvidia', 'amd', 'apple', 'cpu']);
+  });
+
+  // The 2026-11-15 oMLX rows mirror an Ollama row (params, creator, purpose, reasoning, tools, and tier), and say so
+  // in their id (`<ollama id>-mlx`). The table pins each row's repo, download size (gb), window (ctxK), and vision
+  // flag: for an oMLX row `gb` alone sizes the memory
+  // requirements and, with no scores to rank on, decides which row a given Mac is offered first.
+  it('mirrors each 2026-11-15 oMLX row on its Ollama partner and pins its repo, size, window, and vision flag', () => {
+    const expected = [
+      // id, repo, gb, ctxK, vision
+      ['laguna-s-2-1-mlx', 'mlx-community/Laguna-S-2.1-oQ4e', 64.1, 256, false],
+      ['ornith-9b-mlx', 'mlx-community/Ornith-1.0-9B-4bit', 6.0, 256, true],
+      ['ornith-35b-mlx', 'mlx-community/Ornith-1.0-35B-4bit', 20.4, 256, true],
+      ['ornith-1-5-9b-mlx', 'mlx-community/Ornith-1.5-9B-OptiQ-4bit', 7.1, 256, false],
+      ['ornith-1-5-35b-mlx', 'mlx-community/Ornith-1.5-35B-A3B-OptiQ-4bit', 23.5, 256, true],
+      ['mimo-v2-6-9b-mlx', 'mlx-community/MiMo-V2.6-Distill-Qwen-9B-OptiQ-4bit', 7.1, 256, false],
+      ['flint-40b-mlx', 'mlx-community/flint-oQ4e', 23.4, 256, false],
+      ['nemotron-3-5-bolt-e4b-mlx', 'mlx-community/NVIDIA-Nemotron-3.5-Bolt-E4B-OptiQ-4bit', 7.5, 64, true],
+      ['lfm3-1-7b-mlx', 'mlx-community/LFM3-1.7B-OptiQ-4bit', 1.3, 256, false],
+      ['lfm3-vl-2b-mlx', 'mlx-community/LFM3-VL-2B-OptiQ-4bit', 1.7, 128, true],
+      ['lfm2-5-24b-mlx', 'mlx-community/LFM2.5-24B-A2B-OptiQ-4bit', 16.7, 128, false],
+      ['qwen3-8-flash-next-125b-mlx', 'mlx-community/Qwen3.8-Flash-Next-4bit', 111.5, 256, true],
+    ] as const;
+    for (const [id, repo, gb, ctxK, vision] of expected) {
+      const mlx = byId.get(id);
+      const partner = byId.get(id.replace(/-mlx$/, ''));
+      expect(mlx?.backend, id).toBe('omlx');
+      expect(partner?.backend, `${id} partner`).toBe('ollama');
+      expect(mlx?.parameterScale, id).toBe(partner?.parameterScale);
+      expect(mlx?.metadata?.creator, id).toBe(partner?.metadata?.creator);
+      expect(mlx?.purpose, id).toBe(partner?.purpose);
+      expect(mlx?.activeParameterScale, id).toBe(partner?.activeParameterScale);
+      expect(mlx?.metadata?.capabilities?.reasoning, id).toBe(partner?.metadata?.capabilities?.reasoning);
+      expect(mlx?.metadata?.capabilities?.tools, id).toBe(partner?.metadata?.capabilities?.tools);
+      expect(mlx?.requirements.minTier, id).toBe(partner?.requirements.minTier);
+      expect(mlx, id).toMatchObject({ backendModelId: repo, runtime: { contextWindow: ctxK * 1000 }, metadata: { capabilities: { vision } } });
+      expect(mlx?.requirements.diskMb, id).toBe(Math.round(gb * 1024));
+      // 4-bit weights cost about half a byte to one byte a parameter (more for a small row with a large embedding
+      // table or a vision tower), so a slipped decimal point in `gb` shows here.
+      expect(gb / (mlx?.parameterScale ?? 1), id).toBeGreaterThan(0.4);
+      expect(gb / (mlx?.parameterScale ?? 1), id).toBeLessThan(2);
+    }
+  });
+
+  it('lists the five 2026-11-15 vLLM rows as bf16 builds of their Hugging Face repos, sized by their shards', () => {
+    const expected = [
+      // id, repo, gb (the summed bf16 safetensors), params, active params for a MoE row, ctxK, vision
+      ['qwen3-8-27b-vllm', 'Qwen/Qwen3.8-27B', 55.6, 27, undefined, 262, true],
+      ['qwen3-6-35b-vllm', 'Qwen/Qwen3.6-35B-A3B', 71.9, 35, 3, 262, true],
+      ['gemma4-31b-vllm', 'google/gemma-4-31B-it', 62.5, 31, undefined, 256, true],
+      ['qwen3-5-9b-vllm', 'Qwen/Qwen3.5-9B', 19.3, 9, undefined, 262, true],
+      ['glm-4-7-flash-30b-vllm', 'zai-org/GLM-4.7-Flash', 62.4, 30, 3, 202, false],
+    ] as const;
+    for (const [id, repo, gb, params, active, ctxK, vision] of expected) {
+      const row = byId.get(id);
+      expect(row, id).toMatchObject({
+        backend: 'vllm',
+        backendModelId: repo,
+        parameterScale: params,
+        runtime: { quantization: 'bf16', contextWindow: ctxK * 1000 },
+        metadata: { capabilities: { vision } },
+      });
+      expect(row?.requirements.diskMb, id).toBe(Math.round(gb * 1024));
+      // bf16 weights are two bytes a parameter, give or take a vision tower or an embedding table.
+      expect(gb / params, id).toBeGreaterThan(1.9);
+      expect(gb / params, id).toBeLessThan(2.3);
+      expect(row?.activeParameterScale, id).toBe(active ?? params);
+    }
+  });
+
+  // The Hub suggests a plain `vllm serve <repo>`, which cannot fetch a repo that asks for a Hugging Face token.
+  it('keeps meta-llama and pre-4 Gemma repos, which ask for a token, out of the vLLM table', () => {
+    for (const m of llms.filter((row) => row.backend === 'vllm')) {
+      expect(m.backendModelId, `${m.id} is gated`).not.toMatch(/^meta-llama\/|^google\/gemma-(?!4)/);
     }
   });
 
@@ -151,7 +312,7 @@ describe('curated-models (TOON catalog)', () => {
 
   it('gates oMLX rows to Apple Silicon only, never an NVIDIA VRAM budget', () => {
     const mlxRows = llms.filter((m) => m.backend === 'omlx');
-    expect(mlxRows.length).toBe(64);
+    expect(mlxRows.length).toBe(76);
     for (const m of mlxRows) {
       expect(m.backendModelId, `${m.id} tag`).toMatch(/^mlx-community\//);
       expect(m.requirements.gpuVendors, `${m.id} gpuVendors`).toEqual(['apple']);
@@ -338,10 +499,10 @@ describe('curated-models (TOON catalog)', () => {
   });
 
   it('contains no fabricated families/sizes (only ollama.com-verified entries)', () => {
-    // Checked against BOTH the catalog `id` and the actual `backendModelId` pull tag — a fake family
-    // slipped back into the catalog once (2026-08) under a dashed `id` (`mistral-medium-3-5-128b`) that
-    // dodged an id-only check, while its `backendModelId` (`mistral-medium-3.5:128b`) was still exactly
-    // the banned string. Never check id alone again.
+    // Checked against BOTH the catalog `id` and the actual `backendModelId` pull tag — a model once slipped
+    // back into the catalog (2026-08) under a dashed `id` (`mistral-medium-3-5-128b`) that dodged an id-only
+    // check, while its `backendModelId` (`mistral-medium-3.5:128b`) was still exactly the banned string. Never
+    // check id alone again. (Mistral Medium 3.5 left this list on 2026-11-15: the model is real, see below.)
     const ids = new Set(CURATED_MODELS.map((m) => m.id));
     const backendModelIds = CURATED_MODELS.map((m) => m.backendModelId);
     for (const fake of [
@@ -351,7 +512,6 @@ describe('curated-models (TOON catalog)', () => {
       'qwen3-6-200b',
       'kimi-k2-6',
       'deepseek-v4-pro',
-      'mistral-medium-3.5',
       'hermes-4',
       'seed-oss',
       'ernie-4.5',
@@ -368,7 +528,9 @@ describe('curated-models (TOON catalog)', () => {
   // fabrication guard above) and, separately, found one of these rows' fetched description self-referencing
   // an Anthropic-internal codename it had no legitimate way to know. None of them were confirmed to exist
   // through a channel independent of this session's own fetch tooling. Do not re-add without that
-  // independent confirmation (a real browser, or an actual successful `ollama pull`).
+  // independent confirmation (a real browser, or an actual successful `ollama pull`). (granite4-1-3b/8b/30b and
+  // lfm2-24b turned out to be real, per registry manifests read on 2026-11-15; they stay out because granite4.2
+  // and lfm2.5:24b supersede them.)
   it('does not re-add the 2026-07-27 unverified/likely-fabricated batch', () => {
     const ids = new Set(CURATED_MODELS.map((m) => m.id));
     for (const unverified of [
@@ -386,14 +548,53 @@ describe('curated-models (TOON catalog)', () => {
     }
   });
 
-  // 2026-08-12: mirrors the 2026-07-27 guard above for a second, independently-caught fabrication —
-  // kept as its own list (rather than folded into the generic fabrication guard) so a future audit that
-  // re-verifies one of these out-of-band has a single, obvious place to remove it from.
-  it('does not re-add the 2026-08-12 unverified/fabricated Mistral Medium 3.5 row', () => {
+  // 2026-08-12 removed Mistral Medium 3.5 as unconfirmed, and this slot used to forbid it. It is real, and
+  // the proof does not depend on a fetch summary (the 2026-07-27 failure mode): on 2026-11-15
+  // registry.ollama.ai served `mistral-medium-3.5:128b` with manifest layers that sum to 80,241,474,657 bytes (config
+  // `file_type` Q4_K_M, no cloud or remote field), whose GGUF header reads arch `mistral3`, 88 blocks, context_length 262144;
+  // mistralai/Mistral-Medium-3.5-128B on Hugging Face was created 2026-03-31, before either removal, with a
+  // public history from 2026-04-29; and Artificial Analysis lists it as an open-weights Mistral model. The
+  // geometry table below is generated from that same manifest and header, so a mismatch here means the
+  // registry changed, not that someone typed a number.
+  it('lists Mistral Medium 3.5 on the strength of its registry manifest and GGUF header', () => {
+    const m = byId.get('mistral-medium-3-5-128b');
+    expect(m).toMatchObject({ backend: 'ollama', backendModelId: 'mistral-medium-3.5:128b', metadata: { creator: 'Mistral' } });
+    expect(GGUF_KV_GEOMETRY['mistral-medium-3-5-128b']).toMatchObject({
+      architecture: 'mistral3',
+      fileBytes: 80_241_474_657,
+      contextLength: 262_144,
+    });
+  });
+
+  // 2026-11-15: real models that are not listed because Ollama cannot pull them. For a sharded Hugging Face
+  // GGUF, `ollama pull hf.co/<repo>:<quant>` asks huggingface.co/v2/<repo>/manifests/<quant>, which answers
+  // HTTP 400 "This repository only contains sharded GGUF files. Ollama does not yet support pulling sharded
+  // GGUF via the registry" to Ollama's User-Agent (single-file repos answer 200). The official and
+  // major-quantizer Q4-class builds of these are sharded, and the Hub hands the tag to Ollama's /api/pull
+  // unchanged. Re-add one only after an actual pull succeeds. (`glm-5-2` and `inkling` predate this check and
+  // fail the same way; they are left as they were, for the Hub owners to decide. Command A+, Muse Spark Open,
+  // GLM 5.3 Flash, and MiMo-V2.6 Flash are not listed here because single-file builds of them exist, from
+  // individual re-quantizers nobody vetted.)
+  it('keeps the eight sharded-only Hugging Face GGUFs seen on 2026-11-15 out of the catalog', () => {
     const ids = new Set(CURATED_MODELS.map((m) => m.id));
-    for (const unverified of ['mistral-medium-3-5-128b']) {
-      expect(ids.has(unverified), `unverified model ${unverified} must not be re-added without independent confirmation`).toBe(false);
+    for (const sharded of [
+      'kimi-k2-7-code',
+      'mimo-v2-6-pro',
+      'beam-1-0',
+      'nemotron-3-ultra',
+      'ling-3-1-flash-1019',
+      'k2-horizon-375b',
+      'glm-5-3',
+      'minimax-m3',
+    ]) {
+      expect(ids.has(sharded), `${sharded} is sharded-only on Hugging Face: Ollama's pull answers HTTP 400`).toBe(false);
     }
+  });
+
+  // An `hf.co/` row has to pass the registry check above before it is listed, so this set changes only on purpose.
+  it('lists only the four hf.co/ rows that passed the registry check or predate it', () => {
+    const hfRows = CURATED_MODELS.filter((m) => m.backendModelId.startsWith('hf.co/')).map((m) => m.id);
+    expect(hfRows.sort()).toEqual(['arete-27b', 'glm-5-2', 'inkling', 'nanbeige4-3-33b']);
   });
 
   // Lemonade rows are scored like Ollama's: the Intelligence Index describes the model, not the engine
