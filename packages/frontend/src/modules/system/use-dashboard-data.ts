@@ -355,6 +355,20 @@ export function isUnplaced(entry: RoutingLogEntry): boolean {
 }
 
 /**
+ * An outbound request every candidate was tried for, and every one failed — see {@link isUnplaced}
+ * for why this is not the same row. A caller that hung up is excluded: the pool did not fail it.
+ *
+ * "Failed" means neither served nor still pending, matching `routingActivity`, so an outcome
+ * string this page does not know is never silently read as fine.
+ */
+export function isExhausted(entry: RoutingLogEntry): boolean {
+  if (entry.direction !== 'outbound' || entry.node || entry.clientClosed) return false;
+  if (entry.outcome === 'served' || entry.outcome === 'pending') return false;
+
+  return typeof entry.candidates === 'number' ? entry.candidates > 0 : (entry.failedOverFrom?.length ?? 0) > 0;
+}
+
+/**
  * The pool's estimate of a request's prompt size, in tokens, or `null`.
  *
  * The routing decision's own `estimatedTokens` when it recorded one, else `bodyBytes / 4` — the same
@@ -587,6 +601,53 @@ export function routingLogKeys(entries: RoutingLogEntry[]): string[] {
 
     return occurrence === 0 ? base : `${base}#${occurrence}`;
   });
+}
+
+/**
+ * Where OUR OUTBOUND work actually went, as label→count.
+ *
+ * ⚠ `entry.node` DOES NOT MEAN THE SAME THING IN EVERY ROW, which is why this cannot just count
+ * them. The field's doc on `hub-pool-routing-log.service.ts` states it: for `outbound` it is the
+ * node that served the request (`'local'` for this one, `null` when nothing did); for `inbound`
+ * it is the peer that SENT us work.
+ *
+ * Counting every row made two false claims at once — a peer that gave us work charted as having
+ * done work for us (and on a fleet where every peer is inbound, those rows dominate), and each
+ * request nobody would take credited to the local node via `?? 'local'`.
+ *
+ * A row with no node is one of TWO outcomes, and each gets its own label — see {@link isUnplaced}:
+ * no candidate existed (`unplacedLabel`), or every candidate was tried and failed (`exhaustedLabel`).
+ * Folding the second into the first is what had core-2 reporting "a request no node took" for a
+ * request nine nodes each took and dropped. A nodeless row that is neither — a Hub too old to say
+ * how many candidates it had, whose caller also hung up — keeps the old bucket.
+ *
+ * Both labels are passed in rather than hardcoded so the caller can translate them.
+ */
+export function routingByNode(entries: RoutingLogEntry[], unplacedLabel: string, exhaustedLabel: string): Map<string, number> {
+  const byNode = new Map<string, number>();
+  let unplaced = 0;
+  let exhausted = 0;
+
+  for (const entry of entries) {
+    if (entry.direction !== 'outbound') continue;
+
+    const node = entry.node?.split('.')[0];
+
+    if (!node) {
+      if (isExhausted(entry)) exhausted += 1;
+      else unplaced += 1;
+      continue;
+    }
+
+    byNode.set(node, (byNode.get(node) ?? 0) + 1);
+  }
+
+  // Counted under their own labels rather than folded into a node or dropped: "we had nowhere to
+  // send it" and "everywhere we sent it failed" are real outcomes, and the ones most worth seeing.
+  if (unplaced > 0) byNode.set(unplacedLabel, unplaced);
+  if (exhausted > 0) byNode.set(exhaustedLabel, exhausted);
+
+  return byNode;
 }
 
 export function peerLabel(peer: PoolPeerSummary): string {

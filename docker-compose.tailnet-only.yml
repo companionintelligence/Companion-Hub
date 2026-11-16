@@ -1,0 +1,11 @@
+# Mac dev Hub: publish the Hub API and Traefik on loopback only.
+# Tailnet access goes through `tailscale serve`, never the LAN.
+services:
+  ci-hub:
+    ports: !override
+      - "127.0.0.1:${API_PORT:-5002}:5002"
+  traefik:
+    ports: !override
+      - "127.0.0.1:${HTTP_PORT:-80}:80"
+      - "127.0.0.1:${HTTPS_PORT:-443}:443"
+      - "127.0.0.1:${TRAEFIK_DASHBOARD_PORT:-8080}:8080"

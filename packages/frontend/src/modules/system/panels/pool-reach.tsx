@@ -1,4 +1,5 @@
-import { relativeAge } from '@/components/ui/dense/dense';
+import { DASH, relativeAge } from '@/components/ui/dense/dense';
+import { HintText } from '@/components/ui/field-hint/field-hint';
 import { cn } from '@/lib/utils';
 import type { PoolNodeCard } from '@/modules/system/pool-node-series';
 import {
@@ -17,6 +18,7 @@ import {
   reachPeers,
   textWidth,
 } from '@/modules/system/pool-reach';
+import type { PoolReach } from '@/modules/system/use-dashboard-data';
 import { useLayoutEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -207,6 +209,81 @@ function useReachWords() {
       .join(' · ');
 
   return { statusWord, describe, detailOptions };
+}
+
+/** A spoke's pattern drawn at legend size, so the legend is a key to the drawing and not a second vocabulary. */
+function LegendSwatch({ status, concern = null }: { status: ReachStatus; concern?: ReachConcern | null }) {
+  return (
+    <svg width="22" height="12" viewBox="0 0 22 12" aria-hidden="true" className="shrink-0">
+      <line
+        x1="1"
+        y1="6"
+        x2="13"
+        y2="6"
+        className={concern ? 'stroke-warning' : SPOKE_CLASS[status]}
+        strokeWidth={1.8}
+        strokeDasharray={concern ? HELD_DASH : SPOKE_DASH[status]}
+        strokeLinecap="round"
+      />
+      <Marker status={status} concern={concern} x={16.5} y={6} />
+    </svg>
+  );
+}
+
+/**
+ * The counts the drawing does not state: how many peers are in each state, how many models this
+ * pool adds that this Hub lacks, and how much work it has forwarded and not yet read back. It is the
+ * drawing's key, so each state is worded the way the drawing words it.
+ */
+export function PoolReachLegend({ cards, figures }: { cards: PoolNodeCard[]; figures: PoolReach }) {
+  const { t } = useTranslation();
+  const { statusWord } = useReachWords();
+  const layout = reachLayout(reachPeers(cards));
+
+  return (
+    <div
+      data-testid="pool-reach-legend"
+      className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 border-t border-border pt-3 text-xs text-muted-foreground"
+    >
+      {REACH_STATUSES.filter((status) => status === 'connected' || layout.counts[status] > 0).flatMap((status) => {
+        const item = (
+          <span key={status} className="inline-flex items-center gap-1.5">
+            <LegendSwatch status={status} />
+            <span className="font-medium tabular-nums text-foreground">{layout.counts[status]}</span>
+            {statusWord(status)}
+          </span>
+        );
+        // Right after "connected", and worded as part of it: the rail counts these peers as connected too.
+        return status === 'connected' && layout.concerns > 0
+          ? [
+              item,
+              <span key="concerns" className="inline-flex items-center gap-1.5">
+                <LegendSwatch status="connected" concern="unreported" />
+                <span className="font-medium tabular-nums text-foreground">{layout.concerns}</span>
+                {t('DASHBOARD_REACH_CONCERNS')}
+              </span>,
+            ]
+          : [item];
+      })}
+      <span>
+        <span className="font-medium tabular-nums text-foreground">{figures.reachableModels}</span> {t('DASHBOARD_REACH_MODELS_REACHABLE')}
+      </span>
+      <HintText
+        id="dashboard-exclusive-models"
+        hint={t('DASHBOARD_EXCLUSIVE_MODELS_HINT')}
+        className="underline decoration-dotted underline-offset-2"
+      >
+        <span className="font-medium tabular-nums text-foreground">{figures.exclusiveModels}</span> {t('DASHBOARD_REACH_PEER_ONLY')}
+      </HintText>
+      {/* A dash, not 0: no peer reporting the counter is unknown, not idle. */}
+      <span className="inline-flex items-center gap-1.5">
+        <svg data-testid="pool-reach-legend-badge" width="14" height="12" viewBox="0 0 14 12" aria-hidden="true" className="shrink-0">
+          <rect x="0.75" y="0.75" width="12.5" height="10.5" rx="5.25" className="fill-primary" />
+        </svg>
+        <span className="font-medium tabular-nums text-foreground">{figures.peerInFlight ?? DASH}</span> {t('DASHBOARD_REACH_FORWARDED')}
+      </span>
+    </div>
+  );
 }
 
 /**
