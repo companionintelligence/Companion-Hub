@@ -1,6 +1,7 @@
+import { isIP } from 'node:net';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
-import { isPrivateOrLocalIp } from '@/common/helpers/ip-address';
+import { isPoolProbeTarget, isPrivateOrLocalIp } from '@/common/helpers/ip-address';
 import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -14,6 +15,7 @@ import axios from 'axios';
 import { httpsGetExcerpt, resolveAtZoneNameservers, type ZoneAnswer } from '../registration/public-reachability';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { RegistrationService } from '../registration/registration.service';
+import { probeAppPort } from './app-port-probe';
 import { AppsRepository } from './apps.repository';
 import { AppsReadService } from './apps-read.service';
 import { CloudflareClientService, type PublicDnsFailureReason } from '../cloudflare/cloudflare-client.service';
@@ -86,6 +88,62 @@ async function isRefusedByTailscale(tailscaleService: TailscaleService, appPort:
   const selfHost = nodeFqdn.toLowerCase();
   const { entries } = await tailscaleService.getServeStatus();
   return !entries.some((entry) => entry.listenPort === appPort && entry.host === selfHost);
+}
+
+/** Whether a failed fetch was refused by the host at the address, where a tailnet peer can still connect (see {@link servedAppAnswers}). */
+function wasRefused(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === 'ECONNREFUSED' || (error instanceof Error && error.message.includes('ECONNREFUSED'));
+}
+
+/** The schemes a Tailscale Serve target can use that the Hub can ask, and the port each one defaults to. */
+const SERVE_TARGET_DEFAULT_PORTS: Record<string, number | undefined> = { 'http:': 80, 'https:': 443, 'https+insecure:': 443 };
+
+/**
+ * The address a Serve target (`http://172.22.0.8:30141`, `https+insecure://172.22.0.9:443`) names, when the Hub
+ * reads it as tailscaled does. That is an IP address on a private network, which is what the Hub writes: the
+ * app container's address on its app network. A host name or `localhost` can mean one thing to the Hub's
+ * container and another to a tailscaled on the host (`host.docker.internal` is the Hub itself on the app
+ * network, and `localhost` is the Hub's own container), so those are left alone, as is any target that is not HTTP.
+ */
+function parseServedTarget(dest: string | undefined): { host: string; port: number } | null {
+  let url: URL;
+  try {
+    url = new URL(dest ?? '');
+  } catch {
+    return null;
+  }
+  const defaultPort = SERVE_TARGET_DEFAULT_PORTS[url.protocol];
+  const host = url.hostname.replace(/^\[|\]$/g, '');
+  const port = url.port ? Number(url.port) : defaultPort;
+  // `isIP` goes first because `isPoolProbeTarget` reads a name that starts with `fd` as an IPv6 address.
+  // A port of 0 is left out because Node dials it as the default port.
+  return defaultPort && port && isIP(host) && isPoolProbeTarget(host) ? { host, port } : null;
+}
+
+/**
+ * Whether the app that Tailscale Serve forwards `appPort` to answers, for a Private VPN address the Hub was
+ * refused at.
+ *
+ * The Hub dials from inside a Docker network, and a tailscaled that binds its Serve listeners to the tailscale
+ * device (`100.x.y.z%tailscale0:<port>`, seen with 1.104.7) refuses a connection that arrives over any other
+ * interface while every tailnet peer connects. Serve forwards to an address the Hub can dial, so the entry for
+ * the port under this node's current name (a renamed node keeps an old listener that doesn't answer the new
+ * name) is read and its target asked. True means Serve lists the port and the app behind it answers; the Hub
+ * can't see whether tailscaled bound the listener. False leaves the probe's own verdict as it is.
+ */
+async function servedAppAnswers(tailscaleService: TailscaleService, nodeFqdn: string, appPort: number | null): Promise<boolean> {
+  let target: { host: string; port: number } | null;
+  try {
+    const selfHost = nodeFqdn.toLowerCase();
+    const { entries } = await tailscaleService.getServeStatus();
+    const entry = entries.find((candidate) => candidate.listenPort === appPort && candidate.host === selfHost && candidate.mountPoint === '/');
+    target = parseServedTarget(entry?.dest);
+  } catch {
+    // This only turns a refusal into an answer, so a Serve status that can't be read leaves the refusal as it is.
+    return false;
+  }
+  return target !== null && (await probeAppPort(target.host, target.port, APP_PROBE_TIMEOUT_MS)) === 'answered';
 }
 
 function dnsNotFoundResult(exposureMode: string, appUrl: string): AppAvailabilityResult {
@@ -541,6 +599,8 @@ export class AppsService {
 
     // Build the app URL based on exposure mode
     let appUrl: string | undefined;
+    // Set for a Private VPN app, so a failed fetch below can ask Tailscale Serve what answers behind the address.
+    let privateVpn: { tailscaleService: TailscaleService; nodeFqdn: string; appPort: number | null } | undefined;
     if (exposureMode === 'local') {
       if (!app.port || !hasDirectLocalAccess) {
         return { available: false, appUrl: undefined, stage: 'error' };
@@ -582,6 +642,7 @@ export class AppsService {
       }
 
       appUrl = vpnUrl;
+      privateVpn = tailscaleStatus?.nodeFqdn ? { tailscaleService, nodeFqdn: tailscaleStatus.nodeFqdn, appPort } : undefined;
     } else {
       const cloudflareClient = this.moduleRef.get(CloudflareClientService, { strict: false });
       const hasTunnelToken = Boolean(
@@ -633,6 +694,12 @@ export class AppsService {
       return classifyReachedApp(exposureMode, appUrl, response.status, response.text);
     } catch (e) {
       const message = e instanceof Error ? e.message : 'UNKNOWN_ERROR';
+
+      // A Serve listener bound to the tailscale device refuses the Hub, which dials from a Docker network, while
+      // every tailnet peer connects. Where Serve lists the port and the app behind it answers, the address is up.
+      if (privateVpn && wasRefused(e) && (await servedAppAnswers(privateVpn.tailscaleService, privateVpn.nodeFqdn, privateVpn.appPort))) {
+        return { available: true, appUrl, stage: 'ready' };
+      }
 
       // DNS resolution failure
       if (message.includes('ENOTFOUND') || message.includes('getaddrinfo')) {
@@ -756,8 +823,9 @@ export class AppsService {
         if (dockerService) {
           // Compose names containers `<project>-<service>-1`, so the app's name is never one of them.
           try {
-            // tailscaled answers for a down app on a port it publishes, so over the Private VPN a refusal
-            // means the port isn't published. Restarting a running app can't change that.
+            // Over the Private VPN a refusal that survives servedAppAnswers means the port isn't published, or that
+            // the app behind a published port doesn't answer. Restarting a running app publishes nothing and would
+            // cut off one that is still starting, so only containers that are down restart.
             const containers = await dockerService.getRoutedContainerNames(appUrn, { downOnly: tailscaleRepair });
             if (containers.length === 0 && !tailscaleRepair) {
               failures.push(`Failed to restart container: no container found for ${app.appName}`);

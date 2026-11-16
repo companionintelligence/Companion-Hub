@@ -25,7 +25,11 @@ vi.mock('../../registration/public-reachability', async (importOriginal) => {
   };
 });
 
+// The target a Serve entry forwards a Private VPN port to is dialled over the Docker network. These tests set what it does.
+vi.mock('../app-port-probe', () => ({ probeAppPort: vi.fn() }));
+
 import axios from 'axios';
+import { type AppPortProbeResult, probeAppPort } from '../app-port-probe';
 import { httpsGetExcerpt, resolveAtZoneNameservers } from '../../registration/public-reachability';
 const mockedAxiosGet = vi.mocked(axios.get);
 
@@ -124,6 +128,7 @@ describe('AppsService.checkAppAvailability', () => {
     vi.mocked(resolveAtZoneNameservers).mockReset();
     vi.mocked(resolveAtZoneNameservers).mockRejectedValue(new Error('zone lookup is stubbed'));
     vi.mocked(httpsGetExcerpt).mockReset();
+    vi.mocked(probeAppPort).mockReset();
     ctx = createMockService();
   });
 
@@ -683,6 +688,231 @@ describe('AppsService.checkAppAvailability', () => {
     const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
 
     expect(result).toMatchObject({ available: true, httpStatus: status, stage: 'ready' });
+  });
+
+  // tailscaled binds its Serve listeners to the tailscale device (`100.x.y.z%tailscale0:<port>`), so the Hub, which
+  // dials from a Docker network, is refused at an address every tailnet peer reaches. beta-max, Tailscale 1.104.7:
+  // pi-web, opencode and ci-hermes all read "App not responding" while they answered over the tailnet.
+  describe('tailscale mode, refused at the Private VPN address', () => {
+    const urn = 'test-app:test-store' as AppUrn;
+    const vpnUrl = 'https://hub-tailscale-1.example.ts.net:8080';
+    const refusedAtAddress = 'Connection refused. The app or reverse proxy may not be listening.';
+    const serveEntry = (overrides: Record<string, unknown> = {}) => ({
+      service: '8080',
+      proto: 'https',
+      mountPoint: '/',
+      dest: 'http://172.22.0.8:8080',
+      listenPort: 8080,
+      host: 'hub-tailscale-1.example.ts.net',
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      ctx.mockApp.exposureMode = 'tailscale';
+      ctx.tailscaleService.getServeStatus.mockResolvedValue({ entries: [serveEntry()] });
+      mockedAxiosGet.mockRejectedValue(new Error('connect ECONNREFUSED 100.64.0.1:8080'));
+    });
+
+    it('counts the app as available when the target Serve forwards to answers', async () => {
+      vi.mocked(probeAppPort).mockResolvedValue('answered');
+
+      const result = await ctx.service.checkAppAvailability(urn);
+
+      expect(result).toMatchObject({ available: true, appUrl: vpnUrl, stage: 'ready' });
+      expect(result.errorCode).toBeUndefined();
+      expect(probeAppPort).toHaveBeenCalledWith('172.22.0.8', 8080, 5_000);
+      // The address itself is still tried first, and only once.
+      expect(mockedAxiosGet).toHaveBeenCalledTimes(1);
+      expect(mockedAxiosGet.mock.calls[0]?.[0]).toBe(vpnUrl);
+    });
+
+    it("asks the entry's own target, which can sit on another port than the one Serve listens on", async () => {
+      // ci-hermes on beta-max: Serve listens on :18790 and forwards to the container's :18789.
+      ctx.mockApp.port = 18790;
+      ctx.tailscaleService.getServeStatus.mockResolvedValue({ entries: [serveEntry({ listenPort: 18790, dest: 'http://172.22.0.5:18789' })] });
+      vi.mocked(probeAppPort).mockResolvedValue('answered');
+
+      const result = await ctx.service.checkAppAvailability(urn);
+
+      expect(result).toMatchObject({ available: true, appUrl: 'https://hub-tailscale-1.example.ts.net:18790' });
+      expect(probeAppPort).toHaveBeenCalledWith('172.22.0.5', 18789, 5_000);
+    });
+
+    // A host name that resolves to an IPv4 and an IPv6 address reaches axios as an error with no message and a code.
+    it('asks the target after a refusal that reaches axios as a code only', async () => {
+      mockedAxiosGet.mockRejectedValue(Object.assign(new Error(''), { code: 'ECONNREFUSED' }));
+      vi.mocked(probeAppPort).mockResolvedValue('answered');
+
+      const result = await ctx.service.checkAppAvailability(urn);
+
+      expect(result).toMatchObject({ available: true, appUrl: vpnUrl });
+    });
+
+    // Only the refusal was measured. A timeout can come after the connection opened, and a name that does not
+    // resolve or a TLS failure is not something the target says anything about.
+    it.each([
+      ['a timeout', new Error('timeout of 5000ms exceeded'), 'CONNECTION_TIMEOUT'],
+      ['a connect timeout', new Error('connect ETIMEDOUT 100.64.0.1:8080'), 'CONNECTION_TIMEOUT'],
+      ['a name that does not resolve', new Error('getaddrinfo ENOTFOUND hub-tailscale-1.example.ts.net'), 'DNS_NOT_FOUND'],
+      ['a TLS failure', Object.assign(new Error('write EPROTO wrong version number'), { code: 'EPROTO' }), 'UNKNOWN'],
+    ])('keeps the verdict and asks nothing after %s at the address', async (_name, error, errorCode) => {
+      mockedAxiosGet.mockRejectedValue(error);
+      vi.mocked(probeAppPort).mockResolvedValue('answered');
+
+      const result = await ctx.service.checkAppAvailability(urn);
+
+      expect(result).toMatchObject({ available: false, errorCode });
+      expect(ctx.tailscaleService.getServeStatus).not.toHaveBeenCalled();
+      expect(probeAppPort).not.toHaveBeenCalled();
+    });
+
+    it('does not ask Serve when the address itself answers, whatever the status', async () => {
+      mockedAxiosGet.mockResolvedValue({ status: 502, data: 'Bad Gateway' } as never);
+
+      const result = await ctx.service.checkAppAvailability(urn);
+
+      expect(result).toMatchObject({ available: true, httpStatus: 502 });
+      expect(ctx.tailscaleService.getServeStatus).not.toHaveBeenCalled();
+      expect(probeAppPort).not.toHaveBeenCalled();
+    });
+
+    // The new path only turns a refusal into an answer. Anything else the target does leaves the refusal, with the
+    // repair that goes with it.
+    it.each<[string, AppPortProbeResult]>([
+      ['refuses', 'refused'],
+      ['takes the connection and stays silent', 'silent'],
+      ['cannot be reached from the Hub', 'unreachable'],
+    ])('keeps CONNECTION_REFUSED when the target %s', async (_name, answer) => {
+      vi.mocked(probeAppPort).mockResolvedValue(answer);
+
+      const result = await ctx.service.checkAppAvailability(urn);
+
+      expect(result).toMatchObject({
+        available: false,
+        appUrl: vpnUrl,
+        stage: 'error',
+        reason: 'NETWORK_ERROR',
+        errorCode: 'CONNECTION_REFUSED',
+        resolvable: true,
+      });
+      expect(result.detail).toBe(refusedAtAddress);
+      expect(probeAppPort).toHaveBeenCalledWith('172.22.0.8', 8080, 5_000);
+    });
+
+    // The refusal of a port nothing publishes is the one the repair exists for.
+    it.each([
+      ['Serve has no entry', []],
+      ['Serve only has an entry for another port', [serveEntry({ listenPort: 9090 })]],
+      ['Serve only has the port under the name the node had before a rename', [serveEntry({ host: 'old-name.example.ts.net' })]],
+      ['the entry has no node name', [serveEntry({ host: undefined })]],
+      ['Serve only serves a sub-path on the port', [serveEntry({ mountPoint: '/files' })]],
+    ])('keeps CONNECTION_REFUSED and asks nothing when %s', async (_name, entries) => {
+      ctx.tailscaleService.getServeStatus.mockResolvedValue({ entries });
+
+      const result = await ctx.service.checkAppAvailability(urn);
+
+      expect(result).toMatchObject({ available: false, errorCode: 'CONNECTION_REFUSED', resolvable: true, appUrl: vpnUrl });
+      expect(result.detail).toBe(refusedAtAddress);
+      expect(probeAppPort).not.toHaveBeenCalled();
+    });
+
+    it('matches the node name without regard to case', async () => {
+      ctx.tailscaleService.getStatus.mockResolvedValue({
+        installed: true,
+        connected: true,
+        nodeFqdn: 'Hub-Tailscale-1.Example.ts.net',
+        supportsServices: true,
+      });
+      vi.mocked(probeAppPort).mockResolvedValue('answered');
+
+      const result = await ctx.service.checkAppAvailability(urn);
+
+      expect(result.available).toBe(true);
+    });
+
+    it('keeps CONNECTION_REFUSED when Serve status cannot be read, instead of failing the check', async () => {
+      ctx.tailscaleService.getServeStatus.mockRejectedValue(new Error('tailscale CLI unavailable'));
+
+      const result = await ctx.service.checkAppAvailability(urn);
+
+      expect(result).toMatchObject({ available: false, errorCode: 'CONNECTION_REFUSED' });
+      expect(probeAppPort).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['an IPv4 target without a port', 'http://172.22.0.8', '172.22.0.8', 80],
+      ['an IPv6 target', 'http://[fd00::8]:8080', 'fd00::8', 8080],
+      ['a LAN target', 'http://192.168.1.20:9000', '192.168.1.20', 9000],
+      ['a tailnet target', 'http://100.64.0.7:8080', '100.64.0.7', 8080],
+      ['a TLS target', 'https+insecure://172.22.0.8:8443', '172.22.0.8', 8443],
+      ['a TLS target without a port', 'https://172.22.0.8', '172.22.0.8', 443],
+    ])('asks %s', async (_name, dest, host, port) => {
+      ctx.tailscaleService.getServeStatus.mockResolvedValue({ entries: [serveEntry({ dest })] });
+      vi.mocked(probeAppPort).mockResolvedValue('answered');
+
+      const result = await ctx.service.checkAppAvailability(urn);
+
+      expect(result.available).toBe(true);
+      expect(probeAppPort).toHaveBeenCalledWith(host, port, 5_000);
+    });
+
+    // A host name or `localhost` can mean one thing in the Hub's container and another to a tailscaled on the host:
+    // `host.docker.internal` is the Hub itself on the app network, and `localhost` is the Hub's own container.
+    it.each([
+      ['empty', ''],
+      ['a file path', '/var/www/html'],
+      ['a unix socket', 'unix:/var/run/app.sock'],
+      ['on port 0, which Node dials as the default port', 'http://172.22.0.8:0'],
+      ['host.docker.internal', 'http://host.docker.internal:8080'],
+      ['a compose service name', 'http://app-web:8080'],
+      ['a host name that starts like an IPv6 prefix', 'http://fdroid.example:8080'],
+      ['localhost', 'http://localhost:8080'],
+      ['a loopback address', 'http://127.0.0.1:8080'],
+      ['the IPv6 loopback address', 'http://[::1]:8080'],
+      ['the unspecified address', 'http://0.0.0.0:8080'],
+      ['a link-local address', 'http://169.254.169.254:80'],
+      ['a public address', 'http://203.0.113.5:8080'],
+    ])('asks nothing when the target is %s', async (_name, dest) => {
+      ctx.tailscaleService.getServeStatus.mockResolvedValue({ entries: [serveEntry({ dest })] });
+      vi.mocked(probeAppPort).mockResolvedValue('answered');
+
+      const result = await ctx.service.checkAppAvailability(urn);
+
+      expect(result).toMatchObject({ available: false, errorCode: 'CONNECTION_REFUSED', resolvable: true });
+      expect(probeAppPort).not.toHaveBeenCalled();
+    });
+
+    it('still names a refusal tailscaled makes of the Hub when the port is not served', async () => {
+      ctx.tailscaleService.getServePermission.mockReturnValue({ denied: true, remedy: 'x', deniedSince: '2026-11-09T00:00:00.000Z' });
+      ctx.tailscaleService.getServeStatus.mockResolvedValue({ entries: [] });
+
+      const result = await ctx.service.checkAppAvailability(urn);
+
+      expect(result).toMatchObject({ errorCode: 'TAILSCALE_SERVE_REFUSED', resolvable: false });
+      expect(mockedAxiosGet).not.toHaveBeenCalled();
+      expect(probeAppPort).not.toHaveBeenCalled();
+    });
+
+    it('still reports Tailscale as not ready before asking anything', async () => {
+      ctx.tailscaleService.getStatus.mockResolvedValue({ installed: true, connected: false, nodeFqdn: null, supportsServices: true });
+
+      const result = await ctx.service.checkAppAvailability(urn);
+
+      expect(result).toMatchObject({ available: false, errorCode: 'TAILSCALE_NOT_READY', resolvable: true });
+      expect(mockedAxiosGet).not.toHaveBeenCalled();
+      expect(probeAppPort).not.toHaveBeenCalled();
+    });
+
+    it('does not ask about an app in another exposure mode', async () => {
+      ctx.mockApp.exposureMode = 'cloudflare';
+      mockedAxiosGet.mockRejectedValue(new Error('connect ECONNREFUSED 1.2.3.4:443'));
+
+      const result = await ctx.service.checkAppAvailability(urn);
+
+      expect(result).toMatchObject({ available: false, errorCode: 'CONNECTION_REFUSED' });
+      expect(ctx.tailscaleService.getServeStatus).not.toHaveBeenCalled();
+      expect(probeAppPort).not.toHaveBeenCalled();
+    });
   });
 
   // Test 10: connection refused = CONNECTION_REFUSED

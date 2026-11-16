@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-11-15 (oMLX models match by the names oMLX lists; earlier: sign in with a DID, off unless `CI_HUB_DID_AUTH=true`; uninstall removes only the images an app pulled; reset and uninstall reach the `_user` store; backup archives are owner-only)
+> **Last updated:** 2026-11-16 (a Private VPN app the Hub is refused at reads as available when the target Serve forwards to answers; earlier: oMLX models match by the names oMLX lists; sign in with a DID, off unless `CI_HUB_DID_AUTH=true`; uninstall removes only the images an app pulled; reset and uninstall reach the `_user` store; backup archives are owner-only)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -1160,3 +1160,13 @@ empty object, and only registered DTOs get their schema patched in. An unregiste
 - `main.ts` raises Node's per-address connect time from 250 ms to 2 s before the app is created
   (`common/helpers/connect-attempt-timeout.ts`). Node abandons an attempt that runs out of time, so 250 ms
   failed connections that were only slow.
+- A refusal at a Private VPN app's address (`https://<node>:<port>`) can come from the Hub's own network, not
+  from the app. The Hub dials from a Docker network, and a `tailscaled` that binds its Serve listeners to the
+  tailscale device (`100.x.y.z%tailscale0:<port>`, seen with 1.104.7) refuses a connection that arrives over any
+  other interface while every tailnet peer connects. So `probeAppAvailability` reads a refusal against the node's
+  Serve entry for the port: `servedAppAnswers` (`apps/apps.service.ts`) dials the entry's target with
+  `probeAppPort`, and an answer makes the app available. It turns only a refusal into an answer, never another
+  failure, and only for a private-network IP target. A host name or `localhost` can mean one thing in the Hub's
+  container and another to a `tailscaled` on the host (`host.docker.internal` is the Hub itself on the app
+  network). Use the entry's own target, since ci-hermes listens on `:18790` and forwards to `:18789`. An answer
+  means Serve lists the port and the app answers; the Hub can't see whether `tailscaled` bound the listener.

@@ -24,12 +24,16 @@ vi.mock('../../registration/public-reachability', async (importOriginal) => {
   };
 });
 
+// The target a Serve entry forwards a Private VPN port to is dialled over the Docker network. Tests set what it does.
+vi.mock('../app-port-probe', () => ({ probeAppPort: vi.fn() }));
+
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { AppUrn } from '@ci-hub/common/types';
+import { probeAppPort } from '../app-port-probe';
 import { AppsReadService } from '../apps-read.service';
 import { AppsService } from '../apps.service';
 import { InstallPipelineTracker } from '../install-pipeline.tracker';
@@ -58,6 +62,7 @@ describe('AppsService', () => {
 
   beforeEach(async () => {
     mockAxiosGet.mockReset();
+    vi.mocked(probeAppPort).mockReset();
     installPipelineTracker = new InstallPipelineTracker();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -635,7 +640,7 @@ describe('AppsService', () => {
     });
 
     describe('tailscale + CONNECTION_REFUSED', () => {
-      function wireTailscaleResolve(downContainers: string[]) {
+      function wireTailscaleResolve(downContainers: string[], serveEntries: Record<string, unknown>[] = []) {
         const calls: string[] = [];
         const getRoutedContainerNames = vi.fn().mockResolvedValue(downContainers);
         const restartContainer = vi.fn(async (name: string) => {
@@ -651,7 +656,7 @@ describe('AppsService', () => {
                 .fn()
                 .mockResolvedValue({ installed: true, connected: true, nodeFqdn: 'hub-tailscale-1.example.ts.net', supportsServices: true }),
               getServePermission: vi.fn().mockReturnValue({ denied: false, remedy: null, deniedSince: null }),
-              getServeStatus: vi.fn().mockResolvedValue({ entries: [] }),
+              getServeStatus: vi.fn().mockResolvedValue({ entries: serveEntries }),
             };
           }
           if ((token as { name?: string } | undefined)?.name === 'AppLifecycleService') {
@@ -662,7 +667,7 @@ describe('AppsService', () => {
         return { calls, getRoutedContainerNames, restartContainer };
       }
 
-      // A refusal over the Private VPN means tailscaled publishes nothing on the port, whatever the app is doing.
+      // With no Serve entry for the port, a refusal over the Private VPN means nothing is published, whatever the app is doing.
       it('MUST leave a running app alone and only re-sync', async () => {
         const { getRoutedContainerNames, restartContainer } = wireTailscaleResolve([]);
 
@@ -682,6 +687,60 @@ describe('AppsService', () => {
         await service.resolveAppAvailability(appUrn);
 
         expect(calls).toEqual(['restart:test-app_test-store-web-1', 'sync']);
+      });
+
+      // tailscaled binds its Serve listeners to the tailscale device, so the Hub is refused at an address every
+      // peer reaches. `tailscale serve status` shows what the port forwards to, and the probe asks that. Only an
+      // answer changes the verdict, so for any other outcome the repair stays what it was.
+      describe('when Serve forwards the port to an app', () => {
+        const servedEntry = {
+          service: '8080',
+          proto: 'https',
+          mountPoint: '/',
+          dest: 'http://172.22.0.8:8080',
+          listenPort: 8080,
+          host: 'hub-tailscale-1.example.ts.net',
+        };
+
+        it('MUST change nothing for an app that answers behind it, since only the Hub failed to dial the address', async () => {
+          const { calls, getRoutedContainerNames } = wireTailscaleResolve([], [servedEntry]);
+          vi.mocked(probeAppPort).mockResolvedValue('answered');
+
+          setupForResolve('connrefused', { exposureMode: 'tailscale' });
+          const result = await service.resolveAppAvailability(appUrn);
+
+          expect(result).toEqual({ success: true, action: 'none', detail: 'App is already available.' });
+          expect(calls).toEqual([]);
+          expect(getRoutedContainerNames).not.toHaveBeenCalled();
+        });
+
+        it('MUST restart a stopped container and then re-sync when the app behind it does not answer', async () => {
+          const { calls, getRoutedContainerNames } = wireTailscaleResolve(['test-app_test-store-web-1'], [servedEntry]);
+          vi.mocked(probeAppPort).mockResolvedValue('refused');
+
+          setupForResolve('connrefused', { exposureMode: 'tailscale' });
+          const result = await service.resolveAppAvailability(appUrn);
+
+          expect(getRoutedContainerNames).toHaveBeenCalledWith(appUrn, { downOnly: true });
+          expect(calls).toEqual(['restart:test-app_test-store-web-1', 'sync']);
+          expect(result.success).toBe(true);
+        });
+
+        // Restarting it publishes nothing and would cut off an app that is still starting.
+        it.each<[string, 'refused' | 'silent']>([
+          ['refuses', 'refused'],
+          ['takes the connection and never answers', 'silent'],
+        ])('MUST leave a running app alone and only re-sync when the target %s', async (_name, answer) => {
+          const { calls, restartContainer } = wireTailscaleResolve([], [servedEntry]);
+          vi.mocked(probeAppPort).mockResolvedValue(answer);
+
+          setupForResolve('connrefused', { exposureMode: 'tailscale' });
+          const result = await service.resolveAppAvailability(appUrn);
+
+          expect(restartContainer).not.toHaveBeenCalled();
+          expect(calls).toEqual(['sync']);
+          expect(result.detail).toContain('Re-synced Private VPN publishing');
+        });
       });
     });
   });
