@@ -146,6 +146,16 @@ export interface KvGeometry {
 const SWA_PATTERN: Readonly<Record<string, number>> = { gemma2: 2, gemma3: 6, 'gpt-oss': 2, cohere2: 4, llama4: 4 };
 
 /**
+ * `full_attention_interval` where llama.cpp's loader reads the key as optional with a default (src/models/<arch>.cpp, at
+ * b10760 and b12177): 4 for qwen3next, qwen35, qwen35moe, and qwen4exp (minimax-01 defaults to 8, and the catalog has no
+ * row of it). The registry's `qwen3-next:80b` file has no such key, so reading the file alone counted all 48 blocks as
+ * cached instead of 12. The same four loaders read `attention.recurrent_layers` before the interval, and apply the
+ * interval whatever shape `head_count_kv` has. This reads neither: it takes a per-layer head count as it stands, which
+ * agrees with them for files that put 0 on their linear-attention layers, as the real ones do.
+ */
+const DEFAULT_FULL_ATTENTION_INTERVAL: Readonly<Record<string, number>> = { qwen3next: 4, qwen35: 4, qwen35moe: 4, qwen4exp: 4 };
+
+/**
  * f16 KV bytes per token from llama.cpp's own metadata keys, as the runner allocates them:
  * - `attention.head_count_kv`, a scalar or a per-layer array (qwen35: 0 on the linear-attention layers
  *   that keep a fixed-size state and no per-token cache);
@@ -194,7 +204,7 @@ export function kvGeometryFromGguf(meta: Map<string, GgufValue>): KvGeometry | n
     return patternN !== undefined && il % patternN < patternN - 1;
   };
   const owning = blockCount - (int(key('attention.shared_kv_layers')) ?? 0);
-  const interval = int(key('full_attention_interval'));
+  const interval = int(key('full_attention_interval')) ?? DEFAULT_FULL_ATTENTION_INTERVAL[architecture] ?? null;
   // Multi-token-prediction blocks (qwen35 MTP: `nextn_predict_layers`) sit after the main stack and
   // are full attention: llama.cpp gives each a cache, which the measured 0.0667 MB/token of Qwen 3.8
   // 27B on Lemonade (65 blocks, 16 + 1 cached) confirms.
