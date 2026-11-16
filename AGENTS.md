@@ -106,6 +106,7 @@ Claude mirrors live under `.claude/skills/` (same content as `.cursor/skills/` w
 | `bin/agent-sweep`                   | Recent-commit gotcha scan                                                                         |
 | `bin/cihub.cjs`                     | Published Hub CLI                                                                                 |
 | `scripts/check-workflow-hygiene.ts` | Workflow guard: triggers, secret hand-overs, permissions, key blocks (`pnpm run check:workflows`) |
+| `scripts/release-check.mjs`         | Where a release has landed on each platform and store (`node scripts/release-check.mjs`)          |
 
 Authoring guide: [docs/agent/SCRIPT_AUTHORING.md](docs/agent/SCRIPT_AUTHORING.md)
 

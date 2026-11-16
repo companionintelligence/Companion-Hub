@@ -701,3 +701,47 @@ jobs:
       CI_PACKAGE_MANAGERS_TOKEN: ${{ secrets.CI_PACKAGE_MANAGERS_TOKEN }}
     with:
       tag: ${{ inputs.tag }}
+
+  # Asks every place a Hub release ships to which version it has (scripts/release-check.mjs) and writes
+  # the table to the run page. Production releases only, since a dev or prerelease run doesn't move the
+  # Latest release, the feed or the package managers. It reports and never fails the run: the download
+  # page, the CI-OS pin and the phone stores are updated outside this workflow and lag by design, and the
+  # table says which. The CI-OS row shows SKIP here because the workflow token can't read that private
+  # repository; run the script locally to see it.
+  release-check:
+    name: Check every platform
+    needs: [release, upload-r2, finalize-release-page, publish-package-managers]
+    if: always() && inputs.environment == 'production' && !inputs.prerelease && needs.release.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Ask every platform which version it has
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set +e
+          node scripts/release-check.mjs --version "${TAG}" --format markdown > "${RUNNER_TEMP}/check.md"
+          status=$?
+          set -e
+          cat "${RUNNER_TEMP}/check.md"
+          {
+            echo "## Where ${TAG} is"
+            echo
+            cat "${RUNNER_TEMP}/check.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${status}" == "1" ]]; then
+            echo "::warning::Some places don't have ${TAG} yet. The table on the run page lists them."
+          elif [[ "${status}" != "0" ]]; then
+            exit "${status}"
+          fi
