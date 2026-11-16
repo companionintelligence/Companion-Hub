@@ -2,6 +2,8 @@
 
 Rolling notes on the CI-Hub agent workflow. See [session worksheets](sessions/README.md) for context.
 
+> 2026-11-15 — curated-models-gap-pass: Take `reason`/`vision`/`tools` from what the build offers through Ollama and not from library badges, test a chat-template claim on a running Ollama before listing the model, pick a GGUF by its exact quant name and compare its size with the registry's model layer, and replay the old and new selection over every registry entry before replacing it.
+
 > 2026-11-15 — catalog-row-checker: Probe the live registries with plain GETs before writing a registry reader, run the finished reader over the whole catalog before writing its tests, and keep recorded answers behind a replay `fetch` that refuses unknown URLs.
 
 > 2026-11-15 — omlx-model-id-matching: oMLX lists a model by its directory name or `<org>--<name>` from the Hugging Face cache, not the catalog's `<org>/<name>`; the backend now matches by name and organization and hands out the listed name, found by running a throwaway oMLX over one cached model in each layout, then hardened by an independent review and one-at-a-time mutations.
