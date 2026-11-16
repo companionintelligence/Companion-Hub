@@ -399,7 +399,7 @@ describe('InferenceEnvResolver', () => {
     });
     omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
     omlxBackend.getApiKey.mockReturnValue('managed-omlx-key');
-    omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [omlxModel.backendModelId] });
+    omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3-8B-4bit'] });
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([omlxModel]);
     modelRegistry.getRecommendedVisionModel.mockReturnValue(undefined);
 
@@ -413,6 +413,74 @@ describe('InferenceEnvResolver', () => {
     const pooled = await service.resolve();
     expect(pooled.CI_LLM_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
     expect(pooled.CI_LLM_API_KEY).toBe('omlx');
+  });
+
+  // oMLX does not list the catalog's `mlx-community/<name>` (0.7.3.dev1, measured on /v1/models): a model directory is
+  // listed by its own name, the Hugging Face cache by `<org>--<name>`, the one name the cache answers to.
+  describe('chat model on oMLX', () => {
+    // Sized so the smaller one is a utility model beside the bigger chat model (`pickUtilityModel`).
+    const sized = (model: CuratedModel, recommendedVramMb: number, parameterScale: number): CuratedModel =>
+      ({ ...model, parameterScale, requirements: { ...model.requirements, recommendedVramMb } }) as CuratedModel;
+    const qwen = sized(makeLlm('qwen-omlx', 'mlx-community/Qwen3-8B-4bit', false, 'omlx'), 5000, 8);
+    const llama = sized(makeLlm('llama-omlx', 'mlx-community/Llama-3.2-3B-Instruct-4bit', false, 'omlx'), 2000, 3);
+
+    beforeEach(() => {
+      config.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'omlx',
+        preferredModel: 'qwen-omlx',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+      modelRegistry.getCuratedModel.mockImplementation((id) => [qwen, llama].find((model) => model.id === id));
+      modelRegistry.getCatalog.mockReturnValue([llama, qwen]);
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([llama, qwen]);
+      modelRegistry.getRecommendedVisionModel.mockReturnValue(undefined);
+    });
+
+    it.each([
+      ['a model directory', 'Qwen3-8B-4bit'],
+      ['the Hugging Face cache', 'mlx-community--Qwen3-8B-4bit'],
+    ])("hands the operator's model out by the name oMLX lists it under, from %s", async (_layout, listed) => {
+      // Listed first, which is what a handout that did not recognise the model would fall back to.
+      omlxBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16', listed],
+      });
+
+      const env = await service.resolve();
+
+      expect(env.CI_CHAT_MODEL).toBe(listed);
+    });
+
+    it('names the utility model by the name oMLX lists it under too', async () => {
+      // One model from the Hugging Face cache and one from a model directory.
+      omlxBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['mlx-community--Qwen3-8B-4bit', 'Llama-3.2-3B-Instruct-4bit'],
+      });
+
+      const env = await service.resolve();
+
+      expect(env.CI_CHAT_MODEL).toBe('mlx-community--Qwen3-8B-4bit');
+      expect(env.CI_UTILITY_MODEL).toBe('Llama-3.2-3B-Instruct-4bit');
+    });
+
+    it('falls back to the first model oMLX lists when it lists none of the catalog rows, not to a lookalike of the preferred one', async () => {
+      // Another build, and another publisher's of the same name, listed behind a model the catalog does not know:
+      // either would come out in its place if the handout took it for the preferred model.
+      omlxBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16', 'Qwen3-8B-8bit', 'lmstudio-community--Qwen3-8B-4bit'],
+      });
+
+      const env = await service.resolve();
+
+      expect(env.CI_CHAT_MODEL).toBe('LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16');
+    });
   });
 
   it('falls back to Ollama when the stored preference names a backend that does not exist', async () => {

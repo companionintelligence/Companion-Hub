@@ -53,7 +53,7 @@ describe('VllmBackend', () => {
 
     it('yields the server to oMLX when /v1/models says it is theirs — both default to host port 8000', async () => {
       (axios.get as any) = vi.fn().mockResolvedValue({
-        data: { data: [{ id: 'mlx-community/Qwen3-8B-4bit', owned_by: 'omlx' }] },
+        data: { data: [{ id: 'Qwen3-8B-4bit', owned_by: 'omlx' }] },
       });
 
       const health = await backend.healthCheck();

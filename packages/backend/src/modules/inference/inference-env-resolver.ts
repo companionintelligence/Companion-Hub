@@ -7,7 +7,7 @@ import { HardwareInspectorService } from './hardware-inspector.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import { CloudFallbackService, isCloudFallbackAllowed } from './cloud-fallback.service';
 import { InferenceEndpointService } from './inference-endpoint.service';
-import { isCatalogModelInstalled, isServedModelForCatalog, trackedPullCounts } from './model-availability.util';
+import { handoutIdForCatalogModel, isCatalogModelInstalled, isServedModelForCatalog, trackedPullCounts } from './model-availability.util';
 import { appInferenceRequirements, checkModelRequirements, type AppInferenceRequirements } from './app-inference-requirements';
 import {
   capHandoutAtServedWindow,
@@ -307,7 +307,8 @@ export class InferenceEnvResolver {
               profile,
             })
           : undefined;
-      env.CI_UTILITY_MODEL = utility && utility.id !== chatCurated?.id ? utility.backendModelId : chatModel;
+      env.CI_UTILITY_MODEL =
+        utility && utility.id !== chatCurated?.id ? handoutIdForCatalogModel(utility, backendHealth.modelsLoaded ?? []) : chatModel;
       if (env.CI_UTILITY_MODEL !== chatModel) {
         this.logger.info(`[InferenceEnvResolver] ${appLabel}: utility=${env.CI_UTILITY_MODEL} beside chat=${chatModel}`);
       }
@@ -496,7 +497,9 @@ export class InferenceEnvResolver {
         );
       }
     }
-    let engineId = chatCurated?.backendModelId;
+    // The engine's own spelling when it lists the model under another name (oMLX does not list the
+    // catalog's), which is also what the `includes` below must look for.
+    let engineId = chatCurated ? handoutIdForCatalogModel(chatCurated, modelsLoaded) : undefined;
     // Host-managed vLLM/Lemonade can serve models outside the Hub catalog (e.g. an
     // operator's existing `vllm serve` on :8000). When nothing catalog-shaped matches
     // but the backend reports loaded models, emit the first runtime id so apps get a

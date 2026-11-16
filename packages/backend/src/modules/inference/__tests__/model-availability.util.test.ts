@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { CuratedModel } from '@ci-hub/common/types';
 import {
+  engineModelKey,
+  handoutIdForCatalogModel,
   isCatalogModelInstalled,
   isCuratedModelInstalled,
   isOllamaTagForCatalogModel,
@@ -8,6 +10,7 @@ import {
   isServedModelForCatalog,
   resolveInstalledCatalogIds,
   resolveInstalledCatalogIdsFromServedModels,
+  sameEngineModelId,
   servedIdForCatalogModel,
   trackedPullCounts,
 } from '../model-availability.util';
@@ -125,6 +128,93 @@ describe('model-availability.util', () => {
       expect(resolveInstalledCatalogIdsFromServedModels([v15], ['user.nomic-embed-text-v1.5-GGUF'], 'lemonade')).toEqual([
         'nomic-embed-text-v1-5-lemonade',
       ]);
+    });
+  });
+
+  // oMLX 0.7.3.dev1, measured: GET /v1/models lists `Qwen3-8B-4bit` for a model directory (flat, or under an
+  // `mlx-community/` folder) and `mlx-community--Qwen3-8B-4bit` for the Hugging Face cache. The catalog row says
+  // `mlx-community/Qwen3-8B-4bit`, which no oMLX listing ever carries.
+  describe('oMLX spellings', () => {
+    const qwen = { id: 'qwen3-8b-mlx', backend: 'omlx', backendModelId: 'mlx-community/Qwen3-8B-4bit' } as CuratedModel;
+    const qwen8bit = { id: 'qwen3-8b-8bit-mlx', backend: 'omlx', backendModelId: 'mlx-community/Qwen3-8B-8bit' } as CuratedModel;
+    const llama = { id: 'llama3-2-3b-mlx', backend: 'omlx', backendModelId: 'mlx-community/Llama-3.2-3B-Instruct-4bit' } as CuratedModel;
+
+    it.each([
+      ['a model directory', 'Qwen3-8B-4bit'],
+      ['the Hugging Face cache', 'mlx-community--Qwen3-8B-4bit'],
+      ['a model directory spelled in another case', 'qwen3-8b-4bit'],
+    ])('finds the model oMLX lists from %s, and returns the spelling it lists', (_layout, listed) => {
+      expect(servedIdForCatalogModel(qwen, [listed])).toBe(listed);
+      expect(isServedModelForCatalog(qwen, [listed])).toBe(true);
+    });
+
+    it('still finds a model an operator aliased to the catalog id', () => {
+      expect(servedIdForCatalogModel(qwen, ['mlx-community/Qwen3-8B-4bit'])).toBe('mlx-community/Qwen3-8B-4bit');
+    });
+
+    it('does not find another build of the model, another model, or one hidden behind an alias', () => {
+      expect(isServedModelForCatalog(qwen, ['Qwen3-8B-8bit'])).toBe(false);
+      expect(isServedModelForCatalog(qwen, ['Llama-3.2-3B-Instruct-4bit', 'mlx-community--Qwen3-4B-4bit'])).toBe(false);
+      expect(isServedModelForCatalog(qwen, ['my-qwen'])).toBe(false);
+    });
+
+    it("finds this organization's cache entry, and not another publisher's of the same name that oMLX lists first", () => {
+      // oMLX lists its models sorted by id, so `lmstudio-community--` comes before `mlx-community--`.
+      expect(servedIdForCatalogModel(qwen, ['lmstudio-community--Qwen3-8B-4bit', 'mlx-community--Qwen3-8B-4bit'])).toBe(
+        'mlx-community--Qwen3-8B-4bit',
+      );
+      expect(servedIdForCatalogModel(qwen, ['lmstudio-community--Qwen3-8B-4bit'])).toBeNull();
+    });
+
+    it('marks only the rows oMLX lists as installed', () => {
+      const served = ['Qwen3-8B-4bit', 'LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16'];
+
+      expect(resolveInstalledCatalogIdsFromServedModels([qwen, qwen8bit, llama], served, 'omlx')).toEqual(['qwen3-8b-mlx']);
+    });
+
+    it('never folds the spellings for another engine', () => {
+      const vllm = { id: 'qwen3-8b-vllm', backend: 'vllm', backendModelId: 'mlx-community/Qwen3-8B-4bit' } as CuratedModel;
+
+      expect(servedIdForCatalogModel(vllm, ['Qwen3-8B-4bit'])).toBeNull();
+      expect(servedIdForCatalogModel(vllm, ['mlx-community/Qwen3-8B-4bit'])).toBe('mlx-community/Qwen3-8B-4bit');
+    });
+
+    it('names a model for an app or a request by the spelling oMLX lists, and the catalog spelling when it lists none', () => {
+      expect(handoutIdForCatalogModel(qwen, ['mlx-community--Qwen3-8B-4bit'])).toBe('mlx-community--Qwen3-8B-4bit');
+      expect(handoutIdForCatalogModel(qwen, ['Qwen3-8B-4bit'])).toBe('Qwen3-8B-4bit');
+      expect(handoutIdForCatalogModel(qwen, ['Llama-3.2-3B-Instruct-4bit'])).toBe('mlx-community/Qwen3-8B-4bit');
+      expect(handoutIdForCatalogModel(qwen, [])).toBe('mlx-community/Qwen3-8B-4bit');
+    });
+
+    // Only oMLX lists a model under a name the catalog does not spell, so a handout for any other engine is the
+    // catalog's, as it was before this: Lemonade's `user.` spelling is applied where the Hub registers a model.
+    it('leaves the handout of another engine as the catalog spells it', () => {
+      const ollama = { id: 'phi-4-mini', backend: 'ollama', backendModelId: 'phi4-mini' } as CuratedModel;
+      const lemonade = { id: 'nomic-embed-text-v1-5-lemonade', backend: 'lemonade', backendModelId: 'nomic-embed-text-v1.5-GGUF' } as CuratedModel;
+
+      expect(handoutIdForCatalogModel(ollama, ['phi4-mini'])).toBe('phi4-mini');
+      expect(handoutIdForCatalogModel(ollama, ['phi4-mini:latest'])).toBe('phi4-mini');
+      expect(handoutIdForCatalogModel(lemonade, ['user.nomic-embed-text-v1.5-GGUF'])).toBe('nomic-embed-text-v1.5-GGUF');
+    });
+
+    it('keys every spelling of a model alike, for residency and de-duplication', () => {
+      const keys = ['mlx-community/Qwen3-8B-4bit', 'Qwen3-8B-4bit', 'mlx-community--Qwen3-8B-4bit'].map((id) => engineModelKey('omlx', id));
+
+      expect(new Set(keys).size).toBe(1);
+      expect(sameEngineModelId('omlx', 'mlx-community/Qwen3-8B-4bit', 'Qwen3-8B-4bit')).toBe(true);
+      expect(sameEngineModelId('omlx', 'mlx-community/Qwen3-8B-4bit', 'mlx-community--Qwen3-8B-4bit')).toBe(true);
+      expect(sameEngineModelId('omlx', 'mlx-community/Qwen3-8B-4bit', 'Qwen3-8B-8bit')).toBe(false);
+    });
+
+    it("tells two publishers' builds of one name apart when it compares two ids, though a key cannot", () => {
+      expect(sameEngineModelId('omlx', 'mlx-community/Qwen3-8B-4bit', 'lmstudio-community--Qwen3-8B-4bit')).toBe(false);
+      expect(sameEngineModelId('omlx', 'mlx-community/Qwen3-8B-4bit', 'Foo--Qwen3-8B-4bit')).toBe(false);
+      expect(engineModelKey('omlx', 'lmstudio-community--Qwen3-8B-4bit')).toBe(engineModelKey('omlx', 'mlx-community--Qwen3-8B-4bit'));
+    });
+
+    it('keys the spellings apart on every other engine', () => {
+      expect(sameEngineModelId('vllm', 'mlx-community/Qwen3-8B-4bit', 'Qwen3-8B-4bit')).toBe(false);
+      expect(sameEngineModelId('ollama', 'mlx-community/Qwen3-8B-4bit', 'mlx-community--Qwen3-8B-4bit')).toBe(false);
     });
   });
 });

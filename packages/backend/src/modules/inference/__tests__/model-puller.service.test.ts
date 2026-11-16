@@ -44,6 +44,7 @@ describe('ModelPullerService.evaluatePull', () => {
   let modelRegistry: MockProxy<ModelRegistryService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
   let lemonadeBackend: MockProxy<LemonadeBackend>;
+  let omlxBackend: MockProxy<OmlxBackend>;
   let hardwareInspector: MockProxy<HardwareInspectorService>;
 
   beforeEach(async () => {
@@ -54,6 +55,7 @@ describe('ModelPullerService.evaluatePull', () => {
     modelRegistry = mock<ModelRegistryService>();
     ollamaBackend = mock<OllamaBackend>();
     lemonadeBackend = mock<LemonadeBackend>();
+    omlxBackend = mock<OmlxBackend>();
 
     hardwareInspector.getProfile.mockResolvedValue(profile);
     memoryManager.calculateBudget.mockResolvedValue({
@@ -100,7 +102,7 @@ describe('ModelPullerService.evaluatePull', () => {
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
         { provide: LemonadeBackend, useValue: lemonadeBackend },
-        { provide: OmlxBackend, useValue: mock<OmlxBackend>() },
+        { provide: OmlxBackend, useValue: omlxBackend },
         InferenceBackendRegistry,
       ],
     }).compile();
@@ -112,6 +114,40 @@ describe('ModelPullerService.evaluatePull', () => {
     const result = await service.evaluatePull('phi-4-mini');
     expect(result.canPull).toBe(true);
     expect(result.alreadyInstalled).toBe(false);
+  });
+
+  // oMLX does not list the catalog's `mlx-community/<name>` (0.7.3.dev1, measured on /v1/models): a model directory is
+  // listed by its own name, the Hugging Face cache by `<org>--<name>`. Matched exactly, every oMLX row read as missing.
+  describe('a model oMLX serves', () => {
+    const qwen = {
+      ...curated,
+      id: 'qwen3-8b-mlx',
+      backend: 'omlx',
+      backendModelId: 'mlx-community/Qwen3-8B-4bit',
+    } as CuratedModel;
+
+    beforeEach(() => {
+      modelRegistry.getCuratedModel.mockReturnValue(qwen);
+    });
+
+    it.each([
+      ['a model directory', 'Qwen3-8B-4bit'],
+      ['the Hugging Face cache', 'mlx-community--Qwen3-8B-4bit'],
+    ])('marks a model oMLX lists from %s as a no-op pull', async (_layout, listed) => {
+      omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [listed] });
+
+      const result = await service.evaluatePull('qwen3-8b-mlx');
+
+      expect(result.alreadyInstalled).toBe(true);
+    });
+
+    it('does not mark a model oMLX does not list', async () => {
+      omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3-8B-8bit'] });
+
+      const result = await service.evaluatePull('qwen3-8b-mlx');
+
+      expect(result.alreadyInstalled).toBe(false);
+    });
   });
 
   it('marks already-installed models as no-op pulls', async () => {
