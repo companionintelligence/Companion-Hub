@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * `release-check`: asks every place a Hub release ships to which version it has, and prints one table.
+ * `release-check`: asks every place a Hub release ships to which version it has and prints one table.
  * A row that is BEHIND or MISSING is a place the release hasn't reached.
  *
  *   node scripts/release-check.mjs                     # the GitHub Release marked Latest
@@ -14,7 +14,8 @@
  * and deletes the edit.
  *
  * Exit code 0 when every row is OK, INFO or SKIP; 1 when any row is BEHIND, MISSING or ERROR; 2 on a usage
- * error. scripts/__tests__/release-check.test.ts covers the parsing and comparison helpers.
+ * error; 3 when the script itself crashed, so a crash never reads as "behind".
+ * scripts/__tests__/release-check.test.ts covers the parsing and comparison helpers.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -50,22 +51,38 @@ export function normalizeVersion(value) {
   return String(value).trim().replace(/^v/, '');
 }
 
-// Numeric compare of dotted versions: 0.3.13 > 0.3.9. A part that isn't a number sorts by text.
+// Dotted numbers compare as numbers: 0.3.13 > 0.3.9. A pre-release sorts before the release it leads up
+// to (0.3.14-rc1 < 0.3.14). A part that isn't a number sorts as text. Build metadata (+...) is ignored.
 export function compareVersions(a, b) {
-  const pa = normalizeVersion(a).split(/[.+-]/);
-  const pb = normalizeVersion(b).split(/[.+-]/);
+  const [coreA, preA = ''] = normalizeVersion(a).split('+')[0].split(/-(.*)/s);
+  const [coreB, preB = ''] = normalizeVersion(b).split('+')[0].split(/-(.*)/s);
+  const pa = coreA.split('.');
+  const pb = coreB.split('.');
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
     const x = pa[i] ?? '0';
     const y = pb[i] ?? '0';
-    const nx = /^\d+$/.test(x) ? Number(x) : Number.NaN;
-    const ny = /^\d+$/.test(y) ? Number(y) : Number.NaN;
-    if (!Number.isNaN(nx) && !Number.isNaN(ny)) {
-      if (nx !== ny) return nx < ny ? -1 : 1;
+    if (/^\d+$/.test(x) && /^\d+$/.test(y)) {
+      if (Number(x) !== Number(y)) return Number(x) < Number(y) ? -1 : 1;
     } else if (x !== y) {
       return x < y ? -1 : 1;
     }
   }
-  return 0;
+  if (preA === preB) return 0;
+  if (!preA || !preB) return preA ? -1 : 1;
+  return preA < preB ? -1 : 1;
+}
+
+// The release each Play track serves: the newest one that is completed, or inProgress (a staged rollout).
+// Drafts serve nobody, so they don't count.
+export function livePlayReleases(releases) {
+  const live = [];
+  for (const track of ['production', 'beta', 'alpha', 'internal']) {
+    const serving = releases.filter((r) => r.track === track && ['completed', 'inProgress'].includes(r.status));
+    if (serving.length) {
+      live.push(serving.reduce((a, b) => (Math.max(...a.codes.map(Number)) >= Math.max(...b.codes.map(Number)) ? a : b)));
+    }
+  }
+  return live;
 }
 
 export function versionStatus(expected, found) {
@@ -138,11 +155,22 @@ const INDEX_ACCEPT = [
   'application/vnd.docker.distribution.manifest.v2+json',
 ].join(', ');
 
+// One anonymous pull token per repository, reused for every manifest request.
+const ghcrTokens = new Map();
+function ghcrToken(repository) {
+  if (!ghcrTokens.has(repository)) {
+    ghcrTokens.set(
+      repository,
+      fetchJson(`https://ghcr.io/token?scope=repository:${repository}:pull`).then((r) => r.token),
+    );
+  }
+  return ghcrTokens.get(repository);
+}
+
 // Public GHCR images only (anonymous pull token). Returns null when the tag doesn't exist.
 async function ghcrImage(repository, tag) {
-  const { token } = await fetchJson(`https://ghcr.io/token?scope=repository:${repository}:pull`);
   const res = await fetch(`https://ghcr.io/v2/${repository}/manifests/${tag}`, {
-    headers: { Authorization: `Bearer ${token}`, Accept: INDEX_ACCEPT },
+    headers: { Authorization: `Bearer ${await ghcrToken(repository)}`, Accept: INDEX_ACCEPT },
     signal: AbortSignal.timeout(60_000),
   });
   if (res.status === 404) return null;
@@ -191,7 +219,10 @@ async function playTracks(key, packageName) {
       (t.releases ?? []).map((r) => ({ track: t.track, status: r.status, name: r.name ?? null, codes: r.versionCodes ?? [] })),
     );
   } finally {
-    await call('DELETE', `${base}/${id}`);
+    await call('DELETE', `${base}/${id}`).catch(() => {
+      // A failed cleanup mustn't replace the tracks just read (or the error that stopped the read). An
+      // edit nobody commits expires by itself.
+    });
   }
 }
 
@@ -244,13 +275,23 @@ async function checkHub(requested) {
       return rows.add('GitHub Release', version, '', 'MISSING', `no GitHub Release for v${version}`);
     }
     version = normalizeVersion(release.tag_name);
-    const latest = requested ? normalizeVersion(ghJson(`repos/${HUB_REPO}/releases/latest`).tag_name) : version;
+    // Only needed when checking a release other than Latest. Its own lookup, so a failure here costs one
+    // note instead of the installer rows below.
+    let latest = version;
+    if (requested) {
+      try {
+        latest = normalizeVersion(ghJson(`repos/${HUB_REPO}/releases/latest`).tag_name);
+      } catch {
+        latest = null;
+      }
+    }
+    const latestNote = latest === version ? ', marked Latest' : latest ? `; Latest is ${latest}` : "; couldn't read which release is Latest";
     rows.add(
       'GitHub Release',
       version,
       version,
-      latest === version ? 'OK' : 'BEHIND',
-      `published ${release.published_at.slice(0, 10)}${latest === version ? ', marked Latest' : `; Latest is ${latest}`}`,
+      latest === version ? 'OK' : latest ? 'BEHIND' : 'ERROR',
+      `published ${release.published_at.slice(0, 10)}${latestNote}`,
     );
     const names = release.assets.map((a) => a.name);
     for (const [label, patterns] of INSTALLERS) {
@@ -268,8 +309,8 @@ async function checkHub(requested) {
 
   await rows.try('Docker image ci-hub', async () => {
     const image = await ghcrImage(`${ORG}/ci-hub`, version);
-    const latest = await ghcrImage(`${ORG}/ci-hub`, 'latest');
     if (!image) return rows.add('Docker image ci-hub', version, '', 'MISSING', `no ci-hub:${version}`);
+    const latest = await ghcrImage(`${ORG}/ci-hub`, 'latest');
     const arches = ['linux/amd64', 'linux/arm64'].filter((p) => !image.platforms.includes(p));
     const latestOk = latest?.digest === image.digest;
     const notes = [arches.length ? `no ${arches.join(', ')}` : 'amd64 + arm64', latestOk ? ':latest is this build' : ':latest is another build'];
@@ -313,18 +354,21 @@ async function checkHub(requested) {
     { privateRepo: true },
   );
 
-  const key = readPlayKey();
-  if (key) {
+  if (process.env.PLAY_KEY_JSON || process.env.PLAY_KEY_FILE) {
     await rows.try('Android (Google Play)', async () => {
-      const releases = await playTracks(key, PLAY_PACKAGE);
-      for (const track of ['production', 'beta', 'alpha', 'internal']) {
-        const live = releases.filter((r) => r.track === track && r.status === 'completed');
-        if (!live.length) continue;
-        const newest = live.reduce((a, b) => (Math.max(...a.codes.map(Number)) >= Math.max(...b.codes.map(Number)) ? a : b));
+      const releases = await playTracks(readPlayKey(), PLAY_PACKAGE);
+      const live = livePlayReleases(releases);
+      if (!live.length) {
+        const drafts = releases.filter((r) => r.status === 'draft').length;
+        const note = `nothing live on production, beta, alpha or internal${drafts ? `; ${drafts} draft(s) waiting` : ''}`;
+        return rows.add('Android (Google Play)', version, '', 'MISSING', note);
+      }
+      for (const release of live) {
         // Play's release name is free text ("Companion Hub" on the first upload), so fall back to the
         // version Tauri encodes in the build number.
-        const built = isReleaseVersion(newest.name) ? normalizeVersion(newest.name) : tauriVersionFromCode(Math.max(...newest.codes.map(Number)));
-        rows.version(`Android (Google Play), ${track}`, version, built, `build ${newest.codes.join(',')}`);
+        const built = isReleaseVersion(release.name) ? normalizeVersion(release.name) : tauriVersionFromCode(Math.max(...release.codes.map(Number)));
+        const rollout = release.status === 'inProgress' ? 'staged rollout; ' : '';
+        rows.version(`Android (Google Play), ${release.track}`, version, built, `${rollout}build ${release.codes.join(',')}`);
       }
     });
   } else {
@@ -398,8 +442,15 @@ async function main(argv) {
   return failing ? 1 : 0;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main(process.argv).then((code) => {
-    process.exitCode = code;
-  });
+// process.argv[1] is empty when another script imports this one through `node -e`.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main(process.argv).then(
+    (code) => {
+      process.exitCode = code;
+    },
+    (err) => {
+      console.error(`release-check crashed: ${err?.stack ?? err}`);
+      process.exitCode = 3;
+    },
+  );
 }

@@ -704,10 +704,10 @@ jobs:
 
   # Asks every place a Hub release ships to which version it has (scripts/release-check.mjs) and writes
   # the table to the run page. Production releases only, since a dev or prerelease run doesn't move the
-  # Latest release, the feed or the package managers. It reports and never fails the run: the download
-  # page, the CI-OS pin and the phone stores are updated outside this workflow and lag by design, and the
-  # table says which. The CI-OS row shows SKIP here because the workflow token can't read that private
-  # repository; run the script locally to see it.
+  # Latest release, the feed or the package managers. A place that is behind only warns: the download
+  # page, the CI-OS pin and the phone stores are updated outside this workflow and lag by design. The table
+  # says which. A crash of the script itself (exit 3) fails the job. The CI-OS row shows SKIP here because
+  # the workflow token can't read that private repository; run the script locally to see it.
   release-check:
     name: Check every platform
     needs: [release, upload-r2, finalize-release-page, publish-package-managers]

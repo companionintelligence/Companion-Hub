@@ -144,6 +144,9 @@ jobs:
         id: check
         env:
           ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_STORE_PASSWORD: ${{ secrets.ANDROID_KEY_STORE_PASSWORD }}
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
@@ -152,11 +155,21 @@ jobs:
           APPSTORE_API_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
           APPSTORE_API_PRIVATE_KEY_BASE64: ${{ secrets.APPSTORE_API_PRIVATE_KEY_BASE64 }}
         run: |
-          if [ -n "$ANDROID_KEY_BASE64" ]; then
+          # All four keystore secrets, or none. Some but not all is a configuration mistake that
+          # would only surface at signing, after a full Rust and Gradle build, so it fails here.
+          android_set=()
+          android_missing=()
+          for name in ANDROID_KEY_BASE64 ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD ANDROID_KEY_STORE_PASSWORD; do
+            if [ -n "${!name}" ]; then android_set+=("$name"); else android_missing+=("$name"); fi
+          done
+          if [ "${#android_missing[@]}" -eq 0 ]; then
             echo "android=true" >> "$GITHUB_OUTPUT"
-          else
+          elif [ "${#android_set[@]}" -eq 0 ]; then
             echo "android=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::ANDROID_KEY_BASE64 not set, so the release AAB job is skipped. See packages/mobile/STORE-READINESS.md."
+            echo "::notice::The ANDROID_KEY_* secrets are not set, so the release AAB job is skipped. See packages/mobile/STORE-READINESS.md."
+          else
+            echo "::error::The Android release lane is half-configured. Missing: ${android_missing[*]}"
+            exit 1
           fi
 
           missing=()
