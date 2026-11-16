@@ -2,6 +2,8 @@
 
 Rolling notes on the CI-Hub agent workflow. See [session worksheets](sessions/README.md) for context.
 
+> 2026-11-16 — private-vpn-app-probe: A fix for a false negative should only be able to turn a failure into a success, so the Hub asks the app behind a Private VPN Serve entry only after a refusal and changes the verdict only on an answer; the live path was proved read-only by bundling the branch's helpers with esbuild and piping them to `node -` inside `ci-hub`, and a cold review found two problems the tests could not.
+
 > 2026-11-15 — curated-models-gap-pass: Take `reason`/`vision`/`tools` from what the build offers through Ollama and not from library badges, test a chat-template claim on a running Ollama before listing the model, pick a GGUF by its exact quant name and compare its size with the registry's model layer, and replay the old and new selection over every registry entry before replacing it.
 
 > 2026-11-15 — catalog-row-checker: Probe the live registries with plain GETs before writing a registry reader, run the finished reader over the whole catalog before writing its tests, and keep recorded answers behind a replay `fetch` that refuses unknown URLs.
