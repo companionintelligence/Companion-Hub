@@ -46,8 +46,7 @@ export function speaksOpenAiCompletions(provider: CloudProviderType): boolean {
 
 /**
  * Automatic cloud fallback runs only when CI_HUB_ALLOW_CLOUD_FALLBACK is `true`. Any other value, or none, keeps
- * prompts on the appliance when local inference is down. An image's default comes from the Dockerfile build arg,
- * which build-container.yml fills per environment.
+ * prompts on the appliance when local inference is down.
  */
 export function isCloudFallbackAllowed(): boolean {
   return process.env.CI_HUB_ALLOW_CLOUD_FALLBACK === 'true';
