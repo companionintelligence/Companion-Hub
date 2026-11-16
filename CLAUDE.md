@@ -56,6 +56,14 @@ pnpm build
 
 Tauri 2 in `packages/desktop/`. Run `pnpm run local:desktop` to launch against the local source-dev stack, or `pnpm run dev:desktop` for the `.env.dev` appliance stack. macOS signing identity set in tauri.conf.json — other devs without the cert will see TCC prompts.
 
+## Releases
+
+A Hub release is one Desktop Release run (`.github/workflows/desktop-release.yml`) from `dev` with `environment=production`, `prerelease=false` and `platforms=all`. It builds the `ci-hub` image, the installers for six desktop platforms and the `cihub` CLI, uploads them to dl.ci.computer (which moves the auto-update feed) and updates Homebrew and Scoop. Its last job runs `scripts/release-check.mjs` and writes a table to the run page of every place the release should be and what each one has.
+
+Run the same check any time with `node scripts/release-check.mjs`. Add `--version 0.3.14` for another release and `PLAY_KEY_FILE=<key.json>` for the Google Play rows. The download page, the CI-OS pin and the phone stores are updated outside Desktop Release, so the table shows them behind until someone does.
+
+The phone apps build in `mobile-build.yml`. Its signed release jobs show as skipped until their signing secrets are in the production Environment.
+
 ## Packages layout
 
 `packages/backend/` · `packages/frontend/` · `packages/desktop/` · `packages/common/`
