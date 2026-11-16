@@ -1,0 +1,12 @@
+{
+  "model_format": "gguf",
+  "model_family": "qwen35",
+  "model_families": ["qwen35"],
+  "model_type": "27.3B",
+  "file_type": "Q4_K_M",
+  "renderer": "qwen3.5",
+  "parser": "qwen3.5",
+  "requires": "0.30.0",
+  "architecture": "amd64",
+  "os": "linux"
+}

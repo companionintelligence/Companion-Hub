@@ -1,0 +1,11 @@
+{
+  "model_format": "gguf",
+  "model_family": "ricursive",
+  "model_families": ["ricursive"],
+  "model_type": "64.8B",
+  "file_type": "Q4_K_M",
+  "renderer": "ripple",
+  "parser": "ripple",
+  "requires": "0.40.16",
+  "capabilities": ["completion", "tools", "thinking"]
+}

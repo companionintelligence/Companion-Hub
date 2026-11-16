@@ -1,0 +1,11 @@
+{
+  "model_format": "gguf",
+  "model_family": "flint",
+  "model_families": ["flint"],
+  "model_type": "39.8B",
+  "file_type": "NVFP4",
+  "renderer": "flint",
+  "parser": "flint",
+  "requires": "0.40.9",
+  "capabilities": ["completion", "tools", "thinking"]
+}
