@@ -90,6 +90,33 @@ describe('McpBridgeService', () => {
     });
   });
 
+  // `token_env` is a manifest field and the token goes to the URL the same manifest names.
+  describe('HTTP MCP auth token', () => {
+    const resolveAuthToken = (urn: AppUrn, name: string) =>
+      (service as unknown as { resolveAuthToken: (u: AppUrn, n: string) => Promise<string | undefined> }).resolveAuthToken(urn, name);
+
+    beforeEach(() => {
+      envUtils.envStringToMap.mockImplementation(new EnvUtils().envStringToMap);
+    });
+
+    it('is read from the app’s own app.env', async () => {
+      appFilesManager.getAppEnv.mockResolvedValue({ path: 'app.env', content: 'MIRO_ACCESS_TOKEN=app-token' });
+      await expect(resolveAuthToken(TEST_URN, 'MIRO_ACCESS_TOKEN')).resolves.toBe('app-token');
+    });
+
+    it('is never taken from the Hub’s own environment', async () => {
+      process.env.JWT_SECRET = 'hub-signing-key';
+      try {
+        appFilesManager.getAppEnv.mockResolvedValue({ path: 'app.env', content: 'OTHER=x' });
+        await expect(resolveAuthToken(TEST_URN, 'JWT_SECRET')).resolves.toBeUndefined();
+        appFilesManager.getAppEnv.mockRejectedValue(new Error('no app.env'));
+        await expect(resolveAuthToken(TEST_URN, 'JWT_SECRET')).resolves.toBeUndefined();
+      } finally {
+        delete process.env.JWT_SECRET;
+      }
+    });
+  });
+
   describe('listToolInfo', () => {
     it('should return empty when not connected', () => {
       const result = service.listToolInfo(TEST_URN);

@@ -4,6 +4,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { EnvUtils } from '@/modules/env/env.utils';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { AgentOpenApiAuth } from '@ci-hub/common/schemas';
 import { appApiAction } from '../http-method-access';
@@ -31,9 +32,10 @@ interface OpenApiOperationRef {
 @Injectable()
 export class ApiProxyService {
   constructor(
-    readonly _appFilesManager: AppFilesManager,
+    private readonly appFilesManager: AppFilesManager,
     private readonly logger: LoggerService,
     private readonly appLifecycle: AppLifecycleService,
+    private readonly envUtils: EnvUtils,
   ) {}
 
   /**
@@ -144,7 +146,7 @@ export class ApiProxyService {
 
       // Inject auth (S-AOA-2.2, S-APX-1.2), looked up only now that the caller is admitted.
       const auth = typeof options.auth === 'function' ? await options.auth() : options.auth;
-      this.injectAuth(headers, auth);
+      await this.injectAuth(appUrn, headers, auth);
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 30000);
@@ -201,10 +203,25 @@ export class ApiProxyService {
     return new URL(`http://${appStoreId}-${appName}`);
   }
 
-  private injectAuth(headers: Record<string, string>, auth?: AgentOpenApiAuth): void {
+  /**
+   * ⚠ `token_env` NAMES A VARIABLE IN THE APP'S OWN app.env, NEVER THE HUB'S. It is a manifest field
+   * any store can publish, and this request goes to that app. Read from the Hub's environment,
+   * `"token_env": "JWT_SECRET"` made every `hub_call_app_api` deliver the Hub's signing key to the
+   * app — which its own managed key could ask for whenever it liked.
+   */
+  private async readAppEnvToken(appUrn: AppUrn, name: string): Promise<string | undefined> {
+    try {
+      const appEnv = await this.appFilesManager.getAppEnv(appUrn);
+      return this.envUtils.envStringToMap(appEnv.content ?? '').get(name) || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async injectAuth(appUrn: AppUrn, headers: Record<string, string>, auth?: AgentOpenApiAuth): Promise<void> {
     if (!auth || auth.type === 'none') return;
 
-    const tokenValue = auth.token_env ? process.env[auth.token_env] : undefined;
+    const tokenValue = auth.token_env ? await this.readAppEnvToken(appUrn, auth.token_env) : undefined;
     if (!tokenValue) return;
 
     switch (auth.type) {
