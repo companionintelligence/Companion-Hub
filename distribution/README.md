@@ -33,7 +33,7 @@ Replace the old version string everywhere it appears, or run:
 ./distribution/scripts/publish-package-managers.sh "companion-hub vX.Y.Z"
 ```
 
-The update script downloads release assets, computes SHA256 hashes, and refreshes `homebrew/companion-hub.rb`, `scoop/companion-hub.json`, and the `publish/` copies. The publish script pushes to [homebrew-tap](https://github.com/companionintelligence/homebrew-tap) and [scoop-bucket](https://github.com/companionintelligence/scoop-bucket).
+The update script reads the release's `manifest.json` from `https://dl.ci.computer/vX.Y.Z/` for each installer's URL and SHA256, checks that each URL answers `200` without credentials and has the size the manifest records, and refreshes `homebrew/companion-hub.rb`, `scoop/companion-hub.json`, and the `publish/` copies. It stops before it writes anything if an installer is missing, is not at the URL the templates build, or is not downloadable. Run it after the release is uploaded: in Desktop Release, `publish-package-managers` waits for `upload-r2`. The publish script pushes to [homebrew-tap](https://github.com/companionintelligence/homebrew-tap) and [scoop-bucket](https://github.com/companionintelligence/scoop-bucket).
 
 Production desktop releases run this automatically via `.github/workflows/publish-package-managers.yml`.
 
@@ -263,6 +263,8 @@ https://github.com/companionintelligence/Companion-Hub/releases/download/v{versi
 ```
 
 See the [releases page](https://github.com/companionintelligence/Companion-Hub/releases) for the full list of artifacts per release.
+
+Homebrew and Scoop are the exception. They install from `https://dl.ci.computer/v{version}/`, the CDN behind the download page and the desktop updater, so they do not depend on this repository's visibility.
 
 ---
 

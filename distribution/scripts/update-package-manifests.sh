@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # Update Homebrew cask + Scoop manifest for a CI-Hub desktop release.
 # Usage: ./distribution/scripts/update-package-manifests.sh v0.2.28
+#
+# Both manifests install from dl.ci.computer, the CDN behind the download page and the desktop updater, and take
+# each installer's URL and sha256 from that release's manifest.json (written by .github/scripts/upload-desktop-r2.sh).
+# They used to point at GitHub Releases, which answered 404 to anyone outside the org while the Hub repository was
+# private. Run this after the release is uploaded: the publish job waits for upload-r2.
 set -euo pipefail
 
-REPO="${CI_HUB_RELEASE_REPO:-companionintelligence/Companion-Hub}"
+BASE="${CI_HUB_DOWNLOAD_BASE:-https://dl.ci.computer}"
+BASE="${BASE%/}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DIST="$ROOT/distribution"
 VERSION="${1:-}"
@@ -14,25 +20,54 @@ if [[ -z "$VERSION" ]]; then
 fi
 
 TAG="${VERSION#v}"
+VERSION="v${TAG}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-hash_asset() {
-  local pattern="$1"
-  gh release download "$VERSION" --repo "$REPO" -D "$WORK" -p "$pattern"
-  local file
-  file="$(find "$WORK" -maxdepth 1 -name "$pattern" -print -quit)"
-  if [[ -z "$file" ]]; then
-    echo "Asset not found: $pattern" >&2
+command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+
+MANIFEST="$WORK/manifest.json"
+echo "Reading $BASE/$VERSION/manifest.json ..."
+curl -fsSL --retry 3 --retry-delay 5 "$BASE/$VERSION/manifest.json" -o "$MANIFEST"
+if [[ "$(jq -r '.version' "$MANIFEST")" != "$TAG" ]]; then
+  echo "$BASE/$VERSION/manifest.json is for version $(jq -r '.version' "$MANIFEST"), not $TAG" >&2
+  exit 1
+fi
+
+# The cask and the Scoop manifest build their URLs from a version placeholder, so the URL the release really has
+# must be the one the templates below produce. Checking it here stops a change to the uploader's layout before
+# anything is published. The URL must also answer 200 without credentials (the bug this replaced) and have the
+# size the manifest records. Progress goes to stderr: the sha256 is the only thing on stdout.
+installer() {
+  local platform="$1" format="$2" expected="$3" url size status length
+  url="$(jq -r --arg p "$platform" --arg f "$format" '.platforms[$p][$f].url // empty' "$MANIFEST")"
+  size="$(jq -r --arg p "$platform" --arg f "$format" '.platforms[$p][$f].size // empty' "$MANIFEST")"
+  if [[ -z "$url" ]]; then
+    echo "manifest.json has no $platform $format installer" >&2
     exit 1
   fi
-  shasum -a 256 "$file" | awk '{print $1}'
+  if [[ "$url" != "$expected" ]]; then
+    echo "manifest.json lists $url for $platform $format; the templates in this script build $expected" >&2
+    exit 1
+  fi
+  status="$(curl -sSI --retry 3 --retry-delay 5 -o "$WORK/headers" -w '%{http_code}' "$url")"
+  if [[ "$status" != "200" ]]; then
+    echo "HEAD $url answered $status, not 200" >&2
+    exit 1
+  fi
+  length="$(tr -d '\r' <"$WORK/headers" | awk 'tolower($1) == "content-length:" { n = $2 } END { print n }')"
+  if [[ -n "$length" && "$length" != "$size" ]]; then
+    echo "$url is $length bytes; manifest.json says $size" >&2
+    exit 1
+  fi
+  echo "  ok  $platform $format ($url)" >&2
+  jq -r --arg p "$platform" --arg f "$format" '.platforms[$p][$f].sha256' "$MANIFEST"
 }
 
-echo "Hashing release assets for $VERSION ..."
-SHA_X64_DMG="$(hash_asset "Companion.Hub_${TAG}_x64.dmg")"
-SHA_AARCH64_DMG="$(hash_asset "Companion.Hub_${TAG}_aarch64.dmg")"
-SHA_X64_SETUP="$(hash_asset "Companion.Hub_${TAG}_x64-setup.exe")"
+echo "Checking installers for $VERSION ..."
+SHA_X64_DMG="$(installer darwin-x86_64 dmg "$BASE/$VERSION/macos/intel/Companion%20Hub_${TAG}_x64.dmg")"
+SHA_AARCH64_DMG="$(installer darwin-aarch64 dmg "$BASE/$VERSION/macos/arm/Companion%20Hub_${TAG}_aarch64.dmg")"
+SHA_X64_SETUP="$(installer windows-x86_64 exe "$BASE/$VERSION/windows/x64/Companion.Hub_${TAG}_x64-setup.exe")"
 
 HOMEBREW="$DIST/homebrew/companion-hub.rb"
 SCOOP="$DIST/scoop/companion-hub.json"
@@ -45,18 +80,27 @@ cask "companion-hub" do
   version "${TAG}"
 
   on_intel do
-    url "https://github.com/companionintelligence/Companion-Hub/releases/download/v#{version}/Companion.Hub_#{version}_x64.dmg"
+    url "${BASE}/v#{version}/macos/intel/Companion%20Hub_#{version}_x64.dmg"
     sha256 "${SHA_X64_DMG}"
   end
 
   on_arm do
-    url "https://github.com/companionintelligence/Companion-Hub/releases/download/v#{version}/Companion.Hub_#{version}_aarch64.dmg"
+    url "${BASE}/v#{version}/macos/arm/Companion%20Hub_#{version}_aarch64.dmg"
     sha256 "${SHA_AARCH64_DMG}"
   end
 
   name "Companion Hub"
   desc "Self-hosted app platform and local AI hub from Companion Intelligence"
   homepage "https://ci.computer/hub"
+
+  # latest.json is {"version":"v0.3.13","date":"..."}. It only moves to a version once that
+  # release has an installer for every platform, so a version seen here is fully published.
+  livecheck do
+    url "${BASE}/latest.json"
+    strategy :json do |json|
+      json["version"]&.delete_prefix("v")
+    end
+  end
 
   app "Companion Hub.app"
 
@@ -96,7 +140,7 @@ cat >"$SCOOP" <<JSON
   "description": "Self-hosted app platform and local AI hub from Companion Intelligence",
   "homepage": "https://ci.computer/hub",
   "license": "CI-Commercial-1.0",
-  "url": "https://github.com/companionintelligence/Companion-Hub/releases/download/v${TAG}/Companion.Hub_${TAG}_x64-setup.exe",
+  "url": "${BASE}/${VERSION}/windows/x64/Companion.Hub_${TAG}_x64-setup.exe",
   "hash": "${SHA_X64_SETUP}",
   "installer": {
     "script": "& \"\$dir\\\\Companion.Hub_\${version}_x64-setup.exe\" /S"
@@ -142,10 +186,16 @@ cat >"$SCOOP" <<JSON
   },
   "shortcuts": [["Companion Hub\\\\Companion Hub.exe", "Companion Hub"]],
   "checkver": {
-    "github": "https://github.com/companionintelligence/Companion-Hub"
+    "url": "${BASE}/latest.json",
+    "jsonpath": "\$.version",
+    "regex": "v?([\\\\d.]+)"
   },
   "autoupdate": {
-    "url": "https://github.com/companionintelligence/Companion-Hub/releases/download/v\$version/Companion.Hub_\$version_x64-setup.exe"
+    "url": "${BASE}/v\$version/windows/x64/Companion.Hub_\$version_x64-setup.exe",
+    "hash": {
+      "url": "${BASE}/v\$version/manifest.json",
+      "jsonpath": "\$.platforms['windows-x86_64'].exe.sha256"
+    }
   }
 }
 JSON

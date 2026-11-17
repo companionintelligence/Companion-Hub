@@ -51,6 +51,16 @@ describe('desktop-release.yml', () => {
     // six 45-minute bundle builds from running against an unpullable image.
     expect(desktopRelease).toMatch(/needs:\s*build-container/);
   });
+
+  it('publishes Homebrew and Scoop only after the installers are on the CDN', () => {
+    // The cask and the Scoop manifest install from dl.ci.computer, and the generator reads that release's
+    // manifest.json, which upload-r2 writes. Without this dependency the two jobs race.
+    const marker = '  publish-package-managers:';
+    const start = desktopRelease.indexOf(marker);
+    expect(start, `${marker} job not found in desktop-release.yml`).toBeGreaterThan(-1);
+    const job = desktopRelease.slice(start, desktopRelease.indexOf('\n\n', start));
+    expect(job).toMatch(/needs:\s*\[[^\]]*\bupload-r2\b[^\]]*\]/);
+  });
 });
 
 describe('build-container.yml', () => {
