@@ -8,6 +8,7 @@ import { DockerService } from '@/modules/docker/docker.service';
 import { AppsService } from '@/modules/apps/apps.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { EnvUtils } from '@/modules/env/env.utils';
+import { McpStdioLaunchPolicy } from '../mcp-stdio-launch-policy';
 
 const URN = 'github-mcp:ci-marketplace' as AppUrn;
 
@@ -40,6 +41,9 @@ describe('McpBridgeService.describeTool', () => {
         { provide: AppsService, useValue: mock<AppsService>() },
         { provide: AppFilesManager, useValue: mock<AppFilesManager>() },
         { provide: EnvUtils, useValue: mock<EnvUtils>() },
+        // The fake stdio server is a `node -e` child, which the real policy refuses by design; the
+        // policy has its own tests (mcp-stdio-launch-policy.test.ts).
+        { provide: McpStdioLaunchPolicy, useValue: { assertAllowed: async () => undefined } },
       ],
     }).compile();
 
