@@ -693,9 +693,11 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: ./.github/scripts/finalize-desktop-release.sh
 
+  # Homebrew and Scoop install from dl.ci.computer and take their URLs and hashes from the release's manifest.json,
+  # so this waits for upload-r2 to put it there.
   publish-package-managers:
     if: inputs.environment == 'production' && !inputs.prerelease
-    needs: [release]
+    needs: [release, upload-r2]
     uses: ./.github/workflows/publish-package-managers.yml
     secrets:
       CI_PACKAGE_MANAGERS_TOKEN: ${{ secrets.CI_PACKAGE_MANAGERS_TOKEN }}

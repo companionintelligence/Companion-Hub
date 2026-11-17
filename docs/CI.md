@@ -145,3 +145,5 @@ gh workflow run publish-package-managers.yml --repo companionintelligence/CI-Hub
 ```
 
 Required input: `tag` (release tag, for example `v0.2.28`)
+
+The cask and the Scoop manifest install from `dl.ci.computer`, and the job reads the release's `manifest.json` there. If you run it by hand, run it after Desktop Release has uploaded that tag. In Desktop Release it waits for `upload-r2`.
