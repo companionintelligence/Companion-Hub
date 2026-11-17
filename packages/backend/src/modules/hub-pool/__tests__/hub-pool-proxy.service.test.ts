@@ -591,6 +591,41 @@ describe('PoolProxyService', () => {
       expect(loadService.localInFlight()).toBe(0);
     });
 
+    it("sends a native chat on Lemonade to its /v1 and answers with the whole prompt's count", async () => {
+      // Lemonade's own /api/chat reports only the uncached part of the prompt, so Hermes never compacted.
+      lemonade.getBaseUrl.mockReturnValue('http://local-lemonade:13305');
+      vi.mocked(global.fetch).mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            object: 'chat.completion',
+            choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'OK' } }],
+            usage: { prompt_tokens: 13_912, completion_tokens: 2, total_tokens: 13_914, prompt_tokens_details: { cached_tokens: 13_908 } },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      );
+      const res = createMockResponse();
+
+      await service.forwardToLocalBackendAndRespond(
+        'lemonade',
+        '/api/chat',
+        'POST',
+        { model: MODEL, stream: false, options: { num_ctx: 65_536 }, messages: [{ role: 'user', content: 'hi' }] },
+        res,
+      );
+
+      const [url, init] = vi.mocked(global.fetch).mock.calls[0] ?? [];
+      expect(url).toBe('http://local-lemonade:13305/v1/chat/completions');
+      expect(JSON.parse(String(init?.body))).toEqual({ model: MODEL, messages: [{ role: 'user', content: 'hi' }], stream: false });
+      expect(JSON.parse(Buffer.concat(res.chunks).toString())).toMatchObject({
+        done: true,
+        message: { role: 'assistant', content: 'OK' },
+        prompt_eval_count: 13_912,
+        prompt_eval_cached_count: 13_908,
+        eval_count: 2,
+      });
+    });
+
     it('releases the local count when the request it was serving fails', async () => {
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
       peerService.listConnectedPeers.mockResolvedValue([]);
