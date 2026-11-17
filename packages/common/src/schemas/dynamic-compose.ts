@@ -28,6 +28,10 @@ const DENIED_CUSTOM_APP_HOST_PATHS = [
   '/sbin',
   '/lib',
   '/lib64',
+  // Snap-packaged Docker keeps its data-root here (`/var/snap/docker/common/var-lib-docker`), and
+  // `/snap` holds every snap's read-only image.
+  '/snap',
+  '/var/snap',
 ];
 
 /** Docker's own constraint on volume names (see `docker volume create`). */
@@ -109,7 +113,22 @@ function normalizeCustomAppHostPath(hostPath: string): string {
  */
 const ALLOWED_CUSTOM_APP_HOST_PATHS = new Set(['/etc/localtime', '/etc/timezone']);
 
-function isDeniedCustomAppHostPath(hostPath: string): boolean {
+/**
+ * Whether a host bind leaves the app sandbox.
+ *
+ * Two rules, picked by who wrote the compose (`grants.hostBindAuthor`):
+ *
+ * - `listing` — a store manifest, from any store. It may bind its own `${APP_DATA_DIR}` subtree,
+ *   the timezone files, and whatever its audited grant names; nothing else. A reject-list cannot be
+ *   complete for this author: `/home`, `/data`, `/opt` and the Hub's own folder were all open under
+ *   it, and every one of them holds another app's data or the operator's keys. No store listing
+ *   needs more (the marketplace binds nothing else outside its grants).
+ * - `operator` (the default) — a custom app, or a per-app override, written by someone on this Hub
+ *   to point an app at their own files (`/mnt/media`, `~/Music`). The reject-list applies, plus the
+ *   Hub's own folders (`grants.protectedHostPaths`), the home folders themselves and any hidden
+ *   folder (`.ssh`, `.config`, `.docker`), which is where a home directory keeps its keys.
+ */
+function isDeniedCustomAppHostPath(hostPath: string, grants?: AppSecurityGrants): boolean {
   // Unresolvable first: a path we cannot canonicalize is one we cannot clear.
   if (hasUnresolvableHostPathSyntax(hostPath)) {
     return true;
@@ -121,12 +140,37 @@ function isDeniedCustomAppHostPath(hostPath: string): boolean {
     return false;
   }
 
+  // The app's own data folder is always its own to bind, hidden subfolders included.
+  if (normalized === APP_DATA_DIR_PLACEHOLDER || normalized.startsWith(`${APP_DATA_DIR_PLACEHOLDER}/`)) {
+    return false;
+  }
+
+  if (grants?.hostBindAuthor === 'listing') {
+    return true;
+  }
+
   // A denied path is denied by its ANCESTORS too. `/var/lib/docker` is on the list, so binding
   // `/var/lib` — or `/var` — hands over the same data under a path the equality and prefix tests
   // never see. The third clause denies any directory that contains a denied path.
-  return DENIED_CUSTOM_APP_HOST_PATHS.some(
-    (denied) => normalized === denied || normalized.startsWith(`${denied}/`) || denied.startsWith(`${normalized}/`),
-  );
+  const denied = [...DENIED_CUSTOM_APP_HOST_PATHS, ...(grants?.protectedHostPaths ?? []).map(normalizeCustomAppHostPath)];
+  if (denied.some((root) => normalized === root || normalized.startsWith(`${root}/`) || root.startsWith(`${normalized}/`))) {
+    return true;
+  }
+
+  return isPrivateHomeLocation(normalized);
+}
+
+/**
+ * A home folder itself (`/home/<user>`, `/Users/<user>`, or their parent) or anything under a hidden
+ * folder. Binding `/home/kyle` hands over `~/.ssh/authorized_keys` and `~/.bashrc`, a host login for
+ * a user who is usually in the `docker` group; `/home/kyle/Music` is the bind people mean.
+ */
+function isPrivateHomeLocation(normalized: string): boolean {
+  const segments = normalized.split('/').filter(Boolean);
+  if (segments.some((segment) => segment.startsWith('.'))) {
+    return true;
+  }
+  return (segments[0] === 'home' || segments[0] === 'Users') && segments.length <= 2;
 }
 
 /**
@@ -168,7 +212,7 @@ function assertCustomAppServiceSecurity(
     if (volume.hostPath === undefined || grantedPaths.has(normalizeCustomAppHostPath(volume.hostPath))) {
       continue;
     }
-    if (isDeniedCustomAppHostPath(volume.hostPath)) {
+    if (isDeniedCustomAppHostPath(volume.hostPath, grants)) {
       report({ message: 'CUSTOM_APP_ERROR_HOST_PATH_DENIED', path: ['volumes', index, 'hostPath'] });
     }
   }
@@ -189,6 +233,16 @@ export interface AppSecurityGrants {
   pidHost?: boolean;
   /** Denied host paths this app is explicitly permitted to bind. */
   hostPaths?: string[];
+  /**
+   * Who wrote this compose, which decides the host-bind rule (`isDeniedCustomAppHostPath`):
+   * `listing` (a store manifest) binds only its own data folder; `operator` (a custom app or a
+   * per-app override, the default) is held to the reject-list. Not a grant — it travels here because
+   * this is the per-app sandbox context every check already receives. Set by the backend's
+   * `securityGrantsFor` from install provenance, never read from a manifest.
+   */
+  hostBindAuthor?: 'listing' | 'operator';
+  /** This Hub's own host folders (data root, install folder, app data), denied with their ancestors. */
+  protectedHostPaths?: readonly string[];
   /** Linux capabilities beyond the safe set this app may add. */
   capAdd?: string[];
   /** Host devices this app may pass through, as the host half of `devices`. */
@@ -405,7 +459,7 @@ const DENIED_DEVICE_PATTERNS = [
   /^\/dev\/(mem|kmem|port|root)$/i,
 ];
 
-function isDeniedDeviceHostPath(hostHalf: string): boolean {
+function isDeniedDeviceHostPath(hostHalf: string, grants?: AppSecurityGrants): boolean {
   if (hasUnresolvableHostPathSyntax(hostHalf)) {
     return true;
   }
@@ -418,7 +472,7 @@ function isDeniedDeviceHostPath(hostHalf: string): boolean {
 
   // Anything OUTSIDE `/dev` is an ordinary host path and is held to the ordinary
   // reject-list: `devices` must not become a second way to mount `/etc`.
-  return !normalized.startsWith('/dev/') && isDeniedCustomAppHostPath(hostHalf);
+  return !normalized.startsWith('/dev/') && isDeniedCustomAppHostPath(hostHalf, grants);
 }
 
 /**
@@ -494,7 +548,7 @@ export function collectServiceSecurityViolations(service: SecurityCheckedService
         continue;
       }
 
-      if (isDeniedDeviceHostPath(hostHalf)) {
+      if (isDeniedDeviceHostPath(hostHalf, grants)) {
         violations.push({ path: ['devices', index], message: 'CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED', hostPath: device });
       }
     }
@@ -520,7 +574,7 @@ export function collectServiceSecurityViolations(service: SecurityCheckedService
     if (grantedPaths.has(normalizeCustomAppHostPath(volume.hostPath))) {
       continue;
     }
-    if (isDeniedCustomAppHostPath(volume.hostPath)) {
+    if (isDeniedCustomAppHostPath(volume.hostPath, grants)) {
       violations.push({ path: ['volumes', index, 'hostPath'], message: 'CUSTOM_APP_ERROR_HOST_PATH_DENIED', hostPath: volume.hostPath });
     }
   }

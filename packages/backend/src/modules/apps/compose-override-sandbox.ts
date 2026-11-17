@@ -570,7 +570,8 @@ export function collectComposeOverrideViolations(
   }
 
   const context: ServiceCheckContext = {
-    grants: securityGrantsFor(appUrn),
+    // A user config is written by someone on this Hub, whatever store the app came from.
+    grants: securityGrantsFor(appUrn, { author: 'operator' }),
     allowedNetworks,
     hubNetworks,
     appId: appIdOf(appName, appStoreId),

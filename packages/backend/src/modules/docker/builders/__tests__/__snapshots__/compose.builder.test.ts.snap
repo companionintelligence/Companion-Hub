@@ -151,8 +151,8 @@ exports[`DockerComposeBuilder > should correctly format a complex docker-compose
     ports:
       - 3400:9091
     volumes:
-      - /host/path:/container/path:ro
-      - /host/path2:/container/path2
+      - \${APP_DATA_DIR}/host/path:/container/path:ro
+      - \${APP_DATA_DIR}/host/path2:/container/path2
     depends_on:
       - service2
     labels:

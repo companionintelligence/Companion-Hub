@@ -416,8 +416,8 @@ describe('DockerComposeBuilder', () => {
       ulimits: { nproc: 1024, nofile: 65536 },
       command: 'node index.js',
       volumes: [
-        { hostPath: '/host/path', containerPath: '/container/path', readOnly: true },
-        { hostPath: '/host/path2', containerPath: '/container/path2' },
+        { hostPath: '${APP_DATA_DIR}/host/path', containerPath: '/container/path', readOnly: true },
+        { hostPath: '${APP_DATA_DIR}/host/path2', containerPath: '/container/path2' },
       ],
       environment: [
         { key: 'NODE_ENV', value: 'production' },
