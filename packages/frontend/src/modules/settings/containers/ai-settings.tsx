@@ -17,6 +17,7 @@ import {
   rescanInferenceHardware,
   saveCloudProviderConfig,
   saveInferencePreferences,
+  saveOmlxApiKey,
   unloadInferenceModel,
   unpinInferenceModel,
 } from '@/lib/inference/inference-api';
@@ -250,6 +251,16 @@ export const AiSettingsContainer = () => {
       });
     },
     [savedOmlx],
+  );
+  // The key the desktop app just gave oMLX, stored at once: the field then shows the mask, as for a key
+  // the Hub already had.
+  const handleOmlxAdminKeySet = useCallback(
+    async (apiKey: string) => {
+      await saveOmlxApiKey(apiKey, selectedBackend);
+      setSavedOmlx((saved) => ({ ...saved, keyStored: true }));
+      setOmlxApiKey(MASKED_KEY);
+    },
+    [selectedBackend],
   );
   const omlxApiKeyNotice =
     savedOmlx.keyStored && omlxUrl.trim() !== savedOmlx.url && !omlxApiKey.trim() ? t('AI_SETTINGS_OMLX_KEY_NEW_URL') : undefined;
@@ -1087,6 +1098,8 @@ export const AiSettingsContainer = () => {
                 apiKey={omlxApiKey}
                 onApiKeyChange={handleOmlxApiKeyChange}
                 apiKeyNotice={omlxApiKeyNotice}
+                hubHasApiKey={savedOmlx.keyStored || Boolean(omlxApiKey.trim())}
+                onAdminKeySet={handleOmlxAdminKeySet}
               />
             </section>
           )}

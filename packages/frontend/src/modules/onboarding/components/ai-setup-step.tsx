@@ -5,6 +5,7 @@ import {
   fetchOmlxInstallStatus,
   fetchVllmInstallStatus,
   rescanInferenceHardware,
+  saveOmlxApiKey,
 } from '@/lib/inference/inference-api';
 import { openExternal } from '@/lib/helpers/open-external';
 import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
@@ -475,6 +476,13 @@ export const AiSetupStep = ({
     await refreshInstalledModels(runner, endpoint);
   };
 
+  // The key the desktop app just gave oMLX. Continue saves it with the rest; it is stored now too, so a
+  // setup left before Continue still leaves the Hub able to download through oMLX.
+  const handleOmlxAdminKeySet = async (apiKey: string) => {
+    setOmlxApiKey(apiKey);
+    await saveOmlxApiKey(apiKey, 'omlx');
+  };
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
     void (async () => {
@@ -854,6 +862,7 @@ export const AiSetupStep = ({
                   onEndpointUrlChange={setOmlxUrl}
                   apiKey={omlxApiKey}
                   onApiKeyChange={setOmlxApiKey}
+                  onAdminKeySet={handleOmlxAdminKeySet}
                   onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('omlx') : undefined}
                 />
               </BackendSetupGroup>

@@ -12,6 +12,7 @@ const {
   fetchLemonadeInstallStatus,
   fetchOmlxInstallStatus,
   rescanInferenceHardware,
+  saveOmlxApiKey,
 } = vi.hoisted(() => ({
   fetchInferenceOnboardingProfile: vi.fn(),
   fetchOllamaInstallStatus: vi.fn(),
@@ -19,6 +20,7 @@ const {
   fetchLemonadeInstallStatus: vi.fn(),
   fetchOmlxInstallStatus: vi.fn(),
   rescanInferenceHardware: vi.fn(),
+  saveOmlxApiKey: vi.fn(),
 }));
 
 vi.mock('@/lib/inference/inference-api', () => ({
@@ -28,6 +30,7 @@ vi.mock('@/lib/inference/inference-api', () => ({
   fetchLemonadeInstallStatus,
   fetchOmlxInstallStatus,
   rescanInferenceHardware,
+  saveOmlxApiKey,
 }));
 
 vi.mock('@/components/ui/Skeleton/Skeleton', () => ({
@@ -1498,6 +1501,35 @@ describe('AiSetupStep', () => {
 
       expect(mockOpenExternal).toHaveBeenCalledWith(expect.stringMatching(/^https:\/\/huggingface\.co\//));
       expect((screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement).checked).toBe(false);
+    });
+
+    it('offers the desktop app a key for a keyless oMLX, stores it in the Hub and hands it to Continue', async () => {
+      const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+      tauriWindow.__TAURI_INTERNALS__ = {
+        invoke: vi.fn(async (command: string) => {
+          if (command === 'omlx_admin_key_status_command') return { keySet: false };
+          if (command === 'omlx_setup_admin_key_command') return { apiKey: 'ci-hub-set-key' };
+          return null;
+        }),
+      };
+      try {
+        api.profile = macProfile();
+        fetchOmlxInstallStatus.mockImplementation(() => Promise.resolve(omlxReady));
+        saveOmlxApiKey.mockResolvedValue(undefined);
+        const user = userEvent.setup();
+        const { onComplete } = renderStep();
+
+        await user.click(await screen.findByTestId('omlx-admin-key-set-btn'));
+
+        await waitFor(() => expect(screen.getByTestId('omlx-admin-key-value')).toHaveTextContent('ci-hub-set-key'));
+        expect(saveOmlxApiKey).toHaveBeenCalledWith('ci-hub-set-key', 'omlx');
+        expect((screen.getByTestId('omlx-api-key-input') as HTMLInputElement).value).toBe('ci-hub-set-key');
+
+        await user.click(screen.getByTestId('ai-continue-btn'));
+        expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ backend: 'omlx', omlxApiKey: 'ci-hub-set-key' }));
+      } finally {
+        delete tauriWindow.__TAURI_INTERNALS__;
+      }
     });
 
     it('keeps the key the desktop app set when it installed oMLX, and hands it to Continue', async () => {

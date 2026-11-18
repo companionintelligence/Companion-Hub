@@ -32,6 +32,39 @@ export function automaticRunnersForBackend(backend: string): AutomaticInferenceR
   return AUTOMATIC_RUNNERS_BY_BACKEND[backend] ?? DEFAULT_AUTOMATIC_INFERENCE_RUNNERS;
 }
 
+/** What the desktop app answers when it gave oMLX a key: the key, shown once, and a warning when oMLX took only part of it. */
+export interface OmlxAdminKeySetup {
+  apiKey: string;
+  warning?: string;
+}
+
+/**
+ * Ask the desktop app to give the oMLX on this Mac its first main key. Rejects with oMLX's reason
+ * when it already has one or does not listen on loopback alone, and in a browser.
+ */
+export async function setUpOmlxAdminKey(): Promise<OmlxAdminKeySetup> {
+  const invoke = getTauriInvoke();
+  if (!invoke) throw new Error('Only the desktop app can set a key for oMLX.');
+  const result = (await invoke('omlx_setup_admin_key_command')) as OmlxAdminKeySetup | null;
+  if (!result?.apiKey) throw new Error('The desktop app did not return a key.');
+  return result;
+}
+
+/**
+ * Whether oMLX's own settings on this Mac hold a main key, as the desktop app reads them. `null` when
+ * it cannot say: in a browser, or a desktop app too old to have the command.
+ */
+export async function omlxAdminKeyIsSet(): Promise<boolean | null> {
+  const invoke = getTauriInvoke();
+  if (!invoke) return null;
+  try {
+    const result = (await invoke('omlx_admin_key_status_command')) as { keySet?: unknown } | null;
+    return typeof result?.keySet === 'boolean' ? result.keySet : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Ask the desktop shell to install and launch host inference runners.
  * A browser build has no native process boundary, so it is a no-op there.

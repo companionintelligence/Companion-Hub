@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import { resetMobileClientCacheForTests } from '@/lib/mobile-connection';
 import { AiSettingsContainer } from '../ai-settings';
@@ -18,6 +18,7 @@ const {
   fetchLemonadeInstallStatus,
   fetchOmlxInstallStatus,
   saveInferencePreferences,
+  saveOmlxApiKey,
   rescanInferenceHardware,
   pinInferenceModel,
   saveCloudProviderConfig,
@@ -38,6 +39,7 @@ const {
   fetchLemonadeInstallStatus: vi.fn(),
   fetchOmlxInstallStatus: vi.fn(),
   saveInferencePreferences: vi.fn(),
+  saveOmlxApiKey: vi.fn(),
   rescanInferenceHardware: vi.fn(),
   pinInferenceModel: vi.fn(),
   saveCloudProviderConfig: vi.fn(),
@@ -60,6 +62,7 @@ vi.mock('@/lib/inference/inference-api', () => ({
   fetchLemonadeInstallStatus,
   fetchOmlxInstallStatus,
   saveInferencePreferences,
+  saveOmlxApiKey,
   rescanInferenceHardware,
   pinInferenceModel,
   saveCloudProviderConfig,
@@ -835,6 +838,46 @@ describe('AiSettingsContainer', () => {
       await user.click(screen.getByTestId('ai-settings-confirm-btn'));
       await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
       expect(saveInferencePreferences.mock.calls[0]?.[0]).toMatchObject({ backend: 'omlx', omlxApiKey: 'omlx-new-key' });
+    });
+
+    describe('the key the desktop app can give oMLX', () => {
+      type TauriWindow = Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+      afterEach(() => {
+        delete (window as TauriWindow).__TAURI_INTERNALS__;
+      });
+      const desktopApp = () => {
+        const invoke = vi.fn(async (command: string) => {
+          if (command === 'omlx_admin_key_status_command') return { keySet: false };
+          if (command === 'omlx_setup_admin_key_command') return { apiKey: 'ci-hub-new-key' };
+          return null;
+        });
+        (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
+        return invoke;
+      };
+
+      it('is offered while the Hub has no oMLX key, and stores the one it sets', async () => {
+        desktopApp();
+        saveOmlxApiKey.mockResolvedValue(undefined);
+        fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx' });
+        const user = userEvent.setup();
+        renderAiSettings();
+
+        await user.click(await screen.findByTestId('omlx-admin-key-set-btn'));
+
+        await waitFor(() => expect(screen.getByTestId('omlx-admin-key-value')).toHaveTextContent('ci-hub-new-key'));
+        expect(saveOmlxApiKey).toHaveBeenCalledWith('ci-hub-new-key', 'omlx');
+        expect(screen.getByTestId('omlx-api-key-input')).toHaveValue('••••••••');
+      });
+
+      it('is not offered when the Hub already stores a key', async () => {
+        const invoke = desktopApp();
+        fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx', preferredOmlxApiKey: '••••••••' });
+        renderAiSettings();
+
+        await waitFor(() => expect(screen.getByTestId('omlx-api-key-input')).toHaveValue('••••••••'));
+        expect(screen.queryByTestId('omlx-admin-key-prompt')).not.toBeInTheDocument();
+        expect(invoke).not.toHaveBeenCalledWith('omlx_admin_key_status_command');
+      });
     });
 
     it("leaves oMLX's key alone when another engine is saved", async () => {

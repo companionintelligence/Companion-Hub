@@ -6,6 +6,7 @@ import type { OmlxStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import { AlertCircle, CheckCircle2, Download, Loader2, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { AutoInstallRunnerButton } from './auto-install-runner-button';
+import { isLocalOmlxUrl, OmlxAdminKeyPrompt } from './omlx-admin-key-prompt';
 
 const OMLX_DOCS_URL = 'https://github.com/jundot/omlx';
 
@@ -38,6 +39,10 @@ interface OmlxSetupCardProps {
   onApiKeyChange?: (value: string) => void;
   /** Shown under the key field, as when a saved key belongs to another URL. */
   apiKeyNotice?: string;
+  /** Whether the Hub holds a key for oMLX. The key field counts too. */
+  hubHasApiKey?: boolean;
+  /** Store a key the desktop app gave oMLX. Without it the card offers no key. */
+  onAdminKeySet?: (apiKey: string) => Promise<void>;
   onAutoInstall?: () => Promise<void>;
 }
 
@@ -115,6 +120,8 @@ export const OmlxSetupCard = ({
   apiKey,
   onApiKeyChange,
   apiKeyNotice,
+  hubHasApiKey,
+  onAdminKeySet,
   onAutoInstall,
 }: OmlxSetupCardProps) => {
   const { t } = useTranslation();
@@ -172,6 +179,13 @@ export const OmlxSetupCard = ({
             defaultEndpointUrl={status.endpointUrl}
             idSuffix="ready"
           />
+          {onAdminKeySet && (
+            <OmlxAdminKeyPrompt
+              localOmlxReady={isLocalOmlxUrl(endpointUrl?.trim() || status.endpointUrl)}
+              hubHasKey={hubHasApiKey ?? Boolean(apiKey?.trim())}
+              onKeySet={onAdminKeySet}
+            />
+          )}
         </CardContent>
       </Card>
     );

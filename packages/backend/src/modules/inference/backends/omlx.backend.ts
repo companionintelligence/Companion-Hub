@@ -356,10 +356,18 @@ export class OmlxBackend implements InferenceBackend {
     return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
   }
 
+  /**
+   * Why oMLX refused a download, and what to do. A keyless oMLX takes a first key on its own page;
+   * the desktop app can also set one from Settings > AI.
+   */
   private adminKeyError(baseUrl: string, repoId: string): Error {
+    const page = omlxAdminPageUrl(baseUrl);
     return new Error(
-      `oMLX refused to download ${repoId}: its admin API needs oMLX's API key, and ${this.getApiKey() ? 'the key the Hub has is not it' : 'the Hub has none'}. ` +
-        `Enter oMLX's API key in Settings > AI, or download the model from oMLX's own page at ${omlxAdminPageUrl(baseUrl)}.`,
+      this.getApiKey()
+        ? `oMLX refused to download ${repoId}: its admin API needs oMLX's main API key, and the key the Hub has is not it. ` +
+            `Enter the key oMLX uses (on its page at ${page}) in Settings > AI.`
+        : `oMLX refused to download ${repoId}: its admin API needs oMLX's main API key, and the Hub has none. ` +
+            `Set an API key on oMLX's page at ${page}, then enter it in Settings > AI.`,
     );
   }
 

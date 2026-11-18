@@ -528,9 +528,16 @@ describe('OmlxBackend', () => {
       const error = await backend.pullModel(REPO).catch((err: Error) => err);
 
       expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toContain('Settings > AI');
       expect((error as Error).message).toContain('the Hub has none');
-      expect((error as Error).message).toContain('http://localhost:8000/admin');
+      expect((error as Error).message).toContain("Set an API key on oMLX's page at http://localhost:8000/admin, then enter it in Settings > AI.");
+    });
+
+    it('says the key the Hub has is not the one oMLX uses when the admin API refuses it', async () => {
+      post.mockRejectedValue(httpError(401, { detail: 'Invalid API key' }));
+
+      await expect(backend.pullModel(REPO)).rejects.toThrow(
+        'the key the Hub has is not it. Enter the key oMLX uses (on its page at http://omlx.lan:8000/admin) in Settings > AI.',
+      );
     });
 
     it("throws oMLX's own error when the download fails", async () => {

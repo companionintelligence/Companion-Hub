@@ -148,9 +148,9 @@ export async function rescanInferenceHardware(): Promise<void> {
 
 export async function saveInferencePreferences(body: {
   backend: InferenceBackendType;
-  model: string | null;
-  embeddingModel: string | null;
-  visionModel: string | null;
+  model?: string | null;
+  embeddingModel?: string | null;
+  visionModel?: string | null;
   vllmApiKey?: string | null;
   vllmUrl?: string | null;
   omlxUrl?: string | null;
@@ -177,6 +177,15 @@ export async function saveInferencePreferences(body: {
       },
     } as Parameters<typeof updatePreferences>[0]),
   );
+}
+
+/**
+ * Store oMLX's API key and change nothing else. A save names a backend, so this sends the one the Hub
+ * has (or `fallbackBackend` when it has none yet) and leaves every other field out.
+ */
+export async function saveOmlxApiKey(apiKey: string, fallbackBackend: InferenceBackendType): Promise<void> {
+  const preferences = await fetchInferencePreferences();
+  await saveInferencePreferences({ backend: preferences?.preferredBackend ?? fallbackBackend, omlxApiKey: apiKey });
 }
 
 export async function fetchVllmInstallStatus(url?: string, apiKey?: string) {
