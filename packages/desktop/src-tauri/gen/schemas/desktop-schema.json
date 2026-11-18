@@ -351,6 +351,12 @@
           "markdownDescription": "All Companion Hub desktop IPC commands. Required once the webview leaves\ntauri://localhost for the Hub UI (hub.ci.localhost / *.ci.lan / etc.): Tauri 2\nrejects app commands from a remote origin unless they are explicitly allowed\nhere. Without this grant, Open data folder / Start Hub / installers fail with\n\"Command … not allowed by ACL\" on every OS.\n"
         },
         {
+          "description": "The desktop Portal sign-in's token request (`portal_token_request_command`, src/portal_token.rs):\none POST of an OAuth token grant to this desktop's own Portal token endpoint. Sent natively\nbecause Portal answers CORS for its own UI only, so the WebView could never read the reply.\nGranted to the Hub's own origins only (capabilities/ci-auth.json), like the keychain.\n",
+          "type": "string",
+          "const": "allow-portal-token-request",
+          "markdownDescription": "The desktop Portal sign-in's token request (`portal_token_request_command`, src/portal_token.rs):\none POST of an OAuth token grant to this desktop's own Portal token endpoint. Sent natively\nbecause Portal answers CORS for its own UI only, so the WebView could never read the reply.\nGranted to the Hub's own origins only (capabilities/ci-auth.json), like the keychain.\n"
+        },
+        {
           "description": "Sign-in over a loopback redirect and OS keychain storage for ci-auth.\n#### This default permission set includes:\n\n- `allow-begin-loopback`\n- `allow-await-loopback`\n- `allow-cancel-loopback`\n- `allow-secure-get`\n- `allow-secure-set`\n- `allow-secure-remove`",
           "type": "string",
           "const": "ci-auth:default",
