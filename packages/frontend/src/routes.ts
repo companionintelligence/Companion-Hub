@@ -5,6 +5,8 @@ export default [
   // Inert on web/desktop (its loader redirects away when not on a phone).
   route('connect', './modules/mobile-connect/pages/connect-page.tsx', { id: 'mobile-connect' }),
   route('connect/advanced', './modules/mobile-connect/pages/connect-advanced-page.tsx', { id: 'mobile-connect-advanced' }),
+  // Finishes an app's sign-in with this page's session token (self-gated: sends to /login when signed out).
+  route('sso', './modules/auth/pages/edge-sso-page.tsx', { id: 'edge-sso' }),
   // Unauthenticated routes
   layout('./components/routes/unauthenticated-route.tsx', [
     route('login', './modules/auth/pages/login-page.tsx', { id: 'login' }),
@@ -18,6 +20,8 @@ export default [
   // Memory-connect finishing interstitial: the connect callback lands here while
   // the app restarts to pick up its new creds (full-page, self-gated).
   route('memory-connect/finishing', './modules/app/pages/memory-connect-finishing-page.tsx', { id: 'memory-connect-finishing' }),
+  // A Connect Memory navigation's next step, asked with this page's session token (self-gated like /sso).
+  route('memory-connect/continue', './modules/app/pages/memory-connect-continue-page.tsx', { id: 'memory-connect-continue' }),
   // Where a connect started in the phone app ends, in the browser it handed the consent to:
   // a "Back to the Hub app" button (full-page, self-gated like the finishing page).
   route('memory-connect/return-to-app', './modules/app/pages/memory-connect-return-page.tsx', { id: 'memory-connect-return' }),

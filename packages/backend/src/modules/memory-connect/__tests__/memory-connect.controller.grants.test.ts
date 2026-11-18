@@ -69,30 +69,25 @@ describe('MemoryConnectController per-app grants', () => {
   });
 
   it('sends a person without the restart grant back to the Hub instead of to CI Memory', async () => {
-    const res = response();
-
-    await controller.start(APP, undefined, session(8), res);
+    const { url } = await controller.start({ app: APP }, session(8));
 
     expect(service.startConnect).not.toHaveBeenCalled();
-    expect(res.redirect).toHaveBeenCalledWith('/?memoryConnect=denied');
+    expect(url).toBe('/?memoryConnect=denied');
   });
 
   it('starts the connect for a person with the restart grant', async () => {
-    const res = response();
-
-    await controller.start(APP, undefined, session(7), res);
+    const { url } = await controller.start({ app: APP }, session(7));
 
     expect(service.startConnect).toHaveBeenCalledWith(APP, undefined, '7', { host: 'hub.example.com' });
-    expect(res.redirect).toHaveBeenCalledWith('https://memory.example.org/api/connect?app=ci-openclaw%3Aci-marketplace&state=s');
+    expect(url).toBe('https://memory.example.org/api/connect?app=ci-openclaw%3Aci-marketplace&state=s');
   });
 
   it("lands on the Hub with its own marker when CI Memory's consent page has no address this browser can open", async () => {
-    const res = response();
     service.startConnect.mockRejectedValueOnce(new MemoryConsentUnreachableException());
 
-    await controller.start(APP, undefined, session(7), res);
+    const { url } = await controller.start({ app: APP }, session(7));
 
-    expect(res.redirect).toHaveBeenCalledWith('/?memoryConnect=local_only');
+    expect(url).toBe('/?memoryConnect=local_only');
   });
 
   it('refuses Disconnect with APP_ACTION_GRANT_DENIED to a person without the restart grant', async () => {
@@ -109,19 +104,35 @@ describe('MemoryConnectController per-app grants', () => {
 
   // The grant can be taken away while the person is on CI Memory's consent page.
   it('asks for the restart grant again at the callback and sends a refused person to the Hub', async () => {
-    const res = response();
-
-    await controller.callback('the-code', 'state', undefined, session(8), res);
+    const { url } = await controller.callback({ code: 'the-code', state: 'state' }, session(8));
 
     expect(service.handleCallback).toHaveBeenCalledWith('the-code', 'state', '8', expect.any(Function));
-    expect(res.redirect).toHaveBeenCalledWith('/?memoryConnect=denied');
+    expect(url).toBe('/?memoryConnect=denied');
   });
 
   it('lets the callback finish for a person who still holds the restart grant', async () => {
-    const res = response();
+    const { url } = await controller.callback({ code: 'the-code', state: 'state' }, session(7));
 
-    await controller.callback('the-code', 'state', undefined, session(7), res);
+    expect(url).toBe('/memory-connect/finishing');
+  });
 
-    expect(res.redirect).toHaveBeenCalledWith('/memory-connect/finishing');
+  /*
+   * The links themselves decide nothing: a navigation carries no header and the Hub's cookie is no
+   * credential (it reaches every app on the Hub's host). They hand the browser to the Hub page,
+   * which asks the POST routes above with its own session token.
+   */
+  it('hands the start and callback navigations to the Hub page, carrying their parameters', () => {
+    const start = response();
+    controller.startNavigation(APP, 'https://ci-openclaw.example.org/', start);
+    const startUrl = new URL(start.redirect.mock.calls[0]?.[0], 'https://hub.example.com');
+    expect(startUrl.pathname).toBe('/memory-connect/continue');
+    expect(Object.fromEntries(startUrl.searchParams)).toEqual({ step: 'start', app: APP, next: 'https://ci-openclaw.example.org/' });
+
+    const callback = response();
+    controller.callbackNavigation('the-code', 'the-state', undefined, callback);
+    const callbackUrl = new URL(callback.redirect.mock.calls[0]?.[0], 'https://hub.example.com');
+    expect(Object.fromEntries(callbackUrl.searchParams)).toEqual({ step: 'callback', code: 'the-code', state: 'the-state' });
+    expect(service.startConnect).not.toHaveBeenCalled();
+    expect(service.handleCallback).not.toHaveBeenCalled();
   });
 });

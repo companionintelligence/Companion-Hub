@@ -1,6 +1,6 @@
 import { client } from '@/api-client/client.gen';
 import { isSessionExpiryExempt } from '@/lib/session-expiry-policy';
-import { usesCrossOriginDesktopApi } from '@/lib/hub-runtime-mode';
+import { getHubRuntimeMode, usesCrossOriginDesktopApi } from '@/lib/hub-runtime-mode';
 import { isMobileClient, isTauriMobileSync } from '@/lib/mobile-connection';
 import { runtimeFetch } from './runtime-fetch';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
@@ -202,9 +202,16 @@ function persistDesktopSession(id: string | null): void {
   takeLegacyWebViewSessionId();
 }
 
-/** Desktop release builds must survive full app quit/relaunch — sessionStorage does not. */
+/**
+ * Desktop release builds must survive full app quit/relaunch — sessionStorage does not.
+ *
+ * A plain browser too: its session token is the only credential it has (the Hub's cookie
+ * authenticates nothing, see the backend's `session-token.ts`), and sessionStorage is per tab, so a
+ * second tab or a link opened in one would start signed out. localStorage is still scoped to this
+ * page's scheme, host and port, so an app served on another port of the same host cannot read it.
+ */
 function usesPersistentSessionStorage(): boolean {
-  return usesCrossOriginDesktopApi();
+  return usesCrossOriginDesktopApi() || getHubRuntimeMode() === 'browser';
 }
 
 function readStoredSessionId(): string | null {

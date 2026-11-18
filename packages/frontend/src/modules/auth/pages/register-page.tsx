@@ -1,6 +1,6 @@
 import { registerMutation } from '@/api-client/@tanstack/react-query.gen';
 import { userContext } from '@/api-client';
-import { markHubSessionIssuedAt } from '@/lib/api-fetch';
+import { markHubSessionIssuedAt, setTauriSessionId } from '@/lib/api-fetch';
 import { firstOf, HUB_BOOTSTRAP_FETCH_MS } from '@/lib/hub-resume';
 import { resolveRegistrationStatus } from '@/lib/registration-cache';
 import { followSafeRedirect } from '@/lib/safe-redirect';
@@ -61,6 +61,11 @@ export default () => {
         return;
       }
 
+      // The Hub's cookie is no credential: the signed token in the body is what signs this page in.
+      const sessionToken = (data as Record<string, unknown> | undefined)?.sessionId;
+      if (typeof sessionToken === 'string' && sessionToken) {
+        setTauriSessionId(sessionToken);
+      }
       markHubSessionIssuedAt();
       setUserContext({ isLoggedIn: true, isConfigured: true });
       refreshUserContext();

@@ -30,6 +30,7 @@ import { Controller, Get, type INestApplication, type MiddlewareConsumer, Module
 import { APP_FILTER, APP_PIPE } from '@nestjs/core';
 import { Test, type TestingModule } from '@nestjs/testing';
 import cookieParser from 'cookie-parser';
+import { mintSessionToken, openSessionToken } from '../session-token';
 import { json, urlencoded } from 'express';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
@@ -422,7 +423,8 @@ async function proofFor(who: Identity, purpose: 'sign-in' | 'link' = 'sign-in', 
 }
 
 const sessionFor = (userId: number) => sessionManager.createSession(userId);
-const asSession = (sessionId: string) => ({ cookie: `${SESSION_COOKIE_NAME}=${sessionId}` });
+/** How a signed-in client presents its session: the signed token in the header. The cookie is no credential. */
+const asSession = (sessionId: string) => ({ 'x-ci-hub-session': mintSessionToken(sessionId, 'jwt-secret-for-the-http-test') });
 
 /** `who` linked to person `userId` through the real route, from a signed-in session. */
 async function linkDid(userId: number, who: Identity) {
@@ -759,7 +761,7 @@ describe('Sign in with a DID — flag on', () => {
   });
 
   describe('POST /api/auth/did/verify', () => {
-    it('signs in the person the DID is linked to: a session cookie, and the session is theirs', async () => {
+    it('signs in the person the DID is linked to: a signed session token, and the session is theirs', async () => {
       const key = newIdentity();
       await linkDid(1, key);
       const { body } = await proofFor(key);
@@ -768,12 +770,10 @@ describe('Sign in with a DID — flag on', () => {
 
       expect(reply.status).toBe(201);
       expect(reply.json).toEqual({ success: true, sessionId: expect.any(String) });
-      expect(reply.setCookie).toHaveLength(1);
-      expect(reply.setCookie[0]).toMatch(new RegExp(`^${SESSION_COOKIE_NAME}=${reply.json.sessionId};`));
-      expect(reply.setCookie[0]).toMatch(/HttpOnly/i);
-      expect(reply.setCookie[0]).toMatch(/SameSite=Lax/i);
-      expect(sessionManager.resolveSessionUserId(reply.json.sessionId)).toBe(1);
-      const signedIn = await api.links({ headers: asSession(reply.json.sessionId) });
+      const sessionId = openSessionToken(reply.json.sessionId, 'jwt-secret-for-the-http-test');
+      expect(sessionId).not.toBeNull();
+      expect(sessionManager.resolveSessionUserId(sessionId as string)).toBe(1);
+      const signedIn = await api.links({ headers: { 'x-ci-hub-session': reply.json.sessionId } });
       expect(signedIn.json).toEqual({ links: [{ did: key.did, linkedAt: expect.any(String) }] });
     });
 
@@ -1290,7 +1290,11 @@ describe('Sign in with a DID — flag on', () => {
     });
   });
 
-  describe('the session cookie a sign-in sets', () => {
+  /**
+   * The cookie reached every port on the Hub's host, so every app the operator opened beside the Hub
+   * could replay it as a full session (2026-11-17 audit). It is no credential now.
+   */
+  describe('what a sign-in hands the client', () => {
     const signIn = async (headers: Record<string, string> = {}) => {
       const key = newIdentity();
       await linkDid(1, key);
@@ -1298,26 +1302,30 @@ describe('Sign in with a DID — flag on', () => {
       return api.verify((await proofFor(key)).body, { headers });
     };
 
-    it('is the cookie every sign-in sets behind an https proxy: Secure, for the whole site, for seven days, on the Hub’s domain', async () => {
+    it('plants no session cookie, and clears the one an older Hub planted, under both shapes it could have', async () => {
       const reply = await signIn({ 'x-forwarded-proto': 'https', 'x-forwarded-host': HUB_HOST });
 
       expect(reply.status).toBe(201);
-      expect(reply.setCookie).toHaveLength(1);
-      expect(reply.setCookie[0]).toMatch(new RegExp(`^${SESSION_COOKIE_NAME}=${reply.json.sessionId};`));
-      expect(reply.setCookie[0]).toMatch(/; Max-Age=604800;/);
-      expect(reply.setCookie[0]).toMatch(/; Path=\/;/);
-      expect(reply.setCookie[0]).toMatch(/; Domain=\.hub\.example\.test;/);
-      expect(reply.setCookie[0]).toMatch(/; HttpOnly/);
-      expect(reply.setCookie[0]).toMatch(/; Secure/);
-      expect(reply.setCookie[0]).toMatch(/; SameSite=Lax/);
+      expect(reply.setCookie).toHaveLength(2);
+      for (const cookie of reply.setCookie) {
+        expect(cookie).toMatch(new RegExp(`^${SESSION_COOKIE_NAME}=;`));
+        expect(cookie).toMatch(/Expires=Thu, 01 Jan 1970/);
+      }
+      expect(reply.setCookie.some((cookie) => /; Domain=\.hub\.example\.test/.test(cookie))).toBe(true);
+      expect(reply.setCookie.some((cookie) => !/; Domain=/.test(cookie))).toBe(true);
     });
 
-    it('is not Secure, and has no Domain, when the request did not come over https through the proxy', async () => {
-      const reply = await signIn();
+    it('accepts the token it returned, and nothing made from the bare session id', async () => {
+      const key = newIdentity();
+      await linkDid(1, key);
+      const reply = await api.verify((await proofFor(key)).body);
+      const sessionId = openSessionToken(reply.json.sessionId, 'jwt-secret-for-the-http-test') as string;
 
-      expect(reply.setCookie[0]).not.toMatch(/; Secure/);
-      expect(reply.setCookie[0]).not.toMatch(/; Domain=/);
-      expect(reply.setCookie[0]).toMatch(/; Max-Age=604800;/);
+      expect((await api.links({ headers: { 'x-ci-hub-session': reply.json.sessionId } })).status).toBe(200);
+      // What an app on another port of the same host receives, and what it would replay.
+      expect((await api.links({ headers: { cookie: `${SESSION_COOKIE_NAME}=${sessionId}` } })).status).toBe(401);
+      expect((await api.links({ headers: { 'x-ci-hub-session': sessionId } })).status).toBe(401);
+      expect((await api.links({ headers: { 'x-ci-hub-session': `${sessionId}.forged` } })).status).toBe(401);
     });
   });
 

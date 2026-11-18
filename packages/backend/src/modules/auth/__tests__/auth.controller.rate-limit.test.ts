@@ -25,12 +25,15 @@ import { MemoryApiKeyCheck } from '../memory-api-key.check';
 import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
 import { SessionManager } from '../session.manager';
 
+/** What every config mock here answers for `jwtSecret`, so the controller can sign session tokens. */
+const TEST_JWT_SECRET = 'test-jwt-secret';
+
 vi.mock('@/common/helpers/this-host-address', async (importOriginal) =>
   (await import('@/tests/utils/appliance-host-address')).onAppliance(await importOriginal()),
 );
 
 const req = (ip: string, extra: Record<string, unknown> = {}) => ({ ip, headers: {}, ...extra }) as unknown as Request;
-const res = () => ({ cookie: vi.fn() }) as unknown as Response;
+const res = () => ({ cookie: vi.fn(), clearCookie: vi.fn() }) as unknown as Response;
 const wrongCredentials = () => new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
 
 describe('AuthController rate limiting', () => {
@@ -60,7 +63,9 @@ describe('AuthController rate limiting', () => {
 
     controller = moduleRef.get(AuthController);
     authService = moduleRef.get(AuthService);
-    moduleRef.get(ConfigurationService).get.mockReturnValue({ experimental: { insecureCookie: false } } as never);
+    moduleRef
+      .get(ConfigurationService)
+      .get.mockImplementation(((key: string) => (key === 'jwtSecret' ? TEST_JWT_SECRET : { experimental: { insecureCookie: false } })) as never);
     moduleRef.get(ConfigurationService).getConfig.mockReturnValue({} as never);
   });
 

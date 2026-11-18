@@ -32,6 +32,10 @@ import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
 import { HubSessionGuard } from '../hub-session.guard';
 import { MemoryApiKeyCheck } from '../memory-api-key.check';
 import { SessionManager } from '../session.manager';
+import { mintSessionToken } from '../session-token';
+
+/** What every config mock here answers for `jwtSecret`, so the controller can sign session tokens. */
+const TEST_JWT_SECRET = 'test-jwt-secret';
 
 const DID = 'did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw';
 const PROOF = { challengeId: '11111111-2222-4333-8444-555555555555', idToken: 'a.b.c' };
@@ -69,9 +73,12 @@ const req = (overrides: RequestOverrides = {}) =>
     method: 'POST',
     originalUrl: '/api/auth/did/link',
     url: '/api/auth/did/link',
+    get(this: { headers: Record<string, string | undefined> }, name: string) {
+      return this.headers[name.toLowerCase()];
+    },
     ...overrides,
   }) as unknown as Request;
-const res = () => ({ cookie: vi.fn() }) as unknown as Response & { cookie: ReturnType<typeof vi.fn> };
+const res = () => ({ cookie: vi.fn(), clearCookie: vi.fn() }) as unknown as Response & { cookie: ReturnType<typeof vi.fn> };
 
 /** What a client reads from a thrown error: the status and the i18n key the exception filter turns into `message`. */
 async function answerOf(promise: Promise<unknown>): Promise<{ status: number; message: string }> {
@@ -126,7 +133,7 @@ describe('AuthController — sign in with a DID', () => {
     }).compile();
 
     const config = moduleRef.get(ConfigurationService) as unknown as MockProxy<ConfigurationService>;
-    config.get.mockReturnValue({ experimental: { insecureCookie: false } } as never);
+    config.get.mockImplementation(((key: string) => (key === 'jwtSecret' ? TEST_JWT_SECRET : { experimental: { insecureCookie: false } })) as never);
     config.getConfig.mockReturnValue({} as never);
 
     return moduleRef;
@@ -319,12 +326,14 @@ describe('AuthController — sign in with a DID', () => {
   });
 
   describe('POST /auth/did/verify', () => {
-    it('signs in the person the DID is linked to: a session, the session cookie, the old id replaced', async () => {
+    it('signs in the person the DID is linked to: a session, its signed token, the old id replaced', async () => {
       const response = res();
 
-      await expect(controller.didVerify(PROOF as never, response, req({ cookies: { [SESSION_COOKIE_NAME]: 'sid-old' } }))).resolves.toEqual({
+      await expect(
+        controller.didVerify(PROOF as never, response, req({ headers: { 'x-ci-hub-session': mintSessionToken('sid-old', TEST_JWT_SECRET) } })),
+      ).resolves.toEqual({
         success: true,
-        sessionId: 'sid-new',
+        sessionId: mintSessionToken('sid-new', TEST_JWT_SECRET),
       });
 
       expect(didAuth.verify).toHaveBeenCalledExactlyOnceWith(PROOF.challengeId, PROOF.idToken, 'sign-in');
@@ -332,7 +341,9 @@ describe('AuthController — sign in with a DID', () => {
       expect(userRepository.getUserDtoById).toHaveBeenCalledExactlyOnceWith(7);
       expect(sessionManager.createSession).toHaveBeenCalledExactlyOnceWith(7);
       expect(sessionManager.deleteSession).toHaveBeenCalledExactlyOnceWith('sid-old');
-      expect(response.cookie).toHaveBeenCalledWith(SESSION_COOKIE_NAME, 'sid-new', expect.objectContaining({ httpOnly: true, sameSite: 'lax' }));
+      // No session cookie: it reached every app on the Hub's host. The one an older Hub planted is cleared.
+      expect(response.cookie).not.toHaveBeenCalled();
+      expect(response.clearCookie).toHaveBeenCalledWith(SESSION_COOKIE_NAME, expect.objectContaining({ httpOnly: true, sameSite: 'lax' }));
       expectNothingCreated();
     });
 
@@ -381,7 +392,10 @@ describe('AuthController — sign in with a DID', () => {
 
       it('lets the person in when the check itself lets them in, as it does when Portal cannot be reached', async () => {
         // assertStillOrgMember resolves for "unknown": its own tests pin which Portal answers those are.
-        await expect(controller.didVerify(PROOF as never, res(), req())).resolves.toEqual({ success: true, sessionId: 'sid-new' });
+        await expect(controller.didVerify(PROOF as never, res(), req())).resolves.toEqual({
+          success: true,
+          sessionId: mintSessionToken('sid-new', TEST_JWT_SECRET),
+        });
       });
 
       it('does not ask Portal about a person who is revoked, or about a DID nobody linked', async () => {

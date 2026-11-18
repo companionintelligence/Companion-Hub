@@ -4,8 +4,20 @@ import { createHash } from 'node:crypto';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { AuthMiddleware, sessionIdsFromRequest } from '../auth.middleware';
 import { SessionManager } from '../session.manager';
+import { mintSessionToken } from '../session-token';
 import type { Request } from 'express';
 import jsonwebtoken from 'jsonwebtoken';
+
+/** The secret every config mock below answers for `jwtSecret`, so a session token opens. */
+const JWT_SECRET = 'jwt-secret';
+const tokenFor = (sessionId: string) => mintSessionToken(sessionId, JWT_SECRET);
+/** How the Hub page presents a session: the signed token in `X-CI-Hub-Session`, and no cookie needed. */
+const sessionRequest = (sessionId: string) =>
+  ({ cookies: {}, headers: {}, query: {}, get: (name: string) => (name === 'x-ci-hub-session' ? tokenFor(sessionId) : undefined) }) as never;
+const configAnswering =
+  (values: Record<string, string> = {}) =>
+  (key: string) =>
+    ({ jwtSecret: JWT_SECRET, ...values })[key];
 
 /** A Hub that holds a registration, the only kind on which the Portal device key is accepted. */
 const registered = { holdsRegistration: async () => true } as never;
@@ -36,6 +48,7 @@ describe('AuthMiddleware transient DB handling', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     sessionUserCache.get.mockReturnValue(undefined);
+    config.get.mockImplementation(configAnswering());
     middleware = new AuthMiddleware(sessionManager as never, config as never, userRepository as never, sessionUserCache as never);
   });
 
@@ -45,7 +58,7 @@ describe('AuthMiddleware transient DB handling', () => {
     sessionManager.getSessionExpiresAt.mockReturnValue(null);
     userRepository.getUserDtoById.mockRejectedValueOnce(transient).mockResolvedValueOnce({ id: 1, username: 'op' });
 
-    const req = { cookies: { 'ci-hub-sid': 'sess' }, headers: {}, get: () => undefined, query: {} } as never;
+    const req = sessionRequest('sess');
     const next = vi.fn();
 
     await middleware.use(req, {} as never, next);
@@ -61,7 +74,7 @@ describe('AuthMiddleware transient DB handling', () => {
     sessionManager.getSessionExpiresAt.mockReturnValue(null);
     userRepository.getUserDtoById.mockRejectedValue(transient);
 
-    const req = { cookies: { 'ci-hub-sid': 'sess' }, headers: {}, get: () => undefined, query: {} } as never;
+    const req = sessionRequest('sess');
 
     await expect(middleware.use(req, {} as never, vi.fn())).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(userRepository.getUserDtoById).toHaveBeenCalledTimes(3);
@@ -72,7 +85,7 @@ describe('AuthMiddleware transient DB handling', () => {
     sessionManager.getSessionExpiresAt.mockReturnValue(null);
     userRepository.getUserDtoById.mockRejectedValue(new Error('Failed query: select id from user'));
 
-    const req = { cookies: { 'ci-hub-sid': 'sess' }, headers: {}, get: () => undefined, query: {} } as never;
+    const req = sessionRequest('sess');
     const next = vi.fn();
 
     await middleware.use(req, {} as never, next);
@@ -87,7 +100,7 @@ describe('AuthMiddleware transient DB handling', () => {
     userRepository.getUserDtoById.mockResolvedValue({ id: 3, username: 'gone@example.com', accessStatus: 'revoked' });
     sessionManager.destroyAllSessionsByUserId.mockResolvedValue(undefined as never);
 
-    const req = { cookies: { 'ci-hub-sid': 'sess' }, headers: {}, get: () => undefined, query: {} } as never;
+    const req = sessionRequest('sess');
     const next = vi.fn();
 
     await middleware.use(req, {} as never, next);
@@ -99,14 +112,38 @@ describe('AuthMiddleware transient DB handling', () => {
 });
 
 describe('sessionIdsFromRequest', () => {
-  it('lists cookie then header then query, skipping duplicates', () => {
-    const req = {
-      cookies: { 'ci-hub-sid': 'cookie-sess' },
-      query: { session_id: 'query-sess' },
-      get: (name: string) => (name === 'x-ci-hub-session' ? 'header-sess' : undefined),
-    } as unknown as Request;
+  const request = ({ cookie, header, query, path = '/api/apps' }: { cookie?: string; header?: string; query?: string; path?: string }) =>
+    ({
+      originalUrl: path,
+      cookies: cookie ? { 'ci-hub-sid': cookie } : {},
+      query: query ? { session_id: query } : {},
+      get: (name: string) => (name === 'x-ci-hub-session' ? header : undefined),
+    }) as unknown as Request;
 
-    expect(sessionIdsFromRequest(req)).toEqual(['cookie-sess', 'header-sess', 'query-sess']);
+  it('opens the signed token in the header', () => {
+    expect(sessionIdsFromRequest(request({ header: tokenFor('header-sess') }), JWT_SECRET)).toEqual(['header-sess']);
+  });
+
+  /*
+   * The 2026-11-17 audit: browsers send a host's cookies to every PORT on it, so an app the operator
+   * opened at `<hub host>:<its port>` received `ci-hub-sid` and replayed it as an operator session.
+   */
+  it('never reads the session cookie', () => {
+    expect(sessionIdsFromRequest(request({ cookie: 'cookie-sess' }), JWT_SECRET)).toEqual([]);
+    expect(sessionIdsFromRequest(request({ cookie: tokenFor('cookie-sess') }), JWT_SECRET)).toEqual([]);
+  });
+
+  it('refuses a bare session id, a forged signature, and a token signed with another secret', () => {
+    expect(sessionIdsFromRequest(request({ header: 'header-sess' }), JWT_SECRET)).toEqual([]);
+    expect(sessionIdsFromRequest(request({ header: 'header-sess.AAAA' }), JWT_SECRET)).toEqual([]);
+    expect(sessionIdsFromRequest(request({ header: mintSessionToken('header-sess', 'another-hub') }), JWT_SECRET)).toEqual([]);
+    expect(sessionIdsFromRequest(request({ header: tokenFor('header-sess') }), undefined)).toEqual([]);
+  });
+
+  it('reads `?session_id=` on a live-update stream only, and only as a token', () => {
+    expect(sessionIdsFromRequest(request({ query: tokenFor('sse-sess'), path: '/api/sse/app?session_id=x' }), JWT_SECRET)).toEqual(['sse-sess']);
+    expect(sessionIdsFromRequest(request({ query: 'sse-sess', path: '/api/sse/app' }), JWT_SECRET)).toEqual([]);
+    expect(sessionIdsFromRequest(request({ query: tokenFor('sse-sess'), path: '/api/apps' }), JWT_SECRET)).toEqual([]);
   });
 });
 
@@ -144,6 +181,7 @@ describe('AuthMiddleware session fallback', () => {
       undefined,
       registered,
     );
+    config.get.mockImplementation(configAnswering());
     sessionManager.getSessionExpiresAt.mockReturnValue(null);
   });
 
@@ -151,7 +189,7 @@ describe('AuthMiddleware session fallback', () => {
     sessionManager.resolveSessionUserId.mockReturnValue(7);
     sessionUserCache.get.mockReturnValue({ id: 7, username: 'cached' });
 
-    const req = { cookies: { 'ci-hub-sid': 'sess' }, headers: {}, get: () => undefined, query: {} } as never;
+    const req = sessionRequest('sess');
     const next = vi.fn();
 
     await middleware.use(req, {} as never, next);
@@ -162,26 +200,22 @@ describe('AuthMiddleware session fallback', () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
-  it('prefers the newer of a valid cookie and a valid header session', async () => {
-    sessionManager.resolveSessionUserId.mockImplementation((id: string) => (id === 'old-sess' ? 1 : id === 'new-sess' ? 2 : null));
-    sessionManager.getSessionExpiresAt.mockImplementation((id: string) => (id === 'old-sess' ? 1_000 : id === 'new-sess' ? 9_000 : null));
-    userRepository.getUserDtoById.mockResolvedValue({ id: 2, username: 'hello@lifescope.io' });
+  it('authenticates nobody from a live session id in the cookie', async () => {
+    sessionManager.resolveSessionUserId.mockReturnValue(2);
+    userRepository.getUserDtoById.mockResolvedValue({ id: 2, username: 'op' });
 
-    const req = {
-      cookies: { 'ci-hub-sid': 'old-sess' },
-      headers: {},
-      query: {},
-      get: (name: string) => (name === 'x-ci-hub-session' ? 'new-sess' : undefined),
-    } as unknown as Request;
+    const req = { cookies: { 'ci-hub-sid': 'live-sess' }, headers: {}, query: {}, get: () => undefined } as unknown as Request;
     const next = vi.fn();
 
     await middleware.use(req, {} as never, next);
 
-    expect(req.user).toEqual({ id: 2, username: 'hello@lifescope.io' });
-    expect(req.hubSessionId).toBe('new-sess');
+    expect(req.user).toBeUndefined();
+    expect(req.hubSessionId).toBeUndefined();
+    expect(sessionManager.resolveSessionUserId).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledOnce();
   });
 
-  it('authenticates from X-CI-Hub-Session when the cookie session is stale', async () => {
+  it('authenticates from the X-CI-Hub-Session token whatever the cookie says', async () => {
     sessionManager.resolveSessionUserId.mockImplementation((id: string) => (id === 'live-sess' ? 2 : null));
     userRepository.getUserDtoById.mockResolvedValue({ id: 2, username: 'op' });
 
@@ -189,7 +223,7 @@ describe('AuthMiddleware session fallback', () => {
       cookies: { 'ci-hub-sid': 'stale-sess' },
       headers: {},
       query: {},
-      get: (name: string) => (name === 'x-ci-hub-session' ? 'live-sess' : undefined),
+      get: (name: string) => (name === 'x-ci-hub-session' ? tokenFor('live-sess') : undefined),
     } as unknown as Request;
     const next = vi.fn();
 
@@ -203,7 +237,7 @@ describe('AuthMiddleware session fallback', () => {
 
   it('falls through to the Hub API key when a stale cookie is the only session id', async () => {
     sessionManager.resolveSessionUserId.mockReturnValue(null);
-    config.get.mockImplementation((key: string) => (key === 'ciHubApiKey' ? 'hub-api-key' : undefined));
+    config.get.mockImplementation(configAnswering({ ciHubApiKey: 'hub-api-key' }));
     userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'op' });
 
     const req = {
@@ -452,7 +486,13 @@ describe('AuthMiddleware and app sessions', () => {
   }
 
   const requestWith = ({ cookies = {}, header, query = {} }: { cookies?: Record<string, string>; header?: string; query?: Record<string, string> }) =>
-    ({ cookies, headers: {}, query, get: (name: string) => (name === 'x-ci-hub-session' ? header : undefined) }) as unknown as Request;
+    ({
+      originalUrl: '/api/sse/app',
+      cookies,
+      headers: {},
+      query,
+      get: (name: string) => (name === 'x-ci-hub-session' ? header : undefined),
+    }) as unknown as Request;
 
   let middleware: AuthMiddleware;
   let parentSessionId: string;
@@ -463,6 +503,7 @@ describe('AuthMiddleware and app sessions', () => {
     sessionUserCache.get.mockReturnValue(undefined);
     userRepository.getUserDtoById.mockResolvedValue({ id: 7, username: 'op@example.com' });
     const sessionManager = new SessionManager(memoryCache() as never);
+    config.get.mockImplementation(configAnswering());
     middleware = new AuthMiddleware(sessionManager, config as never, userRepository as never, sessionUserCache as never);
     parentSessionId = await sessionManager.createSession(7);
     appSessionId = (await sessionManager.createAppSession(7, parentSessionId, 'importer:ci-marketplace' as never)) as string;
@@ -471,7 +512,9 @@ describe('AuthMiddleware and app sessions', () => {
   it.each([
     ['the Hub session cookie', (id: string) => requestWith({ cookies: { 'ci-hub-sid': id } })],
     ['the X-CI-Hub-Session header', (id: string) => requestWith({ header: id })],
+    ['a signed X-CI-Hub-Session token', (id: string) => requestWith({ header: tokenFor(id) })],
     ['the session_id query parameter', (id: string) => requestWith({ query: { session_id: id } })],
+    ['a signed session_id token', (id: string) => requestWith({ query: { session_id: tokenFor(id) } })],
     ['its own app-session cookie', (id: string) => requestWith({ cookies: { 'ci-hub-app-sid': id } })],
   ])('does not accept an app-session id presented in %s', async (_label, build) => {
     const req = build(appSessionId);
@@ -488,7 +531,7 @@ describe('AuthMiddleware and app sessions', () => {
 
   it('still accepts the Hub session the app session was derived from', async () => {
     // The control for the refusals above: this harness does authenticate a real session id.
-    const req = requestWith({ cookies: { 'ci-hub-sid': parentSessionId } });
+    const req = requestWith({ header: tokenFor(parentSessionId) });
 
     await middleware.use(req, {} as never, vi.fn());
 

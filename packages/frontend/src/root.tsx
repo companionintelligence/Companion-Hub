@@ -18,6 +18,7 @@ import { ThemeProvider } from './components/providers/theme/theme-provider';
 import { normalizeApiErrorMessage } from './lib/normalize-api-error';
 import { TranslatableError } from './types/error.types';
 import { clearStaleServerSession, getTauriSessionId } from '@/lib/api-fetch';
+import { adoptSessionTokenFromFragment } from '@/lib/session-fragment';
 import { refreshHubSessionIfDue, setServerSessionRefreshRecommendedAt } from '@/lib/hub-session-refresh';
 import { handleSessionExpired } from '@/lib/session-expired';
 import { isSessionExpiryExempt } from '@/lib/session-expiry-policy';
@@ -135,7 +136,10 @@ function describeUnknownError(error: unknown): string {
   }
 }
 
-// Add session header for Tauri release mode (cookies don't work cross-origin over HTTP)
+// A redirect-based sign-in leaves its session token in the fragment; keep it before the first request.
+adoptSessionTokenFromFragment();
+
+// Every request presents the session token: the Hub's cookie authenticates nothing (backend `session-token.ts`).
 client.interceptors.request.use((request) => {
   const sid = getTauriSessionId();
   if (sid) {

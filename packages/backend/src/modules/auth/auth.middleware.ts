@@ -1,5 +1,4 @@
 import { timingSafeEqual } from 'node:crypto';
-import { SESSION_COOKIE_NAME } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { withTransientDbRetry } from '@/core/database/transient-db-retry';
 import { isTransientDbError } from '@/modules/api-keys/api-key.errors';
@@ -14,6 +13,7 @@ import { UserRepository } from '../user/user.repository';
 import { SESSION_TTL_SECONDS, SessionManager } from './session.manager';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { OBSERVABILITY_READ_METHODS } from './observability-read.guard';
+import { openSessionToken } from './session-token';
 
 /**
  * Constant-time secret comparison, length-safe.
@@ -42,17 +42,28 @@ function addSessionId(ids: string[], seen: Set<string>, value: unknown) {
   ids.push(value);
 }
 
+/** The live-update streams, whose `EventSource` cannot send a header. `originalUrl`, as above. */
+function isSseRoute(req: Request): boolean {
+  const path = (req.originalUrl ?? req.url ?? '').split('?')[0] ?? '';
+  return path.startsWith('/api/sse/');
+}
+
 /**
- * Session ids the client presented. Preference among *valid* ids is the newest
- * expiry (see `AuthMiddleware`): a stale `ci-hub-sid` must not hide a live
- * `X-CI-Hub-Session` from the login response body.
+ * Session ids the client presented, each opened from a signed session token (`session-token.ts`).
+ *
+ * ⚠ NOT THE COOKIE. `ci-hub-sid` reaches every port on the Hub's host — every app the operator opens
+ * there — so it is never read here, and a bare id copied out of it opens nothing. The token comes from
+ * `X-CI-Hub-Session`, which only the Hub page sets, and on a live-update stream alone from
+ * `?session_id=`, because `EventSource` cannot send a header. Preference among *valid* ids is the
+ * newest expiry (see `AuthMiddleware`).
  */
-export function sessionIdsFromRequest(req: Request): string[] {
+export function sessionIdsFromRequest(req: Request, jwtSecret: string | undefined): string[] {
   const ids: string[] = [];
   const seen = new Set<string>();
-  addSessionId(ids, seen, req.cookies?.[SESSION_COOKIE_NAME]);
-  addSessionId(ids, seen, typeof req.get === 'function' ? req.get('x-ci-hub-session') : undefined);
-  addSessionId(ids, seen, req.query?.session_id);
+  addSessionId(ids, seen, openSessionToken(typeof req.get === 'function' ? req.get('x-ci-hub-session') : undefined, jwtSecret));
+  if (isSseRoute(req)) {
+    addSessionId(ids, seen, openSessionToken(req.query?.session_id, jwtSecret));
+  }
   return ids;
 }
 
@@ -237,7 +248,7 @@ export class AuthMiddleware implements NestMiddleware {
   async use(req: Request, _: Response, next: NextFunction) {
     const bearerToken = req.headers.authorization;
 
-    const presentedIds = sessionIdsFromRequest(req);
+    const presentedIds = sessionIdsFromRequest(req, this.config.get('jwtSecret'));
     const preferredSessionId = pickNewestSessionId(presentedIds, this.sessionManager);
     const orderedIds = preferredSessionId ? [preferredSessionId, ...presentedIds.filter((id) => id !== preferredSessionId)] : presentedIds;
 
