@@ -28,7 +28,7 @@ function fail(message) {
 
 /** The hex keys `update_signature.rs` lists in `constName`. */
 export function listedKeys(source, constName) {
-  const match = source.match(new RegExp(`const ${constName}: &\\[&str\\] = &\\[([^\\]]*)\\];`));
+  const match = source.match(new RegExp(`const ${constName}:\\s*&\\[&str\\]\\s*=\\s*&\\[([^\\]]*)\\];`));
   if (!match) throw new Error(`${constName} not found in update_signature.rs`);
   return [...match[1].matchAll(/"([0-9a-fA-F]{64})"/g)].map(([, key]) => key.toLowerCase());
 }

@@ -154,8 +154,16 @@ describe('sign-desktop-manifest.mjs', () => {
   it('reads both key lists from the real update_signature.rs', () => {
     const source = fs.readFileSync(KEYS_FILE, 'utf8');
     for (const list of ['PRODUCTION_UPDATE_KEYS', 'DEV_UPDATE_KEYS']) {
-      expect(() => listedKeys(source, list)).not.toThrow();
+      expect(listedKeys(source, list)).toHaveLength(1);
     }
+  });
+
+  it('reads a list rustfmt has wrapped onto several lines, or with several keys', () => {
+    const [a, b] = ['a'.repeat(64), 'B'.repeat(64)];
+    const wrapped = `pub(crate) const PRODUCTION_UPDATE_KEYS: &[&str] =\n    &["${a}"];\n`;
+    expect(listedKeys(wrapped, 'PRODUCTION_UPDATE_KEYS')).toEqual([a]);
+    const several = `pub(crate) const DEV_UPDATE_KEYS: &[&str] = &[\n    "${a}",\n    "${b}",\n];\n`;
+    expect(listedKeys(several, 'DEV_UPDATE_KEYS')).toEqual([a, b.toLowerCase()]);
   });
 });
 

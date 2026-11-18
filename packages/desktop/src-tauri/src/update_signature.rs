@@ -22,10 +22,12 @@ use ring::signature::{UnparsedPublicKey, ED25519};
 pub(crate) const SIGNED_MESSAGE_PREFIX: &[u8] = b"companion-hub desktop update manifest v1\n";
 
 /// Ed25519 public keys (32 bytes, hex) that sign production releases (`dl.ci.computer`).
-pub(crate) const PRODUCTION_UPDATE_KEYS: &[&str] = &[];
+pub(crate) const PRODUCTION_UPDATE_KEYS: &[&str] =
+    &["b5a7554340560b4efc30dfcc0135d93d029bec3c1f12e360537ee711c771ed50"];
 
 /// Ed25519 public keys (32 bytes, hex) that sign dev releases (`dl-dev.ci.computer`).
-pub(crate) const DEV_UPDATE_KEYS: &[&str] = &[];
+pub(crate) const DEV_UPDATE_KEYS: &[&str] =
+    &["1834daee641c654d834e1433089222e1f4d8a21093a3be8a865d650007c737e2"];
 
 /// Debug builds only: a key to accept as well, for a local update server (`CI_HUB_UPDATE_BASE_URL`).
 #[cfg(debug_assertions)]
