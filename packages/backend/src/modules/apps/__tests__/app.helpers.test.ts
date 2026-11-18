@@ -236,8 +236,19 @@ describe('AppHelpers', () => {
       const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
 
       expect(written.get('CI_CLOUD_URL')).toBe('https://portal.example');
-      expect(written.get('GOOGLE_MAPS_KEY')).toBe('operator-maps-key');
       expect(written.get('PORTAL_OIDC_ISSUER')).toBe('https://portal.example');
+      // The operator's Google Maps key is not every app's: only first-party Memory's.
+      expect(written.has('GOOGLE_MAPS_KEY')).toBe(false);
+    });
+
+    it("keeps the operator's maps key for first-party Memory, over Portal's", async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory', urn: OFFICIAL_MEMORY_URN });
+      envUtils.envStringToMap.mockReturnValue(new Map([['GOOGLE_MAPS_KEY', 'operator-maps-key']]));
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+      expect(written.get('GOOGLE_MAPS_KEY')).toBe('operator-maps-key');
     });
 
     it('SECURITY: a manifest cannot name a Hub-only secret as its Memory env and inherit it', async () => {

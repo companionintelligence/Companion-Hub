@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { HUB_ENV_KEYS_INHERITED_BY_APPS, hubContainerName } from '@/common/constants';
+import { HUB_ENV_KEYS_INHERITED_BY_APPS, HUB_ENV_KEYS_INHERITED_BY_FIRST_PARTY_MEMORY, hubContainerName } from '@/common/constants';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
@@ -71,8 +71,11 @@ const HUB_ONLY_SECRET_ENV_VAR_SET: ReadonlySet<string> = new Set(HUB_ONLY_SECRET
  * passed through under one: `"token_env": "JWT_SECRET"` would otherwise hand the app that secret.
  * Nor is a name no Hub integration may write (`hubIntegrationMayWrite`).
  */
-export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration'>): ReadonlySet<string> {
+export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration' | 'urn' | 'source'>): ReadonlySet<string> {
   const keys = new Set(HUB_ENV_KEYS_INHERITED_BY_APPS);
+  if (receivesPortalDeviceKey(config)) {
+    for (const key of HUB_ENV_KEYS_INHERITED_BY_FIRST_PARTY_MEMORY) keys.add(key);
+  }
   const memory = config.hub_integration?.memory;
   for (const name of [memory?.url_env, memory?.token_env]) {
     if (name && !HUB_ONLY_SECRET_ENV_VAR_SET.has(name) && hubIntegrationMayWrite(name)) keys.add(name);
