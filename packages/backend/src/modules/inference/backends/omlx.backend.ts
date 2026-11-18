@@ -27,7 +27,7 @@ export function buildOmlxRemediation(): { command: string; hint: string } {
     command: OMLX_INSTALL_COMMAND,
     hint:
       'oMLX runs on Apple Silicon (macOS 15+) and serves MLX weights from Hugging Face through an OpenAI-compatible API, including embeddings. ' +
-      'Install from https://github.com/jundot/omlx with the command above. `omlx serve --model-dir ~/models` runs it in the foreground instead.',
+      'To install it, run the Homebrew command from https://github.com/jundot/omlx in Terminal. `omlx serve --model-dir ~/models` runs it in the foreground instead.',
   };
 }
 
