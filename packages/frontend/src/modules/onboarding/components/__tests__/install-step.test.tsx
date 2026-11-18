@@ -308,6 +308,25 @@ describe('InstallStep', () => {
     expect(screen.getByTestId('inference-runners-phase')).toHaveTextContent('2 runner(s) unavailable on this machine');
   });
 
+  it("shows a working runner's warning, and not its plain detail", async () => {
+    const warning = 'The Hub could not give oMLX an API key, so it cannot download models through it yet: oMLX answered HTTP 503.';
+    const invoke = vi.fn(async (command: string) =>
+      command === 'install_and_start_inference_runners_command'
+        ? [
+            { runner: 'omlx', state: 'installed_and_started', detail: `oMLX was installed and started. ${warning}`, warning },
+            { runner: 'ollama', state: 'already_running', detail: 'The runner is already reachable.' },
+          ]
+        : null,
+    );
+    (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
+    getInstalledApps.mockResolvedValue(sdkOk({ installed: [] }));
+
+    render(<InstallStep apps={[]} onComplete={onComplete} aiSetupConfig={runnerSetupConfig} />);
+
+    expect((await screen.findAllByTestId('inference-runner-warning')).map((node) => node.textContent)).toEqual([warning]);
+    expect(screen.queryByTestId('inference-runner-reason')).not.toBeInTheDocument();
+  });
+
   it('shows the count once when a runner gives no reason', async () => {
     const invoke = vi.fn(async (command: string) =>
       command === 'install_and_start_inference_runners_command'
@@ -539,6 +558,22 @@ describe('InstallStep', () => {
         saveInferencePreferences.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
       );
       expect(pinInferenceModel).not.toHaveBeenCalledWith('qwen3-8b-mlx');
+    });
+
+    it("stores the key typed for an oMLX on another machine, never this Mac's", async () => {
+      fetchTrackedModels.mockResolvedValue([] as never);
+
+      render(
+        <InstallStep
+          apps={[]}
+          onComplete={onComplete}
+          aiSetupConfig={{ ...omlxConfig, omlxUrl: 'http://studio.lan:8000', omlxApiKey: 'studio-key' }}
+        />,
+      );
+
+      await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+      expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ omlxUrl: 'http://studio.lan:8000', omlxApiKey: 'studio-key' }));
+      expect(saveInferencePreferences).not.toHaveBeenCalledWith(expect.objectContaining({ omlxApiKey: 'omlx-main-key' }));
     });
 
     it('marks a download the Hub refused to start as failed, with its reason, instead of waiting on it', async () => {

@@ -67,6 +67,11 @@ pub struct InferenceRunnerResult {
     /// frontend gets it: it is left out of the persisted results and out of `Debug`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<RunnerApiKey>,
+    /// What the person needs to know about a runner that otherwise works, such as an oMLX the Hub
+    /// could not give a key. Setup shows `detail` only for a runner that failed or was skipped, so
+    /// this is said apart from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 /// A runner's API key. `Debug` prints a placeholder, so a logged result never carries the key.
@@ -172,6 +177,7 @@ fn success(
         endpoint_url,
         detail,
         api_key: None,
+        warning: None,
     }
 }
 
@@ -292,7 +298,11 @@ fn install_and_start_omlx(data_dir: &Path) -> InferenceRunnerResult {
         existing_key.as_deref(),
         STARTUP_WAIT,
     ) {
-        return with_api_key(
+        // A new oMLX that has not answered yet has not been given a key either.
+        let warning = (installed_now && existing_key.is_none()).then(|| {
+            "oMLX did not answer in time, so the Hub could not give it an API key and cannot download models through it yet. Set a key from the oMLX card in Settings > AI once oMLX answers.".to_string()
+        });
+        let mut result = with_api_key(
             success(
                 "omlx",
                 InferenceRunnerState::Installed,
@@ -301,6 +311,8 @@ fn install_and_start_omlx(data_dir: &Path) -> InferenceRunnerResult {
             ),
             existing_key,
         );
+        result.warning = warning;
+        return result;
     }
 
     // An oMLX installed here gets a main key once it answers, so the Hub can download models
@@ -317,20 +329,18 @@ fn install_and_start_omlx(data_dir: &Path) -> InferenceRunnerResult {
             existing_key,
         );
     }
-    let (api_key, detail) = match setup_omlx_admin_key(data_dir) {
-        Ok(setup) => {
-            let detail = match &setup.warning {
-                Some(warning) => format!("{started} {warning}"),
-                None => started.to_string(),
-            };
-            (Some(setup.api_key.0), detail)
-        }
+    let (api_key, warning) = match setup_omlx_admin_key(data_dir) {
+        Ok(setup) => (Some(setup.api_key.0), setup.warning),
         Err(error) => (
             None,
-            format!("{started} The Hub could not give it an API key, so it cannot download models through it yet: {error}"),
+            Some(format!("The Hub could not give oMLX an API key, so it cannot download models through it yet: {error}")),
         ),
     };
-    with_api_key(
+    let detail = match &warning {
+        Some(warning) => format!("{started} {warning}"),
+        None => started.to_string(),
+    };
+    let mut result = with_api_key(
         success(
             "omlx",
             InferenceRunnerState::InstalledAndStarted,
@@ -338,7 +348,9 @@ fn install_and_start_omlx(data_dir: &Path) -> InferenceRunnerResult {
             Some(detail),
         ),
         api_key,
-    )
+    );
+    result.warning = warning;
+    result
 }
 
 /// oMLX on this Mac, as its own loopback checks see a request: `setup-api-key` answers only a
@@ -2361,6 +2373,26 @@ Install it with Homebrew (brew install jundot/omlx/omlx) or the oMLX app, or run
             fs::read_to_string(data_dir.path().join(RUNNER_STATE_FILE)).expect("read state");
         assert!(!persisted.contains("ci-hub-secret"));
         assert!(!persisted.contains("apiKey"));
+    }
+
+    #[test]
+    fn says_a_working_runner_warning_apart_from_its_detail() {
+        let mut result = success(
+            "omlx",
+            InferenceRunnerState::InstalledAndStarted,
+            Some(OMLX_ENDPOINT.to_string()),
+            Some("oMLX was installed and started.".to_string()),
+        );
+        assert!(serde_json::to_value(&result)
+            .expect("serialize")
+            .get("warning")
+            .is_none());
+
+        result.warning = Some("The Hub could not give oMLX an API key".to_string());
+        assert_eq!(
+            serde_json::to_value(&result).expect("serialize")["warning"],
+            "The Hub could not give oMLX an API key"
+        );
     }
 
     #[test]

@@ -50,6 +50,8 @@ export const OmlxAdminKeyPrompt = ({ localOmlxReady, hubHasKey, onKeySet }: Omlx
 
   useEffect(() => {
     if (!eligible) return;
+    // Asked again each time the offer could show: an answer from before may be out of date.
+    setOmlxHasKey(null);
     let cancelled = false;
     void omlxAdminKeyIsSet().then((keySet) => {
       if (!cancelled) setOmlxHasKey(keySet ?? true);

@@ -869,6 +869,26 @@ describe('AiSettingsContainer', () => {
         expect(screen.getByTestId('omlx-api-key-input')).toHaveValue('••••••••');
       });
 
+      it('keeps the new key in the field, so Save stores it, while the URL field names another server than the saved one', async () => {
+        desktopApp();
+        saveOmlxApiKey.mockResolvedValue(undefined);
+        fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx', preferredOmlxUrl: 'http://studio.lan:8000' });
+        const user = userEvent.setup();
+        renderAiSettings();
+
+        const url = await screen.findByTestId('omlx-endpoint-url-input');
+        await waitFor(() => expect(url).toHaveValue('http://studio.lan:8000'));
+        await user.clear(url);
+        await user.type(url, 'http://localhost:8000');
+        await user.click(await screen.findByTestId('omlx-admin-key-set-btn'));
+
+        await waitFor(() => expect(screen.getByTestId('omlx-api-key-input')).toHaveValue('ci-hub-new-key'));
+        await user.click(screen.getByTestId('ai-settings-save-btn'));
+        await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+        await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+        expect(saveInferencePreferences.mock.calls[0]?.[0]).toMatchObject({ omlxUrl: 'http://localhost:8000', omlxApiKey: 'ci-hub-new-key' });
+      });
+
       it('is not offered when the Hub already stores a key', async () => {
         const invoke = desktopApp();
         fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx', preferredOmlxApiKey: '••••••••' });

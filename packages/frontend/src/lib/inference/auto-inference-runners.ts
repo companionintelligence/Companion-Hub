@@ -14,6 +14,8 @@ export interface AutomaticInferenceRunnerResult {
    * has. The Hub needs it to download models through oMLX's admin API.
    */
   apiKey?: string;
+  /** What to know about a runner that otherwise works, such as an oMLX the desktop app could not give a key. */
+  warning?: string;
 }
 
 export const DEFAULT_AUTOMATIC_INFERENCE_RUNNERS: AutomaticInferenceRunner[] = ['ollama'];

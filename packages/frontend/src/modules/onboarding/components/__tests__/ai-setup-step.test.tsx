@@ -1553,6 +1553,8 @@ describe('AiSetupStep', () => {
         await user.click(await screen.findByTestId('auto-install-runner-btn'));
 
         await waitFor(() => expect(fetchOmlxInstallStatus).toHaveBeenCalledWith('http://host.docker.internal:8000', 'omlx-main-key'));
+        // Stored at once, so leaving setup before Continue still leaves the Hub with oMLX's key.
+        expect(saveOmlxApiKey).toHaveBeenCalledWith('omlx-main-key', 'omlx');
         // Ready now, so the card shows oMLX detected in place of the button.
         await waitFor(() => expect(screen.getByText('oMLX detected')).toBeInTheDocument());
         expect((screen.getByTestId('omlx-api-key-input') as HTMLInputElement).value).toBe('omlx-main-key');

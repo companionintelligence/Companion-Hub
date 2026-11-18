@@ -17,6 +17,7 @@ import { getInstalledAppsQueryKey, appContextQueryKey } from '@/api-client/@tans
 import { addOptimisticInstalledApp, removeOptimisticInstalledApp } from '@/modules/app/helpers/optimistic-installed-apps';
 import { Download, Loader2 } from 'lucide-react';
 import { FailureLog } from './ai-setup/failure-log';
+import { isLocalOmlxUrl } from './ai-setup/omlx-admin-key-prompt';
 import { OnboardingAppIcon } from './onboarding-app-icon';
 import { WizardCard } from './wizard-ui';
 import type { OnboardingApp, AppInstallStatus, InstallSummary, AiSetupConfig } from '../helpers/types';
@@ -233,7 +234,8 @@ export const InstallStep = ({
       const modelsToPull = downloadSelected.filter((id) => !availablePreferenceModelIds.has(id));
       // Downloads the Hub refused when this step asked for them after saving the preferences, with the
       // reason. A refused download is never tracked, so the download polling reads these (see takeRound).
-      let pullRefusals: Record<string, string> = {};
+      // Filled as the answers arrive, so one that comes after the step stopped waiting still counts.
+      const pullRefusals: Record<string, string> = {};
       const preferenceModels = (tracked: TrackedModel[]): PreferenceModels => ({
         model: preferenceModelId(aiSetupConfig?.preferredModelId, availablePreferenceModelIds, tracked),
         embeddingModel: preferenceModelId(aiSetupConfig?.preferredEmbeddingModelId, availablePreferenceModelIds, tracked),
@@ -324,8 +326,11 @@ export const InstallStep = ({
             vllmUrl: resume ? undefined : configuredOrAutomaticUrl(aiSetupConfig.vllmUrl, 'vllm'),
             omlxUrl: resume ? undefined : configuredOrAutomaticUrl(aiSetupConfig.omlxUrl, 'omlx'),
             // The key in oMLX's own settings, as the desktop app read or set it, else one typed in the
-            // card. With neither, the stored key stays.
-            omlxApiKey: resume ? undefined : automaticOmlxKey || aiSetupConfig.omlxApiKey?.trim() || undefined,
+            // card. With neither, the stored key stays. The desktop app's key is this Mac's oMLX, so it
+            // is never stored for an oMLX URL on another machine, which would send it there.
+            omlxApiKey: resume
+              ? undefined
+              : (isLocalOmlxUrl(aiSetupConfig.omlxUrl) ? automaticOmlxKey : undefined) || aiSetupConfig.omlxApiKey?.trim() || undefined,
             decodeEndpoint: resume ? undefined : (aiSetupConfig.decodeEndpoint ?? null),
             encodeEndpoint: resume ? undefined : (aiSetupConfig.encodeEndpoint ?? null),
           });
@@ -341,7 +346,10 @@ export const InstallStep = ({
         if (modelsToPull.length > 0) {
           // A Hub that does not answer must not hold up the app installs. The polling still follows
           // whatever it started.
-          pullRefusals = await withTimeout(ensurePullsStarted(modelsToPull, true), REQUEST_TIMEOUT_MS).catch(() => ({}));
+          Object.assign(
+            pullRefusals,
+            await withTimeout(ensurePullsStarted(modelsToPull, true, pullRefusals), REQUEST_TIMEOUT_MS).catch(() => undefined),
+          );
         }
       }
 
@@ -922,6 +930,17 @@ export const InstallStep = ({
                   text={result.detail as string}
                   className="px-3 pb-1 pl-9 text-xs text-warning"
                   testId="inference-runner-reason"
+                />
+              ))}
+          {canAutoInstallRunners &&
+            aiPhase.runnerResults
+              .filter((result) => result.warning && result.state !== 'failed' && result.state !== 'skipped')
+              .map((result) => (
+                <FailureLog
+                  key={`${result.runner}-warning`}
+                  text={result.warning as string}
+                  className="px-3 pb-1 pl-9 text-xs text-warning"
+                  testId="inference-runner-warning"
                 />
               ))}
           {aiSetupConfig?.cloudProviders && aiSetupConfig.cloudProviders.length > 0 && (

@@ -462,10 +462,18 @@ export const AiSetupStep = ({
       if (!status.ready) throw new Error('The local runner is still starting.');
     } else {
       setOmlxUrl(endpoint);
-      // The key the desktop app set when it installed oMLX, or the one oMLX already had. Continue
-      // saves it, and the Hub needs it to download models through oMLX.
+      // The key the desktop app set when it installed oMLX, or the one oMLX already had. The Hub needs
+      // it to download models through oMLX. It is stored now, as a key set from the card is: oMLX takes
+      // a first key only once, so a setup left before Continue would leave the Hub without it.
       const apiKey = result.apiKey?.trim() || omlxApiKey;
-      if (result.apiKey?.trim()) setOmlxApiKey(result.apiKey.trim());
+      if (result.apiKey?.trim()) {
+        setOmlxApiKey(result.apiKey.trim());
+        try {
+          await saveOmlxApiKey(result.apiKey.trim(), 'omlx');
+        } catch {
+          // Continue saves it with the rest.
+        }
+      }
       const status = (await fetchOmlxInstallStatus(endpoint, apiKey)) as OmlxStatus;
       setOmlxStatus(status);
       if (!status.ready) throw new Error('The local runner is still starting.');

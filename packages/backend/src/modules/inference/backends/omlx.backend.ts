@@ -94,6 +94,12 @@ function isOmlxDownloadTask(value: unknown): value is OmlxDownloadTask {
   return typeof taskId === 'string' && typeof repoId === 'string' && typeof status === 'string';
 }
 
+/** The download oMLX runs for `repoId`. oMLX matches repos without regard to case, as Hugging Face does. */
+function activeDownloadFor(tasks: OmlxDownloadTask[], repoId: string): OmlxDownloadTask | undefined {
+  const wanted = repoId.toLowerCase();
+  return tasks.find((task) => task.repo_id.toLowerCase() === wanted && (task.status === 'pending' || task.status === 'downloading'));
+}
+
 /** oMLX's `detail` for a refused admin call, else the request's own message. */
 function omlxErrorDetail(err: unknown): string {
   if (axios.isAxiosError(err)) {
@@ -382,9 +388,7 @@ export class OmlxBackend implements InferenceBackend {
       if (isUnauthorized(err)) throw this.adminKeyError(baseUrl, repoId);
       // oMLX runs one download per repo and refuses a second with a 400: follow the one it runs.
       if (axios.isAxiosError(err) && err.response?.status === 400) {
-        const running = (await this.downloadTasks(baseUrl, headers).catch(() => [])).find(
-          (task) => task.repo_id.toLowerCase() === repoId.toLowerCase() && (task.status === 'pending' || task.status === 'downloading'),
-        );
+        const running = activeDownloadFor(await this.downloadTasks(baseUrl, headers).catch(() => []), repoId);
         if (running) return running.task_id;
       }
       throw new Error(`oMLX could not start downloading ${repoId}: ${omlxErrorDetail(err)}`);
@@ -400,15 +404,21 @@ export class OmlxBackend implements InferenceBackend {
   private async followDownload(
     baseUrl: string,
     repoId: string,
-    taskId: string,
+    startedTaskId: string,
     headers: Record<string, string>,
     onProgress?: (progress: PullProgress) => void,
   ): Promise<void> {
+    let taskId = startedTaskId;
     let failures = 0;
     for (;;) {
       let task: OmlxDownloadTask | undefined;
       try {
-        task = (await this.downloadTasks(baseUrl, headers)).find((row) => row.task_id === taskId);
+        const tasks = await this.downloadTasks(baseUrl, headers);
+        // A restarted oMLX resumes an interrupted download under a new task id and drops finished
+        // rows (`restore_tasks` in jundot/omlx omlx/admin/hf_downloader.py), so the download is then
+        // the one oMLX runs for this repo.
+        task = tasks.find((row) => row.task_id === taskId) ?? activeDownloadFor(tasks, repoId);
+        if (task) taskId = task.task_id;
         failures = 0;
       } catch (err) {
         if (isUnauthorized(err)) throw this.adminKeyError(baseUrl, repoId);
@@ -419,7 +429,11 @@ export class OmlxBackend implements InferenceBackend {
         await this.pause(OMLX_DOWNLOAD_POLL_MS);
         continue;
       }
-      if (!task) throw new Error(`oMLX no longer lists the download of ${repoId}. It may have been removed in oMLX.`);
+      if (!task) {
+        // A download that finished just before oMLX restarted has no row left, but its model is listed.
+        if (await this.isModelLoaded(repoId)) return;
+        throw new Error(`oMLX no longer lists the download of ${repoId}. It may have been removed in oMLX.`);
+      }
       if (task.status === 'completed') return;
       if (task.status === 'failed') throw new Error(task.error?.trim() || `oMLX could not download ${repoId}.`);
       if (task.status === 'cancelled') throw new Error(`The download of ${repoId} was cancelled in oMLX.`);

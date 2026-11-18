@@ -583,6 +583,34 @@ describe('OmlxBackend', () => {
       await expect(backend.pullModel(REPO)).resolves.toBeUndefined();
     });
 
+    it('follows the download under the new task id a restarted oMLX resumes it with', async () => {
+      const refused = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+      const resumed = (status: string, extra: Record<string, unknown> = {}) => ({ ...task(status, extra), task_id: 'task-2' });
+      omlxServer([
+        [task('downloading', { progress: 30 })],
+        refused,
+        [resumed('pending')],
+        [resumed('downloading', { progress: 50 })],
+        [resumed('completed', { progress: 100 })],
+      ]);
+      const progress: number[] = [];
+
+      await expect(backend.pullModel(REPO, (update) => progress.push(update.percent))).resolves.toBeUndefined();
+      expect(progress).toEqual([30, 0, 50, 100]);
+    });
+
+    it('finishes when a restarted oMLX dropped the finished row but lists the model', async () => {
+      omlxServer([[task('downloading', { progress: 90 })], []]);
+
+      await expect(backend.pullModel(REPO)).resolves.toBeUndefined();
+    });
+
+    it('fails when the download is gone and oMLX does not list the model', async () => {
+      omlxServer([[task('downloading', { progress: 90 })], []], () => []);
+
+      await expect(backend.pullModel(REPO)).rejects.toThrow('no longer lists the download');
+    });
+
     it('asks oMLX to rescan once when the finished model is slow to show up', async () => {
       let reloaded = false;
       post.mockImplementation(async (url: string) => {

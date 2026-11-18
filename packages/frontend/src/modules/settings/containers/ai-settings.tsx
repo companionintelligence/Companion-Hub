@@ -253,14 +253,15 @@ export const AiSettingsContainer = () => {
     [savedOmlx],
   );
   // The key the desktop app just gave oMLX, stored at once: the field then shows the mask, as for a key
-  // the Hub already had.
+  // the Hub already had. The Hub stores it for the saved URL, so while the URL field names another one
+  // the field keeps the key itself: a mask would read as the saved URL's key, which Save deletes.
   const handleOmlxAdminKeySet = useCallback(
     async (apiKey: string) => {
       await saveOmlxApiKey(apiKey, selectedBackend);
       setSavedOmlx((saved) => ({ ...saved, keyStored: true }));
-      setOmlxApiKey(MASKED_KEY);
+      setOmlxApiKey(omlxUrlRef.current.trim() === savedOmlx.url ? MASKED_KEY : apiKey);
     },
-    [selectedBackend],
+    [selectedBackend, savedOmlx.url],
   );
   const omlxApiKeyNotice =
     savedOmlx.keyStored && omlxUrl.trim() !== savedOmlx.url && !omlxApiKey.trim() ? t('AI_SETTINGS_OMLX_KEY_NEW_URL') : undefined;
@@ -753,8 +754,8 @@ export const AiSettingsContainer = () => {
         vllmApiKey: selectedBackend === 'vllm' ? (isMaskedKey(vllmApiKey) ? undefined : vllmApiKey.trim() || null) : null,
         vllmUrl: selectedBackend === 'vllm' ? vllmUrl.trim() || null : null,
         omlxUrl: selectedBackend === 'omlx' ? omlxUrl.trim() || null : null,
-        // Kept when another engine is saved: oMLX's key is in its settings file, not somewhere the
-        // operator would look again, and the Hub needs it to download through oMLX.
+        // Left out when another engine is saved, so the stored key stays for the default oMLX URL. A
+        // custom oMLX URL is cleared above, and the Hub drops the key with it: a key belongs to its server.
         omlxApiKey: selectedBackend === 'omlx' ? (isMaskedKey(omlxApiKey) ? undefined : omlxApiKey.trim() || null) : undefined,
         decodeEndpoint: decodeEndpoint.trim() || null,
         encodeEndpoint: encodeEndpoint.trim() || null,
