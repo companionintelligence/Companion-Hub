@@ -39,6 +39,7 @@ import { MemoryConnectionService } from '../memory-connect/memory-connection.ser
 import { GATEWAY_API_PREFIX } from '../memory-connect/memory-exchange.client';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 import { ProxyTrustService } from '../network/proxy-trust.service';
+import { SubnetManagerService } from '../network/subnet-manager.service';
 import { FORWARD_AUTH_IDENTITY_SECRET_ENV, FORWARD_AUTH_SECRET_ENV, ForwardAuthSecretResolver } from '../auth/forward-auth-secret.resolver';
 import { mergeFormFieldDefaults } from '@ci-hub/common/validation';
 
@@ -412,13 +413,29 @@ export class AppHelpers {
    * Docker lookup behind the trust list did. No service, or a bad answer,
    * simply means no hops are vouched for.
    */
-  private resolveTrustedProxyCidrs(): string[] {
+  private async resolveTrustedProxyCidrs(appUrn: AppUrn): Promise<string[]> {
     try {
       const service = this.moduleRef.get(ProxyTrustService, { strict: false });
-      const cidrs = service?.trustedProxyCidrs?.();
+      const cidrs = service?.appTrustedProxyCidrs?.(await this.resolveAppSubnet(appUrn));
       return Array.isArray(cidrs) ? cidrs.filter((cidr): cidr is string => typeof cidr === 'string' && cidr.length > 0) : [];
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * The app's network subnet, allocated now if it has none yet. The env is written before the compose
+   * file on install, and Traefik's address on the app's network, which the app is told to trust, comes
+   * from it. The allocator returns the same subnet to the compose step that follows. Null when it cannot
+   * be had, in which case the app trusts the edge hops alone.
+   */
+  private async resolveAppSubnet(appUrn: AppUrn): Promise<string | null> {
+    try {
+      const subnetManager = this.moduleRef.get(SubnetManagerService, { strict: false });
+      return subnetManager ? await subnetManager.allocateSubnet(appUrn) : null;
+    } catch (error) {
+      this.logger.debug(`No subnet for ${appUrn} yet: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
     }
   }
 
@@ -573,12 +590,11 @@ export class AppHelpers {
     // so an app that reads the client address can walk X-Forwarded-For back
     // past Traefik and the tunnel to the real visitor instead of seeing
     // Traefik for everyone. Re-derived on every generation and REMOVED when
-    // nothing can be vouched for. Traefik's address in it is Docker's to
-    // reassign, so a running app keeps a stale one until it is recreated:
-    // TrustedProxyRefreshService restarts the apps that read it within a
-    // minute of Traefik moving, which bounds how long another container that
-    // is given the address it left could be believed.
-    const trustedProxies = this.resolveTrustedProxyCidrs();
+    // nothing can be vouched for. Traefik's address in it is its fixed one on
+    // this app's own network (`traefikAddressOnAppSubnet`); a running app that
+    // still has another, from before apps had networks of their own or from a
+    // subnet that has since changed, is restarted by TrustedProxyRefreshService.
+    const trustedProxies = await this.resolveTrustedProxyCidrs(appUrn);
     if (trustedProxies.length > 0) {
       envMap.set('HUB_TRUSTED_PROXY_CIDRS', trustedProxies.join(','));
     } else {

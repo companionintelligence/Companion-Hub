@@ -75,7 +75,8 @@ describe('MemoryConnectionService', () => {
     repo.findLatestConnected.mockResolvedValue(row({ state: 'connected', encryptedKey: 'enc(raw-key)', serverUrl: 'http://gateway:8642' }));
 
     expect(await service.getInjectableCreds('ci-openclaw:local')).toEqual({
-      url: 'http://gateway:8642',
+      // Stored before apps had networks of their own; the consumer reaches the gateway by its link name now.
+      url: 'http://ci-memory:8642',
       token: 'raw-key',
     });
   });
@@ -96,7 +97,7 @@ describe('MemoryConnectionService', () => {
       row({ id: 1, hubUserId: 2, state: 'connected', encryptedKey: 'enc(key-2)', serverUrl: 'http://gateway:8642' }),
     );
 
-    expect(await service.getInjectableCreds('ci-openclaw:local')).toEqual({ url: 'http://gateway:8642', token: 'key-2' });
+    expect(await service.getInjectableCreds('ci-openclaw:local')).toEqual({ url: 'http://ci-memory:8642', token: 'key-2' });
     expect(repo.findByAppUrn).not.toHaveBeenCalled();
   });
 

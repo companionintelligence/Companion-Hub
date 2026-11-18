@@ -1,4 +1,4 @@
-import { hubNetworkName } from '@/common/constants';
+import { appNetworkName, createAppUrn } from '@/common/helpers/app-helpers';
 import { HUB_FORWARD_AUTH_MIDDLEWARES } from '@ci-hub/common/schemas';
 
 export type ExposureMode = 'local' | 'cloudflare' | 'tailscale';
@@ -225,14 +225,16 @@ export class TraefikLabelsBuilder {
   private effectiveMode: ExposureMode;
 
   constructor(private params: TraefikLabelsArgs) {
-    const mainNetworkName = hubNetworkName();
+    // The app's own network, which the Hub connects Traefik to: no app is on a network Traefik shares
+    // with other apps.
+    const appNetwork = appNetworkName(createAppUrn(params.appId, params.storeId));
 
     this.effectiveMode = params.exposureMode || 'local';
 
     this.labels = {
       generated: true,
       'traefik.enable': false,
-      'traefik.docker.network': mainNetworkName,
+      'traefik.docker.network': appNetwork,
       [`traefik.http.services.${params.appId}-${params.storeId}.loadbalancer.server.port`]: `${params.internalPort}`,
       ...(params.httpsBackend && {
         [`traefik.http.services.${params.appId}-${params.storeId}.loadbalancer.server.scheme`]: 'https',

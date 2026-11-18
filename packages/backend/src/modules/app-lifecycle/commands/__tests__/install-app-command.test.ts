@@ -658,7 +658,7 @@ describe('InstallAppCommand — pull policy', () => {
       serviceFailure: { kind: 'restarting', service: 'ghost' },
     });
     const agentNotifyService = {
-      resolveWebhookTarget: vi.fn().mockResolvedValue({ url: 'http://agent/hook', token: 'token' }),
+      resolveWebhookTarget: vi.fn().mockResolvedValue({ url: 'http://agent/hook', token: 'token', service: 'agent' }),
       registerWebhook: vi.fn(),
     };
     const moduleRef = (command as any).moduleRef;
@@ -668,7 +668,7 @@ describe('InstallAppCommand — pull policy', () => {
     const result = await command.execute(appUrn, {});
 
     expect(result.success).toBe(false);
-    expect(agentNotifyService.registerWebhook).toHaveBeenCalledWith(appUrn, 'http://agent/hook', 'token');
+    expect(agentNotifyService.registerWebhook).toHaveBeenCalledWith(appUrn, 'http://agent/hook', 'token', 'agent');
   });
 
   it('SHOULD name the failing service and keep its logs when it crashes after compose up', async () => {

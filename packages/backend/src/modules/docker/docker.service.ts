@@ -16,6 +16,7 @@ import {
   HUB_NETWORK_NAMES,
   LEGACY_HUB_CONTAINER_NAME,
   LEGACY_HUB_MANAGED_LABEL,
+  appUrnFromLabels,
   hubContainerName,
 } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -45,7 +46,15 @@ import {
   summarizePullLayers,
 } from './pull-progress';
 import { resolveEdgeHopAddress } from '../network/edge-hops';
-import { DEFAULT_HUB_EDGE_TRAEFIK_IP, HUB_EDGE_NETWORK_NAME, TRAEFIK_CONTAINER_NAME } from '../network/network-constants';
+import { traefikAddressOnAppSubnet } from '../network/app-network-addresses';
+import {
+  APP_LINK_NETWORK_PREFIX,
+  DEFAULT_HUB_EDGE_TRAEFIK_IP,
+  HUB_EDGE_NETWORK_NAME,
+  TAILSCALE_SIDECAR_CONTAINER_NAME,
+  TRAEFIK_CONTAINER_NAME,
+} from '../network/network-constants';
+import { HUB_INFRASTRUCTURE_NETWORK_NAMES } from '@ci-hub/common/schemas';
 
 export type { AppContainerRuntimeStats, AppNetworkTarget, ManagedAppContainerVerification } from './docker-read.facade';
 
@@ -112,9 +121,17 @@ export interface ContainerHealthProbeResult {
   cancelled?: boolean;
 }
 
-const HUB_APP_NETWORK_GAP = 'Not attaching the Hub to app networks';
+const HUB_APP_NETWORK_GAP = 'Not attaching the Hub, Traefik and the VPN sidecar to app networks';
 const HUB_APP_NETWORK_CONSEQUENCE =
-  'Services that are not on the shared Hub network cannot resolve ci-hub, so an app that calls Hub inference from such a service fails with ENOTFOUND.';
+  'An app is reachable only from the containers its compose file starts it with, so its services cannot resolve ci-hub and Traefik cannot route to it until the containers are recreated.';
+const SHARED_NETWORK_GAP = 'Not taking app containers off the shared Hub network';
+const SHARED_NETWORK_CONSEQUENCE = 'Each app leaves it at its next start, when its containers are recreated.';
+/** What an app loses while one member is not on its network. */
+const APP_NETWORK_MEMBER_CONSEQUENCE: Record<AppNetworkMember['role'], string> = {
+  hub: `Services of the app cannot resolve ${DEFAULT_HUB_CONTAINER_NAME} until this succeeds.`,
+  traefik: 'Traefik cannot route to the app until this succeeds.',
+  vpn: 'The app is not reachable at its Private VPN address until this succeeds.',
+};
 
 // What Docker uses for a health check that leaves these unset.
 const DOCKER_DEFAULT_HEALTH_INTERVAL_MS = 30_000;
@@ -294,10 +311,19 @@ interface AppProjectNetwork {
   Labels?: Record<string, string> | null;
 }
 
+/** A container the Hub joins to every app network, with the networks it is on now. */
+interface AppNetworkMember {
+  name: string;
+  role: 'hub' | 'traefik' | 'vpn';
+  aliases: string[];
+  networks: Set<string>;
+}
+
 @Injectable()
 export class DockerService {
   /** Whether the engine is Apple container, once probed. Fixed for the process: DOCKERODE is built once. */
   private appleContainerEngine: boolean | undefined;
+  private readonly appNetworkListeners = new Set<(appUrn: AppUrn | null) => Promise<void> | void>();
   /** Gaps already warned about, so a periodic caller logs each once. */
   private readonly warnedAppleContainerGaps = new Set<string>();
 
@@ -373,6 +399,10 @@ export class DockerService {
 
   public getAppNetworkTarget(...args: Parameters<DockerReadFacade['getAppNetworkTarget']>) {
     return this.dockerReadFacade.getAppNetworkTarget(...args);
+  }
+
+  public getServiceAddressOnAppNetwork(...args: Parameters<DockerReadFacade['getServiceAddressOnAppNetwork']>) {
+    return this.dockerReadFacade.getServiceAddressOnAppNetwork(...args);
   }
 
   public isContainerRunning(...args: Parameters<DockerReadFacade['isContainerRunning']>) {
@@ -1180,6 +1210,7 @@ export class DockerService {
     });
     if (verb === 'up') {
       await this.attachHubToAppNetworks(appUrn);
+      this.notifyAppNetworksSettled(appUrn);
     }
     return result;
   }
@@ -2039,34 +2070,37 @@ export class DockerService {
   }
 
   /**
-   * Joins this Hub to an app's own networks after a successful `up`.
+   * Joins the Hub, Traefik and the Private VPN sidecar to an app's own networks after a successful `up`.
    *
-   * Apps are handed inference at `http://ci-hub:<port>/...`. That name exists only on a network the
-   * Hub container is attached to. Compose puts a service on the shared Hub network only when it is
-   * `isMain` or `addToMainNetwork`, so a sibling that calls inference (Companion Memory's `api` and
-   * `summary-service`) cannot resolve `ci-hub`. Joining the Hub to the app network fixes that
-   * without publishing the app's service names on the network every other app shares.
+   * Each app is on a network of its own and on no network another app is on (see "App networks" in
+   * docs/system/backend.md), so these three reach it there:
    *
-   * `GwPriority: -1` keeps the Hub's default route on the network it booted with. A network connected
-   * to a running container otherwise takes the route over when it sorts first (Docker 29.8), and the
-   * Hub's own calls would then leave from the app subnet. No static address: DNS is the whole of
-   * what callers need, and the app subnet is allocated per install.
+   * - The Hub, under the aliases `ci-hub` and `ci-os-hub`, because apps are handed inference and the
+   *   Hub API at `http://ci-hub:<port>/...`, from any of their services.
+   * - Traefik, at the subnet's last host address (`traefikAddressOnAppSubnet`), to route to the app.
+   *   The app is told that address as the one hop it may trust (`HUB_TRUSTED_PROXY_CIDRS`).
+   * - The Private VPN sidecar, when it runs, because `tailscale serve` there proxies to the app's
+   *   container address on this network (`getAppNetworkTarget`).
    *
-   * An `internal` app network is left alone. That flag is complete isolation; joining the Hub would
-   * give those containers a path to the Hub API. `disableMainNetwork` without `internal` is joined:
-   * those services are off the shared network and this is how they reach inference.
+   * None of them looks anything up by name on these networks. On a container with several networks
+   * Docker answers a name from whichever network claims it first, and an app names its own services:
+   * the Hub's own services and the Hub itself are pinned in /etc/hosts (`extra_hosts` in the compose
+   * file), and the Hub reaches an app's services by address (`DockerReadFacade.getAppServiceAddress`).
    *
-   * Never throws. A failed attach leaves the app as it was before this fix, which is the failure
-   * the operator already has, and must not fail the `up` that just succeeded.
+   * `GwPriority: -1` keeps each container's default route on the network it booted with. A network
+   * connected to a running container otherwise takes the route over when it sorts first (Docker 29.8),
+   * and its own calls would then leave from the app subnet.
+   *
+   * An `internal` app network is left alone: that flag is complete isolation, and joining it would give
+   * those containers a path out.
+   *
+   * Never throws. A failed join is logged; it must not fail the `up` that just succeeded.
    */
   public async attachHubToAppNetworks(appUrn: AppUrn): Promise<void> {
     if (await this.skipsNetworkHotAttach(HUB_APP_NETWORK_GAP, HUB_APP_NETWORK_CONSEQUENCE)) {
       return;
     }
-    if (!(await this.runningHubContainerName())) {
-      return;
-    }
-    await this.joinHubToAppNetworks(await this.listComposeProjectNetworks(appUrn));
+    await this.joinAppNetworkMembers(await this.listComposeProjectNetworks(appUrn));
   }
 
   /**
@@ -2114,18 +2148,23 @@ export class DockerService {
   }
 
   /**
-   * Re-joins app networks after the Hub container is recreated.
+   * Re-joins every app network after the Hub, Traefik or the VPN sidecar is recreated, then takes any
+   * app container still on a shared Hub network off it.
    *
-   * An update that replaces this container drops every network connected in place. Running apps are
-   * not composed again, so without this their off-network services go back to `ENOTFOUND ci-hub`
-   * until the next `up`.
+   * An update that replaces one of those containers drops every network connected in place. Running
+   * apps are not composed again, so without this they would go unreachable, or back to
+   * `ENOTFOUND ci-hub`, until their next `up`. An app container composed before apps stopped sharing a
+   * network is still on `ci-hub_network` until its next `up`; {@link moveAppsOffSharedNetworks} takes
+   * it off now rather than then.
+   *
+   * Returns the apps taken off a shared network. Each must be recreated: its containers still carry the
+   * `traefik.docker.network` label naming the network they left, and Traefik then routes to whichever
+   * network they are on first, which can be a link network Traefik is not on. Their env also still
+   * holds the Memory URL and trusted Traefik hop from the shared network.
    */
-  public async ensureHubOnAppNetworks(): Promise<void> {
+  public async ensureHubOnAppNetworks(): Promise<AppUrn[]> {
     if (await this.skipsNetworkHotAttach(HUB_APP_NETWORK_GAP, HUB_APP_NETWORK_CONSEQUENCE)) {
-      return;
-    }
-    if (!(await this.runningHubContainerName())) {
-      return;
+      return [];
     }
     const [current, legacy] = await Promise.all([
       this.listNetworksSafe({ filters: { label: [`${HUB_MANAGED_LABEL}=true`] } }),
@@ -2137,118 +2176,211 @@ export class DockerService {
         byId.set(network.Id, network);
       }
     }
-    await this.joinHubToAppNetworks([...byId.values()]);
+    await this.joinAppNetworkMembers([...byId.values()]);
+    const moved = await this.moveAppsOffSharedNetworks();
+    this.notifyAppNetworksSettled(null);
+    return moved;
   }
 
   /**
-   * Leaves an app's networks before `down` or before the Hub deletes them.
+   * Called after an app's containers come up and the Hub, Traefik and the VPN sidecar have joined its
+   * network (`appUrn`), or after every app network was re-joined at boot (`null`). `AppLinkService`
+   * listens, to put the app's new containers back on the networks linking it to other apps. A listener
+   * runs in the background; one that throws is logged. Returns the function that stops listening.
+   */
+  public onAppNetworksSettled(listener: (appUrn: AppUrn | null) => Promise<void> | void): () => void {
+    this.appNetworkListeners.add(listener);
+    return () => {
+      this.appNetworkListeners.delete(listener);
+    };
+  }
+
+  private notifyAppNetworksSettled(appUrn: AppUrn | null): void {
+    for (const listener of this.appNetworkListeners) {
+      void Promise.resolve()
+        .then(() => listener(appUrn))
+        .catch((error: unknown) => {
+          this.logger.warn(`App network listener failed for ${appUrn ?? 'every app'}: ${error instanceof Error ? error.message : String(error)}`);
+        });
+    }
+  }
+
+  /**
+   * Disconnects every app container from the shared Hub networks (`ci-hub_network`, `ci-os-hub_network`).
+   *
+   * Every app's main container used to join them, where any other app could reach it without the Hub
+   * login and claim a name other containers looked up. The compose builder no longer puts an app there,
+   * but a container keeps the networks it was created with until its next `up`. The Hub, Traefik and the
+   * VPN sidecar are on the app's own network by now (see {@link ensureHubOnAppNetworks}), so the app
+   * stays reachable; whatever reached it over the shared network from another app no longer does.
+   *
+   * Only containers that carry an app URN label are touched. Returns the apps that had one, to be
+   * recreated (see {@link ensureHubOnAppNetworks}). Never throws.
+   */
+  public async moveAppsOffSharedNetworks(): Promise<AppUrn[]> {
+    const moved = new Set<AppUrn>();
+    if (await this.skipsNetworkHotAttach(SHARED_NETWORK_GAP, SHARED_NETWORK_CONSEQUENCE)) {
+      return [];
+    }
+    for (const networkName of HUB_NETWORK_NAMES) {
+      let containers: Array<{ Id?: string; Names?: string[]; Labels?: Record<string, string> }>;
+      try {
+        containers = await this.docker.listContainers({ all: true, filters: { network: [networkName] } });
+      } catch (error) {
+        this.logger.warn(`Could not list the containers on ${networkName}: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
+      for (const container of containers ?? []) {
+        const appUrn = appUrnFromLabels(container.Labels) as AppUrn | undefined;
+        if (!container.Id || !appUrn) {
+          continue;
+        }
+        moved.add(appUrn);
+        const name = container.Names?.[0]?.replace(/^\//, '') || container.Id;
+        try {
+          await this.docker.getNetwork(networkName).disconnect({ Container: container.Id, Force: true });
+          this.logger.info(`Took ${name} off ${networkName}: apps no longer share a network`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (/not connected|no such/i.test(message)) {
+            continue;
+          }
+          this.logger.warn(`Could not take ${name} off ${networkName}: ${message}. Other apps can reach it there until its next start.`);
+        }
+      }
+    }
+    return [...moved];
+  }
+
+  /**
+   * Leaves an app's networks before `down` or before the Hub deletes them, for the Hub, Traefik and the
+   * VPN sidecar alike.
    *
    * Compose treats an extra container on the network as "still in use" and keeps the network.
-   * Infrastructure networks (the shared Hub network, the edge network) are never disconnected:
-   * the Hub belongs there. A network this method did not join is also left, including external
-   * networks a user compose file brought in.
+   * Infrastructure networks (the Hub's own, the edge) are never disconnected. External networks a user
+   * compose file brought in are left too: they were never joined.
    *
    * Never throws.
    */
   public async detachHubFromAppNetworks(appUrn: AppUrn): Promise<void> {
-    // The Hub never joined these networks on Apple container, so it has nothing to leave. No
-    // warning: attach already said so once, and an uninstall is not the moment to repeat it.
+    // Nothing was joined on Apple container, so there is nothing to leave. No warning: attach already
+    // said so once, and an uninstall is not the moment to repeat it.
     if (await this.isAppleContainerEngine()) {
       return;
     }
-    const hubName = await this.runningHubContainerName();
-    if (!hubName) {
-      return;
-    }
-
-    const attached = await this.hubNetworkNames(hubName);
-    if (!attached) {
+    const members = await this.runningAppNetworkMembers();
+    if (members.length === 0) {
       return;
     }
 
     for (const network of await this.listComposeProjectNetworks(appUrn)) {
       const id = network.Id;
       const name = network.Name;
-      if (!id || !name || this.isInfrastructureNetwork(name) || !attached.has(name)) {
+      if (!id || !name || this.isInfrastructureNetwork(name) || network.Labels?.['com.docker.compose.network.external'] === 'true') {
         continue;
       }
-      if (network.Labels?.['com.docker.compose.network.external'] === 'true') {
-        continue;
-      }
-
-      try {
-        await this.docker.getNetwork(id).disconnect({ Container: hubName, Force: true });
-        this.logger.info(`Detached ${hubName} from ${name}`);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (/not connected/i.test(message)) {
+      for (const member of members) {
+        if (!member.networks.has(name)) {
           continue;
         }
-        this.logger.warn(
-          `Could not detach ${hubName} from ${name}: ${message}. The app network may survive compose down while this container is still on it.`,
-        );
+        try {
+          await this.docker.getNetwork(id).disconnect({ Container: member.name, Force: true });
+          this.logger.info(`Detached ${member.name} from ${name}`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (/not connected/i.test(message)) {
+            continue;
+          }
+          this.logger.warn(
+            `Could not detach ${member.name} from ${name}: ${message}. The app network may survive compose down while this container is still on it.`,
+          );
+        }
       }
     }
   }
 
-  private async joinHubToAppNetworks(networks: AppProjectNetwork[]): Promise<void> {
-    const hubName = await this.runningHubContainerName();
-    if (!hubName) {
+  private async joinAppNetworkMembers(networks: AppProjectNetwork[]): Promise<void> {
+    const members = await this.runningAppNetworkMembers();
+    if (!members.some((member) => member.role === 'hub')) {
       this.logger.debug('Hub container is not running; not joining app networks');
-      return;
-    }
-
-    const attached = await this.hubNetworkNames(hubName);
-    if (!attached) {
       return;
     }
 
     for (const network of networks) {
       const id = network.Id;
       const name = network.Name;
-      if (!id || !name || this.isInfrastructureNetwork(name) || attached.has(name)) {
+      if (!id || !name || this.isInfrastructureNetwork(name) || network.Labels?.['com.docker.compose.network.external'] === 'true') {
         continue;
       }
-      if (network.Labels?.['com.docker.compose.network.external'] === 'true') {
+      if (members.every((member) => member.networks.has(name))) {
         continue;
       }
 
-      let internal = false;
+      let inspected: { Internal?: boolean; IPAM?: { Config?: Array<{ Subnet?: string }> | null } } | undefined;
       try {
-        const inspected = await this.docker.getNetwork(id).inspect();
-        internal = inspected?.Internal === true;
+        inspected = await this.docker.getNetwork(id).inspect();
       } catch (error) {
         this.logger.warn(`Could not inspect ${name} before joining it: ${error instanceof Error ? error.message : String(error)}`);
         continue;
       }
-      if (internal) {
+      if (inspected?.Internal === true) {
         this.logger.info(`Not joining ${name}: it is an internal network, so containers on it stay cut off from the Hub`);
         continue;
       }
+      const subnet = inspected?.IPAM?.Config?.find((config) => config.Subnet && !config.Subnet.includes(':'))?.Subnet;
 
-      try {
-        // `GwPriority` is newer than the dockerode typings (Engine API 1.48). Both names are
-        // registered because a legacy compose file still runs this process as `ci-os-hub` while
-        // apps look up `ci-hub`, and the other way around after the rename.
-        const endpoint = { Aliases: [DEFAULT_HUB_CONTAINER_NAME, LEGACY_HUB_CONTAINER_NAME], GwPriority: -1 };
-        await this.docker.getNetwork(id).connect({ Container: hubName, EndpointConfig: endpoint } as never);
-        attached.add(name);
-        this.logger.info(`Attached ${hubName} to ${name} so app containers can resolve ${DEFAULT_HUB_CONTAINER_NAME}`);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (/already exists/i.test(message)) {
+      for (const member of members) {
+        if (member.networks.has(name)) {
           continue;
         }
-        this.logger.warn(
-          `Could not attach ${hubName} to ${name}: ${message}. ` +
-            `Services that are not on the shared Hub network cannot resolve ${DEFAULT_HUB_CONTAINER_NAME} until this succeeds.`,
-        );
+        if (await this.connectAppNetworkMember(id, name, member, subnet)) {
+          member.networks.add(name);
+        }
       }
     }
   }
 
+  /** Connects one member to one app network. True when it is on it afterwards. */
+  private async connectAppNetworkMember(id: string, name: string, member: AppNetworkMember, subnet: string | undefined): Promise<boolean> {
+    const fixed = member.role === 'traefik' ? traefikAddressOnAppSubnet(subnet) : null;
+    // `GwPriority` is newer than the dockerode typings (Engine API 1.48).
+    const endpoint = (address: string | null) => ({
+      ...(address ? { IPAMConfig: { IPv4Address: address } } : {}),
+      Aliases: member.aliases,
+      GwPriority: -1,
+    });
+    try {
+      await this.docker.getNetwork(id).connect({ Container: member.name, EndpointConfig: endpoint(fixed) } as never);
+      this.logger.info(`Attached ${member.name} to ${name}${fixed ? ` at ${fixed}` : ''}`);
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/already exists/i.test(message)) {
+        return true;
+      }
+      if (fixed) {
+        // An app container holds the address (see `traefikAddressOnAppSubnet`). Reachable beats trusted:
+        // join where Docker says, and the app trusts no Traefik hop until its network is recreated.
+        this.logger.warn(
+          `Could not attach ${member.name} to ${name} at ${fixed}: ${message}. Joining at an address Docker picks; ` +
+            'the app will not trust the client address Traefik forwards until its network is recreated (uninstall keeps data; a reinstall does it).',
+        );
+        try {
+          await this.docker.getNetwork(id).connect({ Container: member.name, EndpointConfig: endpoint(null) } as never);
+          this.logger.info(`Attached ${member.name} to ${name}`);
+          return true;
+        } catch (retryError) {
+          this.logger.warn(`Could not attach ${member.name} to ${name}: ${retryError instanceof Error ? retryError.message : String(retryError)}`);
+          return false;
+        }
+      }
+      this.logger.warn(`Could not attach ${member.name} to ${name}: ${message}. ${APP_NETWORK_MEMBER_CONSEQUENCE[member.role]}`);
+      return false;
+    }
+  }
+
   private isInfrastructureNetwork(name: string): boolean {
-    return (HUB_NETWORK_NAMES as readonly string[]).includes(name) || name === HUB_EDGE_NETWORK_NAME;
+    return HUB_INFRASTRUCTURE_NETWORK_NAMES.includes(name) || name.startsWith(APP_LINK_NETWORK_PREFIX);
   }
 
   private async listComposeProjectNetworks(appUrn: AppUrn): Promise<AppProjectNetwork[]> {
@@ -2266,23 +2398,52 @@ export class DockerService {
     }
   }
 
-  /** The names of the networks this container is on, or null when it cannot be inspected. */
-  private async hubNetworkNames(hubName: string): Promise<Set<string> | null> {
+  /**
+   * The running containers that join every app network, each with the networks it is on now: the Hub
+   * (under whichever name this process was started with), Traefik, and the Private VPN sidecar.
+   *
+   * An image-only update can still run the Hub as `ci-os-hub`. Apps are given the name `hubContainerName`
+   * returns, and the Hub is connected under both names.
+   */
+  private async runningAppNetworkMembers(): Promise<AppNetworkMember[]> {
+    const members: AppNetworkMember[] = [];
+    const hubName = await this.runningHubContainerName();
+    if (hubName) {
+      const networks = await this.containerNetworkNames(hubName);
+      if (networks) {
+        members.push({ name: hubName, role: 'hub', aliases: [DEFAULT_HUB_CONTAINER_NAME, LEGACY_HUB_CONTAINER_NAME], networks });
+      }
+    }
+    for (const [name, role] of [
+      [TRAEFIK_CONTAINER_NAME, 'traefik'],
+      [TAILSCALE_SIDECAR_CONTAINER_NAME, 'vpn'],
+    ] as const) {
+      const networks = await this.containerNetworkNames(name, { runningOnly: true });
+      if (networks) {
+        // No alias: nothing on an app network needs to reach either by name.
+        members.push({ name, role, aliases: [], networks });
+      }
+    }
+    return members;
+  }
+
+  /** The networks a container is on, or null when it cannot be inspected (or, with `runningOnly`, is not running). */
+  private async containerNetworkNames(name: string, { runningOnly = false }: { runningOnly?: boolean } = {}): Promise<Set<string> | null> {
     try {
-      const info = await this.docker.getContainer(hubName).inspect();
+      const info = await this.docker.getContainer(name).inspect();
+      if (runningOnly && !info?.State?.Running) {
+        return null;
+      }
       return new Set(Object.keys(info?.NetworkSettings?.Networks ?? {}));
     } catch (error) {
-      this.logger.warn(`Could not inspect ${hubName} to see which app networks it is on: ${error instanceof Error ? error.message : String(error)}`);
+      if (!runningOnly) {
+        this.logger.warn(`Could not inspect ${name} to see which app networks it is on: ${error instanceof Error ? error.message : String(error)}`);
+      }
       return null;
     }
   }
 
-  /**
-   * The running Hub container, under whichever name this process was started with.
-   *
-   * An image-only update can still be `ci-os-hub`. Apps are given the same name `hubContainerName`
-   * returns, and the connect call also registers the other name as an alias.
-   */
+  /** The running Hub container, under whichever name this process was started with. */
   private async runningHubContainerName(): Promise<string | null> {
     const names = [...new Set([hubContainerName(), ...HUB_CONTAINER_NAMES])];
     for (const name of names) {

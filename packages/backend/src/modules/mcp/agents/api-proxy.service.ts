@@ -4,6 +4,8 @@ import { LoggerService } from '@/core/logger/logger.service';
 import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { mainServiceAddressOf } from '@/modules/apps/app-service-address';
+import { DockerService } from '@/modules/docker/docker.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { AgentOpenApiAuth } from '@ci-hub/common/schemas';
@@ -36,6 +38,7 @@ export class ApiProxyService {
     private readonly logger: LoggerService,
     private readonly appLifecycle: AppLifecycleService,
     private readonly envUtils: EnvUtils,
+    private readonly dockerService: DockerService,
   ) {}
 
   /**
@@ -117,7 +120,7 @@ export class ApiProxyService {
     await this.appLifecycle.assertActorMay(options.actor, appUrn, appApiAction(options), { appCall: true });
 
     try {
-      const baseUrl = this.resolveAppBaseUrl(appUrn);
+      const baseUrl = await this.resolveAppBaseUrl(appUrn);
       const url = new URL(options.path, baseUrl);
 
       /*
@@ -190,17 +193,24 @@ export class ApiProxyService {
   }
 
   /**
-   * Resolve the base URL for an app container: `<store>-<app>`, from the URN's segments, which are
-   * refused unless they can only ever name a host.
+   * Resolve the base URL for an app: its main service's address on the app's own network.
+   *
+   * ⚠ NOT A NAME. This request carries the app's credential, and the Hub is on every app's network,
+   * where Docker answers a name from whichever network claims it first. It was `<store>-<app>`, which
+   * any other app could claim by naming a service so (see `mainServiceAddressOf`).
    */
-  private resolveAppBaseUrl(appUrn: AppUrn): URL {
+  private async resolveAppBaseUrl(appUrn: AppUrn): Promise<URL> {
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
     if (!APP_HOST_SEGMENT.test(appName) || !APP_HOST_SEGMENT.test(appStoreId)) {
       throw new Error(`${appUrn} is not an app the proxy can address`);
     }
 
-    return new URL(`http://${appStoreId}-${appName}`);
+    const address = await mainServiceAddressOf(this.appFilesManager, this.dockerService, appUrn);
+    if (!address) {
+      throw new Error(`${appUrn} has no running main service to send the request to`);
+    }
+    return new URL(`http://${address}`);
   }
 
   /**

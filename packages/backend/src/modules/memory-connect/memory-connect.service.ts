@@ -292,7 +292,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
               }
 
               const fresh = await this.exchange.rotate(provider.internalUrl, appUrn);
-              await this.connections.storeConnected(appUrn, provider.internalUrl, fresh.key, fresh.expiresAt, row.hubUserId);
+              await this.connections.storeConnected(appUrn, provider.consumerUrl, fresh.key, fresh.expiresAt, row.hubUserId);
 
               return true;
             });
@@ -515,7 +515,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
     try {
       // The container shares the Hub's internal network, so it stores the internal provider URL.
-      await this.connections.storeConnected(appUrn, provider.internalUrl, exchanged.key, exchanged.expiresAt, hubUserId);
+      await this.connections.storeConnected(appUrn, provider.consumerUrl, exchanged.key, exchanged.expiresAt, hubUserId);
     } catch (err) {
       // Nothing holds the new key, so revoke it rather than leave a valid key nobody can rotate or
       // revoke from here. The exchange also replaced this person's own earlier key, if they had one.
@@ -571,7 +571,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * would take the new key too. Keeping both leaves CI Memory two owners for one app, which its
    * key rotation refuses. Their rows are cleared so their view stops claiming a connection.
    */
-  private async releaseOtherConnections(appUrn: AppUrn, providerUrl: string, hubUserId: string): Promise<'none' | 'released' | 'failed'> {
+  private async releaseOtherConnections(appUrn: AppUrn, providerUrl: string | null, hubUserId: string): Promise<'none' | 'released' | 'failed'> {
     const others = (await this.connections.listConnected(appUrn)).filter((row) => !isSameHubUser(row.hubUserId, hubUserId));
 
     if (others.length === 0) {

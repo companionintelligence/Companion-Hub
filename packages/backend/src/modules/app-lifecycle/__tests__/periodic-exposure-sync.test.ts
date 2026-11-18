@@ -145,4 +145,28 @@ describe('AppLifecycleService periodic exposure sync', () => {
     expect(ensureHubOnAppNetworks).toHaveBeenCalledTimes(1);
     started.mockRestore();
   });
+
+  // Their containers still name the shared network in their Traefik label, so Traefik would route to
+  // whichever network they are on first, a link network among them.
+  it('recreates every app bootstrap took off a shared Hub network, and goes on past one that fails', async () => {
+    const started = vi.spyOn(AppLifecycleService.prototype as any, 'startPeriodicExposureSync').mockImplementation(() => {});
+    const restartApp = vi.fn().mockRejectedValueOnce(new Error('busy')).mockResolvedValue({ requestId: 'r' });
+    Object.assign(service, {
+      recoverStuckInstallsOnStartup: vi.fn().mockResolvedValue(undefined),
+      startTailscaleReadinessWatcher: vi.fn(),
+      syncInferenceAppsAfterHubUpgrade: vi.fn().mockResolvedValue(undefined),
+      dockerService: { ensureHubOnAppNetworks: vi.fn().mockResolvedValue(['ci-memory:ci-marketplace', 'ci-openclaw:ci-marketplace']) },
+      moduleRef: { get: vi.fn().mockReturnValue(undefined) },
+      restartApp,
+    });
+
+    await service.onApplicationBootstrap();
+    await vi.waitFor(() => expect(restartApp).toHaveBeenCalledTimes(2));
+
+    expect(restartApp.mock.calls.map(([params]) => params)).toEqual([
+      { appUrn: 'ci-memory:ci-marketplace', skipPull: true, actor: { kind: 'system', reason: 'app-network-isolation' } },
+      { appUrn: 'ci-openclaw:ci-marketplace', skipPull: true, actor: { kind: 'system', reason: 'app-network-isolation' } },
+    ]);
+    started.mockRestore();
+  });
 });

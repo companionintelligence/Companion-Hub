@@ -752,6 +752,18 @@ export type MyAppsDto = {
                 edge_auth?: {
                     default?: boolean;
                 };
+                links?: {
+                    connects_to: Array<{
+                        app: string;
+                        store?: string;
+                        service: string;
+                        alias?: string;
+                    }>;
+                    accepts_from: Array<{
+                        app: string;
+                        store?: string;
+                    }>;
+                };
             };
         };
         metadata: {
@@ -1011,6 +1023,18 @@ export type GuestAppsDto = {
                 };
                 edge_auth?: {
                     default?: boolean;
+                };
+                links?: {
+                    connects_to: Array<{
+                        app: string;
+                        store?: string;
+                        service: string;
+                        alias?: string;
+                    }>;
+                    accepts_from: Array<{
+                        app: string;
+                        store?: string;
+                    }>;
                 };
             };
         };
@@ -1337,6 +1361,18 @@ export type GetAppDto = {
             };
             edge_auth?: {
                 default?: boolean;
+            };
+            links?: {
+                connects_to: Array<{
+                    app: string;
+                    store?: string;
+                    service: string;
+                    alias?: string;
+                }>;
+                accepts_from: Array<{
+                    app: string;
+                    store?: string;
+                }>;
             };
         };
     };
@@ -6599,6 +6635,39 @@ export type Disconnect2Data = {
 };
 
 export type Disconnect2Responses = {
+    201: unknown;
+};
+
+export type ListData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/app-links';
+};
+
+export type ListResponses = {
+    200: unknown;
+};
+
+export type RevokeData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/app-links/approval';
+};
+
+export type RevokeResponses = {
+    200: unknown;
+};
+
+export type ApproveData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/app-links/approval';
+};
+
+export type ApproveResponses = {
     201: unknown;
 };
 

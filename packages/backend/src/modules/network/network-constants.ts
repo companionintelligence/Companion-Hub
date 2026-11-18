@@ -39,3 +39,15 @@ export const DEFAULT_HUB_EDGE_TAILSCALE_IP = '10.128.0.4';
 
 /** Container name of the Traefik instance the prod compose runs. */
 export const TRAEFIK_CONTAINER_NAME = 'traefik';
+
+/**
+ * Container name of the Private VPN sidecar (`hub-tailscale`, profile `private-vpn`). Overridable for
+ * the same reason `TailscaleService` reads it from the environment.
+ */
+export const TAILSCALE_SIDECAR_CONTAINER_NAME = process.env.TAILSCALE_SIDECAR_CONTAINER ?? 'hub-tailscale';
+
+/**
+ * Prefix of the networks that link one app to another (`AppLinkService`). Each holds the two apps'
+ * containers and nothing else; the Hub, Traefik and the VPN sidecar never join one.
+ */
+export const APP_LINK_NETWORK_PREFIX = 'ci-hub-link_';

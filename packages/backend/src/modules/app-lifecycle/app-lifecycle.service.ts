@@ -613,14 +613,36 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.appEventsQueue.onEvent((data, reply) => this.invokeCommand(data, reply));
   }
 
+  /**
+   * Recreates each app `ensureHubOnAppNetworks` took off a shared Hub network, by queueing a restart
+   * for it. A restart that cannot be queued is logged and the next app goes on.
+   */
+  private async recreateAppsMovedOffSharedNetworks(appUrns: AppUrn[]): Promise<void> {
+    for (const appUrn of appUrns) {
+      try {
+        this.logger.info(`Recreating ${appUrn} onto its own network: it was on a network every app shared`);
+        await this.restartApp({ appUrn, skipPull: true, actor: { kind: 'system', reason: 'app-network-isolation' } });
+      } catch (error) {
+        this.logger.warn(
+          `Could not recreate ${appUrn} onto its own network: ${error instanceof Error ? error.message : String(error)}. Restart it to route to it again.`,
+        );
+      }
+    }
+  }
+
   async onApplicationBootstrap() {
     void this.recoverStuckInstallsOnStartup();
 
     // Recreating this container drops the app-network attachments `compose up` added. Put them
-    // back before apps call inference, or an off-network service cannot resolve `ci-hub`.
-    void this.dockerService.ensureHubOnAppNetworks().catch((error: unknown) => {
-      this.logger.error(`Failed to reattach the Hub to app networks: ${error instanceof Error ? error.message : String(error)}`);
-    });
+    // back before apps call inference, or an off-network service cannot resolve `ci-hub`. An app still
+    // on a shared Hub network from before apps had networks of their own is taken off it there, and is
+    // recreated here so its labels, Memory URL and trusted Traefik hop match its own network.
+    void this.dockerService
+      .ensureHubOnAppNetworks()
+      .then((moved) => this.recreateAppsMovedOffSharedNetworks(moved ?? []))
+      .catch((error: unknown) => {
+        this.logger.error(`Failed to reattach the Hub to app networks: ${error instanceof Error ? error.message : String(error)}`);
+      });
 
     this.logger.info('Triggering initial Cloudflare sync in 5s...');
     setTimeout(() => {

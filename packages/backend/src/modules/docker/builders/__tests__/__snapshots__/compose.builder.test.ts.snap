@@ -8,10 +8,6 @@ exports[`DockerComposeBuilder > should be able to parse a compose.json file 1`] 
     networks:
       nginx_store-id_network:
         gw_priority: 0
-      ci-hub_network:
-        gw_priority: 1
-      ci-os-hub_network:
-        gw_priority: 0
     environment:
       UPLOAD_FOLDER: /var/uploads
       DATABASE_URL: mysql+pymysql://cihub:\${CTFD_MYSQL_DB_PASSWORD}@ctfd-db/ctfd
@@ -69,12 +65,6 @@ exports[`DockerComposeBuilder > should be able to parse a compose.json file 1`] 
       ci-os-hub.managed: true
       ci-os-hub.appurn: nginx:store-id
 networks:
-  ci-hub_network:
-    name: ci-hub_network
-    external: true
-  ci-os-hub_network:
-    name: ci-os-hub_network
-    external: true
   nginx_store-id_network:
     name: nginx_store-id_network
     external: false
@@ -103,12 +93,6 @@ exports[`DockerComposeBuilder > should build a docker-compose file 1`] = `
       ci-os-hub.managed: true
       ci-os-hub.appurn: nginx:store-id
 networks:
-  ci-hub_network:
-    name: ci-hub_network
-    external: true
-  ci-os-hub_network:
-    name: ci-os-hub_network
-    external: true
   nginx_store-id_network:
     name: nginx_store-id_network
     external: false
@@ -217,12 +201,6 @@ exports[`DockerComposeBuilder > should correctly format a complex docker-compose
       ci-os-hub.managed: true
       ci-os-hub.appurn: home-assistant:ci-marketplace
 networks:
-  ci-hub_network:
-    name: ci-hub_network
-    external: true
-  ci-os-hub_network:
-    name: ci-os-hub_network
-    external: true
   home-assistant_ci-marketplace_network:
     name: home-assistant_ci-marketplace_network
     external: false
@@ -265,12 +243,6 @@ exports[`DockerComposeBuilder > should correctly format deploy resources 1`] = `
               driver: nvidia
               count: all
 networks:
-  ci-hub_network:
-    name: ci-hub_network
-    external: true
-  ci-os-hub_network:
-    name: ci-os-hub_network
-    external: true
   nginx_store-id_network:
     name: nginx_store-id_network
     external: false
@@ -302,12 +274,6 @@ exports[`DockerComposeBuilder > should correctly format devices 1`] = `
       - /dev/ttyUSB0:/dev/ttyUSB0
       - /dev/ttyACM0:/dev/xvda:rwm
 networks:
-  ci-hub_network:
-    name: ci-hub_network
-    external: true
-  ci-os-hub_network:
-    name: ci-os-hub_network
-    external: true
   nginx_store-id_network:
     name: nginx_store-id_network
     external: false
@@ -340,12 +306,6 @@ exports[`DockerComposeBuilder > should correctly format entrypoint as array 1`] 
       - arg1
       - arg2
 networks:
-  ci-hub_network:
-    name: ci-hub_network
-    external: true
-  ci-os-hub_network:
-    name: ci-os-hub_network
-    external: true
   nginx_store-id_network:
     name: nginx_store-id_network
     external: false
@@ -375,12 +335,6 @@ exports[`DockerComposeBuilder > should correctly format entrypoint as string 1`]
       ci-os-hub.appurn: nginx:store-id
     entrypoint: entrypoint
 networks:
-  ci-hub_network:
-    name: ci-hub_network
-    external: true
-  ci-os-hub_network:
-    name: ci-os-hub_network
-    external: true
   nginx_store-id_network:
     name: nginx_store-id_network
     external: false
@@ -413,12 +367,6 @@ exports[`DockerComposeBuilder > should correctly format logging 1`] = `
       options:
         syslog-address: tcp://192.168.0.42:123
 networks:
-  ci-hub_network:
-    name: ci-hub_network
-    external: true
-  ci-os-hub_network:
-    name: ci-os-hub_network
-    external: true
   nginx_store-id_network:
     name: nginx_store-id_network
     external: false
