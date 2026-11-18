@@ -185,6 +185,7 @@ export type UserSettingsBody = {
     inferenceVllmApiKey?: string;
     inferenceVllmUrl?: string;
     inferenceOmlxUrl?: string;
+    inferenceOmlxApiKey?: string;
     inferenceDecodeEndpoint?: string;
     inferenceEncodeEndpoint?: string;
     inferenceMaxNumCtx?: number;
@@ -1514,6 +1515,7 @@ export type UpdateInferencePreferencesBody = {
     vllmApiKey?: string;
     vllmUrl?: string;
     omlxUrl?: string;
+    omlxApiKey?: string;
     decodeEndpoint?: string;
     encodeEndpoint?: string;
     maxNumCtx?: number;

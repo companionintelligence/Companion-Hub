@@ -34,6 +34,9 @@ export const inferencePreferencesSchema = z.object({
   // Base URL of the operator's oMLX server (e.g. http://host.docker.internal:8000).
   // `null` clears the stored preference and falls back to OMLX_URL or the host default.
   omlxUrl: z.string().trim().url().nullable().optional(),
+  // oMLX's main API key. The Hub needs it for oMLX's admin API, which downloads models; the desktop
+  // app saves the key it set when it installed oMLX. `null` or an empty string clears it.
+  omlxApiKey: z.string().trim().nullable().optional(),
   // Manual path. Either may be set alone. Origins, not `/v1` suffixes: the resolver appends `/v1`
   // for decode. Encode is stored as typed and handed to apps as the embeddings host.
   decodeEndpoint: z.string().trim().url().nullable().optional(),
@@ -59,7 +62,8 @@ export class UpdateInferencePreferencesBody extends createZodDto(inferencePrefer
 
 /**
  * What the Hub shows in place of a stored key: `GET /api/inference/preferences` sends it for the vLLM
- * key, and Settings > AI shows it for a cloud provider key. A save that sends it back keeps the stored key.
+ * and oMLX keys, and Settings > AI shows it for a cloud provider key. A save that sends it back keeps
+ * the stored key.
  */
 export const MASKED_API_KEY = '••••••••';
 
@@ -68,9 +72,13 @@ export function isMaskedApiKey(value: string | null | undefined): boolean {
   return typeof value === 'string' && value.trim().startsWith('••');
 }
 
-/** Inference preferences as the API reports them: the stored vLLM key becomes {@link MASKED_API_KEY}. */
-export function maskInferencePreferences<T extends { preferredVllmApiKey?: string | null }>(preferences: T): T {
-  return preferences.preferredVllmApiKey ? { ...preferences, preferredVllmApiKey: MASKED_API_KEY } : preferences;
+/** Inference preferences as the API reports them: each stored engine key becomes {@link MASKED_API_KEY}. */
+export function maskInferencePreferences<T extends { preferredVllmApiKey?: string | null; preferredOmlxApiKey?: string | null }>(preferences: T): T {
+  return {
+    ...preferences,
+    ...(preferences.preferredVllmApiKey ? { preferredVllmApiKey: MASKED_API_KEY } : {}),
+    ...(preferences.preferredOmlxApiKey ? { preferredOmlxApiKey: MASKED_API_KEY } : {}),
+  };
 }
 
 const runtimeModelsQuerySchema = z.object({
