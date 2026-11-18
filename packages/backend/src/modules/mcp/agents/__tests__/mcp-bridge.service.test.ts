@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { McpBridgeService } from '../../agents/mcp-bridge.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -7,6 +7,7 @@ import { DockerService } from '@/modules/docker/docker.service';
 import { AppsService } from '@/modules/apps/apps.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { EnvUtils } from '@/modules/env/env.utils';
+import { McpStdioLaunchPolicy, McpStdioLaunchRefused } from '../mcp-stdio-launch-policy';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { ResolvedAgentConfig } from '../../agents/agent-config.service';
 import { type FakeStdioServer, makeFakeStdioServer, waitForExit } from './fake-stdio-mcp-server';
@@ -24,6 +25,7 @@ describe('McpBridgeService', () => {
   let appsService: MockProxy<AppsService>;
   let appFilesManager: MockProxy<AppFilesManager>;
   let envUtils: MockProxy<EnvUtils>;
+  let moduleRef: TestingModule;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -34,9 +36,13 @@ describe('McpBridgeService', () => {
         { provide: AppsService, useValue: mock<AppsService>() },
         { provide: AppFilesManager, useValue: mock<AppFilesManager>() },
         { provide: EnvUtils, useValue: mock<EnvUtils>() },
+        // The fake stdio server is a `node -e` child, which the real policy refuses by design; the
+        // policy has its own tests (mcp-stdio-launch-policy.test.ts).
+        { provide: McpStdioLaunchPolicy, useValue: { assertAllowed: async () => undefined } },
       ],
     }).compile();
 
+    moduleRef = module;
     service = module.get(McpBridgeService);
     appsService = module.get(AppsService);
     appFilesManager = module.get(AppFilesManager);
@@ -126,6 +132,18 @@ describe('McpBridgeService', () => {
     afterEach(() => {
       service.onModuleDestroy();
       server.cleanup();
+    });
+
+    it('starts nothing when the launch policy refuses the listing', async () => {
+      const policy = moduleRef.get(McpStdioLaunchPolicy);
+      const refusal = new McpStdioLaunchRefused(STDIO_URN, 'host_docker is only allowed for apps from the official store');
+      const assertAllowed = vi.spyOn(policy, 'assertAllowed').mockRejectedValue(refusal);
+
+      await expect(service.discoverTools(STDIO_URN, stdioConfig())).rejects.toBe(refusal);
+      // The policy saw exactly what would have been spawned, environment included.
+      expect(assertAllowed).toHaveBeenCalledWith(STDIO_URN, expect.objectContaining({ launch: 'host_docker', command: server.command }));
+      expect(assertAllowed.mock.calls[0]?.[1].env).not.toHaveProperty('JWT_SECRET');
+      expect(server.pids()).toEqual([]);
     });
 
     it('dropApp stops the server and forgets the tools it advertised', async () => {
