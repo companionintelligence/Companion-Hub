@@ -67,7 +67,7 @@ vi.mock('./api-client/client.gen', () => ({
   },
 }));
 
-const { clientLoader, ErrorBoundary, shouldRevalidate } = await import('./root');
+const { clientLoader, ErrorBoundary, shouldRevalidate, shouldStartBootstrapRevalidation, ROOT_BOOTSTRAP_RUN_LIMIT_MS } = await import('./root');
 import { cacheRegistrationStatus } from './lib/registration-cache';
 import { resetMobileClientCacheForTests } from './lib/mobile-connection';
 
@@ -407,6 +407,28 @@ describe('root shouldRevalidate', () => {
     ).toBe(false);
   });
 
+  it('still runs the root loader for a revalidation at / once a run there has marked bootstrap warm', async () => {
+    userContext.mockResolvedValue({
+      data: {
+        isConfigured: true,
+        isLoggedIn: true,
+        isGuestDashboardEnabled: false,
+      },
+    });
+
+    // This run returns its redirect to /home. When a newer revalidation cancels that redirect, the page
+    // is still at `/` with nothing to show, and only the root loader can send it on.
+    await clientLoader({ request: new Request('http://localhost/') } as never);
+
+    expect(
+      shouldRevalidate({
+        currentUrl: new URL('http://localhost/'),
+        nextUrl: new URL('http://localhost/'),
+        defaultShouldRevalidate: true,
+      }),
+    ).toBe(true);
+  });
+
   it('revalidates when navigating to login', async () => {
     userContext.mockResolvedValue({
       data: {
@@ -597,5 +619,17 @@ describe('root response interceptor 401 handling', () => {
     await expect(responseInterceptor(errorResponse(url))).rejects.toThrow();
 
     expect(handleSessionExpired).not.toHaveBeenCalled();
+  });
+});
+
+describe('root shouldStartBootstrapRevalidation', () => {
+  it('starts one when no loader run is in flight', () => {
+    expect(shouldStartBootstrapRevalidation(null, 10_000)).toBe(true);
+  });
+
+  it('leaves a run in flight alone until it has outlived any real run', () => {
+    expect(shouldStartBootstrapRevalidation(10_000, 10_000 + 1_500)).toBe(false);
+    expect(shouldStartBootstrapRevalidation(10_000, 10_000 + ROOT_BOOTSTRAP_RUN_LIMIT_MS - 1)).toBe(false);
+    expect(shouldStartBootstrapRevalidation(10_000, 10_000 + ROOT_BOOTSTRAP_RUN_LIMIT_MS)).toBe(true);
   });
 });

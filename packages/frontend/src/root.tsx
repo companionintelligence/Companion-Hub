@@ -6,7 +6,19 @@ import { useDesktopRestartNotice } from './hooks/use-desktop-restart-notice';
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { Toaster } from '@/components/ui/Toaster/Toaster';
 import { toasterPlacement } from '@/components/ui/Toaster/toaster-placement';
-import { Links, Meta, Navigate, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect, useLocation, useRevalidator } from 'react-router';
+import {
+  Links,
+  Meta,
+  Navigate,
+  Outlet,
+  Scripts,
+  ScrollRestoration,
+  isRouteErrorResponse,
+  redirect,
+  useLocation,
+  useNavigation,
+  useRevalidator,
+} from 'react-router';
 import type { Route } from './+types/root';
 import { userContext } from './api-client';
 import { client } from './api-client/client.gen';
@@ -287,6 +299,13 @@ export function shouldRevalidate({
     return true;
   }
 
+  // `/` has no page: the root loader is what sends it on. A loader run marks bootstrap warm before its
+  // redirect lands, and a newer revalidation can still cancel that redirect. Skipping the loader at `/`
+  // after that left the page on "Connecting to local API..." for good, every later revalidation a no-op.
+  if (nextUrl.pathname === '/') {
+    return defaultShouldRevalidate;
+  }
+
   if (!rootBootstrapWarm) {
     return defaultShouldRevalidate;
   }
@@ -297,6 +316,24 @@ export function shouldRevalidate({
   }
 
   return defaultShouldRevalidate;
+}
+
+/** How often `/` asks the root loader again while it waits to send the page on. */
+export const ROOT_BOOTSTRAP_POLL_MS = 1500;
+
+/**
+ * Longer than a root loader run can take: its registration and user-context reads each give up after
+ * HUB_BOOTSTRAP_FETCH_MS. A run older than this is stuck (a half-open socket, say) and may be replaced.
+ */
+export const ROOT_BOOTSTRAP_RUN_LIMIT_MS = 2 * HUB_BOOTSTRAP_FETCH_MS + 4_000;
+
+/**
+ * Whether the `/` poll may start another root revalidation, given when the loader run in flight
+ * started (null when none is). A new revalidation aborts the one in flight, and from far away a run
+ * takes longer than the poll interval, so every run was cancelled before its redirect landed.
+ */
+export function shouldStartBootstrapRevalidation(busySince: number | null, now: number): boolean {
+  return busySince === null || now - busySince >= ROOT_BOOTSTRAP_RUN_LIMIT_MS;
 }
 
 const MOBILE_ROOT_LOADER_MS = 6_000;
@@ -712,9 +749,16 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App({ loaderData }: Route.ComponentProps) {
-  const { revalidate } = useRevalidator();
+  const { revalidate, state: revalidationState } = useRevalidator();
+  const navigation = useNavigation();
   const location = useLocation();
   const onRootBootstrap = location.pathname === '/' && loaderData == null;
+  // When the root's current loader run started, or null while none is running.
+  const loaderBusySinceRef = useRef<number | null>(null);
+  const loaderBusy = revalidationState !== 'idle' || navigation.state !== 'idle';
+  useEffect(() => {
+    loaderBusySinceRef.current = loaderBusy ? (loaderBusySinceRef.current ?? Date.now()) : null;
+  }, [loaderBusy]);
 
   // Root has no index route. While the loader is still resolving (common during
   // desktop startup), keep polling so we redirect off `/` as soon as the API responds.
@@ -722,10 +766,11 @@ export default function App({ loaderData }: Route.ComponentProps) {
   useEffect(() => {
     if (!onRootBootstrap || needsRemoteHubConnect()) return;
 
-    void revalidate();
-    const id = window.setInterval(() => {
-      void revalidate();
-    }, 1500);
+    const poll = () => {
+      if (shouldStartBootstrapRevalidation(loaderBusySinceRef.current, Date.now())) void revalidate();
+    };
+    poll();
+    const id = window.setInterval(poll, ROOT_BOOTSTRAP_POLL_MS);
     return () => window.clearInterval(id);
   }, [onRootBootstrap, revalidate]);
 
