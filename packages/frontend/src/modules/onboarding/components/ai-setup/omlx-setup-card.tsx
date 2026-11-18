@@ -33,45 +33,90 @@ interface OmlxSetupCardProps {
   onRecheck: () => Promise<void>;
   endpointUrl?: string;
   onEndpointUrlChange?: (value: string) => void;
+  /** oMLX's main API key. The Hub needs it to download models through oMLX's admin API. */
+  apiKey?: string;
+  onApiKeyChange?: (value: string) => void;
+  /** Shown under the key field, as when a saved key belongs to another URL. */
+  apiKeyNotice?: string;
   onAutoInstall?: () => Promise<void>;
 }
 
 const OmlxConnectionFields = ({
   endpointUrl,
   onEndpointUrlChange,
+  apiKey,
+  onApiKeyChange,
+  apiKeyNotice,
   labelClass,
   hintClass,
   defaultEndpointUrl,
   idSuffix,
-}: Pick<OmlxSetupCardProps, 'endpointUrl' | 'onEndpointUrlChange'> & {
+}: Pick<OmlxSetupCardProps, 'endpointUrl' | 'onEndpointUrlChange' | 'apiKey' | 'onApiKeyChange' | 'apiKeyNotice'> & {
   labelClass: string;
   hintClass: string;
   defaultEndpointUrl?: string;
   idSuffix: string;
 }) => {
   const { t } = useTranslation();
-  if (!onEndpointUrlChange) return null;
+  if (!onEndpointUrlChange && !onApiKeyChange) return null;
   return (
-    <div className="min-w-0">
-      <label htmlFor={`omlx-endpoint-url-${idSuffix}`} className={`mb-1 block text-xs font-medium ${labelClass}`}>
-        {t('ONBOARDING_OMLX_ENDPOINT_URL_LABEL')}
-      </label>
-      <Input
-        id={`omlx-endpoint-url-${idSuffix}`}
-        type="text"
-        autoComplete="off"
-        value={endpointUrl ?? ''}
-        onChange={(e) => onEndpointUrlChange(e.target.value)}
-        placeholder={defaultEndpointUrl || t('ONBOARDING_OMLX_ENDPOINT_URL_PLACEHOLDER')}
-        data-testid="omlx-endpoint-url-input"
-        className="w-full max-w-full"
-      />
-      <p className={`mt-1 text-xs ${hintClass}`}>{t('ONBOARDING_OMLX_ENDPOINT_URL_HINT')}</p>
+    <div className="min-w-0 space-y-3">
+      {onEndpointUrlChange && (
+        <div className="min-w-0">
+          <label htmlFor={`omlx-endpoint-url-${idSuffix}`} className={`mb-1 block text-xs font-medium ${labelClass}`}>
+            {t('ONBOARDING_OMLX_ENDPOINT_URL_LABEL')}
+          </label>
+          <Input
+            id={`omlx-endpoint-url-${idSuffix}`}
+            type="text"
+            autoComplete="off"
+            value={endpointUrl ?? ''}
+            onChange={(e) => onEndpointUrlChange(e.target.value)}
+            placeholder={defaultEndpointUrl || t('ONBOARDING_OMLX_ENDPOINT_URL_PLACEHOLDER')}
+            data-testid="omlx-endpoint-url-input"
+            className="w-full max-w-full"
+          />
+          <p className={`mt-1 text-xs ${hintClass}`}>{t('ONBOARDING_OMLX_ENDPOINT_URL_HINT')}</p>
+        </div>
+      )}
+      {onApiKeyChange && (
+        <div className="min-w-0">
+          <label htmlFor={`omlx-api-key-${idSuffix}`} className={`mb-1 block text-xs font-medium ${labelClass}`}>
+            {t('ONBOARDING_OMLX_API_KEY_LABEL')}
+          </label>
+          <Input
+            id={`omlx-api-key-${idSuffix}`}
+            type="password"
+            autoComplete="off"
+            value={apiKey ?? ''}
+            onChange={(e) => onApiKeyChange(e.target.value)}
+            placeholder={t('ONBOARDING_OMLX_API_KEY_PLACEHOLDER')}
+            data-testid="omlx-api-key-input"
+            className="w-full max-w-full"
+          />
+          <p className={`mt-1 text-xs ${hintClass}`}>{t('ONBOARDING_OMLX_API_KEY_HINT')}</p>
+          {apiKeyNotice && (
+            <p className={`mt-1 text-xs font-medium ${hintClass}`} data-testid="omlx-api-key-notice">
+              {apiKeyNotice}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 };
 
-export const OmlxSetupCard = ({ status, checking, onRecheck, endpointUrl, onEndpointUrlChange, onAutoInstall }: OmlxSetupCardProps) => {
+export const OmlxSetupCard = ({
+  status,
+  checking,
+  onRecheck,
+  endpointUrl,
+  onEndpointUrlChange,
+  apiKey,
+  onApiKeyChange,
+  apiKeyNotice,
+  onAutoInstall,
+}: OmlxSetupCardProps) => {
   const { t } = useTranslation();
 
   if (!status) {
@@ -119,6 +164,9 @@ export const OmlxSetupCard = ({ status, checking, onRecheck, endpointUrl, onEndp
           <OmlxConnectionFields
             endpointUrl={endpointUrl}
             onEndpointUrlChange={onEndpointUrlChange}
+            apiKey={apiKey}
+            onApiKeyChange={onApiKeyChange}
+            apiKeyNotice={apiKeyNotice}
             labelClass="text-success"
             hintClass="text-success"
             defaultEndpointUrl={status.endpointUrl}
@@ -150,6 +198,9 @@ export const OmlxSetupCard = ({ status, checking, onRecheck, endpointUrl, onEndp
               <OmlxConnectionFields
                 endpointUrl={endpointUrl}
                 onEndpointUrlChange={onEndpointUrlChange}
+                apiKey={apiKey}
+                onApiKeyChange={onApiKeyChange}
+                apiKeyNotice={apiKeyNotice}
                 labelClass="text-warning"
                 hintClass="text-warning"
                 defaultEndpointUrl={status.endpointUrl}

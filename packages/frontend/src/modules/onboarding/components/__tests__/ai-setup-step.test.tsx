@@ -5,20 +5,28 @@ import { resetMobileClientCacheForTests } from '@/lib/mobile-connection';
 import { AiSetupStep } from '../ai-setup-step';
 import type { HardwareProfileResponse } from '../../helpers/ai-setup-types';
 
-const { fetchInferenceOnboardingProfile, fetchOllamaInstallStatus, fetchVllmInstallStatus, fetchLemonadeInstallStatus, rescanInferenceHardware } =
-  vi.hoisted(() => ({
-    fetchInferenceOnboardingProfile: vi.fn(),
-    fetchOllamaInstallStatus: vi.fn(),
-    fetchVllmInstallStatus: vi.fn(),
-    fetchLemonadeInstallStatus: vi.fn(),
-    rescanInferenceHardware: vi.fn(),
-  }));
+const {
+  fetchInferenceOnboardingProfile,
+  fetchOllamaInstallStatus,
+  fetchVllmInstallStatus,
+  fetchLemonadeInstallStatus,
+  fetchOmlxInstallStatus,
+  rescanInferenceHardware,
+} = vi.hoisted(() => ({
+  fetchInferenceOnboardingProfile: vi.fn(),
+  fetchOllamaInstallStatus: vi.fn(),
+  fetchVllmInstallStatus: vi.fn(),
+  fetchLemonadeInstallStatus: vi.fn(),
+  fetchOmlxInstallStatus: vi.fn(),
+  rescanInferenceHardware: vi.fn(),
+}));
 
 vi.mock('@/lib/inference/inference-api', () => ({
   fetchInferenceOnboardingProfile,
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
   fetchLemonadeInstallStatus,
+  fetchOmlxInstallStatus,
   rescanInferenceHardware,
 }));
 
@@ -333,6 +341,9 @@ describe('AiSetupStep', () => {
     fetchOllamaInstallStatus.mockImplementation(() => Promise.resolve(api.ollama));
     fetchVllmInstallStatus.mockImplementation(() => Promise.resolve(api.vllm));
     fetchLemonadeInstallStatus.mockImplementation(() => Promise.resolve({ ready: false, running: false, endpointUrl: 'http://127.0.0.1:13305' }));
+    fetchOmlxInstallStatus.mockImplementation(() =>
+      Promise.resolve({ ready: false, running: false, endpointUrl: 'http://host.docker.internal:8000' }),
+    );
     rescanInferenceHardware.mockImplementation(async () => {
       if (!api.rescanOk) throw new Error('HTTP 503');
     });
@@ -871,6 +882,7 @@ describe('AiSetupStep', () => {
       agentFrameworks: ['openclaw'],
       selectedModels: ['phi-4-mini'],
       ollamaSelectedModelIds: ['phi-4-mini'],
+      downloadModelIds: ['phi-4-mini'],
       backend: 'ollama',
       cloudProviders: [],
       preferredModelId: 'phi-4-mini',
@@ -1105,7 +1117,7 @@ describe('AiSetupStep', () => {
     await user.click(screen.getByTestId('vllm-recheck-btn'));
 
     // Still on vLLM — the refetch must happen, and must not snap back to the recommended backend.
-    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm', '', '', ''));
+    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm', '', '', '', undefined));
     expect(screen.getByText('vLLM detected')).toBeInTheDocument();
   });
 
@@ -1412,6 +1424,118 @@ describe('AiSetupStep', () => {
     expect(onConfigChange.mock.lastCall?.[0]).not.toHaveProperty('engineBlocked');
   });
 
+  describe('models on oMLX', () => {
+    // A catalog row on oMLX, which the Hub downloads through oMLX's admin API.
+    const omlxModel = {
+      id: 'qwen3-8b-mlx',
+      displayName: 'Qwen 3 8B (MLX)',
+      description: '',
+      modality: 'llm',
+      purpose: 'general',
+      backend: 'omlx',
+      parameterScale: 8,
+      metadata: { capabilities: { tools: true } },
+      runtime: { backendModelId: 'mlx-community/Qwen3-8B-4bit', input: ['text'], pinnedByDefault: false, memoryFootprintMb: 5000 },
+      requirements: { minTier: 'low', diskMb: 4600 },
+      tiers: { high: 'recommended', medium: 'recommended', low: 'available', cpuOnly: 'available' },
+    };
+    const omlxReady = {
+      ready: true,
+      running: true,
+      endpointUrl: 'http://host.docker.internal:8000',
+      displayEndpoint: 'http://host.docker.internal:8000/v1',
+    };
+    const macProfile = (installedCatalogIds: string[] = []): HardwareProfileResponse =>
+      ({
+        ...highTierProfile,
+        hardware: {
+          ...highTierProfile.hardware,
+          gpu: { ...highTierProfile.hardware.gpu, vendor: 'apple', model: 'Apple M2 Max', unifiedMemory: true },
+          cpu: { ...highTierProfile.hardware.cpu, arch: 'arm64', model: 'Apple M2 Max' },
+          os: { platform: 'darwin', name: 'macOS', version: '15.6' },
+        },
+        backends: {
+          recommended: 'omlx',
+          available: [
+            { type: 'ollama', running: true, healthy: true },
+            { type: 'omlx', running: true, healthy: true },
+          ],
+        },
+        recommendedModels: [omlxModel, nomicEmbed],
+        availableModels: [omlxModel, nomicEmbed],
+        installedCatalogIds,
+      }) as any;
+
+    it('ticks a model oMLX does not have yet for the Hub to download, instead of opening Hugging Face, and pins only Ollama models', async () => {
+      api.profile = macProfile(['nomic-embed-text']);
+      fetchOmlxInstallStatus.mockImplementation(() => Promise.resolve(omlxReady));
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+
+      await waitFor(() => expect(screen.getByTestId('backend-option-omlx').querySelector('input')).toBeChecked());
+      const checkbox = (await screen.findByTestId('model-checkbox-qwen3-8b-mlx')) as HTMLInputElement;
+      if (!checkbox.checked) await user.click(checkbox);
+
+      expect(mockOpenExternal).not.toHaveBeenCalled();
+      await waitFor(() => expect((screen.getByTestId('model-checkbox-qwen3-8b-mlx') as HTMLInputElement).checked).toBe(true));
+
+      await user.click(screen.getByTestId('ai-continue-btn'));
+      const config = onComplete.mock.calls[0]?.[0];
+      expect(config.downloadModelIds).toEqual(expect.arrayContaining(['qwen3-8b-mlx', 'nomic-embed-text']));
+      expect(config.ollamaSelectedModelIds).toEqual(['nomic-embed-text']);
+      // Embeddings on the oMLX path come from Ollama.
+      expect(config.preferredEmbeddingModelId).toBe('nomic-embed-text');
+    });
+
+    it('still opens Hugging Face for a vLLM model the server does not serve, which the Hub cannot download', async () => {
+      api.profile = vllmProfile();
+      api.vllm = vllmReady;
+      const user = userEvent.setup();
+      renderStep();
+      await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+
+      await user.click(screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm'));
+
+      expect(mockOpenExternal).toHaveBeenCalledWith(expect.stringMatching(/^https:\/\/huggingface\.co\//));
+      expect((screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement).checked).toBe(false);
+    });
+
+    it('keeps the key the desktop app set when it installed oMLX, and hands it to Continue', async () => {
+      const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+      tauriWindow.__TAURI_INTERNALS__ = {
+        invoke: vi.fn(async (command: string) =>
+          command === 'install_and_start_inference_runners_command'
+            ? [{ runner: 'omlx', state: 'installed_and_started', endpointUrl: 'http://host.docker.internal:8000', apiKey: 'omlx-main-key' }]
+            : null,
+        ),
+      };
+      try {
+        api.profile = macProfile();
+        fetchOmlxInstallStatus.mockImplementation((_url?: string, apiKey?: string) =>
+          Promise.resolve(apiKey ? omlxReady : { ready: false, running: false, endpointUrl: 'http://host.docker.internal:8000' }),
+        );
+        const user = userEvent.setup();
+        const { onComplete } = renderStep();
+        await waitFor(() => expect(screen.getByTestId('backend-option-omlx').querySelector('input')).toBeChecked());
+
+        await user.click(await screen.findByTestId('auto-install-runner-btn'));
+
+        await waitFor(() => expect(fetchOmlxInstallStatus).toHaveBeenCalledWith('http://host.docker.internal:8000', 'omlx-main-key'));
+        // Ready now, so the card shows oMLX detected in place of the button.
+        await waitFor(() => expect(screen.getByText('oMLX detected')).toBeInTheDocument());
+        expect((screen.getByTestId('omlx-api-key-input') as HTMLInputElement).value).toBe('omlx-main-key');
+        expect(fetchInferenceOnboardingProfile).toHaveBeenLastCalledWith('omlx', '', undefined, 'http://host.docker.internal:8000', 'omlx-main-key');
+
+        await user.click(screen.getByTestId('ai-continue-btn'));
+        expect(onComplete).toHaveBeenCalledWith(
+          expect.objectContaining({ backend: 'omlx', omlxUrl: 'http://host.docker.internal:8000', omlxApiKey: 'omlx-main-key' }),
+        );
+      } finally {
+        delete tauriWindow.__TAURI_INTERNALS__;
+      }
+    });
+  });
+
   it('keeps oMLX in the Mac desktop app, which installs it itself, even with Ollama answering', async () => {
     // The desktop window installs oMLX with Homebrew when setup finishes, so its pick stands.
     const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
@@ -1513,7 +1637,7 @@ describe('AiSetupStep', () => {
     renderStep();
 
     await waitFor(() => expect((screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement).checked).toBe(true));
-    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm', '', '', '');
+    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm', '', '', '', undefined);
   });
 
   it('says the apps install while the models download, which is the order the install step runs in', async () => {
@@ -1582,6 +1706,7 @@ describe('AiSetupStep', () => {
       agentFrameworks: ['openclaw'],
       selectedModels: ['phi-4-mini'],
       ollamaSelectedModelIds: ['phi-4-mini'],
+      downloadModelIds: ['phi-4-mini'],
       backend: 'ollama',
       cloudProviders: [],
       preferredModelId: 'phi-4-mini',

@@ -34,11 +34,15 @@ import { unwrapSdk, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
 import { MASKED_KEY, isMaskedKey } from './masked-key';
 
 const VLLM_PROBE_API_KEY_HEADER = 'x-ci-vllm-api-key';
+const OMLX_PROBE_API_KEY_HEADER = 'x-ci-omlx-api-key';
 
-/** The probe header for a vLLM key typed but not saved. A masked field sends none, so the Hub probes with its stored key. */
-function vllmProbeHeaders(apiKey: string | undefined): Record<string, string> | undefined {
-  return apiKey?.trim() && !isMaskedKey(apiKey) ? { [VLLM_PROBE_API_KEY_HEADER]: apiKey.trim() } : undefined;
+/** The probe header for a key typed but not saved. A masked field sends none, so the Hub probes with its stored key. */
+function probeKeyHeaders(header: string, apiKey: string | undefined): Record<string, string> | undefined {
+  return apiKey?.trim() && !isMaskedKey(apiKey) ? { [header]: apiKey.trim() } : undefined;
 }
+
+const vllmProbeHeaders = (apiKey: string | undefined) => probeKeyHeaders(VLLM_PROBE_API_KEY_HEADER, apiKey);
+const omlxProbeHeaders = (apiKey: string | undefined) => probeKeyHeaders(OMLX_PROBE_API_KEY_HEADER, apiKey);
 
 async function unwrap<T>(promise: Promise<{ data?: T; error?: unknown }>): Promise<T> {
   return unwrapSdk(promise);
@@ -49,12 +53,13 @@ export async function fetchInferenceOnboardingProfile(
   vllmUrl?: string,
   vllmApiKey?: string,
   omlxUrl?: string,
+  omlxApiKey?: string,
 ): Promise<HardwareProfileResponse> {
   const query: Record<string, string> = {};
   if (backend) query.backend = backend;
   if (backend === 'vllm' && vllmUrl?.trim()) query.vllmUrl = vllmUrl.trim();
   if (backend === 'omlx' && omlxUrl?.trim()) query.omlxUrl = omlxUrl.trim();
-  const headers = backend === 'vllm' ? vllmProbeHeaders(vllmApiKey) : undefined;
+  const headers = backend === 'vllm' ? vllmProbeHeaders(vllmApiKey) : backend === 'omlx' ? omlxProbeHeaders(omlxApiKey) : undefined;
   return unwrap(
     getOnboardingProfile({
       query: Object.keys(query).length > 0 ? query : undefined,
@@ -149,6 +154,7 @@ export async function saveInferencePreferences(body: {
   vllmApiKey?: string | null;
   vllmUrl?: string | null;
   omlxUrl?: string | null;
+  omlxApiKey?: string | null;
   decodeEndpoint?: string | null;
   encodeEndpoint?: string | null;
 }): Promise<void> {
@@ -165,6 +171,7 @@ export async function saveInferencePreferences(body: {
         vllmApiKey: body.vllmApiKey,
         vllmUrl: body.vllmUrl,
         omlxUrl: body.omlxUrl,
+        omlxApiKey: body.omlxApiKey,
         decodeEndpoint: body.decodeEndpoint,
         encodeEndpoint: body.encodeEndpoint,
       },
@@ -178,10 +185,11 @@ export async function fetchVllmInstallStatus(url?: string, apiKey?: string) {
   return unwrap(getVllmStatus({ query, headers } as Parameters<typeof getVllmStatus>[0]));
 }
 
-/** Probe the operator's oMLX server. No API-key header. */
-export async function fetchOmlxInstallStatus(url?: string) {
+/** Probe the operator's oMLX server, with a key typed but not saved yet when there is one. */
+export async function fetchOmlxInstallStatus(url?: string, apiKey?: string) {
   const query = url?.trim() ? { url: url.trim() } : undefined;
-  return unwrap(getOmlxStatus({ query } as Parameters<typeof getOmlxStatus>[0]));
+  const headers = omlxProbeHeaders(apiKey);
+  return unwrap(getOmlxStatus({ query, headers } as Parameters<typeof getOmlxStatus>[0]));
 }
 
 export async function fetchManualEndpointStatus(url: string) {

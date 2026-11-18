@@ -9,12 +9,17 @@ export interface AutomaticInferenceRunnerResult {
   state: AutomaticInferenceRunnerState;
   endpointUrl?: string;
   detail?: string;
+  /**
+   * oMLX's main API key: the one the desktop app set when it installed oMLX, or the one oMLX already
+   * has. The Hub needs it to download models through oMLX's admin API.
+   */
+  apiKey?: string;
 }
 
 export const DEFAULT_AUTOMATIC_INFERENCE_RUNNERS: AutomaticInferenceRunner[] = ['ollama'];
 
-/** Apple Silicon first-run set. oMLX handles chat and embeddings. */
-export const DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS: AutomaticInferenceRunner[] = ['omlx'];
+/** Apple Silicon first-run set. oMLX serves chat, and Ollama serves embeddings: the catalog has no oMLX embedder. */
+export const DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS: AutomaticInferenceRunner[] = ['omlx', 'ollama'];
 
 const AUTOMATIC_RUNNERS_BY_BACKEND: Record<string, AutomaticInferenceRunner[]> = {
   omlx: DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS,

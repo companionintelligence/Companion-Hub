@@ -8,13 +8,22 @@ import { sdkOk, sdkFail } from '@/tests/sdk-mock-helpers';
 const mockInvalidateQueries = vi.fn();
 const mockSetQueryData = vi.fn();
 
-const { installApp, getInstalledApps, saveInferencePreferences, pinInferenceModel, saveCloudProviderConfig, fetchTrackedModels } = vi.hoisted(() => ({
+const {
+  installApp,
+  getInstalledApps,
+  saveInferencePreferences,
+  pinInferenceModel,
+  saveCloudProviderConfig,
+  fetchTrackedModels,
+  startInferenceModelPull,
+} = vi.hoisted(() => ({
   installApp: vi.fn(),
   getInstalledApps: vi.fn(),
   saveInferencePreferences: vi.fn(),
   pinInferenceModel: vi.fn(),
   saveCloudProviderConfig: vi.fn(),
   fetchTrackedModels: vi.fn(),
+  startInferenceModelPull: vi.fn(),
 }));
 
 type TauriWindow = Window & {
@@ -30,6 +39,7 @@ vi.mock('@/lib/inference/inference-api', () => ({
   saveInferencePreferences,
   pinInferenceModel,
   saveCloudProviderConfig,
+  startInferenceModelPull,
 }));
 
 vi.mock('@/lib/inference/tracked-models', async (importOriginal) => {
@@ -84,6 +94,7 @@ describe('InstallStep', () => {
     pinInferenceModel.mockResolvedValue(undefined);
     saveCloudProviderConfig.mockResolvedValue(undefined);
     fetchTrackedModels.mockResolvedValue([]);
+    startInferenceModelPull.mockResolvedValue({ status: 'in_progress' });
     mockInvalidateQueries.mockResolvedValue(undefined);
   });
 
@@ -254,7 +265,7 @@ describe('InstallStep', () => {
 
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('install_and_start_inference_runners_command', {
-        backends: ['omlx'],
+        backends: ['omlx', 'ollama'],
       });
     });
   });
@@ -480,6 +491,67 @@ describe('InstallStep', () => {
       },
       { timeout: 5000 },
     );
+  });
+
+  describe('on oMLX', () => {
+    const omlxConfig = {
+      agentFrameworks: ['openclaw' as const],
+      remoteAccess: [],
+      selectedModels: ['qwen3-8b-mlx', 'nomic-embed-text'],
+      // The pin list: oMLX loads a model on its first request, so only Ollama's embedder is pinned.
+      ollamaSelectedModelIds: ['nomic-embed-text'],
+      downloadModelIds: ['qwen3-8b-mlx', 'nomic-embed-text'],
+      installedCatalogIds: [],
+      backend: 'omlx' as const,
+      cloudProviders: [],
+      skipped: false,
+    };
+
+    beforeEach(() => {
+      const invoke = vi.fn(async (command: string) =>
+        command === 'install_and_start_inference_runners_command'
+          ? [
+              { runner: 'omlx', state: 'installed_and_started', endpointUrl: 'http://host.docker.internal:8000', apiKey: 'omlx-main-key' },
+              { runner: 'ollama', state: 'already_running', endpointUrl: 'http://host.docker.internal:11434' },
+            ]
+          : null,
+      );
+      (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
+    });
+
+    it("saves the key the desktop app set for oMLX, then downloads oMLX's models and pins only Ollama's", async () => {
+      fetchTrackedModels.mockResolvedValue([
+        { catalogId: 'qwen3-8b-mlx', state: 'pulled' },
+        { catalogId: 'nomic-embed-text', state: 'pulled' },
+      ] as never);
+
+      render(<InstallStep apps={[]} onComplete={onComplete} aiSetupConfig={omlxConfig} />);
+
+      await waitFor(() => expect(pinInferenceModel).toHaveBeenCalledWith('nomic-embed-text'));
+      expect(saveInferencePreferences).toHaveBeenCalledWith(
+        expect.objectContaining({ backend: 'omlx', omlxUrl: 'http://host.docker.internal:8000', omlxApiKey: 'omlx-main-key' }),
+      );
+      expect(startInferenceModelPull).toHaveBeenCalledWith('qwen3-8b-mlx', true);
+      expect(startInferenceModelPull).toHaveBeenCalledWith('nomic-embed-text', true);
+      // After the save: an oMLX download needs the key the save stores.
+      expect(startInferenceModelPull.mock.invocationCallOrder[0]).toBeGreaterThan(
+        saveInferencePreferences.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      );
+      expect(pinInferenceModel).not.toHaveBeenCalledWith('qwen3-8b-mlx');
+    });
+
+    it('marks a download the Hub refused to start as failed, with its reason, instead of waiting on it', async () => {
+      const refusal = "oMLX refused to download mlx-community/Qwen3-8B-4bit: its admin API needs oMLX's API key.";
+      startInferenceModelPull.mockImplementation(async (modelId: string) =>
+        modelId === 'qwen3-8b-mlx' ? { status: 'error', reason: refusal } : { status: 'in_progress' },
+      );
+      fetchTrackedModels.mockResolvedValue([{ catalogId: 'nomic-embed-text', state: 'pulled' }] as never);
+
+      render(<InstallStep apps={[]} onComplete={onComplete} aiSetupConfig={omlxConfig} />);
+
+      expect(await screen.findByTitle(refusal)).toBeInTheDocument();
+      await waitFor(() => expect(pinInferenceModel).toHaveBeenCalledWith('nomic-embed-text'));
+    });
   });
 
   it('only pins models that finished pulling', async () => {

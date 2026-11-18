@@ -243,8 +243,9 @@ function OnboardingWizard() {
     // down would have had their model silently never load.
     inferenceBackend: aiSetupConfig?.backend,
     backendUrl: aiSetupConfig?.backend === 'omlx' ? aiSetupConfig?.omlxUrl : aiSetupConfig?.backend === 'vllm' ? aiSetupConfig?.vllmUrl : undefined,
-    // Only the rows the Hub can install — `selectedModels` also carries vLLM rows the operator
-    // fetched themselves.
+    // Ollama and Lemonade rows only. `selectedModels` also carries vLLM rows the operator fetched
+    // themselves, and oMLX rows wait for InstallStep (`downloadModelIds`): oMLX refuses a download
+    // without its API key, which the Hub holds only once InstallStep has saved it.
     pullableModelIds: aiSetupConfig?.ollamaSelectedModelIds,
   });
 
