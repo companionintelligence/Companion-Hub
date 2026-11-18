@@ -3,7 +3,7 @@ import { Titlebar } from './components/titlebar/titlebar';
 import { HubStatus } from './components/hub-status/hub-status';
 import { useUpdateChecker } from './hooks/use-update-checker';
 import { useDesktopRestartNotice } from './hooks/use-desktop-restart-notice';
-import { Suspense, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Toaster } from '@/components/ui/Toaster/Toaster';
 import { toasterPlacement } from '@/components/ui/Toaster/toaster-placement';
 import {
@@ -300,7 +300,7 @@ export function shouldRevalidate({
   }
 
   // `/` has no page: the root loader is what sends it on. A loader run marks bootstrap warm before its
-  // redirect lands, and a newer revalidation can still cancel that redirect. Skipping the loader at `/`
+  // redirect lands. A newer revalidation can still cancel that redirect. Skipping the loader at `/`
   // after that left the page on "Connecting to local API..." for good, every later revalidation a no-op.
   if (nextUrl.pathname === '/') {
     return defaultShouldRevalidate;
@@ -329,8 +329,8 @@ export const ROOT_BOOTSTRAP_RUN_LIMIT_MS = 2 * HUB_BOOTSTRAP_FETCH_MS + 4_000;
 
 /**
  * Whether the `/` poll may start another root revalidation, given when the loader run in flight
- * started (null when none is). A new revalidation aborts the one in flight, and from far away a run
- * takes longer than the poll interval, so every run was cancelled before its redirect landed.
+ * started (null when none is). A new revalidation aborts the one in flight. From far away a run
+ * takes longer than the poll interval, so polling on every tick cancelled each run before its redirect landed.
  */
 export function shouldStartBootstrapRevalidation(busySince: number | null, now: number): boolean {
   return busySince === null || now - busySince >= ROOT_BOOTSTRAP_RUN_LIMIT_MS;
@@ -753,12 +753,20 @@ export default function App({ loaderData }: Route.ComponentProps) {
   const navigation = useNavigation();
   const location = useLocation();
   const onRootBootstrap = location.pathname === '/' && loaderData == null;
-  // When the root's current loader run started, or null while none is running.
+  // When the loader work in flight started, or null while none is running. The redirect navigation a
+  // revalidation starts is a loader run of its own (for /login the root loader runs again), so it gets its own clock.
   const loaderBusySinceRef = useRef<number | null>(null);
-  const loaderBusy = revalidationState !== 'idle' || navigation.state !== 'idle';
+  const loaderPhase = navigation.state === 'idle' ? (revalidationState === 'idle' ? null : 'revalidation') : 'navigation';
   useEffect(() => {
-    loaderBusySinceRef.current = loaderBusy ? (loaderBusySinceRef.current ?? Date.now()) : null;
-  }, [loaderBusy]);
+    loaderBusySinceRef.current = loaderPhase === null ? null : Date.now();
+  }, [loaderPhase]);
+
+  // A revalidation aborts the run in flight. The run that replaces it gets its own time, or the poll
+  // would cancel it again on the next tick.
+  const restartRootLoad = useCallback(() => {
+    if (loaderBusySinceRef.current !== null) loaderBusySinceRef.current = Date.now();
+    void revalidate();
+  }, [revalidate]);
 
   // Root has no index route. While the loader is still resolving (common during
   // desktop startup), keep polling so we redirect off `/` as soon as the API responds.
@@ -767,20 +775,16 @@ export default function App({ loaderData }: Route.ComponentProps) {
     if (!onRootBootstrap || needsRemoteHubConnect()) return;
 
     const poll = () => {
-      if (shouldStartBootstrapRevalidation(loaderBusySinceRef.current, Date.now())) void revalidate();
+      if (shouldStartBootstrapRevalidation(loaderBusySinceRef.current, Date.now())) restartRootLoad();
     };
     poll();
     const id = window.setInterval(poll, ROOT_BOOTSTRAP_POLL_MS);
     return () => window.clearInterval(id);
-  }, [onRootBootstrap, revalidate]);
+  }, [onRootBootstrap, restartRootLoad]);
 
   // After a long idle the browser often keeps a half-open socket. Revalidate so
   // we abandon the hung bootstrap fetch instead of sitting on the connecting copy.
-  useEffect(() => {
-    return subscribeHubResume(() => {
-      void revalidate();
-    });
-  }, [revalidate]);
+  useEffect(() => subscribeHubResume(restartRootLoad), [restartRootLoad]);
 
   if (onRootBootstrap) {
     if (typeof document !== 'undefined' && usesCloudConnect()) {

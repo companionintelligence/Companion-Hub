@@ -417,9 +417,17 @@ describe('root shouldRevalidate', () => {
     });
 
     // This run returns its redirect to /home. When a newer revalidation cancels that redirect, the page
-    // is still at `/` with nothing to show, and only the root loader can send it on.
+    // is still at `/` with nothing to show. Only the root loader can send it on.
     await clientLoader({ request: new Request('http://localhost/') } as never);
 
+    // The run did mark bootstrap warm: a warm navigation elsewhere skips the root loader.
+    expect(
+      shouldRevalidate({
+        currentUrl: new URL('http://localhost/store'),
+        nextUrl: new URL('http://localhost/settings'),
+        defaultShouldRevalidate: true,
+      }),
+    ).toBe(false);
     expect(
       shouldRevalidate({
         currentUrl: new URL('http://localhost/'),

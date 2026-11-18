@@ -134,6 +134,35 @@ describe('root bootstrap poll at /', () => {
     expect(router.revalidate).toHaveBeenCalledTimes(2);
   });
 
+  it('gives the run that replaced a hung one its own time instead of cancelling it on the next tick', async () => {
+    const { rerender } = renderApp();
+    router.revalidationState = 'loading';
+    rerender(<App {...({ loaderData: null } as unknown as AppProps)} />);
+
+    // The router stays busy throughout: the replacement run is slow too.
+    await act(async () => {
+      vi.advanceTimersByTime(2 * ROOT_BOOTSTRAP_RUN_LIMIT_MS);
+    });
+    expect(router.revalidate).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives the redirect navigation a run starts its own time', async () => {
+    const { rerender } = renderApp();
+    router.revalidationState = 'loading';
+    rerender(<App {...({ loaderData: null } as unknown as AppProps)} />);
+    await act(async () => {
+      vi.advanceTimersByTime(ROOT_BOOTSTRAP_RUN_LIMIT_MS - 5_000);
+    });
+
+    // The run returned its redirect to /login, whose navigation runs the root loader again.
+    router.navigationState = 'loading';
+    rerender(<App {...({ loaderData: null } as unknown as AppProps)} />);
+    await act(async () => {
+      vi.advanceTimersByTime(ROOT_BOOTSTRAP_RUN_LIMIT_MS - ROOT_BOOTSTRAP_POLL_MS);
+    });
+    expect(router.revalidate).toHaveBeenCalledTimes(1);
+  });
+
   it('polls again once the run in flight has finished', async () => {
     const { rerender } = renderApp();
     router.revalidationState = 'loading';
