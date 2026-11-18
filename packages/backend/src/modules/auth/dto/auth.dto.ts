@@ -60,6 +60,8 @@ const loginResponseSchema = z.object({
 const registerResponseSchema = z.object({
   success: z.boolean(),
   requiresEmailVerification: z.boolean().optional(),
+  /** The signed session token for `X-CI-Hub-Session`, when registering signed the person in. */
+  sessionId: z.string().optional(),
 });
 
 const getTotpUriResponseSchema = z.object({

@@ -1,7 +1,6 @@
 import { resolveAppDataHostRoot } from '@/common/helpers/app-data-path.helper';
 import { resolveHubLocalDomainRoot, resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import { isTailscaleServeEnabled } from '@/common/helpers/private-vpn';
-import { SESSION_COOKIE_NAME } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { UserRepository } from '@/modules/user/user.repository';
 import { Body, Controller, Get, Patch, Query, Req, UseGuards } from '@nestjs/common';
@@ -49,7 +48,7 @@ export class AppController {
       return {};
     }
 
-    const sessionId = req.hubSessionId ?? req.cookies[SESSION_COOKIE_NAME] ?? req.get('x-ci-hub-session');
+    const sessionId = req.hubSessionId;
     if (!sessionId) {
       return {};
     }

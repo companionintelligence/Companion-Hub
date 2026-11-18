@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { getHubRuntimeMode, mayHoldCookielessSession, usesCrossOriginDesktopApi, usesSameOriginHubApi } from '@/lib/hub-runtime-mode';
+import { getHubRuntimeMode, usesCrossOriginDesktopApi, usesSameOriginHubApi } from '@/lib/hub-runtime-mode';
 import { resetMobileClientCacheForTests } from '@/lib/mobile-connection';
 
 describe('hub-runtime-mode', () => {
@@ -22,10 +22,6 @@ describe('hub-runtime-mode', () => {
     expect(getHubRuntimeMode()).toBe('browser');
     expect(usesCrossOriginDesktopApi()).toBe(false);
     expect(usesSameOriginHubApi()).toBe(true);
-    // `/auth/login` sets the cookie on the same response whose body the login page
-    // stores, so a browser's stored session id is a duplicate and never needs to
-    // travel in a URL. Keeps a live credential out of access logs.
-    expect(mayHoldCookielessSession()).toBe(false);
   });
 
   it('returns desktop-same-origin for tauri loading the local stack UI', () => {
@@ -38,9 +34,6 @@ describe('hub-runtime-mode', () => {
     expect(getHubRuntimeMode()).toBe('desktop-same-origin');
     expect(usesCrossOriginDesktopApi()).toBe(false);
     expect(usesSameOriginHubApi()).toBe(true);
-    // The regression this predicate exists for: same-origin, so the old cross-origin
-    // gate excluded it, yet the portal SSO handoff leaves it with no session cookie.
-    expect(mayHoldCookielessSession()).toBe(true);
   });
 
   it('returns mobile-remote for Tauri iOS even when the vite devUrl is localhost', () => {
@@ -69,6 +62,5 @@ describe('hub-runtime-mode', () => {
     expect(getHubRuntimeMode()).toBe('desktop-embedded');
     expect(usesCrossOriginDesktopApi()).toBe(true);
     expect(usesSameOriginHubApi()).toBe(false);
-    expect(mayHoldCookielessSession()).toBe(true);
   });
 });

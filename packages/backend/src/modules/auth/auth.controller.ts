@@ -2,6 +2,7 @@ import { isUtf8 } from 'node:buffer';
 import crypto from 'node:crypto';
 import net from 'node:net';
 import { APP_SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME } from '@/common/constants';
+import { EDGE_SSO_PAGE_PATH, mintSessionToken, withSessionTokenFragment } from './session-token';
 import { buildHubPublicOrigin, resolveHubLocalDomainRoot, resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import { hashEmailForLog } from '@/common/helpers/log-privacy';
 import { TranslatableError } from '@/common/error/translatable-error';
@@ -88,7 +89,7 @@ import {
   SetupTotpBody,
   VerifyTotpBody,
 } from './dto/auth.dto';
-import { HUB_FAVICON_LINK_TAG, HUB_FAVICON_PNG } from './hub-favicon';
+import { HUB_FAVICON_PNG } from './hub-favicon';
 import {
   browserHandoffBusyLabel,
   buildBrowserHandoffConfirmHtml,
@@ -448,25 +449,31 @@ export class AuthController {
     return { secure, domain };
   }
 
-  private async setSessionCookie(res: Response, sessionId: string, req: Request) {
-    const options = this.sessionCookieOptions(req);
-    this.logger.debug('Setting session cookie', { host: options.host, domain: options.domain, proto: options.proto, secure: options.secure });
-
-    if (this.config.get('userSettings').experimental.insecureCookie) {
-      this.logger.warn('WARNING: Using insecure cookies. This is not recommended for production environments.');
-    }
-
-    res.cookie(SESSION_COOKIE_NAME, sessionId, {
-      httpOnly: true,
-      sameSite: 'lax',
-      maxAge: SESSION_COOKIE_MAX_AGE,
-      ...this.cookieSecurity(req, options),
-    });
+  /**
+   * The credential the client presents for `sessionId` from now on: a signed token for the
+   * `X-CI-Hub-Session` header (`session-token.ts`). Every sign-in returns it in its body, or, for a
+   * sign-in that ends in a redirect, in the redirect's fragment (`withSessionTokenFragment`).
+   *
+   * ⚠ NO COOKIE. The Hub used to plant `ci-hub-sid` here, and a cookie goes to every port on the host
+   * — every app the operator opens beside the Hub — where it was a full operator session. It
+   * authenticates nothing now (`sessionIdsFromRequest`), and the one a browser still holds is cleared.
+   */
+  private issueSessionToken(res: Response, sessionId: string, req: Request): string {
+    this.clearSessionCookie(res, req);
+    return mintSessionToken(sessionId, this.config.get('jwtSecret'));
   }
 
-  /** Must pass the same Domain/Secure flags as Set-Cookie or the browser keeps the stale session. */
-  private async clearSessionCookie(res: Response, req: Request) {
-    res.clearCookie(SESSION_COOKIE_NAME, { httpOnly: true, sameSite: 'lax', ...this.cookieSecurity(req) });
+  /**
+   * Clears the `ci-hub-sid` an older Hub planted, under both shapes it could have: Domain-scoped to
+   * the forwarded host's parent (a named Hub), and host-only (an IP, or the insecure-cookie dev mode).
+   * Each clear must match the Domain the cookie was set with or the browser keeps it.
+   */
+  private clearSessionCookie(res: Response, req: Request) {
+    const security = this.cookieSecurity(req);
+    res.clearCookie(SESSION_COOKIE_NAME, { httpOnly: true, sameSite: 'lax', ...security });
+    if (security.domain) {
+      res.clearCookie(SESSION_COOKIE_NAME, { httpOnly: true, sameSite: 'lax', secure: security.secure });
+    }
   }
 
   /**
@@ -605,10 +612,8 @@ export class AuthController {
     }
 
     await this.replacePresentedSessions(req, sessionId);
-    await this.setSessionCookie(res, sessionId, req);
 
-    // WebView2 over HTTP cannot rely on cross-origin cookies, so the desktop app also receives the ID.
-    return LoginDto.parse({ success: true, sessionId }, { reportOnly: true });
+    return LoginDto.parse({ success: true, sessionId: this.issueSessionToken(res, sessionId, req) }, { reportOnly: true });
   }
 
   @Post('/verify-totp')
@@ -617,9 +622,8 @@ export class AuthController {
     const { sessionId } = await this.rateLimited('totp', req, () => this.authService.verifyTotp(body));
 
     await this.replacePresentedSessions(req, sessionId);
-    await this.setSessionCookie(res, sessionId, req);
 
-    return LoginDto.parse({ success: true, sessionId }, { reportOnly: true });
+    return LoginDto.parse({ success: true, sessionId: this.issueSessionToken(res, sessionId, req) }, { reportOnly: true });
   }
 
   // ── Sign in with a DID ─────────────────────────────────────────────────────────────────────────
@@ -736,9 +740,8 @@ export class AuthController {
 
     const sessionId = await this.sessionManager.createSession(person.id);
     await this.replacePresentedSessions(req, sessionId);
-    await this.setSessionCookie(res, sessionId, req);
 
-    return LoginDto.parse({ success: true, sessionId }, { reportOnly: true });
+    return LoginDto.parse({ success: true, sessionId: this.issueSessionToken(res, sessionId, req) }, { reportOnly: true });
   }
 
   @Get('/did/links')
@@ -785,7 +788,7 @@ export class AuthController {
     }
 
     if (result.sessionId) {
-      await this.setSessionCookie(res, result.sessionId, req);
+      return RegisterDto.parse({ success: true, sessionId: this.issueSessionToken(res, result.sessionId, req) }, { reportOnly: true });
     }
 
     return RegisterDto.parse({ success: true }, { reportOnly: true });
@@ -895,11 +898,9 @@ export class AuthController {
 
   @Post('/logout')
   async logout(@Res() res: Response, @Req() req: Request) {
-    await this.clearSessionCookie(res, req);
-    // Cookie and header can name different sessions after a login race. Destroy every
-    // id the client presented so a stale cookie cannot leave the live header session
-    // (or vice versa) authenticated after "log out".
-    const sessionIds = new Set(sessionIdsFromRequest(req));
+    this.clearSessionCookie(res, req);
+    // Destroy every session the client presented a token for, and the one it authenticated with.
+    const sessionIds = new Set(sessionIdsFromRequest(req, this.config.get('jwtSecret')));
     if (req.hubSessionId) {
       sessionIds.add(req.hubSessionId);
     }
@@ -913,12 +914,13 @@ export class AuthController {
 
   /** A new login must kill every other id this browser presented so a stale cookie cannot win. */
   private async replacePresentedSessions(req: Request, keepSessionId: string) {
-    for (const presented of sessionIdsFromRequest(req)) {
+    const presentedIds = sessionIdsFromRequest(req, this.config.get('jwtSecret'));
+    for (const presented of presentedIds) {
       if (presented !== keepSessionId) {
         await this.sessionManager.deleteSession(presented);
       }
     }
-    this.invalidateEdgeSsoForSessions([...sessionIdsFromRequest(req), keepSessionId].filter((id) => id !== keepSessionId));
+    this.invalidateEdgeSsoForSessions(presentedIds.filter((id) => id !== keepSessionId));
   }
 
   /** App-host tickets stay valid after Hub logout unless we burn the ones bound to this session. */
@@ -951,15 +953,14 @@ export class AuthController {
   @UseGuards(AuthGuard)
   @ApiResponse({ type: SessionRefreshDto })
   async refreshSession(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    const sessionId = req.hubSessionId ?? req.cookies[SESSION_COOKIE_NAME] ?? req.get('x-ci-hub-session');
+    const sessionId = req.hubSessionId;
     if (!sessionId) {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
     }
 
     const nextSessionId = await this.authService.refreshSession(sessionId);
-    await this.setSessionCookie(res, nextSessionId, req);
 
-    return SessionRefreshDto.parse({ sessionId: nextSessionId, issuedAt: Date.now() }, { reportOnly: true });
+    return SessionRefreshDto.parse({ sessionId: this.issueSessionToken(res, nextSessionId, req), issuedAt: Date.now() }, { reportOnly: true });
   }
 
   /**
@@ -970,7 +971,7 @@ export class AuthController {
   @UseGuards(AuthGuard)
   @ApiResponse({ type: BrowserHandoffMintDto })
   async mintBrowserHandoff(@Body() body: BrowserHandoffMintBody, @Req() req: Request) {
-    const sessionId = req.hubSessionId ?? req.cookies[SESSION_COOKIE_NAME] ?? req.get('x-ci-hub-session');
+    const sessionId = req.hubSessionId;
     if (!sessionId) {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
     }
@@ -1072,7 +1073,7 @@ export class AuthController {
   private async inspectBrowserHandoffTicket(
     ticket: string,
     issued: BrowserHandoffIssued | null,
-  ): Promise<{ hit: true; cached: string; next: string; userId: number } | { hit: boolean; reason: string }> {
+  ): Promise<{ hit: true; cached: string; next: string; userId: number; hubOrigin: string } | { hit: boolean; reason: string }> {
     const cached = this.cache.get(`browser_handoff:${ticket}`);
     if (!cached) {
       // No store write on a miss: this endpoint is unauthenticated.
@@ -1107,7 +1108,7 @@ export class AuthController {
       return { hit: true, reason: 'the minting session has ended' };
     }
 
-    return { hit: true, cached, next, userId };
+    return { hit: true, cached, next, userId, hubOrigin: hub.origin };
   }
 
   /** Shows whom the browser would be signed in as. Spends nothing and plants nothing. */
@@ -1175,7 +1176,7 @@ export class AuthController {
     if (!('cached' in found)) {
       return refuse(found.reason);
     }
-    const { next, userId } = found;
+    const { next, userId, hubOrigin } = found;
 
     if (issued) {
       this.logger.info(`[BrowserHandoff] redeemed a ticket minted ${Math.round((Date.now() - issued.mintedAt) / 1000)}s ago`);
@@ -1183,23 +1184,14 @@ export class AuthController {
 
     // Give the browser its own session because browser rotation deletes the replaced ID and would log out the desktop (#944).
     // Independent session lifecycles prevent the two contexts from invalidating each other.
-    // Reuse a live same-user session to avoid leaving week-long sessions behind.
-    // `touchSession` rejects rotation-grace IDs and extends a session that must survive the round trip.
-    const existingSessionId = req.cookies[SESSION_COOKIE_NAME];
-    const reusableSessionId =
-      typeof existingSessionId === 'string' && existingSessionId && this.sessionManager.resolveSessionUserId(existingSessionId) === userId
-        ? existingSessionId
-        : null;
-
-    if (reusableSessionId && this.sessionManager.touchSession(reusableSessionId)) {
-      // Reissue the cookie because extending only server expiry can still let the browser cookie die mid-flow (#944).
-      await this.setSessionCookie(res, reusableSessionId, req);
-      return browserHandoffRedirect(req, res, next);
-    }
-
+    // (A live session this browser already held used to be reused, found by its cookie. The cookie
+    // names nothing now, and this top-level POST carries no header, so a fresh session it is.)
     const browserSessionId = await this.sessionManager.createSession(userId);
-    await this.setSessionCookie(res, browserSessionId, req);
-    return browserHandoffRedirect(req, res, next);
+    // The token rides in the fragment, which only a Hub page may receive: whatever page the browser
+    // ends on can read it. A `next` on an app's host (`isSafeHandoffNext` allows this appliance's own)
+    // goes through the Hub page that signs in to an app, which takes the token and mints that app's ticket.
+    const landing = new URL(next, hubOrigin).origin === hubOrigin ? next : `${EDGE_SSO_PAGE_PATH}?redirect=${encodeURIComponent(next)}`;
+    return browserHandoffRedirect(req, res, withSessionTokenFragment(landing, this.issueSessionToken(res, browserSessionId, req), hubOrigin));
   }
 
   /** Desktop login returns through its deep link, while browser login returns to the initiating Hub origin. */
@@ -1401,7 +1393,9 @@ export class AuthController {
 
       const sessionId = await this.sessionManager.createSession(operator.id);
       await this.replacePresentedSessions(req, sessionId);
-      await this.setSessionCookie(res, sessionId, req);
+      // A redirect carries no body, so the browser gets its token in the fragment of the Hub page it
+      // lands on (`withSessionTokenFragment`). The desktop takes the session through its exchange.
+      const sessionToken = this.issueSessionToken(res, sessionId, req);
 
       const handoffToDesktop = shouldHandoffPortalLoginToDesktop({
         desktop,
@@ -1427,11 +1421,10 @@ export class AuthController {
           buildPortalDesktopHandoffHtml({
             deepLink,
             /*
-             * The cookie went out with this same response, so this link is the
-             * whole of "carry on in the browser" — no token, no second sign-in.
-             * It is the same destination the app is being sent to.
+             * "Carry on in the browser": the same destination the app is being sent to, with this
+             * browser's own token in the fragment, so no second sign-in.
              */
-            continueHref: exchangePayload.redirectPath,
+            continueHref: withSessionTokenFragment(exchangePayload.redirectPath, sessionToken, hubOrigin),
             statusHref: `/api/auth/portal/desktop-handoff-status?token=${encodeURIComponent(desktopToken)}`,
           }),
         );
@@ -1440,12 +1433,7 @@ export class AuthController {
 
       // Redirect back to the requested URL if it's same-origin; otherwise go home.
       const safeRedirect = resolveSameOriginRedirectUrl(redirectUrl, hubOrigin);
-      if (safeRedirect) {
-        res.redirect(safeRedirect);
-        return;
-      }
-
-      res.redirect(new URL('/home', hubOrigin).toString());
+      res.redirect(withSessionTokenFragment(safeRedirect ?? '/home', sessionToken, hubOrigin));
       return;
     } catch (error) {
       this.logger.error('Portal OAuth callback crashed', error);
@@ -1605,9 +1593,11 @@ export class AuthController {
      */
     this.cache.set(portalDesktopClaimedKey(token), '1', PORTAL_DESKTOP_CLAIMED_TTL_SECONDS);
     this.cache.del(cacheKey);
-    await this.setSessionCookie(res, sessionId, req);
-    this.logger.info('Portal desktop exchange planted a session cookie', { redirectPath: parsed.redirectPath });
-    return PortalDesktopExchangeDto.parse({ sessionId, redirectPath: parsed.redirectPath }, { reportOnly: true });
+    this.logger.info('Portal desktop exchange issued a session', { redirectPath: parsed.redirectPath });
+    return PortalDesktopExchangeDto.parse(
+      { sessionId: this.issueSessionToken(res, sessionId, req), redirectPath: parsed.redirectPath },
+      { reportOnly: true },
+    );
   }
 
   /**
@@ -1635,11 +1625,10 @@ export class AuthController {
       emailVerified: true,
     });
     const sessionId = await this.sessionManager.createSession(operator.id);
-    await this.setSessionCookie(res, sessionId, req);
     this.logger.info('Portal mobile session planted from the cloud-connect id_token', {
       portalEmailHash: hashEmailForLog(claims.email),
     });
-    return PortalDesktopExchangeDto.parse({ sessionId, redirectPath: '/home' }, { reportOnly: true });
+    return PortalDesktopExchangeDto.parse({ sessionId: this.issueSessionToken(res, sessionId, req), redirectPath: '/home' }, { reportOnly: true });
   }
 
   /**
@@ -1673,11 +1662,10 @@ export class AuthController {
       emailVerified: true,
     });
     const sessionId = await this.sessionManager.createSession(operator.id);
-    await this.setSessionCookie(res, sessionId, req);
     this.logger.info("Portal desktop session planted from the app's own sign-in", {
       portalEmailHash: hashEmailForLog(userinfo.email),
     });
-    return PortalDesktopExchangeDto.parse({ sessionId, redirectPath: '/home' }, { reportOnly: true });
+    return PortalDesktopExchangeDto.parse({ sessionId: this.issueSessionToken(res, sessionId, req), redirectPath: '/home' }, { reportOnly: true });
   }
 
   /**
@@ -2391,9 +2379,16 @@ export class AuthController {
   }
 
   /**
-   * Public sibling hosts cannot share the Hub cookie, so edge SSO uses a short-lived, single-use, host-bound ticket (CI-Engineering#77, ADR 002).
-   * Browser navigation must redirect through login instead of returning AuthGuard JSON, while loopback open bypasses this flow under ADR 001.
-   * Fetch Metadata cannot gate a redirect chain, so host binding, one-use, short TTL, and authenticated minting mitigate login CSRF.
+   * The entry an app's sign-in redirect names (`/traefik` sends the visitor here). It decides nothing:
+   * it hands the navigation to the Hub page at {@link EDGE_SSO_PAGE_PATH}, which asks
+   * `POST /edge-sso` for the ticket with the page's own session token.
+   *
+   * ⚠ A NAVIGATION CARRIES NO HEADER, AND THE COOKIE IS NO CREDENTIAL. This route used to mint the
+   * ticket from the `ci-hub-sid` the navigation brought along, and that cookie goes to every port on
+   * the Hub's host — so an app holding it could mint tickets for any other app. The token lives in
+   * the Hub page's storage, which only the page can read.
+   *
+   * The target is validated here too, so a bad one stops before the page.
    */
   @Get('/edge-sso')
   async edgeSso(@Query('redirect') redirect: string | undefined, @Req() req: Request, @Res() res: Response) {
@@ -2401,38 +2396,42 @@ export class AuthController {
     if (!validated) {
       throw new BadRequestException('Unsupported edge SSO target');
     }
+    // Force tunnel requests to HTTPS because their internal hop reports HTTP while the browser uses HTTPS.
+    // Match the scheme case-insensitively as required by RFC 3986.
+    const requestOrigin = resolveRequestOriginFallback(req);
+    const origin = this.viaCloudflareTunnel(req) ? requestOrigin.replace(/^http:/i, 'https:') : requestOrigin;
+    const pageUrl = new URL(EDGE_SSO_PAGE_PATH, origin);
+    pageUrl.searchParams.set('redirect', validated.url.toString());
+    return res.status(302).redirect(pageUrl.toString());
+  }
+
+  /**
+   * Public sibling hosts cannot share the Hub session, so edge SSO uses a short-lived, single-use, host-bound ticket (CI-Engineering#77, ADR 002).
+   * Asked by the Hub page at {@link EDGE_SSO_PAGE_PATH} with its session token; answers the URL to navigate to.
+   * Loopback open bypasses this flow under ADR 001. Host binding, one-use, short TTL and an authenticated mint mitigate login CSRF.
+   */
+  @Post('/edge-sso')
+  @UseGuards(AuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiExcludeEndpoint()
+  async mintEdgeSsoTicket(@Body() body: { redirect?: unknown }, @Req() req: Request, @Res() res: Response) {
+    const validated = await this.validateEdgeSsoTarget(typeof body?.redirect === 'string' ? body.redirect : undefined);
+    if (!validated) {
+      throw new BadRequestException('Unsupported edge SSO target');
+    }
     const { url: target, appUrn } = validated;
 
-    const sessionId = req.user ? (req.hubSessionId ?? req.cookies[SESSION_COOKIE_NAME] ?? req.get('x-ci-hub-session')) : undefined;
+    const sessionId = req.hubSessionId;
     if (!sessionId) {
-      // Return unauthenticated navigation through normal login with the absolute same-origin URL Portal expects.
-      // Force tunnel requests to HTTPS because their internal hop reports HTTP while the browser uses HTTPS.
-      // Match the scheme case-insensitively as required by RFC 3986.
-      const requestOrigin = resolveRequestOriginFallback(req);
-      const origin = this.viaCloudflareTunnel(req) ? requestOrigin.replace(/^http:/i, 'https:') : requestOrigin;
-      const selfUrl = new URL('/api/auth/edge-sso', origin);
-      selfUrl.searchParams.set('redirect', target.toString());
-      const loginUrl = new URL('/login', origin);
-      loginUrl.searchParams.set('redirect_url', selfUrl.toString());
-      loginUrl.searchParams.set('app', target.hostname.split('.')[0] ?? '');
-      return res.status(302).redirect(loginUrl.toString());
+      throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
     }
 
     // Cap mints per session and app so a browser that rejects cookies cannot redirect forever.
     const counterKey = `${EDGE_SSO_COUNTER_PREFIX}${sessionId}:${target.hostname}`;
     const mints = Number.parseInt(this.cache.get(counterKey) ?? '0', 10) || 0;
     if (mints >= EDGE_SSO_MAX_MINTS_PER_MINUTE) {
-      return res
-        .status(409)
-        .type('html')
-        .send(
-          '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Cookies required — Companion Hub</title>' +
-            HUB_FAVICON_LINK_TAG +
-            '</head><body style="font-family:sans-serif;max-width:32rem;margin:4rem auto">' +
-            '<h1>Cookies required</h1><p>Signing in to this app requires cookies, and your browser ' +
-            'does not appear to be accepting them. Enable cookies for this site and try again.</p>' +
-            '</body></html>',
-        );
+      // The page explains: signing in to an app needs that app's cookie, and this browser keeps refusing it.
+      return res.status(409).json({ code: 'EDGE_SSO_COOKIES_REQUIRED' });
     }
     // A fixed window prevents legitimate spaced sign-ins from extending themselves into the cap.
     const windowEndsAt = this.cache.getExpirationAt(counterKey);
@@ -2452,6 +2451,6 @@ export class AuthController {
     // Append the ticket raw because URLSearchParams would re-encode unrelated query segments.
     const ticketParam = `${EDGE_SSO_TICKET_PARAM}=${encodeURIComponent(ticket)}`;
     target.search = target.search ? `${target.search}&${ticketParam}` : `?${ticketParam}`;
-    return res.status(302).redirect(target.toString());
+    return res.status(200).json({ url: target.toString() });
   }
 }
