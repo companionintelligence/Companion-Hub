@@ -5,7 +5,7 @@
 > **Key paths:** `packages/desktop/src-tauri/src/hub_manager.rs`, `packages/desktop/src-tauri/resources/`
 > **Commands:** `pnpm run local:desktop` (Vite :5005), `pnpm run dev:desktop` (appliance :5002), `cd packages/desktop/src-tauri && cargo test`
 > **Owner persona:** maintainability + security
-> **Last updated:** 2026-10-13 (WSL engine setup: pinned docker CLI, update listener firewall rule)
+> **Last updated:** 2026-11-18 (oMLX setup finds Homebrew when the app is opened from Finder; earlier: WSL engine setup: pinned docker CLI, update listener firewall rule)
 > **Related:** docs/system/frontend.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/AUTO_HEALING.md
 
 ---
@@ -96,7 +96,7 @@ installer that writes it. A script that is there is left alone.
 
 ## Native inference runners
 
-The desktop shell owns the best-effort native setup used by the onboarding FTUE. oMLX, on Apple Silicon, is installed with `brew tap jundot/omlx https://github.com/jundot/omlx`, then `brew install jundot/omlx/omlx`, then `omlx start`. vLLM is NVIDIA only and is not installed on Apple Silicon. Lemonade is operator-managed. MTPLX, mlx-dspark, Lucebox, llama.cpp, and LM Studio are not installed.
+The desktop shell owns the best-effort native setup used by the onboarding FTUE. oMLX, on Apple Silicon, is installed with `brew tap jundot/omlx https://github.com/jundot/omlx`, then `brew install jundot/omlx/omlx`, then `omlx start`. An app opened from Finder or the Dock gets PATH `/usr/bin:/bin:/usr/sbin:/sbin`, so the shell looks for `brew` on PATH, then in `/opt/homebrew/bin` and `/usr/local/bin`, and runs each of those commands with brew's directory and both Homebrew directories ahead of the inherited PATH. `omlx start` needs that too: on a Homebrew install it runs `brew services start omlx`. If an `omlx` command is already there, the shell skips the tap and the install and only starts it. Each command's output goes to the runner log, and a failure names the command and quotes its last error line. Without Homebrew the setup fails and points to https://brew.sh and to the oMLX app. vLLM is NVIDIA only and is not installed on Apple Silicon. Lemonade is operator-managed. MTPLX, mlx-dspark, Lucebox, llama.cpp, and LM Studio are not installed.
 
 The frontend passes the selected runner. vLLM and Lemonade also install Ollama for embeddings. oMLX embeds itself. Runner logs and endpoints are persisted under the Hub data directory. On Linux, native runners are
 supervised via per-user systemd services (`~/.config/systemd/user/computer.ci.companion-hub.inference.{runner}.service`)

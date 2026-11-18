@@ -6,6 +6,7 @@
 //! independent, truthful result.
 
 use std::collections::HashSet;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::net::TcpListener;
@@ -177,6 +178,16 @@ fn platform_is_apple_silicon() -> bool {
 
 const OMLX_PORT: u16 = 8000;
 const OMLX_ENDPOINT: &str = "http://host.docker.internal:8000";
+const OMLX_TAP_URL: &str = "https://github.com/jundot/omlx";
+const OMLX_NO_HOMEBREW: &str = "Homebrew isn't installed on this Mac, so the Hub can't install oMLX. \
+Install Homebrew from https://brew.sh and try again, or install the oMLX app from https://github.com/jundot/omlx/releases.";
+
+/// Homebrew's bin directories: Apple Silicon first, then Intel. A Mac app opened from Finder or
+/// the Dock gets PATH `/usr/bin:/bin:/usr/sbin:/sbin`, which has neither.
+const HOMEBREW_BIN_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin"];
+
+/// The longest tail of a failed command's output that goes into a result's detail.
+const OUTPUT_TAIL_MAX_CHARS: usize = 240;
 
 fn install_and_start_omlx(data_dir: &Path) -> InferenceRunnerResult {
     if !platform_is_apple_silicon() {
@@ -185,41 +196,222 @@ fn install_and_start_omlx(data_dir: &Path) -> InferenceRunnerResult {
     if probe_http(OMLX_PORT, "/v1/models") {
         return already_running("omlx", OMLX_ENDPOINT);
     }
-    append_runner_log(
+
+    let homebrew_dirs = homebrew_bin_dirs();
+    let inherited_path = std::env::var_os("PATH");
+    let brew = find_executable("brew", inherited_path.as_deref(), &homebrew_dirs);
+    // `omlx start` on a Homebrew install runs `brew services start omlx` and finds brew on its own
+    // PATH, so every child gets Homebrew's directories, not only the commands started here.
+    let child_path = homebrew_child_path(
+        brew.as_deref().and_then(Path::parent),
+        &homebrew_dirs,
+        inherited_path.as_deref(),
+    );
+
+    let (omlx, installed_now) = match find_executable("omlx", Some(&child_path), &[]) {
+        Some(omlx) => {
+            append_runner_log(
+                data_dir,
+                "omlx",
+                &format!(
+                    "oMLX is already installed at {}; starting it",
+                    omlx.display()
+                ),
+            );
+            (omlx, false)
+        }
+        None => {
+            let Some(brew) = brew else {
+                return failed("omlx", OMLX_NO_HOMEBREW.to_string());
+            };
+            if let Err(error) = install_omlx_with_homebrew(data_dir, &brew, &child_path) {
+                return failed("omlx", error);
+            }
+            match find_executable("omlx", Some(&child_path), &[]) {
+                Some(omlx) => (omlx, true),
+                None => return failed(
+                    "omlx",
+                    "brew install jundot/omlx/omlx finished, but the omlx command was not found."
+                        .to_string(),
+                ),
+            }
+        }
+    };
+
+    if let Err(error) = run_with_path(
         data_dir,
         "omlx",
-        "Installing oMLX with Homebrew: brew tap jundot/omlx && brew install jundot/omlx/omlx && omlx start",
-    );
-    let status = Command::new("brew")
-        .args(["tap", "jundot/omlx", "https://github.com/jundot/omlx"])
-        .status();
-    if status.map(|code| !code.success()).unwrap_or(true) {
-        return failed("omlx", "brew tap jundot/omlx failed.".to_string());
+        &omlx,
+        &["start"],
+        &child_path,
+        "omlx start",
+    ) {
+        return failed("omlx", error);
     }
-    let install = Command::new("brew")
-        .args(["install", "jundot/omlx/omlx"])
-        .status();
-    if install.map(|code| !code.success()).unwrap_or(true) {
-        return failed(
-            "omlx",
-            "brew install jundot/omlx/omlx failed. See https://github.com/jundot/omlx.".to_string(),
-        );
-    }
-    let _ = Command::new("omlx").arg("start").status();
+
+    let started = if installed_now {
+        "oMLX was installed and started."
+    } else {
+        "oMLX was started."
+    };
     if wait_for_http(OMLX_PORT, "/v1/models", STARTUP_WAIT) {
         success(
             "omlx",
             InferenceRunnerState::InstalledAndStarted,
             Some(OMLX_ENDPOINT.to_string()),
-            Some("oMLX was installed and started.".to_string()),
+            Some(started.to_string()),
         )
     } else {
         success(
             "omlx",
             InferenceRunnerState::Installed,
             Some(OMLX_ENDPOINT.to_string()),
-            Some("oMLX was installed; its API is still starting. Foreground form: omlx serve --model-dir ~/models".to_string()),
+            Some("oMLX is installed, but its API is still starting. Foreground form: omlx serve --model-dir ~/models".to_string()),
         )
+    }
+}
+
+fn install_omlx_with_homebrew(data_dir: &Path, brew: &Path, path: &OsStr) -> Result<(), String> {
+    run_with_path(
+        data_dir,
+        "omlx",
+        brew,
+        &["tap", "jundot/omlx", OMLX_TAP_URL],
+        path,
+        "brew tap jundot/omlx",
+    )?;
+    run_with_path(
+        data_dir,
+        "omlx",
+        brew,
+        &["install", "jundot/omlx/omlx"],
+        path,
+        "brew install jundot/omlx/omlx",
+    )
+}
+
+/// Run one setup command with `path` as its PATH. Its output goes to the runner log, and a
+/// failure says which command failed and why, in the command's own last words.
+fn run_with_path(
+    data_dir: &Path,
+    runner: &str,
+    executable: &Path,
+    args: &[&str],
+    path: &OsStr,
+    label: &str,
+) -> Result<(), String> {
+    append_runner_log(
+        data_dir,
+        runner,
+        &format!("running {} {}", executable.display(), args.join(" ")),
+    );
+    let output = Command::new(executable)
+        .args(args)
+        .env("PATH", path)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("{label} could not run: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format_command_output(&stdout, &stderr);
+    if !combined.is_empty() {
+        append_runner_log(data_dir, runner, &combined);
+    }
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(command_failure_detail(
+            label,
+            &output.status.to_string(),
+            &stdout,
+            &stderr,
+        ))
+    }
+}
+
+fn homebrew_bin_dirs() -> Vec<PathBuf> {
+    HOMEBREW_BIN_DIRS.iter().map(PathBuf::from).collect()
+}
+
+/// `name` in the directories of `path_var`, in order, then in `fallback_dirs`.
+fn find_executable(
+    name: &str,
+    path_var: Option<&OsStr>,
+    fallback_dirs: &[PathBuf],
+) -> Option<PathBuf> {
+    path_var
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .chain(fallback_dirs.iter().cloned())
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map(|dir| dir.join(name))
+        .find(|candidate| is_executable_file(candidate))
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        path.metadata()
+            .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
+/// PATH for Homebrew's children: brew's own directory, then both Homebrew prefixes, then the
+/// inherited PATH, each directory once.
+fn homebrew_child_path(
+    brew_dir: Option<&Path>,
+    homebrew_dirs: &[PathBuf],
+    inherited: Option<&OsStr>,
+) -> OsString {
+    let mut seen = HashSet::new();
+    let dirs = brew_dir
+        .map(Path::to_path_buf)
+        .into_iter()
+        .chain(homebrew_dirs.iter().cloned())
+        .chain(inherited.into_iter().flat_map(std::env::split_paths))
+        .filter(|dir| !dir.as_os_str().is_empty() && seen.insert(dir.clone()))
+        .collect::<Vec<_>>();
+    std::env::join_paths(dirs)
+        .unwrap_or_else(|_| inherited.map(OsStr::to_os_string).unwrap_or_default())
+}
+
+/// What a failed setup command said last: its last `Error:` line on stderr (Homebrew's form),
+/// else stderr's last line, else stdout's (oMLX's CLI prints its errors there).
+fn command_output_tail(stdout: &str, stderr: &str) -> Option<String> {
+    let last_line = |text: &str| {
+        let lines = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+        lines
+            .iter()
+            .rev()
+            .find(|line| line.starts_with("Error:"))
+            .or(lines.last())
+            .map(|line| (*line).to_string())
+    };
+    let line = last_line(stderr).or_else(|| last_line(stdout))?;
+    if line.chars().count() <= OUTPUT_TAIL_MAX_CHARS {
+        return Some(line);
+    }
+    let mut shortened = line
+        .chars()
+        .take(OUTPUT_TAIL_MAX_CHARS - 1)
+        .collect::<String>();
+    shortened.push('…');
+    Some(shortened)
+}
+
+fn command_failure_detail(label: &str, status: &str, stdout: &str, stderr: &str) -> String {
+    match command_output_tail(stdout, stderr) {
+        Some(tail) => format!("{label} failed: {tail}"),
+        None => format!("{label} failed ({status})."),
     }
 }
 
@@ -1390,6 +1582,146 @@ mod tests {
             .port();
         let selected = available_host_port(preferred).expect("a nearby test port should be free");
         assert_ne!(selected, preferred);
+    }
+
+    #[cfg(unix)]
+    fn write_executable(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, "#!/bin/sh\n").expect("write test executable");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod");
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn finds_brew_on_path_before_the_homebrew_prefixes() {
+        let on_path = tempfile::tempdir().expect("tempdir");
+        let apple = tempfile::tempdir().expect("tempdir");
+        let path_brew = write_executable(on_path.path(), "brew");
+        write_executable(apple.path(), "brew");
+        let path_var = std::env::join_paths([on_path.path()]).expect("join");
+
+        assert_eq!(
+            find_executable("brew", Some(&path_var), &[apple.path().to_path_buf()]),
+            Some(path_brew)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn finds_brew_in_the_homebrew_prefixes_when_path_is_the_finder_default() {
+        let empty = tempfile::tempdir().expect("tempdir");
+        let apple = tempfile::tempdir().expect("tempdir");
+        let intel = tempfile::tempdir().expect("tempdir");
+        let intel_brew = write_executable(intel.path(), "brew");
+        let finder_path = std::env::join_paths([empty.path()]).expect("join");
+        let prefixes = [apple.path().to_path_buf(), intel.path().to_path_buf()];
+
+        assert_eq!(
+            find_executable("brew", Some(&finder_path), &prefixes),
+            Some(intel_brew)
+        );
+
+        let apple_brew = write_executable(apple.path(), "brew");
+        assert_eq!(
+            find_executable("brew", Some(&finder_path), &prefixes),
+            Some(apple_brew)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_or_non_executable_brew_is_not_found() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            find_executable("brew", None, &[dir.path().to_path_buf()]),
+            None
+        );
+        fs::write(dir.path().join("brew"), "not a program").expect("write");
+        fs::set_permissions(dir.path().join("brew"), fs::Permissions::from_mode(0o644))
+            .expect("chmod");
+        assert_eq!(
+            find_executable("brew", None, &[dir.path().to_path_buf()]),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_path_puts_homebrew_first_and_keeps_each_directory_once() {
+        let homebrew = homebrew_bin_dirs();
+        let finder_path = OsString::from("/usr/bin:/bin:/usr/sbin:/sbin");
+        assert_eq!(
+            homebrew_child_path(
+                Some(Path::new("/opt/homebrew/bin")),
+                &homebrew,
+                Some(&finder_path)
+            ),
+            OsString::from("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+        );
+
+        let shell_path = OsString::from("/usr/local/bin:/Users/me/bin::/usr/bin");
+        assert_eq!(
+            homebrew_child_path(
+                Some(Path::new("/Users/me/brew/bin")),
+                &homebrew,
+                Some(&shell_path)
+            ),
+            OsString::from(
+                "/Users/me/brew/bin:/opt/homebrew/bin:/usr/local/bin:/Users/me/bin:/usr/bin"
+            )
+        );
+
+        assert_eq!(
+            homebrew_child_path(None, &homebrew, None),
+            OsString::from("/opt/homebrew/bin:/usr/local/bin")
+        );
+    }
+
+    #[test]
+    fn failure_detail_quotes_the_commands_last_error() {
+        let stderr = "==> Tapping jundot/omlx\nCloning into '/opt/homebrew/Library/Taps/jundot/homebrew-omlx'...\n\
+Error: Failure while executing; `git clone https://github.com/jundot/omlx` exited with 128.\n\
+fatal: unable to access 'https://github.com/jundot/omlx/': Could not resolve host: github.com\n";
+        assert_eq!(
+            command_failure_detail("brew tap jundot/omlx", "exit status: 1", "", stderr),
+            "brew tap jundot/omlx failed: Error: Failure while executing; `git clone https://github.com/jundot/omlx` exited with 128."
+        );
+    }
+
+    #[test]
+    fn failure_detail_falls_back_to_the_last_line_then_stdout_then_status() {
+        assert_eq!(
+            command_failure_detail(
+                "brew install jundot/omlx/omlx",
+                "exit status: 1",
+                "",
+                "warning\nno space left\n\n"
+            ),
+            "brew install jundot/omlx/omlx failed: no space left"
+        );
+        // oMLX's CLI prints its errors to stdout.
+        assert_eq!(
+            command_failure_detail(
+                "omlx start",
+                "exit status: 1",
+                "Homebrew is not available on PATH.\n",
+                ""
+            ),
+            "omlx start failed: Homebrew is not available on PATH."
+        );
+        assert_eq!(
+            command_failure_detail("omlx start", "exit status: 1", " \n", ""),
+            "omlx start failed (exit status: 1)."
+        );
+    }
+
+    #[test]
+    fn failure_detail_shortens_a_long_line() {
+        let long = "x".repeat(OUTPUT_TAIL_MAX_CHARS + 50);
+        let tail = command_output_tail("", &long).expect("tail");
+        assert_eq!(tail.chars().count(), OUTPUT_TAIL_MAX_CHARS);
+        assert!(tail.ends_with('…'));
     }
 
     #[test]
