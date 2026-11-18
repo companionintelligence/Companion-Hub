@@ -249,14 +249,7 @@ fn install_and_start_omlx(data_dir: &Path) -> InferenceRunnerResult {
         }
     };
 
-    if let Err(error) = run_with_path(
-        data_dir,
-        "omlx",
-        &omlx,
-        &["start"],
-        &child_path,
-        "omlx start",
-    ) {
+    if let Err(error) = start_omlx(data_dir, &omlx, &child_path) {
         return failed("omlx", error);
     }
 
@@ -302,7 +295,7 @@ fn install_omlx_with_homebrew(data_dir: &Path, brew: &Path, path: &OsStr) -> Res
 }
 
 /// Run one setup command with `path` as its PATH. Its output goes to the runner log. A failure
-/// says which command failed and why, in the command's own last words.
+/// says which command failed and why, in the command's own words.
 fn run_with_path(
     data_dir: &Path,
     runner: &str,
@@ -434,25 +427,30 @@ fn homebrew_child_path(
         .unwrap_or_else(|_| inherited.map(OsStr::to_os_string).unwrap_or_default())
 }
 
-/// What a failed setup command said last: its last `Error:` line on stderr (Homebrew's form),
-/// else stderr's last line, else stdout's (oMLX's CLI prints its errors there).
+/// The most useful line of a failed setup command's output: the last error line on stderr, then
+/// on stdout (oMLX's CLI prints its errors there), else stderr's last line, else stdout's.
+/// Homebrew reports a failed subcommand as "Error: Failure while executing; `git clone ...`
+/// exited with 128." after the subcommand's own error, so a `fatal:` or "Could not resolve host"
+/// line wins over that wrapper.
 fn command_output_tail(stdout: &str, stderr: &str) -> Option<String> {
-    let last_line = |text: &str| {
-        let lines = text
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect::<Vec<_>>();
-        lines
-            .iter()
-            .rev()
-            .find(|line| line.starts_with("Error:"))
-            .or(lines.last())
-            .map(|line| (*line).to_string())
+    let stderr = output_lines(stderr);
+    let stdout = output_lines(stdout);
+    fn last_matching<'a>(lines: &[&'a str], matches: fn(&str) -> bool) -> Option<&'a str> {
+        lines.iter().rev().copied().find(|line| matches(line))
+    }
+    let chosen = last_matching(&stderr, is_error_line)
+        .or_else(|| last_matching(&stdout, is_error_line))
+        .or_else(|| stderr.last().copied())
+        .or_else(|| stdout.last().copied())?;
+    let line = if is_exit_status_wrapper(chosen) {
+        last_matching(&stderr, is_specific_cause)
+            .or_else(|| last_matching(&stdout, is_specific_cause))
+            .unwrap_or(chosen)
+    } else {
+        chosen
     };
-    let line = last_line(stderr).or_else(|| last_line(stdout))?;
     if line.chars().count() <= OUTPUT_TAIL_MAX_CHARS {
-        return Some(line);
+        return Some(line.to_string());
     }
     let mut shortened = line
         .chars()
@@ -462,10 +460,65 @@ fn command_output_tail(stdout: &str, stderr: &str) -> Option<String> {
     Some(shortened)
 }
 
+fn output_lines(text: &str) -> Vec<&str> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+/// git's `fatal:`, Homebrew's `Error:` and the `error:` most other tools print.
+fn is_error_line(line: &str) -> bool {
+    ["fatal:", "Error:", "error:"]
+        .iter()
+        .any(|prefix| line.starts_with(prefix))
+}
+
+/// Homebrew's line for a subcommand that failed: "Failure while executing; `...` exited with N."
+fn is_exit_status_wrapper(line: &str) -> bool {
+    line.contains("exited with")
+}
+
+fn is_specific_cause(line: &str) -> bool {
+    !is_exit_status_wrapper(line)
+        && (line.starts_with("fatal:") || line.contains("Could not resolve host"))
+}
+
 fn command_failure_detail(label: &str, status: &str, stdout: &str, stderr: &str) -> String {
     match command_output_tail(stdout, stderr) {
         Some(tail) => format!("{label} failed: {tail}"),
         None => format!("{label} failed ({status})."),
+    }
+}
+
+/// Run `omlx start`, which starts oMLX in the background through the app or `brew services`.
+fn start_omlx(data_dir: &Path, omlx: &Path, path: &OsStr) -> Result<(), String> {
+    let output = run_logged(data_dir, "omlx", omlx, &["start"], Some(path))
+        .map_err(|error| format!("omlx start could not run: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(omlx_start_failure_detail(
+            omlx,
+            &output.status.to_string(),
+            &output.stdout,
+            &output.stderr,
+        ))
+    }
+}
+
+/// A pip install has no background service: its `omlx start` exits 1 and says "For this install,
+/// run foreground server mode with: omlx serve". Say what the user can do about that instead.
+fn omlx_start_failure_detail(omlx: &Path, status: &str, stdout: &str, stderr: &str) -> String {
+    let wants_foreground = |text: &str| text.contains("foreground") && text.contains("omlx serve");
+    if wants_foreground(stdout) || wants_foreground(stderr) {
+        format!(
+            "oMLX at {} is installed with pip, so it can't run as a background service here. \
+Install it with Homebrew (brew install jundot/omlx/omlx) or the oMLX app, or run omlx serve yourself and keep it running.",
+            omlx.display()
+        )
+    } else {
+        command_failure_detail("omlx start", status, stdout, stderr)
     }
 }
 
@@ -1741,13 +1794,74 @@ mod tests {
     }
 
     #[test]
-    fn failure_detail_quotes_the_commands_last_error() {
+    fn failure_detail_names_the_unresolved_host_when_a_tap_fails() {
+        // Homebrew's order: git's own error first, then Homebrew's wrapper around it.
         let stderr = "==> Tapping jundot/omlx\nCloning into '/opt/homebrew/Library/Taps/jundot/homebrew-omlx'...\n\
-Error: Failure while executing; `git clone https://github.com/jundot/omlx` exited with 128.\n\
-fatal: unable to access 'https://github.com/jundot/omlx/': Could not resolve host: github.com\n";
+fatal: unable to access 'https://github.com/jundot/omlx/': Could not resolve host: github.com\n\
+Error: Failure while executing; `git clone https://github.com/jundot/omlx /opt/homebrew/Library/Taps/jundot/homebrew-omlx` exited with 128.\n";
+        let expected = "brew tap jundot/omlx failed: fatal: unable to access 'https://github.com/jundot/omlx/': Could not resolve host: github.com";
         assert_eq!(
             command_failure_detail("brew tap jundot/omlx", "exit status: 1", "", stderr),
-            "brew tap jundot/omlx failed: Error: Failure while executing; `git clone https://github.com/jundot/omlx` exited with 128."
+            expected
+        );
+        // The same lines the other way round.
+        let reversed = stderr.lines().rev().collect::<Vec<_>>().join("\n");
+        assert_eq!(
+            command_failure_detail("brew tap jundot/omlx", "exit status: 1", "", &reversed),
+            expected
+        );
+        // A download that can't resolve its host has no `fatal:` line.
+        let curl = "curl: (6) Could not resolve host: ghcr.io\n\
+Error: Failure while executing; `/usr/bin/env /opt/homebrew/Library/Homebrew/shims/shared/curl --location https://ghcr.io/v2/` exited with 6.\n";
+        assert_eq!(
+            command_failure_detail("brew install jundot/omlx/omlx", "exit status: 1", "", curl),
+            "brew install jundot/omlx/omlx failed: curl: (6) Could not resolve host: ghcr.io"
+        );
+    }
+
+    #[test]
+    fn failure_detail_keeps_the_wrapper_when_nothing_more_specific_was_said() {
+        let stderr = "==> Fetching jundot/omlx/omlx\n\
+Error: Failure while executing; `git fetch origin` exited with 1.\n";
+        assert_eq!(
+            command_failure_detail("brew install jundot/omlx/omlx", "exit status: 1", "", stderr),
+            "brew install jundot/omlx/omlx failed: Error: Failure while executing; `git fetch origin` exited with 1."
+        );
+    }
+
+    #[test]
+    fn failure_detail_prefers_error_lines_on_stderr_then_stdout() {
+        assert_eq!(
+            command_failure_detail(
+                "brew install jundot/omlx/omlx",
+                "exit status: 1",
+                "error: from stdout\n",
+                "Error: from stderr\nWarning: after it\n"
+            ),
+            "brew install jundot/omlx/omlx failed: Error: from stderr"
+        );
+        assert_eq!(
+            command_failure_detail(
+                "omlx start",
+                "exit status: 1",
+                "starting\nerror: port 8000 is in use\ndone\n",
+                "UserWarning: something unrelated\n"
+            ),
+            "omlx start failed: error: port 8000 is in use"
+        );
+    }
+
+    #[test]
+    fn failure_detail_quotes_an_omlx_cli_error_on_stdout() {
+        // oMLX's CLI prints its errors to stdout and leaves stderr empty.
+        assert_eq!(
+            command_failure_detail(
+                "omlx start",
+                "exit status: 1",
+                "Failed to control oMLX.app: Could not reach oMLX.app control socket: [Errno 2] No such file or directory\n",
+                ""
+            ),
+            "omlx start failed: Failed to control oMLX.app: Could not reach oMLX.app control socket: [Errno 2] No such file or directory"
         );
     }
 
@@ -1762,7 +1876,6 @@ fatal: unable to access 'https://github.com/jundot/omlx/': Could not resolve hos
             ),
             "brew install jundot/omlx/omlx failed: no space left"
         );
-        // oMLX's CLI prints its errors to stdout.
         assert_eq!(
             command_failure_detail(
                 "omlx start",
@@ -1775,6 +1888,32 @@ fatal: unable to access 'https://github.com/jundot/omlx/': Could not resolve hos
         assert_eq!(
             command_failure_detail("omlx start", "exit status: 1", " \n", ""),
             "omlx start failed (exit status: 1)."
+        );
+    }
+
+    #[test]
+    fn omlx_start_on_a_pip_install_says_how_to_get_a_background_service() {
+        // oMLX's `omlx start` for an install that is neither the app nor Homebrew.
+        let stdout = "Background start is available for the macOS app and Homebrew installs.\n\
+For this install, run foreground server mode with: omlx serve\n";
+        assert_eq!(
+            omlx_start_failure_detail(
+                Path::new("/Users/me/.venv/bin/omlx"),
+                "exit status: 1",
+                stdout,
+                ""
+            ),
+            "oMLX at /Users/me/.venv/bin/omlx is installed with pip, so it can't run as a background service here. \
+Install it with Homebrew (brew install jundot/omlx/omlx) or the oMLX app, or run omlx serve yourself and keep it running."
+        );
+        assert_eq!(
+            omlx_start_failure_detail(
+                Path::new("/opt/homebrew/bin/omlx"),
+                "exit status: 1",
+                "Homebrew is not available on PATH.\n",
+                ""
+            ),
+            "omlx start failed: Homebrew is not available on PATH."
         );
     }
 
