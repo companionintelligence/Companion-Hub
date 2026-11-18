@@ -63,6 +63,21 @@ pub struct InferenceRunnerResult {
     pub endpoint_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// oMLX's main API key, which the Hub needs for oMLX's admin API (model downloads). Only the
+    /// frontend gets it: it is left out of the persisted results and out of `Debug`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<RunnerApiKey>,
+}
+
+/// A runner's API key. `Debug` prints a placeholder, so a logged result never carries the key.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct RunnerApiKey(String);
+
+impl std::fmt::Debug for RunnerApiKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("<redacted>")
+    }
 }
 
 /// Normalize the user-facing typo and legacy aliases without exposing the
@@ -156,7 +171,16 @@ fn success(
         state,
         endpoint_url,
         detail,
+        api_key: None,
     }
+}
+
+fn with_api_key(
+    mut result: InferenceRunnerResult,
+    api_key: Option<String>,
+) -> InferenceRunnerResult {
+    result.api_key = api_key.map(RunnerApiKey);
+    result
 }
 
 fn failed(runner: &str, detail: String) -> InferenceRunnerResult {
@@ -193,8 +217,12 @@ fn install_and_start_omlx(data_dir: &Path) -> InferenceRunnerResult {
     if !platform_is_apple_silicon() {
         return skipped("omlx", "oMLX runs only on Apple Silicon.");
     }
-    if probe_http(OMLX_PORT, "/v1/models") {
-        return already_running("omlx", OMLX_ENDPOINT);
+    let settings_path = dirs::home_dir().map(|home| omlx_settings_path(&home));
+    // The key oMLX already has, if any. A keyed oMLX wants it on `/v1/models` unless it allows
+    // inference without one, and the Hub needs it for the admin API either way.
+    let existing_key = settings_path.as_deref().and_then(read_omlx_api_key);
+    if probe_http_authenticated(OMLX_PORT, "/v1/models", existing_key.as_deref()) {
+        return with_api_key(already_running("omlx", OMLX_ENDPOINT), existing_key);
     }
 
     let homebrew_dirs = homebrew_bin_dirs();
@@ -238,6 +266,18 @@ fn install_and_start_omlx(data_dir: &Path) -> InferenceRunnerResult {
         }
     };
 
+    // An oMLX installed here gets a main key before its first start, so the Hub can download
+    // models through its admin API. One that was already here is left as its owner set it: other
+    // tools of theirs may use its `/v1` without a key.
+    let api_key = match existing_key {
+        Some(key) => Some(key),
+        None if installed_now => match settings_path.as_deref() {
+            Some(path) => set_new_omlx_api_key(data_dir, path),
+            None => None,
+        },
+        None => None,
+    };
+
     if let Err(error) = run_with_path(
         data_dir,
         "omlx",
@@ -254,7 +294,12 @@ fn install_and_start_omlx(data_dir: &Path) -> InferenceRunnerResult {
     } else {
         "oMLX was started."
     };
-    if wait_for_http(OMLX_PORT, "/v1/models", STARTUP_WAIT) {
+    let result = if wait_for_http_authenticated(
+        OMLX_PORT,
+        "/v1/models",
+        api_key.as_deref(),
+        STARTUP_WAIT,
+    ) {
         success(
             "omlx",
             InferenceRunnerState::InstalledAndStarted,
@@ -268,7 +313,157 @@ fn install_and_start_omlx(data_dir: &Path) -> InferenceRunnerResult {
             Some(OMLX_ENDPOINT.to_string()),
             Some("oMLX is installed, but its API is still starting. Foreground form: omlx serve --model-dir ~/models".to_string()),
         )
+    };
+    with_api_key(result, api_key)
+}
+
+/// Generate a main key and write it into oMLX's settings. A failure is logged and leaves oMLX
+/// without a key: it still serves, and the Hub then asks for the key when it downloads a model.
+fn set_new_omlx_api_key(data_dir: &Path, settings_path: &Path) -> Option<String> {
+    let key = generate_omlx_api_key();
+    match write_omlx_api_key(settings_path, &key) {
+        Ok(()) => {
+            append_runner_log(
+                data_dir,
+                "omlx",
+                &format!("set an API key for oMLX in {}", settings_path.display()),
+            );
+            Some(key)
+        }
+        Err(error) => {
+            append_runner_log(
+                data_dir,
+                "omlx",
+                &format!("warning: could not set an API key for oMLX: {error}"),
+            );
+            None
+        }
     }
+}
+
+/// oMLX's settings file, from its base path: the one the oMLX app saved in
+/// `~/Library/Application Support/oMLX/base-path`, else `~/.omlx` (`resolve_default_base_path` in
+/// jundot/omlx omlx/settings.py). Its `OMLX_BASE_PATH` override is left out: `brew services` does
+/// not pass this app's environment to the server, so the server never sees it either.
+fn omlx_settings_path(home: &Path) -> PathBuf {
+    let bootstrap = home
+        .join("Library")
+        .join("Application Support")
+        .join("oMLX")
+        .join("base-path");
+    let base = fs::read_to_string(bootstrap)
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty())
+        .map(|raw| match raw.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None if raw == "~" => home.to_path_buf(),
+            None => PathBuf::from(raw),
+        })
+        .unwrap_or_else(|| home.join(".omlx"));
+    base.join("settings.json")
+}
+
+/// `auth.api_key` from oMLX's settings file, when one is set.
+fn read_omlx_api_key(path: &Path) -> Option<String> {
+    let settings: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+    settings
+        .get("auth")?
+        .get("api_key")?
+        .as_str()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(ToString::to_string)
+}
+
+/// A main key oMLX accepts: at least 4 printable ASCII characters and no whitespace
+/// (`validate_api_key` in jundot/omlx omlx/admin/auth.py).
+fn generate_omlx_api_key() -> String {
+    // rand 0.10: `rng()` is the OS-seeded CSPRNG.
+    use rand::RngExt;
+    let random: String = rand::rng()
+        .sample_iter(rand::distr::Alphanumeric)
+        .take(40)
+        .map(char::from)
+        .collect();
+    format!("ci-hub-{random}")
+}
+
+/// Whether oMLX's settings bind it to loopback only. A missing host is oMLX's default, 127.0.0.1.
+fn omlx_binds_loopback(settings: &serde_json::Map<String, serde_json::Value>) -> bool {
+    match settings
+        .get("server")
+        .and_then(|server| server.get("host"))
+        .and_then(|host| host.as_str())
+    {
+        None => true,
+        Some(host) => {
+            let host = host.trim().trim_start_matches('[').trim_end_matches(']');
+            host == "localhost" || host == "::1" || host.starts_with("127.")
+        }
+    }
+}
+
+/// Write `key` as oMLX's main key into its settings file, keeping every other field, with the file
+/// readable by its owner only. A file that is not a JSON object is left alone.
+///
+/// An oMLX without a key on a loopback bind takes `/v1` requests without one. Setting a key would
+/// close `/v1` to every app and tool that relies on that, so a loopback bind also gets
+/// `allow_unauthenticated_inference`, which keeps `/v1` as it was and puts only the admin API
+/// behind the key.
+fn write_omlx_api_key(path: &Path, key: &str) -> Result<(), String> {
+    let mut settings = match fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str::<serde_json::Value>(&text)
+            .map_err(|error| format!("{} is not valid JSON: {error}", path.display()))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(error) => return Err(format!("Could not read {}: {error}", path.display())),
+    };
+    let root = settings
+        .as_object_mut()
+        .ok_or_else(|| format!("{} does not hold a JSON object", path.display()))?;
+    let loopback = omlx_binds_loopback(root);
+    let auth = root
+        .entry("auth")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| format!("auth in {} is not a JSON object", path.display()))?;
+    auth.insert("api_key".to_string(), serde_json::json!(key));
+    if loopback {
+        auth.insert(
+            "allow_unauthenticated_inference".to_string(),
+            serde_json::json!(true),
+        );
+    }
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Could not create {}: {error}", parent.display()))?;
+    let serialized = serde_json::to_vec_pretty(&settings)
+        .map_err(|error| format!("Could not serialize oMLX's settings: {error}"))?;
+    let temp = parent.join(format!("settings.json.{}.ci-hub.tmp", std::process::id()));
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let written = options.open(&temp).and_then(|mut file| {
+        file.write_all(&serialized)?;
+        file.sync_all()
+    });
+    if let Err(error) = written {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("Could not write {}: {error}", temp.display()));
+    }
+    #[cfg(unix)]
+    if let Err(error) = fs::set_permissions(&temp, fs::Permissions::from_mode(0o600)) {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("Could not protect {}: {error}", temp.display()));
+    }
+    fs::rename(&temp, path).map_err(|error| {
+        let _ = fs::remove_file(&temp);
+        format!("Could not replace {}: {error}", path.display())
+    })
 }
 
 fn install_omlx_with_homebrew(data_dir: &Path, brew: &Path, path: &OsStr) -> Result<(), String> {
@@ -1406,7 +1601,12 @@ fn persist_results(data_dir: &Path, results: &[InferenceRunnerResult]) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    if let Ok(serialized) = serde_json::to_vec_pretty(results) {
+    let without_keys = results
+        .iter()
+        .cloned()
+        .map(|result| with_api_key(result, None))
+        .collect::<Vec<_>>();
+    if let Ok(serialized) = serde_json::to_vec_pretty(&without_keys) {
         let _ = fs::write(path, serialized);
     }
 }
@@ -1722,6 +1922,196 @@ fatal: unable to access 'https://github.com/jundot/omlx/': Could not resolve hos
         let tail = command_output_tail("", &long).expect("tail");
         assert_eq!(tail.chars().count(), OUTPUT_TAIL_MAX_CHARS);
         assert!(tail.ends_with('…'));
+    }
+
+    #[test]
+    fn finds_omlx_settings_where_omlx_keeps_them() {
+        let home = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            omlx_settings_path(home.path()),
+            home.path().join(".omlx").join("settings.json")
+        );
+
+        let bootstrap_dir = home
+            .path()
+            .join("Library")
+            .join("Application Support")
+            .join("oMLX");
+        fs::create_dir_all(&bootstrap_dir).expect("mkdir");
+        fs::write(bootstrap_dir.join("base-path"), "~/Models/omlx\n").expect("write");
+        assert_eq!(
+            omlx_settings_path(home.path()),
+            home.path()
+                .join("Models")
+                .join("omlx")
+                .join("settings.json")
+        );
+
+        fs::write(bootstrap_dir.join("base-path"), "/Volumes/External/omlx").expect("write");
+        assert_eq!(
+            omlx_settings_path(home.path()),
+            Path::new("/Volumes/External/omlx").join("settings.json")
+        );
+    }
+
+    #[test]
+    fn reads_the_key_omlx_has_and_nothing_else() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        assert_eq!(read_omlx_api_key(&path), None);
+
+        fs::write(&path, r#"{"auth": {"api_key": null}}"#).expect("write");
+        assert_eq!(read_omlx_api_key(&path), None);
+        fs::write(&path, r#"{"auth": {"api_key": "   "}}"#).expect("write");
+        assert_eq!(read_omlx_api_key(&path), None);
+        fs::write(&path, "not json").expect("write");
+        assert_eq!(read_omlx_api_key(&path), None);
+
+        fs::write(&path, r#"{"auth": {"api_key": " their-key "}}"#).expect("write");
+        assert_eq!(read_omlx_api_key(&path), Some("their-key".to_string()));
+    }
+
+    #[test]
+    fn generated_keys_are_ones_omlx_accepts_and_never_repeat() {
+        let first = generate_omlx_api_key();
+        let second = generate_omlx_api_key();
+        assert_ne!(first, second);
+        assert!(first.len() >= 32);
+        assert!(first
+            .chars()
+            .all(|c| c.is_ascii_graphic() && !c.is_whitespace()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_a_new_settings_file_with_only_the_key_and_open_inference() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".omlx").join("settings.json");
+
+        write_omlx_api_key(&path, "ci-hub-new").expect("write the key");
+
+        let settings: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("json");
+        assert_eq!(
+            settings,
+            serde_json::json!({"auth": {"api_key": "ci-hub-new", "allow_unauthenticated_inference": true}})
+        );
+        assert_eq!(
+            fs::metadata(&path).expect("stat").permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(read_omlx_api_key(&path), Some("ci-hub-new".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn merges_the_key_into_existing_settings_and_keeps_every_other_field() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        fs::write(
+            &path,
+            r#"{
+  "version": "1.0",
+  "server": {"host": "127.0.0.1", "port": 8000},
+  "model": {"model_dirs": ["/Users/me/models"]},
+  "auth": {"api_key": null, "skip_api_key_verification": false, "allow_unauthenticated_inference": false, "sub_keys": [{"key": "sub", "name": "tool"}]},
+  "huggingface": {"endpoint": ""}
+}"#,
+        )
+        .expect("write");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("chmod");
+
+        write_omlx_api_key(&path, "ci-hub-merged").expect("merge the key");
+
+        let settings: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("json");
+        assert_eq!(settings["version"], "1.0");
+        assert_eq!(settings["server"]["port"], 8000);
+        assert_eq!(settings["model"]["model_dirs"][0], "/Users/me/models");
+        assert_eq!(settings["huggingface"]["endpoint"], "");
+        assert_eq!(settings["auth"]["api_key"], "ci-hub-merged");
+        assert_eq!(settings["auth"]["skip_api_key_verification"], false);
+        assert_eq!(settings["auth"]["allow_unauthenticated_inference"], true);
+        assert_eq!(settings["auth"]["sub_keys"][0]["name"], "tool");
+        assert_eq!(
+            fs::metadata(&path).expect("stat").permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(fs::read_dir(dir.path()).expect("list").all(|entry| !entry
+            .expect("entry")
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".tmp")));
+    }
+
+    #[test]
+    fn keeps_inference_behind_the_key_when_omlx_listens_beyond_loopback() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        fs::write(&path, r#"{"server": {"host": "0.0.0.0"}}"#).expect("write");
+
+        write_omlx_api_key(&path, "ci-hub-lan").expect("write the key");
+
+        let settings: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("json");
+        assert_eq!(settings["auth"]["api_key"], "ci-hub-lan");
+        assert!(settings["auth"]
+            .get("allow_unauthenticated_inference")
+            .is_none());
+    }
+
+    #[test]
+    fn leaves_a_settings_file_it_cannot_read_as_json_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        fs::write(&path, "{ torn").expect("write");
+
+        assert!(write_omlx_api_key(&path, "ci-hub-x").is_err());
+        assert_eq!(fs::read_to_string(&path).expect("read"), "{ torn");
+
+        fs::write(&path, "[]").expect("write");
+        assert!(write_omlx_api_key(&path, "ci-hub-x").is_err());
+    }
+
+    #[test]
+    fn loopback_binds_are_recognised() {
+        let settings = |host: Option<&str>| {
+            let value = match host {
+                Some(host) => serde_json::json!({"server": {"host": host}}),
+                None => serde_json::json!({}),
+            };
+            value.as_object().expect("object").clone()
+        };
+        assert!(omlx_binds_loopback(&settings(None)));
+        assert!(omlx_binds_loopback(&settings(Some("127.0.0.1"))));
+        assert!(omlx_binds_loopback(&settings(Some("localhost"))));
+        assert!(omlx_binds_loopback(&settings(Some("::1"))));
+        assert!(!omlx_binds_loopback(&settings(Some("0.0.0.0"))));
+        assert!(!omlx_binds_loopback(&settings(Some("192.168.1.20"))));
+    }
+
+    #[test]
+    fn hands_the_key_to_the_frontend_but_never_to_logs_or_the_state_file() {
+        let result = with_api_key(
+            success(
+                "omlx",
+                InferenceRunnerState::InstalledAndStarted,
+                Some(OMLX_ENDPOINT.to_string()),
+                Some("started".to_string()),
+            ),
+            Some("ci-hub-secret".to_string()),
+        );
+
+        let json = serde_json::to_value(&result).expect("serialize");
+        assert_eq!(json["apiKey"], "ci-hub-secret");
+        assert!(!format!("{result:?}").contains("ci-hub-secret"));
+
+        let data_dir = tempfile::tempdir().expect("tempdir");
+        persist_results(data_dir.path(), &[result]);
+        let persisted =
+            fs::read_to_string(data_dir.path().join(RUNNER_STATE_FILE)).expect("read state");
+        assert!(!persisted.contains("ci-hub-secret"));
+        assert!(!persisted.contains("apiKey"));
     }
 
     #[test]
