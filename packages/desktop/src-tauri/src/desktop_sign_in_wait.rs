@@ -64,6 +64,19 @@ pub(crate) fn hub_settings_path(data_dir: &Path, env_path: &Path) -> PathBuf {
         .join("settings.json")
 }
 
+/// The setup code an unpaired Hub asks a browser for before it pairs, next to its settings file.
+/// The Hub writes it while it is unpaired and removes it once paired, so None means there is none.
+pub(crate) fn read_hub_setup_code(settings_path: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(settings_path.with_file_name("setup-code")).ok()?;
+    let code = raw.trim();
+    (!code.is_empty()
+        && code.len() <= 16
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'))
+    .then(|| code.to_string())
+}
+
 fn read_hub_local_key(settings_path: &Path) -> Option<String> {
     let raw = std::fs::read_to_string(settings_path).ok()?;
     let settings: serde_json::Value = serde_json::from_str(&raw).ok()?;
@@ -269,6 +282,24 @@ mod tests {
             base_url,
             &data_dir.path().join("state").join("settings.json"),
         ))
+    }
+
+    #[test]
+    fn reads_the_setup_code_beside_the_settings_file_and_nothing_odd() {
+        let data_dir = settings_with("{}");
+        let settings_path = data_dir.path().join("state").join("settings.json");
+        assert_eq!(read_hub_setup_code(&settings_path), None);
+
+        std::fs::write(settings_path.with_file_name("setup-code"), "ABCD-EFGH\n").unwrap();
+        assert_eq!(
+            read_hub_setup_code(&settings_path).as_deref(),
+            Some("ABCD-EFGH")
+        );
+
+        for odd in ["", "  \n", "<script>", "ABCD-EFGH-IJKL-MNOP-Q"] {
+            std::fs::write(settings_path.with_file_name("setup-code"), odd).unwrap();
+            assert_eq!(read_hub_setup_code(&settings_path), None, "{odd:?}");
+        }
     }
 
     #[test]

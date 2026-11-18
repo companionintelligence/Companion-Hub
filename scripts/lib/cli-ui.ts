@@ -42,6 +42,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         description: 'Create this Hub’s first operator without a browser (needs register first). Safe to re-run',
       },
       {
+        command: `${BASE_COMMAND} setup-code [env]`,
+        description: "Print an unpaired Hub's setup code, and a link to pair it from a browser that fills it in",
+      },
+      {
         command: `${BASE_COMMAND} device-id [--from-hub]`,
         description: "Print this machine's stable device ID (default: local resolver; --from-hub asks the running Hub API)",
       },
@@ -441,7 +445,7 @@ export function renderManPage() {
       'MCP toggles, environment resets, and app management.',
       '',
       'The commands that target one environment take an optional [env]: local (default), dev, staging, prod.',
-      'Those are wizard, setup, register, claim, device-id, up, down, restart, recreate, status, logs, config,',
+      'Those are wizard, setup, register, claim, setup-code, device-id, up, down, restart, recreate, status, logs, config,',
       'doctor, clean, reset, and the mcp, public-web and pool subcommands.',
       '',
       'Every other command takes none. fleet refuses one outright (cihub fleet scan prod is an error);',

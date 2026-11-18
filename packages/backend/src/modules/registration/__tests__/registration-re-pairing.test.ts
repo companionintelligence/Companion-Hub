@@ -17,6 +17,7 @@ import { Test } from '@nestjs/testing';
 import { ForbiddenException } from '@nestjs/common';
 import { RegistrationController } from '../registration.controller';
 import { RegistrationService } from '../registration.service';
+import { SetupCodeService } from '../setup-code.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { DatabaseService } from '@/core/database/database.service';
@@ -72,7 +73,17 @@ function request(ip: string, host: string, caller: Caller = {}) {
 const anonymousOnLan = () => request('192.168.1.50', '192.168.1.10:5002');
 const lanNamingLoopback = () => request('192.168.1.50', '127.0.0.1:5002');
 /** What the setup service's request looks like to the Hub: the gateway, a loopback Host and no session. */
-const fromSetupService = () => request('172.18.0.1', '127.0.0.1:5002');
+/** CI-OS's setup service on the Hub's machine: it sends the host-local key from state/settings.json. */
+const fromSetupService = () => request('172.18.0.1', '127.0.0.1:5002', { hubPrincipal: 'host-local', user: { id: 1 } });
+/**
+ * An installed app dialling its own network's gateway on the published port: it arrives from the Hub
+ * network's gateway with a loopback Host, exactly as the host does (measured on Docker 29), and has no
+ * key. It used to pass as "this Hub's own machine".
+ */
+const appContainerViaGateway = () => request('172.18.0.1', '127.0.0.1:5002');
+const SETUP_REFUSAL = expect.stringContaining('setup code');
+/** A paired Hub has no setup code: it asks for someone who may manage it, as it did before the code. */
+const MANAGER_REFUSAL = expect.stringContaining('Sign in as an owner or admin');
 /** A person signed in to this Hub, using it from another machine on the LAN. */
 const signedIn = (orgRole: string | null) =>
   request('192.168.1.50', '192.168.1.10:5002', { hubPrincipal: 'session', user: { id: OWNER_ID, orgRole } });
@@ -208,6 +219,15 @@ beforeEach(async () => {
       { provide: DatabaseService, useValue: mock<DatabaseService>() },
       { provide: FederatedIdentityRepository, useValue: federatedIdentities },
       { provide: UserRepository, useValue: users },
+      // The setup code this Hub holds is ABCD-EFGH; `SetupCodeService` has tests of its own.
+      {
+        provide: SetupCodeService,
+        useValue: {
+          verify: async (code?: string) => (code ?? '').toUpperCase().replace(/[\s-]/g, '') === 'ABCDEFGH',
+          ensure: vi.fn(),
+          retire: vi.fn(),
+        },
+      },
     ],
   }).compile();
 
@@ -228,9 +248,16 @@ describe.each(['portal_rejected', 'tunnel_token_missing'] as const)('a registrat
     portalSays('member');
     const before = snapshot();
 
-    for (const from of [anonymousOnLan(), lanNamingLoopback(), signedIn('member'), signedIn('owner'), memoryWithDeviceKey()]) {
+    for (const from of [
+      anonymousOnLan(),
+      lanNamingLoopback(),
+      appContainerViaGateway(),
+      signedIn('member'),
+      signedIn('owner'),
+      memoryWithDeviceKey(),
+    ]) {
       await expect(sendPost(from)).rejects.toThrow(/Sign in as an owner or admin/);
-      await expect(sendGet(from)).rejects.toThrow(/only accepted from this Hub itself/);
+      await expect(sendGet(from)).rejects.toThrow(/needs the host-local key/);
     }
 
     expect(snapshot()).toEqual(before);
@@ -253,12 +280,12 @@ describe.each(['portal_rejected', 'tunnel_token_missing'] as const)('a registrat
     const before = snapshot();
     // A link in a mail or chat app opens with `Sec-Fetch-Site: none`, from the same address the setup service uses.
     const linkOnThisHost = () => {
-      const from = fromSetupService();
+      const from = appContainerViaGateway();
       from.headers['sec-fetch-site'] = 'none';
       return from;
     };
 
-    await expect(sendGet(linkOnThisHost())).rejects.toThrow(/only accepted from this Hub itself/);
+    await expect(sendGet(linkOnThisHost())).rejects.toThrow(/needs the host-local key/);
     await expect(sendPost(linkOnThisHost())).rejects.toThrow(/Sign in as an owner or admin/);
 
     expect(snapshot()).toEqual(before);
@@ -284,13 +311,13 @@ describe.each(['portal_rejected', 'tunnel_token_missing'] as const)('a registrat
     await expectPairedAgain();
   });
 
-  it('completes on the POST from the setup service on the Hub itself, with no session', async () => {
+  it('completes on the POST from the setup service with the host-local key, with no session', async () => {
     await expect(sendPost(fromSetupService())).resolves.toMatchObject({ success: true });
     await expectPairedAgain();
     expect(portal.whoisApps).not.toHaveBeenCalled();
   });
 
-  it('completes on the GET from the setup service on the Hub itself, with no session', async () => {
+  it('completes on the GET from the setup service with the host-local key, with no session', async () => {
     await expect(sendGet(fromSetupService())).resolves.toMatchObject({ success: true });
     await expectPairedAgain();
   });
@@ -324,7 +351,7 @@ describe('a registration callback on a Hub whose phase has not been restored fro
     expectNothingWritten();
   });
 
-  it('completes on the POST from the setup service on the Hub itself', async () => {
+  it('completes on the POST from the setup service with the host-local key', async () => {
     await expect(sendPost(fromSetupService())).resolves.toMatchObject({ success: true });
     await vi.waitFor(() => expect(rows[0]).toMatchObject({ tunnelToken: 'tok-new' }));
     expect(settings.ciHubApiKey).toBe('key-new');
@@ -351,10 +378,7 @@ describe('a registration callback on a Hub whose registration cannot be read', (
     const before = snapshot();
 
     await expect(sendPost(anonymousOnLan())).rejects.toThrow(/Sign in as an owner or admin/);
-    await expect(sendPair(anonymousOnLan())).resolves.toMatchObject({
-      success: false,
-      message: expect.stringContaining('Sign in as an owner or admin'),
-    });
+    await expect(sendPair(anonymousOnLan())).resolves.toMatchObject({ success: false, message: SETUP_REFUSAL });
 
     expect(portalPairCalls()).toEqual([]);
     expect(snapshot()).toEqual(before);
@@ -399,8 +423,17 @@ describe.each(['portal_rejected', 'tunnel_token_missing'] as const)('a pairing c
     portalSays('member');
     const before = snapshot();
 
-    for (const from of [undefined, anonymousOnLan(), lanNamingLoopback(), signedIn('member'), signedIn('owner'), memoryWithDeviceKey()]) {
-      await expect(sendPair(from)).resolves.toMatchObject({ success: false, message: expect.stringContaining('Sign in as an owner or admin') });
+    for (const from of [
+      undefined,
+      anonymousOnLan(),
+      lanNamingLoopback(),
+      appContainerViaGateway(),
+      signedIn('member'),
+      signedIn('owner'),
+      memoryWithDeviceKey(),
+      cliOnThisHostWithDeviceKey(),
+    ]) {
+      await expect(sendPair(from)).resolves.toMatchObject({ success: false, code: 'HUB_MANAGER_REQUIRED', message: MANAGER_REFUSAL });
       await expect(sendPair(from, true)).resolves.toMatchObject({ success: false });
     }
 
@@ -442,10 +475,7 @@ describe.each(['portal_rejected', 'tunnel_token_missing'] as const)('a pairing c
     for (const fetchSite of ['same-site', 'cross-site']) {
       const fromOtherPage = signedIn('owner');
       fromOtherPage.headers['sec-fetch-site'] = fetchSite;
-      await expect(sendPair(fromOtherPage)).resolves.toMatchObject({
-        success: false,
-        message: expect.stringContaining('Sign in as an owner or admin'),
-      });
+      await expect(sendPair(fromOtherPage)).resolves.toMatchObject({ success: false, code: 'HUB_MANAGER_REQUIRED', message: MANAGER_REFUSAL });
     }
     expect(portalPairCalls()).toEqual([]);
     expectNothingWritten();
@@ -468,8 +498,7 @@ describe.each(['portal_rejected', 'tunnel_token_missing'] as const)('a pairing c
   it.each([
     ['the CLI token', asCli],
     ['the host-local key', asHostLocalKey],
-    ['a caller on the Hub itself', fromSetupService],
-    ['cihub register on the Hub itself with only the device key', cliOnThisHostWithDeviceKey],
+    ['the setup service with the host-local key', fromSetupService],
   ])('pairs for %s', async (_caller, from) => {
     portalIssuesPairing();
 
@@ -480,13 +509,62 @@ describe.each(['portal_rejected', 'tunnel_token_missing'] as const)('a pairing c
 });
 
 describe('a pairing code on a Hub that is not registered', () => {
-  it('goes to Portal for anyone, as a first pairing has nobody to sign in as', async () => {
+  // A first pairing has nobody to sign in as, so it asks for the setup code: Portal hands pairing
+  // codes out for the caller's own organization, and anyone who reached the port could pair the Hub
+  // into theirs.
+  it('refuses a caller with no setup code before Portal is asked, the app container on the gateway included', async () => {
     mockedPost.mockReset();
     portalIssuesPairing();
 
-    await expect(sendPair(anonymousOnLan())).resolves.toMatchObject({ success: true });
+    for (const from of [anonymousOnLan(), lanNamingLoopback(), appContainerViaGateway(), memoryWithDeviceKey(), cliOnThisHostWithDeviceKey()]) {
+      await expect(sendPair(from)).resolves.toMatchObject({ success: false, code: 'SETUP_CODE_REQUIRED', message: SETUP_REFUSAL });
+    }
+    const wrongCode = anonymousOnLan();
+    wrongCode.headers['x-ci-hub-setup-code'] = 'WXYZ-0000';
+    await expect(sendPair(wrongCode)).resolves.toMatchObject({ success: false, code: 'SETUP_CODE_REQUIRED' });
+
+    expect(portalPairCalls()).toEqual([]);
+    expectNothingWritten();
+  });
+
+  // A factory-reset Hub is open for first-operator setup, so its operator is whoever reached it first.
+  it('refuses the operator who claimed it, and an owner, without the setup code', async () => {
+    mockedPost.mockReset();
+    users.getFirstOperator.mockResolvedValue({ id: OWNER_ID } as any);
+    portalSays('owner');
+    portalIssuesPairing();
+
+    for (const from of [signedIn('owner'), signedIn('member'), signedIn(null)]) {
+      from.headers['sec-fetch-site'] = 'same-origin';
+      await expect(sendPair(from)).resolves.toMatchObject({ success: false, code: 'SETUP_CODE_REQUIRED' });
+    }
+    expect(portalPairCalls()).toEqual([]);
+    expectNothingWritten();
+
+    const withCode = signedIn('owner');
+    withCode.headers['x-ci-hub-setup-code'] = 'ABCD-EFGH';
+    await expect(sendPair(withCode)).resolves.toMatchObject({ success: true });
+    await vi.waitFor(() => expect((service as any)._currentPhase).toBe('publicly_ready'));
+  });
+
+  it('goes to Portal for a browser that sends the setup code', async () => {
+    mockedPost.mockReset();
+    portalIssuesPairing();
+    const withCode = anonymousOnLan();
+    withCode.headers['x-ci-hub-setup-code'] = 'abcd efgh';
+
+    await expect(sendPair(withCode)).resolves.toMatchObject({ success: true });
     expect(portalPairCalls()).toHaveLength(1);
     expect(portal.whoisApps).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect((service as any)._currentPhase).toBe('publicly_ready'));
+  });
+
+  it('goes to Portal for the setup service or cihub with the host-local key', async () => {
+    mockedPost.mockReset();
+    portalIssuesPairing();
+
+    await expect(sendPair(fromSetupService())).resolves.toMatchObject({ success: true });
+    expect(portalPairCalls()).toHaveLength(1);
     await vi.waitFor(() => expect((service as any)._currentPhase).toBe('publicly_ready'));
   });
 });
@@ -503,8 +581,11 @@ describe('a pairing code on a Hub that is registered and serving', () => {
     portalSays('owner');
     const before = snapshot();
 
-    for (const from of [signedIn('owner'), asHostLocalKey(), fromSetupService(), anonymousOnLan()]) {
+    for (const from of [signedIn('owner'), asHostLocalKey(), fromSetupService()]) {
       await expect(sendPair(from)).resolves.toMatchObject({ success: false, message: 'Device is already registered.' });
+    }
+    for (const from of [anonymousOnLan(), appContainerViaGateway()]) {
+      await expect(sendPair(from)).resolves.toMatchObject({ success: false, code: 'HUB_MANAGER_REQUIRED', message: MANAGER_REFUSAL });
     }
 
     expect(portalPairCalls()).toEqual([]);
@@ -516,8 +597,8 @@ describe('a pairing code on a Hub that is registered and serving', () => {
     (service as any).portalRejectedSince = Date.now();
     portalSays('member');
 
-    await expect(sendPair(anonymousOnLan())).resolves.toMatchObject({ success: false, message: 'Device is already registered.' });
-    await expect(sendPair(signedIn('owner'))).resolves.toMatchObject({ success: false, message: 'Device is already registered.' });
+    await expect(sendPair(anonymousOnLan())).resolves.toMatchObject({ success: false, code: 'HUB_MANAGER_REQUIRED', message: MANAGER_REFUSAL });
+    await expect(sendPair(signedIn('owner'))).resolves.toMatchObject({ success: false, code: 'HUB_MANAGER_REQUIRED', message: MANAGER_REFUSAL });
     expect(portalPairCalls()).toEqual([]);
 
     portalIssuesPairing();

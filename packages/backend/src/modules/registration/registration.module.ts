@@ -13,6 +13,7 @@ import { CloudflareModule } from '../cloudflare/cloudflare.module';
 import { DockerModule } from '../docker/docker.module';
 import { QueueModule } from '../queue/queue.module';
 import { TailscaleModule } from '../tailscale/tailscale.module';
+import { SetupCodeService } from './setup-code.service';
 
 @Module({
   imports: [
@@ -28,7 +29,7 @@ import { TailscaleModule } from '../tailscale/tailscale.module';
     TailscaleModule,
   ],
   controllers: [RegistrationController],
-  providers: [RegistrationService, RegistrationGuard, DeviceRegistrationRepository, PortalPushKeyService],
-  exports: [RegistrationService, RegistrationGuard, DeviceRegistrationRepository, PortalPushKeyService],
+  providers: [RegistrationService, RegistrationGuard, DeviceRegistrationRepository, PortalPushKeyService, SetupCodeService],
+  exports: [RegistrationService, RegistrationGuard, DeviceRegistrationRepository, PortalPushKeyService, SetupCodeService],
 })
 export class RegistrationModule {}

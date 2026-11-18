@@ -35,6 +35,7 @@ commands.allow = [
   "install_docker_engine_alternative_command",
   "start_wsl_engine_command",
   "consume_pending_pairing_code",
+  "hub_setup_code",
   "consume_pending_portal_auth",
   "consume_pending_install_intent",
   "check_desktop_update_command",

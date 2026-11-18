@@ -402,6 +402,7 @@ export type RegisterBody = {
 export type RegisterDto = {
     success: boolean;
     requiresEmailVerification?: boolean;
+    sessionId?: string;
 };
 
 export type HubClaimStatusDto = {
@@ -2826,7 +2827,7 @@ export type HandleCallbackErrors = {
      */
     400: unknown;
     /**
-     * Not sent from this Hub's own machine, or the Hub is already registered
+     * No host-local key, setup code or Hub manager, or the Hub is already registered
      */
     403: unknown;
 };
@@ -6492,6 +6493,17 @@ export type GetPeerJobStatusResponses = {
     200: unknown;
 };
 
+export type StartNavigationData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/memory-connect/start';
+};
+
+export type StartNavigationResponses = {
+    200: unknown;
+};
+
 export type StartData = {
     body?: never;
     path?: never;
@@ -6500,6 +6512,17 @@ export type StartData = {
 };
 
 export type StartResponses = {
+    201: unknown;
+};
+
+export type CallbackNavigationData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/memory-connect/callback';
+};
+
+export type CallbackNavigationResponses = {
     200: unknown;
 };
 
@@ -6511,7 +6534,7 @@ export type CallbackData = {
 };
 
 export type CallbackResponses = {
-    200: unknown;
+    201: unknown;
 };
 
 export type StateData = {
