@@ -23,6 +23,7 @@ mod inference_runners;
 mod login_autostart;
 pub mod port_manager;
 mod portal_url;
+mod portal_token;
 mod sentry_scrubber;
 mod tray;
 mod updater;
@@ -665,6 +666,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
+            portal_token::portal_token_request_command,
             check_hub_status,
             discover_hubs,
             start_hub_command,

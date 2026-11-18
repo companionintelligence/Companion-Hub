@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setTauriSessionId } from '@/lib/api-fetch';
-import { DesktopSignInError, signInDesktopWithPortal } from './desktop-portal-sign-in';
+import { DesktopSignInError, nativeTokenFetch, signInDesktopWithPortal } from './desktop-portal-sign-in';
 
 // The system browser is the only thing the test cannot run: it captures the authorize URL instead.
 const { openAuthInSystemBrowser, authorizeUrls } = vi.hoisted(() => {
@@ -53,6 +53,11 @@ const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>): Promis
       return undefined;
     case 'plugin:ci-auth|cancel_loopback':
       return undefined;
+    // The desktop's native token request (src/portal_token.rs), standing in for Portal here.
+    case 'portal_token_request_command': {
+      const response = await tokenFetch(String(args?.endpoint), { method: 'POST', body: String(args?.body) });
+      return { status: response.status, body: await response.text() };
+    }
     default:
       throw new Error(`unexpected command ${cmd}`);
   }
@@ -72,6 +77,10 @@ const tokenFetch = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promi
   throw new Error(`unexpected fetch ${String(input)}`);
 });
 
+const webviewFetch = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+  throw new TypeError(`the WebView fetch was used for ${String(input)}`);
+});
+
 /** The S256 challenge for a verifier, computed here rather than with the vendored helper, so the check is independent. */
 async function s256(verifier: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
@@ -89,7 +98,9 @@ beforeEach(() => {
   tauriWindow.__TAURI_INTERNALS__ = { invoke };
   setTauriSessionId(null);
   tokenFetch.mockClear();
-  vi.stubGlobal('fetch', tokenFetch);
+  // The WebView's own fetch can never read Portal's token reply (Portal answers CORS for its own UI
+  // only), so the sign-in must not use it.
+  vi.stubGlobal('fetch', webviewFetch);
   apiFetch.mockReset();
   apiFetch.mockImplementation(async (path: string) => {
     if (path === '/api/auth/portal/desktop-config') {
@@ -125,6 +136,10 @@ describe('signInDesktopWithPortal', () => {
 
   it('exchanges the code at the Portal token endpoint with the verifier that matches the challenge', async () => {
     await signInDesktopWithPortal();
+
+    // Through the desktop app, never the WebView.
+    expect(webviewFetch).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith('portal_token_request_command', expect.objectContaining({ endpoint: TOKEN_ENDPOINT }));
 
     expect(tokenFetch).toHaveBeenCalledTimes(1);
     const [tokenUrl, init] = tokenFetch.mock.calls[0] ?? [];
@@ -168,5 +183,30 @@ describe('signInDesktopWithPortal', () => {
     const failure = signInDesktopWithPortal();
     await expect(failure).rejects.toBeInstanceOf(DesktopSignInError);
     await expect(failure).rejects.toMatchObject({ status: 401 });
+  });
+});
+
+describe('nativeTokenFetch', () => {
+  it('turns the native answer into the Response the token client reads', async () => {
+    const native = vi.fn(async () => ({ status: 400, body: '{"error":"invalid_grant"}' }));
+    const response = await nativeTokenFetch(native as never)(TOKEN_ENDPOINT, { method: 'POST', body: 'grant_type=authorization_code' });
+
+    expect(native).toHaveBeenCalledWith('portal_token_request_command', { endpoint: TOKEN_ENDPOINT, body: 'grant_type=authorization_code' });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'invalid_grant' });
+  });
+
+  it('rejects an answer with no usable status, as a network failure would', async () => {
+    const native = vi.fn(async () => ({ status: 0, body: '' }));
+    await expect(nativeTokenFetch(native as never)(TOKEN_ENDPOINT, { body: 'x' })).rejects.toThrow();
+  });
+
+  it('rejects at once when the sign-in was already cancelled', async () => {
+    const native = vi.fn(async () => ({ status: 200, body: '{}' }));
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(nativeTokenFetch(native as never)(TOKEN_ENDPOINT, { body: 'x', signal: controller.signal })).rejects.toBeDefined();
+    expect(native).not.toHaveBeenCalled();
   });
 });

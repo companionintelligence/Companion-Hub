@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-portal-token-request"
+description = """
+The desktop Portal sign-in's token request (`portal_token_request_command`, src/portal_token.rs):
+one POST of an OAuth token grant to this desktop's own Portal token endpoint. Sent natively
+because Portal answers CORS for its own UI only, so the WebView could never read the reply.
+Granted to the Hub's own origins only (capabilities/ci-auth.json), like the keychain.
+"""
+commands.allow = ["portal_token_request_command"]
