@@ -179,8 +179,10 @@ fn platform_is_apple_silicon() -> bool {
 const OMLX_PORT: u16 = 8000;
 const OMLX_ENDPOINT: &str = "http://host.docker.internal:8000";
 const OMLX_TAP_URL: &str = "https://github.com/jundot/omlx";
-const OMLX_NO_HOMEBREW: &str = "Homebrew isn't installed on this Mac, so the Hub can't install oMLX. \
+const OMLX_NO_HOMEBREW: &str = "The Hub can't find Homebrew on this Mac, so it can't install oMLX. \
 Install Homebrew from https://brew.sh and try again, or install the oMLX app from https://github.com/jundot/omlx/releases.";
+/// The CLI inside the oMLX app. `omlx start` through it opens the app and starts its server.
+const OMLX_APP_CLI: &str = "/Applications/oMLX.app/Contents/MacOS/omlx-cli";
 
 /// Homebrew's bin directories: Apple Silicon first, then Intel. A Mac app opened from Finder or
 /// the Dock gets PATH `/usr/bin:/bin:/usr/sbin:/sbin`, which has neither.
@@ -202,13 +204,22 @@ fn install_and_start_omlx(data_dir: &Path) -> InferenceRunnerResult {
     let brew = find_executable("brew", inherited_path.as_deref(), &homebrew_dirs);
     // `omlx start` on a Homebrew install runs `brew services start omlx` and finds brew on its own
     // PATH, so every child gets Homebrew's directories, not only the commands started here.
-    let child_path = homebrew_child_path(
-        brew.as_deref().and_then(Path::parent),
-        &homebrew_dirs,
-        inherited_path.as_deref(),
-    );
+    let brew_dir = brew.as_deref().and_then(Path::parent);
+    let child_path = homebrew_child_path(brew_dir, &homebrew_dirs, inherited_path.as_deref());
+    // A Finder launch has neither the app's ~/.omlx/bin nor an unlinked keg on PATH. Without
+    // these the Hub would build a second copy with Homebrew, or ask for the app it already has.
+    let omlx_fallbacks =
+        omlx_fallback_commands(brew_dir, &homebrew_dirs, dirs::home_dir().as_deref());
+    let find_omlx = || {
+        find_executable("omlx", Some(&child_path), &[]).or_else(|| {
+            omlx_fallbacks
+                .iter()
+                .find(|candidate| is_executable_file(candidate))
+                .cloned()
+        })
+    };
 
-    let (omlx, installed_now) = match find_executable("omlx", Some(&child_path), &[]) {
+    let (omlx, installed_now) = match find_omlx() {
         Some(omlx) => {
             append_runner_log(
                 data_dir,
@@ -227,7 +238,7 @@ fn install_and_start_omlx(data_dir: &Path) -> InferenceRunnerResult {
             if let Err(error) = install_omlx_with_homebrew(data_dir, &brew, &child_path) {
                 return failed("omlx", error);
             }
-            match find_executable("omlx", Some(&child_path), &[]) {
+            match find_omlx() {
                 Some(omlx) => (omlx, true),
                 None => return failed(
                     "omlx",
@@ -290,8 +301,8 @@ fn install_omlx_with_homebrew(data_dir: &Path, brew: &Path, path: &OsStr) -> Res
     )
 }
 
-/// Run one setup command with `path` as its PATH. Its output goes to the runner log, and a
-/// failure says which command failed and why, in the command's own last words.
+/// Run one setup command with `path` as its PATH. Its output goes to the runner log. A failure
+/// says which command failed and why, in the command's own last words.
 fn run_with_path(
     data_dir: &Path,
     runner: &str,
@@ -300,37 +311,80 @@ fn run_with_path(
     path: &OsStr,
     label: &str,
 ) -> Result<(), String> {
-    append_runner_log(
-        data_dir,
-        runner,
-        &format!("running {} {}", executable.display(), args.join(" ")),
-    );
-    let output = Command::new(executable)
-        .args(args)
-        .env("PATH", path)
-        .stdin(Stdio::null())
-        .output()
+    let output = run_logged(data_dir, runner, executable, args, Some(path))
         .map_err(|error| format!("{label} could not run: {error}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format_command_output(&stdout, &stderr);
-    if !combined.is_empty() {
-        append_runner_log(data_dir, runner, &combined);
-    }
     if output.status.success() {
         Ok(())
     } else {
         Err(command_failure_detail(
             label,
             &output.status.to_string(),
-            &stdout,
-            &stderr,
+            &output.stdout,
+            &output.stderr,
         ))
     }
 }
 
+struct LoggedOutput {
+    status: std::process::ExitStatus,
+    stdout: String,
+    stderr: String,
+    combined: String,
+}
+
+/// Run a setup command, with `path` as its PATH when one is given, and copy the command line and
+/// its output to the runner log.
+fn run_logged(
+    data_dir: &Path,
+    runner: &str,
+    executable: &Path,
+    args: &[&str],
+    path: Option<&OsStr>,
+) -> std::io::Result<LoggedOutput> {
+    append_runner_log(
+        data_dir,
+        runner,
+        &format!("running {} {}", executable.display(), args.join(" ")),
+    );
+    let mut command = Command::new(executable);
+    command.args(args);
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    let output = command.output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let combined = format_command_output(&stdout, &stderr);
+    if !combined.is_empty() {
+        append_runner_log(data_dir, runner, &combined);
+    }
+    Ok(LoggedOutput {
+        status: output.status,
+        stdout,
+        stderr,
+        combined,
+    })
+}
+
 fn homebrew_bin_dirs() -> Vec<PathBuf> {
     HOMEBREW_BIN_DIRS.iter().map(PathBuf::from).collect()
+}
+
+/// Where an `omlx` command can be when PATH has none: an installed Homebrew keg that isn't
+/// linked, then the oMLX app's CLI (the shim it puts in ~/.omlx/bin, else the one in its bundle).
+fn omlx_fallback_commands(
+    brew_dir: Option<&Path>,
+    homebrew_dirs: &[PathBuf],
+    home: Option<&Path>,
+) -> Vec<PathBuf> {
+    brew_dir
+        .into_iter()
+        .chain(homebrew_dirs.iter().map(PathBuf::as_path))
+        .filter_map(Path::parent)
+        .map(|prefix| prefix.join("opt/omlx/bin/omlx"))
+        .chain(home.map(|home| home.join(".omlx/bin/omlx")))
+        .chain([PathBuf::from(OMLX_APP_CLI)])
+        .collect()
 }
 
 /// `name` in the directories of `path_var`, in order, then in `fallback_dirs`.
@@ -700,7 +754,7 @@ fn command_on_path(binary: &str) -> Option<PathBuf> {
     // Keep the native installer usable in that launch mode without changing the
     // user's shell configuration.
     #[cfg(unix)]
-    for directory in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
+    for directory in HOMEBREW_BIN_DIRS.iter().chain(&["/usr/bin", "/bin"]) {
         let candidate = Path::new(directory).join(binary);
         if candidate.is_file() {
             return Some(candidate);
@@ -1311,27 +1365,15 @@ fn run_command(
     executable: &Path,
     args: &[String],
 ) -> Result<String, String> {
-    append_runner_log(
-        data_dir,
-        runner,
-        &format!("running {} {}", executable.display(), args.join(" ")),
-    );
-    let output = Command::new(executable)
-        .args(args)
-        .output()
+    let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+    let LoggedOutput {
+        status, combined, ..
+    } = run_logged(data_dir, runner, executable, &args, None)
         .map_err(|error| format!("Could not run {}: {error}", executable.display()))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format_command_output(&stdout, &stderr);
-    append_runner_log(data_dir, runner, &combined);
-    if output.status.success() {
+    if status.success() {
         Ok(combined)
     } else if combined.is_empty() {
-        Err(format!(
-            "{} exited with {}.",
-            executable.display(),
-            output.status
-        ))
+        Err(format!("{} exited with {status}.", executable.display()))
     } else {
         Err(format!("{} failed: {}", executable.display(), combined))
     }
@@ -1675,6 +1717,26 @@ mod tests {
         assert_eq!(
             homebrew_child_path(None, &homebrew, None),
             OsString::from("/opt/homebrew/bin:/usr/local/bin")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn omlx_fallbacks_cover_unlinked_kegs_then_the_app_cli() {
+        assert_eq!(
+            omlx_fallback_commands(
+                Some(Path::new("/Users/me/brew/bin")),
+                &homebrew_bin_dirs(),
+                Some(Path::new("/Users/me"))
+            ),
+            [
+                "/Users/me/brew/opt/omlx/bin/omlx",
+                "/opt/homebrew/opt/omlx/bin/omlx",
+                "/usr/local/opt/omlx/bin/omlx",
+                "/Users/me/.omlx/bin/omlx",
+                OMLX_APP_CLI,
+            ]
+            .map(PathBuf::from)
         );
     }
 
