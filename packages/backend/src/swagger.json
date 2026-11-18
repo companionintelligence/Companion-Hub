@@ -528,7 +528,7 @@
             "description": "Invalid callback data"
           },
           "403": {
-            "description": "Not sent from this Hub's own machine, or the Hub is already registered"
+            "description": "No host-local key, setup code or Hub manager, or the Hub is already registered"
           }
         },
         "summary": "Handle registration callback from CI Cloud (deprecated GET form — use POST)",
@@ -7045,10 +7045,22 @@
     },
     "/api/memory-connect/start": {
       "get": {
-        "operationId": "start",
+        "operationId": "startNavigation",
         "parameters": [],
         "responses": {
           "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      },
+      "post": {
+        "operationId": "start",
+        "parameters": [],
+        "responses": {
+          "201": {
             "description": ""
           }
         },
@@ -7059,10 +7071,22 @@
     },
     "/api/memory-connect/callback": {
       "get": {
-        "operationId": "callback",
+        "operationId": "callbackNavigation",
         "parameters": [],
         "responses": {
           "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      },
+      "post": {
+        "operationId": "callback",
+        "parameters": [],
+        "responses": {
+          "201": {
             "description": ""
           }
         },
@@ -9164,6 +9188,9 @@
           },
           "requiresEmailVerification": {
             "type": "boolean"
+          },
+          "sessionId": {
+            "type": "string"
           }
         },
         "required": [

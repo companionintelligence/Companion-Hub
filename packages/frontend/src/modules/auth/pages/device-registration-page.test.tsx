@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@/tests/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RegistrationStatus } from '@/lib/registration-status';
+import { getRegistrationSetupCode, setRegistrationSetupCode } from '@/lib/registration-api';
 import DeviceRegistrationPage from './device-registration-page';
 
 const {
@@ -44,7 +45,15 @@ vi.mock('react-router', async () => {
   };
 });
 
-vi.mock('@/lib/registration-api', () => ({
+// The setup-code helpers are the real ones: they only hold the code and read the address bar.
+vi.mock('@/lib/registration-api', async (importOriginal) => ({
+  ...(({ adoptSetupCodeFromDesktop, adoptSetupCodeFromUrl, getRegistrationSetupCode, setRegistrationSetupCode, SETUP_CODE_REQUIRED }) => ({
+    adoptSetupCodeFromDesktop,
+    adoptSetupCodeFromUrl,
+    getRegistrationSetupCode,
+    setRegistrationSetupCode,
+    SETUP_CODE_REQUIRED,
+  }))(await importOriginal<typeof import('@/lib/registration-api')>()),
   fetchRegistrationStatusResult,
   fetchDeviceRegistrationInfoResult,
   fetchRegistrationStateDrift,
@@ -435,6 +444,133 @@ describe('DeviceRegistrationPage', () => {
       screen.getByText('Provisioning your domain and secure connection. DNS and tunnel setup can take a few minutes. Please wait on this screen.'),
     ).toBeInTheDocument();
     expect(screen.queryByText(/Your pairing code worked/)).not.toBeInTheDocument();
+  });
+
+  describe('setup code', () => {
+    afterEach(() => {
+      setRegistrationSetupCode(null);
+      window.history.replaceState(null, '', '/');
+    });
+
+    it('takes the code from the link `cihub setup-code` prints and drops it from the address bar', async () => {
+      window.history.replaceState(null, '', '/device-registration?setup=ABCD-EFGH&x=1');
+
+      render(<DeviceRegistrationPage />);
+      await flushAsyncWork();
+
+      expect(getRegistrationSetupCode()).toBe('ABCD-EFGH');
+      expect(window.location.search).toBe('?x=1');
+    });
+
+    it('asks for the code when the Hub withholds the Portal link, and when it refuses a pairing for want of one', async () => {
+      fetchDeviceRegistrationInfoResult.mockResolvedValue({
+        ok: true,
+        status: 200,
+        data: { device_id: 'device-123', ci_cloud_url: 'https://portal.example', registration_url: null, setup_code_required: true },
+      });
+      pairWithCode.mockResolvedValue({ ok: true, status: 200, data: { success: false, code: 'SETUP_CODE_REQUIRED', message: 'no' } });
+
+      render(<DeviceRegistrationPage />);
+      await flushAsyncWork();
+
+      const field = screen.getByLabelText(/setup code/i);
+      const pairingInput = screen.getByLabelText('Enter pairing code:');
+      fireEvent.change(pairingInput, { target: { value: 'ABC123' } });
+      // A pairing could only be refused while the Hub is asking, so neither the button nor Enter sends one.
+      expect(screen.getByRole('button', { name: 'Register' })).toBeDisabled();
+      fireEvent.keyDown(pairingInput, { key: 'Enter' });
+      await flushAsyncWork();
+      expect(pairWithCode).not.toHaveBeenCalled();
+
+      // The Hub accepts the right code: it stops asking and hands over the link.
+      fetchDeviceRegistrationInfoResult.mockResolvedValue({
+        ok: true,
+        status: 200,
+        data: {
+          device_id: 'device-123',
+          ci_cloud_url: 'https://portal.example',
+          registration_url: 'https://portal.example/device/register',
+          setup_code_required: false,
+        },
+      });
+      const calls = fetchDeviceRegistrationInfoResult.mock.calls.length;
+      fireEvent.change(field, { target: { value: 'abcd-efgh' } });
+      expect(getRegistrationSetupCode()).toBe('ABCD-EFGH');
+      // A complete code asks the Hub again for the Portal link it withheld.
+      await waitFor(() => expect(fetchDeviceRegistrationInfoResult.mock.calls.length).toBeGreaterThan(calls));
+      // The field stays and says the code was accepted, rather than vanishing.
+      await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/setup code accepted/i));
+      expect(screen.getByLabelText(/setup code/i)).toHaveValue('ABCD-EFGH');
+      expect(screen.getByRole('button', { name: 'Register' })).toBeEnabled();
+
+      // Editing it takes the acceptance back until the Hub has seen the new code.
+      fireEvent.change(field, { target: { value: 'ABCD-EF' } });
+      expect(screen.queryByText(/setup code accepted/i)).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Register' })).toBeDisabled();
+    });
+
+    it('asks for the code at its own field when a Hub that had not asked refuses a pairing for want of one', async () => {
+      pairWithCode.mockResolvedValue({ ok: true, status: 200, data: { success: false, code: 'SETUP_CODE_REQUIRED', message: 'no' } });
+
+      render(<DeviceRegistrationPage />);
+      await flushAsyncWork();
+      expect(screen.queryByLabelText(/setup code/i)).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText('Enter pairing code:'), { target: { value: 'ABC123' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/setup code first/i));
+
+      // Marked at the setup code, which is what is wrong, not at the pairing code.
+      const field = screen.getByLabelText(/setup code/i);
+      expect(field).toHaveAttribute('aria-invalid', 'true');
+      expect(field).toHaveAttribute('aria-describedby', 'setup-code-error');
+      expect(screen.getByLabelText('Enter pairing code:')).not.toHaveAttribute('aria-invalid');
+      expect(screen.getByRole('button', { name: 'Register' })).toBeDisabled();
+    });
+
+    it('stops sending a code the Hub turned down, and never sends a half-typed one', async () => {
+      // The Hub keeps asking: the code typed is wrong.
+      fetchDeviceRegistrationInfoResult.mockResolvedValue({
+        ok: true,
+        status: 200,
+        data: { device_id: 'device-123', ci_cloud_url: 'https://portal.example', registration_url: null, setup_code_required: true },
+      });
+
+      render(<DeviceRegistrationPage />);
+      await flushAsyncWork();
+      const field = screen.getByLabelText(/setup code/i);
+
+      fireEvent.change(field, { target: { value: 'WXYZ' } });
+      expect(getRegistrationSetupCode()).toBeNull();
+
+      fireEvent.change(field, { target: { value: 'WXYZ-0000' } });
+      // Turned down: forgotten, so the page's checks every few seconds don't spend the lockout.
+      await waitFor(() => expect(getRegistrationSetupCode()).toBeNull());
+      expect(screen.getByRole('alert')).toHaveTextContent(/not right/i);
+      expect(field).toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByLabelText('Enter pairing code:')).not.toHaveAttribute('aria-invalid');
+      // Still in the field, for the person to correct.
+      expect(field).toHaveValue('WXYZ-0000');
+    });
+
+    it('never shows the field when the code came with the link and the Hub accepted it', async () => {
+      window.history.replaceState(null, '', '/device-registration?setup=ABCD-EFGH');
+      fetchDeviceRegistrationInfoResult.mockResolvedValue({
+        ok: true,
+        status: 200,
+        data: {
+          device_id: 'device-123',
+          ci_cloud_url: 'https://portal.example',
+          registration_url: 'https://portal.example/x',
+          setup_code_required: false,
+        },
+      });
+
+      render(<DeviceRegistrationPage />);
+      await flushAsyncWork();
+
+      expect(screen.queryByLabelText(/setup code/i)).not.toBeInTheDocument();
+    });
   });
 
   it('submits pairing without immediate navigation when status remains unregistered', async () => {
