@@ -5,16 +5,51 @@
 #   R2_BUCKET          — e.g. dl-prod or dl-dev
 #   DOWNLOAD_BASE_URL  — public HTTPS origin, e.g. https://dl.ci.computer
 #   RELEASE_TAG        — e.g. v0.2.34
+#   MANIFEST_DIR       — manifest.json and manifest.json.sig from the sign-manifest job
 #   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID — wrangler auth
+#
+# The manifest is built and signed in another job, which has the signing key and not this token
+# (build-desktop-manifest.mjs, sign-desktop-manifest.mjs). It is uploaded here byte for byte: the
+# desktop app refuses a manifest whose signature does not match.
 set -euo pipefail
 
 : "${R2_BUCKET:?R2_BUCKET is required}"
 : "${DOWNLOAD_BASE_URL:?DOWNLOAD_BASE_URL is required}"
 : "${RELEASE_TAG:?RELEASE_TAG is required}"
+: "${MANIFEST_DIR:?MANIFEST_DIR is required}"
+MANIFEST="${MANIFEST_DIR}/manifest.json"
+[ -s "${MANIFEST}" ] || { echo "::error::${MANIFEST} is missing"; exit 1; }
+[ -s "${MANIFEST}.sig" ] || { echo "::error::${MANIFEST}.sig is missing: desktop apps refuse an unsigned manifest"; exit 1; }
+
+# The signed manifest must describe these very files, or every desktop would refuse the download.
+node - "${MANIFEST}" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const manifest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const local = new Map();
+const walk = (dir) => {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) walk(full);
+    else if (/\.(dmg|msi|exe|deb|rpm)$/.test(entry.name)) {
+      local.set(crypto.createHash('sha256').update(fs.readFileSync(full)).digest('hex'), fs.statSync(full).size);
+    }
+  }
+};
+walk('artifacts');
+for (const [platform, formats] of Object.entries(manifest.platforms || {})) {
+  for (const [format, { sha256, size }] of Object.entries(formats)) {
+    if (local.get(sha256) !== size) {
+      console.error(`::error::manifest.json names a ${platform} ${format} (${sha256}) that is not among the artifacts being uploaded`);
+      process.exit(1);
+    }
+  }
+}
+NODE
 
 DOWNLOAD_BASE_URL="${DOWNLOAD_BASE_URL%/}"
 VERSION="${RELEASE_TAG}"
-SEMVER="${VERSION#v}"
 DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 upload() {
@@ -78,68 +113,10 @@ for f in artifacts/release-aarch64-unknown-linux-gnu/*.rpm; do
   [ -f "$f" ] && upload "${VERSION}/linux/rpm/arm/$(basename "$f")" "$f"
 done
 
-export VERSION SEMVER DATE DOWNLOAD_BASE_URL
-node <<'NODE'
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
 
-const { VERSION, SEMVER, DATE, DOWNLOAD_BASE_URL } = process.env;
-const manifest = {
-  version: SEMVER,
-  date: DATE,
-  platforms: {},
-};
-
-const mappings = [
-  ['windows-x86_64', 'release-x86_64-pc-windows-msvc', { msi: '.msi', exe: '-setup.exe' }],
-  ['windows-aarch64', 'release-aarch64-pc-windows-msvc', { msi: '.msi', exe: '-setup.exe' }],
-  ['darwin-aarch64', 'release-aarch64-apple-darwin', { dmg: '.dmg' }],
-  ['darwin-x86_64', 'release-x86_64-apple-darwin', { dmg: '.dmg' }],
-  ['linux-x86_64', 'release-x86_64-unknown-linux-gnu', { deb: '.deb', rpm: '.rpm' }],
-  ['linux-aarch64', 'release-aarch64-unknown-linux-gnu', { deb: '.deb', rpm: '.rpm' }],
-];
-
-for (const [platform, artifactDir, formats] of mappings) {
-  const dir = path.join('artifacts', artifactDir);
-  if (!fs.existsSync(dir)) continue;
-  const files = fs.readdirSync(dir);
-  const platformData = {};
-  for (const [fmt, ext] of Object.entries(formats)) {
-    const file = files.find((f) => f.endsWith(ext));
-    if (!file) continue;
-    const filePath = path.join(dir, file);
-    const stat = fs.statSync(filePath);
-    const sha256 = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
-    // Windows points at the space-free copy upload_windows put up (see there for why).
-    const windows = platform.startsWith('windows');
-    const encodedFile = encodeURIComponent(windows ? file.replace(/ /g, '.') : file);
-    if (windows && encodedFile.includes('%')) {
-      throw new Error(`${file}: a % in a Windows installer URL stops the desktop app's updater from running it`);
-    }
-    let r2Path;
-    if (platform === 'windows-aarch64') r2Path = 'windows/arm64';
-    else if (platform.startsWith('windows')) r2Path = 'windows/x64';
-    else if (platform === 'darwin-aarch64') r2Path = 'macos/arm';
-    else if (platform === 'darwin-x86_64') r2Path = 'macos/intel';
-    else if (platform === 'linux-x86_64') r2Path = `linux/${fmt}/x64`;
-    else r2Path = `linux/${fmt}/arm`;
-    platformData[fmt] = {
-      url: `${DOWNLOAD_BASE_URL}/${VERSION}/${r2Path}/${encodedFile}`,
-      size: stat.size,
-      sha256,
-    };
-  }
-  if (Object.keys(platformData).length > 0) {
-    manifest.platforms[platform] = platformData;
-  }
-}
-
-fs.writeFileSync('/tmp/manifest.json', JSON.stringify(manifest, null, 2));
-console.log(JSON.stringify(manifest, null, 2));
-NODE
-
-wrangler r2 object put --remote "${R2_BUCKET}/${VERSION}/manifest.json" --file /tmp/manifest.json
+# The signature first: a client that finds the manifest must find its signature too.
+upload "${VERSION}/manifest.json.sig" "${MANIFEST}.sig"
+upload "${VERSION}/manifest.json" "${MANIFEST}"
 
 # On production, the root latest.json is what stable clients follow, so it moves to this version only
 # when the manifest has every key in REQUIRED_PLATFORMS. A partial run (for example a prerelease
@@ -148,10 +125,10 @@ wrangler r2 object put --remote "${R2_BUCKET}/${VERSION}/manifest.json" --file /
 REQUIRED_PLATFORMS=(darwin-aarch64 darwin-x86_64 windows-x86_64 linux-x86_64)
 missing_platforms=""
 if [ "${R2_BUCKET}" = "dl-prod" ]; then
-  missing_platforms="$(node -e '
+  missing_platforms="$(MANIFEST="${MANIFEST}" node -e '
     const fs = require("fs");
     const required = process.argv.slice(1);
-    const { platforms = {} } = JSON.parse(fs.readFileSync("/tmp/manifest.json", "utf8"));
+    const { platforms = {} } = JSON.parse(fs.readFileSync(process.env.MANIFEST, "utf8"));
     console.log(required.filter((p) => !platforms[p]).join(" "));
   ' "${REQUIRED_PLATFORMS[@]}")"
 fi
