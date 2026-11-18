@@ -524,16 +524,21 @@ export class McpBridgeService implements OnModuleDestroy {
     return JSON.stringify(a) === JSON.stringify(b);
   }
 
-  /** Read an auth token from app.env first, then Hub process env. */
+  /**
+   * Read an auth token from the app's own app.env, and nowhere else.
+   *
+   * `token_env` is a manifest field any store can publish, and the bridge sends the value to the URL
+   * the same manifest names. It used to fall back to the Hub's own environment, so
+   * `"token_env": "JWT_SECRET"` mailed the Hub's signing key to the app. app.env holds only what the
+   * app already has (its settings plus the allowlisted Hub keys), so reading it gives nothing away.
+   */
   private async resolveAuthToken(appUrn: AppUrn, tokenEnv: string): Promise<string | undefined> {
     try {
       const appEnv = await this.appFilesManager.getAppEnv(appUrn);
-      const fromApp = this.envUtils.envStringToMap(appEnv.content ?? '').get(tokenEnv);
-      if (fromApp) return fromApp;
+      return this.envUtils.envStringToMap(appEnv.content ?? '').get(tokenEnv) || undefined;
     } catch {
-      // fall through
+      return undefined;
     }
-    return process.env[tokenEnv];
   }
 
   /**
