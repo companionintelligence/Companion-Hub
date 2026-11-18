@@ -76,6 +76,16 @@ const SLOW_POLL_INTERVAL_MS = 5000;
 const SLOW_POLL_AFTER_MS = 120_000;
 /** An app still installing after this long reads "Not yet confirmed". The step keeps asking about it. */
 const APP_CONFIRM_WINDOW_MS = 120_000;
+/**
+ * Statuses an app rests in that are not on the way to Running. Past the confirm window an app in one of them, or one
+ * the Hub does not list, is no longer followed: it would hold the step open for good.
+ */
+const RESTING_APP_STATUSES = new Set(['stopped', 'stopping', 'missing', 'uninstalling', 'uninstalled']);
+/**
+ * A chosen model that has not started downloading after this long, while nothing else downloads either, is marked failed.
+ * The Hub tracks neither a pull it refused once the model's turn came nor one it lost in a restart.
+ */
+const DOWNLOAD_START_WINDOW_MS = 60_000;
 /** A status request that hangs must not stop the polling, so the step stops waiting for it after this long. */
 const REQUEST_TIMEOUT_MS = 15_000;
 
@@ -105,7 +115,7 @@ interface PreferenceModels {
 const samePreferences = (a: PreferenceModels, b: PreferenceModels) =>
   a.model === b.model && a.embeddingModel === b.embeddingModel && a.visionModel === b.visionModel;
 
-const isOnDisk = (model: TrackedModel) => model.state === 'pulled' || model.state === 'loaded' || model.state === 'pinned';
+type InstalledStatus = 'running' | 'installing' | 'install_failed' | 'resting';
 
 type AiPhaseStatus = 'pending' | 'installing-runners' | 'configuring-cloud' | 'pulling-models' | 'pinning-models' | 'done' | 'skipped';
 
@@ -339,13 +349,14 @@ export const InstallStep = ({
       const finalStates: AppInstallState[] = apps.map((app) => ({ app, status: 'queued' as AppInstallStatus }));
       const stateAt = (index: number, app: OnboardingApp): AppInstallState => finalStates[index] ?? { app, status: 'queued' };
 
-      const fetchInstalledStatusMap = async (): Promise<Map<string, 'running' | 'installing' | 'install_failed'>> => {
+      // Null when the Hub did not answer, which says nothing about any app.
+      const readInstalledStatuses = async (): Promise<Map<string, InstalledStatus> | null> => {
         try {
           const installedResult = await withTimeout(sdkResult(getInstalledApps()), REQUEST_TIMEOUT_MS);
-          if (!installedResult.ok) return new Map();
+          if (!installedResult.ok) return null;
           const data = (installedResult.data ?? {}) as { installed?: Array<{ info?: { urn?: string }; app?: { status?: string } }> };
           const installed = data.installed || [];
-          const statusMap = new Map<string, 'running' | 'installing' | 'install_failed'>();
+          const statusMap = new Map<string, InstalledStatus>();
           for (const item of installed) {
             const urn = item.info?.urn;
             if (!urn) continue;
@@ -354,17 +365,19 @@ export const InstallStep = ({
               statusMap.set(urn, 'running');
             } else if (appStatus === 'install_failed') {
               statusMap.set(urn, 'install_failed');
+            } else if (RESTING_APP_STATUSES.has(appStatus)) {
+              statusMap.set(urn, 'resting');
             } else {
               statusMap.set(urn, 'installing');
             }
           }
           return statusMap;
         } catch {
-          return new Map();
+          return null;
         }
       };
 
-      const alreadyInstalled = await fetchInstalledStatusMap();
+      const alreadyInstalled = (await readInstalledStatuses()) ?? new Map<string, InstalledStatus>();
 
       const enqueueApp = async (index: number, app: OnboardingApp) => {
         if (!app.urn) {
@@ -480,21 +493,25 @@ export const InstallStep = ({
          * ⚠ A MODEL THE ENGINE HAS IS PINNABLE WHETHER OR NOT THIS HUB TRACKS IT. The Hub tracks a
          * model once it pulls or loads one, in memory. After a reset, a reinstall or a restart that
          * list is empty while every model is still in Ollama, so pinning only tracked models pinned
-         * nothing. The row showed its check mark anyway. `installedCatalogIds` is the engine's
-         * own list from when the wizard opened. The Hub's pin loads a model that is on disk
-         * but untracked (`InferenceRouterService.pinTrackedModel`).
+         * nothing. The row showed its check mark anyway. `availablePreferenceModelIds` starts as the
+         * engine's own list from when the wizard opened, and each download that lands is added to it.
+         * The Hub's pin loads a model that is on disk but untracked (`InferenceRouterService.pinTrackedModel`).
          */
-        const pinWhatIsOnDisk = (tracked: TrackedModel[]) => {
-          const onDisk = new Set([...installedCatalogIds, ...tracked.filter(isOnDisk).map((m) => m.catalogId)]);
+        const pinLanded = () => {
           for (const modelId of pinSelected) {
-            if (onDisk.has(modelId)) pin(modelId);
+            if (availablePreferenceModelIds.has(modelId)) pin(modelId);
           }
         };
 
-        // A failed save is not tried again with the same models, so a Hub that refuses it is not asked every second.
+        // Mid-way, a failed save is not tried again with the same models, so a Hub that refuses it is not asked
+        // every second. The final save is skipped only when the last try stored exactly these models: one that
+        // failed is asked again, and one that timed out may have landed after all.
         let lastTried = savedModels;
-        const savePreferences = async (next: PreferenceModels) => {
-          if (!savedModels || samePreferences(next, savedModels) || (lastTried && samePreferences(next, lastTried))) return;
+        const savePreferences = async (next: PreferenceModels, final = false) => {
+          if (!savedModels) return;
+          const isSaved = samePreferences(next, savedModels);
+          const wasTried = lastTried !== null && samePreferences(next, lastTried);
+          if (final ? isSaved && wasTried : isSaved || wasTried) return;
           lastTried = next;
           try {
             // Only the defaults: leaving the URLs and keys out keeps what the first save stored.
@@ -505,17 +522,43 @@ export const InstallStep = ({
           }
         };
 
-        type Settled = { tracked: TrackedModel[]; pulledIds: Set<string> };
-        const takeRound = async (tracked: TrackedModel[]): Promise<Settled | null> => {
+        // Since when no chosen model has been on its way while one has yet to start. Null while something downloads.
+        let idleSince: number | null = null;
+
+        // Returns the tracked list once every download has landed or failed, otherwise null.
+        const takeRound = async (tracked: TrackedModel[]): Promise<TrackedModel[] | null> => {
           const parsed = parsePullProgress(modelsToPull, installedCatalogIds, tracked);
-          const failedNow: Record<string, string> = { ...parsed.errorsById };
-          // A download the Hub refused to start is never tracked. This step heard the refusal when it
-          // asked after saving the preferences, or the onboarding page heard it.
+          const stateOf = (id: string) => tracked.find((m) => m.catalogId === id)?.state;
+          const arriving = (id: string) => stateOf(id) === 'pulling' || stateOf(id) === 'loading';
+          const landed = (id: string) => availablePreferenceModelIds.has(id) || parsed.pulledIds.has(id);
+          const failedNow: Record<string, string> = {};
           for (const id of modelsToPull) {
-            const refusal = pullRefusals[id] ?? pullErrorsRef.current?.[id];
-            if (refusal && !failedNow[id] && !tracked.some((m) => m.catalogId === id)) failedNow[id] = refusal;
+            // A model that landed has finished its download. An error after that is its pin failing to load it.
+            if (landed(id)) continue;
+            // A download the Hub refused to start is never tracked. This step heard the refusal when it
+            // asked after saving the preferences, or the onboarding page heard it.
+            const failure = parsed.errorsById[id] ?? (stateOf(id) ? undefined : (pullRefusals[id] ?? pullErrorsRef.current?.[id]));
+            if (failure) failedNow[id] = failure;
           }
-          const failedBefore = Object.keys(modelErrors).length;
+
+          const notStarted = modelsToPull.filter((id) => !landed(id) && !failedNow[id] && !arriving(id));
+          if (notStarted.length === 0 || tracked.some((m) => m.state === 'pulling')) {
+            idleSince = null;
+          } else if (idleSince === null) {
+            idleSince = Date.now();
+          } else if (Date.now() - idleSince >= DOWNLOAD_START_WINDOW_MS) {
+            for (const id of notStarted) failedNow[id] = t('ONBOARDING_INSTALL_DOWNLOAD_NOT_RUNNING');
+          }
+
+          // A model seen downloading again, after a Hub restart or a retry from Settings, has not failed.
+          let recovered = false;
+          for (const id of Object.keys(modelErrors)) {
+            if (failedNow[id] || !(landed(id) || arriving(id))) continue;
+            delete modelErrors[id];
+            if (!pinsAsked.has(id)) delete pinFailures[id];
+            recovered = true;
+          }
+          const newlyFailed = Object.keys(failedNow).filter((id) => !modelErrors[id]);
           Object.assign(modelProgress, parsed.progressById);
           Object.assign(modelErrors, failedNow);
           const failed = Object.keys(modelErrors).length;
@@ -523,20 +566,18 @@ export const InstallStep = ({
             ...prev,
             modelProgress: { ...modelProgress },
             modelErrors: { ...modelErrors },
-            ...(failed > failedBefore ? { error: t('ONBOARDING_INSTALL_MODEL_DOWNLOADS_FAILED', { count: failed }) } : {}),
+            ...(newlyFailed.length > 0 ? { error: t('ONBOARDING_INSTALL_MODEL_DOWNLOADS_FAILED', { count: failed }) } : {}),
           }));
-          if (failed > failedBefore) {
-            for (const modelId of Object.keys(modelErrors)) {
-              if (!pinsAsked.has(modelId) && !pinFailures[modelId]) pinFailures[modelId] = t('ONBOARDING_PIN_NOT_DOWNLOADED');
-            }
-            publishPins();
+          for (const modelId of newlyFailed) {
+            if (!pinsAsked.has(modelId) && !pinFailures[modelId]) pinFailures[modelId] = t('ONBOARDING_PIN_NOT_DOWNLOADED');
           }
-          pinWhatIsOnDisk(tracked);
+          if (newlyFailed.length > 0 || recovered) publishPins();
           for (const id of parsed.pulledIds) {
             availablePreferenceModelIds.add(id);
           }
+          pinLanded();
 
-          if (modelsToPull.every((id) => parsed.pulledIds.has(id) || failedNow[id])) return { tracked, pulledIds: parsed.pulledIds };
+          if (modelsToPull.every((id) => availablePreferenceModelIds.has(id) || failedNow[id])) return tracked;
 
           /*
            * The Hub pulls one model at a time and tracks the rest only when their turn comes, so the save
@@ -555,12 +596,12 @@ export const InstallStep = ({
         };
 
         setAiPhase((prev) => ({ ...prev, status: modelsToPull.length > 0 ? 'pulling-models' : 'pinning-models' }));
-        pinWhatIsOnDisk([]);
+        pinLanded();
 
         const watchStart = Date.now();
         // The read before the installs is the first round. The next one waits an interval.
         let tracked: TrackedModel[] | null = trackedBeforeInstalls;
-        let settled: Settled | null = null;
+        let settled: TrackedModel[] | null = null;
         while (modelsToPull.length > 0) {
           if (!tracked) {
             try {
@@ -581,14 +622,13 @@ export const InstallStep = ({
         }
 
         // Store what the downloads ended as, which drops a choice whose download failed.
-        if (settled) await savePreferences(preferenceModels(settled.tracked));
+        if (settled) await savePreferences(preferenceModels(settled), true);
 
         setAiPhase((prev) => ({ ...prev, status: 'pinning-models' }));
-        // A chosen model the step never saw land is named, so the row does not check a pin that did not happen.
+        // The loop ends only once every download landed or failed, so a chosen model the step never pinned failed
+        // its download. It is named, so the row does not check a pin that did not happen.
         for (const modelId of pinSelected) {
-          if (!pinsAsked.has(modelId) && !pinFailures[modelId]) {
-            pinFailures[modelId] = modelErrors[modelId] ? t('ONBOARDING_PIN_NOT_DOWNLOADED') : t('ONBOARDING_PIN_STILL_DOWNLOADING');
-          }
+          if (!pinsAsked.has(modelId) && !pinFailures[modelId]) pinFailures[modelId] = t('ONBOARDING_PIN_NOT_DOWNLOADED');
         }
         await pins;
         if (cancelled()) return;
@@ -615,14 +655,17 @@ export const InstallStep = ({
           // ignore
         }
       };
-      const unsettled = (state: AppInstallState) => !!state.app.urn && (state.status === 'installing' || state.status === 'incomplete');
+      // Apps past the confirm window that the Hub lists as resting, or does not list. Nothing more is coming for them.
+      const givenUp = new Set<number>();
+      const unsettled = (state: AppInstallState, index: number) =>
+        !givenUp.has(index) && !!state.app.urn && (state.status === 'installing' || state.status === 'incomplete');
 
       // Followed for as long as the step is open. On a slow machine (Docker Desktop on a Mac) an app can
       // outlast the confirm window, and its row still has to turn Running or Failed when the Hub says so.
       const followApps = async () => {
         const followStart = Date.now();
         while (finalStates.some(unsettled)) {
-          const statusMap = await fetchInstalledStatusMap();
+          const statusMap = await readInstalledStatuses();
           if (cancelled()) return;
           const overdue = Date.now() - followStart >= APP_CONFIRM_WINDOW_MS;
           let changed = false;
@@ -630,14 +673,17 @@ export const InstallStep = ({
 
           for (let index = 0; index < finalStates.length; index++) {
             const state = finalStates[index];
-            if (!state?.app.urn || !unsettled(state)) continue;
-            const confirmed = statusMap.get(state.app.urn);
+            if (!state?.app.urn || !unsettled(state, index)) continue;
+            const confirmed = statusMap?.get(state.app.urn);
             if (confirmed === 'running') {
               finalStates[index] = { ...state, status: 'running', error: undefined };
               settledNow = true;
             } else if (confirmed === 'install_failed') {
               finalStates[index] = { ...state, status: 'failed', error: t('ONBOARDING_INSTALL_FAILED_RETRY_MY_APPS') };
               settledNow = true;
+            } else if (overdue && statusMap && (confirmed === undefined || confirmed === 'resting')) {
+              givenUp.add(index);
+              finalStates[index] = { ...state, status: 'incomplete', error: t('ONBOARDING_INSTALL_STARTED_NOT_CONFIRMED') };
             } else if (overdue && state.status === 'installing') {
               finalStates[index] = { ...state, status: 'incomplete', error: t('ONBOARDING_INSTALL_STARTED_NOT_CONFIRMED') };
             } else {

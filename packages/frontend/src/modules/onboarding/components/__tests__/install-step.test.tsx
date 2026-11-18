@@ -1463,5 +1463,98 @@ describe('InstallStep', () => {
       expect(fetchTrackedModels).toHaveBeenCalledTimes(modelReads);
       expect(getInstalledApps).toHaveBeenCalledTimes(appReads);
     });
+
+    it('fails a download the Hub never started once nothing has downloaded for a minute', async () => {
+      vi.useFakeTimers();
+      // The Hub refused it when its turn came, so it was never tracked, and the page heard only "queued".
+      let gemma12b: Record<string, unknown> = { catalogId: 'gemma4-12b', state: 'pulling', pullProgress: 50 };
+      fetchTrackedModels.mockImplementation(async () => [gemma12b]);
+
+      render(<InstallStep apps={[]} onComplete={onComplete} aiSetupConfig={modelConfig(['gemma4-12b', 'gemma4-26b'], [])} />);
+
+      // Queued behind a running download, it is still on its way.
+      await advance(90_000);
+      expect(modelRow('gemma4-26b')).toHaveTextContent('Downloading...');
+
+      gemma12b = { catalogId: 'gemma4-12b', state: 'pulled' };
+      await advance(30_000);
+      expect(modelRow('gemma4-26b')).toHaveTextContent('Downloading...');
+      expect(within(pinRow()).getByText('●')).toBeInTheDocument();
+
+      await advance(40_000);
+      expect(modelRow('gemma4-26b')).toHaveTextContent('Failed');
+      expect(screen.getByTestId('pin-models-failures')).toHaveTextContent('gemma4-26b is not pinned: its download failed.');
+      expect(pinInferenceModel).toHaveBeenCalledWith('gemma4-12b');
+      expect(screen.getByTestId('install-progress-text')).toHaveTextContent('AI setup complete.');
+    });
+
+    it("does not read a landed model's failed load as a failed download", async () => {
+      vi.useFakeTimers();
+      let gemma12b: Record<string, unknown> = { catalogId: 'gemma4-12b', state: 'pulled' };
+      const gemma26b = { catalogId: 'gemma4-26b', state: 'pulling', pullProgress: 20 };
+      fetchTrackedModels.mockImplementation(async () => [gemma12b, gemma26b]);
+      pinInferenceModel.mockImplementation(async (modelId: string) => {
+        if (modelId === 'gemma4-12b') {
+          gemma12b = { catalogId: 'gemma4-12b', state: 'error', errorMessage: 'out of memory' };
+          throw new Error('out of memory');
+        }
+      });
+
+      render(<InstallStep apps={[]} onComplete={onComplete} aiSetupConfig={modelConfig(['gemma4-12b', 'gemma4-26b'], [])} />);
+      await advance(5_000);
+
+      expect(modelRow('gemma4-12b')).toHaveTextContent('Downloaded');
+      expect(screen.queryByTestId('ai-phase-warning')).not.toBeInTheDocument();
+      expect(screen.getByTestId('pin-models-failures')).toHaveTextContent('gemma4-12b is not pinned: out of memory');
+    });
+
+    it('stops following an app the Hub lists as stopped once the confirm window has passed', async () => {
+      vi.useFakeTimers();
+      getInstalledApps.mockResolvedValueOnce(sdkOk({ installed: [] })).mockResolvedValue(hermesIs('stopped'));
+
+      render(<InstallStep apps={[hermes]} onComplete={onComplete} />);
+      await advance(60_000);
+      expect(screen.getByTestId('status-installing')).toBeInTheDocument();
+
+      await advance(70_000);
+      expect(screen.getByTestId('status-incomplete')).toBeInTheDocument();
+      expect(screen.getByText('Installation Complete')).toBeInTheDocument();
+      const reads = getInstalledApps.mock.calls.length;
+      await advance(60_000);
+      expect(getInstalledApps).toHaveBeenCalledTimes(reads);
+    });
+
+    it('saves the settled defaults again after a save mid-way failed', async () => {
+      vi.useFakeTimers();
+      let chat: Record<string, unknown> | null = null;
+      fetchTrackedModels.mockImplementation(async () => [
+        { catalogId: 'nomic-embed-text', state: 'pulling', pullProgress: 50 },
+        ...(chat ? [chat] : []),
+      ]);
+
+      render(
+        <InstallStep
+          apps={[]}
+          onComplete={onComplete}
+          aiSetupConfig={{
+            ...modelConfig(['nomic-embed-text', 'llama3-3-70b'], []),
+            preferredModelId: 'llama3-3-70b',
+          }}
+        />,
+      );
+      await advance(3_000);
+      expect(saveInferencePreferences).toHaveBeenCalledTimes(1);
+
+      saveInferencePreferences.mockRejectedValueOnce(new Error('Hub restarting'));
+      chat = { catalogId: 'llama3-3-70b', state: 'pulling', pullProgress: 5 };
+      await advance(10_000);
+      expect(saveInferencePreferences).toHaveBeenCalledTimes(2);
+
+      chat = { catalogId: 'llama3-3-70b', state: 'pulled' };
+      fetchTrackedModels.mockImplementation(async () => [{ catalogId: 'nomic-embed-text', state: 'pulled' }, chat]);
+      await advance(2_000);
+      expect(saveInferencePreferences).toHaveBeenCalledTimes(3);
+      expect(saveInferencePreferences.mock.calls[2]?.[0]).toEqual(expect.objectContaining({ model: 'llama3-3-70b' }));
+    });
   });
 });
