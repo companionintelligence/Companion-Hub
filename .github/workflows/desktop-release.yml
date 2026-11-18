@@ -223,6 +223,25 @@ jobs:
           sed -i'' -e 's/^version = ".*"/version = "'"$SEMVER"'"/' src-tauri/Cargo.toml
           echo "tauri.conf.json: $(node -e "console.log(JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8')).version)")"
           echo "Cargo.toml: $(grep '^version' src-tauri/Cargo.toml | head -1)"
+      # ── Update signing key ──────────────────────────────────────────
+      # The app installs updates only from a manifest signed by a key it pins
+      # (update_signature.rs). A build with no key for its environment could never
+      # update again, so fail here, before the long compile, not in sign-manifest.
+      - name: Require an update signing key in the app
+        if: env.BUILD_ENABLED
+        shell: bash
+        run: |
+          node --input-type=module -e "
+            import fs from 'node:fs';
+            import { listedKeys } from './.github/scripts/sign-desktop-manifest.mjs';
+            const list = process.argv[1] === 'production' ? 'PRODUCTION_UPDATE_KEYS' : 'DEV_UPDATE_KEYS';
+            const source = fs.readFileSync('packages/desktop/src-tauri/src/update_signature.rs', 'utf8');
+            if (listedKeys(source, list).length === 0) {
+              console.error('::error::' + list + ' in update_signature.rs is empty: this build would refuse every update. See docs/DESKTOP-RELEASE-SIGNING.md.');
+              process.exit(1);
+            }
+          " "${{ inputs.environment }}"
+
       # ── macOS Code Signing ──────────────────────────────────────────
       # A green macOS release must mean a Developer ID signed AND notarized DMG.
       # Fail fast (before building) if either the signing or notarization secrets
@@ -650,8 +669,46 @@ jobs:
             - Linux: WebKitGTK 4.1
             ${{ inputs.environment != 'production' && format('### Dev CDN — https://dl-dev.ci.computer/{0}/', inputs.tag) || '' }}
 
-  upload-r2:
+  # The desktop app installs only what a manifest signed by a key it pins names
+  # (packages/desktop/src-tauri/src/update_signature.rs). This job builds and signs that manifest.
+  # It has the signing key and no R2 token; upload-r2 has the token and no key, so neither one can
+  # put an installer on desktops alone.
+  sign-manifest:
     needs: release
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: artifacts
+          merge-multiple: false
+
+      - name: Build and sign the update manifest
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          DOWNLOAD_BASE_URL: ${{ inputs.environment == 'production' && 'https://dl.ci.computer' || 'https://dl-dev.ci.computer' }}
+          DESKTOP_UPDATE_SIGNING_KEY: ${{ secrets.DESKTOP_UPDATE_SIGNING_KEY }}
+        run: |
+          mkdir -p update-manifest
+          node .github/scripts/build-desktop-manifest.mjs artifacts update-manifest/manifest.json
+          node .github/scripts/sign-desktop-manifest.mjs update-manifest/manifest.json "${{ inputs.environment }}"
+
+      - name: Upload the signed manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-update-manifest
+          path: update-manifest/
+          if-no-files-found: error
+
+  upload-r2:
+    needs: [release, sign-manifest]
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     steps:
@@ -665,6 +722,12 @@ jobs:
           path: artifacts
           merge-multiple: false
 
+      - name: Download the signed manifest
+        uses: actions/download-artifact@v8
+        with:
+          name: desktop-update-manifest
+          path: update-manifest
+
       - name: Install wrangler
         run: npm install -g wrangler
 
@@ -675,6 +738,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
           R2_BUCKET: ${{ inputs.environment == 'production' && 'dl-prod' || 'dl-dev' }}
           DOWNLOAD_BASE_URL: ${{ inputs.environment == 'production' && 'https://dl.ci.computer' || 'https://dl-dev.ci.computer' }}
+          MANIFEST_DIR: update-manifest
         run: ./.github/scripts/upload-desktop-r2.sh
 
   finalize-release-page:

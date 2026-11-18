@@ -596,27 +596,23 @@ fn verify_downloaded_artifact(
         }
     }
 
-    if let Some(expected_sha) = expected_sha256 {
-        let expected = normalize_sha256(expected_sha);
-        if expected.len() != 64 || !expected.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err("Manifest SHA-256 checksum is invalid".to_string());
-        }
-        let actual = sha256_hex_file(path)?;
-        if actual != expected {
-            return Err("Download SHA-256 checksum mismatch — refusing to install".to_string());
-        }
-        return Ok(());
+    // The SHA-256 from the signed manifest is what ties the download to the release. A size alone
+    // ties it to nothing: the size-only path for manifests from before the hashes is gone.
+    let Some(expected_sha) = expected_sha256 else {
+        return Err(
+            "Manifest has no SHA-256 for this installer — refusing to install an unverified download"
+                .to_string(),
+        );
+    };
+    let expected = normalize_sha256(expected_sha);
+    if expected.len() != 64 || !expected.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("Manifest SHA-256 checksum is invalid".to_string());
     }
-
-    if expected_size.is_some() {
-        // Legacy manifests (pre-sha256) — hostname pinning + size check only.
-        return Ok(());
+    let actual = sha256_hex_file(path)?;
+    if actual != expected {
+        return Err("Download SHA-256 checksum mismatch — refusing to install".to_string());
     }
-
-    Err(
-        "Manifest missing SHA-256 checksum and size — refusing to install untrusted artifact"
-            .to_string(),
-    )
+    Ok(())
 }
 
 fn fetch_latest_version(
@@ -645,15 +641,29 @@ fn fetch_manifest(
     if !source.is_trusted(&url) {
         return Err("Untrusted manifest URL".to_string());
     }
-    let response = client
-        .get(&url)
-        .send()
-        .map_err(|e| format!("Failed to fetch manifest: {}", e))?;
-    if !response.status().is_success() {
-        return Err(format!("manifest returned HTTP {}", response.status()));
-    }
-    response
-        .json()
+    let fetch = |url: &str, what: &str| -> Result<Vec<u8>, String> {
+        let response = client
+            .get(url)
+            .send()
+            .map_err(|e| format!("Failed to fetch {what}: {e}"))?;
+        if !response.status().is_success() {
+            return Err(format!("{what} returned HTTP {}", response.status()));
+        }
+        response
+            .bytes()
+            .map(|bytes| bytes.to_vec())
+            .map_err(|e| format!("Failed to read {what}: {e}"))
+    };
+    let manifest = fetch(&url, "manifest")?;
+    // Checked before anything in it is read: the hashes it gives are the only check an installer
+    // gets, and they come from the same server as the installer (see `update_signature`).
+    let signature = fetch(&format!("{url}.sig"), "manifest signature")?;
+    crate::update_signature::verify_manifest_signature(
+        &manifest,
+        &String::from_utf8_lossy(&signature),
+        &crate::update_signature::trusted_update_keys(),
+    )?;
+    serde_json::from_slice(&manifest)
         .map_err(|e| format!("Failed to parse manifest: {}", e))
         .and_then(|manifest: ManifestJson| {
             let expected = version.trim_start_matches('v');
@@ -832,6 +842,13 @@ fn install_macos_dmg(dmg_path: &Path) -> Result<(), String> {
         .ok_or_else(|| "Could not determine DMG mount point".to_string())?;
 
     let app_bundle = find_app_in_dir(Path::new(&mount_point))?;
+    // Before the installed app is touched: an app not signed by our team is never put in its place.
+    if let Err(error) = crate::installer_signature::verify_macos_app(&app_bundle) {
+        let _ = Command::new("hdiutil")
+            .args(["detach", &mount_point])
+            .output();
+        return Err(error);
+    }
     let install_target = resolve_macos_install_target(&app_bundle)?;
 
     if install_target.exists() {
@@ -999,6 +1016,8 @@ fn windows_update_script(installer: &Path, app_exe: &Path, relaunch_args: &[Stri
 
 #[cfg(target_os = "windows")]
 fn install_windows_exe(installer: &Path, launch_mode: PersistedLaunchMode) -> Result<(), String> {
+    // Checked here, not by the helper script: once the script starts, this app has quit.
+    crate::installer_signature::verify_windows_installer(installer)?;
     set_progress("install", "Handing off to installer — app will restart…");
     let app_exe = std::env::current_exe().map_err(|e| format!("current_exe: {}", e))?;
     let script = windows_update_script(installer, &app_exe, &relaunch_args(launch_mode));
@@ -2433,11 +2452,12 @@ mod tests {
     }
 
     #[test]
-    fn verify_download_allows_legacy_size_only_manifests() {
+    fn verify_download_refuses_a_manifest_with_no_sha256_even_when_the_size_matches() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let path = tempdir.path().join("installer.bin");
         std::fs::write(&path, b"legacy").expect("write");
-        verify_downloaded_artifact(&path, Some(6), None).expect("legacy verify");
+        let err = verify_downloaded_artifact(&path, Some(6), None).expect_err("size alone");
+        assert!(err.contains("SHA-256"));
     }
 
     #[test]
@@ -2993,6 +3013,8 @@ mod tests {
         .to_string();
         let latest = format!("{{\"version\":\"{latest_version}\"}}");
         let manifest_path = format!("/v{latest_version}/manifest.json");
+        let signature_path = format!("{manifest_path}.sig");
+        let signature = crate::update_signature::test_key::sign(manifest.as_bytes());
         let artifact_path = format!("/v{latest_version}/artifact.bin");
 
         std::thread::spawn(move || {
@@ -3009,6 +3031,8 @@ mod tests {
                     ("200 OK", latest.clone().into_bytes())
                 } else if path == manifest_path {
                     ("200 OK", manifest.clone().into_bytes())
+                } else if path == signature_path {
+                    ("200 OK", signature.clone().into_bytes())
                 } else if path == artifact_path {
                     ("200 OK", artifact.clone())
                 } else {
@@ -3033,6 +3057,18 @@ mod tests {
         latest_version: &str,
         manifest: impl FnOnce(&str) -> Option<serde_json::Value>,
     ) -> String {
+        serve_release_signed(latest_version, manifest, |manifest| {
+            Some(crate::update_signature::test_key::sign(manifest.as_bytes()))
+        })
+    }
+
+    /// [`serve_release`] with `signature` making `manifest.json.sig` from the manifest's text, or
+    /// serving none.
+    fn serve_release_signed(
+        latest_version: &str,
+        manifest: impl FnOnce(&str) -> Option<serde_json::Value>,
+        signature: impl FnOnce(&str) -> Option<String>,
+    ) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
         let base = format!(
             "http://127.0.0.1:{}",
@@ -3040,7 +3076,9 @@ mod tests {
         );
         let latest = format!("{{\"version\":\"{latest_version}\"}}");
         let manifest_path = format!("/v{latest_version}/manifest.json");
+        let signature_path = format!("{manifest_path}.sig");
         let manifest = manifest(&base).map(|m| m.to_string());
+        let signature = manifest.as_deref().and_then(signature);
         std::thread::spawn(move || {
             for mut stream in listener.incoming().flatten() {
                 let mut buffer = [0u8; 2048];
@@ -3053,6 +3091,9 @@ mod tests {
                 let (status, body) = match (path.as_str(), &manifest) {
                     ("/latest.json", _) => ("200 OK", latest.clone()),
                     (p, Some(m)) if p == manifest_path => ("200 OK", m.clone()),
+                    (p, Some(_)) if p == signature_path && signature.is_some() => {
+                        ("200 OK", signature.clone().unwrap_or_default())
+                    }
                     _ => ("404 Not Found", "not found".to_string()),
                 };
                 let header = format!(
@@ -3079,6 +3120,44 @@ mod tests {
                 }
             }
         })
+    }
+
+    /// Whoever can write to the download server can change the manifest, but not sign it.
+    #[test]
+    fn an_update_is_refused_when_the_manifest_is_unsigned_or_signed_by_another_key() {
+        let other_key = |manifest: &str| {
+            use ring::signature::Ed25519KeyPair;
+            let pair = Ed25519KeyPair::from_seed_unchecked(&[9u8; 32]).expect("seed");
+            let mut message = crate::update_signature::SIGNED_MESSAGE_PREFIX.to_vec();
+            message.extend_from_slice(manifest.as_bytes());
+            Some(crate::digest_hex::lower_hex(pair.sign(&message).as_ref()))
+        };
+        // Signed by the right key, but over a different manifest from the one served.
+        let other_manifest = |_: &str| {
+            Some(crate::update_signature::test_key::sign(
+                br#"{"version":"1.2.4","platforms":{}}"#,
+            ))
+        };
+        let cases: [(&str, Box<dyn FnOnce(&str) -> Option<String>>); 3] = [
+            ("no signature", Box::new(|_: &str| None)),
+            ("another key", Box::new(other_key)),
+            ("another manifest", Box::new(other_manifest)),
+        ];
+        for (case, signature) in cases {
+            let base = serve_release_signed(
+                "1.2.4",
+                |base| Some(linux_release(base, "1.2.4")),
+                signature,
+            );
+            let source = UpdateSource::from_base(&base).expect("test source");
+            let result = check_desktop_update_for_host(
+                "1.2.3",
+                &source,
+                Some((HostOs::Linux, "deb")),
+                false,
+            );
+            assert!(result.is_err(), "{case}: {result:?}");
+        }
     }
 
     #[test]
