@@ -11,6 +11,7 @@ import { AppService } from './app.service';
 import { DEFAULT_BODY_LIMIT, INFERENCE_BODY_LIMIT, LARGE_BODY_PATHS, payloadTooLargeHandler } from './common/helpers/body-limits';
 import { raiseConnectAttemptTimeout } from './common/helpers/connect-attempt-timeout';
 import { resolveAllowedCorsOrigin } from './common/helpers/cors-origin';
+import { crossSiteRequestGuard } from './common/helpers/cross-site-request';
 import { generateSystemEnvFile } from './common/helpers/env-helpers';
 import { buildSwaggerDocument, writeSwaggerJsonFile } from './swagger-setup';
 import { resolvePortalRootBounce } from './modules/auth/portal-sso';
@@ -95,6 +96,8 @@ async function bootstrap() {
     credentials: true,
   });
   app.use(cookieParser());
+  // Before any route and any body parser: a forged cross-site write stops here (cross-site-request.ts).
+  app.use(crossSiteRequestGuard);
 
   // Inference and MCP bodies (a whole conversation, every tool schema, base64 images) get the large
   // limit; everything else keeps Nest's default. Registered before Nest binds routes, so the
