@@ -55,7 +55,7 @@ export const LocalAiExposureNotice = () => {
 
   if (state === 'exposed') {
     return (
-      <Alert variant="warning" className="mt-3" data-testid="local-ai-exposure-notice">
+      <Alert variant="warning" data-testid="local-ai-exposure-notice">
         <AlertIcon>
           <ShieldAlert />
         </AlertIcon>
@@ -79,7 +79,7 @@ export const LocalAiExposureNotice = () => {
 
   const guarded = state === 'guarded';
   return (
-    <div className="mt-3 border-t border-success/20 pt-3 text-xs" data-testid="local-ai-network-setting">
+    <div className="rounded-md border border-border px-3 py-2 text-xs" data-testid="local-ai-network-setting">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2 text-muted-foreground">
           {guarded ? <ShieldCheck className="h-3.5 w-3.5 shrink-0" /> : <ShieldOff className="h-3.5 w-3.5 shrink-0" />}

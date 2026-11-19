@@ -36,13 +36,15 @@ describe('LocalAiExposureNotice', () => {
 
     const notice = await screen.findByTestId('local-ai-exposure-notice');
     expect(notice).toHaveTextContent("Other devices on your network can use this computer's AI");
-    expect(notice).toHaveTextContent('it has no password');
+    expect(notice).toHaveTextContent('Ollama has no password');
 
     fireEvent.click(screen.getByRole('button', { name: 'Keep it to this computer' }));
 
     await waitFor(() => expect(screen.queryByTestId('local-ai-exposure-notice')).not.toBeInTheDocument());
     expect(invoke).toHaveBeenCalledWith('protect_local_ai_command');
-    expect(screen.getByTestId('local-ai-network-setting')).toHaveTextContent('Only this computer and its Hub can use Ollama.');
+    expect(screen.getByTestId('local-ai-network-setting')).toHaveTextContent(
+      'Only this computer, its Hub and its apps can use the AI servers on this computer.',
+    );
   });
 
   it('turns the guard off on request, and then says so quietly instead of warning', async () => {
@@ -52,14 +54,20 @@ describe('LocalAiExposureNotice', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Allow other devices' }));
 
     await waitFor(() =>
-      expect(screen.getByTestId('local-ai-network-setting')).toHaveTextContent('Other devices on your network can use Ollama. You turned this on.'),
+      expect(screen.getByTestId('local-ai-network-setting')).toHaveTextContent(
+        'Other devices on your network can use the AI servers on this computer. You turned this on.',
+      ),
     );
     expect(invoke).toHaveBeenCalledWith('allow_local_ai_on_network_command');
     expect(screen.queryByTestId('local-ai-exposure-notice')).not.toBeInTheDocument();
 
     // And back on.
     fireEvent.click(screen.getByRole('button', { name: 'Keep it to this computer' }));
-    await waitFor(() => expect(screen.getByTestId('local-ai-network-setting')).toHaveTextContent('Only this computer and its Hub can use Ollama.'));
+    await waitFor(() =>
+      expect(screen.getByTestId('local-ai-network-setting')).toHaveTextContent(
+        'Only this computer, its Hub and its apps can use the AI servers on this computer.',
+      ),
+    );
   });
 
   it('says nothing when nothing listens on every interface and the guard was never turned off', async () => {
@@ -92,7 +100,7 @@ describe('LocalAiExposureNotice', () => {
   it('tells how to do it by hand where the desktop cannot, and shows a refused password prompt', async () => {
     desktop({ listeningOnAllInterfaces: true, guarded: false, canProtect: false });
     const manual = render(<LocalAiExposureNotice />);
-    expect(await manual.findByText(/Block ports 11434 and 8002/)).toBeInTheDocument();
+    expect(await manual.findByText(/Block ports 11434, 8002 and 13305/)).toBeInTheDocument();
     manual.unmount();
 
     desktop({ listeningOnAllInterfaces: true, guarded: false, canProtect: true }, async () => {

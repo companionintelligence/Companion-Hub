@@ -15,8 +15,12 @@
 //!
 //! vLLM also gets an API key (`inference_runners`), because a person can start it on another port.
 
-/// Ollama's port, and the vLLM port the desktop starts it on (`inference_runners::VLLM_PORT`).
-pub(crate) const INFERENCE_GUARD_PORTS: [u16; 2] = [11434, 8002];
+/// Ollama's port, the vLLM port the desktop starts it on (`inference_runners::VLLM_PORT`), and
+/// Lemonade's default port: the Hub's Lemonade setup has it listen on every interface for the same
+/// reason (`lemonade config set host=0.0.0.0`). A Lemonade the Hub runs as a container is published
+/// by Docker, whose forwarding never passes this input chain, so the guard neither covers nor breaks
+/// it.
+pub(crate) const INFERENCE_GUARD_PORTS: [u16; 3] = [11434, 8002, 13305];
 
 pub(crate) const INFERENCE_GUARD_TABLE: &str = "companion_hub_inference";
 pub(crate) const INFERENCE_GUARD_UNIT: &str = "companion-hub-inference-guard.service";
@@ -362,7 +366,7 @@ mod tests {
                 "{interface}"
             );
         }
-        assert!(rules.contains("tcp dport { 11434, 8002 } drop"));
+        assert!(rules.contains("tcp dport { 11434, 8002, 13305 } drop"));
         // The accepts come before the drop.
         assert!(rules.find("br-*").unwrap() < rules.find("drop").unwrap());
         assert_eq!(rules.matches(" drop").count(), 1);

@@ -37,6 +37,7 @@ import { SystemOverview } from './ai-setup/system-overview';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
 import { useLiveSession } from '@/lib/inference/live-session';
 import { LiveSessionNotice } from './ai-setup/live-session-notice';
+import { LocalAiExposureNotice } from './ai-setup/local-ai-exposure-notice';
 import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
 import { VllmSetupCard } from './ai-setup/vllm-setup-card';
 import { OmlxSetupCard } from './ai-setup/omlx-setup-card';
@@ -857,6 +858,8 @@ export const AiSetupStep = ({
                 <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleOllamaRecheck} />
               </div>
             )}
+
+            <LocalAiExposureNotice />
 
             <ManualEndpointsCard
               decodeEndpoint={decodeEndpoint}
