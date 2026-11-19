@@ -54,7 +54,7 @@ const tauriConf = JSON.parse(read('tauri.conf.json')) as {
   version: string;
   identifier: string;
   app: { windows: Array<{ title: string }> };
-  bundle: { iOS: { minimumSystemVersion: string } };
+  bundle: { iOS: { minimumSystemVersion: string; bundleVersion?: string } };
   plugins: { 'deep-link': { mobile: Array<{ scheme?: string[]; host?: string }>; desktop: { schemes: string[] } } };
 };
 
@@ -119,12 +119,15 @@ describe('mobile app metadata: version', () => {
   it('agrees across tauri.conf, iOS project.yml, iOS Info.plist, and Android', () => {
     const version = tauriConf.version;
     expect(version).toMatch(/^\d+\.\d+\.\d+$/);
+    // The iOS build number is bundle.iOS.bundleVersion when tauri.conf sets one (App Store Connect
+    // needs a new number for every upload of the same version), and the version when it doesn't.
+    const buildNumber = tauriConf.bundle.iOS.bundleVersion ?? version;
     // iOS project.yml
     expect(iosYmlShortVersion).toBe(version);
-    expect(iosYmlBundleVersion).toBe(version);
+    expect(iosYmlBundleVersion).toBe(buildNumber);
     // iOS Info.plist
     expect(plistString(iosInfoPlist, 'CFBundleShortVersionString')).toBe(version);
-    expect(plistString(iosInfoPlist, 'CFBundleVersion')).toBe(version);
+    expect(plistString(iosInfoPlist, 'CFBundleVersion')).toBe(buildNumber);
   });
 });
 
