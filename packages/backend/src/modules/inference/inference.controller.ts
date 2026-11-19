@@ -970,7 +970,7 @@ export class InferenceController {
       remediationCommand: remediation?.command,
       error: ready ? undefined : health.error,
       hint: remediation
-        ? `${remediation.hint} Hub probes from inside its container — use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`
+        ? `${remediation.hint} The Hub probes from inside its container. Use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`
         : undefined,
     };
   }
@@ -991,7 +991,7 @@ export class InferenceController {
     // An NVIDIA host cannot serve oMLX, but it can speed up a Mac's: say that, and whether its helper runs.
     const prefillHelper = ready ? null : await this.omlxBackend.cudaHelperStatus();
     const remediation = ready ? undefined : prefillHelper ? buildOmlxCudaHelperRemediation(prefillHelper) : buildOmlxRemediation();
-    const containerNote = ` Hub probes from inside its container — use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`;
+    const containerNote = ` The Hub probes from inside its container. Use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`;
     return {
       ready,
       running: health.running,
