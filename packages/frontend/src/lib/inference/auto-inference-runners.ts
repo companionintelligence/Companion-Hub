@@ -9,12 +9,19 @@ export interface AutomaticInferenceRunnerResult {
   state: AutomaticInferenceRunnerState;
   endpointUrl?: string;
   detail?: string;
+  /**
+   * oMLX's main API key: the one the desktop app set when it installed oMLX, or the one oMLX already
+   * has. The Hub needs it to download models through oMLX's admin API.
+   */
+  apiKey?: string;
+  /** What to know about a runner that otherwise works, such as an oMLX the desktop app could not give a key. */
+  warning?: string;
 }
 
 export const DEFAULT_AUTOMATIC_INFERENCE_RUNNERS: AutomaticInferenceRunner[] = ['ollama'];
 
-/** Apple Silicon first-run set. oMLX handles chat and embeddings. */
-export const DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS: AutomaticInferenceRunner[] = ['omlx'];
+/** Apple Silicon first-run set. oMLX serves chat, and Ollama serves embeddings: the catalog has no oMLX embedder. */
+export const DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS: AutomaticInferenceRunner[] = ['omlx', 'ollama'];
 
 const AUTOMATIC_RUNNERS_BY_BACKEND: Record<string, AutomaticInferenceRunner[]> = {
   omlx: DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS,
@@ -25,6 +32,39 @@ const AUTOMATIC_RUNNERS_BY_BACKEND: Record<string, AutomaticInferenceRunner[]> =
 
 export function automaticRunnersForBackend(backend: string): AutomaticInferenceRunner[] {
   return AUTOMATIC_RUNNERS_BY_BACKEND[backend] ?? DEFAULT_AUTOMATIC_INFERENCE_RUNNERS;
+}
+
+/** What the desktop app answers when it gave oMLX a key: the key, shown once, and a warning when oMLX took only part of it. */
+export interface OmlxAdminKeySetup {
+  apiKey: string;
+  warning?: string;
+}
+
+/**
+ * Ask the desktop app to give the oMLX on this Mac its first main key. Rejects with oMLX's reason
+ * when it already has one or does not listen on loopback alone, and in a browser.
+ */
+export async function setUpOmlxAdminKey(): Promise<OmlxAdminKeySetup> {
+  const invoke = getTauriInvoke();
+  if (!invoke) throw new Error('Only the desktop app can set a key for oMLX.');
+  const result = (await invoke('omlx_setup_admin_key_command')) as OmlxAdminKeySetup | null;
+  if (!result?.apiKey) throw new Error('The desktop app did not return a key.');
+  return result;
+}
+
+/**
+ * Whether oMLX's own settings on this Mac hold a main key, as the desktop app reads them. `null` when
+ * it cannot say: in a browser, or a desktop app too old to have the command.
+ */
+export async function omlxAdminKeyIsSet(): Promise<boolean | null> {
+  const invoke = getTauriInvoke();
+  if (!invoke) return null;
+  try {
+    const result = (await invoke('omlx_admin_key_status_command')) as { keySet?: unknown } | null;
+    return typeof result?.keySet === 'boolean' ? result.keySet : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

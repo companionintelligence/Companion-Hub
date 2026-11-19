@@ -732,7 +732,14 @@ describe('AppCredentialsService', () => {
   // oMLX does not list the catalog's `mlx-community/<name>` (0.7.3.dev1, measured on /v1/models): a model directory is
   // listed by its own name, the Hugging Face cache by `<org>--<name>`, the one name the cache answers to.
   describe('getCredentials — host-served oMLX', () => {
-    it('hands the API key to direct sibling-app clients', async () => {
+    const savedOmlxKey = process.env.OMLX_API_KEY;
+
+    afterEach(() => {
+      if (savedOmlxKey === undefined) delete process.env.OMLX_API_KEY;
+      else process.env.OMLX_API_KEY = savedOmlxKey;
+    });
+
+    const directOmlxApp = async () => {
       const model = makeLlm('qwen-omlx', 'mlx-community/Qwen3-8B-4bit', 8000, 16000, 'omlx');
       configurationService.getInferencePreferences.mockReturnValue({
         preferredBackend: 'omlx',
@@ -741,16 +748,31 @@ describe('AppCredentialsService', () => {
         preferredVisionModel: null,
       });
       omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
-      omlxBackend.getApiKey.mockReturnValue('managed-omlx-key');
+      // The key saved in Settings: oMLX's main key, which also opens its admin API.
+      omlxBackend.getApiKey.mockReturnValue('saved-main-key');
       omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3-8B-4bit'] });
       modelRegistry.getRecommendedModelsForHardware.mockReturnValue([model]);
       modelRegistry.getCuratedModel.mockImplementation((id) => (id === model.id ? model : undefined));
       service.invalidateCache();
+      return service.getCredentials('openclaw');
+    };
 
-      const config = await service.getCredentials('openclaw');
+    it('hands OMLX_API_KEY to direct sibling-app clients', async () => {
+      process.env.OMLX_API_KEY = 'managed-omlx-key';
+
+      const config = await directOmlxApp();
 
       expect(config.env.OPENAI_API_KEY).toBe('managed-omlx-key');
       expect(config.endpointUrl).toBe('http://host.docker.internal:8000/v1');
+    });
+
+    it("never hands an app the saved key, which is oMLX's main key", async () => {
+      delete process.env.OMLX_API_KEY;
+
+      const config = await directOmlxApp();
+
+      expect(config.env.OPENAI_API_KEY).toBe('omlx');
+      expect(JSON.stringify(config)).not.toContain('saved-main-key');
     });
 
     it('keeps OMLX_API_KEY out of an app the pool proxy fronts', async () => {

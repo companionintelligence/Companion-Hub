@@ -109,10 +109,17 @@ export function isHostServedBackend(backend: InferenceBackendType | undefined): 
   return backend === 'vllm' || backend === 'omlx';
 }
 
+/** Engines the Hub loads and pins a model on. oMLX loads a model on its first request, and vLLM serves the one it started with. */
 export function isHubLoadableBackend(backend: InferenceBackendType | undefined): boolean {
   return backend === 'ollama' || backend === 'lemonade';
 }
 
+/** Engines the Hub downloads a model for: Ollama and Lemonade through their own APIs, oMLX through its admin API. */
+export function isHubDownloadableBackend(backend: InferenceBackendType | undefined): boolean {
+  return isHubLoadableBackend(backend) || backend === 'omlx';
+}
+
+/** The selected models the Hub pins. */
 export function hubLoadableSelection(
   selectedIds: string[],
   backendOf: (modelId: string) => InferenceBackendType | undefined,
@@ -121,5 +128,10 @@ export function hubLoadableSelection(
   return selectedIds.filter((id) => isHubLoadableBackend(backendOf(id)));
 }
 
-/** Embeddings use Ollama when the chosen decoder cannot embed (vLLM, Lemonade). oMLX can embed itself. */
+/** The selected models the Hub downloads. */
+export function hubDownloadSelection(selectedIds: string[], backendOf: (modelId: string) => InferenceBackendType | undefined): string[] {
+  return selectedIds.filter((id) => isHubDownloadableBackend(backendOf(id)));
+}
+
+/** Embeddings use Ollama when the chosen decoder has no embedder in the catalog: vLLM, oMLX and Lemonade. */
 export const EMBEDDING_INFERENCE_BACKEND: InferenceBackendType = 'ollama';

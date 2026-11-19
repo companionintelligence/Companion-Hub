@@ -63,6 +63,26 @@ pub struct InferenceRunnerResult {
     pub endpoint_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// oMLX's main API key, which the Hub needs for oMLX's admin API (model downloads). Only the
+    /// frontend gets it: it is left out of the persisted results and out of `Debug`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<RunnerApiKey>,
+    /// What the person needs to know about a runner that otherwise works, such as an oMLX the Hub
+    /// could not give a key. Setup shows `detail` only for a runner that failed or was skipped, so
+    /// this is said apart from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+/// A runner's API key. `Debug` prints a placeholder, so a logged result never carries the key.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct RunnerApiKey(String);
+
+impl std::fmt::Debug for RunnerApiKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("<redacted>")
+    }
 }
 
 /// Normalize the user-facing typo and legacy aliases without exposing the
@@ -156,7 +176,17 @@ fn success(
         state,
         endpoint_url,
         detail,
+        api_key: None,
+        warning: None,
     }
+}
+
+fn with_api_key(
+    mut result: InferenceRunnerResult,
+    api_key: Option<String>,
+) -> InferenceRunnerResult {
+    result.api_key = api_key.map(RunnerApiKey);
+    result
 }
 
 fn failed(runner: &str, detail: String) -> InferenceRunnerResult {
@@ -195,8 +225,12 @@ fn install_and_start_omlx(data_dir: &Path) -> InferenceRunnerResult {
     if !platform_is_apple_silicon() {
         return skipped("omlx", "oMLX runs only on Apple Silicon.");
     }
-    if probe_http(OMLX_PORT, "/v1/models") {
-        return already_running("omlx", OMLX_ENDPOINT);
+    let settings_path = dirs::home_dir().map(|home| omlx_settings_path(&home));
+    // The key oMLX already has, if any. A keyed oMLX wants it on `/v1/models` unless it allows
+    // inference without one, and the Hub needs it for the admin API either way.
+    let existing_key = settings_path.as_deref().and_then(read_omlx_api_key);
+    if probe_http_authenticated(OMLX_PORT, "/v1/models", existing_key.as_deref()) {
+        return with_api_key(already_running("omlx", OMLX_ENDPOINT), existing_key);
     }
 
     let homebrew_dirs = homebrew_bin_dirs();
@@ -258,21 +292,252 @@ fn install_and_start_omlx(data_dir: &Path) -> InferenceRunnerResult {
     } else {
         "oMLX was started."
     };
-    if wait_for_http(OMLX_PORT, "/v1/models", STARTUP_WAIT) {
+    if !wait_for_http_authenticated(
+        OMLX_PORT,
+        "/v1/models",
+        existing_key.as_deref(),
+        STARTUP_WAIT,
+    ) {
+        // A new oMLX that has not answered yet has not been given a key either.
+        let warning = (installed_now && existing_key.is_none()).then(|| {
+            "oMLX did not answer in time, so the Hub could not give it an API key and cannot download models through it yet. Set a key from the oMLX card in Settings > AI once oMLX answers.".to_string()
+        });
+        let mut result = with_api_key(
+            success(
+                "omlx",
+                InferenceRunnerState::Installed,
+                Some(OMLX_ENDPOINT.to_string()),
+                Some("oMLX is installed, but its API is still starting. Foreground form: omlx serve --model-dir ~/models".to_string()),
+            ),
+            existing_key,
+        );
+        result.warning = warning;
+        return result;
+    }
+
+    // An oMLX installed here gets a main key once it answers, so the Hub can download models
+    // through its admin API. One that was already here is left as its owner set it: other tools
+    // of theirs may use its `/v1` without a key, and the Hub asks before it sets one.
+    if existing_key.is_some() || !installed_now {
+        return with_api_key(
+            success(
+                "omlx",
+                InferenceRunnerState::InstalledAndStarted,
+                Some(OMLX_ENDPOINT.to_string()),
+                Some(started.to_string()),
+            ),
+            existing_key,
+        );
+    }
+    let (api_key, warning) = match setup_omlx_admin_key(data_dir) {
+        Ok(setup) => (Some(setup.api_key.0), setup.warning),
+        Err(error) => (
+            None,
+            Some(format!("The Hub could not give oMLX an API key, so it cannot download models through it yet: {error}")),
+        ),
+    };
+    let detail = match &warning {
+        Some(warning) => format!("{started} {warning}"),
+        None => started.to_string(),
+    };
+    let mut result = with_api_key(
         success(
             "omlx",
             InferenceRunnerState::InstalledAndStarted,
             Some(OMLX_ENDPOINT.to_string()),
-            Some(started.to_string()),
-        )
-    } else {
-        success(
-            "omlx",
-            InferenceRunnerState::Installed,
-            Some(OMLX_ENDPOINT.to_string()),
-            Some("oMLX is installed, but its API is still starting. Foreground form: omlx serve --model-dir ~/models".to_string()),
-        )
+            Some(detail),
+        ),
+        api_key,
+    );
+    result.warning = warning;
+    result
+}
+
+/// oMLX on this Mac, as its own loopback checks see a request: `setup-api-key` answers only a
+/// loopback peer, which `host.docker.internal` from the Hub's container is not.
+const OMLX_LOOPBACK_URL: &str = "http://127.0.0.1:8000";
+
+/// What [`setup_omlx_admin_key`] hands the frontend: the key it set, and a warning when oMLX took
+/// the key but did not leave `/v1` open without one.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OmlxAdminKeySetup {
+    pub api_key: RunnerApiKey,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+/// Whether oMLX's settings file holds a main key. The key itself stays in this process.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OmlxAdminKeyStatus {
+    pub key_set: bool,
+}
+
+pub fn omlx_admin_key_status() -> OmlxAdminKeyStatus {
+    let key_set = dirs::home_dir()
+        .map(|home| read_omlx_api_key(&omlx_settings_path(&home)).is_some())
+        .unwrap_or(false);
+    OmlxAdminKeyStatus { key_set }
+}
+
+/// Give an oMLX that has no main key one, through its own first-key setup
+/// (`POST /admin/api/setup-api-key` in jundot/omlx omlx/admin/routes.py), then keep `/v1` open
+/// without a key as it was (`allow_unauthenticated_inference` through
+/// `POST /admin/api/global-settings`). oMLX applies both at once and saves them to its settings.
+/// It takes a first key only while it listens on loopback alone and the request comes from this
+/// Mac, and only while it has none.
+pub fn setup_omlx_admin_key(data_dir: &Path) -> Result<OmlxAdminKeySetup, String> {
+    if !platform_is_apple_silicon() {
+        return Err("oMLX runs only on Apple Silicon.".to_string());
     }
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|error| format!("Could not prepare the request to oMLX: {error}"))?;
+    let key = generate_omlx_api_key();
+
+    let response = client
+        .post(format!("{OMLX_LOOPBACK_URL}/admin/api/setup-api-key"))
+        .json(&omlx_setup_api_key_body(&key))
+        .send()
+        .map_err(|error| format!("Could not reach oMLX at {OMLX_LOOPBACK_URL}: {error}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().unwrap_or_default();
+        let refusal = omlx_setup_refusal(status.as_u16(), &body);
+        append_runner_log(
+            data_dir,
+            "omlx",
+            &format!("oMLX did not take an API key: {refusal}"),
+        );
+        return Err(refusal);
+    }
+    append_runner_log(data_dir, "omlx", "set a main API key for oMLX");
+
+    let warning = match client
+        .post(format!("{OMLX_LOOPBACK_URL}/admin/api/global-settings"))
+        .bearer_auth(&key)
+        .json(&omlx_open_inference_body())
+        .send()
+    {
+        Ok(response) if response.status().is_success() => None,
+        Ok(response) => {
+            let status = response.status().as_u16();
+            Some(omlx_open_inference_failure(
+                Some(status),
+                &response.text().unwrap_or_default(),
+            ))
+        }
+        Err(error) => Some(omlx_open_inference_failure(None, &error.to_string())),
+    };
+    if let Some(warning) = &warning {
+        append_runner_log(data_dir, "omlx", &format!("warning: {warning}"));
+    }
+    Ok(OmlxAdminKeySetup {
+        api_key: RunnerApiKey(key),
+        warning,
+    })
+}
+
+/// `SetupApiKeyRequest` in jundot/omlx omlx/admin/routes.py: the key twice, as its setup form sends it.
+fn omlx_setup_api_key_body(key: &str) -> serde_json::Value {
+    serde_json::json!({ "api_key": key, "api_key_confirm": key })
+}
+
+/// The one global setting the Hub changes: `/v1` stays open without a key, as it was before oMLX had one.
+fn omlx_open_inference_body() -> serde_json::Value {
+    serde_json::json!({ "allow_unauthenticated_inference": true })
+}
+
+/// oMLX's `detail` from an error body (`{"detail": "..."}`), else the body itself, shortened.
+fn omlx_error_detail(body: &str) -> String {
+    let detail = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("detail")
+                .and_then(|detail| detail.as_str())
+                .map(ToString::to_string)
+        })
+        .unwrap_or_else(|| body.trim().to_string());
+    command_output_tail("", &detail).unwrap_or_default()
+}
+
+/// Why oMLX refused its first key, said so the person knows what to do instead.
+fn omlx_setup_refusal(status: u16, body: &str) -> String {
+    let detail = omlx_error_detail(body);
+    match status {
+        400 if detail.contains("already configured") => {
+            "oMLX already has an API key, so the Hub cannot set one. Enter oMLX's key in Settings > AI. It is in ~/.omlx/settings.json, or set it again on oMLX's page at http://localhost:8000/admin.".to_string()
+        }
+        400 => format!("oMLX refused the new API key: {detail}"),
+        403 => "oMLX sets its first API key only while it listens on this Mac alone (127.0.0.1) and the request comes from this Mac. Set a key in oMLX's own settings, then enter it in Settings > AI.".to_string(),
+        _ if detail.is_empty() => format!("oMLX answered HTTP {status} when the Hub set its API key."),
+        _ => format!("oMLX answered HTTP {status} when the Hub set its API key: {detail}"),
+    }
+}
+
+/// The warning when oMLX took the key but not the setting that keeps `/v1` open. `status` is absent
+/// when the request itself failed.
+fn omlx_open_inference_failure(status: Option<u16>, body: &str) -> String {
+    let detail = omlx_error_detail(body);
+    let cause = match (status, detail.is_empty()) {
+        (Some(status), true) => format!("HTTP {status}"),
+        (Some(status), false) => format!("HTTP {status}: {detail}"),
+        (None, _) => detail,
+    };
+    format!(
+        "oMLX now has an API key, but it did not keep /v1 open without one ({cause}). Apps that talk to oMLX directly need the key until \"Allow inference without API key\" is on in oMLX's settings."
+    )
+}
+
+/// oMLX's settings file, from its base path: the one the oMLX app saved in
+/// `~/Library/Application Support/oMLX/base-path`, else `~/.omlx` (`resolve_default_base_path` in
+/// jundot/omlx omlx/settings.py). Its `OMLX_BASE_PATH` override is left out: `brew services` does
+/// not pass this app's environment to the server, so the server never sees it either.
+fn omlx_settings_path(home: &Path) -> PathBuf {
+    let bootstrap = home
+        .join("Library")
+        .join("Application Support")
+        .join("oMLX")
+        .join("base-path");
+    let base = fs::read_to_string(bootstrap)
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty())
+        .map(|raw| match raw.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None if raw == "~" => home.to_path_buf(),
+            None => PathBuf::from(raw),
+        })
+        .unwrap_or_else(|| home.join(".omlx"));
+    base.join("settings.json")
+}
+
+/// `auth.api_key` from oMLX's settings file, when one is set.
+fn read_omlx_api_key(path: &Path) -> Option<String> {
+    let settings: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+    settings
+        .get("auth")?
+        .get("api_key")?
+        .as_str()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(ToString::to_string)
+}
+
+/// A main key oMLX accepts: at least 4 printable ASCII characters and no whitespace
+/// (`validate_api_key` in jundot/omlx omlx/admin/auth.py).
+fn generate_omlx_api_key() -> String {
+    // rand 0.10: `rng()` is the OS-seeded CSPRNG.
+    use rand::RngExt;
+    let random: String = rand::rng()
+        .sample_iter(rand::distr::Alphanumeric)
+        .take(40)
+        .map(char::from)
+        .collect();
+    format!("ci-hub-{random}")
 }
 
 fn install_omlx_with_homebrew(data_dir: &Path, brew: &Path, path: &OsStr) -> Result<(), String> {
@@ -1501,7 +1766,12 @@ fn persist_results(data_dir: &Path, results: &[InferenceRunnerResult]) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    if let Ok(serialized) = serde_json::to_vec_pretty(results) {
+    let without_keys = results
+        .iter()
+        .cloned()
+        .map(|result| with_api_key(result, None))
+        .collect::<Vec<_>>();
+    if let Ok(serialized) = serde_json::to_vec_pretty(&without_keys) {
         let _ = fs::write(path, serialized);
     }
 }
@@ -1923,6 +2193,206 @@ Install it with Homebrew (brew install jundot/omlx/omlx) or the oMLX app, or run
         let tail = command_output_tail("", &long).expect("tail");
         assert_eq!(tail.chars().count(), OUTPUT_TAIL_MAX_CHARS);
         assert!(tail.ends_with('…'));
+    }
+
+    #[test]
+    fn finds_omlx_settings_where_omlx_keeps_them() {
+        let home = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            omlx_settings_path(home.path()),
+            home.path().join(".omlx").join("settings.json")
+        );
+
+        let bootstrap_dir = home
+            .path()
+            .join("Library")
+            .join("Application Support")
+            .join("oMLX");
+        fs::create_dir_all(&bootstrap_dir).expect("mkdir");
+        fs::write(bootstrap_dir.join("base-path"), "~/Models/omlx\n").expect("write");
+        assert_eq!(
+            omlx_settings_path(home.path()),
+            home.path()
+                .join("Models")
+                .join("omlx")
+                .join("settings.json")
+        );
+
+        fs::write(bootstrap_dir.join("base-path"), "/Volumes/External/omlx").expect("write");
+        assert_eq!(
+            omlx_settings_path(home.path()),
+            Path::new("/Volumes/External/omlx").join("settings.json")
+        );
+    }
+
+    #[test]
+    fn reads_the_key_omlx_has_and_nothing_else() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        assert_eq!(read_omlx_api_key(&path), None);
+
+        fs::write(&path, r#"{"auth": {"api_key": null}}"#).expect("write");
+        assert_eq!(read_omlx_api_key(&path), None);
+        fs::write(&path, r#"{"auth": {"api_key": "   "}}"#).expect("write");
+        assert_eq!(read_omlx_api_key(&path), None);
+        fs::write(&path, "not json").expect("write");
+        assert_eq!(read_omlx_api_key(&path), None);
+
+        fs::write(&path, r#"{"auth": {"api_key": " their-key "}}"#).expect("write");
+        assert_eq!(read_omlx_api_key(&path), Some("their-key".to_string()));
+    }
+
+    #[test]
+    fn generated_keys_are_ones_omlx_accepts_and_never_repeat() {
+        let first = generate_omlx_api_key();
+        let second = generate_omlx_api_key();
+        assert_ne!(first, second);
+        assert!(first.len() >= 32);
+        assert!(first
+            .chars()
+            .all(|c| c.is_ascii_graphic() && !c.is_whitespace()));
+    }
+
+    #[test]
+    fn sets_the_first_key_with_the_body_omlx_setup_expects() {
+        assert_eq!(
+            omlx_setup_api_key_body("ci-hub-abc"),
+            serde_json::json!({"api_key": "ci-hub-abc", "api_key_confirm": "ci-hub-abc"})
+        );
+        assert_eq!(
+            omlx_open_inference_body(),
+            serde_json::json!({"allow_unauthenticated_inference": true})
+        );
+    }
+
+    #[test]
+    fn says_omlx_already_has_a_key_when_setup_answers_400_for_that() {
+        let refusal = omlx_setup_refusal(
+            400,
+            r#"{"detail": "API key is already configured. Use settings to change it."}"#,
+        );
+        assert!(refusal.starts_with("oMLX already has an API key"));
+        assert!(refusal.contains("Settings > AI"));
+    }
+
+    #[test]
+    fn passes_on_other_400s_in_omlx_words() {
+        assert_eq!(
+            omlx_setup_refusal(
+                400,
+                r#"{"detail": "API key must be at least 4 characters"}"#
+            ),
+            "oMLX refused the new API key: API key must be at least 4 characters"
+        );
+    }
+
+    #[test]
+    fn says_setup_needs_loopback_when_omlx_answers_403() {
+        let refusal = omlx_setup_refusal(
+            403,
+            r#"{"detail": "Initial API key setup is only available over loopback."}"#,
+        );
+        assert!(refusal.contains("127.0.0.1"));
+        assert!(refusal.contains("Settings > AI"));
+    }
+
+    #[test]
+    fn names_the_status_of_any_other_answer() {
+        assert_eq!(
+            omlx_setup_refusal(503, r#"{"detail": "Server not initialized"}"#),
+            "oMLX answered HTTP 503 when the Hub set its API key: Server not initialized"
+        );
+        assert_eq!(
+            omlx_setup_refusal(502, "  Bad Gateway \n"),
+            "oMLX answered HTTP 502 when the Hub set its API key: Bad Gateway"
+        );
+        assert_eq!(
+            omlx_setup_refusal(500, ""),
+            "oMLX answered HTTP 500 when the Hub set its API key."
+        );
+    }
+
+    #[test]
+    fn warns_when_omlx_takes_the_key_but_not_the_open_v1_setting() {
+        let refused = omlx_open_inference_failure(Some(401), r#"{"detail": "Invalid API key"}"#);
+        assert!(refused.starts_with("oMLX now has an API key, but it did not keep /v1 open"));
+        assert!(refused.contains("(HTTP 401: Invalid API key)"));
+        assert!(refused.contains("Allow inference without API key"));
+
+        let unreachable = omlx_open_inference_failure(None, "connection refused");
+        assert!(unreachable.contains("(connection refused)"));
+    }
+
+    #[test]
+    fn hands_a_set_up_key_to_the_frontend_and_keeps_it_out_of_debug() {
+        let setup = OmlxAdminKeySetup {
+            api_key: RunnerApiKey("ci-hub-secret".to_string()),
+            warning: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&setup).expect("serialize"),
+            serde_json::json!({"apiKey": "ci-hub-secret"})
+        );
+        assert!(!format!("{setup:?}").contains("ci-hub-secret"));
+        assert_eq!(
+            serde_json::to_value(OmlxAdminKeyStatus { key_set: true }).expect("serialize"),
+            serde_json::json!({"keySet": true})
+        );
+    }
+
+    #[test]
+    fn sets_no_key_off_apple_silicon() {
+        if !platform_is_apple_silicon() {
+            let data_dir = tempfile::tempdir().expect("tempdir");
+            assert_eq!(
+                setup_omlx_admin_key(data_dir.path()),
+                Err("oMLX runs only on Apple Silicon.".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn hands_the_key_to_the_frontend_but_never_to_logs_or_the_state_file() {
+        let result = with_api_key(
+            success(
+                "omlx",
+                InferenceRunnerState::InstalledAndStarted,
+                Some(OMLX_ENDPOINT.to_string()),
+                Some("started".to_string()),
+            ),
+            Some("ci-hub-secret".to_string()),
+        );
+
+        let json = serde_json::to_value(&result).expect("serialize");
+        assert_eq!(json["apiKey"], "ci-hub-secret");
+        assert!(!format!("{result:?}").contains("ci-hub-secret"));
+
+        let data_dir = tempfile::tempdir().expect("tempdir");
+        persist_results(data_dir.path(), &[result]);
+        let persisted =
+            fs::read_to_string(data_dir.path().join(RUNNER_STATE_FILE)).expect("read state");
+        assert!(!persisted.contains("ci-hub-secret"));
+        assert!(!persisted.contains("apiKey"));
+    }
+
+    #[test]
+    fn says_a_working_runner_warning_apart_from_its_detail() {
+        let mut result = success(
+            "omlx",
+            InferenceRunnerState::InstalledAndStarted,
+            Some(OMLX_ENDPOINT.to_string()),
+            Some("oMLX was installed and started.".to_string()),
+        );
+        assert!(serde_json::to_value(&result)
+            .expect("serialize")
+            .get("warning")
+            .is_none());
+
+        result.warning = Some("The Hub could not give oMLX an API key".to_string());
+        assert_eq!(
+            serde_json::to_value(&result).expect("serialize")["warning"],
+            "The Hub could not give oMLX an API key"
+        );
     }
 
     #[test]

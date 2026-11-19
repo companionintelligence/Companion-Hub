@@ -36,6 +36,84 @@ export const OMLX_PROBE_API_KEY_HEADER = 'x-ci-omlx-api-key';
 
 export const resolveOmlxProbeUrl = resolveHostBackendProbeUrl;
 
+/** Where oMLX requests go with `savedUrl` as the URL saved in Settings: that, else OMLX_URL, else oMLX's default port on the host. */
+export function omlxBaseUrl(savedUrl: string | null | undefined): string {
+  const host = detectHubContainer() ? 'host.docker.internal' : 'localhost';
+  return resolveOmlxProbeUrl(savedUrl?.trim() || process.env.OMLX_URL?.trim() || `http://${host}:${OMLX_DEFAULT_PORT}`);
+}
+
+/**
+ * oMLX's own admin page for the server at `baseUrl`, as a browser on the Mac opens it: the Hub's
+ * `host.docker.internal` is the Mac's `localhost`.
+ */
+function omlxAdminPageUrl(baseUrl: string): string {
+  try {
+    const url = new URL(baseUrl);
+    if (url.hostname === 'host.docker.internal') url.hostname = 'localhost';
+    return `${normalizeHostBackendUrl(url.toString())}/admin`;
+  } catch {
+    return `${baseUrl}/admin`;
+  }
+}
+
+/**
+ * The oMLX key an app that talks to oMLX directly is handed: OMLX_API_KEY, never the key saved in
+ * Settings. That one is oMLX's main key, and it would let any app change oMLX's settings or delete
+ * its models. An oMLX the desktop app installed keeps `/v1` open without a key, as it was before.
+ */
+export function omlxAppApiKey(): string | undefined {
+  return process.env.OMLX_API_KEY?.trim() || undefined;
+}
+
+/** How often a download's progress is read. oMLX's own page reads it every 500 ms. */
+const OMLX_DOWNLOAD_POLL_MS = 1000;
+
+/** Reads of a download in a row that may fail (oMLX restarting, say) before the pull gives up. */
+const OMLX_DOWNLOAD_POLL_FAILURES = 30;
+
+/** Seconds a finished download has to show up in `/v1/models`, read once a second. */
+const OMLX_LISTING_WAIT_POLLS = 60;
+
+/** Reads of `/v1/models` before the Hub asks oMLX to rescan its model directories, once. */
+const OMLX_RELOAD_AFTER_POLLS = 5;
+
+/** A row of `GET /admin/api/hf/tasks`: `DownloadTask.to_dict()` in jundot/omlx omlx/admin/hf_downloader.py. */
+interface OmlxDownloadTask {
+  task_id: string;
+  repo_id: string;
+  status: 'pending' | 'downloading' | 'completed' | 'failed' | 'cancelled';
+  progress?: number;
+  total_size?: number;
+  downloaded_size?: number;
+  error?: string;
+}
+
+function isOmlxDownloadTask(value: unknown): value is OmlxDownloadTask {
+  if (!value || typeof value !== 'object') return false;
+  const { task_id: taskId, repo_id: repoId, status } = value as Record<string, unknown>;
+  return typeof taskId === 'string' && typeof repoId === 'string' && typeof status === 'string';
+}
+
+/** The download oMLX runs for `repoId`. oMLX matches repos without regard to case, as Hugging Face does. */
+function activeDownloadFor(tasks: OmlxDownloadTask[], repoId: string): OmlxDownloadTask | undefined {
+  const wanted = repoId.toLowerCase();
+  return tasks.find((task) => task.repo_id.toLowerCase() === wanted && (task.status === 'pending' || task.status === 'downloading'));
+}
+
+/** oMLX's `detail` for a refused admin call, else the request's own message. */
+function omlxErrorDetail(err: unknown): string {
+  if (axios.isAxiosError(err)) {
+    const detail = (err.response?.data as { detail?: unknown } | undefined)?.detail;
+    if (typeof detail === 'string' && detail.trim()) return detail.trim();
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
+function isUnauthorized(err: unknown): boolean {
+  const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+  return status === 401 || status === 403;
+}
+
 /**
  * Reported without probing when the host is not Apple Silicon and no oMLX URL is set. oMLX's
  * default port is vLLM's, so on a Linux node the default URL can only reach vLLM or nothing.
@@ -143,18 +221,27 @@ export class OmlxBackend implements InferenceBackend {
   ) {}
 
   getBaseUrl(): string {
-    const host = detectHubContainer() ? 'host.docker.internal' : 'localhost';
-    return resolveOmlxProbeUrl(this.configuredUrl() || `http://${host}:${OMLX_DEFAULT_PORT}`);
+    return omlxBaseUrl(this.configuredUrl());
   }
 
+  /**
+   * The key the Hub sends oMLX: one typed for a probe, else the key saved in Settings (the one the
+   * desktop app set when it installed oMLX, or one the operator entered), else OMLX_API_KEY. oMLX's
+   * admin API, which downloads models, takes only its main key.
+   */
   getApiKey(apiKeyOverride?: string): string | undefined {
-    return apiKeyOverride?.trim() || process.env.OMLX_API_KEY?.trim() || undefined;
+    return (
+      apiKeyOverride?.trim() ||
+      this.configuration.getInferencePreferences().preferredOmlxApiKey?.trim() ||
+      process.env.OMLX_API_KEY?.trim() ||
+      undefined
+    );
   }
 
   /**
    * The key a probe of `probeUrl` carries: one typed for this probe goes wherever the operator is
-   * probing, and OMLX_API_KEY only to the oMLX server it is configured for (`getBaseUrl`, compared
-   * by `isSameServer`). `omlx/status` and `onboarding-profile` hand their `?url=` straight to
+   * probing, and the saved key or OMLX_API_KEY only to the oMLX server it is configured for
+   * (`getBaseUrl`, compared by `isSameServer`). `omlx/status` and `onboarding-profile` hand their `?url=` straight to
    * {@link healthCheck}, so attaching the saved key to any URL let any caller of those routes
    * collect it by naming a listener.
    */
@@ -205,8 +292,8 @@ export class OmlxBackend implements InferenceBackend {
       const hint =
         status === 401 || status === 403
           ? savedKeyWithheld
-            ? " oMLX asks for an API key on /v1/models once it listens beyond loopback. OMLX_API_KEY is sent only to the configured oMLX URL; enter this server's key to check it."
-            : ' oMLX asks for an API key on /v1/models once it listens beyond loopback. Set OMLX_API_KEY to one of its keys.'
+            ? " oMLX asks for an API key on /v1/models once it has one set or listens beyond loopback. The saved key (or OMLX_API_KEY) is sent only to the configured oMLX URL; enter this server's key to check it."
+            : ' oMLX asks for an API key on /v1/models once it has one set or listens beyond loopback. Enter its API key in Settings > AI, or set OMLX_API_KEY.'
           : '';
       return { running: true, healthy: false, modelsLoaded: [], error: `${message}.${hint}` };
     }
@@ -254,9 +341,130 @@ export class OmlxBackend implements InferenceBackend {
     return health.healthy ? health.modelsLoaded.map((id) => ({ id, name: id, size: 0, loaded: true })) : [];
   }
 
-  async pullModel(modelId: string, onProgress?: (progress: PullProgress) => void): Promise<void> {
-    onProgress?.({ status: 'Download MLX weights in oMLX (admin) or with a Hugging Face login on this machine', percent: 100 });
-    this.logger.info(`[oMLX] Model ${modelId} is downloaded by oMLX from Hugging Face, not by the Hub`);
+  /**
+   * Download `repoId` (the catalog's Hugging Face repo, `mlx-community/<name>`) through oMLX's admin
+   * API: start it, follow oMLX's task for it, then wait until `/v1/models` lists the model, which is
+   * what the Hub's installed check reads. oMLX rescans its model directories when a download
+   * finishes; the Hub asks for one more rescan if the model is slow to appear.
+   */
+  async pullModel(repoId: string, onProgress?: (progress: PullProgress) => void): Promise<void> {
+    const baseUrl = this.getBaseUrl();
+    const headers = this.adminHeaders();
+    this.logger.info(`[oMLX] Downloading ${repoId} through oMLX at ${baseUrl}`);
+    const taskId = await this.startDownload(baseUrl, repoId, headers);
+    await this.followDownload(baseUrl, repoId, taskId, headers, onProgress);
+    onProgress?.({ status: 'Waiting for oMLX to list the model', percent: 100 });
+    await this.waitUntilListed(baseUrl, repoId, headers);
+  }
+
+  private adminHeaders(): Record<string, string> {
+    const apiKey = this.getApiKey();
+    return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+  }
+
+  /**
+   * Why oMLX refused a download, and what to do. A keyless oMLX takes a first key on its own page;
+   * the desktop app can also set one from Settings > AI.
+   */
+  private adminKeyError(baseUrl: string, repoId: string): Error {
+    const page = omlxAdminPageUrl(baseUrl);
+    return new Error(
+      this.getApiKey()
+        ? `oMLX refused to download ${repoId}: its admin API needs oMLX's main API key, and the key the Hub has is not it. ` +
+            `Enter the key oMLX uses (on its page at ${page}) in Settings > AI.`
+        : `oMLX refused to download ${repoId}: its admin API needs oMLX's main API key, and the Hub has none. ` +
+            `Set an API key on oMLX's page at ${page}, then enter it in Settings > AI.`,
+    );
+  }
+
+  /** The task id of the download oMLX starts, or of the one it already runs for this repo. */
+  private async startDownload(baseUrl: string, repoId: string, headers: Record<string, string>): Promise<string> {
+    try {
+      const res = await axios.post(`${baseUrl}/admin/api/hf/download`, { repo_id: repoId }, { headers, timeout: 15_000 });
+      const task = (res.data as { task?: unknown } | undefined)?.task;
+      if (isOmlxDownloadTask(task)) return task.task_id;
+      throw new Error(`oMLX did not say which download it started for ${repoId}.`);
+    } catch (err) {
+      if (isUnauthorized(err)) throw this.adminKeyError(baseUrl, repoId);
+      // oMLX runs one download per repo and refuses a second with a 400: follow the one it runs.
+      if (axios.isAxiosError(err) && err.response?.status === 400) {
+        const running = activeDownloadFor(await this.downloadTasks(baseUrl, headers).catch(() => []), repoId);
+        if (running) return running.task_id;
+      }
+      throw new Error(`oMLX could not start downloading ${repoId}: ${omlxErrorDetail(err)}`);
+    }
+  }
+
+  private async downloadTasks(baseUrl: string, headers: Record<string, string>): Promise<OmlxDownloadTask[]> {
+    const res = await axios.get(`${baseUrl}/admin/api/hf/tasks`, { headers, timeout: 10_000 });
+    const tasks = (res.data as { tasks?: unknown } | undefined)?.tasks;
+    return Array.isArray(tasks) ? tasks.filter(isOmlxDownloadTask) : [];
+  }
+
+  private async followDownload(
+    baseUrl: string,
+    repoId: string,
+    startedTaskId: string,
+    headers: Record<string, string>,
+    onProgress?: (progress: PullProgress) => void,
+  ): Promise<void> {
+    let taskId = startedTaskId;
+    let failures = 0;
+    for (;;) {
+      let task: OmlxDownloadTask | undefined;
+      try {
+        const tasks = await this.downloadTasks(baseUrl, headers);
+        // A restarted oMLX resumes an interrupted download under a new task id and drops finished
+        // rows (`restore_tasks` in jundot/omlx omlx/admin/hf_downloader.py), so the download is then
+        // the one oMLX runs for this repo.
+        task = tasks.find((row) => row.task_id === taskId) ?? activeDownloadFor(tasks, repoId);
+        if (task) taskId = task.task_id;
+        failures = 0;
+      } catch (err) {
+        if (isUnauthorized(err)) throw this.adminKeyError(baseUrl, repoId);
+        failures += 1;
+        if (failures >= OMLX_DOWNLOAD_POLL_FAILURES) {
+          throw new Error(`The Hub lost track of the download of ${repoId} in oMLX: ${omlxErrorDetail(err)}`);
+        }
+        await this.pause(OMLX_DOWNLOAD_POLL_MS);
+        continue;
+      }
+      if (!task) {
+        // A download that finished just before oMLX restarted has no row left, but its model is listed.
+        if (await this.isModelLoaded(repoId)) return;
+        throw new Error(`oMLX no longer lists the download of ${repoId}. It may have been removed in oMLX.`);
+      }
+      if (task.status === 'completed') return;
+      if (task.status === 'failed') throw new Error(task.error?.trim() || `oMLX could not download ${repoId}.`);
+      if (task.status === 'cancelled') throw new Error(`The download of ${repoId} was cancelled in oMLX.`);
+      onProgress?.({
+        status: task.status === 'pending' ? 'Waiting for oMLX to start the download' : 'Downloading in oMLX',
+        percent: Number.isFinite(task.progress) ? Math.max(0, Math.min(100, task.progress as number)) : 0,
+        ...(task.total_size ? { total: task.total_size } : {}),
+        ...(task.downloaded_size === undefined ? {} : { completed: task.downloaded_size }),
+      });
+      await this.pause(OMLX_DOWNLOAD_POLL_MS);
+    }
+  }
+
+  private async waitUntilListed(baseUrl: string, repoId: string, headers: Record<string, string>): Promise<void> {
+    for (let poll = 1; poll <= OMLX_LISTING_WAIT_POLLS; poll++) {
+      if (await this.isModelLoaded(repoId)) return;
+      if (poll === OMLX_RELOAD_AFTER_POLLS) {
+        await axios.post(`${baseUrl}/admin/api/reload`, {}, { headers, timeout: 30_000 }).catch((err: unknown) => {
+          this.logger.warn(`[oMLX] Rescan after downloading ${repoId} failed: ${omlxErrorDetail(err)}`);
+        });
+      }
+      await this.pause(OMLX_DOWNLOAD_POLL_MS);
+    }
+    throw new Error(
+      `oMLX downloaded ${repoId} but does not list it. Reload the models on oMLX's page at ${omlxAdminPageUrl(baseUrl)}, then re-check.`,
+    );
+  }
+
+  /** A seam for tests, which do not wait. */
+  protected pause(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   async loadModel(modelId: string): Promise<void> {

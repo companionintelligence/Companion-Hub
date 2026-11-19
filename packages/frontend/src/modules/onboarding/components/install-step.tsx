@@ -7,7 +7,7 @@ import {
 } from '@/lib/inference/auto-inference-runners';
 import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
 import { sdkResult } from '@/lib/sdk-unwrap';
-import { describePullStartError, fetchTrackedModels, parsePullProgress, preferenceModelId } from '@/lib/inference/tracked-models';
+import { describePullStartError, ensurePullsStarted, fetchTrackedModels, parsePullProgress, preferenceModelId } from '@/lib/inference/tracked-models';
 import { claimOnboardingInstallUrn, onboardingInstallUrnClaimed, releaseOnboardingInstallUrn } from '../helpers/install-session';
 import type { TrackedModel } from '@ci-hub/common/types';
 import { Button } from '@/components/ui/Button';
@@ -17,6 +17,7 @@ import { getInstalledAppsQueryKey, appContextQueryKey } from '@/api-client/@tans
 import { addOptimisticInstalledApp, removeOptimisticInstalledApp } from '@/modules/app/helpers/optimistic-installed-apps';
 import { Download, Loader2 } from 'lucide-react';
 import { FailureLog } from './ai-setup/failure-log';
+import { isLocalOmlxUrl } from './ai-setup/omlx-admin-key-prompt';
 import { OnboardingAppIcon } from './onboarding-app-icon';
 import { WizardCard } from './wizard-ui';
 import type { OnboardingApp, AppInstallStatus, InstallSummary, AiSetupConfig } from '../helpers/types';
@@ -226,8 +227,15 @@ export const InstallStep = ({
       const minDelay = (ms: number) => new Promise((r) => setTimeout(r, ms));
       const installedCatalogIds = aiSetupConfig?.installedCatalogIds ?? [];
       const availablePreferenceModelIds = new Set(installedCatalogIds);
-      const ollamaSelected = aiSetupConfig?.ollamaSelectedModelIds ?? aiSetupConfig?.selectedModels ?? [];
-      const modelsToPull = ollamaSelected.filter((id) => !availablePreferenceModelIds.has(id));
+      // The Hub pins Ollama and Lemonade models, and downloads those and oMLX's. A session saved before
+      // the two lists were split has only the first, which was both.
+      const pinSelected = aiSetupConfig?.ollamaSelectedModelIds ?? aiSetupConfig?.selectedModels ?? [];
+      const downloadSelected = aiSetupConfig?.downloadModelIds ?? pinSelected;
+      const modelsToPull = downloadSelected.filter((id) => !availablePreferenceModelIds.has(id));
+      // Downloads the Hub refused when this step asked for them after saving the preferences, with the
+      // reason. A refused download is never tracked, so the download polling reads these (see takeRound).
+      // Filled as the answers arrive, so one that comes after the step stopped waiting still counts.
+      const pullRefusals: Record<string, string> = {};
       const preferenceModels = (tracked: TrackedModel[]): PreferenceModels => ({
         model: preferenceModelId(aiSetupConfig?.preferredModelId, availablePreferenceModelIds, tracked),
         embeddingModel: preferenceModelId(aiSetupConfig?.preferredEmbeddingModelId, availablePreferenceModelIds, tracked),
@@ -244,6 +252,7 @@ export const InstallStep = ({
       // are requested. Waiting first left the apps unrequested when someone pressed Continue.
       if (aiSetupConfig && !aiSetupConfig.skipped) {
         let automaticRunnerUrls = new Map<string, string>();
+        let automaticOmlxKey: string | undefined;
         const automaticRunners = automaticRunnersForBackend(aiSetupConfig.backend);
 
         // A reload already ran runner setup and cloud keys. Doing either again would install
@@ -252,8 +261,8 @@ export const InstallStep = ({
           // Native runner setup belongs in the desktop shell. It is deliberately
           // best-effort: unsupported hardware or one failed install must not
           // prevent cloud configuration, model pulls, or app installation. The
-          // Apple Silicon default is a deliberate two-runner pair: mlx-dspark
-          // serves chat and Ollama supplies embeddings.
+          // Apple Silicon default is a deliberate two-runner pair: oMLX serves
+          // chat and Ollama supplies embeddings.
           if (canAutoInstallRunners) {
             setAiPhase((prev) => ({ ...prev, status: 'installing-runners' }));
             try {
@@ -262,6 +271,7 @@ export const InstallStep = ({
               automaticRunnerUrls = new Map(
                 runnerResults.filter((result) => result.endpointUrl).map((result) => [result.runner, result.endpointUrl as string]),
               );
+              automaticOmlxKey = runnerResults.find((result) => result.runner === 'omlx')?.apiKey?.trim() || undefined;
             } catch (error) {
               setAiPhase((prev) => ({
                 ...prev,
@@ -315,12 +325,31 @@ export const InstallStep = ({
             vllmApiKey: resume ? undefined : (aiSetupConfig.vllmApiKey ?? null),
             vllmUrl: resume ? undefined : configuredOrAutomaticUrl(aiSetupConfig.vllmUrl, 'vllm'),
             omlxUrl: resume ? undefined : configuredOrAutomaticUrl(aiSetupConfig.omlxUrl, 'omlx'),
+            // The key in oMLX's own settings, as the desktop app read or set it, else one typed in the
+            // card. With neither, the stored key stays. The desktop app's key is this Mac's oMLX, so it
+            // is never stored for an oMLX URL on another machine, which would send it there.
+            omlxApiKey: resume
+              ? undefined
+              : (isLocalOmlxUrl(aiSetupConfig.omlxUrl) ? automaticOmlxKey : undefined) || aiSetupConfig.omlxApiKey?.trim() || undefined,
             decodeEndpoint: resume ? undefined : (aiSetupConfig.decodeEndpoint ?? null),
             encodeEndpoint: resume ? undefined : (aiSetupConfig.encodeEndpoint ?? null),
           });
           savedModels = models;
         } catch {
           setAiPhase((prev) => ({ ...prev, error: t('ONBOARDING_INSTALL_FAILED_SAVE_PREFERRED_BACKEND', { status: 0 }) }));
+        }
+
+        // Start the downloads now that the engines are installed and the Hub holds their URLs and
+        // keys. The wizard starts the Ollama and Lemonade ones sooner when the engine already
+        // answers, and the Hub ignores a second request for a download it runs. oMLX's start here:
+        // oMLX refuses a download without the key this save just stored.
+        if (modelsToPull.length > 0) {
+          // A Hub that does not answer must not hold up the app installs. The polling still follows
+          // whatever it started.
+          Object.assign(
+            pullRefusals,
+            await withTimeout(ensurePullsStarted(modelsToPull, true, pullRefusals), REQUEST_TIMEOUT_MS).catch(() => undefined),
+          );
         }
       }
 
@@ -440,7 +469,7 @@ export const InstallStep = ({
 
         const publishPins = () => {
           const ordered: Record<string, string> = {};
-          for (const id of ollamaSelected) {
+          for (const id of pinSelected) {
             const reason = pinFailures[id];
             if (reason) ordered[id] = reason;
           }
@@ -477,7 +506,7 @@ export const InstallStep = ({
          * The Hub's pin loads a model that is on disk but untracked (`InferenceRouterService.pinTrackedModel`).
          */
         const pinLanded = () => {
-          for (const modelId of ollamaSelected) {
+          for (const modelId of pinSelected) {
             if (availablePreferenceModelIds.has(modelId)) pin(modelId);
           }
         };
@@ -514,8 +543,9 @@ export const InstallStep = ({
           for (const id of modelsToPull) {
             // A model that landed has finished its download. An error after that is its pin failing to load it.
             if (landed(id)) continue;
-            // A download the Hub refused to start is never tracked. The onboarding page heard the refusal.
-            const failure = parsed.errorsById[id] ?? (stateOf(id) ? undefined : pullErrorsRef.current?.[id]);
+            // A download the Hub refused to start is never tracked. This step heard the refusal when it
+            // asked after saving the preferences, or the onboarding page heard it.
+            const failure = parsed.errorsById[id] ?? (stateOf(id) ? undefined : (pullRefusals[id] ?? pullErrorsRef.current?.[id]));
             if (failure) failedNow[id] = failure;
           }
 
@@ -605,7 +635,7 @@ export const InstallStep = ({
         setAiPhase((prev) => ({ ...prev, status: 'pinning-models' }));
         // The loop ends only once every download landed or failed, so a chosen model the step never pinned failed
         // its download. It is named, so the row does not check a pin that did not happen.
-        for (const modelId of ollamaSelected) {
+        for (const modelId of pinSelected) {
           if (!pinsAsked.has(modelId) && !pinFailures[modelId]) pinFailures[modelId] = t('ONBOARDING_PIN_NOT_DOWNLOADED');
         }
         await pins;
@@ -900,6 +930,17 @@ export const InstallStep = ({
                   text={result.detail as string}
                   className="px-3 pb-1 pl-9 text-xs text-warning"
                   testId="inference-runner-reason"
+                />
+              ))}
+          {canAutoInstallRunners &&
+            aiPhase.runnerResults
+              .filter((result) => result.warning && result.state !== 'failed' && result.state !== 'skipped')
+              .map((result) => (
+                <FailureLog
+                  key={`${result.runner}-warning`}
+                  text={result.warning as string}
+                  className="px-3 pb-1 pl-9 text-xs text-warning"
+                  testId="inference-runner-warning"
                 />
               ))}
           {aiSetupConfig?.cloudProviders && aiSetupConfig.cloudProviders.length > 0 && (

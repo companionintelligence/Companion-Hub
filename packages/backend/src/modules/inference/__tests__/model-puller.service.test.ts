@@ -45,6 +45,7 @@ describe('ModelPullerService.evaluatePull', () => {
   let ollamaBackend: MockProxy<OllamaBackend>;
   let lemonadeBackend: MockProxy<LemonadeBackend>;
   let omlxBackend: MockProxy<OmlxBackend>;
+  let vllmBackend: MockProxy<VllmBackend>;
   let hardwareInspector: MockProxy<HardwareInspectorService>;
 
   beforeEach(async () => {
@@ -56,6 +57,7 @@ describe('ModelPullerService.evaluatePull', () => {
     ollamaBackend = mock<OllamaBackend>();
     lemonadeBackend = mock<LemonadeBackend>();
     omlxBackend = mock<OmlxBackend>();
+    vllmBackend = mock<VllmBackend>();
 
     hardwareInspector.getProfile.mockResolvedValue(profile);
     memoryManager.calculateBudget.mockResolvedValue({
@@ -100,7 +102,7 @@ describe('ModelPullerService.evaluatePull', () => {
         { provide: MemoryManagerService, useValue: memoryManager },
         { provide: HostMetricsService, useValue: hostMetrics },
         { provide: OllamaBackend, useValue: ollamaBackend },
-        { provide: VllmBackend, useValue: mock<VllmBackend>() },
+        { provide: VllmBackend, useValue: vllmBackend },
         { provide: LemonadeBackend, useValue: lemonadeBackend },
         { provide: OmlxBackend, useValue: omlxBackend },
         InferenceBackendRegistry,
@@ -148,6 +150,42 @@ describe('ModelPullerService.evaluatePull', () => {
 
       expect(result.alreadyInstalled).toBe(false);
     });
+
+    it('downloads a model oMLX does not list through oMLX, and marks it pulled only once that succeeds', async () => {
+      modelRegistry.getModelsForTier.mockReturnValue([qwen]);
+      omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+      omlxBackend.pullModel.mockResolvedValue();
+
+      expect((await service.evaluatePull('qwen3-8b-mlx')).canPull).toBe(true);
+      await service.pullModel('qwen3-8b-mlx');
+
+      expect(omlxBackend.pullModel).toHaveBeenCalledWith('mlx-community/Qwen3-8B-4bit', expect.any(Function));
+      expect(modelRegistry.updateModelState).toHaveBeenCalledWith('qwen3-8b-mlx', 'pulled');
+    });
+
+    it("records oMLX's refusal as the model's error instead of a download", async () => {
+      modelRegistry.getModelsForTier.mockReturnValue([qwen]);
+      omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+      omlxBackend.pullModel.mockRejectedValue(new Error("oMLX refused to download mlx-community/Qwen3-8B-4bit: its admin API needs oMLX's API key"));
+      modelRegistry.getTrackedModel.mockReturnValue({ catalogId: 'qwen3-8b-mlx', backend: 'omlx', state: 'pulling' } as TrackedModel);
+
+      await expect(service.pullModel('qwen3-8b-mlx')).rejects.toThrow('admin API');
+
+      expect(modelRegistry.updateModelState).toHaveBeenCalledWith('qwen3-8b-mlx', 'error', expect.stringContaining('admin API'));
+      expect(modelRegistry.updateModelState).not.toHaveBeenCalledWith('qwen3-8b-mlx', 'pulled');
+    });
+  });
+
+  it('still refuses to download a vLLM model, which the server loads from the host', async () => {
+    const vllmRow = { ...curated, id: 'qwen3-vllm', backend: 'vllm', backendModelId: 'Qwen/Qwen3-4B-Instruct-2507' } as CuratedModel;
+    modelRegistry.getCuratedModel.mockReturnValue(vllmRow);
+    modelRegistry.getModelsForTier.mockReturnValue([vllmRow]);
+    vllmBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+
+    const result = await service.evaluatePull('qwen3-vllm');
+
+    expect(result.canPull).toBe(false);
+    expect(result.reason).toContain('loads weights on the host');
   });
 
   it('marks already-installed models as no-op pulls', async () => {

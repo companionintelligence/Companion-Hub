@@ -72,6 +72,7 @@ import {
   buildOmlxRemediation,
   OMLX_PROBE_API_KEY_HEADER,
   OmlxBackend,
+  omlxBaseUrl,
   resolveOmlxProbeUrl,
 } from './backends/omlx.backend';
 import { OpenAiCompatibleClient } from './backends/openai-compatible.client';
@@ -368,14 +369,14 @@ export class InferenceController {
 
   // ─── Management Endpoints ─────────────────────────────────────────────
 
-  /** The vLLM key is reported masked, as `cloud-providers` reports a provider key (`configured`). */
+  /** The vLLM and oMLX keys are reported masked, as `cloud-providers` reports a provider key (`configured`). */
   @UseGuards(AuthGuard)
   @Get('preferences')
   async getPreferences() {
     return maskInferencePreferences(this.configurationService.getInferencePreferences());
   }
 
-  /** A vLLM key that comes back as the mask is left as stored; `null` or an empty one still clears it. */
+  /** A vLLM or oMLX key that comes back as the mask is left as stored; `null` or an empty one still clears it. */
   @UseGuards(AuthGuard, HubManagerGuard)
   @Patch('preferences')
   async updatePreferences(@Body() body: UpdateInferencePreferencesBody) {
@@ -387,6 +388,7 @@ export class InferenceController {
       vllmApiKey: this.vllmApiKeyToSave(body),
       vllmUrl: body.vllmUrl,
       omlxUrl: body.omlxUrl,
+      omlxApiKey: this.omlxApiKeyToSave(body),
       decodeEndpoint: body.decodeEndpoint,
       encodeEndpoint: body.encodeEndpoint,
       maxNumCtx: body.maxNumCtx,
@@ -411,6 +413,14 @@ export class InferenceController {
     if (body.vllmUrl === undefined) return undefined;
     const savedUrl = this.configurationService.getInferencePreferences().preferredVllmUrl;
     return isSameServer(vllmBaseUrl(body.vllmUrl), vllmBaseUrl(savedUrl)) ? undefined : null;
+  }
+
+  /** The oMLX key a preferences save stores, by the rule {@link vllmApiKeyToSave} gives for the vLLM key. */
+  private omlxApiKeyToSave(body: UpdateInferencePreferencesBody): string | null | undefined {
+    if (body.omlxApiKey !== undefined && !isMaskedApiKey(body.omlxApiKey)) return body.omlxApiKey;
+    if (body.omlxUrl === undefined) return undefined;
+    const savedUrl = this.configurationService.getInferencePreferences().preferredOmlxUrl;
+    return isSameServer(omlxBaseUrl(body.omlxUrl), omlxBaseUrl(savedUrl)) ? undefined : null;
   }
 
   /**

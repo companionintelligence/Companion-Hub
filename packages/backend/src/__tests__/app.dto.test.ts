@@ -198,7 +198,7 @@ describe('AppContextDto: the settings it reports', () => {
     const reported = Object.keys(AppContextDto.schema.shape.userSettings.shape);
     const keptOut = Object.keys(settingsSchema.shape).filter((key) => !reported.includes(key));
 
-    expect(keptOut.sort()).toEqual(['autoUpdates', 'inferenceCloudProviders', 'inferenceVllmApiKey']);
+    expect(keptOut.sort()).toEqual(['autoUpdates', 'inferenceCloudProviders', 'inferenceOmlxApiKey', 'inferenceVllmApiKey']);
   });
 });
 
