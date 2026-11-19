@@ -7045,10 +7045,22 @@
     },
     "/api/memory-connect/start": {
       "get": {
-        "operationId": "start",
+        "operationId": "startNavigation",
         "parameters": [],
         "responses": {
           "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      },
+      "post": {
+        "operationId": "start",
+        "parameters": [],
+        "responses": {
+          "201": {
             "description": ""
           }
         },
@@ -7059,10 +7071,22 @@
     },
     "/api/memory-connect/callback": {
       "get": {
-        "operationId": "callback",
+        "operationId": "callbackNavigation",
         "parameters": [],
         "responses": {
           "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      },
+      "post": {
+        "operationId": "callback",
+        "parameters": [],
+        "responses": {
+          "201": {
             "description": ""
           }
         },
@@ -9167,6 +9191,9 @@
           },
           "requiresEmailVerification": {
             "type": "boolean"
+          },
+          "sessionId": {
+            "type": "string"
           }
         },
         "required": [
