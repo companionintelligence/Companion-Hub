@@ -197,11 +197,21 @@ interface EdgeSsoTicket {
  * minutes, Memory's `staticfiles.auth.signatureTTL`), as it already does on a
  * Memory reached without a Hub.
  *
+ * `/api/agent/v1` is where another person's Companion Memory reaches this one:
+ * asking a question, collecting an answer, checking this box holds a person's
+ * key, accepting an invite. Those requests come from another box, never with a
+ * Hub session or a member's Portal token, and Memory authenticates every one
+ * itself: each is signed with the sender's own key and answered only through a
+ * link the owner made for that key (an identity check needs no link and proves
+ * only that a key the caller already names is held here). Without this the Hub
+ * answered every one with its login, so two Memories behind Hubs could never
+ * link or ask each other anything.
+ *
  * ONLY for the official Memory install — see `isMemoryProviderHost`. Every
  * other edge-authenticated app relies on the Hub to authenticate for it, and
  * these paths mean nothing to them.
  */
-const FORWARD_AUTH_APP_PUBLIC_PREFIXES = ['/api/authenticate', '/api/health', '/api/keys', '/powersync', '/static'] as const;
+const FORWARD_AUTH_APP_PUBLIC_PREFIXES = ['/api/authenticate', '/api/health', '/api/keys', '/api/agent/v1', '/powersync', '/static'] as const;
 
 /** Memory's object keys are UUIDs, so its signed links need no decoding. A literal `%2F` in a key would take two rounds. */
 const MAX_FORWARDED_PATH_DECODE_ROUNDS = 4;
