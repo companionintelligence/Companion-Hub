@@ -1,4 +1,4 @@
-import { render, screen, userEvent } from '@/tests/test-utils';
+import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import { MemoryRouter } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
 import { LoginForm } from './login-form';
@@ -155,7 +155,12 @@ describe('LoginForm', () => {
     const button = screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON_AS' });
     expect(button).toBeEnabled();
     await userEvent.click(button);
-    expect(openAuthSession).toHaveBeenCalledWith('https://hub.example.com/api/auth/portal/start?desktop=1');
+    // The start URL, plus the challenge that binds the code it ends with to this app (deep-link-app-binding).
+    await waitFor(() =>
+      expect(openAuthSession).toHaveBeenCalledWith(
+        expect.stringMatching(/^https:\/\/hub\.example\.com\/api\/auth\/portal\/start\?desktop=1&app_challenge=[A-Za-z0-9_-]{43}$/),
+      ),
+    );
   });
 
   it('opens Companion Account SSO through openAuthSession so the native webview stays mounted', async () => {
@@ -174,7 +179,12 @@ describe('LoginForm', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' }));
 
-    expect(openAuthSession).toHaveBeenCalledWith('http://localhost:5005/api/auth/portal/start?desktop=1');
+    // The start URL, plus the challenge that binds the code it ends with to this app (deep-link-app-binding).
+    await waitFor(() =>
+      expect(openAuthSession).toHaveBeenCalledWith(
+        expect.stringMatching(/^http:\/\/localhost:5005\/api\/auth\/portal\/start\?desktop=1&app_challenge=[A-Za-z0-9_-]{43}$/),
+      ),
+    );
     expect(screen.queryByRole('link', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).not.toBeInTheDocument();
   });
 });

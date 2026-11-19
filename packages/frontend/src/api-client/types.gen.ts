@@ -3699,6 +3699,7 @@ export type StartPortalLoginData = {
         redirect_url: string;
         desktop: string;
         desktop_channel: string;
+        app_challenge: string;
     };
     url: '/api/auth/portal/start';
 };
@@ -3754,6 +3755,7 @@ export type ExchangePortalDesktopLoginData = {
     path?: never;
     query: {
         token: string;
+        verifier: string;
     };
     url: '/api/auth/portal/desktop-exchange';
 };

@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import crypto, { createHmac } from 'node:crypto';
 import { CacheService } from '@/core/cache/cache.service';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -2537,6 +2537,61 @@ describe('AuthController', () => {
       expect(cache.set).toHaveBeenCalledWith(expect.stringMatching(/^portal_sso_desktop:/), expect.any(String), 60);
     });
 
+    it('carries the app challenge onto the one-time code it hands the app', async () => {
+      cache.get.mockReturnValue(
+        JSON.stringify({
+          codeVerifier: 'verifier',
+          redirectUrl: null,
+          hubOrigin: 'http://localhost:5005',
+          desktop: true,
+          binding: 'test-binding',
+          appChallenge: 'c'.repeat(43),
+        }),
+      );
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') {
+          return 'https://hub.ci.computer';
+        }
+        if (key === 'userSettings') {
+          return { experimental: { insecureCookie: true } };
+        }
+        return '';
+      });
+      vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
+        ok: true,
+        accessToken: 'access-token',
+        email: 'operator@example.com',
+        emailVerified: true,
+        subject: 'portal-user-1',
+        issuer: 'https://hub.ci.computer',
+      });
+      authService.admitHubPerson.mockResolvedValue({ id: 1, username: 'operator@example.com' } as never);
+      sessionManager.createSession.mockResolvedValue('session-123');
+
+      const req = {
+        protocol: 'http',
+        get: vi.fn((header: string) => (header === 'host' ? 'localhost:5005' : undefined)),
+        headers: {},
+        cookies: { [portalBindingCookieName('state-123')]: 'test-binding' },
+      } as unknown as Request;
+      const res = {
+        redirect: vi.fn(),
+        clearCookie: vi.fn(),
+        cookie: vi.fn(),
+        status: vi.fn().mockReturnThis(),
+        setHeader: vi.fn(),
+        send: vi.fn().mockReturnThis(),
+      } as unknown as Response;
+
+      const returned = await authController.portalCallback(req, res, 'auth-code', 'state-123');
+
+      expect(returned).toBeUndefined();
+      expect(res.send).toHaveBeenCalledWith(expect.stringContaining('cihub://auth?token='));
+      expect(res.redirect).not.toHaveBeenCalled();
+      const codeCall = vi.mocked(cache.set).mock.calls.find(([key]) => typeof key === 'string' && key.startsWith('portal_sso_desktop:'));
+      expect(JSON.parse(codeCall?.[1] as string)).toMatchObject({ appChallenge: 'c'.repeat(43) });
+    });
+
     it('hands a loopback browser callback to the running Tauri app', async () => {
       cache.get.mockImplementation((key: string) => {
         if (key === 'portal_sso_desktop_present') {
@@ -2759,6 +2814,76 @@ describe('AuthController', () => {
         setHeader: vi.fn(),
         send: vi.fn().mockReturnThis(),
       }) as unknown as Response;
+
+    describe('binding the one-time code to the app that asked', () => {
+      const verifier = 'v'.repeat(43);
+      const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+      const localReq = () =>
+        ({
+          protocol: 'http',
+          get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
+          headers: {},
+        }) as unknown as Request;
+      const storedState = () => {
+        const call = vi.mocked(cache.set).mock.calls.find(([key]) => typeof key === 'string' && key.startsWith('portal_sso:'));
+
+        return JSON.parse(call?.[1] as string) as { appChallenge?: string };
+      };
+
+      it('/start keeps the app challenge of a desktop or phone sign-in', async () => {
+        configWithPortal();
+        await authController.startPortalLogin(localReq(), callbackRes(), undefined, '1', undefined, challenge);
+
+        expect(storedState().appChallenge).toBe(challenge);
+      });
+
+      it('/start ignores an app challenge on a browser sign-in, and a malformed one', async () => {
+        configWithPortal();
+        await authController.startPortalLogin(localReq(), callbackRes(), undefined, undefined, undefined, challenge);
+        expect(storedState().appChallenge).toBeUndefined();
+
+        vi.mocked(cache.set).mockClear();
+        await authController.startPortalLogin(localReq(), callbackRes(), undefined, '1', undefined, 'short');
+        expect(storedState().appChallenge).toBeUndefined();
+      });
+
+      const exchangeReq = () =>
+        ({
+          protocol: 'http',
+          get: vi.fn((header: string) => (header === 'host' ? 'localhost:5005' : undefined)),
+          headers: {},
+          cookies: {},
+        }) as unknown as Request;
+      const exchangeRes = () => ({ cookie: vi.fn(), clearCookie: vi.fn() }) as unknown as Response;
+      const boundCode = () =>
+        cache.get.mockReturnValue(JSON.stringify({ sessionId: 'session-123', redirectPath: '/home', userId: 1, appChallenge: challenge }));
+
+      it('redeems a bound code for the app holding its secret', async () => {
+        boundCode();
+        sessionManager.resolveSessionUserId.mockReturnValue(1 as never);
+        config.get.mockReturnValue({ experimental: { insecureCookie: true } });
+
+        await expect(authController.exchangePortalDesktopLogin(exchangeReq(), exchangeRes(), 'desktop-token', verifier)).resolves.toEqual({
+          sessionId: tokenFor('session-123'),
+          redirectPath: '/home',
+        });
+      });
+
+      it.each([
+        ['no secret', undefined],
+        ['the wrong secret', 'w'.repeat(43)],
+        ['the challenge itself', challenge],
+      ])('refuses a bound code presented with %s, and burns it', async (_label, presented) => {
+        boundCode();
+        sessionManager.resolveSessionUserId.mockReturnValue(1 as never);
+
+        await expect(authController.exchangePortalDesktopLogin(exchangeReq(), exchangeRes(), 'desktop-token', presented)).rejects.toThrow(
+          'Invalid or expired desktop exchange token',
+        );
+        expect(cache.del).toHaveBeenCalledWith('portal_sso_desktop:desktop-token');
+        expect(sessionManager.createSession).not.toHaveBeenCalled();
+      });
+    });
 
     it('/start stores the binding with the state and drops the same value as a cookie', async () => {
       configWithPortal();

@@ -145,6 +145,20 @@ describe('native vs browser SSO chrome', () => {
 });
 
 describe('buildPortalDesktopExchangeUrl', () => {
+  it('carries the secret of the sign-in this app started, when it has one', () => {
+    expect(
+      buildPortalDesktopExchangeUrl({
+        token: 'abc',
+        verifier: 'secret_value-1',
+        remoteHubUrl: 'https://hub.example.com',
+        isTauriDesktop: false,
+        isMobileClient: true,
+        configuredApiBaseUrl: null,
+        pageOrigin: 'http://tauri.localhost',
+      }),
+    ).toBe('https://hub.example.com/api/auth/portal/desktop-exchange?token=abc&verifier=secret_value-1');
+  });
+
   it('local:desktop exchanges on Vite :5005, not Docker :5002', () => {
     expect(
       buildPortalDesktopExchangeUrl({
