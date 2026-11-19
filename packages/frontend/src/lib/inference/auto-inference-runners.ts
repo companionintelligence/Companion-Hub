@@ -9,6 +9,8 @@ export interface AutomaticInferenceRunnerResult {
   state: AutomaticInferenceRunnerState;
   endpointUrl?: string;
   detail?: string;
+  /** The API key the runner was started with, which the Hub must send (vLLM). */
+  apiKey?: string;
 }
 
 export const DEFAULT_AUTOMATIC_INFERENCE_RUNNERS: AutomaticInferenceRunner[] = ['ollama'];

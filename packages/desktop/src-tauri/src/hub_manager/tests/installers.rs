@@ -670,7 +670,7 @@ fn docker_desktop_outer_launch_has_stop_on_error_preference() {
 
 #[test]
 fn ollama_linux_installer_script_uses_official_installer_and_handles_deps() {
-    let script = ollama_linux_install_script();
+    let script = ollama_linux_install_script(true);
 
     assert!(script.contains("https://ollama.com/install.sh"));
     // The official installer hard-requires curl and zstd.
@@ -689,6 +689,38 @@ fn ollama_linux_installer_script_uses_official_installer_and_handles_deps() {
     assert!(script.contains("ollama.service.d/override.conf"));
     assert!(script.contains(r#"Environment="OLLAMA_HOST=0.0.0.0:11434""#));
     assert!(script.contains("systemctl daemon-reload"));
+}
+
+/// Ollama on 0.0.0.0 has no login, so the installer keeps it off the network with the guard, after
+/// the bind and without failing the install when the guard can't be set up.
+#[test]
+fn ollama_linux_installer_keeps_ollama_off_the_network() {
+    // Turned off by the person's choice: the installer leaves the guard off.
+    let without = ollama_linux_install_script(false);
+    assert!(!without.contains("@inference-guard@"));
+    assert!(!without.contains("companion-hub-inference-guard.service"));
+    assert!(without.contains(r#"OLLAMA_HOST=0.0.0.0:11434"#));
+
+    let script = ollama_linux_install_script(true);
+
+    assert!(
+        !script.contains("@inference-guard@"),
+        "placeholder left in the script"
+    );
+    assert!(script.contains(&inference_guard_install_script()));
+    let bind = script.find(r#"OLLAMA_HOST=0.0.0.0:11434"#).expect("bind");
+    let guard = script
+        .find("companion-hub-inference-guard.service")
+        .expect("guard");
+    assert!(bind < guard, "the guard goes on after the bind");
+    assert!(
+        script.contains(r#") 1>&2 || echo "warning: could not keep Ollama off the network" >&2"#)
+    );
+    let status = std::process::Command::new("bash")
+        .args(["-n", "-c", &script])
+        .status()
+        .expect("bash");
+    assert!(status.success(), "the installer is not valid bash");
 }
 
 /// The reason `write_elevated_script` closes its handle: this is the failure pkexec reported.
