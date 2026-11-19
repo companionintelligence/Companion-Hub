@@ -136,6 +136,9 @@ export class RegistrationController {
   }
 
   @Post('mark-restore-intent')
+  // As prepare-fresh above: unauthenticated because the pairing page that calls it has no session yet,
+  // but not on a demo Hub.
+  @UseGuards(DemoModeGuard)
   @ApiOperation({ summary: 'Record restore intent before re-pairing an existing Portal device' })
   @ApiResponse({ status: 200, description: 'Restore intent recorded' })
   async markRestoreIntent() {
