@@ -571,6 +571,12 @@ describe('AuthController', () => {
       // Memory's sync engine, which verifies its own JWT (not a Portal token).
       { uri: '/powersync/sync/stream', extra: { authorization: 'Bearer powersync.jwt.not-portal' } },
       { uri: '/powersync/write-checkpoint2.json' },
+      // Another person's Memory asking, collecting, checking an identity, accepting an invite:
+      // signed with that person's key, which Memory itself verifies.
+      { uri: '/api/agent/v1/ask', extra: { authorization: 'Bearer keri', 'x-forwarded-method': 'POST' } },
+      { uri: '/api/agent/v1/ask/0193f0c1-aaaa-7bbb-8ccc-123456789abc', extra: { authorization: 'Bearer keri' } },
+      { uri: '/api/agent/v1/identity/did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK?challenge=abc' },
+      { uri: '/api/agent/v1/invites/accept', extra: { authorization: 'Bearer keri', 'x-forwarded-method': 'POST' } },
       // Memory's object store: an <img> of a signed link carries no key; the store checks the signature.
       {
         uri: '/static/companion/824bc2c5-f25c-4b6d-b836-7cd0accdae4c?X-Amz-Expires=300&X-Amz-Signature=abc',
@@ -748,6 +754,9 @@ describe('AuthController', () => {
         // Encoded more than once.
         '/powersync/%252e%252e%252fapi/graphql',
         '/powersync/..%252fapi/graphql',
+        '/api/agent/v1/../graphql',
+        '/api/agent/v1/..%2f..%2fgraphql',
+        '/api/agent/v1/%2e%2e/%2e%2e/graphql',
         '/static/%25252e%25252e%25252f',
         '/powersync/%%32%65%%32%65/api/graphql',
         '/powersync/%25%32%65%25%32%65%25%32%66api/graphql',
@@ -778,6 +787,8 @@ describe('AuthController', () => {
         // Start like a prefix without being under it.
         '/powersyncx/sync/stream',
         '/static..%2fapi/graphql',
+        '/api/agent/v1x/ask',
+        '/api/agent/v10/ask',
         // The app itself.
         '/',
         '/api/graphql',
