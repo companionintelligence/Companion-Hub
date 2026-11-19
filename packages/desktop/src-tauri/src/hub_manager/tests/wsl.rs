@@ -430,7 +430,12 @@ fn no_logon_script_is_written_without_the_engines_distro() {
 /// for a bind the user chose, and the marker the caller reads stays the last line on stdout.
 #[test]
 fn the_wsl_bind_script_guards_only_our_own_bind() {
-    let script = crate::hub_manager::wsl_ollama_bind_script();
+    // Turned off by the person's choice: `guard` does nothing.
+    let without = crate::hub_manager::wsl_ollama_bind_script(false);
+    assert!(!without.contains("companion-hub-inference-guard.service"));
+    assert!(without.contains("guard() {\n  : # the network guard is off by the person's choice\n}"));
+
+    let script = crate::hub_manager::wsl_ollama_bind_script(true);
 
     assert!(script.contains(&crate::hub_manager::inference_guard_install_script()));
     let user_configured = script

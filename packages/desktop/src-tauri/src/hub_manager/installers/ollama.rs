@@ -266,10 +266,14 @@ fn install_ollama_macos() -> Result<OllamaInstallResult, String> {
 }
 
 #[cfg(any(test, target_os = "linux"))]
-pub(crate) fn ollama_linux_install_script() -> String {
+/// With `guard` false (the person turned the network guard off) it leaves the guard alone.
+pub(crate) fn ollama_linux_install_script(guard: bool) -> String {
     // The official installer is distro-agnostic (tarball to /usr/local + systemd
     // unit + GPU detection), so unlike Docker no per-distro branching is needed —
     // only its hard dependencies (curl, zstd) vary by package manager.
+    if !guard {
+        return OLLAMA_LINUX_INSTALL_SCRIPT.replace(INFERENCE_GUARD_PLACEHOLDER, "");
+    }
     OLLAMA_LINUX_INSTALL_SCRIPT.replace(
         INFERENCE_GUARD_PLACEHOLDER,
         &format!(
@@ -282,8 +286,10 @@ pub(crate) fn ollama_linux_install_script() -> String {
     )
 }
 
+#[cfg(any(test, target_os = "linux"))]
 const INFERENCE_GUARD_PLACEHOLDER: &str = "# @inference-guard@\n";
 
+#[cfg(any(test, target_os = "linux"))]
 const OLLAMA_LINUX_INSTALL_SCRIPT: &str = r#"#!/bin/bash
 # Ollama auto-installer for Companion Hub. Runs as root via pkexec.
 # Arg 1: username to add to the ollama group.
@@ -359,7 +365,8 @@ pub fn install_ollama_linux() -> Result<OllamaInstallResult, String> {
         "pkexec is not installed or not on PATH. Install polkit/pkexec and try again.".to_string()
     })?;
 
-    let wrapper_script = write_elevated_script(ollama_linux_install_script().as_bytes())?;
+    let guard = !local_ai_guard_disabled(&super::get_hub_data_dir());
+    let wrapper_script = write_elevated_script(ollama_linux_install_script(guard).as_bytes())?;
 
     let output = Command::new(&pkexec_path)
         .arg(&*wrapper_script)

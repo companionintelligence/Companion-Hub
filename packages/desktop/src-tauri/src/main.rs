@@ -341,6 +341,15 @@ async fn protect_local_ai_command() -> Result<(), String> {
         .map_err(|error| format!("The protection task failed: {error}"))?
 }
 
+/// Turn the guard off, so other devices on the network can use this machine's AI servers. The
+/// choice is remembered (asks for the password on Linux).
+#[tauri::command]
+async fn allow_local_ai_on_network_command() -> Result<(), String> {
+    tokio::task::spawn_blocking(hub_manager::allow_local_ai_on_network)
+        .await
+        .map_err(|error| format!("The guard task failed: {error}"))?
+}
+
 /// Get the current Hub status (Docker availability, container state, health).
 #[tauri::command]
 async fn get_hub_status_command() -> hub_manager::HubStatus {
@@ -708,6 +717,7 @@ pub fn run() {
             install_and_start_inference_runners_command,
             local_ai_network_exposure_command,
             protect_local_ai_command,
+            allow_local_ai_on_network_command,
             install_rocm_command,
             verify_rocm_command,
             install_docker_engine_alternative_command,

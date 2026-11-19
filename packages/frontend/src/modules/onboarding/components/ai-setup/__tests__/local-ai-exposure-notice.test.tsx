@@ -11,7 +11,11 @@ function desktop(exposure: Record<string, boolean>, protect: () => Promise<unkno
     if (command === 'local_ai_network_exposure_command') return current;
     if (command === 'protect_local_ai_command') {
       await protect();
-      current = { ...current, guarded: true };
+      current = { ...current, guarded: true, disabledByUser: false };
+      return undefined;
+    }
+    if (command === 'allow_local_ai_on_network_command') {
+      current = { ...current, guarded: false, disabledByUser: true };
       return undefined;
     }
     throw new Error(`unexpected command ${command}`);
@@ -38,18 +42,42 @@ describe('LocalAiExposureNotice', () => {
 
     await waitFor(() => expect(screen.queryByTestId('local-ai-exposure-notice')).not.toBeInTheDocument());
     expect(invoke).toHaveBeenCalledWith('protect_local_ai_command');
+    expect(screen.getByTestId('local-ai-network-setting')).toHaveTextContent('Only this computer and its Hub can use Ollama.');
   });
 
-  it.each([
-    ['guarded', { listeningOnAllInterfaces: true, guarded: true, canProtect: true }],
-    ['on loopback only', { listeningOnAllInterfaces: false, guarded: false, canProtect: true }],
-  ])('says nothing when the servers are %s', async (_case, exposure) => {
-    const invoke = desktop(exposure);
+  it('turns the guard off on request, and then says so quietly instead of warning', async () => {
+    const invoke = desktop({ listeningOnAllInterfaces: true, guarded: true, canProtect: true, disabledByUser: false });
+
+    render(<LocalAiExposureNotice />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Allow other devices' }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('local-ai-network-setting')).toHaveTextContent('Other devices on your network can use Ollama. You turned this on.'),
+    );
+    expect(invoke).toHaveBeenCalledWith('allow_local_ai_on_network_command');
+    expect(screen.queryByTestId('local-ai-exposure-notice')).not.toBeInTheDocument();
+
+    // And back on.
+    fireEvent.click(screen.getByRole('button', { name: 'Keep it to this computer' }));
+    await waitFor(() => expect(screen.getByTestId('local-ai-network-setting')).toHaveTextContent('Only this computer and its Hub can use Ollama.'));
+  });
+
+  it('says nothing when nothing listens on every interface and the guard was never turned off', async () => {
+    const invoke = desktop({ listeningOnAllInterfaces: false, guarded: false, canProtect: true, disabledByUser: false });
+
+    const { container } = render(<LocalAiExposureNotice />);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('local_ai_network_exposure_command'));
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('offers no switch where the desktop cannot change the guard', async () => {
+    desktop({ listeningOnAllInterfaces: true, guarded: true, canProtect: false, disabledByUser: false });
 
     render(<LocalAiExposureNotice />);
 
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('local_ai_network_exposure_command'));
-    expect(screen.queryByTestId('local-ai-exposure-notice')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('local-ai-network-setting')).toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
   it('says nothing outside the desktop app, or with a desktop app that has no such command', async () => {

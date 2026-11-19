@@ -264,9 +264,18 @@ const OLLAMA_HOST_DROPIN_PATH: &str = "/etc/systemd/system/ollama.service.d/comp
 /// (`configured` this call, `already`, `user-configured`, `no-service`) or `None` on
 /// failure. The marker is taken from the last non-empty stdout line so a shell login
 /// banner can't mask it.
-/// The root script [`ensure_ollama_listens_on_all_interfaces`] runs in the distro.
+/// The root script [`ensure_ollama_listens_on_all_interfaces`] runs in the distro. With `guard`
+/// false (the person turned the network guard off) it leaves the guard alone.
 #[cfg(any(windows, test))]
-pub(crate) fn wsl_ollama_bind_script() -> String {
+pub(crate) fn wsl_ollama_bind_script(guard: bool) -> String {
+    let guard_body = if guard {
+        format!(
+            "  ( set -e\n{}) 1>&2 || echo \"warning: could not keep Ollama off the network\" >&2\n",
+            super::inference_guard_install_script()
+        )
+    } else {
+        "  : # the network guard is off by the person's choice\n".to_string()
+    };
     format!(
         r#"set -e
 # Only configure a real ollama systemd service; installing Ollama is a separate step.
@@ -275,9 +284,7 @@ systemctl cat ollama >/dev/null 2>&1 || {{ echo no-service; exit 0; }}
 # inference_guard.rs). Not for a bind the user chose. Its output goes to stderr, so the
 # marker stays the last line on stdout; a failure leaves Ollama reachable as before.
 guard() {{
-  ( set -e
-{guard}) 1>&2 || echo "warning: could not keep Ollama off the network" >&2
-}}
+{guard_body}}}
 # Already reachable from containers (bound to a wildcard address)? — checks the live
 # listener, so a prior failed restart (still on loopback) is retried below.
 if ss -ltn 2>/dev/null | grep -qE '(\*|0\.0\.0\.0|\[::\]):11434'; then
@@ -295,13 +302,13 @@ systemctl restart ollama
 guard
 echo configured"#,
         path = OLLAMA_HOST_DROPIN_PATH,
-        guard = super::inference_guard_install_script(),
     )
 }
 
 #[cfg(windows)]
 pub(crate) fn ensure_ollama_listens_on_all_interfaces(distro: &str) -> Option<String> {
-    let output = run_wsl_root_script_capture(distro, &wsl_ollama_bind_script())?;
+    let guard = !super::local_ai_guard_disabled(&get_hub_data_dir());
+    let output = run_wsl_root_script_capture(distro, &wsl_ollama_bind_script(guard))?;
     // Marker = last non-empty line (robust to any profile banner on stdout).
     Some(
         output

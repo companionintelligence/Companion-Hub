@@ -102,6 +102,64 @@ echo inference-guard-active
     )
 }
 
+/// POSIX shell, run as root, that removes the guard: the unit, the rules file and the loaded table.
+/// Exits 0 when there was none.
+pub(crate) fn inference_guard_remove_script() -> String {
+    format!(
+        r#"# ── Let other devices reach the local AI servers again (inference_guard.rs) ──
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl disable --now {unit} >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/{unit}
+    systemctl daemon-reload
+fi
+if command -v nft >/dev/null 2>&1; then
+    nft delete table inet {table} 2>/dev/null || true
+fi
+rm -f {rules_path}
+echo inference-guard-removed
+"#,
+        unit = INFERENCE_GUARD_UNIT,
+        table = INFERENCE_GUARD_TABLE,
+        rules_path = INFERENCE_GUARD_RULES_PATH,
+    )
+}
+
+/// Where the person's choice to turn the guard off is kept. While it exists, the Ollama installer
+/// and the WSL startup step leave the guard off; turning the guard on again removes it.
+fn guard_disabled_marker(data_dir: &std::path::Path) -> std::path::PathBuf {
+    data_dir.join("state").join("inference-guard-disabled")
+}
+
+/// Whether the person turned the guard off.
+pub(crate) fn local_ai_guard_disabled(data_dir: &std::path::Path) -> bool {
+    guard_disabled_marker(data_dir).exists()
+}
+
+pub(crate) fn set_local_ai_guard_disabled(
+    data_dir: &std::path::Path,
+    disabled: bool,
+) -> Result<(), String> {
+    let marker = guard_disabled_marker(data_dir);
+    if disabled {
+        if let Some(parent) = marker.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Could not save the choice: {e}"))?;
+        }
+        std::fs::write(
+            &marker,
+            "The network guard for the local AI servers is off by the person's choice.\n",
+        )
+        .map_err(|e| format!("Could not save the choice: {e}"))
+    } else {
+        match std::fs::remove_file(&marker) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(format!("Could not save the choice: {e}"))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 /// What the desktop can see, without root, about whether this machine's AI servers reach the network.
 #[derive(Debug, Clone, Default, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -110,14 +168,16 @@ pub struct LocalAiNetworkExposure {
     pub listening_on_all_interfaces: bool,
     /// The guard's unit is active.
     pub guarded: bool,
-    /// Whether this computer can install the guard from the desktop (Linux with pkexec).
+    /// Whether the desktop can turn the guard on and off here (Linux with pkexec, or a WSL engine).
     pub can_protect: bool,
+    /// The person turned the guard off, so the servers are on the network by choice.
+    pub disabled_by_user: bool,
 }
 
 impl LocalAiNetworkExposure {
-    /// Reachable from the network: the case to warn about.
+    /// Reachable from the network, and not by the person's choice: the case to warn about.
     pub fn exposed(&self) -> bool {
-        self.listening_on_all_interfaces && !self.guarded
+        self.listening_on_all_interfaces && !self.guarded && !self.disabled_by_user
     }
 }
 
@@ -161,23 +221,58 @@ pub fn local_ai_network_exposure() -> LocalAiNetworkExposure {
             .any(|port| listening.contains(port)),
         guarded,
         can_protect: super::find_executable("pkexec").is_some(),
+        disabled_by_user: local_ai_guard_disabled(&super::get_hub_data_dir()),
     }
 }
 
-/// Elsewhere the desktop sets up nothing on every interface: Docker Desktop reaches the host's own
-/// loopback, and a native WSL engine's distro gets the guard at startup, as root, with no prompt.
-#[cfg(not(target_os = "linux"))]
+/// On a native WSL engine the servers run in the distro, so it is asked there, as root. Elsewhere on
+/// Windows the desktop sets up nothing on every interface: Docker Desktop reaches the host's own
+/// loopback.
+#[cfg(target_os = "windows")]
+pub fn local_ai_network_exposure() -> LocalAiNetworkExposure {
+    let Some(distro) = wsl_engine_distro() else {
+        return LocalAiNetworkExposure::default();
+    };
+    let script = format!(
+        "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null\n\
+         systemctl is-active --quiet {INFERENCE_GUARD_UNIT} && echo inference-guard-active || echo inference-guard-inactive\n"
+    );
+    let output = super::run_wsl_root_script_capture(&distro, &script).unwrap_or_default();
+    let listening = wildcard_listening_ports(&output);
+    LocalAiNetworkExposure {
+        listening_on_all_interfaces: INFERENCE_GUARD_PORTS
+            .iter()
+            .any(|port| listening.contains(port)),
+        guarded: output
+            .lines()
+            .any(|line| line.trim() == "inference-guard-active"),
+        can_protect: true,
+        disabled_by_user: local_ai_guard_disabled(&super::get_hub_data_dir()),
+    }
+}
+
+/// The distro of a native WSL engine, the only Windows setup with servers on every interface.
+#[cfg(target_os = "windows")]
+fn wsl_engine_distro() -> Option<String> {
+    if !super::is_wsl_engine_docker_backend() {
+        return None;
+    }
+    super::find_wsl_distro()
+}
+
+/// Docker Desktop reaches the AI servers on this computer's own loopback: nothing listens everywhere.
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub fn local_ai_network_exposure() -> LocalAiNetworkExposure {
     LocalAiNetworkExposure::default()
 }
 
-/// Install the guard on this Linux machine, asking for the password with pkexec.
+/// Run a guard script as root with pkexec (Linux), asking for the password.
 #[cfg(target_os = "linux")]
-pub fn protect_local_ai() -> Result<(), String> {
+fn run_elevated(script: &str, failure: &str) -> Result<(), String> {
     let pkexec = super::find_executable("pkexec").ok_or_else(|| {
         "pkexec is not installed or not on PATH. Install polkit/pkexec and try again.".to_string()
     })?;
-    let script = format!("#!/bin/sh\nset -e\n{}", inference_guard_install_script());
+    let script = format!("#!/bin/sh\nset -e\n{script}");
     let wrapper = super::write_elevated_script(script.as_bytes())?;
     let output = std::process::Command::new(&pkexec)
         .arg(&*wrapper)
@@ -194,16 +289,57 @@ pub fn protect_local_ai() -> Result<(), String> {
     if super::pkexec_refused(output.status.code(), &combined) {
         return Err("Authorization was cancelled or denied.".to_string());
     }
-    Err(format!(
-        "Could not protect the local AI servers: {}",
-        combined.trim()
-    ))
+    Err(format!("{failure}: {}", combined.trim()))
 }
 
-#[cfg(not(target_os = "linux"))]
+/// Run a guard script as root in the WSL engine's distro (Windows; no prompt), expecting `done` on stdout.
+#[cfg(target_os = "windows")]
+fn run_elevated(script: &str, failure: &str) -> Result<(), String> {
+    let distro = wsl_engine_distro().ok_or_else(|| format!("{failure}: no WSL engine distro."))?;
+    let done = if script.contains("echo inference-guard-removed") {
+        "inference-guard-removed"
+    } else {
+        "inference-guard-active"
+    };
+    match super::run_wsl_root_script_capture(&distro, &format!("set -e\n{script}")) {
+        Some(output) if output.contains(done) => Ok(()),
+        _ => Err(format!("{failure} in the WSL distro \"{distro}\".")),
+    }
+}
+
+/// Turn the guard on (Linux: asks for the password; a WSL engine: in its distro), and forget a
+/// choice to keep it off.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub fn protect_local_ai() -> Result<(), String> {
+    run_elevated(
+        &inference_guard_install_script(),
+        "Could not protect the local AI servers",
+    )?;
+    set_local_ai_guard_disabled(&super::get_hub_data_dir(), false)
+}
+
+/// Turn the guard off, and remember the choice so installs and startups leave it off.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub fn allow_local_ai_on_network() -> Result<(), String> {
+    run_elevated(
+        &inference_guard_remove_script(),
+        "Could not turn the network guard off",
+    )?;
+    set_local_ai_guard_disabled(&super::get_hub_data_dir(), true)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub fn protect_local_ai() -> Result<(), String> {
     Err(
-        "Only needed on Linux, where the desktop app sets the AI servers up on every interface."
+        "Not needed here: Docker Desktop reaches the AI servers on this computer's loopback."
+            .to_string(),
+    )
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub fn allow_local_ai_on_network() -> Result<(), String> {
+    Err(
+        "Not needed here: Docker Desktop reaches the AI servers on this computer's loopback."
             .to_string(),
     )
 }
@@ -267,14 +403,47 @@ mod tests {
     }
 
     #[test]
-    fn exposed_means_listening_everywhere_with_no_guard() {
-        let exposure = |listening_on_all_interfaces, guarded| LocalAiNetworkExposure {
-            listening_on_all_interfaces,
-            guarded,
-            can_protect: true,
-        };
-        assert!(exposure(true, false).exposed());
-        assert!(!exposure(true, true).exposed());
-        assert!(!exposure(false, false).exposed());
+    fn exposed_means_listening_everywhere_with_no_guard_and_not_by_choice() {
+        let exposure =
+            |listening_on_all_interfaces, guarded, disabled_by_user| LocalAiNetworkExposure {
+                listening_on_all_interfaces,
+                guarded,
+                can_protect: true,
+                disabled_by_user,
+            };
+        assert!(exposure(true, false, false).exposed());
+        assert!(!exposure(true, true, false).exposed());
+        assert!(!exposure(false, false, false).exposed());
+        // Turned off on purpose: no warning.
+        assert!(!exposure(true, false, true).exposed());
+    }
+
+    #[test]
+    fn the_remove_script_takes_out_the_unit_the_table_and_the_rules_and_tolerates_none() {
+        let script = inference_guard_remove_script();
+        assert!(script.contains("systemctl disable --now companion-hub-inference-guard.service"));
+        assert!(script.contains("rm -f /etc/systemd/system/companion-hub-inference-guard.service"));
+        assert!(
+            script.contains("nft delete table inet companion_hub_inference 2>/dev/null || true")
+        );
+        assert!(script.contains("rm -f /etc/companion-hub/inference-guard.nft"));
+        assert!(script.trim_end().ends_with("echo inference-guard-removed"));
+        let status = std::process::Command::new("sh")
+            .args(["-n", "-c", &script])
+            .status()
+            .expect("sh");
+        assert!(status.success());
+    }
+
+    #[test]
+    fn the_choice_to_turn_the_guard_off_is_remembered_and_undone() {
+        let data_dir = tempfile::tempdir().expect("tempdir");
+        assert!(!local_ai_guard_disabled(data_dir.path()));
+        set_local_ai_guard_disabled(data_dir.path(), true).expect("off");
+        assert!(local_ai_guard_disabled(data_dir.path()));
+        set_local_ai_guard_disabled(data_dir.path(), false).expect("on");
+        assert!(!local_ai_guard_disabled(data_dir.path()));
+        // Turning it on twice is fine.
+        set_local_ai_guard_disabled(data_dir.path(), false).expect("on again");
     }
 }

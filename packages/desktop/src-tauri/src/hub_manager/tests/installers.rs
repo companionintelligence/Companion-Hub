@@ -670,7 +670,7 @@ fn docker_desktop_outer_launch_has_stop_on_error_preference() {
 
 #[test]
 fn ollama_linux_installer_script_uses_official_installer_and_handles_deps() {
-    let script = ollama_linux_install_script();
+    let script = ollama_linux_install_script(true);
 
     assert!(script.contains("https://ollama.com/install.sh"));
     // The official installer hard-requires curl and zstd.
@@ -695,7 +695,13 @@ fn ollama_linux_installer_script_uses_official_installer_and_handles_deps() {
 /// the bind and without failing the install when the guard can't be set up.
 #[test]
 fn ollama_linux_installer_keeps_ollama_off_the_network() {
-    let script = ollama_linux_install_script();
+    // Turned off by the person's choice: the installer leaves the guard off.
+    let without = ollama_linux_install_script(false);
+    assert!(!without.contains("@inference-guard@"));
+    assert!(!without.contains("companion-hub-inference-guard.service"));
+    assert!(without.contains(r#"OLLAMA_HOST=0.0.0.0:11434"#));
+
+    let script = ollama_linux_install_script(true);
 
     assert!(
         !script.contains("@inference-guard@"),

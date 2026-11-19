@@ -9,8 +9,10 @@ import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 export interface LocalAiNetworkExposure {
   listeningOnAllInterfaces: boolean;
   guarded: boolean;
-  /** The desktop can install the guard here (Linux with pkexec). */
+  /** The desktop can turn the guard on and off here (Linux with pkexec, or a WSL engine). */
   canProtect: boolean;
+  /** The person turned the guard off: on the network by choice. */
+  disabledByUser: boolean;
 }
 
 /** Null outside the desktop app, or when it cannot tell. */
@@ -32,6 +34,24 @@ export async function protectLocalAi(): Promise<void> {
   await invoke('protect_local_ai_command');
 }
 
-export function isExposedToNetwork(exposure: LocalAiNetworkExposure | null): boolean {
-  return Boolean(exposure?.listeningOnAllInterfaces && !exposure.guarded);
+/** Ask the desktop to turn the guard off, and remember that. It asks for the computer's password. */
+export async function allowLocalAiOnNetwork(): Promise<void> {
+  const invoke = getTauriInvoke();
+  if (!invoke) throw new Error('Only the Companion Hub desktop app can do this.');
+  await invoke('allow_local_ai_on_network_command');
+}
+
+/**
+ * - `exposed`: reachable from the network, not by choice. Warn.
+ * - `guarded`: the guard is on.
+ * - `open-by-choice`: the person turned the guard off.
+ * - `none`: nothing to say (nothing listens everywhere, or this is not the desktop app).
+ */
+export type LocalAiNetworkState = 'exposed' | 'guarded' | 'open-by-choice' | 'none';
+
+export function localAiNetworkState(exposure: LocalAiNetworkExposure | null): LocalAiNetworkState {
+  if (!exposure) return 'none';
+  if (exposure.guarded) return 'guarded';
+  if (exposure.disabledByUser) return 'open-by-choice';
+  return exposure.listeningOnAllInterfaces ? 'exposed' : 'none';
 }
