@@ -277,6 +277,7 @@ function OnboardingWizard() {
           defaultExposureMode={installExposureMode}
           operatorUsername={user.username}
           aiSetupConfig={resumed ? resumed.aiSetupConfig : aiSetupConfig}
+          pullErrorsById={modelPullState.errorsById}
           onComplete={async (summary) => {
             // InstallStep's Continue button is never disabled and drops the promise it gets back,
             // and this handler now stays alive across the retry pause — so without a latch a
