@@ -691,6 +691,32 @@ fn ollama_linux_installer_script_uses_official_installer_and_handles_deps() {
     assert!(script.contains("systemctl daemon-reload"));
 }
 
+/// Ollama on 0.0.0.0 has no login, so the installer keeps it off the network with the guard, after
+/// the bind and without failing the install when the guard can't be set up.
+#[test]
+fn ollama_linux_installer_keeps_ollama_off_the_network() {
+    let script = ollama_linux_install_script();
+
+    assert!(
+        !script.contains("@inference-guard@"),
+        "placeholder left in the script"
+    );
+    assert!(script.contains(&inference_guard_install_script()));
+    let bind = script.find(r#"OLLAMA_HOST=0.0.0.0:11434"#).expect("bind");
+    let guard = script
+        .find("companion-hub-inference-guard.service")
+        .expect("guard");
+    assert!(bind < guard, "the guard goes on after the bind");
+    assert!(
+        script.contains(r#") 1>&2 || echo "warning: could not keep Ollama off the network" >&2"#)
+    );
+    let status = std::process::Command::new("bash")
+        .args(["-n", "-c", &script])
+        .status()
+        .expect("bash");
+    assert!(status.success(), "the installer is not valid bash");
+}
+
 /// The reason `write_elevated_script` closes its handle: this is the failure pkexec reported.
 #[cfg(target_os = "linux")]
 #[test]

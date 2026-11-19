@@ -324,6 +324,23 @@ async fn announce_desktop_sign_in_wait_command(
     outcome.into_command_result()
 }
 
+/// Whether this machine's AI servers (Ollama, vLLM) can be reached from the network: listening on
+/// every interface with no guard. See `hub_manager::installers::inference_guard`.
+#[tauri::command]
+async fn local_ai_network_exposure_command() -> hub_manager::LocalAiNetworkExposure {
+    tokio::task::spawn_blocking(hub_manager::local_ai_network_exposure)
+        .await
+        .unwrap_or_default()
+}
+
+/// Install the guard that keeps this machine's AI servers off the network (asks for the password).
+#[tauri::command]
+async fn protect_local_ai_command() -> Result<(), String> {
+    tokio::task::spawn_blocking(hub_manager::protect_local_ai)
+        .await
+        .map_err(|error| format!("The protection task failed: {error}"))?
+}
+
 /// Get the current Hub status (Docker availability, container state, health).
 #[tauri::command]
 async fn get_hub_status_command() -> hub_manager::HubStatus {
@@ -689,6 +706,8 @@ pub fn run() {
             install_nvidia_runtime_command,
             live_session_state_command,
             install_and_start_inference_runners_command,
+            local_ai_network_exposure_command,
+            protect_local_ai_command,
             install_rocm_command,
             verify_rocm_command,
             install_docker_engine_alternative_command,

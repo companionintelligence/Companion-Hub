@@ -8,6 +8,7 @@ import { AlertCircle, CheckCircle2, Download, Info, Loader2, RefreshCw } from 'l
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FailureLog } from './failure-log';
+import { LocalAiExposureNotice } from './local-ai-exposure-notice';
 
 const OLLAMA_DOWNLOAD_URL = 'https://ollama.com';
 const OLLAMA_DOCS_URL = 'https://docs.ollama.com';
@@ -124,6 +125,7 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
               {!checking && <RefreshCw className="h-3.5 w-3.5" />}
             </Button>
           </div>
+          <LocalAiExposureNotice />
         </CardContent>
       </Card>
     );

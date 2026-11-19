@@ -232,6 +232,48 @@ describe('InstallStep', () => {
     });
   });
 
+  // The desktop starts vLLM with an API key of its own, so it serves nobody else on the network.
+  it.each([
+    ['saves the key vLLM was started with, beside its URL', {}, 'k'.repeat(64), 'http://host.docker.internal:8002'],
+    [
+      "keeps the person's own key for a URL they gave",
+      { vllmUrl: 'http://gpu-box:8000', vllmApiKey: 'their-key' },
+      'their-key',
+      'http://gpu-box:8000',
+    ],
+  ])('%s', async (_case, configured, savedKey, savedUrl) => {
+    const invoke = vi.fn(async (command: string) =>
+      command === 'install_and_start_inference_runners_command'
+        ? [
+            { runner: 'vllm', state: 'installed_and_started', endpointUrl: 'http://host.docker.internal:8002', apiKey: 'k'.repeat(64) },
+            { runner: 'ollama', state: 'already_running', endpointUrl: 'http://host.docker.internal:11434' },
+          ]
+        : [],
+    );
+    (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
+
+    render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          agentFrameworks: [],
+          remoteAccess: [],
+          selectedModels: [],
+          installedCatalogIds: [],
+          backend: 'vllm',
+          cloudProviders: [],
+          skipped: false,
+          ...configured,
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ vllmApiKey: savedKey, vllmUrl: savedUrl }));
+    });
+  });
+
   it('installs oMLX for the Apple Silicon first-run set', async () => {
     const invoke = vi.fn().mockResolvedValue([]);
     (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };

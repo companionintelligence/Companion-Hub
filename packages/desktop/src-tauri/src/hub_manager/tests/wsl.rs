@@ -425,3 +425,33 @@ fn no_logon_script_is_written_without_the_engines_distro() {
     assert!(restore_wsl_engine_logon_script(startup.path(), || None).is_err());
     assert!(!startup.path().join("CompanionHub-WSL-Docker.vbs").exists());
 }
+
+/// In the WSL distro the guard goes on only where our drop-in bound Ollama to every interface, never
+/// for a bind the user chose, and the marker the caller reads stays the last line on stdout.
+#[test]
+fn the_wsl_bind_script_guards_only_our_own_bind() {
+    let script = crate::hub_manager::wsl_ollama_bind_script();
+
+    assert!(script.contains(&crate::hub_manager::inference_guard_install_script()));
+    let user_configured = script
+        .find("echo user-configured")
+        .expect("user-configured");
+    let configured = script.find("echo configured").expect("configured");
+    // The bind the user chose returns before the guard; ours runs it just before its marker.
+    assert!(
+        script[user_configured..configured + "echo configured".len()]
+            .contains("\nguard\necho configured")
+    );
+    assert!(script.contains("[ -f /etc/systemd/system/ollama.service.d/companionhub-host.conf ] && guard\n  echo already"));
+    assert!(
+        script.contains(") 1>&2 || echo \"warning: could not keep Ollama off the network\" >&2")
+    );
+    let status = std::process::Command::new("sh")
+        .args(["-n", "-c", &script])
+        .status()
+        .expect("sh");
+    assert!(
+        status.success(),
+        "the distro script is not valid POSIX shell"
+    );
+}

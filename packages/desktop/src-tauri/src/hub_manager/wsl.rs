@@ -249,7 +249,7 @@ pub(crate) fn ensure_wsl_engine_gpu_runtime(data_dir: &Path) {
 /// it only reaches the distro via the docker0 bridge gateway (172.17.0.1). Binding
 /// 0.0.0.0 makes it reachable. Docker Desktop bridges this via host.docker.internal;
 /// a native WSL2 engine does not, so we configure it ourselves.
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 const OLLAMA_HOST_DROPIN_PATH: &str = "/etc/systemd/system/ollama.service.d/companionhub-host.conf";
 
 /// Ensure the in-distro Ollama listens on 0.0.0.0 so the Hub container can reach it.
@@ -264,17 +264,26 @@ const OLLAMA_HOST_DROPIN_PATH: &str = "/etc/systemd/system/ollama.service.d/comp
 /// (`configured` this call, `already`, `user-configured`, `no-service`) or `None` on
 /// failure. The marker is taken from the last non-empty stdout line so a shell login
 /// banner can't mask it.
-#[cfg(windows)]
-pub(crate) fn ensure_ollama_listens_on_all_interfaces(distro: &str) -> Option<String> {
-    let output = run_wsl_root_script_capture(
-        distro,
-        &format!(
-            r#"set -e
+/// The root script [`ensure_ollama_listens_on_all_interfaces`] runs in the distro.
+#[cfg(any(windows, test))]
+pub(crate) fn wsl_ollama_bind_script() -> String {
+    format!(
+        r#"set -e
 # Only configure a real ollama systemd service; installing Ollama is a separate step.
 systemctl cat ollama >/dev/null 2>&1 || {{ echo no-service; exit 0; }}
+# Keep Ollama off the network where our drop-in put it on every interface (see
+# inference_guard.rs). Not for a bind the user chose. Its output goes to stderr, so the
+# marker stays the last line on stdout; a failure leaves Ollama reachable as before.
+guard() {{
+  ( set -e
+{guard}) 1>&2 || echo "warning: could not keep Ollama off the network" >&2
+}}
 # Already reachable from containers (bound to a wildcard address)? — checks the live
 # listener, so a prior failed restart (still on loopback) is retried below.
-if ss -ltn 2>/dev/null | grep -qE '(\*|0\.0\.0\.0|\[::\]):11434'; then echo already; exit 0; fi
+if ss -ltn 2>/dev/null | grep -qE '(\*|0\.0\.0\.0|\[::\]):11434'; then
+  [ -f {path} ] && guard
+  echo already; exit 0
+fi
 # Respect a deliberate OLLAMA_HOST the user set outside our own drop-in.
 if [ ! -f {path} ] && systemctl show ollama -p Environment 2>/dev/null | grep -q 'OLLAMA_HOST='; then
   echo user-configured; exit 0
@@ -283,10 +292,16 @@ mkdir -p /etc/systemd/system/ollama.service.d
 printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0:11434"\n' > {path}
 systemctl daemon-reload
 systemctl restart ollama
+guard
 echo configured"#,
-            path = OLLAMA_HOST_DROPIN_PATH
-        ),
-    )?;
+        path = OLLAMA_HOST_DROPIN_PATH,
+        guard = super::inference_guard_install_script(),
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn ensure_ollama_listens_on_all_interfaces(distro: &str) -> Option<String> {
+    let output = run_wsl_root_script_capture(distro, &wsl_ollama_bind_script())?;
     // Marker = last non-empty line (robust to any profile banner on stdout).
     Some(
         output
