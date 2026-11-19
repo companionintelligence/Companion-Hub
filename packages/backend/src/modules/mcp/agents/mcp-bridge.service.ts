@@ -10,6 +10,7 @@ import type { ResolvedAgentConfig } from './agent-config.service';
 import type { McpToolDefinition } from '../mcp-tool-registry.service';
 import { McpStreamableHttpClient } from './mcp-streamable-http-client';
 import { McpServerError, McpStdioSession, StdioSilentExitError, type StdioSpawnSpec } from './mcp-stdio-session';
+import { hostDockerEnv, McpStdioLaunchPolicy } from './mcp-stdio-launch-policy';
 
 interface McpConnection {
   appUrn: AppUrn;
@@ -75,6 +76,7 @@ export class McpBridgeService implements OnModuleDestroy {
     private readonly appsService: AppsService,
     private readonly appFilesManager: AppFilesManager,
     private readonly envUtils: EnvUtils,
+    private readonly launchPolicy: McpStdioLaunchPolicy,
   ) {}
 
   onModuleDestroy() {
@@ -339,11 +341,13 @@ export class McpBridgeService implements OnModuleDestroy {
   private async getOrCreateStdioSession(appUrn: AppUrn, conn: McpConnection): Promise<McpStdioSession> {
     // Built on every request: a process keeps the environment it started with, so a token changed in
     // the app's settings only reaches the server through a new process.
-    const spec = await this.buildStdioSpawnSpec(appUrn, conn);
+    const { spec, appEnvEmpty } = await this.buildStdioSpawnSpec(appUrn, conn);
+    // Every spawn, not just the first: the listing can change under an app updated in place.
+    await this.launchPolicy.assertAllowed(appUrn, spec);
     const specKey = stdioSpecKey(spec);
     // An empty read (app.env missing, or caught mid-write) says nothing about the token, so it
     // doesn't restart a server that is up.
-    const envUnknown = Object.keys(spec.env ?? {}).length === 0;
+    const envUnknown = appEnvEmpty;
     if (conn.stdioSession?.alive && (conn.stdioSpecKey === specKey || envUnknown)) {
       return conn.stdioSession;
     }
@@ -360,16 +364,19 @@ export class McpBridgeService implements OnModuleDestroy {
     return session;
   }
 
-  private async buildStdioSpawnSpec(appUrn: AppUrn, conn: McpConnection): Promise<StdioSpawnSpec> {
+  private async buildStdioSpawnSpec(appUrn: AppUrn, conn: McpConnection): Promise<{ spec: StdioSpawnSpec; appEnvEmpty: boolean }> {
     const launch = conn.config.launch ?? 'container_exec';
     // Only a host_docker process gets app.env. A `docker exec` runs with the container's own
     // environment, so a change to app.env must not restart it.
     const appEnv = launch === 'host_docker' ? await this.loadAppEnvRecord(appUrn) : {};
     return {
-      launch,
-      command: conn.config.command ?? [],
-      container: conn.config.container ?? this.defaultMainContainerName(appUrn),
-      env: appEnv,
+      spec: {
+        launch,
+        command: conn.config.command ?? [],
+        container: conn.config.container ?? this.defaultMainContainerName(appUrn),
+        env: launch === 'host_docker' ? hostDockerEnv(appEnv) : {},
+      },
+      appEnvEmpty: Object.keys(appEnv).length === 0,
     };
   }
 
@@ -517,16 +524,21 @@ export class McpBridgeService implements OnModuleDestroy {
     return JSON.stringify(a) === JSON.stringify(b);
   }
 
-  /** Read an auth token from app.env first, then Hub process env. */
+  /**
+   * Read an auth token from the app's own app.env, and nowhere else.
+   *
+   * `token_env` is a manifest field any store can publish, and the bridge sends the value to the URL
+   * the same manifest names. It used to fall back to the Hub's own environment, so
+   * `"token_env": "JWT_SECRET"` mailed the Hub's signing key to the app. app.env holds only what the
+   * app already has (its settings plus the allowlisted Hub keys), so reading it gives nothing away.
+   */
   private async resolveAuthToken(appUrn: AppUrn, tokenEnv: string): Promise<string | undefined> {
     try {
       const appEnv = await this.appFilesManager.getAppEnv(appUrn);
-      const fromApp = this.envUtils.envStringToMap(appEnv.content ?? '').get(tokenEnv);
-      if (fromApp) return fromApp;
+      return this.envUtils.envStringToMap(appEnv.content ?? '').get(tokenEnv) || undefined;
     } catch {
-      // fall through
+      return undefined;
     }
-    return process.env[tokenEnv];
   }
 
   /**

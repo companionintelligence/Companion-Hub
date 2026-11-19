@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { ApiProxyService } from '../../agents/api-proxy.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { EnvUtils } from '@/modules/env/env.utils';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import {
@@ -23,6 +24,9 @@ const mockFetch = vi.fn();
 describe('ApiProxyService', () => {
   let service: ApiProxyService;
   let lifecycle: MockProxy<AppLifecycleService>;
+  let appFilesManager: MockProxy<AppFilesManager>;
+  /** What the app's own app.env holds; the only place a `token_env` is read from. */
+  const setAppEnv = (content: string) => appFilesManager.getAppEnv.mockResolvedValue({ path: 'app.env', content });
 
   beforeEach(async () => {
     vi.stubGlobal('fetch', mockFetch);
@@ -30,11 +34,14 @@ describe('ApiProxyService', () => {
     lifecycle = mock<AppLifecycleService>();
     // The real actor decision, so the proxy is exercised against the gate it asks in production.
     lifecycle.assertActorMay.mockImplementation(lifecycleActorGate());
+    appFilesManager = mock<AppFilesManager>();
+    setAppEnv('');
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ApiProxyService,
-        { provide: AppFilesManager, useValue: mock<AppFilesManager>() },
+        { provide: AppFilesManager, useValue: appFilesManager },
+        { provide: EnvUtils, useValue: new EnvUtils() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
         { provide: AppLifecycleService, useValue: lifecycle },
       ],
@@ -88,8 +95,8 @@ describe('ApiProxyService', () => {
   });
 
   describe('S-AOA-2.2: inject auth credentials', () => {
-    it('should inject bearer token from env', async () => {
-      process.env.TEST_TOKEN = 'secret123';
+    it('should inject bearer token from the app’s own app.env', async () => {
+      setAppEnv('TEST_TOKEN=secret123');
       mockFetch.mockResolvedValue(new Response('ok', { status: 200 }));
 
       await service.proxyOpenApiCall(TEST_URN, { method: 'get', path: '/api/test' }, {}, GRANTED_ACTOR, { type: 'bearer', token_env: 'TEST_TOKEN' });
@@ -102,8 +109,25 @@ describe('ApiProxyService', () => {
           }),
         }),
       );
+    });
 
-      delete process.env.TEST_TOKEN;
+    it('never sends a Hub secret a manifest names as its token_env', async () => {
+      process.env.JWT_SECRET = 'hub-signing-key';
+      mockFetch.mockResolvedValue(new Response('ok', { status: 200 }));
+
+      try {
+        await service.proxyOpenApiCall(TEST_URN, { method: 'get', path: '/api/test' }, {}, GRANTED_ACTOR, {
+          type: 'bearer',
+          token_env: 'JWT_SECRET',
+        });
+      } finally {
+        delete process.env.JWT_SECRET;
+      }
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const headers = (mockFetch.mock.calls[0]?.[1] as RequestInit | undefined)?.headers as Record<string, string>;
+      expect(headers).not.toHaveProperty('Authorization');
+      expect(JSON.stringify(mockFetch.mock.calls)).not.toContain('hub-signing-key');
     });
   });
 
@@ -352,15 +376,11 @@ describe('ApiProxyService', () => {
     });
 
     it('is run once the caller is admitted, and its credential sent', async () => {
-      process.env.TEST_TOKEN = 'secret123';
+      setAppEnv('TEST_TOKEN=secret123');
       mockFetch.mockResolvedValue(new Response('ok', { status: 200 }));
       const auth = vi.fn(async () => ({ type: 'bearer' as const, token_env: 'TEST_TOKEN' }));
 
-      try {
-        await service.proxyRequest(TEST_URN, { method: 'GET', path: '/api/users', auth, actor: GRANTED_ACTOR });
-      } finally {
-        delete process.env.TEST_TOKEN;
-      }
+      await service.proxyRequest(TEST_URN, { method: 'GET', path: '/api/users', auth, actor: GRANTED_ACTOR });
 
       expect(auth).toHaveBeenCalledTimes(1);
       expect(mockFetch).toHaveBeenCalledWith(

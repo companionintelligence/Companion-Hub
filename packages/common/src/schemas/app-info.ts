@@ -492,7 +492,9 @@ export const marketplaceMcpSchema = z.looseObject({
   /**
    * How CI Hub spawns stdio servers:
    * - `container_exec` (default): `docker exec -i <main-container> <command…>`
-   * - `host_docker`: run `<command…>` on the Hub host (for catalog entries whose MCP is `docker run …`)
+   * - `host_docker`: run `<command…>` on the Hub host (for catalog entries whose MCP is `docker run …`).
+   *   Official-store apps only, and only a `docker run` within the flag allowlist; the bridge
+   *   refuses anything else at spawn time (backend `mcp-stdio-launch-policy.ts`).
    */
   launch: z.enum(MCP_LAUNCH_MODES).optional(),
   /** Executable for stdio servers (e.g. "uvx"); empty/absent for hosted http listings. */

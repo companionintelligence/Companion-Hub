@@ -106,6 +106,7 @@ import {
 /** Added to a forward's deadline message when it ran under the last local candidate's longer budget, so the 502 names the setting that decided it. */
 const LAST_LOCAL_DEADLINE_NOTE = ' (last candidate, on this node)';
 import { type NativeChatPlan, nativeChatPlan, nativeChatPlanAt, nativeChatWindow, openAiChatResponse, optionsNumCtx } from './ollama-native-chat';
+import { lemonadeChatPlan, nativeChatResponseFromOpenAi } from './lemonade-native-chat';
 import {
   MAX_JUDGED_BODY_BYTES,
   OutputJudge,
@@ -4449,6 +4450,20 @@ export class PoolProxyService {
         lastLocal,
       );
       return await openAiChatResponse(upstream, native);
+    }
+    // Lemonade's native `/api/chat` reports only the uncached part of the prompt, so an agent that
+    // sizes its context from it never compacts. Its `/v1` reports the whole prompt. See `lemonade-native-chat.ts`.
+    const lemonade = backend === 'lemonade' && method === 'POST' && path === '/api/chat' ? lemonadeChatPlan(body) : null;
+    if (lemonade) {
+      const upstream = await this.fetchWithConnectTimeout(
+        `${backendImpl.getBaseUrl()}/v1/chat/completions`,
+        { method, headers, body: JSON.stringify(lemonade.request) },
+        lemonade.stream,
+        payload?.length ?? 0,
+        clientClosed,
+        lastLocal,
+      );
+      return await nativeChatResponseFromOpenAi(upstream, lemonade);
     }
     return this.fetchWithConnectTimeout(
       `${backendImpl.getBaseUrl()}${path}`,

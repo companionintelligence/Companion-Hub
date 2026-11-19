@@ -43,6 +43,7 @@ import { AgentConfigService } from './agents/agent-config.service';
 import { SkillResolverService } from './agents/skill-resolver.service';
 import { OpenApiBridgeService } from './agents/openapi-bridge.service';
 import { McpBridgeService } from './agents/mcp-bridge.service';
+import { McpStdioLaunchPolicy } from './agents/mcp-stdio-launch-policy';
 import { ApiProxyService } from './agents/api-proxy.service';
 import { McpProbeService } from './mcp-probe.service';
 import { ThrottlerModule } from '@nestjs/throttler';
@@ -108,6 +109,7 @@ const MCP_RATE_LIMIT = Number(process.env.MCP_RATE_LIMIT) || 300;
     SkillResolverService,
     OpenApiBridgeService,
     McpBridgeService,
+    McpStdioLaunchPolicy,
     ApiProxyService,
     McpProbeService,
   ],

@@ -158,8 +158,10 @@ export class McpStdioSession {
       if (!bin) {
         throw new Error(`No MCP command configured for ${this.label}`);
       }
+      // The caller builds the whole environment (see McpStdioLaunchPolicy / hostDockerEnv): never
+      // the Hub's own, which holds every Hub secret.
       return spawn(bin, args, {
-        env: { ...process.env, ...env },
+        env: { ...env },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     }
