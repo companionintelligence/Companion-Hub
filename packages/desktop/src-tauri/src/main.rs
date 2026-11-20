@@ -21,6 +21,7 @@ pub mod hub_manager;
 mod hub_names;
 mod inference_runners;
 mod login_autostart;
+mod login_start_unit;
 pub mod port_manager;
 mod portal_token;
 mod portal_url;
@@ -1227,6 +1228,10 @@ fn run_detached_mode() -> Result<String, String> {
             &format!("Pre-start cleanup failed (non-fatal): {}", error),
         );
     }
+
+    // Headless mode has no tray to come back at login (login_autostart needs a graphical session),
+    // so a Hub in a home folder unlocked at login gets the systemd user service instead.
+    login_start_unit::ensure(&data_dir);
 
     let message = hub_manager::start_hub(&compose_path, &env_path, &data_dir).map_err(|error| {
         error_reporting::capture_setup_failure(&error);
