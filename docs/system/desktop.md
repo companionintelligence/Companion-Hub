@@ -228,6 +228,8 @@ So on Linux the app starts itself at login, the counterpart of the WSL engine's 
 - If the user deletes the file, the app doesn't write it again. `<data dir>/.login-autostart-installed` records that it wrote one before.
 - `TryExec` names the binary, so the desktop skips the entry after an uninstall, or after an AppImage moves, until the next launch rewrites it.
 
+A Hub started with `cihub up` instead of the app gets a systemd user service that does the same job; see [After a reboot on Linux](../CLI.md#after-a-reboot-on-linux) in the CLI docs.
+
 Container identity: `CI_HUB_CONTAINER_UID/GID`, `DOCKER_GID` env vars from `resolve_hub_container_identity()`.
 
 Device ID: Portal knows a Hub by its `DEVICE_ID`, and the Hub's device key works only with that ID, so a launch keeps the one the Hub has. `render_runtime_env_content` (`hub_manager/runtime_env.rs`) takes it from `state/registered-device-id`, which the backend writes when the Hub pairs and removes when it is set up fresh, then from the `DEVICE_ID` already in the env file. Only a Hub with neither reads one from the host: on Windows the SMBIOS UUID through CIM (`Win32_ComputerSystemProduct`, what `wmic csproduct get uuid` printed), else the registry `MachineGuid`; on macOS `IOPlatformUUID`; on Linux `/etc/machine-id`. When the registered ID replaces a different one in the env file, `desktop.log` says so, with the last characters of each. A data folder copied to another computer keeps its device ID, as an env file copied between fleet nodes does (see [One device ID per machine](../fleet-setup.md#one-device-id-per-machine)), and a launch keeps `HUB_ALLOW_FOREIGN_DEVICE_ID=true` when the operator sets it.
