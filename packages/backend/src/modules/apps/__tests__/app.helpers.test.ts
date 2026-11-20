@@ -1721,6 +1721,11 @@ describe('AppHelpers', () => {
     });
 
     describe('R-ENV: MCP env injection for agent harness apps', () => {
+      // A person let these apps use the Hub's tools (`app.mcp_access`); see the MCP access block below.
+      beforeEach(() => {
+        appsRepository.getAppMcpAccess.mockResolvedValue('write');
+      });
+
       // BUG-MCP-1: single Streamable HTTP endpoint (/api/mcp); the old /sse + /messages pair is gone.
       it('R-ENV-1/2: should inject HUB_URL and the single HUB_MCP_URL when hub_integration.mcp_client is true', async () => {
         const envMap = new Map<string, string>();
@@ -1788,6 +1793,76 @@ describe('AppHelpers', () => {
         } finally {
           delete process.env.API_PORT;
         }
+      });
+
+      it('mints the key at the level the person granted', async () => {
+        envUtils.envStringToMap.mockReturnValue(new Map());
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, hub_integration: { mcp_client: true } } as AppInfo);
+        appsRepository.getAppMcpAccess.mockResolvedValue('read');
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(apiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ scopes: ['mcp'], mcpCapability: 'read' }));
+      });
+
+      describe.each([
+        ['nobody has answered', null],
+        ['the answer was no', 'none'],
+      ])('SECURITY: when %s', (_label, access) => {
+        it('gives the app no MCP key and takes away one it holds', async () => {
+          const envMap = new Map<string, string>();
+          envUtils.envStringToMap.mockReturnValue(envMap);
+          appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app.env', content: 'HUB_MCP_API_KEY=old-key' });
+          appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, hub_integration: { mcp_client: true } } as AppInfo);
+          appsRepository.getAppMcpAccess.mockResolvedValue(access);
+
+          await appHelpers.generateEnvFile(testAppUrn, {});
+
+          expect(apiKeys.provisionManagedKey).not.toHaveBeenCalled();
+          expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(testAppUrn);
+          expect(envMap.has('HUB_MCP_API_KEY')).toBe(false);
+          expect(envMap.has('HUB_MCP_URL')).toBe(false);
+        });
+      });
+
+      describe('an app installed before the Hub asked', () => {
+        const officialUrn = createAppUrn('ci-openclaw', 'ci-marketplace');
+
+        beforeEach(() => {
+          envUtils.envStringToMap.mockImplementation((content: string) => new Map(content ? [['HUB_MCP_API_KEY', 'held-key']] : []));
+          appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app.env', content: 'HUB_MCP_API_KEY=held-key' });
+          appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, hub_integration: { mcp_client: true } } as AppInfo);
+          appsRepository.getAppMcpAccess.mockResolvedValue(null);
+          apiKeys.provisionManagedKey.mockResolvedValue('held-key');
+        });
+
+        it("keeps an official-store app's MCP key at its level, and records that as the answer", async () => {
+          apiKeys.findManagedByApp.mockResolvedValue(fromPartial({ scopes: ['mcp'], capability: 'read' }));
+
+          await appHelpers.generateEnvFile(officialUrn, {});
+
+          expect(appsRepository.setAppMcpAccess).toHaveBeenCalledWith(officialUrn, 'read');
+          expect(apiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ scopes: ['mcp'], mcpCapability: 'read' }));
+        });
+
+        it('SECURITY: does not keep one for an app from another store', async () => {
+          apiKeys.findManagedByApp.mockResolvedValue(fromPartial({ scopes: ['mcp'], capability: 'write' }));
+
+          await appHelpers.generateEnvFile(createAppUrn('ci-openclaw', 'test-store'), {});
+
+          expect(appsRepository.setAppMcpAccess).not.toHaveBeenCalled();
+          expect(apiKeys.provisionManagedKey).not.toHaveBeenCalled();
+          expect(apiKeys.revokeManagedByApp).toHaveBeenCalled();
+        });
+
+        it('gives an official-store app that holds no MCP key none', async () => {
+          apiKeys.findManagedByApp.mockResolvedValue(null);
+
+          await appHelpers.generateEnvFile(officialUrn, {});
+
+          expect(appsRepository.setAppMcpAccess).not.toHaveBeenCalled();
+          expect(apiKeys.provisionManagedKey).not.toHaveBeenCalled();
+        });
       });
 
       it('R-ENV/SEC-MCP-8: provisions a dedicated managed key and injects it as HUB_MCP_API_KEY', async () => {

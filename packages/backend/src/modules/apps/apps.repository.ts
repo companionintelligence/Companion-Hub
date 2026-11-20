@@ -3,7 +3,7 @@ import { DATABASE, type Database } from '@/core/database/database.module';
 import { app } from '@/core/database/drizzle/schema';
 import type { AppStatus, NewApp } from '@/core/database/drizzle/types';
 import { Inject, Injectable } from '@nestjs/common';
-import type { AppUrn } from '@ci-hub/common/types';
+import type { AppUrn, McpAccessChoice } from '@ci-hub/common/types';
 import { normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { and, asc, eq, ne, notInArray, or, sql } from 'drizzle-orm';
 
@@ -71,6 +71,38 @@ export class AppsRepository {
       .execute();
 
     return row?.customDomain ?? null;
+  }
+
+  /**
+   * A person's answer to this app's request for the Hub's MCP tools (`app.mcp_access`), or `null`
+   * when nobody was asked or there is no row. Read on every env generation, so like
+   * {@link getAppCustomDomain} it reads the one column.
+   */
+  public async getAppMcpAccess(appUrn: AppUrn): Promise<string | null> {
+    const { appStoreId, appName } = extractAppUrn(appUrn);
+
+    const [row] = await this.db
+      .select({ mcpAccess: app.mcpAccess })
+      .from(app)
+      .where(and(eq(app.appName, appName), eq(app.appStoreSlug, appStoreId)))
+      .limit(1)
+      .execute();
+
+    return row?.mcpAccess ?? null;
+  }
+
+  /** Record a person's answer (or, for an app installed before the question existed, the Hub's). */
+  public async setAppMcpAccess(appUrn: AppUrn, access: McpAccessChoice): Promise<boolean> {
+    const { appStoreId, appName } = extractAppUrn(appUrn);
+
+    const updated = await this.db
+      .update(app)
+      .set({ mcpAccess: access })
+      .where(and(eq(app.appName, appName), eq(app.appStoreSlug, appStoreId)))
+      .returning({ id: app.id })
+      .execute();
+
+    return updated.length > 0;
   }
 
   /**

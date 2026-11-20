@@ -1,9 +1,13 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { castAppUrn } from '@/common/helpers/app-helpers';
-import { Body, Controller, Delete, Get, HttpStatus, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpStatus, Param, Patch, Post, Put, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
+import type { McpAccessChoice } from '@ci-hub/common/types';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AuthGuard } from '../auth/auth.guard';
+import { HubManagerGuard } from '../auth/hub-manager.guard';
+import { assertMayGrantFullCapability } from '../api-keys/may-grant-full';
+import { LoggerService } from '@/core/logger/logger.service';
 import { AppLifecycleService } from './app-lifecycle.service';
 import { HubAccessService } from './hub-access.service';
 import { AppRehydrationService } from './app-rehydration.service';
@@ -14,6 +18,7 @@ import {
   CancelOperationBody,
   CancelOperationResponseDto,
   LifecycleRequestDto,
+  McpAccessBody,
   RehydrateStatusDto,
   ResetAppBody,
   UninstallAppBody,
@@ -36,6 +41,7 @@ export class AppLifecycleController {
     private readonly hubAccessService: HubAccessService,
     private readonly whois: MarketplaceWhoIsService,
     private readonly pairingAppRestore: PairingAppRestoreService,
+    private readonly logger: LoggerService,
   ) {}
 
   @Get('rehydrate/plan')
@@ -112,12 +118,47 @@ export class AppLifecycleController {
     return this.hubAccessService.rotate(appUrn);
   }
 
+  /**
+   * Answer an app's request for the Hub's MCP tools (`hub_integration.mcp_client`): `none`, or the
+   * level its own MCP key reaches the apps beside it at.
+   *
+   * ⚠ A PERSON ANSWERS THIS, NEVER A KEY. The key it grants reaches other apps, so it takes what minting
+   * any key takes (`HubManagerGuard`, a person's session), `configure` on this app, and for `full` an
+   * organization owner or admin, as raising any key to `full` does. An app's own key may change its own
+   * app, which is why this is a route of its own and not a field of the settings it could save.
+   */
+  /**
+   * An installer granting the app's MCP key access needs what `PUT :urn/hub-access/mcp` needs: the right
+   * to manage the Hub, and for `full` an organization owner or admin. Refusing (`none`) needs nothing more.
+   */
+  private async assertMayGrantMcpAccess(req: Request, access: McpAccessChoice | undefined): Promise<void> {
+    if (access === undefined || access === 'none') {
+      return;
+    }
+    await this.whois.assertSessionMayManageHub(req);
+    if (access === 'full') {
+      await assertMayGrantFullCapability(req, this.whois, this.logger);
+    }
+  }
+
+  @Put(':urn/hub-access/mcp')
+  @UseGuards(HubManagerGuard)
+  async setMcpAccess(@Param('urn') urn: string, @Body() body: McpAccessBody, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'configure');
+    if (body.access === 'full') {
+      await assertMayGrantFullCapability(req, this.whois, this.logger);
+    }
+    return this.hubAccessService.setMcpAccess(appUrn, body.access);
+  }
+
   @Post(':urn/install')
   @ApiResponse({ type: LifecycleRequestDto })
   async installApp(@Param('urn') urn: string, @Body() body: AppFormBody, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
     // No `assertSessionAction` here: `installApp` asks the same question of the same actor before it
     // does anything else, and asking twice cost an install a second WhoIs round trip to the Portal.
+    await this.assertMayGrantMcpAccess(req, body.mcpAccess);
     const res = await this.appLifecycleService.installApp({ appUrn, form: body, actor: this.whois.lifecycleActor(req, 'install') });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }

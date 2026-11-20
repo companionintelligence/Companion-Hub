@@ -1,8 +1,7 @@
-import { Body, Controller, Delete, Get, HttpStatus, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { ApiResponse } from '@nestjs/swagger';
 import type { Request } from 'express';
-import { TranslatableError } from '@/common/error/translatable-error';
 import { LoggerService } from '@/core/logger/logger.service';
 import { hubSessionOperatorUserId } from '@/core/portal/hub-session-operator';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
@@ -10,6 +9,7 @@ import { AuthGuard } from '@/modules/auth/auth.guard';
 import { HubManagerGuard, resolveWhoisService } from '@/modules/auth/hub-manager.guard';
 import { ApiKeyAdminService } from './api-key-admin.service';
 import { ApiKeyListDto, CreateApiKeyBody, UpdateApiKeyBody } from './api-key-admin.dto';
+import { assertMayGrantFullCapability, mayGrantFullCapability } from './may-grant-full';
 
 /**
  * Operator-facing hub-wide API-key surface, powering the Settings → Security "API keys" card.
@@ -101,46 +101,13 @@ export class ApiKeyAdminController {
     return this.adminService.revokeKey(id);
   }
 
-  /**
-   * ⚠ FULL CAPABILITY IS THE ORGANIZATION'S TO GIVE. A key acts with its creator's grants, but `full`
-   * also opens the destructive MCP tools, and some act on no app a per-app grant could bound: updating
-   * the Hub, and adding, re-enabling or deleting an app store. So who may hand it out is an owner's or
-   * admin's call, as it is in the Portal. Asked of WhoIs fresh and about no app (`isOrgManager`); every
-   * way of not knowing is a no. The operator who claimed the Hub may too, whatever their role, as
-   * `HubManagerGuard` lets them make every other Hub-wide change (`isClaimingOperator`).
-   *
-   * The exempt principals (the CLI, the Portal device push) are admitted by name, as
-   * `MarketplaceWhoIsService.lifecycleActor` names them, not through `isGrantExemptPrincipal`: one
-   * added to that list later is refused here until someone decides it may hand out `full` keys. Any
-   * other principal is refused and logged the way the other gates log it, because all its caller
-   * ever sees is a 403.
-   */
-  private async mayGrantFull(req: Request): Promise<boolean> {
-    switch (req.hubPrincipal) {
-      case 'cli':
-      case 'host-local':
-      case 'portal-device':
-        return true;
-      case 'session': {
-        const userId = hubSessionOperatorUserId(req);
-        const whois = this.resolveWhois();
-
-        if (userId === undefined || !whois) {
-          return false;
-        }
-
-        return (await whois.isClaimingOperator(userId)) || (await whois.isOrgManager(userId));
-      }
-      default:
-        this.logger.warn(`whois_unrecognised_principal principal=${req.hubPrincipal ?? 'none'} action=grant_full`);
-        return false;
-    }
+  /** See {@link mayGrantFullCapability}. */
+  private mayGrantFull(req: Request): Promise<boolean> {
+    return mayGrantFullCapability(req, this.resolveWhois(), this.logger);
   }
 
-  private async assertMayGrantFull(req: Request): Promise<void> {
-    if (!(await this.mayGrantFull(req))) {
-      throw new TranslatableError('API_KEY_FULL_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
-    }
+  private assertMayGrantFull(req: Request): Promise<void> {
+    return assertMayGrantFullCapability(req, this.resolveWhois(), this.logger);
   }
 
   /**

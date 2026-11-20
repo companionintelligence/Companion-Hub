@@ -1890,6 +1890,36 @@ describe('AppLifecycleService', () => {
       });
     });
 
+    // The answer to the app's request for the Hub MCP tools lives on the row, written by a person; the
+    // route checked they may give it (`AppLifecycleController.installApp`).
+    describe('the installer’s answer about MCP access', () => {
+      it('is recorded on the row, and kept out of the stored form', async () => {
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { mcpAccess: 'read' } });
+
+        const row = appsRepository.createApp.mock.calls[0]?.[0] as Record<string, unknown>;
+        expect(row.mcpAccess).toBe('read');
+        expect(row.config).not.toHaveProperty('mcpAccess');
+      });
+
+      it('SECURITY: is ignored from a key, which may install an app but not give it reach', async () => {
+        await service.installApp({
+          actor: { kind: 'mcp', ownerAppUrn: null, createdByUserId: null, capability: 'full' },
+          appUrn,
+          form: { mcpAccess: 'full' },
+        });
+
+        const row = appsRepository.createApp.mock.calls[0]?.[0] as Record<string, unknown>;
+        expect(row).not.toHaveProperty('mcpAccess');
+        expect(row.config).not.toHaveProperty('mcpAccess');
+      });
+
+      it('is left as it was when an install gives none', async () => {
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+
+        expect(appsRepository.createApp.mock.calls[0]?.[0]).not.toHaveProperty('mcpAccess');
+      });
+    });
+
     it('records what the production guard applied, not what the request asked for', async () => {
       configService.getConfig.mockReturnValue({ ...configService.getConfig(), isProduction: true } as any);
 
@@ -9495,7 +9525,7 @@ describe('AppLifecycleService', () => {
         forwardAuth.invalidateApp.mockReset();
         const moduleRef = mock<ModuleRef>();
         moduleRef.get.mockReturnValue(forwardAuth);
-        hubAccess = new HubAccessService(apiKeys, hubAppFiles, service, new EnvUtils(), mock<LoggerService>(), moduleRef);
+        hubAccess = new HubAccessService(apiKeys, hubAppFiles, service, new EnvUtils(), mock<LoggerService>(), moduleRef, mock<AppsRepository>());
       });
 
       it("refuses a rotate while the app starts, with the start's 409, and leaves the old credentials working", async () => {

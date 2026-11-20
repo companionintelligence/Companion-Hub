@@ -5126,6 +5126,39 @@
         ]
       }
     },
+    "/api/app-lifecycle/{urn}/hub-access/mcp": {
+      "put": {
+        "operationId": "setMcpAccess",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpAccessBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLifecycle"
+        ]
+      }
+    },
     "/api/app-lifecycle/{urn}/install": {
       "post": {
         "operationId": "installApp",
@@ -14781,6 +14814,24 @@
         ],
         "additionalProperties": false
       },
+      "McpAccessBody": {
+        "type": "object",
+        "properties": {
+          "access": {
+            "type": "string",
+            "enum": [
+              "none",
+              "read",
+              "write",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "access"
+        ],
+        "additionalProperties": false
+      },
       "AppFormBody": {
         "type": "object",
         "properties": {
@@ -14817,6 +14868,15 @@
           },
           "autoRestartOnDomainChange": {
             "type": "boolean"
+          },
+          "mcpAccess": {
+            "type": "string",
+            "enum": [
+              "none",
+              "read",
+              "write",
+              "full"
+            ]
           },
           "localSubdomain": {
             "type": "string",

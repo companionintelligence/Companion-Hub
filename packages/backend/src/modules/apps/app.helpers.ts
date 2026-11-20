@@ -20,7 +20,7 @@ import {
   type HubIntegration,
   writesAppBaseUrl,
 } from '@ci-hub/common/schemas';
-import type { AppUrn } from '@ci-hub/common/types';
+import { type AppUrn, mcpAccessGranted } from '@ci-hub/common/types';
 import { normalizeStoredHostname } from '@ci-hub/common/types';
 import { buildFqdnSubdomain, buildPublicWebIdentity, extractDeviceSlug, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { EnvUtils } from '../env/env.utils';
@@ -227,7 +227,8 @@ export function receivesPortalDeviceKey(config: Pick<AppInfo, 'id' | 'source'>):
 /**
  * Returns the scopes for an app's Hub-managed key.
  *
- * The `mcp` scope serves an MCP tools consumer, and the `app` scope serves a
+ * The `mcp` scope serves an MCP tools consumer that a person let use the Hub's tools
+ * (`mcpAccess`, the app row's `mcp_access`), and the `app` scope serves a
  * provenance-gated first-party consumer. An empty array grants no managed key and no
  * per-app forward-auth secret. Both `generateEnvFile` and `HubAccessService` use this
  * gate so the operator-facing report cannot drift from the actual grant. It is not the
@@ -235,9 +236,11 @@ export function receivesPortalDeviceKey(config: Pick<AppInfo, 'id' | 'source'>):
  * secret with no key scope, and `HubAccessService` counts that gate too. A new kind of
  * trust material has to be added in both places.
  */
-export function hubTrustMaterialScopes(config: Pick<AppInfo, 'urn' | 'hub_integration'>): ApiKeyScope[] {
+export function hubTrustMaterialScopes(config: Pick<AppInfo, 'urn' | 'hub_integration'>, mcpAccess: string | null | undefined): ApiKeyScope[] {
   const scopes: ApiKeyScope[] = [];
-  if (config.hub_integration?.mcp_client) {
+  // Asking is not enough: any store can publish a manifest that sets `mcp_client`, and the key it would
+  // get reaches the apps beside it. A person answers first (`app.mcp_access`, see `mcpAccessGranted`).
+  if (config.hub_integration?.mcp_client && mcpAccessGranted(mcpAccess)) {
     scopes.push('mcp');
   }
   // The install URN's store slug provides provenance because manifest fields are forgeable.
@@ -427,6 +430,35 @@ export class AppHelpers {
     } catch {
       return [];
     }
+  }
+
+  /**
+   * A person's answer to this app's request for the Hub's MCP tools (`app.mcp_access`).
+   *
+   * An app installed before the Hub asked has none. An official-store app among them that already
+   * holds an MCP key keeps it, at that key's level, and the answer is recorded as given: Hermes and
+   * OpenClaw were installed from the Hub's own store expecting it, and taking it away unasked would
+   * stop them on their next restart. Every other unanswered app gets no MCP key until a person
+   * grants one, from the app's Hub access section.
+   */
+  private async resolveMcpAccess(appUrn: AppUrn, config: Pick<AppInfo, 'hub_integration'>, existingAppEnvMap: Map<string, string>) {
+    if (!config.hub_integration?.mcp_client) {
+      return null;
+    }
+    const stored = await this.appsRepository.getAppMcpAccess(appUrn);
+    if (stored !== null && stored !== undefined) {
+      return stored;
+    }
+    if (!isOfficialStoreApp({ urn: appUrn }) || !existingAppEnvMap.get('HUB_MCP_API_KEY')) {
+      return null;
+    }
+    const held = await this.apiKeys.findManagedByApp(appUrn);
+    if (!held?.scopes.includes('mcp')) {
+      return null;
+    }
+    await this.appsRepository.setAppMcpAccess(appUrn, held.capability);
+    this.logger.info(`[AppHelpers] ${appUrn} keeps the MCP access it had before the Hub asked, at ${held.capability}`);
+    return held.capability;
   }
 
   /**
@@ -998,7 +1030,8 @@ export class AppHelpers {
     // The install URN gates the callback grant because manifest fields are
     // forgeable but store slugs are not. Third-party-store apps receive no
     // callback credential regardless of their manifest.
-    const scopes = hubTrustMaterialScopes(config);
+    const mcpAccess = await this.resolveMcpAccess(appUrn, config, existingAppEnvMap);
+    const scopes = hubTrustMaterialScopes(config, mcpAccess);
     const isMcpClient = scopes.includes('mcp');
     const isFirstPartyConsumer = scopes.includes('app');
     if (scopes.length > 0) {
@@ -1019,6 +1052,7 @@ export class AppHelpers {
         appName: config.name ?? appUrn,
         existingRawKey: existingManagedKey,
         scopes,
+        ...(mcpAccessGranted(mcpAccess) ? { mcpCapability: mcpAccess } : {}),
       });
 
       if (isMcpClient) {
@@ -1044,6 +1078,10 @@ export class AppHelpers {
         envMap.set('HUB_APP_KEY', managedKey);
         envMap.set('CI_APP_URN', appUrn);
       }
+    } else {
+      // Nothing to hold, so nothing may stay behind: an app whose MCP access was refused or never
+      // granted kept the key it had until now, and with it its reach over the apps beside it.
+      await this.apiKeys.revokeManagedByApp(appUrn);
     }
 
     // --- Standardized AI environment variables (opt-in) ---

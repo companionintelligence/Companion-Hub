@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/Input';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { apiFetch } from '@/lib/api-fetch';
+import { fetchCanGrantFull } from '@/lib/hooks/use-can-grant-full';
 import { copyToClipboard } from '@/lib/copy-to-clipboard';
 import { isI18nKey } from '@/lib/format-api-error';
 import type { TFunction } from 'i18next';
@@ -66,23 +67,6 @@ const fetchApiKeys = async (): Promise<ApiKeyInfo[]> => {
     throw new Error('api-keys request failed');
   }
   return ((await res.json()) as { keys: ApiKeyInfo[] }).keys;
-};
-
-/**
- * Whether this operator may give a key full capability. Asked on its own because answering it asks
- * the Portal, and the list must not wait on that. Any failure (a Hub that predates the route, an
- * outage) reads as yes: the screen then offers full as it always did, and the routes decide.
- */
-const fetchCanGrantFull = async (): Promise<boolean> => {
-  try {
-    const res = await apiFetch('/api/api-keys/grantable');
-    if (!res.ok) {
-      return true;
-    }
-    return ((await res.json()) as { canGrantFull?: boolean }).canGrantFull !== false;
-  } catch {
-    return true;
-  }
 };
 
 /**

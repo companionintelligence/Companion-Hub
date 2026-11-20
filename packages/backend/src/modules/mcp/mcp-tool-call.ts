@@ -40,6 +40,26 @@ export function mcpCallerIsOperator(): boolean {
  * key" as an unmanaged key is how the admin runner, which never has one, reached every app with no
  * grant check (CI-Hub#1397).
  */
+/**
+ * Whether the in-flight caller may read the values a person typed into `appUrn`: its install form
+ * (the stored `app.config`) and its own env and compose overrides. Those hold passwords and API keys.
+ *
+ * An app's own MCP key reads its own app's. Another app's key may look after an app (start it, read
+ * its logs) without them, so it needs `full`, which only an organization owner or admin gives. A key a
+ * person made acts as that person, and the operator console is a person: both keep what their grant
+ * lets them read.
+ */
+export function mcpCallerMayReadSettingValues(appUrn: AppUrn): boolean {
+  if (mcpAdminCallContext.getStore() !== undefined) {
+    return true;
+  }
+  const key = mcpCallContext.getStore();
+  if (!key || key.ownerAppUrn === null) {
+    return true;
+  }
+  return key.ownerAppUrn === appUrn || key.capability === 'full';
+}
+
 export function mcpCallerLifecycleActor(action: HubAction): LifecycleActor {
   const actorFor = mcpAdminCallContext.getStore();
 

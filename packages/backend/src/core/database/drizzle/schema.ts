@@ -146,6 +146,15 @@ export const app = pgTable(
     autoRestartOnDomainChange: boolean('auto_restart_on_domain_change').default(false).notNull(),
     userConfigEnabled: boolean('user_config_enabled').default(true).notNull(),
     maxBackups: integer('max_backups'),
+    /**
+     * A person's answer to an app's `hub_integration.mcp_client`: whether it may use the Hub's MCP
+     * tools on the apps beside it, and at what level (`McpAccessChoice`). `null` means nobody was
+     * asked; `none` means asked and refused. The Hub mints the app's MCP key only at `read` or above.
+     *
+     * ⚠ ONLY A PERSON'S SESSION WRITES THIS. An app's own key may change its own app, so this is
+     * never read from the stored form, which that key can rewrite (see 0068_app_mcp_access.sql).
+     */
+    mcpAccess: varchar('mcp_access'),
   },
   (table) => [uniqueIndex('app_name_store_slug_uidx').on(table.appName, table.appStoreSlug)],
 );

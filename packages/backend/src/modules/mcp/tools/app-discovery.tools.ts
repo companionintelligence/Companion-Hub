@@ -6,7 +6,7 @@ import { DockerService } from '@/modules/docker/docker.service';
 import { hasUpdateAvailable } from '@ci-hub/common/validation';
 import { castAppUrn, createAppUrn } from '@/common/helpers/app-helpers';
 import { settingsReadAction } from '@/core/portal/local-app-reads';
-import { assertMcpCallerMay } from '../mcp-tool-call';
+import { assertMcpCallerMay, mcpCallerMayReadSettingValues } from '../mcp-tool-call';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
 @Injectable()
@@ -120,7 +120,7 @@ export class AppDiscoveryTools implements OnModuleInit {
   async listInstalledApps(params: { full?: boolean } = {}) {
     const entries = await this.appsService.getInstalledApps();
     if (params.full === true) {
-      return entries;
+      return entries.map((entry) => withoutSettingValuesFor(createAppUrn(entry.app.appName, entry.app.appStoreSlug), entry));
     }
 
     return { count: entries.length, apps: entries.map(summarizeInstalledApp) };
@@ -134,7 +134,7 @@ export class AppDiscoveryTools implements OnModuleInit {
   async getApp(params: { appUrn: string }) {
     const appUrn = castAppUrn(params.appUrn);
     await assertMcpCallerMay(this.appLifecycleService, appUrn, 'view');
-    return this.appsService.getApp(appUrn);
+    return withoutSettingValuesFor(appUrn, await this.appsService.getApp(appUrn));
   }
 
   async getAppLogs(params: { appUrn: string; maxLines?: number }): Promise<{ lines: string[] }> {
@@ -213,6 +213,20 @@ export class AppDiscoveryTools implements OnModuleInit {
 }
 
 type InstalledAppEntry = Awaited<ReturnType<AppsService['getInstalledApps']>>[number];
+
+/**
+ * An app's record without the values a person typed into its install form (`app.config`), for a
+ * caller that may look after the app but not read them (`mcpCallerMayReadSettingValues`): another
+ * app's MCP key below `full`. Those values hold passwords and API keys; what the app is, where it
+ * runs and how it is doing stay.
+ */
+export function withoutSettingValuesFor<T extends { app: { config?: unknown } | null }>(appUrn: AppUrn, entry: T): T {
+  if (!entry?.app || mcpCallerMayReadSettingValues(appUrn)) {
+    return entry;
+  }
+  const { config: _config, ...app } = entry.app;
+  return { ...entry, app };
+}
 
 /**
  * One installed app as `hub_list_installed_apps` reports it by default. The full entry carries the
