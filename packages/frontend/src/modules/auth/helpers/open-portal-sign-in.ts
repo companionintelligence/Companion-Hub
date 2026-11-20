@@ -1,3 +1,4 @@
+import { bindSignInToThisApp } from '@/lib/deep-link-app-binding';
 import { signInDesktopWithPortal } from '@/lib/desktop-portal-sign-in';
 import { AuthSessionCancelledError, openAuthSession } from '@/lib/helpers/open-auth-browser';
 import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
@@ -31,11 +32,14 @@ export function openPortalSignInOutsideApp(portalSsoHref: string, errorMessage: 
     return;
   }
 
-  openAuthSession(portalSsoHref).catch((error: unknown) => {
-    if (error instanceof AuthSessionCancelledError) {
-      return;
-    }
-    console.error('login: the system opener refused the SSO URL', error);
-    toast.error(errorMessage);
-  });
+  // The code this sign-in ends with is redeemable only with the secret kept here (deep-link-app-binding).
+  bindSignInToThisApp(portalSsoHref)
+    .then((href) => openAuthSession(href))
+    .catch((error: unknown) => {
+      if (error instanceof AuthSessionCancelledError) {
+        return;
+      }
+      console.error('login: the system opener refused the SSO URL', error);
+      toast.error(errorMessage);
+    });
 }

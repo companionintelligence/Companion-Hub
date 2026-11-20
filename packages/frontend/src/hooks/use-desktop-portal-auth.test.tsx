@@ -45,8 +45,10 @@ vi.mock('@/lib/mobile-connection', () => ({
   getHubBaseUrlSync: () => runtime.getHubBaseUrlSync(),
 }));
 vi.mock('@/lib/portal-sso-url', () => ({
-  buildPortalDesktopExchangeUrl: ({ token }: { token: string }) =>
-    `http://localhost:5005/api/auth/portal/desktop-exchange?token=${encodeURIComponent(token)}`,
+  buildPortalDesktopExchangeUrl: ({ token, verifier }: { token: string; verifier?: string | null }) =>
+    `http://localhost:5005/api/auth/portal/desktop-exchange?token=${encodeURIComponent(token)}${
+      verifier ? `&verifier=${encodeURIComponent(verifier)}` : ''
+    }`,
 }));
 
 vi.mock('@/lib/tauri-hub-probe', () => ({ isViteLocalFrontend: () => true }));
@@ -135,12 +137,17 @@ beforeEach(() => {
   dl.takePersistedDesktopPortalToken.mockReset().mockReturnValue(null);
   dl.clearPersistedDesktopPortalToken.mockReset();
   hint.resolvePortalSessionHint.mockReset().mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: true });
+  // A sign-in this app started: its secret is waiting (deep-link-app-binding). The tests that need none clear it.
+  localStorage.setItem('ci-hub.portal-deep-link-verifier', JSON.stringify({ verifier: APP_VERIFIER, createdAt: Date.now() }));
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
+
+/** The secret of the sign-in the app started, as `bindSignInToThisApp` keeps it. */
+const APP_VERIFIER = 'a'.repeat(43);
 
 /** The Hub a phone has picked. With a Hub chosen, a phone is on mobile-hub-sso, the flow that owns the deep-link handoff. */
 const REMOTE_HUB = 'https://hub-core3-bc.companionintelligence.com';
@@ -278,7 +285,7 @@ describe('useDesktopPortalAuth — successful handoff (phone)', () => {
     renderHook(() => useDesktopPortalAuth());
 
     await waitFor(() => expect(api.setTauriSessionId).toHaveBeenCalledWith('sess-1'));
-    expect(api.apiFetch).toHaveBeenCalledWith('/api/auth/portal/desktop-exchange?token=tok-cold', expect.any(Object));
+    expect(api.apiFetch).toHaveBeenCalledWith(`/api/auth/portal/desktop-exchange?token=tok-cold&verifier=${APP_VERIFIER}`, expect.any(Object));
     expect(toastMock.error).not.toHaveBeenCalled();
     expect(ctx.setUserContext).toHaveBeenCalledWith({ isLoggedIn: true });
     await waitFor(() => expect(locationAssign).toHaveBeenCalledWith('/dashboard'));
@@ -293,7 +300,7 @@ describe('useDesktopPortalAuth — successful handoff (phone)', () => {
     renderHook(() => useDesktopPortalAuth());
 
     await waitFor(() => expect(api.setTauriSessionId).toHaveBeenCalledWith('sess-1'));
-    expect(api.apiFetch).toHaveBeenCalledWith('/api/auth/portal/desktop-exchange?token=tok-mobile', expect.any(Object));
+    expect(api.apiFetch).toHaveBeenCalledWith(`/api/auth/portal/desktop-exchange?token=tok-mobile&verifier=${APP_VERIFIER}`, expect.any(Object));
   });
 
   it('remembers the account the phone is signed in as, from the session hint that follows the exchange', async () => {
@@ -308,6 +315,43 @@ describe('useDesktopPortalAuth — successful handoff (phone)', () => {
     renderHook(() => useDesktopPortalAuth());
 
     await waitFor(() => expect(hint.rememberPortalAccountEmail).toHaveBeenCalledWith('person@example.com'));
+  });
+});
+
+describe('useDesktopPortalAuth — only a sign-in this app started (phone)', () => {
+  beforeEach(() => {
+    asPhoneOnRemoteHub();
+  });
+
+  it('drops a link it did not ask for, without exchanging it, and says so', async () => {
+    localStorage.removeItem('ci-hub.portal-deep-link-verifier');
+    dl.takePendingDesktopPortalAuth.mockResolvedValue({ token: 'tok-planted' });
+
+    renderHook(() => useDesktopPortalAuth());
+
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalled());
+    expect(api.apiFetch.mock.calls.some((call) => String(call[0]).includes('desktop-exchange'))).toBe(false);
+    expect(api.setTauriSessionId).not.toHaveBeenCalled();
+    expect(dl.used.has('tok-planted')).toBe(true);
+  });
+
+  it('drops a link whose sign-in secret is too old', async () => {
+    localStorage.setItem('ci-hub.portal-deep-link-verifier', JSON.stringify({ verifier: APP_VERIFIER, createdAt: Date.now() - 31 * 60 * 1000 }));
+    dl.takePendingDesktopPortalAuth.mockResolvedValue({ token: 'tok-stale' });
+
+    renderHook(() => useDesktopPortalAuth());
+
+    await waitFor(() => expect(dl.used.has('tok-stale')).toBe(true));
+    expect(api.setTauriSessionId).not.toHaveBeenCalled();
+  });
+
+  it('forgets the secret once its code has signed the phone in', async () => {
+    dl.takePendingDesktopPortalAuth.mockResolvedValue({ token: 'tok-once' });
+
+    renderHook(() => useDesktopPortalAuth());
+
+    await waitFor(() => expect(api.setTauriSessionId).toHaveBeenCalledWith('sess-1'));
+    expect(localStorage.getItem('ci-hub.portal-deep-link-verifier')).toBeNull();
   });
 });
 

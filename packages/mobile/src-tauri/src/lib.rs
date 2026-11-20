@@ -25,6 +25,7 @@
 //! frontend routes to the right screen — so an intent needs no extra IPC.
 
 mod auth_session;
+mod webview_navigation;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -125,6 +126,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(webview_navigation::init())
         .plugin(tauri_plugin_http::init())
         .invoke_handler(tauri::generate_handler![
             consume_pending_pairing_code,
