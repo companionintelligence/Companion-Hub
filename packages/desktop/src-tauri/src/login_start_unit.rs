@@ -211,13 +211,11 @@ mod tests {
         (dir, paths)
     }
 
+    /// Every `systemctl` call the recorder saw, one joined argument list per call.
+    type Calls = std::rc::Rc<std::cell::RefCell<Vec<String>>>;
+
     /// A `systemctl` that records each call, with a user manager unless `session` is false.
-    fn recorder(
-        session: bool,
-    ) -> (
-        std::rc::Rc<std::cell::RefCell<Vec<String>>>,
-        impl FnMut(&[&str]) -> bool,
-    ) {
+    fn recorder(session: bool) -> (Calls, impl FnMut(&[&str]) -> bool) {
         let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let sink = calls.clone();
         let systemctl = move |args: &[&str]| {
