@@ -314,7 +314,7 @@ cihub config [env]                                   # show resolved config valu
 
 The Hub's containers bind-mount files from a folder in the home folder: the data dir (`~/.local/share/companion-hub`) on an installed Hub, the checkout on a developer's. If the home folder is only unlocked at login (eCryptfs, fscrypt or systemd-homed), Docker starts before those files exist. The containers then fail to start (`error mounting … not a directory`, exit 127), and Docker doesn't retry a container that failed to start. A disk that is unlocked before boot, such as full-disk LUKS, isn't affected. On one machine, Docker gave up on `ci-hub` and `traefik` 0.3 seconds before the login mounted the home folder.
 
-So on Linux, `cihub up` (any environment but `local`) installs a systemd user service, `companion-hub-login-start.service`, and enables it the first time. It runs once at each login, waits up to two minutes for Docker, and starts a Hub container only when all of these are true:
+So on Linux, `cihub up` (any environment but `local`) and the desktop package's headless mode (`companion-hub --detached`) install a systemd user service, `companion-hub-login-start.service`, and enable it the first time. Both install the same files, `scripts/login-start/` in this repo, at the same paths. The windowed desktop app uses its login autostart entry instead. It runs once at each login, waits up to two minutes for Docker, and starts a Hub container only when all of these are true:
 
 - It belongs to the Hub: the `ci-hub.managed=true` label, or the `ci-hub` compose project.
 - Its restart policy is `unless-stopped` or `always`, and it isn't running.
@@ -325,7 +325,8 @@ So on Linux, `cihub up` (any environment but `local`) installs a systemd user se
 - The unit is `$XDG_CONFIG_HOME/systemd/user/companion-hub-login-start.service` (default `~/.config/`), and the script it runs is `~/.config/companion-hub/login-start.sh`. Later `cihub up` runs rewrite them when they change.
 - `systemctl --user disable companion-hub-login-start` turns it off for good: `cihub up` enables it only once, which `~/.config/companion-hub/.login-start-installed` records. A deleted unit isn't written again either.
 - Without a systemd user manager (inside a container, or on some SSH-only setups), nothing is installed.
-- `cihub uninstall` disables and deletes it.
+- Run as root, nothing is installed. `scripts/install.sh` runs `sudo -E ./cihub up`, and root's home isn't a folder unlocked at someone's login, so that Hub comes back by its restart policy.
+- `cihub uninstall` disables and deletes it. The headless desktop app writes what it did to `desktop.log` (`login-start-unit`).
 - With lingering enabled (`loginctl enable-linger`), the user manager starts at boot, before an encrypted home folder is unlocked, so it can't see the unit. Start the Hub after logging in with `docker start ci-hub`.
 
 The desktop app covers its own install the same way with a login autostart entry; see [After a reboot on Linux](system/desktop.md#after-a-reboot-on-linux). The two don't conflict: whichever runs second finds the Hub already running.

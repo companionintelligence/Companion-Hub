@@ -228,7 +228,7 @@ So on Linux the app starts itself at login, the counterpart of the WSL engine's 
 - If the user deletes the file, the app doesn't write it again. `<data dir>/.login-autostart-installed` records that it wrote one before.
 - `TryExec` names the binary, so the desktop skips the entry after an uninstall, or after an AppImage moves, until the next launch rewrites it.
 
-A Hub started with `cihub up` instead of the app gets a systemd user service that does the same job; see [After a reboot on Linux](../CLI.md#after-a-reboot-on-linux) in the CLI docs.
+The autostart entry needs a graphical login, so the headless mode (`companion-hub --detached`) installs a systemd user service instead, `login_start_unit.rs`. It's the same service `cihub up` installs, from the same files in `scripts/login-start/`; see [After a reboot on Linux](../CLI.md#after-a-reboot-on-linux) in the CLI docs.
 
 Container identity: `CI_HUB_CONTAINER_UID/GID`, `DOCKER_GID` env vars from `resolve_hub_container_identity()`.
 

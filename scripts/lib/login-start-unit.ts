@@ -18,6 +18,10 @@
  * desktop's Stop Hub) has no such error, so it stays stopped. `ci-hub` goes first: its own boot
  * brings back a Traefik that is still down, so the rest is usually a no-op.
  *
+ * **One copy.** The script and the unit template are `scripts/login-start/`, baked into the CLI
+ * by `generate-bundled-hub-assets.ts`. The desktop's headless mode installs the same files at the
+ * same paths (`packages/desktop/src-tauri/src/login_start_unit.rs`).
+ *
  * **The user stays in charge.** `cihub up` enables the service once. A user who disables it
  * (`systemctl --user disable`) or deletes the file keeps it that way: a marker file records
  * that `cihub` installed it before, and later runs only refresh a file that is still there.
@@ -27,14 +31,11 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { BUNDLED_LOGIN_START_SCRIPT, BUNDLED_LOGIN_START_SERVICE } from './bundled-hub-assets.generated.js';
 
 export const LOGIN_START_UNIT = 'companion-hub-login-start.service';
 const SCRIPT_NAME = 'login-start.sh';
 const MARKER_NAME = '.login-start-installed';
-
-/** How long the script waits for Docker, and then for a missing bind source, in 2 s steps. */
-const DOCKER_WAIT_STEPS = 60;
-const SOURCE_WAIT_STEPS = 30;
 
 export interface LoginStartPaths {
   unitFile: string;
@@ -42,6 +43,10 @@ export interface LoginStartPaths {
   markerFile: string;
 }
 
+/**
+ * Where both installers put it. `packages/desktop/src-tauri/src/login_start_unit.rs` uses the
+ * same three paths, so `cihub up` and the desktop's headless mode share one unit and one marker.
+ */
 export function loginStartPaths(env: NodeJS.ProcessEnv = process.env, homeDir = os.homedir()): LoginStartPaths {
   const configHome = env.XDG_CONFIG_HOME && path.isAbsolute(env.XDG_CONFIG_HOME) ? env.XDG_CONFIG_HOME : path.join(homeDir, '.config');
   const ownDir = path.join(configHome, 'companion-hub');
@@ -57,105 +62,28 @@ function systemdQuote(value: string): string {
   return /[\s"\\]/.test(value) ? `"${value.replace(/[\\"]/g, '\\$&')}"` : value;
 }
 
+/** The unit, from `scripts/login-start/companion-hub-login-start.service`. */
 export function renderLoginStartService(scriptFile: string): string {
-  return [
-    '[Unit]',
-    'Description=Start the Companion Hub containers that could not start at boot',
-    'Documentation=https://github.com/companionintelligence/CI-Hub/blob/dev/docs/CLI.md#after-a-reboot-on-linux',
-    // An uninstall that removed the script leaves nothing to run, which is not a failure.
-    `ConditionPathExists=${scriptFile}`,
-    '',
-    '[Service]',
-    'Type=oneshot',
-    `ExecStart=/bin/sh ${systemdQuote(scriptFile)}`,
-    // Docker can take a while to answer after boot, and a missing source gets its own wait.
-    'TimeoutStartSec=10min',
-    '',
-    '[Install]',
-    'WantedBy=default.target',
-    '',
-  ].join('\n');
+  return BUNDLED_LOGIN_START_SERVICE.replace('@SCRIPT_PATH@', scriptFile).replace('@SCRIPT_EXEC@', systemdQuote(scriptFile));
 }
 
 /**
- * POSIX sh, so the service needs nothing but `docker` and runs whichever `cihub` installed it
- * (a checkout, the .deb's /usr/bin/cihub, npm, a standalone binary). Every exit is 0: a login
- * with nothing to start, or no Docker, is normal and must not leave a failed unit behind.
+ * The script, from `scripts/login-start/companion-hub-login-start.sh`. POSIX sh, so the service
+ * needs nothing but `docker` and runs whichever `cihub` installed it (a checkout, the .deb's
+ * /usr/bin/cihub, npm, a standalone binary).
  */
 export function renderLoginStartScript(): string {
-  return `#!/bin/sh
-# Written by cihub (scripts/lib/login-start-unit.ts). Starts the Companion Hub containers that
-# Docker could not start at boot because a bind-mounted file was not there yet, which happens
-# when the home folder is unlocked at login. A container someone stopped is left alone.
-set -u
-log() { echo "companion-hub-login-start: $*"; }
-
-i=0
-until docker info >/dev/null 2>&1; do
-  i=$((i + 1))
-  if [ "$i" -ge ${DOCKER_WAIT_STEPS} ]; then
-    log "Docker did not answer within $((${DOCKER_WAIT_STEPS} * 2)) s; started nothing"
-    exit 0
-  fi
-  sleep 2
-done
-
-ids=$( {
-  docker ps -aq --filter label=ci-hub.managed=true --filter status=exited
-  docker ps -aq --filter label=ci-hub.managed=true --filter status=created
-  docker ps -aq --filter label=com.docker.compose.project=ci-hub --filter status=exited
-  docker ps -aq --filter label=com.docker.compose.project=ci-hub --filter status=created
-} | sort -u)
-
-# One line per candidate: <0 for ci-hub, 1 otherwise>|<name>|<missing source>. Sorted, so the
-# Hub starts first and brings back what its own boot handles (Traefik).
-candidates=""
-for id in $ids; do
-  info=$(docker inspect --format '{{.Name}}|{{.HostConfig.RestartPolicy.Name}}|{{.State.Error}}' "$id" 2>/dev/null) || continue
-  name=\${info%%|*}; name=\${name#/}
-  rest=\${info#*|}
-  policy=\${rest%%|*}
-  error=\${rest#*|}
-  case "$policy" in unless-stopped|always) ;; *) continue ;; esac
-  case "$error" in *"error mounting"*) ;; *) continue ;; esac
-  src=$(printf '%s\\n' "$error" | sed -n 's/.*mount src=\\([^,]*\\),.*/\\1/p')
-  [ -n "$src" ] || continue
-  if [ "$name" = "ci-hub" ]; then rank=0; else rank=1; fi
-  candidates="$candidates$rank|$name|$src
-"
-done
-
-if [ -z "$candidates" ]; then
-  exit 0
-fi
-
-printf '%s' "$candidates" | sort | while IFS='|' read -r rank name src; do
-  [ -n "$name" ] || continue
-  j=0
-  while [ ! -e "$src" ] && [ "$j" -lt ${SOURCE_WAIT_STEPS} ]; do
-    j=$((j + 1))
-    sleep 2
-  done
-  if [ ! -e "$src" ]; then
-    log "left $name stopped: $src is still missing"
-    continue
-  fi
-  if docker start "$name" >/dev/null 2>&1; then
-    log "started $name, which could not mount $src at boot"
-  else
-    log "could not start $name"
-  fi
-done
-exit 0
-`;
+  return BUNDLED_LOGIN_START_SCRIPT;
 }
 
-export type LoginStartOutcome = 'installed' | 'refreshed' | 'unchanged' | 'left-removed' | 'not-linux' | 'no-user-session' | 'failed';
+export type LoginStartOutcome = 'installed' | 'refreshed' | 'unchanged' | 'left-removed' | 'not-linux' | 'root' | 'no-user-session' | 'failed';
 
 export interface LoginStartDeps {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
+  /** The effective uid; root gets no unit. */
+  uid?: number;
   /** Runs `systemctl --user <args>`; returns true on exit 0. */
   systemctl?: (args: string[]) => boolean;
 }
@@ -180,6 +108,10 @@ function readOr(file: string): string | null {
 export function ensureLoginStartUnit(deps: LoginStartDeps = {}): LoginStartOutcome {
   const platform = deps.platform ?? process.platform;
   if (platform !== 'linux') return 'not-linux';
+  // `scripts/install.sh` runs `sudo -E cihub up`. Root's home is not the folder unlocked at a
+  // person's login, and a unit in root's config would run only when root logs in, so a root
+  // install gets nothing; the Hub it starts comes back by its restart policy.
+  if ((deps.uid ?? process.geteuid?.()) === 0) return 'root';
   const systemctl = deps.systemctl ?? defaultSystemctl;
   const paths = loginStartPaths(deps.env ?? process.env, deps.homeDir ?? os.homedir());
 

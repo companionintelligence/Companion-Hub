@@ -1,0 +1,14 @@
+[Unit]
+Description=Start the Companion Hub containers that could not start at boot
+Documentation=https://github.com/companionintelligence/CI-Hub/blob/dev/docs/CLI.md#after-a-reboot-on-linux
+# An uninstall that removed the script leaves nothing to run, which is not a failure.
+ConditionPathExists=@SCRIPT_PATH@
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh @SCRIPT_EXEC@
+# Docker can take a while to answer after boot, and a missing source gets its own wait.
+TimeoutStartSec=10min
+
+[Install]
+WantedBy=default.target

@@ -57,7 +57,7 @@ describe('ensureLoginStartUnit', () => {
 
   it('writes the unit and script and enables it the first time', () => {
     const { calls, systemctl } = fakeSystemctl();
-    expect(ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, systemctl })).toBe('installed');
+    expect(ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, uid: 1000, systemctl })).toBe('installed');
 
     const paths = loginStartPaths(env, home);
     expect(readFileSync(paths.unitFile, 'utf8')).toBe(renderLoginStartService(paths.scriptFile));
@@ -68,42 +68,49 @@ describe('ensureLoginStartUnit', () => {
   });
 
   it('never enables it again, so a user who disabled it keeps it disabled', () => {
-    ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, systemctl: fakeSystemctl().systemctl });
+    ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, uid: 1000, systemctl: fakeSystemctl().systemctl });
     const { calls, systemctl } = fakeSystemctl();
-    expect(ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, systemctl })).toBe('unchanged');
+    expect(ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, uid: 1000, systemctl })).toBe('unchanged');
     expect(calls.some((c) => c[0] === 'enable')).toBe(false);
   });
 
   it('rewrites a stale script without enabling', () => {
-    ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, systemctl: fakeSystemctl().systemctl });
+    ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, uid: 1000, systemctl: fakeSystemctl().systemctl });
     writeFileSync(loginStartPaths(env, home).scriptFile, 'old');
     const { calls, systemctl } = fakeSystemctl();
-    expect(ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, systemctl })).toBe('refreshed');
+    expect(ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, uid: 1000, systemctl })).toBe('refreshed');
     expect(readFileSync(loginStartPaths(env, home).scriptFile, 'utf8')).toBe(renderLoginStartScript());
     expect(calls.some((c) => c[0] === 'enable')).toBe(false);
   });
 
   it('does not bring back a unit the user deleted', () => {
-    ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, systemctl: fakeSystemctl().systemctl });
+    ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, uid: 1000, systemctl: fakeSystemctl().systemctl });
     rmSync(loginStartPaths(env, home).unitFile);
     const { calls, systemctl } = fakeSystemctl();
-    expect(ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, systemctl })).toBe('left-removed');
+    expect(ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, uid: 1000, systemctl })).toBe('left-removed');
     expect(existsSync(loginStartPaths(env, home).unitFile)).toBe(false);
     expect(calls).toEqual([]);
   });
 
   it('writes nothing without a systemd user manager, or off Linux', () => {
-    expect(ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, systemctl: fakeSystemctl({ session: false }).systemctl })).toBe(
+    expect(ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, uid: 1000, systemctl: fakeSystemctl({ session: false }).systemctl })).toBe(
       'no-user-session',
     );
-    expect(ensureLoginStartUnit({ platform: 'darwin', env, homeDir: home, systemctl: fakeSystemctl().systemctl })).toBe('not-linux');
+    expect(ensureLoginStartUnit({ platform: 'darwin', env, homeDir: home, uid: 1000, systemctl: fakeSystemctl().systemctl })).toBe('not-linux');
     expect(existsSync(loginStartPaths(env, home).unitFile)).toBe(false);
+  });
+
+  it('installs nothing for root, as `sudo -E cihub up` in install.sh runs it', () => {
+    const { calls, systemctl } = fakeSystemctl();
+    expect(ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, uid: 0, systemctl })).toBe('root');
+    expect(existsSync(loginStartPaths(env, home).unitFile)).toBe(false);
+    expect(calls).toEqual([]);
   });
 
   it('only speaks up when it installed the unit or could not', () => {
     expect(describeLoginStartOutcome('installed')).toContain(`systemctl --user disable ${LOGIN_START_UNIT}`);
     expect(describeLoginStartOutcome('failed')).toContain('docker start ci-hub');
-    for (const quiet of ['refreshed', 'unchanged', 'left-removed', 'not-linux', 'no-user-session'] as const) {
+    for (const quiet of ['refreshed', 'unchanged', 'left-removed', 'not-linux', 'root', 'no-user-session'] as const) {
       expect(describeLoginStartOutcome(quiet)).toBeNull();
     }
   });
@@ -112,9 +119,9 @@ describe('ensureLoginStartUnit', () => {
 describe('removeLoginStartUnit', () => {
   it('disables and deletes the unit, the script and the marker', () => {
     const env = {} as NodeJS.ProcessEnv;
-    ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, systemctl: fakeSystemctl().systemctl });
+    ensureLoginStartUnit({ platform: 'linux', env, homeDir: home, uid: 1000, systemctl: fakeSystemctl().systemctl });
     const { calls, systemctl } = fakeSystemctl();
-    expect(removeLoginStartUnit({ platform: 'linux', env, homeDir: home, systemctl })).toBe(true);
+    expect(removeLoginStartUnit({ platform: 'linux', env, homeDir: home, uid: 1000, systemctl })).toBe(true);
     const paths = loginStartPaths(env, home);
     for (const file of [paths.unitFile, paths.scriptFile, paths.markerFile]) expect(existsSync(file)).toBe(false);
     expect(calls).toContainEqual(['disable', LOGIN_START_UNIT]);
