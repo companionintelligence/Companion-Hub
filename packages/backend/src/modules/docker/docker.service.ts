@@ -2633,7 +2633,9 @@ export class DockerService {
       }
       try {
         await this.docker.getNetwork(name).disconnect({ Container: containerName, Force: true });
-        this.logger.info(`Took ${containerName} off ${name} (${endpoint?.NetworkID?.slice(0, 12) ?? 'unknown id'}), a network that no longer exists`);
+        // A stopped container's endpoint often carries no network id, so show one only when there is one.
+        const id = endpoint?.NetworkID ? ` (${endpoint.NetworkID.slice(0, 12)})` : '';
+        this.logger.info(`Took ${containerName} off ${name}${id}, a network that no longer exists`);
       } catch (error) {
         this.logger.warn(
           `Could not take ${containerName} off ${name}, a network that no longer exists: ${error instanceof Error ? error.message : String(error)}`,
