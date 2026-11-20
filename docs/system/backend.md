@@ -54,6 +54,23 @@ Three containers join every app network after each `up` and at boot (`DockerServ
 | Traefik | fixed address: the subnet's last host, `.254` of the app's /24 (`traefikAddressOnAppSubnet`) | To route to the app. The app is told that address as the hop it trusts (`HUB_TRUSTED_PROXY_CIDRS`, `ProxyTrustService.appTrustedProxyCidrs`). If an app container ever holds it, Traefik joins at an address Docker picks and the app trusts no Traefik hop. |
 | The Private VPN sidecar | no alias | `tailscale serve` proxies to the app container's address on this network (`getAppNetworkTarget`). |
 
+Traefik and the VPN sidecar join and leave whether they are running or not (`appNetworkMembers`):
+Docker applies a stopped container's networks at its next start. Counting only running ones left a
+Traefik that was down off the networks apps created meanwhile, and on the ones `compose down`
+deleted, and Docker then refuses to start it ("network <id> not found").
+
+At boot the Hub also starts Traefik when its container exists but is not running
+(`ensureTraefikRunning`), then puts it on the edge network. Docker does not retry a container that
+failed to start when the daemon did, and Traefik fails then whenever the Hub's data folder is mounted
+after Docker starts (an encrypted home that unlocks at login, an encrypted or external drive): its
+single-file bind mounts find no file ("not a directory: Are you trying to mount a directory onto a
+file?"), it stays down, and every app hostname with it while the Hub is healthy. It is tried again
+on a backoff for about a quarter of an hour. A start refused for a deleted network is answered by
+leaving that network by name (`leaveDeletedNetworks`) and trying again. It is started in place,
+never recreated from inside the Hub (see `ensureTraefikOnEdgeNetwork`). The Hub cannot do the same
+for its own container: a Hub whose bind mounts were missing at boot needs `docker start ci-hub`
+once the folder is there.
+
 At boot, `moveAppsOffSharedNetworks` takes any app container still on `ci-hub_network` or
 `ci-os-hub_network` off it, and `AppLifecycleService` then restarts each such app (system reason
 `app-network-isolation`). Disconnecting is not enough: the container's `traefik.docker.network`

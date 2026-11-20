@@ -14,11 +14,21 @@ const APP_URN = 'ci-memory:ci-marketplace' as never;
 const APP_NETWORK = 'ci-memory_ci-marketplace_network';
 const APP_SUBNET = '10.128.12.0/24';
 
-type Inspect = { Name?: string; State?: { Running?: boolean }; NetworkSettings?: { Networks?: Record<string, unknown> } };
+type Inspect = {
+  Name?: string;
+  State?: { Running?: boolean; Status?: string; Error?: string };
+  NetworkSettings?: { Networks?: Record<string, unknown> };
+};
 
 const running = (name: string, networks: Record<string, unknown>): Inspect => ({
   Name: `/${name}`,
   State: { Running: true },
+  NetworkSettings: { Networks: networks },
+});
+
+const stopped = (name: string, networks: Record<string, unknown>, error = ''): Inspect => ({
+  Name: `/${name}`,
+  State: { Running: false, Status: 'exited', Error: error },
   NetworkSettings: { Networks: networks },
 });
 
@@ -32,32 +42,39 @@ describe('DockerService app-network membership', () => {
     const connect = vi.fn().mockResolvedValue(undefined);
     const disconnect = vi.fn().mockResolvedValue(undefined);
     const networks = new Map<string, { Internal?: boolean; Subnet?: string }>();
+    /** Networks that no longer exist: inspecting one is a 404. */
+    const deletedNetworks = new Set<string>();
+    const start = vi.fn().mockResolvedValue(undefined);
     const docker = {
       listNetworks: vi.fn().mockResolvedValue([]),
       listContainers: vi.fn().mockResolvedValue([]),
       getNetwork: vi.fn((id: string) => ({
         connect,
         disconnect,
-        inspect: vi.fn().mockResolvedValue({
-          Name: id,
-          Internal: networks.get(id)?.Internal === true,
-          IPAM: { Config: [{ Subnet: networks.get(id)?.Subnet ?? APP_SUBNET }] },
+        inspect: vi.fn().mockImplementation(async () => {
+          if (deletedNetworks.has(id)) throw new Error(`(HTTP code 404) no such network - network ${id} not found`);
+          return {
+            Name: id,
+            Internal: networks.get(id)?.Internal === true,
+            IPAM: { Config: [{ Subnet: networks.get(id)?.Subnet ?? APP_SUBNET }] },
+          };
         }),
         remove: vi.fn(),
       })),
       getContainer: vi.fn((name: string) => ({
         inspect: vi.fn().mockImplementation(async () => {
           const found = containers[name];
-          if (!found) throw new Error(`no such container: ${name}`);
+          if (!found) throw new Error(`(HTTP code 404) no such container - No such container: ${name}`);
           return found;
         }),
+        start: () => start(name),
       })),
       version: vi.fn().mockResolvedValue({ Components: [{ Name: 'Engine' }] }),
     };
     const logger = mock<LoggerService>();
     const dockerReadFacade = { getComposeProjectName: (appUrn: string) => String(appUrn).replace(':', '_') };
     const service = new DockerService(logger, mock(), mock(), mock(), mock(), docker as never, dockerReadFacade as never);
-    return { service, connect, disconnect, docker, networks, logger };
+    return { service, connect, disconnect, docker, networks, logger, start, deletedNetworks };
   };
 
   const projectNetwork = (id: string, name: string, labels: Record<string, string> = {}) => ({ Id: id, Name: name, Labels: labels });
@@ -247,6 +264,122 @@ describe('DockerService app-network membership', () => {
     expect(connect).toHaveBeenCalledWith({
       Container: 'ci-os-hub',
       EndpointConfig: { Aliases: ['ci-hub', 'ci-os-hub'], GwPriority: -1 },
+    });
+  });
+
+  /*
+   * A Traefik that is down still has to follow the app networks. Docker lets a stopped container join
+   * and leave networks and applies them at its next start. Left out, a Traefik that failed its bind
+   * mount at boot missed the networks apps created meanwhile and kept the ones `compose down` deleted,
+   * and Docker then refused to start it ("network <id> not found").
+   */
+  describe('a Traefik that is not running', () => {
+    it('is joined to an app network at its fixed address all the same', async () => {
+      const { service, connect, docker, networks } = setup({ ...hubOnly(), traefik: stopped('traefik', { 'ci-hub_network': {} }) });
+      networks.set('app-net', { Internal: false });
+      docker.listNetworks.mockResolvedValue([projectNetwork('app-net', APP_NETWORK)]);
+
+      await service.attachHubToAppNetworks(APP_URN);
+
+      expect(connect).toHaveBeenCalledWith({
+        Container: 'traefik',
+        EndpointConfig: { IPAMConfig: { IPv4Address: '10.128.12.254' }, Aliases: [], GwPriority: -1 },
+      });
+    });
+
+    it('is taken off an app network before compose down deletes it', async () => {
+      const { service, disconnect, docker, networks } = setup({ ...hubOnly(), traefik: stopped('traefik', { [APP_NETWORK]: {} }) });
+      networks.set('app-net', {});
+      docker.listNetworks.mockResolvedValue([projectNetwork('app-net', APP_NETWORK)]);
+
+      await service.detachHubFromAppNetworks(APP_URN);
+
+      expect(disconnect).toHaveBeenCalledWith({ Container: 'traefik', Force: true });
+    });
+
+    it('does not warn about a VPN sidecar that does not exist', async () => {
+      const { service, docker, networks, logger } = setup({ ...hubOnly(), traefik: stopped('traefik', {}) });
+      networks.set('app-net', { Internal: false });
+      docker.listNetworks.mockResolvedValue([projectNetwork('app-net', APP_NETWORK)]);
+
+      await service.attachHubToAppNetworks(APP_URN);
+
+      expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('hub-tailscale'));
+    });
+  });
+
+  /*
+   * Docker does not retry a container that failed to start when the daemon did. Traefik fails then
+   * whenever the Hub's data folder is mounted after Docker (an encrypted home or drive), and every app
+   * hostname stays dead while the Hub is healthy.
+   */
+  describe('ensureTraefikRunning', () => {
+    const BIND_MOUNT_ERROR =
+      'error mounting "/data/traefik/config/traefik.yml" to rootfs at "/etc/traefik/traefik.yml": not a directory: Are you trying to mount a directory onto a file (or vice-versa)?';
+
+    it('leaves a running Traefik alone', async () => {
+      const { service, start } = setup(allThree());
+      await expect(service.ensureTraefikRunning([0])).resolves.toBe('running');
+      expect(start).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when there is no Traefik container', async () => {
+      const { service, start, logger } = setup(hubOnly());
+      await expect(service.ensureTraefikRunning([0])).resolves.toBe('absent');
+      expect(start).not.toHaveBeenCalled();
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('starts one that failed its bind mount at boot, and says why it was down', async () => {
+      const { service, start, logger } = setup({ ...hubOnly(), traefik: stopped('traefik', {}, BIND_MOUNT_ERROR) });
+
+      await expect(service.ensureTraefikRunning([0])).resolves.toBe('started');
+
+      expect(start).toHaveBeenCalledWith('traefik');
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('mount a directory onto a file'));
+    });
+
+    it('tries again while the data folder is still missing, and starts it once it is there', async () => {
+      const { service, start } = setup({ ...hubOnly(), traefik: stopped('traefik', {}) });
+      start.mockRejectedValueOnce(new Error(BIND_MOUNT_ERROR)).mockRejectedValueOnce(new Error(BIND_MOUNT_ERROR));
+
+      await expect(service.ensureTraefikRunning([0, 0, 0, 0])).resolves.toBe('started');
+
+      expect(start).toHaveBeenCalledTimes(3);
+    });
+
+    it('takes it off a network that no longer exists, then starts it', async () => {
+      const { service, start, disconnect, deletedNetworks } = setup({
+        ...hubOnly(),
+        traefik: stopped('traefik', { 'ci-hub_network': {}, gone_app_network: { NetworkID: '8dc999fc0fc3aaaa' } }),
+      });
+      deletedNetworks.add('gone_app_network');
+      start.mockRejectedValueOnce(
+        new Error('(HTTP code 500) server error - failed to set up container networking: network 8dc999fc0fc3aaaa not found'),
+      );
+
+      await expect(service.ensureTraefikRunning([0, 0])).resolves.toBe('started');
+
+      // Only the deleted one: a network that exists (by name) is left as it is.
+      expect(disconnect.mock.calls.map(([options]) => options)).toEqual([{ Container: 'traefik', Force: true }]);
+      expect(start).toHaveBeenCalledTimes(2);
+    });
+
+    it('treats one started meanwhile as running', async () => {
+      const { service, start } = setup({ ...hubOnly(), traefik: stopped('traefik', {}) });
+      start.mockRejectedValueOnce(Object.assign(new Error('(HTTP code 304) container already started'), { statusCode: 304 }));
+
+      await expect(service.ensureTraefikRunning([0])).resolves.toBe('running');
+    });
+
+    it('gives up after its last try, with the command that recreates it, and never throws', async () => {
+      const { service, start, logger } = setup({ ...hubOnly(), traefik: stopped('traefik', {}) });
+      start.mockRejectedValue(new Error(BIND_MOUNT_ERROR));
+
+      await expect(service.ensureTraefikRunning([0, 0])).resolves.toBe('failed');
+
+      expect(start).toHaveBeenCalledTimes(2);
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('docker compose up -d --force-recreate traefik'));
     });
   });
 });

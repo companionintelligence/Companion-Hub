@@ -238,6 +238,12 @@ const COMPOSE_OP_MAX_ATTEMPTS = 2;
 const PROCESS_EXIT_BACKSTOP_MS = 5_000;
 
 /** Returns whether Docker failed because the container network endpoint is stale. */
+/**
+ * When `ensureTraefikRunning` tries to start a stopped Traefik: at once, then on a backoff to about a
+ * quarter of an hour, for a data folder that is mounted at login or by hand after Docker started.
+ */
+const TRAEFIK_START_RETRY_DELAYS_MS: readonly number[] = [0, 2_000, 5_000, 10_000, 30_000, ...Array<number>(14).fill(60_000)];
+
 function isStaleContainerNetworkError(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
   return /network .+ not found/i.test(msg) || /failed to set up container networking/i.test(msg);
@@ -2254,7 +2260,8 @@ export class DockerService {
 
   /**
    * Leaves an app's networks before `down` or before the Hub deletes them, for the Hub, Traefik and the
-   * VPN sidecar alike.
+   * VPN sidecar alike, a stopped Traefik or sidecar included: one left on a network that is then deleted
+   * cannot be started again (see {@link appNetworkMembers}).
    *
    * Compose treats an extra container on the network as "still in use" and keeps the network.
    * Infrastructure networks (the Hub's own, the edge) are never disconnected. External networks a user
@@ -2268,7 +2275,7 @@ export class DockerService {
     if (await this.isAppleContainerEngine()) {
       return;
     }
-    const members = await this.runningAppNetworkMembers();
+    const members = await this.appNetworkMembers();
     if (members.length === 0) {
       return;
     }
@@ -2300,7 +2307,7 @@ export class DockerService {
   }
 
   private async joinAppNetworkMembers(networks: AppProjectNetwork[]): Promise<void> {
-    const members = await this.runningAppNetworkMembers();
+    const members = await this.appNetworkMembers();
     if (!members.some((member) => member.role === 'hub')) {
       this.logger.debug('Hub container is not running; not joining app networks');
       return;
@@ -2399,13 +2406,20 @@ export class DockerService {
   }
 
   /**
-   * The running containers that join every app network, each with the networks it is on now: the Hub
-   * (under whichever name this process was started with), Traefik, and the Private VPN sidecar.
+   * The containers that join every app network, each with the networks it is on now: the running Hub
+   * (under whichever name this process was started with), and Traefik and the Private VPN sidecar
+   * whether they are running or not.
+   *
+   * Stopped ones count. Docker lets a stopped container join and leave networks; it applies them at its
+   * next start. Counting only running ones left a Traefik that was down (it failed its bind mount at
+   * boot, when the host's data folder mounted a second after Docker started) off every network an app
+   * created meanwhile, and still on the ones `compose down` deleted: Docker then refused to start it
+   * ("network <id> not found"), and every tunnelled hostname stayed dead until it was recreated by hand.
    *
    * An image-only update can still run the Hub as `ci-os-hub`. Apps are given the name `hubContainerName`
    * returns, and the Hub is connected under both names.
    */
-  private async runningAppNetworkMembers(): Promise<AppNetworkMember[]> {
+  private async appNetworkMembers(): Promise<AppNetworkMember[]> {
     const members: AppNetworkMember[] = [];
     const hubName = await this.runningHubContainerName();
     if (hubName) {
@@ -2418,7 +2432,8 @@ export class DockerService {
       [TRAEFIK_CONTAINER_NAME, 'traefik'],
       [TAILSCALE_SIDECAR_CONTAINER_NAME, 'vpn'],
     ] as const) {
-      const networks = await this.containerNetworkNames(name, { runningOnly: true });
+      // Absent is ordinary (no VPN sidecar on most Hubs), so not worth a warning.
+      const networks = await this.containerNetworkNames(name, { absentIsQuiet: true });
       if (networks) {
         // No alias: nothing on an app network needs to reach either by name.
         members.push({ name, role, aliases: [], networks });
@@ -2427,16 +2442,13 @@ export class DockerService {
     return members;
   }
 
-  /** The networks a container is on, or null when it cannot be inspected (or, with `runningOnly`, is not running). */
-  private async containerNetworkNames(name: string, { runningOnly = false }: { runningOnly?: boolean } = {}): Promise<Set<string> | null> {
+  /** The networks a container is on, or null when it cannot be inspected (quietly, with `absentIsQuiet`). */
+  private async containerNetworkNames(name: string, { absentIsQuiet = false }: { absentIsQuiet?: boolean } = {}): Promise<Set<string> | null> {
     try {
       const info = await this.docker.getContainer(name).inspect();
-      if (runningOnly && !info?.State?.Running) {
-        return null;
-      }
       return new Set(Object.keys(info?.NetworkSettings?.Networks ?? {}));
     } catch (error) {
-      if (!runningOnly) {
+      if (!absentIsQuiet) {
         this.logger.warn(`Could not inspect ${name} to see which app networks it is on: ${error instanceof Error ? error.message : String(error)}`);
       }
       return null;
@@ -2523,6 +2535,110 @@ export class DockerService {
           "(`cihub up`, or `docker compose up -d traefik` with the stack's env file).",
       );
       return 'failed';
+    }
+  }
+
+  /**
+   * Starts Traefik when its container exists but is not running.
+   *
+   * Docker starts an `unless-stopped` container again when the daemon starts, and does not retry one
+   * that fails then. Traefik bind-mounts single files from the Hub's data folder, so when that folder
+   * is mounted after Docker starts (an encrypted home that unlocks at login, an encrypted or external
+   * drive, a network share) its first start fails ("not a directory: Are you trying to mount a
+   * directory onto a file?") and it stays down. The Hub, on named volumes, is healthy meanwhile, and
+   * every tunnelled and LAN app hostname is dead. Tried again on a backoff for about a quarter of an
+   * hour, so a folder that is mounted at login is picked up.
+   *
+   * A start refused for a network that no longer exists is answered by taking Traefik off that network
+   * and trying again; the Hub joins it to the app networks that do exist (see
+   * {@link appNetworkMembers}). Started in place, never recreated (see
+   * {@link ensureTraefikOnEdgeNetwork} on why the Hub does not recreate Traefik).
+   *
+   * `absent` when there is no Traefik container to start. Never throws: a Traefik that still cannot
+   * start is logged with the command that recreates it.
+   */
+  public async ensureTraefikRunning(
+    retryDelaysMs: readonly number[] = TRAEFIK_START_RETRY_DELAYS_MS,
+  ): Promise<'running' | 'started' | 'absent' | 'failed'> {
+    let lastError = 'it was not running';
+    for (const [attempt, delayMs] of retryDelaysMs.entries()) {
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+
+      let state: { Running?: boolean; Restarting?: boolean; Status?: string; Error?: string } | undefined;
+      try {
+        state = (await this.docker.getContainer(TRAEFIK_CONTAINER_NAME).inspect())?.State;
+      } catch (error) {
+        if (this.isResourceMissingError(error)) {
+          return 'absent';
+        }
+        lastError = error instanceof Error ? error.message : String(error);
+        continue;
+      }
+      // Running, or started by someone else between two attempts.
+      if (state?.Running || state?.Restarting) {
+        return 'running';
+      }
+      if (attempt === 0) {
+        this.logger.warn(
+          `${TRAEFIK_CONTAINER_NAME} is not running (${state?.Status ?? 'unknown'}${state?.Error ? `: ${state.Error}` : ''}); starting it`,
+        );
+      }
+
+      try {
+        await this.docker.getContainer(TRAEFIK_CONTAINER_NAME).start();
+        this.logger.info(`Started ${TRAEFIK_CONTAINER_NAME}${attempt > 0 ? ` on attempt ${attempt + 1}` : ''}`);
+        return 'started';
+      } catch (error) {
+        if ((error as { statusCode?: number }).statusCode === 304) {
+          return 'running';
+        }
+        lastError = error instanceof Error ? error.message : String(error);
+        if (isStaleContainerNetworkError(error)) {
+          await this.leaveDeletedNetworks(TRAEFIK_CONTAINER_NAME);
+        }
+      }
+    }
+
+    this.logger.error(
+      `Could not start ${TRAEFIK_CONTAINER_NAME}: ${lastError}. App hostnames, tunnelled and on the LAN, do not answer until it runs. ` +
+        "Recreate it from the stack's compose file (`cihub up`, or `docker compose up -d --force-recreate traefik` with the stack's env file).",
+    );
+    return 'failed';
+  }
+
+  /**
+   * Takes a stopped container off each network it is on that no longer exists, so Docker will start it.
+   *
+   * Docker refuses to start a container that names a deleted network ("network <id> not found"), and a
+   * deleted network can still be left by its name with `Force`. One that was deleted and created again
+   * under the same name is not touched: Docker finds it by name at start. Never throws.
+   */
+  private async leaveDeletedNetworks(containerName: string): Promise<void> {
+    let networks: Record<string, { NetworkID?: string } | undefined>;
+    try {
+      networks = (await this.docker.getContainer(containerName).inspect())?.NetworkSettings?.Networks ?? {};
+    } catch {
+      return;
+    }
+    for (const [name, endpoint] of Object.entries(networks)) {
+      try {
+        await this.docker.getNetwork(name).inspect();
+        continue;
+      } catch (error) {
+        if (!this.isResourceMissingError(error)) {
+          continue;
+        }
+      }
+      try {
+        await this.docker.getNetwork(name).disconnect({ Container: containerName, Force: true });
+        this.logger.info(`Took ${containerName} off ${name} (${endpoint?.NetworkID?.slice(0, 12) ?? 'unknown id'}), a network that no longer exists`);
+      } catch (error) {
+        this.logger.warn(
+          `Could not take ${containerName} off ${name}, a network that no longer exists: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   }
 

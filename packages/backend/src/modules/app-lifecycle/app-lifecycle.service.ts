@@ -637,11 +637,27 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     // back before apps call inference, or an off-network service cannot resolve `ci-hub`. An app still
     // on a shared Hub network from before apps had networks of their own is taken off it there, and is
     // recreated here so its labels, Memory URL and trusted Traefik hop match its own network.
-    void this.dockerService
-      .ensureHubOnAppNetworks()
+    const appNetworksRejoined = Promise.resolve().then(() => this.dockerService.ensureHubOnAppNetworks());
+    void appNetworksRejoined
       .then((moved) => this.recreateAppsMovedOffSharedNetworks(moved ?? []))
       .catch((error: unknown) => {
         this.logger.error(`Failed to reattach the Hub to app networks: ${error instanceof Error ? error.message : String(error)}`);
+      });
+
+    // Docker does not retry a container that failed to start when the daemon did, and Traefik fails
+    // then whenever the Hub's data folder mounts after Docker (an encrypted home or drive): the Hub
+    // comes up and every app hostname stays dead. Start it once its app networks are right (a stopped
+    // Traefik is joined to them too), and put it on the edge network cloudflared reaches it on.
+    void appNetworksRejoined
+      .catch(() => undefined)
+      .then(() => this.dockerService.ensureTraefikRunning())
+      .then(async (result) => {
+        if (result === 'started') {
+          await this.dockerService.ensureTraefikOnEdgeNetwork();
+        }
+      })
+      .catch((error: unknown) => {
+        this.logger.error(`Failed to start Traefik: ${error instanceof Error ? error.message : String(error)}`);
       });
 
     this.logger.info('Triggering initial Cloudflare sync in 5s...');
