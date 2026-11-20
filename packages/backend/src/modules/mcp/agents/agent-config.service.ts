@@ -60,7 +60,7 @@ export class AgentConfigService {
     const skill = this.resolveSkillConfig(agentsConfig, skillMdExists);
 
     // Resolve openapi config
-    const openapi = this.resolveOpenApiConfig(agentsConfig, agentsDir);
+    const openapi = await this.containOpenApiSpec(appUrn, this.resolveOpenApiConfig(agentsConfig, agentsDir), appInstalledDir);
 
     // Resolve mcp config — agents.mcp when declared, marketplace block otherwise
     let mcp = this.resolveMcpConfig(agentsConfig);
@@ -192,6 +192,28 @@ export class AgentConfigService {
     const specPath = openapiField.spec_path ? path.join(agentsDir, '..', openapiField.spec_path) : path.join(agentsDir, 'openapi.yaml');
 
     return { enabled: true, specPath, config: openapiField };
+  }
+
+  /**
+   * The spec only when it is a file that really lives in the app's installed folder.
+   *
+   * The Hub reads the spec and returns it to `hub_get_app_openapi`, which the app itself may call. A
+   * `spec_path` of `../../../state/settings.json` read the Hub's host-local operator key out that way,
+   * and a store repo can also ship `agents/openapi.yaml` as a link to such a file. `isWithin` resolves
+   * every link on the way and requires the result under the folder; anything else reads as no spec.
+   */
+  private async containOpenApiSpec(
+    appUrn: AppUrn,
+    openapi: ResolvedAgentConfig['openapi'],
+    appInstalledDir: string,
+  ): Promise<ResolvedAgentConfig['openapi']> {
+    if (!openapi.specPath || (await this.filesystem.isWithin(openapi.specPath, appInstalledDir))) {
+      return openapi;
+    }
+    if (await this.filesystem.pathExists(openapi.specPath)) {
+      this._logger.warn(`[AgentConfig] ${appUrn}: the OpenAPI spec path leads outside the app's folder; it is not read`);
+    }
+    return { ...openapi, specPath: null };
   }
 
   private resolveMcpConfig(agentsConfig: NonNullable<AgentConfig>): ResolvedAgentConfig['mcp'] {
