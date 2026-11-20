@@ -256,6 +256,67 @@ describe('AppHelpers', () => {
       expect(written.has('JWT_SECRET')).toBe(false);
     });
 
+    /*
+     * The Hub's .env holds secrets no denylist names (`.env.example` documents TAILSCALE_AUTHKEY and
+     * NODE_AUTH_TOKEN), so only an official-store app may pin its Memory env from it.
+     */
+    it('SECURITY: a third-party app cannot name another Hub .env key as its Memory env and inherit it', async () => {
+      envUtils.envStringToMap.mockReturnValue(
+        new Map([
+          ['TAILSCALE_AUTHKEY', 'tskey-auth-secret'],
+          ['NODE_AUTH_TOKEN', 'registry-token'],
+        ]),
+      );
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        ...mockAppInfo,
+        hub_integration: { memory: { url_env: 'NODE_AUTH_TOKEN', token_env: 'TAILSCALE_AUTHKEY' } },
+      } as AppInfo);
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+      expect(written.has('TAILSCALE_AUTHKEY')).toBe(false);
+      expect(written.has('NODE_AUTH_TOKEN')).toBe(false);
+    });
+
+    it('keeps an operator-pinned Memory env for an official-store app', async () => {
+      envUtils.envStringToMap.mockReturnValue(new Map([['CI_SERVER_TOKEN', 'operator-pinned-token']]));
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        ...mockAppInfo,
+        hub_integration: { memory: { url_env: 'CI_SERVER_URL', token_env: 'CI_SERVER_TOKEN' } },
+      } as AppInfo);
+
+      await appHelpers.generateEnvFile(createAppUrn('test-app', 'ci-marketplace'), {});
+
+      const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+      expect(written.get('CI_SERVER_TOKEN')).toBe('operator-pinned-token');
+    });
+
+    describe('the Cloudflare tunnel token', () => {
+      beforeEach(() => {
+        envUtils.envStringToMap.mockReturnValue(new Map());
+        deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(
+          fromPartial({ tunnelToken: 'tunnel-token', tunnelId: 'tunnel-id' }),
+        );
+      });
+
+      it('goes to the official store cloudflared', async () => {
+        await appHelpers.generateEnvFile(createAppUrn('cloudflared', 'ci-marketplace'), {});
+
+        const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+        expect(written.get('TUNNEL_TOKEN')).toBe('tunnel-token');
+        expect(written.get('TUNNEL_ID')).toBe('tunnel-id');
+      });
+
+      it('SECURITY: does not go to an app named cloudflared from another store', async () => {
+        await appHelpers.generateEnvFile(createAppUrn('cloudflared', 'test-store'), {});
+
+        const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+        expect(written.has('TUNNEL_TOKEN')).toBe(false);
+        expect(written.has('TUNNEL_ID')).toBe(false);
+      });
+    });
+
     describe('Companion Memory credential injection', () => {
       // A consumer app declaring the env vars it reads its memory URL + key from.
       const memoryConsumerApp: AppInfo = {
@@ -313,15 +374,17 @@ describe('AppHelpers', () => {
       });
 
       it('marks manual when the operator set a token and there is no brokered connection', async () => {
+        // An operator pin in the Hub's .env reaches only an official-store app.
+        const officialUrn = createAppUrn('test-app', 'ci-marketplace');
         const envMap = new Map<string, string>([['CI_SERVER_TOKEN', 'operator-set']]);
         envUtils.envStringToMap.mockReturnValue(envMap);
         appFilesManager.getInstalledAppInfo.mockResolvedValue(memoryConsumerApp);
         memoryConnection.getInjectableCreds.mockResolvedValue(null);
 
-        await appHelpers.generateEnvFile(testAppUrn, {});
+        await appHelpers.generateEnvFile(officialUrn, {});
 
         // markManual is idempotent at the service layer; env-gen just delegates.
-        expect(memoryConnection.markManual).toHaveBeenCalledWith(testAppUrn);
+        expect(memoryConnection.markManual).toHaveBeenCalledWith(officialUrn);
         // The operator's own value is left untouched.
         expect(envMap.get('CI_SERVER_TOKEN')).toBe('operator-set');
       });
@@ -1118,7 +1181,7 @@ describe('AppHelpers', () => {
 
       // Assert
       expect(envMap.get('RANDOM_VAR')).toBe(randomString);
-      expect(envUtils.createRandomString).toHaveBeenCalledWith('RANDOM_VAR', 16, undefined);
+      expect(envUtils.createRandomString).toHaveBeenCalledWith(testAppUrn, 'RANDOM_VAR', 16, undefined);
     });
 
     it('should write the transformed env map to file', async () => {

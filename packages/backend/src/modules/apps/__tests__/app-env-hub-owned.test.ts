@@ -200,7 +200,8 @@ describe('AppHelpers.generateEnvFile keeps the values the Hub sets for the app',
       {},
     );
     expect(env.get('APP_LOCAL_DOMAIN')).toBeUndefined();
-    expect(env.get('MEMORY_TOKEN')).toBe('pinned');
+    // `app:home` is not the official store, so no Memory name passes through, pinned or not.
+    expect(env.get('MEMORY_TOKEN')).toBeUndefined();
   });
 
   it('writes the variables the manifest names that the Hub doesn’t own', async () => {
@@ -376,6 +377,7 @@ describe('AppHelpers.generateEnvFile keeps the values the Hub sets for the app',
       expect(inference.ownedKeys).not.toContain('APP_BASE_URL');
 
       const inherited = appInheritableHubEnvKeys({
+        urn: createAppUrn('app', 'ci-marketplace'),
         hub_integration: fromPartial({ memory: { url_env: 'APP_BASE_URL', token_env: 'MEMORY_TOKEN' } }),
       });
       expect(inherited.has('APP_BASE_URL')).toBe(false);
@@ -411,9 +413,12 @@ describe('AppHelpers.generateEnvFile keeps the values the Hub sets for the app',
 
       expect(env.get('APP_DATA_DIR')).toMatch(/\/home\/app$/);
       expect(written.split('\n').filter((line) => line.startsWith('APP_DATA_DIR='))).toHaveLength(1);
-      expect(appInheritableHubEnvKeys({ hub_integration: fromPartial({ memory: { url_env: 'A\nB', token_env: 'MEMORY_TOKEN' } }) }).has('A\nB')).toBe(
-        false,
-      );
+      expect(
+        appInheritableHubEnvKeys({
+          urn: createAppUrn('app', 'ci-marketplace'),
+          hub_integration: fromPartial({ memory: { url_env: 'A\nB', token_env: 'MEMORY_TOKEN' } }),
+        }).has('A\nB'),
+      ).toBe(false);
     });
   });
 });

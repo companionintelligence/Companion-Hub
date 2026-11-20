@@ -66,14 +66,19 @@ for (const secret of HUB_ONLY_SECRET_ENV_VARS) {
 const HUB_ONLY_SECRET_ENV_VAR_SET: ReadonlySet<string> = new Set(HUB_ONLY_SECRET_ENV_VARS);
 
 /**
- * The allowlist for one app: the shared keys plus the Memory env names its manifest declares.
+ * The allowlist for one app: the shared keys, plus, for an official-store app, the Memory env names
+ * its manifest declares, so an operator can pin those in the Hub's `.env`.
  *
- * Those names come from the manifest, which any store can publish, so a Hub-only secret is never
- * passed through under one: `"token_env": "JWT_SECRET"` would otherwise hand the app that secret.
- * Nor is a name no Hub integration may write (`hubIntegrationMayWrite`).
+ * Those names come from the manifest, and the Hub's `.env` holds more secrets than any list here
+ * names (`TAILSCALE_AUTHKEY`, `NODE_AUTH_TOKEN`, provider keys an operator added). So a manifest
+ * from any other store gets no pass-through at all: `"token_env": "TAILSCALE_AUTHKEY"` would
+ * otherwise hand it the value. Its Memory credentials still come from a brokered connection or the
+ * install form, as for every app. Even for the official store, a Hub-only secret is never passed
+ * through, nor a name no Hub integration may write (`hubIntegrationMayWrite`).
  */
-export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration'>): ReadonlySet<string> {
+export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration' | 'urn'>): ReadonlySet<string> {
   const keys = new Set(HUB_ENV_KEYS_INHERITED_BY_APPS);
+  if (!isOfficialStoreApp(config)) return keys;
   const memory = config.hub_integration?.memory;
   for (const name of [memory?.url_env, memory?.token_env]) {
     if (name && !HUB_ONLY_SECRET_ENV_VAR_SET.has(name) && hubIntegrationMayWrite(name)) keys.add(name);
@@ -454,7 +459,8 @@ export class AppHelpers {
     // this function (and its tests) mutate: the Hub's .env is the seed, but only
     // the keys an app is documented to inherit survive — see
     // HUB_ENV_KEYS_INHERITED_BY_APPS for what and why.
-    const inheritable = appInheritableHubEnvKeys(config);
+    // The URN this function was called with, not the copy in config.json: provenance is the Hub's.
+    const inheritable = appInheritableHubEnvKeys({ hub_integration: config.hub_integration, urn: appUrn });
     let withheld = 0;
     for (const key of [...envMap.keys()]) {
       if (!inheritable.has(key)) {
@@ -671,7 +677,7 @@ export class AppHelpers {
         }
 
         const length = field.min ?? 32;
-        const randomString = this.envUtils.createRandomString(field.env_variable, length, field.encoding);
+        const randomString = this.envUtils.createRandomString(appUrn, field.env_variable, length, field.encoding);
         envMap.set(envVar, randomString);
         continue;
       }
@@ -969,7 +975,12 @@ export class AppHelpers {
       }
     }
 
-    if (appName === 'cloudflared') {
+    // The tunnel token lets whoever holds it serve every public hostname of this Hub, so it goes
+    // only to the official store's cloudflared. The app's name alone is no provenance: any store
+    // can publish an app called `cloudflared`, and it installs as `cloudflared:<that store>`.
+    if (appName === 'cloudflared' && !isOfficialStoreApp({ urn: appUrn })) {
+      this.logger.warn(`[AppHelpers] ${appUrn} is named cloudflared but is not from the official store; it gets no tunnel token`);
+    } else if (appName === 'cloudflared') {
       const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
       if (org?.tunnelToken && org.tunnelId) {
         envMap.set('TUNNEL_TOKEN', org.tunnelToken);
