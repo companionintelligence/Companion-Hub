@@ -86,7 +86,9 @@ describe('DockerService on Apple container (socktainer)', () => {
       await service.ensureHubOnAppNetworks();
 
       expect(connect).not.toHaveBeenCalled();
-      const gapWarnings = logger.warn.mock.calls.filter(([message]) => String(message).startsWith('Not attaching the Hub to app networks'));
+      const gapWarnings = logger.warn.mock.calls.filter(([message]) =>
+        String(message).startsWith('Not attaching the Hub, Traefik and the VPN sidecar to app networks'),
+      );
       expect(gapWarnings).toHaveLength(1);
       expect(gapWarnings[0]?.[0]).toContain('cannot resolve ci-hub');
       // No false success.

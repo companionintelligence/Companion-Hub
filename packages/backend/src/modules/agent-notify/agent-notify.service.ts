@@ -6,6 +6,7 @@ import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
+import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { buildWakeText, DEFAULT_MIN_URGENCY, isUrgency, passesUrgency, type Urgency } from './wake-text';
@@ -26,7 +27,15 @@ export interface WebhookTarget {
   url: string;
   token?: string;
   appUrn: string;
+  /**
+   * The app's compose service `url` names by its host. Set for every target the Hub resolved itself:
+   * each wake is sent to that service's address on the app's own network instead (see
+   * {@link AgentNotifyService.dialableUrl}).
+   */
+  service?: string;
 }
+
+type WakeTarget = { url: string; token?: string; appUrn?: string; service?: string };
 
 /**
  * Send the same secret in both supported headers. OpenClaw prioritizes `Authorization`, so
@@ -74,7 +83,7 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
       let registered = 0;
       for (const { appUrn, target } of resolved) {
         if (!target) continue;
-        this.registerWebhook(appUrn, target.url, target.token);
+        this.registerWebhook(appUrn, target.url, target.token, target.service);
         registered += 1;
       }
 
@@ -86,10 +95,10 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
 
   /**
    * Reconstructs an app's wake URL and secret from installed files. Returns null when the
-   * app declares no wake capability. Docker DNS requires the Compose service name rather
-   * than the app URN name.
+   * app declares no wake capability. The URL names the app's compose service as its host, for
+   * the log; each wake goes to that service's address instead (`dialableUrl`).
    */
-  async resolveWebhookTarget(appUrn: string): Promise<{ url: string; token?: string } | null> {
+  async resolveWebhookTarget(appUrn: string): Promise<{ url: string; token?: string; service: string } | null> {
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
 
     const appInfo = await appFilesManager.getInstalledAppInfo(appUrn as AppUrn);
@@ -130,7 +139,7 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
     const agentEnv = await appFilesManager.getAppEnv(appUrn as AppUrn);
     const token = envUtils.envStringToMap(agentEnv.content).get('HUB_WAKE_SECRET');
 
-    return { url: `http://${serviceName}:${wakePort}${wakeEndpoint}`, token };
+    return { url: `http://${serviceName}:${wakePort}${wakeEndpoint}`, token, service: serviceName };
   }
 
   onModuleDestroy() {
@@ -139,8 +148,8 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
     }
   }
 
-  registerWebhook(appUrn: string, url: string, token?: string): void {
-    this.webhooks.set(appUrn, { url, token, appUrn });
+  registerWebhook(appUrn: string, url: string, token?: string, service?: string): void {
+    this.webhooks.set(appUrn, { url, token, appUrn, service });
     this.logger.info(`Registered agent webhook for ${appUrn}: ${url}`);
   }
 
@@ -156,10 +165,10 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
     return [...this.webhooks.values()];
   }
 
-  private getAllTargets(): Array<{ url: string; token?: string }> {
+  private getAllTargets(): WakeTarget[] {
     // Deduplicate because the compatibility environment target can name an auto-registered
     // app. Registered entries overwrite it because each app's on-disk secret is authoritative.
-    const byUrl = new Map<string, { url: string; token?: string }>();
+    const byUrl = new Map<string, WakeTarget>();
 
     const envUrl = process.env.AGENT_WEBHOOK_URL;
     if (envUrl) {
@@ -167,7 +176,7 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
     }
 
     for (const wh of this.webhooks.values()) {
-      byUrl.set(wh.url, { url: wh.url, token: wh.token });
+      byUrl.set(wh.url, { url: wh.url, token: wh.token, appUrn: wh.appUrn, service: wh.service });
     }
 
     return [...byUrl.values()];
@@ -183,7 +192,7 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
       try {
         const resolved = await this.resolveWebhookTarget(appUrn);
         if (resolved) {
-          this.registerWebhook(appUrn, resolved.url, resolved.token);
+          this.registerWebhook(appUrn, resolved.url, resolved.token, resolved.service);
           target = this.webhooks.get(appUrn);
         }
       } catch (error) {
@@ -237,7 +246,31 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
     return results.some((result) => result.status === 'fulfilled' && result.value);
   }
 
-  private async postWake(target: { url: string; token?: string }, text: string): Promise<boolean> {
+  /**
+   * The URL a wake is sent to: `target.url` with its host replaced by the address the app's service
+   * holds on the app's own network, for a target the Hub resolved from the app's files.
+   *
+   * ⚠ NOT THE SERVICE NAME. The wake carries the app's secret, and the Hub is on every app's network,
+   * where Docker answers a name from whichever network claims it first: another app with a service of
+   * the same name would receive it (see `mainServiceAddressOf`). Null when the service has no running
+   * container on that network, so nothing is sent.
+   */
+  private async dialableUrl(target: WakeTarget): Promise<string | null> {
+    if (!target.appUrn || !target.service) {
+      return target.url;
+    }
+    const docker = this.moduleRef.get(DockerReadFacade, { strict: false });
+    const address = await docker.getServiceAddressOnAppNetwork(target.appUrn as AppUrn, target.service);
+    if (!address) {
+      this.logger.warn(`Agent wake for ${target.appUrn} not sent: its "${target.service}" service is not running on the app's network`);
+      return null;
+    }
+    const url = new URL(target.url);
+    url.hostname = address;
+    return url.toString();
+  }
+
+  private async postWake(target: WakeTarget, text: string): Promise<boolean> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (target.token) {
       headers[WAKE_TOKEN_HEADER] = target.token;
@@ -245,7 +278,11 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
     }
 
     try {
-      const response = await fetch(target.url, {
+      const url = await this.dialableUrl(target);
+      if (!url) {
+        return false;
+      }
+      const response = await fetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify({ text, mode: 'now' }),

@@ -21,10 +21,18 @@ function makeResolver(installed: Array<{ info: AppInfo }>) {
     publicAddressRefusalFor: vi.fn().mockResolvedValue(null),
   };
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+  // ci-memory's gateway, by its address on ci-memory's own network.
+  const dockerReadFacade = {
+    getServiceAddressOnAppNetwork: vi.fn(async (urn: string, service: string) =>
+      urn === 'ci-memory:ci-marketplace' && service === 'gateway' ? '10.128.11.2' : null,
+    ),
+  };
+  const moduleRef = { get: vi.fn(() => dockerReadFacade) };
   return {
-    resolver: new MemoryProviderResolver(appsReadService as never, appsService as never, logger as never),
+    resolver: new MemoryProviderResolver(appsReadService as never, appsService as never, logger as never, moduleRef as never),
     appsReadService,
     appsService,
+    dockerReadFacade,
   };
 }
 
@@ -229,7 +237,8 @@ describe('MemoryProviderResolver.findProvider', () => {
 
     expect(provider).toEqual({
       appUrn: 'ci-memory:ci-marketplace',
-      internalUrl: 'http://gateway:8642',
+      internalUrl: 'http://10.128.11.2:8642',
+      consumerUrl: 'http://ci-memory:8642',
       publicUrl: 'https://ci-memory.example.com',
       hostPortOnLoopback: false,
     });
@@ -240,17 +249,30 @@ describe('MemoryProviderResolver.findProvider', () => {
 
     const provider = await resolver.findProvider();
 
-    expect(provider?.internalUrl).toBe('http://gateway:8642');
+    expect(provider?.internalUrl).toBe('http://10.128.11.2:8642');
     expect(provider?.publicUrl).toBeUndefined();
     expect(appsService.checkAppAvailability).not.toHaveBeenCalled();
   });
 
-  it('falls back to gateway:8642 when the provider descriptor is absent', async () => {
-    const { resolver } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
+  it('falls back to the gateway service on 8642 when the provider descriptor is absent', async () => {
+    const { resolver, dockerReadFacade } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
 
     const provider = await resolver.findProvider();
 
-    expect(provider?.internalUrl).toBe('http://gateway:8642');
+    expect(dockerReadFacade.getServiceAddressOnAppNetwork).toHaveBeenCalledWith('ci-memory:ci-marketplace', 'gateway');
+    expect(provider?.internalUrl).toBe('http://10.128.11.2:8642');
+    expect(provider?.consumerUrl).toBe('http://ci-memory:8642');
+  });
+
+  // Any app with a service called `gateway` answered the Hub's calls to that name, and was handed the key.
+  it('has no internal URL, rather than the service name, while the gateway is not running', async () => {
+    const { resolver, dockerReadFacade } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
+    dockerReadFacade.getServiceAddressOnAppNetwork.mockResolvedValue(null);
+
+    const provider = await resolver.findProvider();
+
+    expect(provider?.internalUrl).toBeNull();
+    expect(provider?.consumerUrl).toBe('http://ci-memory:8642');
   });
 
   // The probe still names the address when it fails. Right after CI Memory's containers stopped, that address answered

@@ -132,11 +132,6 @@ export function hubQueueName(env: NodeJS.ProcessEnv = process.env): string {
   return hubContainerName(env) === LEGACY_HUB_CONTAINER_NAME ? LEGACY_RABBITMQ_HOST : DEFAULT_RABBITMQ_HOST;
 }
 
-export function hubAppNetworkNames(env: NodeJS.ProcessEnv = process.env): string[] {
-  const primary = hubNetworkName(env);
-  return primary === LEGACY_NETWORK_NAME ? [primary] : [primary, LEGACY_NETWORK_NAME];
-}
-
 /**
  * The ONLY keys an app's env may inherit from the Hub's own `.env`.
  *
@@ -203,15 +198,6 @@ export function managedAppLabels(appUrn: string): Record<string, string | boolea
     [LEGACY_HUB_MANAGED_LABEL]: true,
     [LEGACY_HUB_APPURN_LABEL]: appUrn,
   };
-}
-
-export function ipOnHubNetwork(networks?: Record<string, { IPAddress?: string } | undefined> | null): string | undefined {
-  if (!networks) return undefined;
-  for (const name of HUB_NETWORK_NAMES) {
-    const ip = networks[name]?.IPAddress;
-    if (ip) return ip;
-  }
-  return undefined;
 }
 
 // Traefik

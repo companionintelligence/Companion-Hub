@@ -184,7 +184,7 @@ describe('custom app edit', () => {
     const notice = screen.getByTestId('custom-app-edit-refused-label');
     expect(notice).toHaveTextContent('This app has labels the Hub no longer accepts');
     expect(notice).toHaveTextContent('Service web:');
-    expect(notice).toHaveTextContent('traefik.docker.network can only name a Hub network the app is on: ci-hub_network, ci-os-hub_network.');
+    expect(notice).toHaveTextContent("traefik.docker.network can only name the app's own network, which the Hub already sets. Remove it.");
     expect(notice).toHaveTextContent('Remove ci-hub.appurn.');
   });
 

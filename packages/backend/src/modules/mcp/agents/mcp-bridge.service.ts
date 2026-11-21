@@ -4,6 +4,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import { AppsService } from '@/modules/apps/apps.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { mainServiceAddressOf } from '@/modules/apps/app-service-address';
 import { EnvUtils } from '@/modules/env/env.utils';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { ResolvedAgentConfig } from './agent-config.service';
@@ -72,7 +73,7 @@ export class McpBridgeService implements OnModuleDestroy {
 
   constructor(
     private readonly logger: LoggerService,
-    readonly _dockerService: DockerService,
+    private readonly dockerService: DockerService,
     private readonly appsService: AppsService,
     private readonly appFilesManager: AppFilesManager,
     private readonly envUtils: EnvUtils,
@@ -252,7 +253,7 @@ export class McpBridgeService implements OnModuleDestroy {
       throw new Error(`No MCP URL configured for ${appUrn}`);
     }
 
-    const url = this.resolveTemplateUrl(conn.config.url, appUrn);
+    const url = await this.resolveTemplateUrl(conn.config.url, appUrn);
     const headers = await this.buildStreamableHttpHeaders(appUrn, conn);
 
     if (!conn.httpClient) {
@@ -590,8 +591,21 @@ export class McpBridgeService implements OnModuleDestroy {
     conn.connected = false;
   }
 
-  private resolveTemplateUrl(url: string, appUrn: AppUrn): string {
-    const [storeSlug, appName] = appUrn.split(':') as [string, string];
-    return url.replace(/\$\{APP_HOST\}/g, `${appName}-${storeSlug}`).replace(/\$\{APP_PORT\}/g, '');
+  /**
+   * `${APP_HOST}` is the app's main service's address on the app's own network, not a name: the bridge
+   * sends the app's token along, and another app could answer for a name (see `mainServiceAddressOf`).
+   * Throws when that service is not running, so nothing is sent.
+   */
+  private async resolveTemplateUrl(url: string, appUrn: AppUrn): Promise<string> {
+    let resolved = url.replace(/\$\{APP_PORT\}/g, '');
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the listing's own template, not a JS one
+    if (resolved.includes('${APP_HOST}')) {
+      const address = await mainServiceAddressOf(this.appFilesManager, this.dockerService, appUrn);
+      if (!address) {
+        throw new Error(`App ${appUrn} has no running main service for its MCP server`);
+      }
+      resolved = resolved.replace(/\$\{APP_HOST\}/g, address);
+    }
+    return resolved;
   }
 }

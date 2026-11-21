@@ -470,6 +470,13 @@
       "when": 1781700000000,
       "tag": "0066_user_public_id_and_directory",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1781800000000,
+      "tag": "0067_app_link_approval",
+      "breakpoints": true
     }
   ]
 }

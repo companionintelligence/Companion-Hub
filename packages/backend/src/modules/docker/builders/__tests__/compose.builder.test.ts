@@ -1,8 +1,8 @@
 /** biome-ignore-all lint/suspicious/noTemplateCurlyInString: intended */
-import { HUB_NETWORK_NAMES, hubNetworkName } from '@/common/constants';
+import { hubNetworkName } from '@/common/constants';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { CI_MARKETPLACE_STORE_SLUG } from '@/core/portal/portal.constants';
-import { HUB_APP_NETWORK_NAMES, type ServiceInput } from '@ci-hub/common/schemas';
+import type { ServiceInput } from '@ci-hub/common/schemas';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import yaml from 'yaml';
 import { DockerComposeBuilder } from '../compose.builder';
@@ -49,43 +49,37 @@ describe('DockerComposeBuilder', () => {
     }
   });
 
-  it('attaches main services to both Hub networks during canonical migration', async () => {
-    const previousHubContainerName = process.env.HUB_CONTAINER_NAME;
-    process.env.HUB_CONTAINER_NAME = 'ci-hub';
-    try {
-      const compose = await composeBuilder.getDockerCompose([{ name: 'service', image: 'image', isMain: true }], {}, urn, subnet);
-      const parsed = yaml.parse(compose);
-
-      expect(parsed.services.service.networks).toMatchObject({
-        'ci-hub_network': { gw_priority: 1 },
-        'ci-os-hub_network': { gw_priority: 0 },
-      });
-      expect(parsed.networks['ci-hub_network']).toEqual({ name: 'ci-hub_network', external: true });
-      expect(parsed.networks['ci-os-hub_network']).toEqual({ name: 'ci-os-hub_network', external: true });
-    } finally {
-      if (previousHubContainerName === undefined) delete process.env.HUB_CONTAINER_NAME;
-      else process.env.HUB_CONTAINER_NAME = previousHubContainerName;
+  // Every app's main container used to join the shared Hub networks too, where any other app could reach
+  // it without the Hub login and claim a name other containers looked up.
+  it.each([
+    ['current', { HUB_CONTAINER_NAME: 'ci-hub' }],
+    ['image-only update', { HUB_CONTAINER_NAME: undefined, RABBITMQ_HOST: 'ci-os-hub-queue' }],
+  ] as const)('puts every service on the app’s own network and no shared Hub network (%s topology)', async (_topology, env) => {
+    const previous = { HUB_CONTAINER_NAME: process.env.HUB_CONTAINER_NAME, RABBITMQ_HOST: process.env.RABBITMQ_HOST };
+    for (const [key, value] of Object.entries(env)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
     }
-  });
-
-  it('writes only the existing legacy Hub network during an image-only update', async () => {
-    const previousHubContainerName = process.env.HUB_CONTAINER_NAME;
-    const previousRabbitmqHost = process.env.RABBITMQ_HOST;
-    delete process.env.HUB_CONTAINER_NAME;
-    process.env.RABBITMQ_HOST = 'ci-os-hub-queue';
     try {
-      const compose = await composeBuilder.getDockerCompose([{ name: 'service', image: 'image', isMain: true }], {}, urn, subnet);
+      const compose = await composeBuilder.getDockerCompose(
+        [
+          { name: 'service', image: 'image', isMain: true },
+          { name: 'sidecar', image: 'image', addToMainNetwork: true },
+        ],
+        {},
+        urn,
+        subnet,
+      );
       const parsed = yaml.parse(compose);
 
-      expect(parsed.services.service.networks['ci-os-hub_network']).toEqual({ gw_priority: 1 });
-      expect(parsed.services.service.networks).not.toHaveProperty('ci-hub_network');
-      expect(parsed.networks['ci-os-hub_network']).toEqual({ name: 'ci-os-hub_network', external: true });
-      expect(parsed.networks).not.toHaveProperty('ci-hub_network');
+      expect(Object.keys(parsed.services.service.networks)).toEqual(['nginx_store-id_network']);
+      expect(Object.keys(parsed.services.sidecar.networks)).toEqual(['nginx_store-id_network']);
+      expect(Object.keys(parsed.networks)).toEqual(['nginx_store-id_network']);
     } finally {
-      if (previousHubContainerName === undefined) delete process.env.HUB_CONTAINER_NAME;
-      else process.env.HUB_CONTAINER_NAME = previousHubContainerName;
-      if (previousRabbitmqHost === undefined) delete process.env.RABBITMQ_HOST;
-      else process.env.RABBITMQ_HOST = previousRabbitmqHost;
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     }
   });
 
@@ -1460,9 +1454,9 @@ describe('DockerComposeBuilder — an app’s Traefik labels stay inside the app
     });
   });
 
-  // A container on the app's network and the Hub's needs the pin, or Traefik may pick the network it
-  // isn't on. A local app with routers of its own gets no pin from the Hub.
-  it('keeps an app’s pin to a Hub network its container is on, and no other', async () => {
+  // The Hub pins Traefik to the app's own network, the one Traefik joins. An app's own pin may name that
+  // network and no other: not a shared Hub network, which no app is on any more.
+  it('keeps an app’s pin to its own network, and no other', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       const own = {
@@ -1471,44 +1465,34 @@ describe('DockerComposeBuilder — an app’s Traefik labels stay inside the app
         'traefik.http.routers.{{CI_HUB_APP_ID}}-lan.entrypoints': 'web',
         'traefik.http.services.{{CI_HUB_APP_ID}}.loadbalancer.server.port': '80',
       };
-      const pinned = await labelsFor({ exposureMode: 'local' }, { ...own, 'traefik.docker.network': hubNetworkName() });
+      const pinned = await labelsFor({ exposureMode: 'local' }, { ...own, 'traefik.docker.network': 'my-app__user_network' });
+      const hub = await labelsFor({ exposureMode: 'local' }, { ...own, 'traefik.docker.network': hubNetworkName() });
       const elsewhere = await labelsFor({ exposureMode: 'local' }, { ...own, 'traefik.docker.network': 'another-app_network' });
 
-      expect(pinned['traefik.docker.network']).toBe(hubNetworkName());
+      expect(pinned['traefik.docker.network']).toBe('my-app__user_network');
       expect(pinned['traefik.http.routers.my-app-_user-lan.rule']).toBe('Host(`${APP_LOCAL_DOMAIN}`)');
-      expect(elsewhere).not.toHaveProperty('traefik.docker.network');
-      expect(elsewhere['traefik.http.routers.my-app-_user-lan.rule']).toBe('Host(`${APP_LOCAL_DOMAIN}`)');
+      for (const labels of [hub, elsewhere]) {
+        expect(labels).not.toHaveProperty('traefik.docker.network');
+        expect(labels['traefik.http.routers.my-app-_user-lan.rule']).toBe('Host(`${APP_LOCAL_DOMAIN}`)');
+      }
     } finally {
       warn.mockRestore();
     }
   });
 
-  it('leaves out the pin of a service the Hub keeps off its networks', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    try {
-      const result = await new DockerComposeBuilder('ci.computer', 'ci.lan').getDockerCompose(
-        [
-          { name: 'web', image: 'nginx:alpine', isMain: true, internalPort: 80 },
-          { name: 'worker', image: 'nginx:alpine', extraLabels: { 'traefik.docker.network': hubNetworkName() } },
-        ],
-        { exposureMode: 'local' },
-        customUrn,
-        subnet,
-        'ci.computer',
-        'ci.lan',
-      );
-      const { web, worker } = yaml.parse(result).services;
+  it('pins Traefik to the app’s own network on a route the Hub builds', async () => {
+    const result = await new DockerComposeBuilder('ci.computer', 'ci.lan').getDockerCompose(
+      [{ name: 'web', image: 'nginx:alpine', isMain: true, internalPort: 80 }],
+      { exposureMode: 'cloudflare' },
+      customUrn,
+      subnet,
+      'ci.computer',
+      'ci.lan',
+    );
+    const { web } = yaml.parse(result).services;
 
-      expect(web.networks).toHaveProperty(hubNetworkName());
-      expect(worker.networks).not.toHaveProperty(hubNetworkName());
-      expect(worker.labels).not.toHaveProperty('traefik.docker.network');
-    } finally {
-      warn.mockRestore();
-    }
-  });
-
-  it('checks the pin against the networks the Hub uses', () => {
-    expect([...HUB_APP_NETWORK_NAMES]).toEqual([...HUB_NETWORK_NAMES]);
+    expect(web.labels['traefik.docker.network']).toBe('my-app__user_network');
+    expect(Object.keys(web.networks)).toEqual(['my-app__user_network']);
   });
 
   // A router keeps all of its labels or none: the chain it asked for may hold the Hub login.

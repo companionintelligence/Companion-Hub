@@ -4,7 +4,6 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import YAML from 'yaml';
-import { hubNetworkName } from '@/common/constants';
 import type { ConfigurationService } from '@/core/config/configuration.service';
 import type { FilesystemService } from '@/core/filesystem/filesystem.service';
 import type { AppStatus } from '@/core/database/drizzle/types';
@@ -68,6 +67,7 @@ describe('TraefikConfigService — the app-starting page', () => {
       app: {
         Name: '/nginx-store-id-nginx-1',
         Labels: {
+          'ci-hub.appurn': 'nginx:store-id',
           'traefik.enable': 'true',
           'traefik.http.routers.nginx-store-id-insecure.rule': 'Host(`nginx-hub1-acme.ci.lan`)',
           'traefik.http.routers.nginx-store-id-insecure.entrypoints': 'web',
@@ -94,7 +94,8 @@ describe('TraefikConfigService — the app-starting page', () => {
           inspect: async () => ({
             Name: containers[id]?.Name,
             Config: { Labels: containers[id]?.Labels },
-            NetworkSettings: { Networks: { [hubNetworkName()]: { IPAddress: '172.30.0.9' } } },
+            // Each app's container is on its own network only, where Traefik reaches it.
+            NetworkSettings: { Networks: { 'nginx_store-id_network': { IPAddress: '172.30.0.9' } } },
           }),
         }) as never,
     );
@@ -161,6 +162,7 @@ describe('TraefikConfigService — routes while an app restarts', () => {
       // WordPress's manifest adds a middleware of its own through extraLabels.
       [`traefik.http.middlewares.${appId}-ci-marketplace.headers.customrequestheaders.X-Forwarded-Proto`]: 'https',
       'com.docker.compose.project': `${appId}_ci-marketplace`,
+      'ci-hub.appurn': `${appId}:ci-marketplace`,
     });
     if (chain) {
       labels[`traefik.http.routers.${appId}-ci-marketplace-insecure.middlewares`] = chain;
@@ -177,7 +179,9 @@ describe('TraefikConfigService — routes while an app restarts', () => {
           inspect: async () => ({
             Name: `/${containers[Number(id)]?.['com.docker.compose.project']}-web-${id}`,
             Config: { Labels: containers[Number(id)] },
-            NetworkSettings: { Networks: { [hubNetworkName()]: { IPAddress: `172.19.0.${Number(id) + 2}` } } },
+            NetworkSettings: {
+              Networks: { [`${containers[Number(id)]?.['com.docker.compose.project']}_network`]: { IPAddress: `172.19.0.${Number(id) + 2}` } },
+            },
           }),
         }) as never,
     );
@@ -364,6 +368,7 @@ describe('TraefikConfigService — routes while an app restarts', () => {
       'traefik.enable': 'true',
       'traefik.http.middlewares.wordpress-ci-marketplace-proxy-headers.headers.customrequestheaders.X-Script-Name': '/',
       'com.docker.compose.project': 'wordpress_ci-marketplace',
+      'ci-hub.appurn': 'wordpress:ci-marketplace',
     };
     runningContainers(web, proxy);
     await service.generateTraefikConfig();

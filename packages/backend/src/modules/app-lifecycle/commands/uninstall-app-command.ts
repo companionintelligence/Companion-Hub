@@ -12,6 +12,7 @@ import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { AppLifecycleCommand } from './command';
 import { handOverKeptImages, sortImagesByOtherApps } from './pull-app-images';
 import { describeLeftovers, removeAppDataWithPrivilegedFallback } from './remove-app-data';
+import { AppLinkService } from '@/modules/app-links/app-link.service';
 
 export class UninstallAppCommand extends AppLifecycleCommand {
   constructor(
@@ -95,6 +96,14 @@ export class UninstallAppCommand extends AppLifecycleCommand {
       } catch (error) {
         logger.warn(`Failed to sync Cloudflare state for ${appUrn}: ${error}`);
         // Don't fail the uninstallation if Cloudflare sync fails
+      }
+
+      // Forget the operator's link approvals naming this app and take its link networks down, so a later
+      // install of an app of the same id asks again.
+      try {
+        await this.moduleRef.get(AppLinkService, { strict: false })?.forgetApp(appUrn);
+      } catch {
+        // AppLinkService may not be available; the next reconcile removes the networks anyway.
       }
 
       // Deregister agent webhook if registered (R-HOOK-3)

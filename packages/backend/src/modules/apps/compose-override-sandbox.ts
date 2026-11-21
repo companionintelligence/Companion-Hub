@@ -1,11 +1,12 @@
-import { HUB_ENV_KEYS_INHERITED_BY_APPS, hubAppNetworkNames } from '@/common/constants';
-import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { HUB_ENV_KEYS_INHERITED_BY_APPS } from '@/common/constants';
+import { appNetworkName, extractAppUrn } from '@/common/helpers/app-helpers';
 import { appIdOf } from '@/modules/apps/app-id.helpers';
 import { securityGrantsFor } from '@/modules/apps/security-grants';
 import {
   type AppSecurityGrants,
   collectServiceSecurityViolations,
   collectTraefikLabelIssues,
+  HUB_INFRASTRUCTURE_NETWORK_NAMES,
   HUB_OWNED_APP_ENV_VARS,
   isReservedHubLabel,
 } from '@ci-hub/common/schemas';
@@ -287,7 +288,8 @@ function checkServiceNetworks(value: unknown, path: string, allowedNetworks: Rea
 interface ServiceCheckContext {
   grants: AppSecurityGrants | undefined;
   allowedNetworks: ReadonlySet<string>;
-  hubNetworks: readonly string[];
+  /** The app's own network, the only one its Traefik labels may name. */
+  appNetworks: readonly string[];
   appId: string;
   knownAppIds: Iterable<string> | undefined;
   hubEnvironment: ReadonlySet<string>;
@@ -323,7 +325,7 @@ function checkLabels(value: unknown, path: string, context: ServiceCheckContext,
       violations.push({ path: `${path}.${key}`, rule: 'CUSTOM_APP_ERROR_LABEL_RESERVED', detail: key });
     }
   }
-  for (const issue of collectTraefikLabelIssues(labels, context.appId, { knownAppIds: context.knownAppIds, hubNetworks: context.hubNetworks })) {
+  for (const issue of collectTraefikLabelIssues(labels, context.appId, { knownAppIds: context.knownAppIds, appNetworks: context.appNetworks })) {
     violations.push({ path: `${path}.${issue.label}`, rule: issue.message });
   }
 }
@@ -554,11 +556,13 @@ export function collectComposeOverrideViolations(
   }
 
   const { appName, appStoreId } = extractAppUrn(appUrn);
-  const allowedNetworks = new Set(['default', `${appName}_${appStoreId}_network`]);
+  const ownNetwork = appNetworkName(appUrn);
+  const allowedNetworks = new Set(['default', ownNetwork]);
   checkTopLevelDefinitions(parsed.volumes, 'volumes', VOLUME_DEFINITION_NOT_ALLOWED, new Set(), violations);
-  // An empty declaration merges onto the generated entry of the same name, so it isn't a network of the override's own.
-  const hubNetworks = hubAppNetworkNames();
-  checkTopLevelDefinitions(parsed.networks, 'networks', NETWORK_NOT_ALLOWED, allowedNetworks, violations, hubNetworks);
+  // An empty declaration merges onto the generated entry of the same name, so it isn't a network of the
+  // override's own. The Hub's networks are refused even empty: no generated entry of that name exists, so
+  // compose would create or join it.
+  checkTopLevelDefinitions(parsed.networks, 'networks', NETWORK_NOT_ALLOWED, allowedNetworks, violations, HUB_INFRASTRUCTURE_NETWORK_NAMES);
 
   const services = parsed.services;
   if (services === undefined || services === null) {
@@ -573,7 +577,7 @@ export function collectComposeOverrideViolations(
     // A user config is written by someone on this Hub, whatever store the app came from.
     grants: securityGrantsFor(appUrn, { author: 'operator' }),
     allowedNetworks,
-    hubNetworks,
+    appNetworks: [ownNetwork],
     appId: appIdOf(appName, appStoreId),
     knownAppIds,
     hubEnvironment,

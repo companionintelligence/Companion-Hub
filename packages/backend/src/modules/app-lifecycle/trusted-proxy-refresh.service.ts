@@ -13,30 +13,28 @@ import { AppLifecycleService } from './app-lifecycle.service';
 export const TRUSTED_PROXY_ENV_KEY = 'HUB_TRUSTED_PROXY_CIDRS';
 
 /**
- * Recreates a running app whose HUB_TRUSTED_PROXY_CIDRS still trusts an address Traefik has left.
+ * Recreates a running app whose HUB_TRUSTED_PROXY_CIDRS trusts an address no hop on its network holds.
  *
- * Each app is handed Traefik's address on the Hub network when its env is generated, and that
- * address is Docker's to assign: when Traefik is recreated (an image bump, a compose change, the
- * edge network's own roll-out) or the host reboots and containers come back in another order, it
- * can land elsewhere, and Docker gives the address it left to the next container that asks. An app
- * still trusting it (CI Memory maps it onto its gateway's `set_real_ip_from`) would then let that
- * container name any client address it liked, defeating the per-address login throttle and session
- * binding the value exists for. Nothing else re-derives a running app's env: boot restarts apps only
- * on a Hub version change, and an app's container keeps the env it was created with.
+ * Each app is told the edge hops and Traefik's fixed address on the app's own network
+ * (`ProxyTrustService.appTrustedProxyCidrs`). An app's env is only written when it starts, so a
+ * running app can hold a list the Hub would no longer write: Traefik's address on the shared Hub
+ * network, from before apps had networks of their own, which Docker gives to the next container that
+ * asks once Traefik leaves it; or the Traefik address of a subnet the app was moved off after a
+ * network overlap. An app trusting such an address would let whoever holds it name any client address
+ * it liked, defeating the per-address login throttle and session binding the value exists for.
  *
- * So every read of the hops (`ProxyTrustService.onResolved`, once a minute) is compared with what
- * each running app was given, and an app that trusts an address no longer in the set is restarted,
- * which regenerates its env. Only a stale address counts: an app trusting fewer hops than it could
- * is narrower, not unsafe, and the edge hops' fixed addresses cannot be handed to anything else (the
- * edge network's `ip_range`), so only Traefik's can go stale. Only apps whose compose file reads
- * the value are restarted; the rest carry it unread. A read that did not find Traefik changes
- * nothing, so a Traefik being recreated or a Docker hiccup never restarts an app.
+ * So every read of the hops (`ProxyTrustService.onResolved`, once a minute) is compared with what each
+ * running app was given, and an app that trusts anything outside its current set is restarted, which
+ * regenerates its env. Only a stale address counts: an app trusting fewer hops than it could is
+ * narrower, not unsafe. Only apps whose compose file reads the value are restarted; the rest carry it
+ * unread. A read that did not find Traefik changes nothing, so a Traefik being recreated or a Docker
+ * hiccup never restarts an app.
  */
 @Injectable()
 export class TrustedProxyRefreshService implements OnModuleInit, OnModuleDestroy {
   /**
-   * Each app already restarted from a given stale list to a given set, so a restart still queued is
-   * not repeated every minute. Keyed on both, so a Traefik that moves back is followed too.
+   * Each app already restarted from a given stale list toward the set it should hold, so a restart still
+   * queued is not repeated every minute. Keyed on both, so a subnet that changes again is followed too.
    */
   private readonly dispatched = new Set<string>();
   /**
@@ -88,8 +86,7 @@ export class TrustedProxyRefreshService implements OnModuleInit, OnModuleDestroy
     return this.inFlight;
   }
 
-  private async reconcile(current: string[], target: string): Promise<AppUrn[]> {
-    const trusted = new Set(current);
+  private async reconcile(_current: string[], target: string): Promise<AppUrn[]> {
     const edgeHops = new Set(resolveEdgeHops().map((hop) => `${hop.address}/32`));
     const restarted: AppUrn[] = [];
     let settled = true;
@@ -115,8 +112,12 @@ export class TrustedProxyRefreshService implements OnModuleInit, OnModuleDestroy
           .split(',')
           .map((cidr) => cidr.trim())
           .filter(Boolean);
-        const stale = given.filter((cidr) => !trusted.has(cidr) && !edgeHops.has(cidr));
-        const attempt = `${appUrn}|${given.join(',')}|${target}`;
+        // What this app may trust now: the edge hops and Traefik's fixed address on its own network.
+        // Anything else is stale: Traefik's address on the shared Hub network, from before apps had
+        // networks of their own, or the Traefik address of a subnet the app no longer has.
+        const expected = new Set(this.proxyTrust.appTrustedProxyCidrs(app.subnet));
+        const stale = given.filter((cidr) => !expected.has(cidr) && !edgeHops.has(cidr));
+        const attempt = `${appUrn}|${given.join(',')}|${[...expected].join(',')}`;
         if (stale.length === 0 || !(await this.readsTrustedProxies(appUrn))) {
           continue;
         }
@@ -127,7 +128,7 @@ export class TrustedProxyRefreshService implements OnModuleInit, OnModuleDestroy
 
         this.dispatched.add(attempt);
         this.logger.info(
-          `[TrustedProxyRefresh] Restarting ${appUrn}: it trusts ${stale.join(', ')} as a proxy, which Traefik no longer holds (now ${target})`,
+          `[TrustedProxyRefresh] Restarting ${appUrn}: it trusts ${stale.join(', ')} as a proxy, which no hop on its network holds (now ${[...expected].join(',')})`,
         );
         try {
           await this.appLifecycleService.restartApp({ appUrn, skipPull: true, actor: { kind: 'system', reason: 'trusted-proxy-refresh' } });

@@ -723,19 +723,28 @@ service, container, and Docker DNS name are also `ci-hub` (`ci-hub-queue`, `ci-h
 lookup fallbacks so already-installed apps keep resolving. Pointing the **image** at the
 retired private `ci-os-hub` GHCR package is what broke Hub 0.2.44 (#920).
 
-Two Docker networks carry different trust. `ci-hub_network` (and its retired alias
-`ci-os-hub_network`) is the app-facing one: every installed app's main container joins it to
-reach the Hub API and other apps' gateways. `ci-hub_internal` is Hub-private: Postgres and
-RabbitMQ live only there and only the `ci-hub` service joins it, so a marketplace container
-cannot reach the Hub's database or its lifecycle queue at all — by topology, not by password.
-Both also publish a host port bound to `127.0.0.1` for local tooling, never to the LAN. The
-queue additionally authenticates every message it carries (`modules/queue/message-signing.ts`),
-so even a leaked broker password does not confer Hub authority. The Hub's own connections out
-(the Portal, image registries) still leave through `ci-hub_network`: `ci-hub_internal` sorts first
-by name and would otherwise take the Hub's default route, so the compose file gives
-`ci-hub_network` `gw_priority: 1` on the Hub, as it does on Traefik and the Tailscale sidecar
-(#1763). Docker Engine older than 28 ignores `gw_priority` and routes all three by name, so the
-desktop app and `cihub up` warn when they start the stack on one.
+No app shares a Docker network with another app. Each app is on a network of its own
+(`<app>_<store>_network`), and the Hub, Traefik and the Private VPN sidecar join that network to
+reach it; two apps reach each other only over a link network the Hub makes for the pair (see
+"App networks" in [`system/backend.md`](system/backend.md#app-networks)). `ci-hub_network` (and its
+retired alias `ci-os-hub_network`) is left to the Hub's own containers: every installed app's main
+container used to join it, where any app could reach any other without the Hub login and answer
+for a name other containers looked up.
+
+`ci-hub_internal` is Hub-private: Postgres and RabbitMQ live only there and only the `ci-hub` service
+joins it, so a marketplace container cannot reach the Hub's database or its lifecycle queue at
+all — by topology, not by password. It has a fixed subnet and fixed addresses, and the Hub pins
+`ci-hub-db` and `ci-hub-queue` to them in `/etc/hosts` (`extra_hosts`): the Hub is on every app's
+network, and on a container with several networks Docker answers a name from whichever network
+claims it first, so an app with a service called `ci-hub-queue` would otherwise be handed the
+broker password. Both also publish a host port bound to `127.0.0.1` for local
+tooling, never to the LAN. The queue additionally authenticates every message it carries
+(`modules/queue/message-signing.ts`), so even a leaked broker password does not confer Hub
+authority. The Hub's own connections out (the Portal, image registries) still leave through
+`ci-hub_network`: the edge and infra networks sort first by name and would otherwise take the Hub's
+default route, so the compose file gives `ci-hub_network` `gw_priority: 1` on the Hub, as it does on
+Traefik and the Tailscale sidecar (#1763). Docker Engine older than 28 ignores `gw_priority` and
+routes all three by name, so the desktop app and `cihub up` warn when they start the stack on one.
 
 Images are pushed to **GitHub Container Registry** (ghcr.io). The package must remain
 **public**: the desktop shells out to `docker compose` with no registry credentials, so any
