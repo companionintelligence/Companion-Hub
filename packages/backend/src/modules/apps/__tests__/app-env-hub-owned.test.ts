@@ -200,7 +200,8 @@ describe('AppHelpers.generateEnvFile keeps the values the Hub sets for the app',
       {},
     );
     expect(env.get('APP_LOCAL_DOMAIN')).toBeUndefined();
-    expect(env.get('MEMORY_TOKEN')).toBe('pinned');
+    // `app:home` is not the official store, so no Memory name passes through, pinned or not.
+    expect(env.get('MEMORY_TOKEN')).toBeUndefined();
   });
 
   it('writes the variables the manifest names that the Hub doesn’t own', async () => {
@@ -376,10 +377,48 @@ describe('AppHelpers.generateEnvFile keeps the values the Hub sets for the app',
       expect(inference.ownedKeys).not.toContain('APP_BASE_URL');
 
       const inherited = appInheritableHubEnvKeys({
+        urn: createAppUrn('app', 'ci-marketplace'),
         hub_integration: fromPartial({ memory: { url_env: 'APP_BASE_URL', token_env: 'MEMORY_TOKEN' } }),
       });
       expect(inherited.has('APP_BASE_URL')).toBe(false);
       expect(inherited.has('MEMORY_TOKEN')).toBe(true);
+    });
+  });
+
+  /*
+   * A key is written as `NAME=value` with nothing escaped, so a newline in a manifest's variable name
+   * started a line of its own: `X=1\nAPP_DATA_DIR` with a default of `/` wrote `APP_DATA_DIR=/` after
+   * the Hub's value, and every `${APP_DATA_DIR}/...` bind became a host path. The schema refuses such
+   * a manifest; this is one that reached the builder some other way.
+   */
+  describe('a variable name that is no variable name', () => {
+    it.each(['X=1\nAPP_DATA_DIR', ' APP_DATA_DIR', 'export APP_DATA_DIR', 'A=B'])('is left out of app.env: %j', async (name) => {
+      const env = await generate(appInfo({ form_fields: [field({ env_variable: name, default: '/' })] }));
+
+      expect(env.get('APP_DATA_DIR')).toMatch(/\/home\/app$/);
+      expect(written.split('\n').filter((line) => line.startsWith('APP_DATA_DIR='))).toHaveLength(1);
+      expect(written).not.toMatch(/^(export )?\s*APP_DATA_DIR=\/$/m);
+      expect(written).not.toContain(name);
+    });
+
+    it('is left out as an alias and as an inference variable', async () => {
+      inferenceEnv.resolve.mockResolvedValue(fromPartial({ CI_CHAT_MODEL: '/' }));
+      const env = await generate(
+        appInfo({
+          categories: ['ai'],
+          form_fields: [field({ type: 'app_base_url', env_variable: 'APP_BASE_URL', alias_env_variables: ['APP_URL', 'X\nAPP_DATA_DIR'] })],
+          hub_integration: fromPartial({ inference: { chat_model: 'Y=1\nAPP_DATA_DIR' } }),
+        }),
+      );
+
+      expect(env.get('APP_DATA_DIR')).toMatch(/\/home\/app$/);
+      expect(written.split('\n').filter((line) => line.startsWith('APP_DATA_DIR='))).toHaveLength(1);
+      expect(
+        appInheritableHubEnvKeys({
+          urn: createAppUrn('app', 'ci-marketplace'),
+          hub_integration: fromPartial({ memory: { url_env: 'A\nB', token_env: 'MEMORY_TOKEN' } }),
+        }).has('A\nB'),
+      ).toBe(false);
     });
   });
 });

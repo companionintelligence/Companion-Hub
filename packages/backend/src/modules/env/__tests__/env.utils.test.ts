@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { EnvUtils } from '../env.utils';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import webpush from 'web-push';
@@ -72,14 +73,45 @@ describe('EnvUtils', () => {
       vi.spyOn(fs, 'existsSync').mockReturnValue(true);
       vi.spyOn(fs, 'readFileSync').mockReturnValue('mock-seed');
 
-      const result = service.createRandomString('test-name', 10);
-      expect(result).toHaveLength(10);
-      // Since it's deterministic with seed and name, we could check exact value but length + determinism is fine.
+      const result = service.createRandomString('app-a:store', 'test-name', 10);
+      expect(result).toMatch(/^[0-9a-f]{10}$/);
+      expect(service.createRandomString('app-a:store', 'test-name', 10)).toBe(result);
+    });
+
+    it('gives two apps different values for the same variable', () => {
+      vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+      vi.spyOn(fs, 'readFileSync').mockReturnValue('mock-seed');
+
+      const a = service.createRandomString('app-a:ci-marketplace', 'DB_PASSWORD', 32);
+      const b = service.createRandomString('app-b:ci-marketplace', 'DB_PASSWORD', 32);
+      // Same app name from another store is another app.
+      const c = service.createRandomString('app-a:someone-else', 'DB_PASSWORD', 32);
+      expect(new Set([a, b, c]).size).toBe(3);
+    });
+
+    it('is no longer sha256(name + seed), which any app could match with another', () => {
+      vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+      vi.spyOn(fs, 'readFileSync').mockReturnValue('mock-seed');
+
+      const legacy = crypto
+        .createHash('sha256')
+        .update('DB_PASSWORD' + 'mock-seed')
+        .digest('hex')
+        .substring(0, 32);
+      expect(service.createRandomString('app-a:ci-marketplace', 'DB_PASSWORD', 32)).not.toBe(legacy);
+    });
+
+    it('cuts base64 output to the requested number of bytes', () => {
+      vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+      vi.spyOn(fs, 'readFileSync').mockReturnValue('mock-seed');
+
+      const value = service.createRandomString('app-a:store', 'KEY', 24, 'base64');
+      expect(Buffer.from(value, 'base64')).toHaveLength(24);
     });
 
     it('should throw if seed file missing', () => {
       vi.spyOn(fs, 'existsSync').mockReturnValue(false);
-      expect(() => service.createRandomString('test', 10)).toThrow('Seed file not found');
+      expect(() => service.createRandomString('app-a:store', 'test', 10)).toThrow('Seed file not found');
     });
   });
 

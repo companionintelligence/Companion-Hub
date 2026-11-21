@@ -53,6 +53,10 @@ import { HostnamePreviewCard } from './hostname-preview-card';
 import { InstallFormField } from './install-form-field';
 import { keepsPublishedDomain, preselectedPublicDomain, publicDomainToUse } from './preselected-public-domain';
 import { useDnsAvailability } from './use-dns-availability';
+import { McpAccessPicker } from '@/components/capability-badge/mcp-access-picker';
+import { useCanGrantFull } from '@/lib/hooks/use-can-grant-full';
+import { useHubAccess } from '@/lib/hooks/use-hub-access';
+import type { McpAccessChoice } from '@ci-hub/common/types';
 
 /**
  * The expected URL to warn about, or `null` when this app needs no repair.
@@ -119,6 +123,11 @@ export type FormValues = {
    */
   customDomainTakeover?: boolean;
   autoRestartOnDomainChange?: boolean;
+  /**
+   * The answer to the app's request for the Hub's MCP tools (`hub_integration.mcp_client`), asked on
+   * install only. Later changes go through the app's Hub access section, never a settings save.
+   */
+  mcpAccess?: McpAccessChoice;
   /**
    * What this app was being served on when the dialog was drawn — the
    * compare-and-swap half of `customDomain: ''` (R2-HUBDOMAINS-3).
@@ -220,6 +229,10 @@ export const InstallForm: React.FC<IProps> = ({
   // Public Web. It would also give a form that names no mode whatever a new install gets.
   // An app that is not exposable has no mode to keep: whatever its stored form names, a save sends it local.
   const savedExposureMode = isEdit && info.exposable ? servedExposureMode({ config: initialValues }) : undefined;
+  // The app asks for the Hub's MCP tools; only an install asks back (see `mcpAccess`).
+  const asksForMcpAccess = !isEdit && Boolean(info.hub_integration?.mcp_client);
+  const { manageHub } = useHubAccess({ enabled: asksForMcpAccess });
+  const canGrantFull = useCanGrantFull({ enabled: asksForMcpAccess && manageHub });
   const keepsPublished = keepsPublishedDomain(isEdit, savedExposureMode);
   // What an empty Subdomain field stands for. An app already on the web with no subdomain stored (API,
   // MCP, restore and older installs) is served on its routing name. Filling the field with the bare app
@@ -1354,6 +1367,32 @@ export const InstallForm: React.FC<IProps> = ({
       {/* Exposure mode selector — always shown when applicable, even in simple mode */}
       {info.exposable && info.dynamic_config && renderExposureModeSelector()}
       {renderHostnameSettings()}
+
+      {/* Asked on install, outside the advanced settings: what the app's own key may do to the apps
+          beside it is no detail to leave behind a toggle. "No access" is the default, so clicking
+          through grants nothing. Changing it later is the app's Hub access section. */}
+      {asksForMcpAccess && (
+        <div className="mb-4 rounded-md border border-border/60 p-3" data-testid="install-form-mcp-section">
+          <p className="text-sm font-medium">{t('APP_MCP_ACCESS_TITLE')}</p>
+          <p className="mb-2 text-xs text-muted-foreground">{t('APP_MCP_ACCESS_DESC')}</p>
+          <Controller
+            control={control}
+            name="mcpAccess"
+            defaultValue="none"
+            render={({ field: { onChange, value } }) => (
+              <McpAccessPicker
+                name="install-form"
+                value={value ?? 'none'}
+                onChange={onChange}
+                disabled={loading || !manageHub}
+                unavailable={canGrantFull ? [] : ['full']}
+                unavailableHint={t('APP_MCP_ACCESS_FULL_ROLE_REQUIRED')}
+              />
+            )}
+          />
+          {!manageHub && <p className="mt-2 text-xs text-muted-foreground">{t('APP_MCP_ACCESS_MANAGER_REQUIRED')}</p>}
+        </div>
+      )}
 
       {/* Configuration section. No scroll container of its own: both dialogs that host this form
           already scroll their body, and a nested fixed-height one showed a second scrollbar. */}

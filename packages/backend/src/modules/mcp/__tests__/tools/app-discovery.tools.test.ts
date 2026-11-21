@@ -6,6 +6,7 @@ import {
   GRANTED_ACTOR,
   UNGRANTED_CALLERS,
   asGrantedOperator,
+  asKey,
   asManagedKeyOnOtherApp,
   gateChecks,
   lifecycleActorGate,
@@ -142,6 +143,47 @@ describe('AppDiscoveryTools', () => {
       const entries = [installedEntry()];
       appsService.getInstalledApps.mockResolvedValue(entries as any);
       await expect(tools.listInstalledApps({ full: true })).resolves.toEqual(entries);
+    });
+
+    describe('the values typed into an app’s settings', () => {
+      const typed = { config: { ADMIN_PASSWORD: 'hunter2' } };
+
+      it('SECURITY: are left out of the full records for another app’s key below full', async () => {
+        appsService.getInstalledApps.mockResolvedValue([installedEntry({ app: typed })] as any);
+
+        const [entry] = (await asManagedKeyOnOtherApp(() => tools.listInstalledApps({ full: true }))) as Array<{ app: Record<string, unknown> }>;
+
+        expect(entry.app).not.toHaveProperty('config');
+        expect(entry.app.appName).toBe('ci-earth');
+        expect(JSON.stringify(entry)).not.toContain('hunter2');
+      });
+
+      it('SECURITY: are left out of hub_get_app for another app’s key below full', async () => {
+        lifecycle.assertActorMay.mockResolvedValue(undefined);
+        appsService.getApp.mockResolvedValue(installedEntry({ app: typed }) as any);
+
+        const result = (await asManagedKeyOnOtherApp(() => tools.getApp({ appUrn: 'ci-earth:ci-marketplace' }), 'read')) as {
+          app: Record<string, unknown>;
+        };
+
+        expect(result.app).not.toHaveProperty('config');
+      });
+
+      it.each([
+        ['another app’s key at full', (call: () => Promise<unknown>) => asManagedKeyOnOtherApp(call, 'full')],
+        [
+          'the app’s own key',
+          (call: () => Promise<unknown>) => asKey({ ownerAppUrn: 'ci-earth:ci-marketplace', createdByUserId: null, capability: 'read' }, call),
+        ],
+        ['a person', (call: () => Promise<unknown>) => asGrantedOperator(call)],
+      ])('stay for %s', async (_label, as) => {
+        lifecycle.assertActorMay.mockResolvedValue(undefined);
+        appsService.getApp.mockResolvedValue(installedEntry({ app: typed }) as any);
+
+        const result = (await as(() => tools.getApp({ appUrn: 'ci-earth:ci-marketplace' }))) as { app: Record<string, unknown> };
+
+        expect(result.app.config).toEqual(typed.config);
+      });
     });
 
     it('should only include apps with a database record', async () => {

@@ -164,7 +164,7 @@ export function hubAppNetworkNames(env: NodeJS.ProcessEnv = process.env): string
  *
  * An app-specific pass-through — the Memory `url_env`/`token_env` names a
  * manifest declares, which an operator may pin the same way — is added per app
- * by {@link appInheritableHubEnvKeys}. Add a key here only if an app must read
+ * by {@link appInheritableHubEnvKeys}, for official-store apps only. Add a key here only if an app must read
  * it from the Hub's `.env` specifically; if the Hub knows the value, set it.
  */
 export const HUB_ENV_KEYS_INHERITED_BY_APPS: ReadonlySet<string> = new Set([

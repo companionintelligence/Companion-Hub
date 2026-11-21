@@ -3,6 +3,7 @@ import { createZodDto } from '@/common/zod-dto';
 import { optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
 import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
 import isFQDN from 'validator/lib/isFQDN';
+import { MCP_ACCESS_CHOICES } from '@ci-hub/common/types';
 
 export const appFormSchema = z
   .object({
@@ -21,6 +22,13 @@ export const appFormSchema = z
      * restarts anything.
      */
     autoRestartOnDomainChange: z.boolean().optional(),
+    /**
+     * The installer's answer to the app's request for the Hub's MCP tools, which the app's own key
+     * would use on the apps beside it. Only an install takes it, and only from a person who may give
+     * it (`AppLifecycleService.installApp`); it lands on `app.mcp_access` and never in the stored form.
+     * Changing it later is `PUT :urn/hub-access/mcp`.
+     */
+    mcpAccess: z.enum(MCP_ACCESS_CHOICES).optional(),
     localSubdomain: z
       .string()
       .regex(/^[a-zA-Z0-9-]{1,63}$/)
@@ -161,6 +169,11 @@ const cancelOperationResponseSchema = z.object({
 });
 
 export class AppFormBody extends createZodDto(appFormSchema) {}
+
+/** A person's answer to an app's request for the Hub's MCP tools (`PUT :urn/hub-access/mcp`). */
+export const mcpAccessBodySchema = z.object({ access: z.enum(MCP_ACCESS_CHOICES) });
+
+export class McpAccessBody extends createZodDto(mcpAccessBodySchema) {}
 
 export class UninstallAppBody extends createZodDto(uninstallAppBodySchema) {}
 
