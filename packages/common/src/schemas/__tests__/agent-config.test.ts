@@ -83,6 +83,19 @@ describe('agent-config schemas', () => {
         expect(result.data.spec_path).toBe('agents/openapi.yaml');
       }
     });
+
+    it.each(['../../../state/settings.json', 'agents/../../x.json', '..\\..\\state\\settings.json', '/data/state/settings.json', '\\x', 'C:\\x', ''])(
+      'refuses a spec_path outside the app folder: %j',
+      (spec_path) => {
+        expect(agentOpenApiConfigSchema.safeParse({ spec_path }).success).toBe(false);
+      },
+    );
+
+    it('accepts a spec_path inside the app folder', () => {
+      for (const spec_path of ['agents/openapi.yaml', 'docs/api.json', './agents/openapi.json', 'agents/..spec.json']) {
+        expect(agentOpenApiConfigSchema.safeParse({ spec_path }).success).toBe(true);
+      }
+    });
   });
 
   describe('agentMcpConfigSchema', () => {

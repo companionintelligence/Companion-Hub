@@ -15,6 +15,7 @@ import {
   type FormField,
   HUB_OWNED_APP_ENV_VARS,
   hubIntegrationMayWrite,
+  isEnvVariableName,
   type MemoryUrlStyle,
   type HubIntegration,
   writesAppBaseUrl,
@@ -81,13 +82,14 @@ export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration'
 }
 
 /**
- * Whether a manifest may have the Hub write `name` into the app's env: not a value the Hub sets for
+ * Whether a manifest may have the Hub write `name` into the app's env: a plain variable name
+ * (`isEnvVariableName`: a newline in a key writes a second line), and not a value the Hub sets for
  * the app itself (`HUB_OWNED_APP_ENV_VARS`). The manifest schema refuses those names and an installed
  * copy is read without them (`parseInstalledAppInfo`). This is for a manifest that reaches the env
  * some other way.
  */
 function manifestMayWriteEnv(name: string): boolean {
-  return !HUB_OWNED_APP_ENV_VARS.has(name);
+  return isEnvVariableName(name) && !HUB_OWNED_APP_ENV_VARS.has(name);
 }
 
 /**
@@ -591,10 +593,14 @@ export class AppHelpers {
     // A manifest that names a value the Hub sets for the app gets the Hub's value. The manifest
     // schema refuses such a manifest, so this is only for one that reaches here some other way.
     const leaveOutManifestEnv = (name: string, source: string) => {
+      if (!isEnvVariableName(name)) {
+        this.logger.warn(`[AppHelpers] ${appUrn}: ${source} names ${JSON.stringify(name)}, which is no variable name; it is left out`);
+        return;
+      }
       this.logger.warn(`[AppHelpers] ${appUrn}: ${source} names ${name}, which the Hub sets for the app; the Hub's value is kept`);
     };
     const leaveOutIntegrationEnv = (name: string, source: string) => {
-      if (HUB_OWNED_APP_ENV_VARS.has(name)) {
+      if (HUB_OWNED_APP_ENV_VARS.has(name) || !isEnvVariableName(name)) {
         leaveOutManifestEnv(name, source);
       } else {
         this.logger.warn(`[AppHelpers] ${appUrn}: ${source} names ${name}, which no Hub integration may write; it is left out`);
@@ -1305,6 +1311,15 @@ export class AppHelpers {
     const hubContainer = hubContainerName();
     const hubPort = process.env.API_PORT || '3000';
     envMap.set('HUB_INFERENCE_URL', `http://${hubContainer}:${hubPort}/api/inference/v1`);
+
+    // Every writer above checks its names. This is the one place they all meet, so a key that is no
+    // variable name is dropped here too: written as-is, a newline in it would start a line of its own.
+    for (const key of [...envMap.keys()]) {
+      if (!isEnvVariableName(key)) {
+        envMap.delete(key);
+        this.logger.warn(`[AppHelpers] ${appUrn}: left ${JSON.stringify(key)} out of app.env, as it is no variable name`);
+      }
+    }
 
     await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));
 

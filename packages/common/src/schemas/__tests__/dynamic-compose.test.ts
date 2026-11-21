@@ -1302,6 +1302,17 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
     }
   });
 
+  it('flags a securityOpt entry that Compose would expand into one that switches confinement off', () => {
+    // The text matches no confinement pattern; Compose turns it into one at up time.
+    for (const opt of ['${A:-apparmor=unconfined}', '${B:-systempaths=unconfined}', '${C:-label=disable}', 'seccomp=${S}', '$OPT', '$${X}']) {
+      expect(collectServiceSecurityViolations({ securityOpt: [opt] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_SECURITY_OPT_NOT_ALLOWED');
+    }
+    // A grant names a literal, so it never clears an expansion.
+    expect(
+      collectServiceSecurityViolations({ securityOpt: ['${A:-seccomp=unconfined}'] }, { securityOpt: ['seccomp=unconfined'] }).map((v) => v.message),
+    ).toContain('CUSTOM_APP_ERROR_SECURITY_OPT_NOT_ALLOWED');
+  });
+
   it('leaves securityOpt entries that tighten confinement alone', () => {
     // Matched on the VALUE half, so a real profile and `no-new-privileges` pass.
     expect(collectServiceSecurityViolations({ securityOpt: ['no-new-privileges:true', 'apparmor=my-profile'] })).toHaveLength(0);
@@ -1438,6 +1449,27 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
     expect(collectServiceSecurityViolations({ pid: 'host' }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED');
     expect(collectServiceSecurityViolations({ networkMode: 'host' }, { networkModeHost: true })).toHaveLength(0);
     expect(collectServiceSecurityViolations({ pid: 'host' }, { pidHost: true })).toHaveLength(0);
+  });
+
+  it('flags a pid Compose would expand to the host namespace, grant or not', () => {
+    for (const pid of ['${P:-host}', '$PID', 'container:${C}', ' HOST ']) {
+      expect(collectServiceSecurityViolations({ pid }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED');
+    }
+    expect(collectServiceSecurityViolations({ pid: '${P:-host}' }, { pidHost: true }).map((v) => v.message)).toContain(
+      'CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED',
+    );
+    // A pid mode that stays inside the app is still left alone.
+    expect(collectServiceSecurityViolations({ pid: 'service:db' })).toHaveLength(0);
+  });
+
+  it('already refuses an expansion in the settings checked against an allow-list', () => {
+    expect(collectServiceSecurityViolations({ networkMode: '${N:-host}' }).map((v) => v.message)).toContain(
+      'CUSTOM_APP_ERROR_NETWORK_MODE_NOT_ALLOWED',
+    );
+    expect(collectServiceSecurityViolations({ capAdd: ['${C:-SYS_ADMIN}'] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED');
+    expect(collectServiceSecurityViolations({ devices: ['${D:-/dev/sda}:/dev/sda'] }).map((v) => v.message)).toContain(
+      'CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED',
+    );
   });
 
   it('flags denied host-path binds and honors per-path grants', () => {
