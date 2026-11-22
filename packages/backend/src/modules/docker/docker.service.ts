@@ -35,6 +35,7 @@ import { DOCKERODE } from './constants';
 import { DockerReadFacade, type ManagedAppContainerVerification } from './docker-read.facade';
 import { APP_CAME_UP_TIMING, AppCameUpWatch, type AppCameUpTiming } from './managed-app-containers';
 import { listContainersMatchingAnyLabelSets, managedAppLabelSets } from './hub-container-query';
+import { appComposeEnvironment } from './app-compose-environment';
 import {
   applyLayerEvent,
   type DockerPullLayerSnapshot,
@@ -1673,6 +1674,8 @@ export class DockerService {
     const cmd = spawn(command[0], command.slice(1), {
       cwd, // Set working directory to compose file's directory
       signal: composeSignal,
+      // Only an app's compose comes through here, and it must not expand the Hub's secrets.
+      env: appComposeEnvironment(),
     });
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -1802,9 +1805,9 @@ export class DockerService {
         this.logger.warn('docker compose plugin not available for logs, falling back to docker-compose binary');
       }
 
-      const logs = canUseDockerComposePlugin
-        ? spawn('docker', ['compose', ...args], { stdio: 'pipe' })
-        : spawn('docker-compose', args, { stdio: 'pipe' });
+      // An app's compose must not expand the Hub's secrets (`appComposeEnvironment`); the Hub's own keeps its environment.
+      const spawnOptions = appUrn ? { stdio: 'pipe' as const, env: appComposeEnvironment() } : { stdio: 'pipe' as const };
+      const logs = canUseDockerComposePlugin ? spawn('docker', ['compose', ...args], spawnOptions) : spawn('docker-compose', args, spawnOptions);
 
       logs.on('error', (error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOEXEC') {
@@ -1858,9 +1861,9 @@ export class DockerService {
         this.logger.warn('docker compose plugin not available for log download, falling back to docker-compose binary');
       }
 
-      const logs = canUseDockerComposePlugin
-        ? spawn('docker', ['compose', ...args], { stdio: 'pipe' })
-        : spawn('docker-compose', args, { stdio: 'pipe' });
+      // An app's compose must not expand the Hub's secrets (`appComposeEnvironment`); the Hub's own keeps its environment.
+      const spawnOptions = appUrn ? { stdio: 'pipe' as const, env: appComposeEnvironment() } : { stdio: 'pipe' as const };
+      const logs = canUseDockerComposePlugin ? spawn('docker', ['compose', ...args], spawnOptions) : spawn('docker-compose', args, spawnOptions);
 
       logs.on('error', (error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOEXEC') {

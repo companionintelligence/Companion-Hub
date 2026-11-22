@@ -10062,7 +10062,8 @@
                             },
                             "spec_path": {
                               "default": "agents/openapi.yaml",
-                              "type": "string"
+                              "type": "string",
+                              "minLength": 1
                             },
                             "base_url": {
                               "type": "string"
@@ -11402,7 +11403,8 @@
                             },
                             "spec_path": {
                               "default": "agents/openapi.yaml",
-                              "type": "string"
+                              "type": "string",
+                              "minLength": 1
                             },
                             "base_url": {
                               "type": "string"
@@ -13047,7 +13049,8 @@
                       },
                       "spec_path": {
                         "default": "agents/openapi.yaml",
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1
                       },
                       "base_url": {
                         "type": "string"
