@@ -79,7 +79,7 @@ describe('desktop-release.yml update manifest', () => {
     const job = desktopReleaseJob('sign-manifest');
     expect(job).toContain('secrets.DESKTOP_UPDATE_SIGNING_KEY');
     expect(job).toContain('sign-desktop-manifest.mjs update-manifest/manifest.json "${{ inputs.environment }}"');
-    expect(job).toMatch(/environment:\s*\$\{\{\s*inputs\.environment\s*\}\}/);
+    expect(job).toMatch(/environment:\s*\$\{\{\s*inputs\.environment\s*\}\}-update-signing\n/);
     expect(job).not.toContain('CF_R2_DL_API_TOKEN');
     expect(job).not.toContain('CLOUDFLARE_API_TOKEN');
   });
@@ -90,6 +90,18 @@ describe('desktop-release.yml update manifest', () => {
     expect(job).toContain('name: desktop-update-manifest');
     expect(job).toContain('MANIFEST_DIR: update-manifest');
     expect(job).not.toContain('DESKTOP_UPDATE_SIGNING_KEY');
+  });
+
+  // Each job has its own GitHub Environment, so the signing key and the R2 token sit behind
+  // separate protection rules.
+  it('runs signing and upload in different GitHub Environments', () => {
+    const environmentOf = (name: string) => desktopReleaseJob(name).match(/\n {4}environment: (.+)\n/)?.[1];
+    expect(environmentOf('sign-manifest')).toBe('${{ inputs.environment }}-update-signing');
+    expect(environmentOf('upload-r2')).toBe('${{ inputs.environment }}');
+  });
+
+  it('stamps the build date the app compares update manifests with', () => {
+    expect(desktopRelease).toContain('echo "CI_HUB_BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"');
   });
 
   it('refuses to build an app that has no update key for its environment, before compiling', () => {

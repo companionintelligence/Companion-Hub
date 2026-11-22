@@ -52,7 +52,7 @@ function main() {
   const { DESKTOP_UPDATE_SIGNING_KEY: pem } = process.env;
   if (!pem?.trim()) {
     fail(
-      `DESKTOP_UPDATE_SIGNING_KEY is not set on the '${environment}' GitHub Environment. ` +
+      `DESKTOP_UPDATE_SIGNING_KEY is not set on the '${environment}-update-signing' GitHub Environment. ` +
         'Desktop apps install no update from an unsigned manifest; see docs/DESKTOP-RELEASE-SIGNING.md.',
     );
   }

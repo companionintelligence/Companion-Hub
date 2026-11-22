@@ -184,6 +184,9 @@ jobs:
           {
             echo "CI_HUB_ENVIRONMENT=${{ inputs.environment }}"
             echo "CI_HUB_BUILD_VERSION=${{ inputs.tag }}"
+            # The app refuses an update manifest dated before this (updater.rs, check_manifest_date).
+            # sign-manifest dates the manifest after every build, so this release's own is later.
+            echo "CI_HUB_BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_ENV"
           echo "Cloud target: ${{ inputs.environment }} (CI_CLOUD_URL will be baked from GITHUB_ENV)"
       - name: Build standalone Companion Hub CLI
@@ -672,11 +675,13 @@ jobs:
   # The desktop app installs only what a manifest signed by a key it pins names
   # (packages/desktop/src-tauri/src/update_signature.rs). This job builds and signs that manifest.
   # It has the signing key and no R2 token; upload-r2 has the token and no key, so neither one can
-  # put an installer on desktops alone.
+  # put an installer on desktops alone. It runs in its own GitHub Environment
+  # (<environment>-update-signing), which holds only the signing key, so its protection rules
+  # gate signing apart from the upload.
   sign-manifest:
     needs: release
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+    environment: ${{ inputs.environment }}-update-signing
     permissions:
       contents: read
     steps:

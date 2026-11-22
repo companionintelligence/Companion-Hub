@@ -211,6 +211,10 @@ struct LatestJson {
 #[derive(Deserialize)]
 struct ManifestJson {
     version: String,
+    /// When the release was published (RFC 3339), from `build-desktop-manifest.mjs`. Signed with
+    /// the rest of the manifest; see [`check_manifest_date`].
+    #[serde(default)]
+    date: Option<String>,
     platforms: std::collections::HashMap<String, serde_json::Value>,
 }
 
@@ -673,8 +677,34 @@ fn fetch_manifest(
                     "Manifest version mismatch (expected {expected}, got {actual})"
                 ));
             }
+            check_manifest_date(manifest.date.as_deref(), option_env!("CI_HUB_BUILD_DATE"))?;
             Ok(manifest)
         })
+}
+
+/// Refuses a signed manifest dated before this build was made. Desktop Release stamps
+/// `CI_HUB_BUILD_DATE` into each build and signs the manifest after every build finished, so a
+/// release this build could update to is never dated earlier. An older one is a replayed release.
+/// A build without the stamp (a local one) skips the check; one with it refuses an undated manifest.
+fn check_manifest_date(
+    manifest_date: Option<&str>,
+    build_date: Option<&str>,
+) -> Result<(), String> {
+    let Some(build_date) = build_date.map(str::trim).filter(|date| !date.is_empty()) else {
+        return Ok(());
+    };
+    let Ok(build_date) = chrono::DateTime::parse_from_rfc3339(build_date) else {
+        return Ok(());
+    };
+    let manifest_date = manifest_date
+        .and_then(|date| chrono::DateTime::parse_from_rfc3339(date.trim()).ok())
+        .ok_or_else(|| "Manifest has no valid date — refusing it".to_string())?;
+    if manifest_date < build_date {
+        return Err(format!(
+            "Manifest is dated {manifest_date}, before this build ({build_date}) — refusing an older release"
+        ));
+    }
+    Ok(())
 }
 
 /// Whether a newer version exists, and its installer. Callers that only act on an update (the
@@ -2710,6 +2740,7 @@ mod tests {
         );
         let manifest = ManifestJson {
             version: "1.0.0".to_string(),
+            date: None,
             platforms,
         };
         let artifact =
@@ -3158,6 +3189,33 @@ mod tests {
             );
             assert!(result.is_err(), "{case}: {result:?}");
         }
+    }
+
+    /// A replayed older release is refused even though its signature is good.
+    #[test]
+    fn a_manifest_dated_before_this_build_is_refused() {
+        let built = Some("2026-11-20T10:00:00Z");
+        assert!(check_manifest_date(Some("2026-11-20T10:30:00Z"), built).is_ok());
+        assert!(check_manifest_date(Some("2026-11-20T10:00:00Z"), built).is_ok());
+        assert!(check_manifest_date(Some("2026-11-19T23:59:59Z"), built).is_err());
+        assert!(check_manifest_date(None, built).is_err());
+        assert!(check_manifest_date(Some("yesterday"), built).is_err());
+        // A local build carries no date, so it has nothing to compare with.
+        assert!(check_manifest_date(None, None).is_ok());
+        assert!(check_manifest_date(Some("2001-01-01T00:00:00Z"), Some("")).is_ok());
+    }
+
+    /// A feed naming an older version never leads to its manifest or installer: no downgrade.
+    #[test]
+    fn an_older_version_in_latest_json_installs_nothing() {
+        let base = serve_release("1.2.3", |base| Some(linux_release(base, "1.2.3")));
+        let source = UpdateSource::from_base(&base).expect("test source");
+        let older =
+            check_desktop_update_for_host("1.3.0", &source, Some((HostOs::Linux, "deb")), false)
+                .expect("check ahead of the server");
+        assert!(!older.update_available);
+        assert!(older.download_url.is_empty());
+        assert!(older.expected_sha256.is_none());
     }
 
     #[test]
