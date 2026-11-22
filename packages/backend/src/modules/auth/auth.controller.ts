@@ -1601,6 +1601,15 @@ export class AuthController {
       throw new BadRequestException('Invalid or expired desktop exchange token');
     }
 
+    // An app that sends a secret asked for a bound code. A code with no challenge was minted for
+    // some other sign-in (a page can start one without app_challenge) and must not sign this app
+    // in as whoever finished it. Burn it the same way.
+    if (parsed.appChallenge === undefined && verifier !== undefined) {
+      this.cache.del(cacheKey);
+      this.logger.warn('Portal desktop exchange refused an unbound code presented with an app secret');
+      throw new BadRequestException('Invalid or expired desktop exchange token');
+    }
+
     if (parsed.appChallenge === undefined) {
       this.logger.info('Portal desktop exchange redeemed a code with no app secret (an app from before app binding)');
     }

@@ -2883,6 +2883,29 @@ describe('AuthController', () => {
         expect(cache.del).toHaveBeenCalledWith('portal_sso_desktop:desktop-token');
         expect(sessionManager.createSession).not.toHaveBeenCalled();
       });
+
+      it('refuses an unbound code presented with an app secret, and burns it', async () => {
+        cache.get.mockReturnValue(JSON.stringify({ sessionId: 'session-123', redirectPath: '/home', userId: 1 }));
+        sessionManager.resolveSessionUserId.mockReturnValue(1 as never);
+
+        await expect(authController.exchangePortalDesktopLogin(exchangeReq(), exchangeRes(), 'desktop-token', verifier)).rejects.toThrow(
+          'Invalid or expired desktop exchange token',
+        );
+        expect(cache.del).toHaveBeenCalledWith('portal_sso_desktop:desktop-token');
+        expect(cache.set).not.toHaveBeenCalledWith('portal_sso_desktop_done:desktop-token', expect.anything(), expect.anything());
+        expect(sessionManager.createSession).not.toHaveBeenCalled();
+      });
+
+      it('still redeems an unbound code for an app that sends no secret', async () => {
+        cache.get.mockReturnValue(JSON.stringify({ sessionId: 'session-123', redirectPath: '/home', userId: 1 }));
+        sessionManager.resolveSessionUserId.mockReturnValue(1 as never);
+        config.get.mockReturnValue({ experimental: { insecureCookie: true } });
+
+        await expect(authController.exchangePortalDesktopLogin(exchangeReq(), exchangeRes(), 'desktop-token')).resolves.toEqual({
+          sessionId: tokenFor('session-123'),
+          redirectPath: '/home',
+        });
+      });
     });
 
     it('/start stores the binding with the state and drops the same value as a cookie', async () => {
