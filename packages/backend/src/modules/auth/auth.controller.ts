@@ -197,11 +197,21 @@ interface EdgeSsoTicket {
  * minutes, Memory's `staticfiles.auth.signatureTTL`), as it already does on a
  * Memory reached without a Hub.
  *
+ * `/api/agent/v1` is where another person's Companion Memory reaches this one:
+ * asking a question, collecting an answer, checking this box holds a person's
+ * key, accepting an invite. Those requests come from another box, never with a
+ * Hub session or a member's Portal token, and Memory authenticates every one
+ * itself: each is signed with the sender's own key and answered only through a
+ * link the owner made for that key (an identity check needs no link and proves
+ * only that a key the caller already names is held here). Without this the Hub
+ * answered every one with its login, so two Memories behind Hubs could never
+ * link or ask each other anything.
+ *
  * ONLY for the official Memory install — see `isMemoryProviderHost`. Every
  * other edge-authenticated app relies on the Hub to authenticate for it, and
  * these paths mean nothing to them.
  */
-const FORWARD_AUTH_APP_PUBLIC_PREFIXES = ['/api/authenticate', '/api/health', '/api/keys', '/powersync', '/static'] as const;
+const FORWARD_AUTH_APP_PUBLIC_PREFIXES = ['/api/authenticate', '/api/health', '/api/keys', '/api/agent/v1', '/powersync', '/static'] as const;
 
 /** Memory's object keys are UUIDs, so its signed links need no decoding. A literal `%2F` in a key would take two rounds. */
 const MAX_FORWARDED_PATH_DECODE_ROUNDS = 4;
@@ -341,6 +351,8 @@ self.addEventListener('activate', (event) => {
 });
 `;
 
+/** The Portal client the Hub's own sign-ins use (mobile-connect `OIDC_CLIENT_ID`). */
+const HUB_MOBILE_PORTAL_AUDIENCE = 'ci-hub';
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -1605,15 +1617,19 @@ export class AuthController {
    * then pick is the same account, so the second in-app sheet is not a new
    * login: it is this id_token becoming a Hub session.
    *
-   * The token is the one `ci-hub` PKCE minted (`aud` includes `ci-hub`). An
-   * unverified email is refused the same way the browser callback refuses it.
+   * The token is the one `ci-hub` PKCE minted (`aud` includes `ci-hub`), and only that audience is
+   * accepted here. The default list also takes tokens Portal minted for the extension, the applet,
+   * Capture and the rest, which forward-auth needs; a session on this Hub is not one of their uses, and
+   * a token handed to any of those clients was otherwise a Hub sign-in too. An unverified email is
+   * refused the same way the browser callback refuses it.
    */
   @Post('/portal/mobile-session')
   @ApiResponse({ type: PortalDesktopExchangeDto })
   async establishPortalMobileSession(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const bearer = extractBearerToken(typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined);
     const portalBase = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
-    const claims = bearer && portalBase ? await verifyPortalIdToken(bearer, { publicCiCloudUrl: portalBase }) : null;
+    const claims =
+      bearer && portalBase ? await verifyPortalIdToken(bearer, { publicCiCloudUrl: portalBase, audiences: [HUB_MOBILE_PORTAL_AUDIENCE] }) : null;
     if (!claims?.email || claims.emailVerified !== true) {
       throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
     }

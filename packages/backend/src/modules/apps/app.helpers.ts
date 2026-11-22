@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { HUB_ENV_KEYS_INHERITED_BY_APPS, hubContainerName } from '@/common/constants';
+import { HUB_ENV_KEYS_INHERITED_BY_APPS, HUB_ENV_KEYS_INHERITED_BY_FIRST_PARTY_MEMORY, hubContainerName } from '@/common/constants';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
@@ -76,8 +76,11 @@ const HUB_ONLY_SECRET_ENV_VAR_SET: ReadonlySet<string> = new Set(HUB_ONLY_SECRET
  * install form, as for every app. Even for the official store, a Hub-only secret is never passed
  * through, nor a name no Hub integration may write (`hubIntegrationMayWrite`).
  */
-export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration' | 'urn'>): ReadonlySet<string> {
+export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration' | 'urn' | 'source'>): ReadonlySet<string> {
   const keys = new Set(HUB_ENV_KEYS_INHERITED_BY_APPS);
+  if (receivesPortalDeviceKey(config)) {
+    for (const key of HUB_ENV_KEYS_INHERITED_BY_FIRST_PARTY_MEMORY) keys.add(key);
+  }
   if (!isOfficialStoreApp(config)) return keys;
   const memory = config.hub_integration?.memory;
   for (const name of [memory?.url_env, memory?.token_env]) {
@@ -216,13 +219,32 @@ export function needsHubAppKey(config: Pick<AppInfo, 'hub_integration'>): boolea
  * Whether an app is first-party Companion Memory as env generation sees it, which is the app that gets
  * this Hub's Portal device key as `HUB_API_KEY`.
  *
- * `ci-memory` deployments and source builds of the same product both count. The OIDC fallback, Portal
- * bearer config, device key and maps key all follow this one test, and so does the refresh that hands
- * Memory a new key after pairing (`DeviceKeyRefreshService`).
+ * Two installs count, both by INSTALL PROVENANCE: the official store's `ci-memory` (`isMemoryProviderApp`),
+ * and a source build of the same product the operator added as a custom app (store `_user`, `source`
+ * naming the CI-Server repository). The OIDC fallback, Portal bearer config, device key and maps key all
+ * follow this one test, and so does the refresh that hands Memory a new key after pairing
+ * (`DeviceKeyRefreshService`).
+ *
+ * ⚠ NEVER BY MANIFEST FIELDS ALONE. `id` and `source` are copied from config.json, which any store
+ * publishes: a manifest that said `"id": "ci-memory"` was handed this Hub's Portal device key, the
+ * Portal maps key and the Portal sign-in config (2026-11-18). A custom app is the operator's own, so
+ * its `source` is the operator's word; a store app's is not.
  */
-export function receivesPortalDeviceKey(config: Pick<AppInfo, 'id' | 'source'>): boolean {
-  return config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
+export function receivesPortalDeviceKey(config: Pick<AppInfo, 'urn' | 'source'>): boolean {
+  if (isMemoryProviderApp(config)) {
+    return true;
+  }
+  let store: string;
+  try {
+    store = extractAppUrn(config.urn).appStoreId;
+  } catch {
+    return false;
+  }
+  return store === CUSTOM_APP_STORE_SLUG && typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server');
 }
+
+/** The store every custom app is filed under (see `security-grants.ts`). */
+const CUSTOM_APP_STORE_SLUG = '_user';
 
 /**
  * Returns the scopes for an app's Hub-managed key.
@@ -492,7 +514,7 @@ export class AppHelpers {
     // the keys an app is documented to inherit survive — see
     // HUB_ENV_KEYS_INHERITED_BY_APPS for what and why.
     // The URN this function was called with, not the copy in config.json: provenance is the Hub's.
-    const inheritable = appInheritableHubEnvKeys({ hub_integration: config.hub_integration, urn: appUrn });
+    const inheritable = appInheritableHubEnvKeys({ hub_integration: config.hub_integration, urn: appUrn, source: config.source });
     let withheld = 0;
     for (const key of [...envMap.keys()]) {
       if (!inheritable.has(key)) {

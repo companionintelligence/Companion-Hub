@@ -31,7 +31,7 @@ describe('AppContainerOriginGuard', () => {
   beforeEach(() => {
     logger.warn.mockClear();
     addresses = vi.fn(async (names: readonly string[]) =>
-      names.includes('ci-openclaw') ? new Set(['172.19.0.9', '10.128.12.3']) : new Set<string>(),
+      names.includes('ci-openclaw:ci-marketplace') ? new Set(['172.19.0.9', '10.128.12.3']) : new Set<string>(),
     );
     guard = new AppContainerOriginGuard(logger as never, { runningContainerAddressesForApps: addresses } as never);
   });
@@ -39,7 +39,7 @@ describe('AppContainerOriginGuard', () => {
   it("admits the slug's own container, from any of its networks", async () => {
     await expect(guard.canActivate(createContext({ ip: '172.19.0.9', params: { slug: 'openclaw' } }))).resolves.toBe(true);
     await expect(guard.canActivate(createContext({ ip: '10.128.12.3', params: { slug: 'openclaw' } }))).resolves.toBe(true);
-    expect(addresses).toHaveBeenCalledWith(['openclaw', 'ci-openclaw']);
+    expect(addresses).toHaveBeenCalledWith(['openclaw:ci-marketplace', 'ci-openclaw:ci-marketplace']);
   });
 
   it('admits an IPv6-mapped socket address the same way', async () => {
@@ -59,13 +59,15 @@ describe('AppContainerOriginGuard', () => {
   it("refuses the other agent's container: the slug names the app, not 'any agent'", async () => {
     // hermes has no running containers in this fixture; openclaw's address must not do.
     await expect(guard.canActivate(createContext({ ip: '172.19.0.9', params: { slug: 'hermes-agent' } }))).rejects.toBeInstanceOf(ForbiddenException);
-    expect(addresses).toHaveBeenCalledWith(['hermes-agent', 'ci-hermes']);
+    expect(addresses).toHaveBeenCalledWith(['hermes-agent:ci-marketplace', 'ci-hermes:ci-marketplace']);
   });
 
   it('admits a ci-mentra container for the ci-mentra slug, and refuses it for hermes-agent', async () => {
-    addresses.mockImplementation(async (names: readonly string[]) => (names.includes('ci-mentra') ? new Set(['172.19.0.20']) : new Set<string>()));
+    addresses.mockImplementation(async (names: readonly string[]) =>
+      names.includes('ci-mentra:ci-marketplace') ? new Set(['172.19.0.20']) : new Set<string>(),
+    );
     await expect(guard.canActivate(createContext({ ip: '172.19.0.20', params: { slug: 'ci-mentra' } }))).resolves.toBe(true);
-    expect(addresses).toHaveBeenCalledWith(['ci-mentra', 'mentra']);
+    expect(addresses).toHaveBeenCalledWith(['ci-mentra:ci-marketplace', 'mentra:ci-marketplace']);
     await expect(guard.canActivate(createContext({ ip: '172.19.0.20', params: { slug: 'hermes-agent' } }))).rejects.toBeInstanceOf(
       ForbiddenException,
     );

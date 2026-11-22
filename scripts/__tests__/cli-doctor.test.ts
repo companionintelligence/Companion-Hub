@@ -105,6 +105,9 @@ vi.mock('../lib/register-hub.js', async (importOriginal) => ({
   fetchRegistrationPhase: mocks.fetchRegistrationPhase,
 }));
 
+// Unmocked, uninstall would disable and delete the real login-start unit of whoever runs the suite.
+vi.mock('../lib/login-start-unit.js', () => ({ removeLoginStartUnit: vi.fn(() => true) }));
+
 vi.mock('../hub-cleanup-lib.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../hub-cleanup-lib.js')>()),
   runHubCleanup: mocks.runHubCleanup,
