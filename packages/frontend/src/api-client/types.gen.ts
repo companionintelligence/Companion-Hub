@@ -1784,6 +1784,40 @@ export type EditLinkBodyDto = {
     isVisibleOnGuestDashboard?: boolean;
 };
 
+export type TerminusHealthIndicatorResult = {
+    /**
+     * The status of this health indicator
+     */
+    status: 'up' | 'degraded' | 'down';
+    /**
+     * Time the health indicator took to respond, in ms
+     */
+    responseTime?: number;
+    /**
+     * Whether this result was served from the cache
+     */
+    cachedResponse?: boolean;
+};
+
+export type TerminusHealthCheckResult = {
+    status: 'error' | 'ok' | 'degraded' | 'shutting_down';
+    info?: {
+        [key: string]: TerminusHealthIndicatorResult & {
+            [key: string]: unknown;
+        };
+    } | null;
+    error?: {
+        [key: string]: TerminusHealthIndicatorResult & {
+            [key: string]: unknown;
+        };
+    } | null;
+    details: {
+        [key: string]: TerminusHealthIndicatorResult & {
+            [key: string]: unknown;
+        };
+    };
+};
+
 export type PublicWebRepairBody = {
     appUrns?: Array<string>;
 };
@@ -6060,38 +6094,10 @@ export type CheckErrors = {
     /**
      * The Health Check is not successful
      */
-    503: {
+    503: TerminusHealthCheckResult & {
         status?: 'error' | 'shutting_down';
-        info?: {
-            [key: string]: {
-                status: 'up' | 'degraded' | 'down';
-                /**
-                 * Time the health indicator took to respond, in ms
-                 */
-                responseTime?: number;
-                [key: string]: unknown;
-            };
-        } | null;
-        error?: {
-            [key: string]: {
-                status: 'up' | 'degraded' | 'down';
-                /**
-                 * Time the health indicator took to respond, in ms
-                 */
-                responseTime?: number;
-                [key: string]: unknown;
-            };
-        } | null;
-        details?: {
-            [key: string]: {
-                status: 'up' | 'degraded' | 'down';
-                /**
-                 * Time the health indicator took to respond, in ms
-                 */
-                responseTime?: number;
-                [key: string]: unknown;
-            };
-        };
+        error?: unknown;
+        details?: unknown;
     };
 };
 
@@ -6101,38 +6107,10 @@ export type CheckResponses = {
     /**
      * The Health Check is successful
      */
-    200: {
+    200: TerminusHealthCheckResult & {
         status?: 'ok' | 'degraded';
-        info?: {
-            [key: string]: {
-                status: 'up' | 'degraded' | 'down';
-                /**
-                 * Time the health indicator took to respond, in ms
-                 */
-                responseTime?: number;
-                [key: string]: unknown;
-            };
-        } | null;
-        error?: {
-            [key: string]: {
-                status: 'up' | 'degraded' | 'down';
-                /**
-                 * Time the health indicator took to respond, in ms
-                 */
-                responseTime?: number;
-                [key: string]: unknown;
-            };
-        } | null;
-        details?: {
-            [key: string]: {
-                status: 'up' | 'degraded' | 'down';
-                /**
-                 * Time the health indicator took to respond, in ms
-                 */
-                responseTime?: number;
-                [key: string]: unknown;
-            };
-        };
+        error?: unknown;
+        details?: unknown;
     };
 };
 
