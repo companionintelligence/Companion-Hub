@@ -20,6 +20,7 @@ pub mod hub_env;
 pub mod hub_manager;
 mod hub_names;
 mod inference_runners;
+mod installer_signature;
 mod login_autostart;
 mod login_start_unit;
 pub mod port_manager;
@@ -27,6 +28,7 @@ mod portal_token;
 mod portal_url;
 mod sentry_scrubber;
 mod tray;
+mod update_signature;
 mod updater;
 mod webview_navigation;
 
