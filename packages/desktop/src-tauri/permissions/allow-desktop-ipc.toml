@@ -30,6 +30,8 @@ commands.allow = [
   "install_nvidia_runtime_command",
   "live_session_state_command",
   "install_and_start_inference_runners_command",
+  "omlx_setup_admin_key_command",
+  "omlx_admin_key_status_command",
   "install_rocm_command",
   "verify_rocm_command",
   "install_docker_engine_alternative_command",

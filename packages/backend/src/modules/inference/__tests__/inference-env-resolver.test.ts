@@ -1,5 +1,5 @@
 import { Test, type TestingModule } from '@nestjs/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import axios from 'axios';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -389,7 +389,13 @@ describe('InferenceEnvResolver', () => {
     expect(env.CI_CHAT_MODEL).toBe('preferred:latest');
   });
 
-  it('passes the host key to apps using oMLX', async () => {
+  it('passes OMLX_API_KEY, never the saved main key, to apps using oMLX', async () => {
+    const savedOmlxKey = process.env.OMLX_API_KEY;
+    process.env.OMLX_API_KEY = 'managed-omlx-key';
+    onTestFinished(() => {
+      if (savedOmlxKey === undefined) delete process.env.OMLX_API_KEY;
+      else process.env.OMLX_API_KEY = savedOmlxKey;
+    });
     const omlxModel = makeLlm('qwen-omlx', 'mlx-community/Qwen3-8B-4bit', false, 'omlx');
     config.getInferencePreferences.mockReturnValue({
       preferredBackend: 'omlx',
@@ -398,7 +404,7 @@ describe('InferenceEnvResolver', () => {
       preferredVisionModel: null,
     });
     omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
-    omlxBackend.getApiKey.mockReturnValue('managed-omlx-key');
+    omlxBackend.getApiKey.mockReturnValue('saved-main-key');
     omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3-8B-4bit'] });
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([omlxModel]);
     modelRegistry.getRecommendedVisionModel.mockReturnValue(undefined);
@@ -406,6 +412,7 @@ describe('InferenceEnvResolver', () => {
     const env = await service.resolve();
 
     expect(env.CI_LLM_API_KEY).toBe('managed-omlx-key');
+    expect(JSON.stringify(env)).not.toContain('saved-main-key');
 
     // Through this Hub's proxy the same app gets the placeholder: the proxy authenticates apps by
     // origin, so OMLX_API_KEY would only be copied into the container.

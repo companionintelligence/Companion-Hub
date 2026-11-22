@@ -31,6 +31,8 @@ vi.mock('../init-traefik.js', () => ({ initTraefik: vi.fn() }));
 vi.mock('../sync-postgres-password.js', () => ({ syncPostgresPasswordFromEnv: vi.fn() }));
 vi.mock('../sync-rabbitmq-password.js', () => ({ syncRabbitmqPasswordFromEnv: vi.fn() }));
 vi.mock('../lib/cli-repo-context.js', () => ({ isApplianceMode: () => true, requireRepoRoot: vi.fn() }));
+// Unmocked, `cihub up` would write a systemd user unit into the real ~/.config.
+vi.mock('../lib/login-start-unit.js', () => ({ ensureLoginStartUnit: vi.fn(() => 'unchanged'), describeLoginStartOutcome: () => null }));
 vi.mock('../lib/docker-versions.js', () => ({ requireDockerForHubStack: vi.fn() }));
 vi.mock('../lib/cli-ui.js', () => ({ printMessageBox: vi.fn(), colorize: (s: string) => s, dim: (s: string) => s }));
 vi.mock('../lib/cli-proc.js', () => ({

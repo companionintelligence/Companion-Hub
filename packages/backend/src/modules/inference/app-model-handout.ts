@@ -463,8 +463,9 @@ export function decideModelPrePull(input: {
 
   if (input.cloudPrimary && kind === 'chat') return decide(false, 'a cloud provider is serving chat for this app');
   // Ollama and Lemonade download through the Hub (`ModelPullerService`). vLLM has no download API
-  // (its model is fixed when the server starts). oMLX has one, `POST /admin/api/hf/download`, but it
-  // needs an admin session from oMLX's main key, and the Hub does not use it.
+  // (its model is fixed when the server starts). oMLX downloads through the Hub too, but only the
+  // models the operator picks in setup or Settings > AI: its admin API needs oMLX's main key, which
+  // the Hub may not have, so an app's handout does not start one.
   if (input.backendType !== 'ollama' && input.backendType !== 'lemonade') {
     return decide(false, `${input.backendType} has no Hub-managed pull registry`);
   }

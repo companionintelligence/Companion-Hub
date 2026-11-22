@@ -8,6 +8,7 @@ import { ModelRegistryService } from './model-registry.service';
 import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService, isCloudFallbackAllowed } from './cloud-fallback.service';
 import { OllamaBackend } from './backends/ollama.backend';
+import { omlxAppApiKey } from './backends/omlx.backend';
 import { InferenceEndpointService } from './inference-endpoint.service';
 import type { CuratedModel, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import { handoutIdForCatalogModel, isCatalogModelInstalled, isServedModelForCatalog, trackedPullCounts } from './model-availability.util';
@@ -393,7 +394,9 @@ export class AppCredentialsService implements OnApplicationShutdown {
     let endpointUrl = backendOpenAiUrl;
     // The engine's own credential. It is handed out only if the app ends up talking to the engine
     // directly, which is decided after the cloud and pool overrides below.
-    const engineKey = (backendType === 'vllm' && preferences.preferredVllmApiKey?.trim()) || backend.getApiKey?.()?.trim();
+    const engineKey =
+      (backendType === 'vllm' && preferences.preferredVllmApiKey?.trim()) ||
+      (backendType === 'omlx' ? omlxAppApiKey() : backend.getApiKey?.()?.trim());
     let cloudKey: string | undefined;
 
     let chatModel: CuratedModel | null;

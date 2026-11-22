@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { HUB_ENV_KEYS_INHERITED_BY_APPS, hubContainerName } from '@/common/constants';
+import { HUB_ENV_KEYS_INHERITED_BY_APPS, HUB_ENV_KEYS_INHERITED_BY_FIRST_PARTY_MEMORY, hubContainerName } from '@/common/constants';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
@@ -15,6 +15,7 @@ import {
   type FormField,
   HUB_OWNED_APP_ENV_VARS,
   hubIntegrationMayWrite,
+  isEnvVariableName,
   type MemoryUrlStyle,
   type HubIntegration,
   writesAppBaseUrl,
@@ -71,8 +72,11 @@ const HUB_ONLY_SECRET_ENV_VAR_SET: ReadonlySet<string> = new Set(HUB_ONLY_SECRET
  * passed through under one: `"token_env": "JWT_SECRET"` would otherwise hand the app that secret.
  * Nor is a name no Hub integration may write (`hubIntegrationMayWrite`).
  */
-export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration'>): ReadonlySet<string> {
+export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration' | 'urn' | 'source'>): ReadonlySet<string> {
   const keys = new Set(HUB_ENV_KEYS_INHERITED_BY_APPS);
+  if (receivesPortalDeviceKey(config)) {
+    for (const key of HUB_ENV_KEYS_INHERITED_BY_FIRST_PARTY_MEMORY) keys.add(key);
+  }
   const memory = config.hub_integration?.memory;
   for (const name of [memory?.url_env, memory?.token_env]) {
     if (name && !HUB_ONLY_SECRET_ENV_VAR_SET.has(name) && hubIntegrationMayWrite(name)) keys.add(name);
@@ -81,13 +85,14 @@ export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration'
 }
 
 /**
- * Whether a manifest may have the Hub write `name` into the app's env: not a value the Hub sets for
+ * Whether a manifest may have the Hub write `name` into the app's env: a plain variable name
+ * (`isEnvVariableName`: a newline in a key writes a second line), and not a value the Hub sets for
  * the app itself (`HUB_OWNED_APP_ENV_VARS`). The manifest schema refuses those names and an installed
  * copy is read without them (`parseInstalledAppInfo`). This is for a manifest that reaches the env
  * some other way.
  */
 function manifestMayWriteEnv(name: string): boolean {
-  return !HUB_OWNED_APP_ENV_VARS.has(name);
+  return isEnvVariableName(name) && !HUB_OWNED_APP_ENV_VARS.has(name);
 }
 
 /**
@@ -209,13 +214,32 @@ export function needsHubAppKey(config: Pick<AppInfo, 'hub_integration'>): boolea
  * Whether an app is first-party Companion Memory as env generation sees it, which is the app that gets
  * this Hub's Portal device key as `HUB_API_KEY`.
  *
- * `ci-memory` deployments and source builds of the same product both count. The OIDC fallback, Portal
- * bearer config, device key and maps key all follow this one test, and so does the refresh that hands
- * Memory a new key after pairing (`DeviceKeyRefreshService`).
+ * Two installs count, both by INSTALL PROVENANCE: the official store's `ci-memory` (`isMemoryProviderApp`),
+ * and a source build of the same product the operator added as a custom app (store `_user`, `source`
+ * naming the CI-Server repository). The OIDC fallback, Portal bearer config, device key and maps key all
+ * follow this one test, and so does the refresh that hands Memory a new key after pairing
+ * (`DeviceKeyRefreshService`).
+ *
+ * ⚠ NEVER BY MANIFEST FIELDS ALONE. `id` and `source` are copied from config.json, which any store
+ * publishes: a manifest that said `"id": "ci-memory"` was handed this Hub's Portal device key, the
+ * Portal maps key and the Portal sign-in config (2026-11-18). A custom app is the operator's own, so
+ * its `source` is the operator's word; a store app's is not.
  */
-export function receivesPortalDeviceKey(config: Pick<AppInfo, 'id' | 'source'>): boolean {
-  return config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
+export function receivesPortalDeviceKey(config: Pick<AppInfo, 'urn' | 'source'>): boolean {
+  if (isMemoryProviderApp(config)) {
+    return true;
+  }
+  let store: string;
+  try {
+    store = extractAppUrn(config.urn).appStoreId;
+  } catch {
+    return false;
+  }
+  return store === CUSTOM_APP_STORE_SLUG && typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server');
 }
+
+/** The store every custom app is filed under (see `security-grants.ts`). */
+const CUSTOM_APP_STORE_SLUG = '_user';
 
 /**
  * Returns the scopes for an app's Hub-managed key.
@@ -591,10 +615,14 @@ export class AppHelpers {
     // A manifest that names a value the Hub sets for the app gets the Hub's value. The manifest
     // schema refuses such a manifest, so this is only for one that reaches here some other way.
     const leaveOutManifestEnv = (name: string, source: string) => {
+      if (!isEnvVariableName(name)) {
+        this.logger.warn(`[AppHelpers] ${appUrn}: ${source} names ${JSON.stringify(name)}, which is no variable name; it is left out`);
+        return;
+      }
       this.logger.warn(`[AppHelpers] ${appUrn}: ${source} names ${name}, which the Hub sets for the app; the Hub's value is kept`);
     };
     const leaveOutIntegrationEnv = (name: string, source: string) => {
-      if (HUB_OWNED_APP_ENV_VARS.has(name)) {
+      if (HUB_OWNED_APP_ENV_VARS.has(name) || !isEnvVariableName(name)) {
         leaveOutManifestEnv(name, source);
       } else {
         this.logger.warn(`[AppHelpers] ${appUrn}: ${source} names ${name}, which no Hub integration may write; it is left out`);
@@ -1305,6 +1333,15 @@ export class AppHelpers {
     const hubContainer = hubContainerName();
     const hubPort = process.env.API_PORT || '3000';
     envMap.set('HUB_INFERENCE_URL', `http://${hubContainer}:${hubPort}/api/inference/v1`);
+
+    // Every writer above checks its names. This is the one place they all meet, so a key that is no
+    // variable name is dropped here too: written as-is, a newline in it would start a line of its own.
+    for (const key of [...envMap.keys()]) {
+      if (!isEnvVariableName(key)) {
+        envMap.delete(key);
+        this.logger.warn(`[AppHelpers] ${appUrn}: left ${JSON.stringify(key)} out of app.env, as it is no variable name`);
+      }
+    }
 
     await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));
 

@@ -418,6 +418,16 @@ function normalizeSecurityOpt(opt: string): string {
 const CONFINEMENT_DISABLING_SECURITY_OPTS = [/^apparmor=unconfined$/, /^systempaths=unconfined$/, /^seccomp=/, /^label=/];
 
 /**
+ * Whether a value holds a `$`, which Compose reads as an expansion (`${X:-default}`, `$X`) or, doubled,
+ * as a literal `$`. A check that compares text cannot clear a value Compose rewrites after it: the
+ * allow-lists here refuse such a value already, as it matches nothing they allow, but a deny-list
+ * waves it through. No manifest needs an expansion in a setting that is checked against one.
+ */
+function holdsExpansion(value: string): boolean {
+  return value.includes('$');
+}
+
+/**
  * Whether `networkMode` is one of the modes the compose spec defines.
  *
  * Anything else is not rejected by Compose: it is passed to the Engine as `NetworkMode`, and the
@@ -499,7 +509,10 @@ export function collectServiceSecurityViolations(service: SecurityCheckedService
   if (service.networkMode && !isKnownNetworkMode(service.networkMode)) {
     violations.push({ path: ['networkMode'], message: 'CUSTOM_APP_ERROR_NETWORK_MODE_NOT_ALLOWED', hostPath: service.networkMode });
   }
-  if ((service.pid === 'host' || service.pid?.startsWith('container:')) && !grants?.pidHost) {
+  // A `$` is refused outright, grant or not: `pid` is compared as text here and Compose expands it
+  // afterwards, so `${P:-host}` passed as "not host" and joined the host's PID namespace.
+  const pid = service.pid?.trim().toLowerCase();
+  if (pid !== undefined && (holdsExpansion(pid) || ((pid === 'host' || pid.startsWith('container:')) && !grants?.pidHost))) {
     violations.push({ path: ['pid'], message: 'CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED' });
   }
 
@@ -530,6 +543,14 @@ export function collectServiceSecurityViolations(service: SecurityCheckedService
     const grantedSecurityOpts = new Set((grants?.securityOpt ?? []).map(normalizeSecurityOpt));
     for (const [index, opt] of (service.securityOpt ?? []).entries()) {
       const normalized = normalizeSecurityOpt(opt);
+
+      // Matched as text, expanded by Compose afterwards: `${A:-apparmor=unconfined}` is no confinement
+      // option the patterns know, and becomes one at up time. A grant names a literal, so it never
+      // covers an expansion.
+      if (holdsExpansion(opt)) {
+        violations.push({ path: ['securityOpt', index], message: 'CUSTOM_APP_ERROR_SECURITY_OPT_NOT_ALLOWED', hostPath: opt });
+        continue;
+      }
 
       if (!CONFINEMENT_DISABLING_SECURITY_OPTS.some((pattern) => pattern.test(normalized)) || grantedSecurityOpts.has(normalized)) {
         continue;

@@ -7045,10 +7045,22 @@
     },
     "/api/memory-connect/start": {
       "get": {
-        "operationId": "start",
+        "operationId": "startNavigation",
         "parameters": [],
         "responses": {
           "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      },
+      "post": {
+        "operationId": "start",
+        "parameters": [],
+        "responses": {
+          "201": {
             "description": ""
           }
         },
@@ -7059,10 +7071,22 @@
     },
     "/api/memory-connect/callback": {
       "get": {
-        "operationId": "callback",
+        "operationId": "callbackNavigation",
         "parameters": [],
         "responses": {
           "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      },
+      "post": {
+        "operationId": "callback",
+        "parameters": [],
+        "responses": {
+          "201": {
             "description": ""
           }
         },
@@ -8285,6 +8309,9 @@
           "inferenceOmlxUrl": {
             "type": "string"
           },
+          "inferenceOmlxApiKey": {
+            "type": "string"
+          },
           "inferenceDecodeEndpoint": {
             "type": "string"
           },
@@ -9164,6 +9191,9 @@
           },
           "requiresEmailVerification": {
             "type": "boolean"
+          },
+          "sessionId": {
+            "type": "string"
           }
         },
         "required": [
@@ -9992,7 +10022,8 @@
                             },
                             "spec_path": {
                               "default": "agents/openapi.yaml",
-                              "type": "string"
+                              "type": "string",
+                              "minLength": 1
                             },
                             "base_url": {
                               "type": "string"
@@ -11269,7 +11300,8 @@
                             },
                             "spec_path": {
                               "default": "agents/openapi.yaml",
-                              "type": "string"
+                              "type": "string",
+                              "minLength": 1
                             },
                             "base_url": {
                               "type": "string"
@@ -12851,7 +12883,8 @@
                       },
                       "spec_path": {
                         "default": "agents/openapi.yaml",
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1
                       },
                       "base_url": {
                         "type": "string"
@@ -14273,6 +14306,10 @@
             "nullable": true,
             "type": "string",
             "format": "uri"
+          },
+          "omlxApiKey": {
+            "nullable": true,
+            "type": "string"
           },
           "decodeEndpoint": {
             "nullable": true,

@@ -32,6 +32,7 @@ import { cliUpdateInstructions, gatherSkew, readStackBuild, type SkewSnapshot } 
 import { inspectImagePin, type PinReport } from './cli-image-pin.js';
 import { discoverComposeIdentity, HUB_CONTAINER_NAMES } from './compose-discovery.js';
 import { composeArgsForContext, envOverridesForContext, type HubContext, requireRepoOrApplianceContext, resolveHubContext } from './hub-context.js';
+import { removeLoginStartUnit } from './login-start-unit.js';
 import { resolveRootFolderHost } from './paths.js';
 
 export function logsHub(env: HubEnv, service?: string) {
@@ -434,6 +435,9 @@ export async function uninstallHub(force: boolean) {
     return;
   }
   const summary = runHubCleanup();
+  // The service that starts the Hub after login would find nothing to start; take it away too.
+  summary.attemptedCommands += 1;
+  if (!removeLoginStartUnit()) summary.failedCommands += 1;
   const failures = summary.failedDirs + summary.failedCommands;
   printMessageBox(
     failures > 0 ? 'Uninstall incomplete' : 'Uninstall complete',

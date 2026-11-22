@@ -22,9 +22,10 @@ mod hub_names;
 mod inference_runners;
 mod installer_signature;
 mod login_autostart;
+mod login_start_unit;
 pub mod port_manager;
-mod portal_url;
 mod portal_token;
+mod portal_url;
 mod sentry_scrubber;
 mod tray;
 mod update_signature;
@@ -246,6 +247,27 @@ async fn install_and_start_inference_runners_command(
     })
     .await
     .map_err(|error| format!("Inference runner setup task failed: {error}"))?
+}
+
+/// Give a running oMLX with no main key one, so the Hub can download models through its admin
+/// API. Returns the key once; oMLX refuses when it already has a key or does not listen on
+/// loopback alone, and the error says so.
+#[tauri::command]
+async fn omlx_setup_admin_key_command(
+    state: tauri::State<'_, hub_manager::HubPaths>,
+) -> Result<inference_runners::OmlxAdminKeySetup, String> {
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || inference_runners::setup_omlx_admin_key(&data_dir))
+        .await
+        .map_err(|error| format!("oMLX key setup task failed: {error}"))?
+}
+
+/// Whether oMLX's own settings already hold a main key. Only the answer leaves the app, not the key.
+#[tauri::command]
+async fn omlx_admin_key_status_command() -> Result<inference_runners::OmlxAdminKeyStatus, String> {
+    tokio::task::spawn_blocking(inference_runners::omlx_admin_key_status)
+        .await
+        .map_err(|error| format!("oMLX key check failed: {error}"))
 }
 
 /// Install ROCm on Ubuntu via pkexec-elevated AMDGPU installer.
@@ -691,6 +713,8 @@ pub fn run() {
             install_nvidia_runtime_command,
             live_session_state_command,
             install_and_start_inference_runners_command,
+            omlx_setup_admin_key_command,
+            omlx_admin_key_status_command,
             install_rocm_command,
             verify_rocm_command,
             install_docker_engine_alternative_command,
@@ -1206,6 +1230,10 @@ fn run_detached_mode() -> Result<String, String> {
             &format!("Pre-start cleanup failed (non-fatal): {}", error),
         );
     }
+
+    // Headless mode has no tray to come back at login (login_autostart needs a graphical session),
+    // so a Hub in a home folder unlocked at login gets the systemd user service instead.
+    login_start_unit::ensure(&data_dir);
 
     let message = hub_manager::start_hub(&compose_path, &env_path, &data_dir).map_err(|error| {
         error_reporting::capture_setup_failure(&error);

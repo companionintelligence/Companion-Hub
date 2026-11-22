@@ -665,6 +665,7 @@ jobs:
             | **macOS (Intel)** | `.dmg` | Older Intel-based Macs |
             | **Linux (x64)** | `.deb` or `.rpm` | Ubuntu/Debian or Fedora/RHEL |
             | **Linux (ARM64)** | `.deb` or `.rpm` | Raspberry Pi, ARM servers |
+            | **Command line only** | `cihub-<os>-<arch>` | The `cihub` tool on its own, for servers and machines without the desktop app. `scripts/install.sh` and `cihub fleet install` download these; most people want an installer above |
             ### Requirements
             - Docker must be installed and running
             - Windows: Windows 10+ with WebView2 (ships with Windows 11)
