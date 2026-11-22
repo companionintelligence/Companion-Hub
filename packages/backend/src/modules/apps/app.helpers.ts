@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { HUB_ENV_KEYS_INHERITED_BY_APPS, hubContainerName } from '@/common/constants';
+import { HUB_ENV_KEYS_INHERITED_BY_APPS, HUB_ENV_KEYS_INHERITED_BY_FIRST_PARTY_MEMORY, hubContainerName } from '@/common/constants';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
@@ -72,8 +72,11 @@ const HUB_ONLY_SECRET_ENV_VAR_SET: ReadonlySet<string> = new Set(HUB_ONLY_SECRET
  * passed through under one: `"token_env": "JWT_SECRET"` would otherwise hand the app that secret.
  * Nor is a name no Hub integration may write (`hubIntegrationMayWrite`).
  */
-export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration'>): ReadonlySet<string> {
+export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration' | 'urn' | 'source'>): ReadonlySet<string> {
   const keys = new Set(HUB_ENV_KEYS_INHERITED_BY_APPS);
+  if (receivesPortalDeviceKey(config)) {
+    for (const key of HUB_ENV_KEYS_INHERITED_BY_FIRST_PARTY_MEMORY) keys.add(key);
+  }
   const memory = config.hub_integration?.memory;
   for (const name of [memory?.url_env, memory?.token_env]) {
     if (name && !HUB_ONLY_SECRET_ENV_VAR_SET.has(name) && hubIntegrationMayWrite(name)) keys.add(name);
@@ -211,13 +214,32 @@ export function needsHubAppKey(config: Pick<AppInfo, 'hub_integration'>): boolea
  * Whether an app is first-party Companion Memory as env generation sees it, which is the app that gets
  * this Hub's Portal device key as `HUB_API_KEY`.
  *
- * `ci-memory` deployments and source builds of the same product both count. The OIDC fallback, Portal
- * bearer config, device key and maps key all follow this one test, and so does the refresh that hands
- * Memory a new key after pairing (`DeviceKeyRefreshService`).
+ * Two installs count, both by INSTALL PROVENANCE: the official store's `ci-memory` (`isMemoryProviderApp`),
+ * and a source build of the same product the operator added as a custom app (store `_user`, `source`
+ * naming the CI-Server repository). The OIDC fallback, Portal bearer config, device key and maps key all
+ * follow this one test, and so does the refresh that hands Memory a new key after pairing
+ * (`DeviceKeyRefreshService`).
+ *
+ * ⚠ NEVER BY MANIFEST FIELDS ALONE. `id` and `source` are copied from config.json, which any store
+ * publishes: a manifest that said `"id": "ci-memory"` was handed this Hub's Portal device key, the
+ * Portal maps key and the Portal sign-in config (2026-11-18). A custom app is the operator's own, so
+ * its `source` is the operator's word; a store app's is not.
  */
-export function receivesPortalDeviceKey(config: Pick<AppInfo, 'id' | 'source'>): boolean {
-  return config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
+export function receivesPortalDeviceKey(config: Pick<AppInfo, 'urn' | 'source'>): boolean {
+  if (isMemoryProviderApp(config)) {
+    return true;
+  }
+  let store: string;
+  try {
+    store = extractAppUrn(config.urn).appStoreId;
+  } catch {
+    return false;
+  }
+  return store === CUSTOM_APP_STORE_SLUG && typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server');
 }
+
+/** The store every custom app is filed under (see `security-grants.ts`). */
+const CUSTOM_APP_STORE_SLUG = '_user';
 
 /**
  * Returns the scopes for an app's Hub-managed key.

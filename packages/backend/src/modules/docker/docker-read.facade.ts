@@ -190,16 +190,16 @@ export class DockerReadFacade {
   }
 
   /**
-   * Every address a RUNNING container of any app named in `appNames` (any
-   * store) holds on any Docker network. What `AppContainerOriginGuard` compares
+   * Every address a RUNNING container of an app in `appUrns` (whole URNs, store
+   * included) holds on any Docker network. What `AppContainerOriginGuard` compares
    * a request's source address against: a container-to-container call arrives
    * from one of these, and nothing else on the appliance's networks does.
    * Read from the container list, which already carries per-network addresses,
    * so no inspect round-trip; a Docker failure yields an empty set (refuse).
    */
-  public async runningContainerAddressesForApps(appNames: readonly string[]): Promise<Set<string>> {
+  public async runningContainerAddressesForApps(appUrns: readonly string[]): Promise<Set<string>> {
     const addresses = new Set<string>();
-    if (appNames.length === 0) {
+    if (appUrns.length === 0) {
       return addresses;
     }
     let containers: Dockerode.ContainerInfo[];
@@ -216,7 +216,8 @@ export class DockerReadFacade {
     for (const container of containers) {
       const labels = container.Labels ?? {};
       const appUrn = labels[HUB_APPURN_LABEL] ?? labels[LEGACY_HUB_APPURN_LABEL];
-      if (!appUrn || !appNames.includes(appUrn.split(':')[0] ?? '')) {
+      // The whole URN, store included: the app name alone is any store's to choose.
+      if (!appUrn || !appUrns.includes(appUrn)) {
         continue;
       }
       for (const network of Object.values(container.NetworkSettings?.Networks ?? {})) {

@@ -351,6 +351,8 @@ self.addEventListener('activate', (event) => {
 });
 `;
 
+/** The Portal client the Hub's own sign-ins use (mobile-connect `OIDC_CLIENT_ID`). */
+const HUB_MOBILE_PORTAL_AUDIENCE = 'ci-hub';
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -1615,15 +1617,19 @@ export class AuthController {
    * then pick is the same account, so the second in-app sheet is not a new
    * login: it is this id_token becoming a Hub session.
    *
-   * The token is the one `ci-hub` PKCE minted (`aud` includes `ci-hub`). An
-   * unverified email is refused the same way the browser callback refuses it.
+   * The token is the one `ci-hub` PKCE minted (`aud` includes `ci-hub`), and only that audience is
+   * accepted here. The default list also takes tokens Portal minted for the extension, the applet,
+   * Capture and the rest, which forward-auth needs; a session on this Hub is not one of their uses, and
+   * a token handed to any of those clients was otherwise a Hub sign-in too. An unverified email is
+   * refused the same way the browser callback refuses it.
    */
   @Post('/portal/mobile-session')
   @ApiResponse({ type: PortalDesktopExchangeDto })
   async establishPortalMobileSession(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const bearer = extractBearerToken(typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined);
     const portalBase = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
-    const claims = bearer && portalBase ? await verifyPortalIdToken(bearer, { publicCiCloudUrl: portalBase }) : null;
+    const claims =
+      bearer && portalBase ? await verifyPortalIdToken(bearer, { publicCiCloudUrl: portalBase, audiences: [HUB_MOBILE_PORTAL_AUDIENCE] }) : null;
     if (!claims?.email || claims.emailVerified !== true) {
       throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
     }

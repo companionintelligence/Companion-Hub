@@ -58,12 +58,16 @@ pub fn stays_in_hub_webview(target: &Url, current: Option<&Url>, hub_api_port: u
     };
     let host = host.trim_end_matches('.').to_ascii_lowercase();
 
-    if is_shell_internal_host(&host) || is_hub_hostname(&host) {
+    if is_shell_internal_host(&host) {
         return true;
     }
 
+    let port = target.port_or_known_default().unwrap_or(80);
+    if is_hub_hostname(&host) {
+        return is_hub_port(port, hub_api_port);
+    }
+
     if is_loopback_host(&host) {
-        let port = target.port_or_known_default().unwrap_or(80);
         return port == hub_api_port || port == DEV_FRONTEND_PORT;
     }
 
@@ -85,10 +89,34 @@ fn is_shell_internal_host(host: &str) -> bool {
 }
 
 /// The Hub's own hostname: the label `hub` (`hub.ci.lan`) or a public label
-/// `hub-…` (`hub-laptop-acme.ci.computer`). An app label (`freecut`,
-/// `freecut-hub-laptop-acme`) does not match.
+/// `hub-…` (`hub-laptop-acme.ci.computer`), directly under one of the domains
+/// the Hub is served on. An app label (`freecut`, `freecut-hub-laptop-acme`)
+/// does not match, and neither does `hub` under any other domain
+/// (`hub.attacker.example`): those domains are the ones `capabilities/default.json`
+/// hands desktop IPC to, and a Hub on any other domain stays in the window only
+/// as the page already showing (`origins_match`).
 fn is_hub_hostname(host: &str) -> bool {
-    hub_host_pattern().is_match(host)
+    HUB_DOMAINS.iter().any(|domain| {
+        host.strip_suffix(domain)
+            .and_then(|rest| rest.strip_suffix('.'))
+            .is_some_and(|label| !label.contains('.') && hub_host_pattern().is_match(label))
+    })
+}
+
+/// The domains the Hub is served on, as `capabilities/default.json` names them.
+const HUB_DOMAINS: &[&str] = &[
+    "ci.computer",
+    "companionintelligence.com",
+    "ci.lan",
+    "ci.localhost",
+    "localhost",
+];
+
+/// The Hub answers on the web ports (through Traefik), its API port and, under
+/// `tauri dev`, the Vite port. Any other port under a `hub` name is an app's
+/// published port (`hub.ci.lan:8400`), not the Hub.
+fn is_hub_port(port: u16, hub_api_port: u16) -> bool {
+    port == 80 || port == 443 || port == hub_api_port || port == DEV_FRONTEND_PORT
 }
 
 fn hub_host_pattern() -> &'static Regex {
@@ -154,6 +182,18 @@ mod tests {
             Some(&current),
             API_PORT
         ));
+    }
+
+    #[test]
+    fn hub_under_another_domain_or_on_an_app_port_is_not_the_hub() {
+        assert!(!stays("https://hub.attacker.example/"));
+        assert!(!stays("https://hub-laptop-acme.attacker.example/"));
+        assert!(!stays("https://hub.ci.computer.attacker.example/"));
+        assert!(!stays("http://hub.ci.lan:8400/"));
+        assert!(!stays("http://hub.ci.localhost:8400/"));
+        assert!(!stays("https://hub-laptop-acme.ci.computer:8443/"));
+        assert!(stays("http://hub.localhost:5002/"));
+        assert!(stays("https://hub.companionintelligence.com/"));
     }
 
     #[test]

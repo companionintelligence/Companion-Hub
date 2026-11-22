@@ -2209,6 +2209,9 @@ describe('AuthController', () => {
         sessionId: tokenFor('sid-mobile'),
         redirectPath: '/home',
       });
+      // Only a token Portal minted for the Hub's own client: one for the extension, the applet or
+      // Capture is not a Hub sign-in.
+      expect(verifyPortalIdToken).toHaveBeenCalledWith('portal.id.token', expect.objectContaining({ audiences: ['ci-hub'] }));
       expect(authService.admitHubPerson).toHaveBeenCalledWith({
         issuer: 'https://hub.ci.computer',
         subject: 'portal-sub',
