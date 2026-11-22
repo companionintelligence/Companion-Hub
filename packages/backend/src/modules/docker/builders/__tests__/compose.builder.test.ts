@@ -116,6 +116,20 @@ describe('DockerComposeBuilder', () => {
   });
 
   describe('app security sandbox', () => {
+    // The Hub, Traefik and the VPN sidecar join every app network, where a service name is a DNS alias:
+    // an app service called `ci-hub` could answer the sidecar's lookup of the Hub, login and all.
+    it.each(['ci-hub', 'ci-os-hub', 'hub-tailscale', 'ci-hub-db', 'ci-hub-queue', 'CI-Hub'])('refuses a service named %s', async (name) => {
+      const service: ServiceInput = { name, image: 'image', internalPort: 80 };
+      await expect(composeBuilder.getDockerCompose([service], {}, urn, subnet)).rejects.toThrow(/reserved for the Hub's own containers/);
+    });
+
+    it('accepts a service named like a store app of its own (traefik, cloudflared)', async () => {
+      for (const name of ['traefik', 'cloudflared']) {
+        const service: ServiceInput = { name, image: 'image', internalPort: 80 };
+        await expect(composeBuilder.getDockerCompose([service], {}, urn, subnet)).resolves.toBeDefined();
+      }
+    });
+
     it('rejects a privileged service from a non-allowlisted app', async () => {
       const service: ServiceInput = { name: 'svc', image: 'image', internalPort: 80, privileged: true };
       // `urn` is the nginx app (not in TRUSTED_APP_SECURITY_ALLOWLIST)

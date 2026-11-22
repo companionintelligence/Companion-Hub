@@ -1,3 +1,5 @@
+import { HUB_CONTAINER_NAMES } from '@/common/constants';
+
 /** First Hub-allocated app /24 (10.128.10.0/24). 10.128.0.0–10.128.9.0 are reserved for hub infrastructure. */
 export const HUB_APP_ALLOCATION_START_CIDR = '10.128.10.0/24';
 
@@ -45,6 +47,30 @@ export const TRAEFIK_CONTAINER_NAME = 'traefik';
  * the same reason `TailscaleService` reads it from the environment.
  */
 export const TAILSCALE_SIDECAR_CONTAINER_NAME = process.env.TAILSCALE_SIDECAR_CONTAINER ?? 'hub-tailscale';
+
+/**
+ * Names no app service may take: the Hub's own containers, which the Hub, Traefik and the VPN sidecar
+ * look up by name. Those three join every app network, and on a container with several networks Docker
+ * answers a name from whichever network claims it first, so an app service called `ci-hub` could take
+ * the sidecar's `tailscale serve` traffic to the Hub (`http://ci-hub:5002`), its login included. A
+ * compose service name is a DNS alias on the app's network, so the name itself is refused.
+ *
+ * `traefik` and `cloudflared` are not in the list: store apps of those names have a service of the same
+ * name, and the Hub reaches its own Traefik and cloudflared by container (Docker API) or fixed address.
+ */
+export const HUB_RESERVED_SERVICE_NAMES: ReadonlySet<string> = new Set([
+  ...HUB_CONTAINER_NAMES,
+  TAILSCALE_SIDECAR_CONTAINER_NAME,
+  'hub-tailscale',
+  'ci-hub-db',
+  'ci-hub-queue',
+  'ci-os-hub-queue',
+]);
+
+/** Whether an app service name is one only the Hub's own containers may answer to (case-insensitive, as DNS is). */
+export function isHubReservedServiceName(name: string): boolean {
+  return HUB_RESERVED_SERVICE_NAMES.has(name.trim().toLowerCase());
+}
 
 /**
  * Prefix of the networks that link one app to another (`AppLinkService`). Each holds the two apps'

@@ -61,6 +61,11 @@ describe('collectComposeOverrideViolations', () => {
   });
 
   describe('what only an override can say', () => {
+    // A service name is a DNS alias on the app's network, which the Hub, Traefik and the VPN sidecar join.
+    it.each(['ci-hub', 'ci-os-hub', 'hub-tailscale', 'ci-hub-queue'])('refuses a service named %s', (name) => {
+      expect(rules(`services:\n  ${name}:\n    image: nginx\n`)).toEqual(['COMPOSE_OVERRIDE_SERVICE_NAME_RESERVED']);
+    });
+
     it.each([
       'build',
       'cgroup',

@@ -2,6 +2,7 @@ import { HUB_ENV_KEYS_INHERITED_BY_APPS } from '@/common/constants';
 import { appNetworkName, extractAppUrn } from '@/common/helpers/app-helpers';
 import { appIdOf } from '@/modules/apps/app-id.helpers';
 import { securityGrantsFor } from '@/modules/apps/security-grants';
+import { isHubReservedServiceName } from '@/modules/network/network-constants';
 import {
   type AppSecurityGrants,
   collectServiceSecurityViolations,
@@ -42,6 +43,7 @@ const IPC_NOT_ALLOWED = 'COMPOSE_OVERRIDE_IPC_NOT_ALLOWED';
 const VOLUME_TYPE_NOT_ALLOWED = 'COMPOSE_OVERRIDE_VOLUME_TYPE_NOT_ALLOWED';
 const VOLUMES_FROM_NOT_ALLOWED = 'COMPOSE_OVERRIDE_VOLUMES_FROM_NOT_ALLOWED';
 const ENV_NAME_RESERVED = 'COMPOSE_OVERRIDE_ENV_NAME_RESERVED';
+const SERVICE_NAME_RESERVED = 'COMPOSE_OVERRIDE_SERVICE_NAME_RESERVED';
 
 /**
  * The Compose keys an override may set on a service: what the builder renders for an app, plus limits
@@ -397,6 +399,12 @@ const COMPOSE_SPELLING: Record<string, string> = {
 
 function checkService(name: string, service: Record<string, unknown>, context: ServiceCheckContext, violations: ComposeOverrideViolation[]): void {
   const servicePath = `services.${name}`;
+
+  // A service name is a DNS alias on the app's network, which the Hub, Traefik and the VPN sidecar join
+  // (see `HUB_RESERVED_SERVICE_NAMES`).
+  if (isHubReservedServiceName(name)) {
+    violations.push({ path: servicePath, rule: SERVICE_NAME_RESERVED, detail: name });
+  }
 
   for (const key of Object.keys(service)) {
     if (!ALLOWED_SERVICE_KEYS.has(key) && !key.startsWith('x-')) {

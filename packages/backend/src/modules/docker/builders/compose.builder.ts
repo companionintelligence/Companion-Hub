@@ -17,6 +17,7 @@ import { labelsOfRoutersLosingTheirChain, TraefikLabelsBuilder, withAppStartingP
 import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
 import { requiresHubLoginOnPublicRoute } from '@/modules/apps/app-public-routing.helpers';
 import { securityGrantsFor } from '@/modules/apps/security-grants';
+import { isHubReservedServiceName } from '@/modules/network/network-constants';
 import { z } from 'zod';
 
 export const INTERNAL_INFRASTRUCTURE_PORTS = [6543, 5672] as const;
@@ -373,6 +374,14 @@ export class DockerComposeBuilder {
     if (!result.success) {
       console.warn(
         `! Service ${params.name} has invalid schema: \n${JSON.stringify(z.treeifyError(result.error), null, 2)}\nNotify the app maintainer`,
+      );
+    }
+
+    // A service name is a DNS alias on the app's network, which the Hub, Traefik and the VPN sidecar
+    // join. One named like a Hub container could answer their lookups of it (`HUB_RESERVED_SERVICE_NAMES`).
+    if (isHubReservedServiceName(params.name)) {
+      throw new Error(
+        `App "${appName}" service "${params.name}" has a name reserved for the Hub's own containers. Rename the service in the app's compose file.`,
       );
     }
 
