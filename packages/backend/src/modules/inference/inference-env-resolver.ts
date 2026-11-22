@@ -5,6 +5,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { ModelRegistryService } from './model-registry.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { OllamaBackend } from './backends/ollama.backend';
+import { omlxAppApiKey } from './backends/omlx.backend';
 import { CloudFallbackService, isCloudFallbackAllowed } from './cloud-fallback.service';
 import { InferenceEndpointService } from './inference-endpoint.service';
 import { handoutIdForCatalogModel, isCatalogModelInstalled, isServedModelForCatalog, trackedPullCounts } from './model-availability.util';
@@ -190,7 +191,7 @@ export class InferenceEnvResolver {
     // The engine's own credential. It goes into the env only if the app ends up talking to the
     // engine directly, which is decided after pool routing below.
     const configuredVllmKey = preferences.preferredVllmApiKey?.trim();
-    const engineKey = (backendType === 'vllm' && configuredVllmKey) || backend.getApiKey?.()?.trim();
+    const engineKey = (backendType === 'vllm' && configuredVllmKey) || (backendType === 'omlx' ? omlxAppApiKey() : backend.getApiKey?.()?.trim());
 
     // ── Chat model ────────────────────────────────────────────────────────
     let chatCurated: CuratedModel | undefined;

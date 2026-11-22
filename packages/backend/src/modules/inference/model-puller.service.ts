@@ -150,7 +150,8 @@ export class ModelPullerService {
       };
     }
 
-    if (curated.backend === 'omlx' || curated.backend === 'vllm') {
+    // oMLX downloads through its admin API (`OmlxBackend.pullModel`). vLLM has no download API.
+    if (curated.backend === 'vllm') {
       return {
         catalogId,
         alreadyInstalled: false,

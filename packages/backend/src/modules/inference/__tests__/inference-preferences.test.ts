@@ -317,6 +317,7 @@ describe('InferenceController — preferences', () => {
   });
 
   it('passes the oMLX endpoint URL through when provided', async () => {
+    configService.getInferencePreferences.mockReturnValue({ preferredBackend: 'omlx', preferredOmlxUrl: null } as never);
     configService.setInferencePreferences.mockResolvedValue({
       preferredBackend: 'omlx',
       preferredModel: null,
@@ -337,6 +338,61 @@ describe('InferenceController — preferences', () => {
       }),
     );
   }, 30_000);
+
+  describe("oMLX's API key", () => {
+    const savedOmlxEnv = process.env.OMLX_URL;
+    const storedKeyArg = () => (configService.setInferencePreferences.mock.calls[0]?.[0] as SetInferencePreferencesOptions)?.omlxApiKey;
+
+    beforeEach(() => {
+      delete process.env.OMLX_URL;
+      configService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'omlx',
+        preferredOmlxApiKey: 'omlx-main-key',
+        preferredOmlxUrl: null,
+      } as never);
+      configService.setInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx', preferredOmlxApiKey: 'omlx-main-key' } as never);
+    });
+
+    afterEach(() => {
+      if (savedOmlxEnv === undefined) delete process.env.OMLX_URL;
+      else process.env.OMLX_URL = savedOmlxEnv;
+    });
+
+    it('is reported masked, and never in the clear', async () => {
+      const result = await controller.getPreferences();
+
+      expect(result).toMatchObject({ preferredOmlxApiKey: MASKED_API_KEY });
+      expect(JSON.stringify(result)).not.toContain('omlx-main-key');
+    });
+
+    it('is stored from a save, kept when the mask comes back, and cleared on a null', async () => {
+      const result = await controller.updatePreferences({ backend: 'omlx', omlxApiKey: 'new-key' });
+      expect(storedKeyArg()).toBe('new-key');
+      expect(JSON.stringify(result)).not.toContain('omlx-main-key');
+
+      configService.setInferencePreferences.mockClear();
+      await controller.updatePreferences({ backend: 'omlx', omlxApiKey: MASKED_API_KEY });
+      expect(storedKeyArg()).toBeUndefined();
+
+      configService.setInferencePreferences.mockClear();
+      await controller.updatePreferences({ backend: 'omlx', omlxApiKey: null });
+      expect(storedKeyArg()).toBeNull();
+    });
+
+    it('is kept when the desktop app saves the default oMLX URL it set up, and dropped for another server', async () => {
+      await controller.updatePreferences({ backend: 'omlx', omlxUrl: 'http://localhost:8000' });
+      expect(storedKeyArg()).toBeUndefined();
+
+      configService.setInferencePreferences.mockClear();
+      await controller.updatePreferences({ backend: 'omlx', omlxUrl: 'http://mac-studio.lan:8000' });
+      expect(storedKeyArg()).toBeNull();
+    });
+
+    it('accepts an oMLX key in the preferences schema', () => {
+      expect(inferencePreferencesSchema.safeParse({ backend: 'omlx', omlxApiKey: 'k3y' }).success).toBe(true);
+      expect(inferencePreferencesSchema.safeParse({ backend: 'omlx', omlxApiKey: null }).success).toBe(true);
+    });
+  });
 
   it('returns runtime models for a healthy selected backend', async () => {
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['mistral:latest'] } as any);

@@ -185,6 +185,7 @@ export type UserSettingsBody = {
     inferenceVllmApiKey?: string;
     inferenceVllmUrl?: string;
     inferenceOmlxUrl?: string;
+    inferenceOmlxApiKey?: string;
     inferenceDecodeEndpoint?: string;
     inferenceEncodeEndpoint?: string;
     inferenceMaxNumCtx?: number;
@@ -402,6 +403,7 @@ export type RegisterBody = {
 export type RegisterDto = {
     success: boolean;
     requiresEmailVerification?: boolean;
+    sessionId?: string;
 };
 
 export type HubClaimStatusDto = {
@@ -1514,6 +1516,7 @@ export type UpdateInferencePreferencesBody = {
     vllmApiKey?: string;
     vllmUrl?: string;
     omlxUrl?: string;
+    omlxApiKey?: string;
     decodeEndpoint?: string;
     encodeEndpoint?: string;
     maxNumCtx?: number;
@@ -6492,6 +6495,17 @@ export type GetPeerJobStatusResponses = {
     200: unknown;
 };
 
+export type StartNavigationData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/memory-connect/start';
+};
+
+export type StartNavigationResponses = {
+    200: unknown;
+};
+
 export type StartData = {
     body?: never;
     path?: never;
@@ -6500,6 +6514,17 @@ export type StartData = {
 };
 
 export type StartResponses = {
+    201: unknown;
+};
+
+export type CallbackNavigationData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/memory-connect/callback';
+};
+
+export type CallbackNavigationResponses = {
     200: unknown;
 };
 
@@ -6511,7 +6536,7 @@ export type CallbackData = {
 };
 
 export type CallbackResponses = {
-    200: unknown;
+    201: unknown;
 };
 
 export type StateData = {

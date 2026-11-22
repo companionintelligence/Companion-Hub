@@ -39,6 +39,7 @@ function withoutSecrets(config: AiSetupConfig): AiSetupConfig {
   return {
     ...config,
     vllmApiKey: undefined,
+    omlxApiKey: undefined,
     cloudProviders: config.cloudProviders.map((provider) => ({ ...provider, apiKey: '' })),
   };
 }

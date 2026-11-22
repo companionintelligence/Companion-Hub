@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import { resetMobileClientCacheForTests } from '@/lib/mobile-connection';
 import { AiSettingsContainer } from '../ai-settings';
@@ -16,7 +16,9 @@ const {
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
   fetchLemonadeInstallStatus,
+  fetchOmlxInstallStatus,
   saveInferencePreferences,
+  saveOmlxApiKey,
   rescanInferenceHardware,
   pinInferenceModel,
   saveCloudProviderConfig,
@@ -35,7 +37,9 @@ const {
   fetchOllamaInstallStatus: vi.fn(),
   fetchVllmInstallStatus: vi.fn(),
   fetchLemonadeInstallStatus: vi.fn(),
+  fetchOmlxInstallStatus: vi.fn(),
   saveInferencePreferences: vi.fn(),
+  saveOmlxApiKey: vi.fn(),
   rescanInferenceHardware: vi.fn(),
   pinInferenceModel: vi.fn(),
   saveCloudProviderConfig: vi.fn(),
@@ -56,7 +60,9 @@ vi.mock('@/lib/inference/inference-api', () => ({
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
   fetchLemonadeInstallStatus,
+  fetchOmlxInstallStatus,
   saveInferencePreferences,
+  saveOmlxApiKey,
   rescanInferenceHardware,
   pinInferenceModel,
   saveCloudProviderConfig,
@@ -274,6 +280,7 @@ describe('AiSettingsContainer', () => {
     fetchOllamaInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:11434' });
     fetchVllmInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:8000' });
     fetchLemonadeInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:13305' });
+    fetchOmlxInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://host.docker.internal:8000' });
     saveInferencePreferences.mockResolvedValue(undefined);
     rescanInferenceHardware.mockResolvedValue(undefined);
     removeCloudProviderConfig.mockResolvedValue(undefined);
@@ -775,6 +782,140 @@ describe('AiSettingsContainer', () => {
         description: `The Hub can't reach Ollama, so q27 couldn't download (${reason}). Check that Ollama is running and accepts connections from the Hub, then save again.`,
       }),
     );
+  });
+
+  describe('on oMLX', () => {
+    it('downloads a ticked oMLX model through the Hub, and does not pin it: oMLX loads it on the first request', async () => {
+      const { waitForModelPulls } = await import('@/lib/inference/tracked-models');
+      vi.mocked(waitForModelPulls).mockResolvedValueOnce({ errorsById: {}, pulledIds: new Set(['q8']), progressById: { q8: 100 }, allDone: true });
+      fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx' });
+      fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled([], [llm('q8', 'omlx')]));
+
+      const user = userEvent.setup();
+      renderAiSettings();
+
+      await user.click(await screen.findByTestId('recommended-model-checkbox-q8'));
+      await user.click(screen.getByTestId('ai-settings-save-btn'));
+      await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+      await waitFor(() => expect(ensurePullsStarted).toHaveBeenCalledWith(['q8'], false));
+      await waitFor(() => expect(toast.success).toHaveBeenCalled());
+      expect(pinInferenceModel).not.toHaveBeenCalled();
+    });
+
+    it('asks for nothing for a model oMLX already lists', async () => {
+      fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx', preferredModel: 'q8' });
+      fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['q8'], [llm('q8', 'omlx')]));
+
+      const user = userEvent.setup();
+      renderAiSettings();
+
+      await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-q8')).toBeChecked());
+      await user.click(screen.getByTestId('ai-settings-save-btn'));
+      await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+      await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+      expect(ensurePullsStarted).not.toHaveBeenCalled();
+      expect(pinInferenceModel).not.toHaveBeenCalled();
+    });
+
+    it("keeps oMLX's stored key while its masked field is untouched, and saves one typed in its place", async () => {
+      fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx', preferredOmlxApiKey: '••••••••' });
+      const user = userEvent.setup();
+      renderAiSettings();
+
+      const field = await screen.findByTestId('omlx-api-key-input');
+      await waitFor(() => expect(field).toHaveValue('••••••••'));
+      await user.click(screen.getByTestId('ai-settings-save-btn'));
+      await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+      await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+      expect((saveInferencePreferences.mock.calls[0]?.[0] as { omlxApiKey?: string | null } | undefined)?.omlxApiKey).toBeUndefined();
+
+      saveInferencePreferences.mockClear();
+      await user.type(field, 'omlx-new-key');
+      expect(field).toHaveValue('omlx-new-key');
+      await user.click(screen.getByTestId('ai-settings-save-btn'));
+      await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+      await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+      expect(saveInferencePreferences.mock.calls[0]?.[0]).toMatchObject({ backend: 'omlx', omlxApiKey: 'omlx-new-key' });
+    });
+
+    describe('the key the desktop app can give oMLX', () => {
+      type TauriWindow = Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+      afterEach(() => {
+        delete (window as TauriWindow).__TAURI_INTERNALS__;
+      });
+      const desktopApp = () => {
+        const invoke = vi.fn(async (command: string) => {
+          if (command === 'omlx_admin_key_status_command') return { keySet: false };
+          if (command === 'omlx_setup_admin_key_command') return { apiKey: 'ci-hub-new-key' };
+          return null;
+        });
+        (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
+        return invoke;
+      };
+
+      it('is offered while the Hub has no oMLX key, and stores the one it sets', async () => {
+        desktopApp();
+        saveOmlxApiKey.mockResolvedValue(undefined);
+        fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx' });
+        const user = userEvent.setup();
+        renderAiSettings();
+
+        await user.click(await screen.findByTestId('omlx-admin-key-set-btn'));
+
+        await waitFor(() => expect(screen.getByTestId('omlx-admin-key-value')).toHaveTextContent('ci-hub-new-key'));
+        expect(saveOmlxApiKey).toHaveBeenCalledWith('ci-hub-new-key', 'omlx');
+        expect(screen.getByTestId('omlx-api-key-input')).toHaveValue('••••••••');
+      });
+
+      it('keeps the new key in the field, so Save stores it, while the URL field names another server than the saved one', async () => {
+        desktopApp();
+        saveOmlxApiKey.mockResolvedValue(undefined);
+        fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx', preferredOmlxUrl: 'http://studio.lan:8000' });
+        const user = userEvent.setup();
+        renderAiSettings();
+
+        const url = await screen.findByTestId('omlx-endpoint-url-input');
+        await waitFor(() => expect(url).toHaveValue('http://studio.lan:8000'));
+        await user.clear(url);
+        await user.type(url, 'http://localhost:8000');
+        await user.click(await screen.findByTestId('omlx-admin-key-set-btn'));
+
+        await waitFor(() => expect(screen.getByTestId('omlx-api-key-input')).toHaveValue('ci-hub-new-key'));
+        await user.click(screen.getByTestId('ai-settings-save-btn'));
+        await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+        await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+        expect(saveInferencePreferences.mock.calls[0]?.[0]).toMatchObject({ omlxUrl: 'http://localhost:8000', omlxApiKey: 'ci-hub-new-key' });
+      });
+
+      it('is not offered when the Hub already stores a key', async () => {
+        const invoke = desktopApp();
+        fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx', preferredOmlxApiKey: '••••••••' });
+        renderAiSettings();
+
+        await waitFor(() => expect(screen.getByTestId('omlx-api-key-input')).toHaveValue('••••••••'));
+        expect(screen.queryByTestId('omlx-admin-key-prompt')).not.toBeInTheDocument();
+        expect(invoke).not.toHaveBeenCalledWith('omlx_admin_key_status_command');
+      });
+    });
+
+    it("leaves oMLX's key alone when another engine is saved", async () => {
+      fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx', preferredOmlxApiKey: '••••••••' });
+      const user = userEvent.setup();
+      renderAiSettings();
+
+      await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('omlx'));
+      await user.click(screen.getByTestId('select-lemonade'));
+      await user.click(screen.getByTestId('ai-settings-save-btn'));
+      await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+      await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+      const body = saveInferencePreferences.mock.calls[0]?.[0] as { backend: string; omlxApiKey?: string | null };
+      expect(body.backend).toBe('lemonade');
+      expect(body).not.toHaveProperty('omlxApiKey', null);
+      expect(body.omlxApiKey).toBeUndefined();
+    });
   });
 
   it('pre-selects models the backend reports installed even when the tracked registry is empty', async () => {

@@ -156,6 +156,7 @@ type PersistedSettingsValues = {
   inferenceVllmApiKey: string | undefined;
   inferenceVllmUrl: string | undefined;
   inferenceOmlxUrl: string | undefined;
+  inferenceOmlxApiKey: string | undefined;
   inferenceDecodeEndpoint: string | undefined;
   inferenceEncodeEndpoint: string | undefined;
   inferenceMaxNumCtx: number | undefined;
@@ -203,6 +204,7 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   inferenceVllmApiKey: undefined,
   inferenceVllmUrl: undefined,
   inferenceOmlxUrl: undefined,
+  inferenceOmlxApiKey: undefined,
   inferenceDecodeEndpoint: undefined,
   inferenceEncodeEndpoint: undefined,
   inferenceMaxNumCtx: undefined,
@@ -247,6 +249,7 @@ function userSettingsFromFile(settingsValues: PersistedSettingsValues) {
     inferenceVllmApiKey: settingsValues.inferenceVllmApiKey,
     inferenceVllmUrl: settingsValues.inferenceVllmUrl,
     inferenceOmlxUrl: settingsValues.inferenceOmlxUrl,
+    inferenceOmlxApiKey: settingsValues.inferenceOmlxApiKey,
     inferenceDecodeEndpoint: settingsValues.inferenceDecodeEndpoint,
     inferenceEncodeEndpoint: settingsValues.inferenceEncodeEndpoint,
     inferenceMaxNumCtx: settingsValues.inferenceMaxNumCtx,
@@ -292,6 +295,8 @@ export interface SetInferencePreferencesOptions {
   vllmApiKey?: string | null;
   vllmUrl?: string | null;
   omlxUrl?: string | null;
+  /** oMLX's main API key, which the Hub sends to that server's `/v1` and admin API. `null` clears it. */
+  omlxApiKey?: string | null;
   decodeEndpoint?: string | null;
   encodeEndpoint?: string | null;
   maxNumCtx?: number | null;
@@ -385,6 +390,7 @@ export class ConfigurationService {
       inferenceVllmApiKey: settings.inferenceVllmApiKey,
       inferenceVllmUrl: settings.inferenceVllmUrl,
       inferenceOmlxUrl: settings.inferenceOmlxUrl,
+      inferenceOmlxApiKey: settings.inferenceOmlxApiKey,
       inferenceDecodeEndpoint: settings.inferenceDecodeEndpoint,
       inferenceEncodeEndpoint: settings.inferenceEncodeEndpoint,
       inferenceMaxNumCtx: settings.inferenceMaxNumCtx,
@@ -710,6 +716,7 @@ export class ConfigurationService {
       preferredVllmApiKey: this.config.userSettings.inferenceVllmApiKey ?? null,
       preferredVllmUrl: this.config.userSettings.inferenceVllmUrl ?? null,
       preferredOmlxUrl: this.config.userSettings.inferenceOmlxUrl ?? null,
+      preferredOmlxApiKey: this.config.userSettings.inferenceOmlxApiKey ?? null,
       preferredDecodeEndpoint: this.config.userSettings.inferenceDecodeEndpoint ?? null,
       preferredEncodeEndpoint: this.config.userSettings.inferenceEncodeEndpoint ?? null,
       // `null` is no cap: the handout is sized from the model window and this node's memory alone,
@@ -791,6 +798,7 @@ export class ConfigurationService {
       inferenceVllmApiKey?: string;
       inferenceVllmUrl?: string;
       inferenceOmlxUrl?: string;
+      inferenceOmlxApiKey?: string;
       inferenceDecodeEndpoint?: string;
       inferenceEncodeEndpoint?: string;
       inferenceMaxNumCtx?: number;
@@ -815,6 +823,9 @@ export class ConfigurationService {
     }
     if (opts.omlxUrl !== undefined) {
       settings.inferenceOmlxUrl = opts.omlxUrl?.trim() ? opts.omlxUrl.trim() : undefined;
+    }
+    if (opts.omlxApiKey !== undefined) {
+      settings.inferenceOmlxApiKey = opts.omlxApiKey?.trim() ? opts.omlxApiKey.trim() : undefined;
     }
     if (opts.decodeEndpoint !== undefined) {
       settings.inferenceDecodeEndpoint = opts.decodeEndpoint?.trim() ? opts.decodeEndpoint.trim() : undefined;

@@ -22,8 +22,8 @@ mod hub_names;
 mod inference_runners;
 mod login_autostart;
 pub mod port_manager;
-mod portal_url;
 mod portal_token;
+mod portal_url;
 mod sentry_scrubber;
 mod tray;
 mod updater;
@@ -244,6 +244,27 @@ async fn install_and_start_inference_runners_command(
     })
     .await
     .map_err(|error| format!("Inference runner setup task failed: {error}"))?
+}
+
+/// Give a running oMLX with no main key one, so the Hub can download models through its admin
+/// API. Returns the key once; oMLX refuses when it already has a key or does not listen on
+/// loopback alone, and the error says so.
+#[tauri::command]
+async fn omlx_setup_admin_key_command(
+    state: tauri::State<'_, hub_manager::HubPaths>,
+) -> Result<inference_runners::OmlxAdminKeySetup, String> {
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || inference_runners::setup_omlx_admin_key(&data_dir))
+        .await
+        .map_err(|error| format!("oMLX key setup task failed: {error}"))?
+}
+
+/// Whether oMLX's own settings already hold a main key. Only the answer leaves the app, not the key.
+#[tauri::command]
+async fn omlx_admin_key_status_command() -> Result<inference_runners::OmlxAdminKeyStatus, String> {
+    tokio::task::spawn_blocking(inference_runners::omlx_admin_key_status)
+        .await
+        .map_err(|error| format!("oMLX key check failed: {error}"))
 }
 
 /// Install ROCm on Ubuntu via pkexec-elevated AMDGPU installer.
@@ -718,6 +739,8 @@ pub fn run() {
             local_ai_network_exposure_command,
             protect_local_ai_command,
             allow_local_ai_on_network_command,
+            omlx_setup_admin_key_command,
+            omlx_admin_key_status_command,
             install_rocm_command,
             verify_rocm_command,
             install_docker_engine_alternative_command,

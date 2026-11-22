@@ -187,6 +187,7 @@ export const settingsSchema = z.object({
   inferenceVllmApiKey: z.string().trim().optional(),
   inferenceVllmUrl: z.string().trim().optional(),
   inferenceOmlxUrl: z.string().trim().optional(),
+  inferenceOmlxApiKey: z.string().trim().optional(),
   inferenceDecodeEndpoint: z.string().trim().optional(),
   inferenceEncodeEndpoint: z.string().trim().optional(),
   // Ceiling on the `num_ctx` handed to apps, matched to the engine's own context

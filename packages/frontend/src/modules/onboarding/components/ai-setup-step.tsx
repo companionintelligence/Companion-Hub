@@ -5,6 +5,7 @@ import {
   fetchOmlxInstallStatus,
   fetchVllmInstallStatus,
   rescanInferenceHardware,
+  saveOmlxApiKey,
 } from '@/lib/inference/inference-api';
 import { openExternal } from '@/lib/helpers/open-external';
 import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
@@ -47,7 +48,9 @@ import { TailscaleSetupStep } from './tailscale-setup-step';
 import { computeSelectionBudget, inferenceMemoryMb } from '../helpers/onboarding-model-selection';
 import {
   EMBEDDING_INFERENCE_BACKEND,
+  hubDownloadSelection,
   hubLoadableSelection,
+  isHubDownloadableBackend,
   hiddenInferenceBackends,
   isHostServedBackend,
   localEngineBlocksFinish,
@@ -141,6 +144,7 @@ export const AiSetupStep = ({
   const [vllmApiKey, setVllmApiKey] = useState('');
   const [vllmUrl, setVllmUrl] = useState('');
   const [omlxUrl, setOmlxUrl] = useState('');
+  const [omlxApiKey, setOmlxApiKey] = useState('');
   const [decodeEndpoint, setDecodeEndpoint] = useState('');
   const [encodeEndpoint, setEncodeEndpoint] = useState('');
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
@@ -233,7 +237,13 @@ export const AiSetupStep = ({
     const requestId = ++profileRequestId.current;
     try {
       const backend = backendOverride ?? selectedBackend;
-      let data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, omlxUrl);
+      let data = await fetchInferenceOnboardingProfile(
+        backend,
+        vllmUrl,
+        backend === 'vllm' ? vllmApiKey : undefined,
+        omlxUrl,
+        backend === 'omlx' ? omlxApiKey : undefined,
+      );
       // Ignore superseded rescans so they cannot restore an earlier backend and its defaults.
       if (profileRequestId.current !== requestId) return;
       const hiddenBackends = hiddenInferenceBackends(data);
@@ -246,7 +256,13 @@ export const AiSetupStep = ({
       if (resolvedBackend !== backend) {
         // `installedCatalogIds` describes the engine the request named. The first load names
         // Ollama, so starting anywhere else needs that engine's list, or its models show as missing.
-        data = await fetchInferenceOnboardingProfile(resolvedBackend, vllmUrl, resolvedBackend === 'vllm' ? vllmApiKey : undefined, omlxUrl);
+        data = await fetchInferenceOnboardingProfile(
+          resolvedBackend,
+          vllmUrl,
+          resolvedBackend === 'vllm' ? vllmApiKey : undefined,
+          omlxUrl,
+          resolvedBackend === 'omlx' ? omlxApiKey : undefined,
+        );
         if (profileRequestId.current !== requestId) return;
       }
       setProfile(data);
@@ -340,7 +356,7 @@ export const AiSetupStep = ({
   const checkOmlxStatus = async (): Promise<OmlxStatus> => {
     setCheckingOmlx(true);
     try {
-      const data = (await fetchOmlxInstallStatus(omlxUrl)) as OmlxStatus;
+      const data = (await fetchOmlxInstallStatus(omlxUrl, omlxApiKey)) as OmlxStatus;
       setOmlxStatus(data);
       return data;
     } catch (_e) {
@@ -355,7 +371,12 @@ export const AiSetupStep = ({
   // Re-check refreshes installed models without resetting in-progress choices. A status probe
   // alone leaves `installedCatalogIds` stale; unlike `fetchProfile`, this best-effort refresh
   // does not replace the step with an error.
-  const refreshInstalledModels = async (backend: InferenceBackendType, endpointUrlOverride?: string, apiKeyOverride?: string) => {
+  const refreshInstalledModels = async (
+    backend: InferenceBackendType,
+    endpointUrlOverride?: string,
+    apiKeyOverride?: string,
+    omlxApiKeyOverride?: string,
+  ) => {
     const requestId = ++profileRequestId.current;
     try {
       const previouslyInstalled = new Set(profile?.installedCatalogIds ?? []);
@@ -364,17 +385,18 @@ export const AiSetupStep = ({
         backend === 'vllm' && endpointUrlOverride ? endpointUrlOverride : vllmUrl,
         backend === 'vllm' ? (apiKeyOverride ?? vllmApiKey) : undefined,
         backend === 'omlx' && endpointUrlOverride ? endpointUrlOverride : omlxUrl,
+        backend === 'omlx' ? (omlxApiKeyOverride ?? omlxApiKey) : undefined,
       );
       // Drop superseded responses so refreshes cannot restore stale hardware or backend state.
       if (profileRequestId.current !== requestId) return;
       setProfile(data);
 
       const nextInstalled = new Set(data.installedCatalogIds ?? []);
-      // Remove unavailable host-served models because selection budgeting would treat them
-      // as pending downloads and could block Continue.
+      // Remove host-served models the engine no longer serves and the Hub cannot download (vLLM),
+      // because selection budgeting would treat them as pending downloads and could block Continue.
       const isStillSelectable = (id: string) => {
         const modelBackend = data.availableModels.find((m) => m.id === id)?.backend;
-        return !isHostServedBackend(modelBackend) || nextInstalled.has(id);
+        return !isHostServedBackend(modelBackend) || isHubDownloadableBackend(modelBackend) || nextInstalled.has(id);
       };
       const stillSelected = selectedModelIdsRef.current.filter(isStillSelectable);
 
@@ -449,12 +471,33 @@ export const AiSetupStep = ({
       if (!status.ready) throw new Error('The local runner is still starting.');
     } else {
       setOmlxUrl(endpoint);
-      const status = (await fetchOmlxInstallStatus(endpoint)) as OmlxStatus;
+      // The key the desktop app set when it installed oMLX, or the one oMLX already had. The Hub needs
+      // it to download models through oMLX. It is stored now, as a key set from the card is: oMLX takes
+      // a first key only once, so a setup left before Continue would leave the Hub without it.
+      const apiKey = result.apiKey?.trim() || omlxApiKey;
+      if (result.apiKey?.trim()) {
+        setOmlxApiKey(result.apiKey.trim());
+        try {
+          await saveOmlxApiKey(result.apiKey.trim(), 'omlx');
+        } catch {
+          // Continue saves it with the rest.
+        }
+      }
+      const status = (await fetchOmlxInstallStatus(endpoint, apiKey)) as OmlxStatus;
       setOmlxStatus(status);
       if (!status.ready) throw new Error('The local runner is still starting.');
+      await refreshInstalledModels(runner, endpoint, undefined, apiKey);
+      return;
     }
 
     await refreshInstalledModels(runner, endpoint, apiKey);
+  };
+
+  // The key the desktop app just gave oMLX. Continue saves it with the rest; it is stored now too, so a
+  // setup left before Continue still leaves the Hub able to download through oMLX.
+  const handleOmlxAdminKeySet = async (apiKey: string) => {
+    setOmlxApiKey(apiKey);
+    await saveOmlxApiKey(apiKey, 'omlx');
   };
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
@@ -484,7 +527,13 @@ export const AiSetupStep = ({
     setSelectedBackend(backend);
     const requestId = ++profileRequestId.current;
     try {
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, omlxUrl);
+      const data = await fetchInferenceOnboardingProfile(
+        backend,
+        vllmUrl,
+        backend === 'vllm' ? vllmApiKey : undefined,
+        omlxUrl,
+        backend === 'omlx' ? omlxApiKey : undefined,
+      );
       // Ignore a slower response from an earlier backend choice.
       if (profileRequestId.current === requestId) {
         setProfile(data);
@@ -511,9 +560,14 @@ export const AiSetupStep = ({
     const model = profile.availableModels.find((m) => m.id === modelId);
     if (!model) return;
     const installed = new Set(profile.installedCatalogIds ?? []);
-    // Host-served backends cannot hot-swap, so uninstalled models open their model page.
-    // Hub-loadable backends remain selectable.
-    if (isHostServedBackend(model.backend) && !installed.has(modelId) && !selectedModelIds.includes(modelId)) {
+    // vLLM serves only the weights on its host, so a model it does not serve opens its model page.
+    // The Hub downloads every other engine's models, oMLX's through oMLX's admin API.
+    if (
+      !isHubDownloadableBackend(model.backend) &&
+      isHostServedBackend(model.backend) &&
+      !installed.has(modelId) &&
+      !selectedModelIds.includes(modelId)
+    ) {
       openExternal(`https://huggingface.co/${model.backendModelId}`);
       return;
     }
@@ -583,7 +637,7 @@ export const AiSetupStep = ({
       preferredModelId && selectedModels.includes(preferredModelId)
         ? preferredModelId
         : getDefaultPreferredModelId(profile, selectedBackend, selectedModels, true);
-    const embeddingBackend = selectedBackend === 'omlx' || selectedBackend === 'ollama' ? selectedBackend : EMBEDDING_INFERENCE_BACKEND;
+    const embeddingBackend = selectedBackend === 'ollama' ? selectedBackend : EMBEDDING_INFERENCE_BACKEND;
     const effectivePreferredEmbeddingModelId = getDefaultPreferredAuxModelId(profile, embeddingBackend, isEmbeddingModel, selectedModels);
     // A vision model off the recommended list is a whole chat model, so it is not ticked (and pinned)
     // for this. With nothing ticked that sees images, the one the engine has is still saved, as it was
@@ -600,15 +654,13 @@ export const AiSetupStep = ({
           )
         : undefined);
 
+    const backendOf = (id: string) => profile.availableModels.find((m) => m.id === id)?.backend;
     return {
       agentFrameworks,
       selectedModels,
-      // The historical field name represents every Hub-loadable model.
-      ollamaSelectedModelIds: hubLoadableSelection(
-        selectedModels,
-        (id) => profile.availableModels.find((m) => m.id === id)?.backend,
-        effectivePreferredModelId,
-      ),
+      // The historical field name is the pin list: the Hub pins Ollama and Lemonade models only.
+      ollamaSelectedModelIds: hubLoadableSelection(selectedModels, backendOf, effectivePreferredModelId),
+      downloadModelIds: hubDownloadSelection(selectedModels, backendOf),
       backend: selectedBackend,
       cloudProviders: validProviders,
       preferredModelId: effectivePreferredModelId,
@@ -638,6 +690,7 @@ export const AiSetupStep = ({
       ...(selectedBackend === 'vllm' && vllmApiKey.trim() ? { vllmApiKey: vllmApiKey.trim() } : {}),
       ...(selectedBackend === 'vllm' && vllmUrl.trim() ? { vllmUrl: vllmUrl.trim() } : {}),
       ...(selectedBackend === 'omlx' && omlxUrl.trim() ? { omlxUrl: omlxUrl.trim() } : {}),
+      ...(selectedBackend === 'omlx' && omlxApiKey.trim() ? { omlxApiKey: omlxApiKey.trim() } : {}),
       ...(decodeEndpoint.trim() ? { decodeEndpoint: decodeEndpoint.trim() } : {}),
       ...(encodeEndpoint.trim() ? { encodeEndpoint: encodeEndpoint.trim() } : {}),
     };
@@ -671,6 +724,7 @@ export const AiSetupStep = ({
     vllmApiKey,
     vllmUrl,
     omlxUrl,
+    omlxApiKey,
     decodeEndpoint,
     encodeEndpoint,
     ollamaStatus,
@@ -823,6 +877,9 @@ export const AiSetupStep = ({
                   onRecheck={handleOmlxRecheck}
                   endpointUrl={omlxUrl}
                   onEndpointUrlChange={setOmlxUrl}
+                  apiKey={omlxApiKey}
+                  onApiKeyChange={setOmlxApiKey}
+                  onAdminKeySet={handleOmlxAdminKeySet}
                   onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('omlx') : undefined}
                 />
               </BackendSetupGroup>
@@ -836,7 +893,7 @@ export const AiSetupStep = ({
               </BackendSetupGroup>
             )}
 
-            {(selectedBackend === 'vllm' || selectedBackend === 'lemonade') && (
+            {(selectedBackend === 'vllm' || selectedBackend === 'omlx' || selectedBackend === 'lemonade') && (
               <div className="space-y-3 border-t border-border pt-5" data-testid="embeddings-inference-setup">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">

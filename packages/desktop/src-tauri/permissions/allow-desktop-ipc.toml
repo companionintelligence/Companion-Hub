@@ -33,6 +33,8 @@ commands.allow = [
   "local_ai_network_exposure_command",
   "protect_local_ai_command",
   "allow_local_ai_on_network_command",
+  "omlx_setup_admin_key_command",
+  "omlx_admin_key_status_command",
   "install_rocm_command",
   "verify_rocm_command",
   "install_docker_engine_alternative_command",
