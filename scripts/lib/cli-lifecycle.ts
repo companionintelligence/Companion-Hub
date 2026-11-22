@@ -33,6 +33,7 @@ import {
   requireRepoOrApplianceContext,
   resolveHubContext,
 } from './hub-context.js';
+import { describeLoginStartOutcome, ensureLoginStartUnit } from './login-start-unit.js';
 import { applianceEnvFilePaths } from './paths.js';
 import { ensureStrongRabbitmqPassword } from './seed-appliance.js';
 
@@ -61,6 +62,15 @@ function noteRabbitmqPasswordReplaced(replaced: boolean): void {
     ],
     'yellow',
   );
+}
+
+/**
+ * Make sure the Hub comes back after a reboot on a home folder unlocked at login (see
+ * `login-start-unit.ts`). Says something only when it installed the service or could not.
+ */
+function ensureHubStartsAfterLogin(): void {
+  const message = describeLoginStartOutcome(ensureLoginStartUnit());
+  if (message) printMessageBox('Start after login', [message], message.startsWith('Could not') ? 'yellow' : 'cyan');
 }
 
 export function shouldRetryApkMirrorWithHostNetwork(
@@ -177,6 +187,7 @@ export async function startHub(mode: StartMode, env: HubEnv) {
     [`Environment: ${env}`, `Mode: ${detached ? 'detached' : 'attached'}`, `Compose files: ${files.join(', ')}`],
     'green',
   );
+  ensureHubStartsAfterLogin();
   await ensurePostgresInfraAndSyncPassword(envFileName, files, envOverrides);
   await runDockerComposeUp(envFileName, files, detached, envOverrides);
 }
@@ -228,6 +239,7 @@ async function startApplianceHub(ctx: HubContext, detachedMode: 'attached' | 'de
     ['Environment: prod (canonical install)', `Data dir: ${dataDir}`, `Mode: ${detached ? 'detached' : 'attached'}`],
     'green',
   );
+  ensureHubStartsAfterLogin();
   await ensurePostgresInfraAndSyncPassword(ctx.envFile, ctx.composeFiles, envOverrides, dataDir);
   refreshFloatingHubImage(ctx, envOverrides, dataDir);
   await runDockerComposeUp(ctx.envFile, ctx.composeFiles, detached, envOverrides, dataDir);
