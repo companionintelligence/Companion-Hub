@@ -27,7 +27,7 @@ import { runFleetCommand } from './cli-fleet.js';
 import { runComposeRefreshCommand } from './cli-compose-refresh.js';
 import { runPoolCommand } from './cli-pool.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
-import { registerHub, showDeviceId } from './cli-register.js';
+import { registerHub, showDeviceId, showSetupCode } from './cli-register.js';
 import { isApplianceMode } from './cli-repo-context.js';
 import { runWriteStatusFile } from './status-file.js';
 import { cleanHub, downHub, recreateHub, resetHub, restartHub } from './cli-teardown.js';
@@ -92,6 +92,11 @@ export async function runCli(rawArgs: string[]) {
   if (first === 'claim') {
     const claimArgs = normalizeClaimFlags(args.slice(1));
     await claimHub(claimArgs.env, { email: claimArgs.email });
+    return;
+  }
+
+  if (first === 'setup-code') {
+    showSetupCode(resolveEnvFromArgs(args.slice(1)));
     return;
   }
 

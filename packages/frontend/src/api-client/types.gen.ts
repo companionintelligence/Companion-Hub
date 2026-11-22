@@ -2865,7 +2865,7 @@ export type HandleCallbackErrors = {
      */
     400: unknown;
     /**
-     * Not sent from this Hub's own machine, or the Hub is already registered
+     * No host-local key, setup code or Hub manager, or the Hub is already registered
      */
     403: unknown;
 };

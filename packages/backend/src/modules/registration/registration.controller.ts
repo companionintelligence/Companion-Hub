@@ -1,4 +1,4 @@
-import { Body, Controller, ForbiddenException, Get, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Optional, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { Request } from 'express';
 import { RegistrationService } from './registration.service';
@@ -13,7 +13,8 @@ import { AuthGuard } from '@/modules/auth/auth.guard';
 import { HubSessionGuard } from '@/modules/auth/hub-session.guard';
 import { HubManagerGuard, resolveWhoisService } from '@/modules/auth/hub-manager.guard';
 import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
-import { isCrossSiteBrowserRequest, isRequestFromThisHost } from '@/modules/auth/portal-sso';
+import { isCrossSiteBrowserRequest } from '@/modules/auth/portal-sso';
+import { SETUP_CODE_HEADER, SETUP_CODE_REQUIRED, SetupCodeService } from './setup-code.service';
 
 interface RegisterDeviceDto {
   organization_id: string;
@@ -42,6 +43,11 @@ interface RegistrationCallbackDto {
   domain?: string;
 }
 
+/** A pairing refused on a Hub that holds a registration: it has no setup code, so a manager must pair it. */
+const HUB_MANAGER_REQUIRED = 'HUB_MANAGER_REQUIRED';
+const ALREADY_REGISTERED_MESSAGE =
+  'This Hub is already registered. Sign in as an owner or admin to pair it again, or run `cihub register --code <code>` on the Hub itself.';
+
 @ApiTags('Registration')
 @Controller('registration')
 export class RegistrationController {
@@ -52,7 +58,82 @@ export class RegistrationController {
     // Optional only to TypeScript, for the tests that build this controller by hand to reset a Hub.
     // Nest always injects it. Without it the callback finds no WhoIs service to ask about the caller.
     private readonly moduleRef?: ModuleRef,
+    // Optional for the same reason. Without it no setup code is accepted, only the host-local key and
+    // a person who may manage the Hub.
+    @Optional() private readonly setupCode?: SetupCodeService,
   ) {}
+
+  /**
+   * Whether this caller may pair this Hub, set its pairing up or take a registration secret: someone
+   * with the Hub's machine, or someone who may manage it.
+   *
+   * - The host-local key or the CLI token (`req.hubPrincipal`): `cihub` on the box, the desktop app,
+   *   CI-OS's setup service. Each reads the key from `state/settings.json`, which only the machine's
+   *   own user can.
+   * - The setup code (`SetupCodeService`), sent in {@link SETUP_CODE_HEADER} by the setup page on
+   *   another computer, for a Hub that holds no registration. Never for one that does, whether or not
+   *   its setup file is still on disk.
+   * - A person `mayPairRegisteredHubAgain` allows: the claiming operator, an owner or an admin.
+   *
+   * ⚠ NOT "FROM THIS HUB'S MACHINE". That used to admit any request arriving from the Hub network's
+   * gateway with a loopback Host, and an installed app arrives exactly so when it dials its own
+   * network's gateway on the published port. Any app could pair an unpaired Hub, or pair a registered
+   * one again, into its own Portal organization.
+   */
+  private async mayPairThisHub(req: Request | undefined): Promise<boolean> {
+    if (!req) {
+      return false;
+    }
+    if (req.hubPrincipal === 'host-local' || req.hubPrincipal === 'cli') {
+      return true;
+    }
+    // The code is for a Hub that holds no registration. Its file can outlive the registration (a
+    // failed `retire`, or `ensure` running while the phase still reads `unregistered`), and a code
+    // that is still on disk proves nothing about who has the machine, so it never pairs a Hub that
+    // holds one again. Asked before the code is checked, so a wrong code sent to a paired Hub does not
+    // count towards the lockout either. `pairingReplacesRegistration` and not `holdsRegistration`:
+    // a Hub whose registration can't be read counts as registered here, as it does for the pairing.
+    const presented = req.headers?.[SETUP_CODE_HEADER];
+    if (
+      typeof presented === 'string' &&
+      !(await this.registrationService.pairingReplacesRegistration()) &&
+      (await this.setupCode?.verify(presented))
+    ) {
+      return true;
+    }
+    // A manager only of a Hub that holds a registration. An unpaired Hub's operator is whoever reached
+    // it first and claimed it, which proves no more than reaching the port: they would pair it into
+    // their own organization without the setup code (seen on a factory-reset Hub, 2026-11-18).
+    if (!(await this.registrationService.holdsRegistration())) {
+      return false;
+    }
+    return this.mayPairRegisteredHubAgain(req);
+  }
+
+  /**
+   * The answer for a caller {@link mayPairThisHub} does not admit, or null when it does. In the shape
+   * these routes already answer a refusal in (`success: false` and a message, which `cihub` and the
+   * setup page read), with a code the page asks for the setup code on.
+   */
+  private async setupRefusal(
+    req: Request | undefined,
+    action: string,
+  ): Promise<{ success: false; code: typeof SETUP_CODE_REQUIRED | typeof HUB_MANAGER_REQUIRED; message: string } | null> {
+    if (await this.mayPairThisHub(req)) {
+      return null;
+    }
+    this.logger.warn(`Refused ${action} from ${req?.socket?.remoteAddress ?? 'unknown'}: no setup code, host-local key or Hub manager`);
+    // A Hub that holds a registration has no setup code to ask for: only a manager or the machine may.
+    if (await this.registrationService.holdsRegistration()) {
+      return { success: false, code: HUB_MANAGER_REQUIRED, message: ALREADY_REGISTERED_MESSAGE };
+    }
+    return {
+      success: false,
+      code: SETUP_CODE_REQUIRED,
+      message:
+        "Enter this Hub's setup code to pair it. Run `cihub setup-code` on the Hub's machine to see it, or pair from the Companion Hub desktop app.",
+    };
+  }
 
   /**
    * Clears this Hub's registration locally. The Portal keeps the device: removing it from the
@@ -131,7 +212,11 @@ export class RegistrationController {
   @UseGuards(DemoModeGuard)
   @ApiOperation({ summary: 'Clear local registration artifacts for a fresh device pairing' })
   @ApiResponse({ status: 200, description: 'Local registration artifacts cleared' })
-  async prepareFreshSetup() {
+  async prepareFreshSetup(@Req() req?: Request) {
+    const refused = await this.setupRefusal(req, 'prepare-fresh');
+    if (refused) {
+      return { ...refused, clearedAppEnvFiles: 0 };
+    }
     return this.registrationService.prepareFreshSetup();
   }
 
@@ -141,8 +226,8 @@ export class RegistrationController {
   @UseGuards(DemoModeGuard)
   @ApiOperation({ summary: 'Record restore intent before re-pairing an existing Portal device' })
   @ApiResponse({ status: 200, description: 'Restore intent recorded' })
-  async markRestoreIntent() {
-    return this.registrationService.markRestoreIntent();
+  async markRestoreIntent(@Req() req?: Request) {
+    return (await this.setupRefusal(req, 'mark-restore-intent')) ?? this.registrationService.markRestoreIntent();
   }
 
   @Get('device-id')
@@ -165,8 +250,13 @@ export class RegistrationController {
      * `callback_url` as opaque and returns to it verbatim, so nothing changes
      * there.
      */
-    const callbackNonce = this.registrationService.mintCallbackNonce();
-    const callbackUrl = `${protocol}://${host}/device-registration?state=${encodeURIComponent(callbackNonce)}`;
+    // Only for a caller who may pair this Hub: the nonce is what lets a callback hand the Hub its
+    // identity, so handing it to anyone let anyone register the Hub into their organization.
+    const mayPair = await this.mayPairThisHub(req);
+    // Only an unpaired Hub has a setup code to ask for; a paired one asks for a manager instead.
+    const setupCodeRequired = !mayPair && !(await this.registrationService.holdsRegistration());
+    const callbackNonce = mayPair ? this.registrationService.mintCallbackNonce() : null;
+    const callbackUrl = callbackNonce ? `${protocol}://${host}/device-registration?state=${encodeURIComponent(callbackNonce)}` : null;
 
     // A DEVICE_ID copied from another machine gets no registration link: following it would bind that
     // other Hub's device ID in Portal, which `pairDevice` refuses for the same reason.
@@ -175,7 +265,7 @@ export class RegistrationController {
     // Use Companion Portal's `/device/register` entry route for authentication
     // and Add Device. Treat blank configuration like a missing value.
     const registrationUrl =
-      ciCloudUrl?.trim() && hostBinding.status !== 'foreign'
+      callbackUrl && ciCloudUrl?.trim() && hostBinding.status !== 'foreign'
         ? `${ciCloudUrl.trim()}/device/register?device_id=${encodeURIComponent(deviceId)}&callback_url=${encodeURIComponent(callbackUrl)}`
         : null;
 
@@ -184,6 +274,8 @@ export class RegistrationController {
       registration_url: registrationUrl,
       callback_url: callbackUrl,
       ci_cloud_url: ciCloudUrl || null, // Expose the configured Portal origin for diagnostics.
+      // No registration link without the setup code, the host-local key or a Hub manager.
+      setup_code_required: setupCodeRequired,
       // Status and message only. The host's own machine ID is never put on this unauthenticated route.
       device_id_host: { status: hostBinding.status, message: hostBinding.status === 'foreign' ? hostBinding.message : null },
     };
@@ -234,7 +326,7 @@ export class RegistrationController {
    *
    * It carries `api_key` and `tunnel_token` in the query string, where they
    * reach request logs. Its caller cannot supply a nonce, so it answers only a
-   * request made on this Hub's own machine. Like the POST, it refuses a Hub that
+   * caller `mayPairThisHub` admits (CI-OS's setup service sends the host-local key). Like the POST, it refuses a Hub that
    * is already registered. Delete it once no appliance runs the GET-only setup
    * service; the warning below is how we tell when nothing calls it.
    */
@@ -242,7 +334,7 @@ export class RegistrationController {
   @ApiOperation({ summary: 'Handle registration callback from CI Cloud (deprecated GET form — use POST)' })
   @ApiResponse({ status: 200, description: 'Registration completed successfully' })
   @ApiResponse({ status: 400, description: 'Invalid callback data' })
-  @ApiResponse({ status: 403, description: "Not sent from this Hub's own machine, or the Hub is already registered" })
+  @ApiResponse({ status: 403, description: 'No host-local key, setup code or Hub manager, or the Hub is already registered' })
   async handleCallback(
     @Req() req: Request,
     @Query('device_id') deviceId: string,
@@ -256,17 +348,16 @@ export class RegistrationController {
     @Query('domain') domain: string,
   ) {
     /*
-     * The setup service calls the published port from the host, so the Hub sees it arrive from its
-     * container's gateway with `Host: 127.0.0.1:5002`, which `isRequestFromThisHost` admits. That
-     * places the request by address and isn't authentication, so the rules in
-     * `completeRegistrationCallback` still apply.
+     * CI-OS's setup service sends the host-local key. It used to pass on its address alone (the
+     * container's gateway with `Host: 127.0.0.1:5002`), which an installed app can arrive with too
+     * (see `mayPairThisHub`). The rules in `completeRegistrationCallback` still apply.
      */
-    if (!isRequestFromThisHost(req)) {
+    if (!(await this.mayPairThisHub(req))) {
       this.logger.warn(
-        `Rejected deprecated GET registration callback from ${req.socket?.remoteAddress ?? 'unknown'}: not sent from this Hub's own machine`,
+        `Rejected deprecated GET registration callback from ${req.socket?.remoteAddress ?? 'unknown'}: no setup code, host-local key or Hub manager`,
       );
 
-      throw new ForbiddenException('This callback is only accepted from this Hub itself. Pair this Hub from its pairing page instead.');
+      throw new ForbiddenException('This callback needs the host-local key. Pair this Hub from its pairing page instead.');
     }
 
     // After the refusal above, so a probe from the LAN does not read as a caller still on the GET.
@@ -337,18 +428,16 @@ export class RegistrationController {
      * A Hub that holds a registration but needs pairing again (`portal_rejected`,
      * `tunnel_token_missing`) gets past the check above. A `portal_rejected` Hub keeps its tunnel.
      * Pairing it again replaces its device key and tunnel, so it takes someone who may manage this
-     * Hub, or a request from this Hub's own machine, where the headless setup service runs with no
-     * session. An unregistered Hub has nobody to ask. The row counts as well as the phase
+     * Hub or the host-local key, which the headless setup service sends (`mayPairThisHub`). An
+     * unregistered Hub has nobody to ask. The row counts as well as the phase
      * (`pairingReplacesRegistration`).
      */
-    if ((await this.registrationService.pairingReplacesRegistration()) && !(await this.mayPairRegisteredHubAgain(req))) {
+    if ((await this.registrationService.pairingReplacesRegistration()) && !(await this.mayPairThisHub(req))) {
       this.logger.warn(
-        `Rejected registration callback for a registered Hub from ${req?.socket?.remoteAddress ?? 'unknown'}: no owner or admin and not sent from this Hub's own machine`,
+        `Rejected registration callback for a registered Hub from ${req?.socket?.remoteAddress ?? 'unknown'}: no owner, admin or host-local key`,
       );
 
-      throw new ForbiddenException(
-        'This Hub is already registered. Sign in as an owner or admin to pair it again, or run `cihub register --code <code>` on the Hub itself.',
-      );
+      throw new ForbiddenException(ALREADY_REGISTERED_MESSAGE);
     }
 
     return this.registrationService.completeRegistrationFromCallback({
@@ -365,18 +454,14 @@ export class RegistrationController {
   }
 
   /**
-   * Who may pair a Hub that holds a registration again, by a callback or a pairing code: a request
-   * from this Hub's own machine, or someone `hubManageVerdictForRePairing` allows: the claiming
-   * operator, an owner or admin, the CLI or the host-local key. A member is refused, as are the
+   * Who may pair a Hub that holds a registration again, by a callback or a pairing code: someone
+   * `hubManageVerdictForRePairing` allows: the claiming operator, an owner or admin, the CLI or the
+   * host-local key. Not a request merely sent from this Hub's machine (see `mayPairThisHub`). A member is refused, as are the
    * Portal device key, a caller nobody authenticated and a session a page on another site sent.
    */
   private async mayPairRegisteredHubAgain(req: Request | undefined): Promise<boolean> {
     if (!req) {
       return false;
-    }
-
-    if (isRequestFromThisHost(req)) {
-      return true;
     }
 
     // Nobody authenticated, so no WhoIs answer could allow it. Not asked, so it logs no refusal of its own.
@@ -526,10 +611,15 @@ export class RegistrationController {
       return { success: false, message: 'A valid 6-character pairing code is required.' };
     }
 
-    // No guard: first pairing has nobody to authenticate. Only for a Hub that holds a registration
-    // does the service ask the question a registration callback asks (`mayPairRegisteredHubAgain`).
+    // First pairing has nobody to authenticate, so it asks for the setup code instead (or the
+    // host-local key, or a Hub manager); see `mayPairThisHub`. A Hub that holds a registration asks
+    // the same before it pairs again.
+    const refused = await this.setupRefusal(req, 'pair');
+    if (refused) {
+      return refused;
+    }
     const result = await this.registrationService.pairDevice(pairingCode, {
-      mayPairAgain: () => this.mayPairRegisteredHubAgain(req),
+      mayPairAgain: () => this.mayPairThisHub(req),
       confirmMove: body.confirm_move === true,
     });
     return result;
@@ -539,7 +629,12 @@ export class RegistrationController {
   @ApiOperation({ summary: 'Initiate device registration with organization' })
   @ApiResponse({ status: 200, description: 'Registration initiated successfully' })
   @ApiResponse({ status: 400, description: 'Invalid request' })
-  async registerDevice(@Body() body: RegisterDeviceDto) {
+  async registerDevice(@Body() body: RegisterDeviceDto, @Req() req?: Request) {
+    const refused = await this.setupRefusal(req, 'register');
+    if (refused) {
+      return refused;
+    }
+
     if (!body.organization_id?.trim()) {
       return {
         success: false,

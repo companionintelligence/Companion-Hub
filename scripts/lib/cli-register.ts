@@ -5,6 +5,8 @@
  * polling loop as well as the HTTP calls in `register-hub.ts`.
  */
 
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { parseEnvFile } from '../env-file.js';
@@ -14,6 +16,7 @@ import { requireRepoRoot } from './cli-repo-context.js';
 import { BASE_COMMAND, CI_CLOUD_DEFAULT, type HubEnv, type RegisterHubOptions } from './cli-types.js';
 import { bold, colorize, dim, printMessageBox } from './cli-ui.js';
 import { requireRepoOrApplianceContext, resolveHubContext } from './hub-context.js';
+import { resolveSettingsCandidates } from './paths.js';
 import {
   type DeviceIdResponse,
   fetchDeviceId,
@@ -31,13 +34,59 @@ import {
   waitForHubApi,
 } from './register-hub.js';
 
+/**
+ * `cihub setup-code`: the code an unpaired Hub asks a browser for before it pairs. It sits in the
+ * Hub's `state/setup-code`, which only this machine's user can read; reading it here is the proof
+ * that whoever pairs has the machine. Prints it with a link that fills it in.
+ */
+export function showSetupCode(env: HubEnv = 'local') {
+  const ctx = resolveHubContext(env);
+  const apiBase = resolveRegisterApiBase(ctx.envFile);
+  const candidates = resolveSettingsCandidates(ctx.envFile).map((settingsPath) => path.join(path.dirname(settingsPath), 'setup-code'));
+  for (const codePath of candidates) {
+    let code: string;
+    try {
+      code = readFileSync(codePath, 'utf8').trim();
+    } catch {
+      continue;
+    }
+    if (!code) {
+      continue;
+    }
+    const link = `${apiBase}/device-registration?setup=${encodeURIComponent(code)}`;
+    printMessageBox(
+      'Setup code',
+      [
+        bold(code),
+        '',
+        `On this machine, open ${link}`,
+        `From another computer, open this Hub's address with ?setup=${encodeURIComponent(code)} on the end,`,
+        'or enter the code on the pairing page when it asks.',
+        dim(`Or skip the browser: ${BASE_COMMAND} register ${env}`),
+      ],
+      'cyan',
+    );
+    return;
+  }
+  printMessageBox(
+    'No setup code',
+    [
+      'This Hub has none, which means it is paired already, or it has not started yet.',
+      `To pair it again, reset its registration from Settings, or run ${BASE_COMMAND} register ${env} --fresh.`,
+      dim(`Looked in: ${candidates.join(', ')}`),
+    ],
+    'yellow',
+  );
+  process.exitCode = 1;
+}
+
 export async function showDeviceId(options: { fromHub?: boolean; env?: HubEnv } = {}) {
   if (options.fromHub) {
     const env = options.env ?? 'local';
     const ctx = resolveHubContext(env);
     const apiBase = resolveRegisterApiBase(ctx.envFile);
     try {
-      const deviceInfo = await fetchDeviceId(apiBase);
+      const deviceInfo = await fetchDeviceId(apiBase, readHubApiKey(ctx.envFile));
       if (!deviceInfo.device_id) {
         printMessageBox(
           'Device ID unavailable',
@@ -216,7 +265,7 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
       'cyan',
     );
     try {
-      const prepared = await prepareFreshSetup(apiBase);
+      const prepared = await prepareFreshSetup(apiBase, readHubApiKey(envFileName));
       if (!prepared.success) {
         printMessageBox('Prepare fresh failed', [prepared.message || 'Unknown error'], 'red');
         process.exit(1);
@@ -230,7 +279,7 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
 
   let deviceInfo: DeviceIdResponse;
   try {
-    deviceInfo = await fetchDeviceId(apiBase);
+    deviceInfo = await fetchDeviceId(apiBase, readHubApiKey(envFileName));
   } catch (error) {
     printMessageBox('Device info failed', [error instanceof Error ? error.message : String(error)], 'red');
     process.exit(1);

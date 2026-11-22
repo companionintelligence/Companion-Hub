@@ -46,11 +46,19 @@ describe('RegistrationController', () => {
     configService = moduleRef.get(ConfigurationService);
     // What nearly every Hub reports: DEVICE_ID is unset and derived from this machine.
     registrationService.getDeviceIdHostBinding.mockReturnValue({ status: 'not_set' });
+    registrationService.mintCallbackNonce.mockReturnValue('nonce-0');
   });
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
   });
+
+  /** `cihub`, the desktop app or CI-OS's setup service: the host-local key from state/settings.json. */
+  const withHostLocalKey = (host = 'localhost:3000') =>
+    ({ protocol: 'https', headers: { host }, socket: { remoteAddress: '172.18.0.1' }, get: () => host, hubPrincipal: 'host-local' }) as any;
+  /** Anyone else: a browser on the LAN with no setup code, or an app on the gateway with no key. */
+  const withNothing = (host = 'localhost:3000') =>
+    ({ protocol: 'https', headers: { host }, socket: { remoteAddress: '172.18.0.1' }, get: () => host }) as any;
 
   describe('getStatus', () => {
     it('should return full registration status with phase', async () => {
@@ -155,7 +163,7 @@ describe('RegistrationController', () => {
     it('should record restore intent', async () => {
       registrationService.markRestoreIntent.mockResolvedValue({ success: true, message: 'Restore intent recorded' });
 
-      const result = await controller.markRestoreIntent();
+      const result = await controller.markRestoreIntent(withHostLocalKey());
       expect(result.success).toBe(true);
       expect(registrationService.markRestoreIntent).toHaveBeenCalled();
     });
@@ -188,7 +196,7 @@ describe('RegistrationController', () => {
         clearedAppEnvFiles: 2,
       });
 
-      const result = await controller.prepareFreshSetup();
+      const result = await controller.prepareFreshSetup(withHostLocalKey());
 
       expect(result.success).toBe(true);
       expect(registrationService.prepareFreshSetup).toHaveBeenCalled();
@@ -200,7 +208,7 @@ describe('RegistrationController', () => {
       registrationService.getDeviceId.mockResolvedValue('device-123');
       configService.getConfig.mockReturnValue({ ciCloudUrl: 'https://portal.ci.com' } as any);
 
-      const req = { protocol: 'https', get: () => 'localhost:3000' } as any;
+      const req = withHostLocalKey();
       const result = await controller.getDeviceId(req);
 
       expect(result.device_id).toBe('device-123');
@@ -214,18 +222,40 @@ describe('RegistrationController', () => {
       registrationService.mintCallbackNonce.mockReturnValue('nonce-1');
       configService.getConfig.mockReturnValue({ ciCloudUrl: 'https://portal.ci.com' } as any);
 
-      const req = { protocol: 'https', get: () => 'localhost:3000' } as any;
+      const req = withHostLocalKey();
       const result = await controller.getDeviceId(req);
 
       expect(result.callback_url).toBe('https://localhost:3000/device-registration?state=nonce-1');
       expect(result.registration_url).toContain(encodeURIComponent(result.callback_url));
     });
 
+    // The nonce is what lets a callback hand the Hub its identity.
+    it('mints no nonce and gives no Portal link to a caller without the setup code, the host-local key or a manager', async () => {
+      registrationService.getDeviceId.mockResolvedValue('device-123');
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'https://portal.ci.com' } as any);
+
+      const result = await controller.getDeviceId(withNothing());
+
+      expect(registrationService.mintCallbackNonce).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ device_id: 'device-123', registration_url: null, callback_url: null, setup_code_required: true });
+    });
+
+    it('asks no setup code of a caller on a paired Hub, which has none, and still gives no link', async () => {
+      registrationService.getDeviceId.mockResolvedValue('device-123');
+      registrationService.holdsRegistration.mockResolvedValue(true);
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'https://portal.ci.com' } as any);
+
+      const result = await controller.getDeviceId(withNothing());
+
+      expect(registrationService.mintCallbackNonce).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ registration_url: null, callback_url: null, setup_code_required: false });
+    });
+
     it('should return null registration URL when ciCloudUrl is empty', async () => {
       registrationService.getDeviceId.mockResolvedValue('device-123');
       configService.getConfig.mockReturnValue({ ciCloudUrl: '' } as any);
 
-      const req = { protocol: 'https', get: () => 'localhost:3000' } as any;
+      const req = withHostLocalKey();
       const result = await controller.getDeviceId(req);
 
       expect(result.device_id).toBe('device-123');
@@ -243,7 +273,7 @@ describe('RegistrationController', () => {
       });
       configService.getConfig.mockReturnValue({ ciCloudUrl: 'https://portal.ci.com' } as any);
 
-      const result = await controller.getDeviceId({ protocol: 'https', get: () => 'localhost:3000' } as any);
+      const result = await controller.getDeviceId(withHostLocalKey());
 
       expect(result.registration_url).toBeNull();
       expect(result.device_id_host).toEqual({ status: 'foreign', message: expect.stringContaining('not generated on this machine') });
@@ -254,7 +284,7 @@ describe('RegistrationController', () => {
       registrationService.getDeviceIdHostBinding.mockReturnValue({ status: 'matches_host', deviceId: '5eed5eed5eed5eed5eed5eed5eed5eed' });
       configService.getConfig.mockReturnValue({ ciCloudUrl: 'https://portal.ci.com' } as any);
 
-      const result = await controller.getDeviceId({ protocol: 'https', get: () => 'localhost:3000' } as any);
+      const result = await controller.getDeviceId(withHostLocalKey());
 
       expect(result.registration_url).toContain('portal.ci.com');
       expect(result.device_id_host).toEqual({ status: 'matches_host', message: null });
@@ -379,7 +409,8 @@ describe('RegistrationController', () => {
       return { ip, socket: { remoteAddress: ip }, headers: all, protocol: 'http', get: (name: string) => all[name.toLowerCase()] } as any;
     };
     // The setup service runs on the host and calls the published port, so the Hub sees a bridge gateway.
-    const req = request('172.18.0.1', '127.0.0.1:5002');
+    // It sends the host-local key: that address is also where an installed app arrives from.
+    const req = { ...request('172.18.0.1', '127.0.0.1:5002'), hubPrincipal: 'host-local' };
     const callback = (from: unknown) =>
       controller.handleCallback(from as any, 'device-1', 'org-1', 'My Org', 'my-org', 'my-sub', 'tun-1', 'tok-1', 'key-1', 'example.com');
 
@@ -414,10 +445,10 @@ describe('RegistrationController', () => {
       expect(registrationService.completeRegistrationFromCallback).not.toHaveBeenCalled();
     });
 
-    it('accepts a request made inside the Hub container on loopback', async () => {
-      registrationService.completeRegistrationFromCallback.mockResolvedValue({ success: true } as any);
-
-      await expect(callback(request('::ffff:127.0.0.1', 'localhost:5002'))).resolves.toEqual({ success: true });
+    it("refuses the setup service's address without the host-local key: an installed app arrives from there too", async () => {
+      await expect(callback(request('172.18.0.1', '127.0.0.1:5002'))).rejects.toThrow(ForbiddenException);
+      await expect(callback(request('::ffff:127.0.0.1', 'localhost:5002'))).rejects.toThrow(ForbiddenException);
+      expect(registrationService.completeRegistrationFromCallback).not.toHaveBeenCalled();
     });
 
     it('refuses a request that was not sent on loopback, before reading the registration', async () => {
@@ -533,7 +564,7 @@ describe('RegistrationController', () => {
     it('should pair with valid code', async () => {
       registrationService.pairDevice.mockResolvedValue({ success: true } as any);
 
-      const result = await controller.pairDevice({ pairing_code: 'ABCDEF' });
+      const result = await controller.pairDevice({ pairing_code: 'ABCDEF' }, withHostLocalKey());
       expect(result).toEqual({ success: true });
       expect(registrationService.pairDevice).toHaveBeenCalledWith('ABCDEF', { mayPairAgain: expect.any(Function), confirmMove: false });
     });
@@ -551,49 +582,58 @@ describe('RegistrationController', () => {
         return registrationService.pairDevice.mock.lastCall?.[1]?.mayPairAgain?.();
       };
 
-      await expect(mayPairAgainFor(undefined)).resolves.toBe(false);
-      await expect(mayPairAgainFor(request('192.168.1.50', '192.168.1.10:5002'))).resolves.toBe(false);
-      // Any principal used to be enough. Without a WhoIs service to ask, only this machine passes.
-      await expect(mayPairAgainFor(request('192.168.1.50', '192.168.1.10:5002', { hubPrincipal: 'session', user: { id: 1 } }))).resolves.toBe(false);
-      await expect(mayPairAgainFor(request('192.168.1.50', '127.0.0.1:5002', { hubPrincipal: 'portal-device' }))).resolves.toBe(false);
-      // `cihub register` and the setup service, on the Hub's own machine.
-      await expect(mayPairAgainFor(request('172.18.0.1', '127.0.0.1:5002'))).resolves.toBe(true);
+      // `cihub register` and the setup service send the host-local key; the CLI token counts too.
+      await expect(mayPairAgainFor(request('172.18.0.1', '127.0.0.1:5002', { hubPrincipal: 'host-local' }))).resolves.toBe(true);
+      await expect(mayPairAgainFor(request('192.168.1.50', '192.168.1.10:5002', { hubPrincipal: 'cli' }))).resolves.toBe(true);
+
+      // Everyone else is refused before the service is asked: an address is not presence.
+      registrationService.pairDevice.mockClear();
+      for (const from of [
+        undefined,
+        request('192.168.1.50', '192.168.1.10:5002'),
+        request('192.168.1.50', '192.168.1.10:5002', { hubPrincipal: 'session', user: { id: 1 } }),
+        request('192.168.1.50', '127.0.0.1:5002', { hubPrincipal: 'portal-device' }),
+        request('172.18.0.1', '127.0.0.1:5002'),
+      ]) {
+        await expect(controller.pairDevice({ pairing_code: 'ABCDEF' }, from)).resolves.toMatchObject({ success: false, code: 'SETUP_CODE_REQUIRED' });
+      }
+      expect(registrationService.pairDevice).not.toHaveBeenCalled();
     });
 
     it('passes the yes to a move on, and nothing else as one', async () => {
       registrationService.pairDevice.mockResolvedValue({ success: true } as any);
 
-      await controller.pairDevice({ pairing_code: 'ABCDEF', confirm_move: true });
+      await controller.pairDevice({ pairing_code: 'ABCDEF', confirm_move: true }, withHostLocalKey());
       expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', expect.objectContaining({ confirmMove: true }));
 
       // Only a literal true: a string from a hand-made request is not a yes.
-      await controller.pairDevice({ pairing_code: 'ABCDEF', confirm_move: 'yes' as never });
+      await controller.pairDevice({ pairing_code: 'ABCDEF', confirm_move: 'yes' as never }, withHostLocalKey());
       expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', expect.objectContaining({ confirmMove: false }));
     });
 
     it('returns the Portal refusal code to the registration page', async () => {
       registrationService.pairDevice.mockResolvedValue({ success: false, message: 'Already paired', code: 'DEVICE_PROOF_REQUIRED' });
 
-      const result = await controller.pairDevice({ pairing_code: 'ABCDEF' });
+      const result = await controller.pairDevice({ pairing_code: 'ABCDEF' }, withHostLocalKey());
       expect(result).toEqual({ success: false, message: 'Already paired', code: 'DEVICE_PROOF_REQUIRED' });
     });
   });
 
   describe('registerDevice', () => {
     it('should reject missing organization_id', async () => {
-      const result = await controller.registerDevice({ organization_id: '', organization_name: 'Test' });
+      const result = await controller.registerDevice({ organization_id: '', organization_name: 'Test' }, withHostLocalKey());
       expect(result.success).toBe(false);
     });
 
     it('should reject missing organization_name', async () => {
-      const result = await controller.registerDevice({ organization_id: 'org-1', organization_name: '' });
+      const result = await controller.registerDevice({ organization_id: 'org-1', organization_name: '' }, withHostLocalKey());
       expect(result.success).toBe(false);
     });
 
     it('should initiate registration with valid data', async () => {
       registrationService.initiateRegistration.mockResolvedValue({ success: true } as any);
 
-      const result = await controller.registerDevice({ organization_id: 'org-1', organization_name: 'Test Org' });
+      const result = await controller.registerDevice({ organization_id: 'org-1', organization_name: 'Test Org' }, withHostLocalKey());
       expect(result).toEqual({ success: true });
     });
   });

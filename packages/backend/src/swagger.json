@@ -528,7 +528,7 @@
             "description": "Invalid callback data"
           },
           "403": {
-            "description": "Not sent from this Hub's own machine, or the Hub is already registered"
+            "description": "No host-local key, setup code or Hub manager, or the Hub is already registered"
           }
         },
         "summary": "Handle registration callback from CI Cloud (deprecated GET form — use POST)",
