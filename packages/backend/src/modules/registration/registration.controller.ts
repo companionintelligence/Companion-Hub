@@ -71,7 +71,8 @@ export class RegistrationController {
    *   CI-OS's setup service. Each reads the key from `state/settings.json`, which only the machine's
    *   own user can.
    * - The setup code (`SetupCodeService`), sent in {@link SETUP_CODE_HEADER} by the setup page on
-   *   another computer, for a Hub that holds no registration.
+   *   another computer, for a Hub that holds no registration. Never for one that does, whether or not
+   *   its setup file is still on disk.
    * - A person `mayPairRegisteredHubAgain` allows: the claiming operator, an owner or an admin.
    *
    * ⚠ NOT "FROM THIS HUB'S MACHINE". That used to admit any request arriving from the Hub network's
@@ -86,8 +87,18 @@ export class RegistrationController {
     if (req.hubPrincipal === 'host-local' || req.hubPrincipal === 'cli') {
       return true;
     }
+    // The code is for a Hub that holds no registration. Its file can outlive the registration (a
+    // failed `retire`, or `ensure` running while the phase still reads `unregistered`), and a code
+    // that is still on disk proves nothing about who has the machine, so it never pairs a Hub that
+    // holds one again. Asked before the code is checked, so a wrong code sent to a paired Hub does not
+    // count towards the lockout either. `pairingReplacesRegistration` and not `holdsRegistration`:
+    // a Hub whose registration can't be read counts as registered here, as it does for the pairing.
     const presented = req.headers?.[SETUP_CODE_HEADER];
-    if (typeof presented === 'string' && (await this.setupCode?.verify(presented))) {
+    if (
+      typeof presented === 'string' &&
+      !(await this.registrationService.pairingReplacesRegistration()) &&
+      (await this.setupCode?.verify(presented))
+    ) {
       return true;
     }
     // A manager only of a Hub that holds a registration. An unpaired Hub's operator is whoever reached

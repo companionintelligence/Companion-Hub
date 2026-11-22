@@ -89,6 +89,16 @@ const signedIn = (orgRole: string | null) =>
   request('192.168.1.50', '192.168.1.10:5002', { hubPrincipal: 'session', user: { id: OWNER_ID, orgRole } });
 const memoryWithDeviceKey = () => request('192.168.1.50', '192.168.1.10:5002', { hubPrincipal: 'portal-device', user: { id: 1 } });
 
+/**
+ * The same caller with this Hub's setup code, which the stubbed `SetupCodeService` above still
+ * accepts: a registered Hub whose `state/setup-code` was never removed (a failed `retire`, or a
+ * phase that had not been restored from its row when `ensure` ran).
+ */
+const withSetupCode = <T extends { headers: Record<string, string> }>(from: T): T => {
+  from.headers['x-ci-hub-setup-code'] = 'ABCD-EFGH';
+  return from;
+};
+
 const BODY = {
   device_id: DEVICE_ID,
   organization_id: 'org-current',
@@ -292,6 +302,27 @@ describe.each(['portal_rejected', 'tunnel_token_missing'] as const)('a registrat
     expectNothingWritten();
   });
 
+  // The setup code is for a Hub that holds no registration. One still on disk after the Hub paired
+  // is no proof that the caller has the machine, and must not pair this Hub again.
+  it('refuses a setup code that is still on disk, on either route, without changing anything', async () => {
+    portalSays('member');
+    const before = snapshot();
+
+    for (const from of [anonymousOnLan, lanNamingLoopback, appContainerViaGateway, () => signedIn('member')]) {
+      await expect(sendPost(withSetupCode(from()))).rejects.toThrow(/Sign in as an owner or admin/);
+      await expect(sendGet(withSetupCode(from()))).rejects.toThrow(/needs the host-local key/);
+    }
+
+    expect(snapshot()).toEqual(before);
+    expectNothingWritten();
+  });
+
+  it('mints no nonce and gives no registration link for a setup code that is still on disk', async () => {
+    const result = await controller.getDeviceId(withSetupCode(anonymousOnLan()));
+
+    expect(result).toMatchObject({ registration_url: null, callback_url: null, setup_code_required: false });
+  });
+
   it('is refused on the POST when there is no request to read the caller from', async () => {
     await expect(controller.handleCallbackPost(BODY, service.mintCallbackNonce())).rejects.toThrow(/Sign in as an owner or admin/);
     expectNothingWritten();
@@ -301,6 +332,13 @@ describe.each(['portal_rejected', 'tunnel_token_missing'] as const)('a registrat
     portalSays('owner');
 
     await expect(sendPost(signedIn('member'))).resolves.toMatchObject({ success: true });
+    await expectPairedAgain();
+  });
+
+  it('completes on the POST for an owner the Portal confirms, though the request also carries a setup code', async () => {
+    portalSays('owner');
+
+    await expect(sendPost(withSetupCode(signedIn('member')))).resolves.toMatchObject({ success: true });
     await expectPairedAgain();
   });
 
@@ -351,6 +389,20 @@ describe('a registration callback on a Hub whose phase has not been restored fro
     expectNothingWritten();
   });
 
+  // `ensure` runs while the phase still reads `unregistered`, so it can write a code for this Hub.
+  it('refuses a setup code on the POST and a pairing code without changing anything', async () => {
+    mockedPost.mockReset();
+    portalIssuesPairing();
+    const before = snapshot();
+
+    await expect(sendPost(withSetupCode(anonymousOnLan()))).rejects.toThrow(/Sign in as an owner or admin/);
+    await expect(sendPair(withSetupCode(anonymousOnLan()))).resolves.toMatchObject({ success: false, code: 'HUB_MANAGER_REQUIRED' });
+
+    expect(portalPairCalls()).toEqual([]);
+    expect(snapshot()).toEqual(before);
+    expectNothingWritten();
+  });
+
   it('completes on the POST from the setup service with the host-local key', async () => {
     await expect(sendPost(fromSetupService())).resolves.toMatchObject({ success: true });
     await vi.waitFor(() => expect(rows[0]).toMatchObject({ tunnelToken: 'tok-new' }));
@@ -379,6 +431,21 @@ describe('a registration callback on a Hub whose registration cannot be read', (
 
     await expect(sendPost(anonymousOnLan())).rejects.toThrow(/Sign in as an owner or admin/);
     await expect(sendPair(anonymousOnLan())).resolves.toMatchObject({ success: false, message: SETUP_REFUSAL });
+
+    expect(portalPairCalls()).toEqual([]);
+    expect(snapshot()).toEqual(before);
+    expectNothingWritten();
+  });
+
+  // Not knowing whether the Hub is registered must not read as "it is not" for a setup code either.
+  it('refuses a setup code on the POST, on the GET and for a pairing code without changing anything', async () => {
+    mockedPost.mockReset();
+    portalIssuesPairing();
+    const before = snapshot();
+
+    await expect(sendPost(withSetupCode(anonymousOnLan()))).rejects.toThrow(ForbiddenException);
+    await expect(sendGet(withSetupCode(anonymousOnLan()))).rejects.toThrow(/needs the host-local key/);
+    await expect(sendPair(withSetupCode(anonymousOnLan()))).resolves.toMatchObject({ success: false });
 
     expect(portalPairCalls()).toEqual([]);
     expect(snapshot()).toEqual(before);
@@ -440,6 +507,34 @@ describe.each(['portal_rejected', 'tunnel_token_missing'] as const)('a pairing c
     expect(portalPairCalls()).toEqual([]);
     expect(snapshot()).toEqual(before);
     expectNothingWritten();
+  });
+
+  // A Hub that needs pairing again still holds its registration: its setup code, if one is on disk,
+  // proves nothing about who has the machine.
+  it('refuses a setup code that is still on disk before Portal is asked, without changing anything', async () => {
+    portalSays('member');
+    const before = snapshot();
+
+    for (const from of [anonymousOnLan, lanNamingLoopback, appContainerViaGateway, () => signedIn('member'), memoryWithDeviceKey]) {
+      await expect(sendPair(withSetupCode(from()))).resolves.toMatchObject({
+        success: false,
+        code: 'HUB_MANAGER_REQUIRED',
+        message: MANAGER_REFUSAL,
+      });
+    }
+
+    expect(portalPairCalls()).toEqual([]);
+    expect(snapshot()).toEqual(before);
+    expectNothingWritten();
+  });
+
+  it('still pairs for an owner the Portal confirms when the request also carries a setup code', async () => {
+    portalSays('owner');
+    portalIssuesPairing();
+
+    await expect(sendPair(withSetupCode(signedIn('member')))).resolves.toMatchObject({ success: true });
+    expect(portalPairCalls()).toHaveLength(1);
+    await expectPairedAgain();
   });
 
   it('refuses a member whose role the Portal cannot confirm and someone with no stored role', async () => {
@@ -584,7 +679,7 @@ describe('a pairing code on a Hub that is registered and serving', () => {
     for (const from of [signedIn('owner'), asHostLocalKey(), fromSetupService()]) {
       await expect(sendPair(from)).resolves.toMatchObject({ success: false, message: 'Device is already registered.' });
     }
-    for (const from of [anonymousOnLan(), appContainerViaGateway()]) {
+    for (const from of [anonymousOnLan(), appContainerViaGateway(), withSetupCode(anonymousOnLan())]) {
       await expect(sendPair(from)).resolves.toMatchObject({ success: false, code: 'HUB_MANAGER_REQUIRED', message: MANAGER_REFUSAL });
     }
 
@@ -598,6 +693,11 @@ describe('a pairing code on a Hub that is registered and serving', () => {
     portalSays('member');
 
     await expect(sendPair(anonymousOnLan())).resolves.toMatchObject({ success: false, code: 'HUB_MANAGER_REQUIRED', message: MANAGER_REFUSAL });
+    await expect(sendPair(withSetupCode(anonymousOnLan()))).resolves.toMatchObject({
+      success: false,
+      code: 'HUB_MANAGER_REQUIRED',
+      message: MANAGER_REFUSAL,
+    });
     await expect(sendPair(signedIn('owner'))).resolves.toMatchObject({ success: false, code: 'HUB_MANAGER_REQUIRED', message: MANAGER_REFUSAL });
     expect(portalPairCalls()).toEqual([]);
 
