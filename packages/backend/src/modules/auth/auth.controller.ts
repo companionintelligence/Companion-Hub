@@ -122,6 +122,8 @@ import {
   portalBindingMatches,
   PORTAL_SSO_STATE_TTL_SECONDS,
   type PortalDesktopExchange,
+  APP_CHALLENGE_PATTERN,
+  appVerifierMatches,
   type PortalSsoErrorCode,
   type PortalSsoState,
   resolveHubRequestOrigin,
@@ -1214,6 +1216,7 @@ export class AuthController {
     @Query('redirect_url') redirectUrl?: string,
     @Query('desktop') desktop?: string,
     @Query('desktop_channel') desktopChannel?: string,
+    @Query('app_challenge') appChallengeParam?: string,
   ) {
     // Only this sign-in's own request decides. The desktop app always sends desktop=1, and the
     // presence flag is applied at the callback, to loopback sign-ins only.
@@ -1254,6 +1257,10 @@ export class AuthController {
     // short-lived cookie, then required back at the callback (see portalCallback).
     const binding = crypto.randomBytes(32).toString('base64url');
     // A short callback window limits stale PKCE state.
+    // Only for a sign-in that ends in a one-time code handed to an app, and only a well-formed one:
+    // anything else is dropped, which leaves the code redeemable the old way rather than by no one.
+    const appChallenge =
+      isDesktop && typeof appChallengeParam === 'string' && APP_CHALLENGE_PATTERN.test(appChallengeParam) ? appChallengeParam : undefined;
     const portalState: PortalSsoState = {
       codeVerifier,
       redirectUrl: redirectUrl || null,
@@ -1261,6 +1268,7 @@ export class AuthController {
       desktop: isDesktop,
       desktopChannel: channel,
       binding,
+      ...(appChallenge ? { appChallenge } : {}),
     };
 
     // Built before the state and cookie are written: CI_CLOUD_URL is only checked as a string, so
@@ -1320,6 +1328,7 @@ export class AuthController {
       let redirectUrl: string | null;
       let hubOrigin: string;
       let binding: string | undefined;
+      let appChallenge: string | undefined;
 
       try {
         const parsed = JSON.parse(cached) as PortalSsoState;
@@ -1329,6 +1338,7 @@ export class AuthController {
         desktop = parsed.desktop;
         desktopChannel = parsed.desktopChannel ?? 'packaged';
         binding = parsed.binding;
+        appChallenge = parsed.appChallenge;
       } catch {
         return redirectError(null, 'callback_error');
       }
@@ -1421,6 +1431,7 @@ export class AuthController {
           sessionId,
           redirectPath: toDesktopRedirectPath(redirectUrl, hubOrigin),
           userId: operator.id,
+          ...(appChallenge ? { appChallenge } : {}),
         };
         this.cache.set(portalDesktopPendingKey(desktopToken), JSON.stringify(exchangePayload), PORTAL_DESKTOP_HANDOFF_TTL_SECONDS);
         const deepLink = buildPortalDesktopDeepLink(desktopToken, desktopChannel);
@@ -1568,7 +1579,12 @@ export class AuthController {
 
   @Get('/portal/desktop-exchange')
   @ApiResponse({ type: PortalDesktopExchangeDto })
-  async exchangePortalDesktopLogin(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Query('token') token?: string) {
+  async exchangePortalDesktopLogin(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+    @Query('token') token?: string,
+    @Query('verifier') verifier?: string,
+  ) {
     if (!token) {
       throw new BadRequestException('Missing desktop exchange token');
     }
@@ -1586,6 +1602,28 @@ export class AuthController {
     } catch {
       this.cache.del(cacheKey);
       throw new BadRequestException('Malformed desktop exchange payload');
+    }
+
+    // A code minted for an app that kept a secret goes only to that app. A wrong or missing secret
+    // burns the code: whoever is presenting it took it off the link and is not the app that asked,
+    // and the same refusal as an unknown code tells them nothing more.
+    if (parsed.appChallenge !== undefined && !appVerifierMatches(parsed.appChallenge, verifier)) {
+      this.cache.del(cacheKey);
+      this.logger.warn('Portal desktop exchange refused a code presented without its app secret');
+      throw new BadRequestException('Invalid or expired desktop exchange token');
+    }
+
+    // An app that sends a secret asked for a bound code. A code with no challenge was minted for
+    // some other sign-in (a page can start one without app_challenge) and must not sign this app
+    // in as whoever finished it. Burn it the same way.
+    if (parsed.appChallenge === undefined && verifier !== undefined) {
+      this.cache.del(cacheKey);
+      this.logger.warn('Portal desktop exchange refused an unbound code presented with an app secret');
+      throw new BadRequestException('Invalid or expired desktop exchange token');
+    }
+
+    if (parsed.appChallenge === undefined) {
+      this.logger.info('Portal desktop exchange redeemed a code with no app secret (an app from before app binding)');
     }
 
     let sessionId = parsed.sessionId;

@@ -1883,6 +1883,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "app_challenge",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1983,6 +1991,14 @@
         "parameters": [
           {
             "name": "token",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "verifier",
             "required": true,
             "in": "query",
             "schema": {
