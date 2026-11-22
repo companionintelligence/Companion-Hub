@@ -1095,9 +1095,13 @@ describe('DockerService', () => {
               'traefik.http.services.anything-llm-ci-marketplace.loadbalancer.server.port': '3001',
             },
           },
+          // On its own network, where the VPN sidecar joins it; a shared Hub network no longer counts.
           NetworkSettings: {
             Networks: {
               'ci-os-hub_network': {
+                IPAddress: '172.18.0.99',
+              },
+              'anything-llm_ci-marketplace_network': {
                 IPAddress: '172.18.0.10',
               },
             },

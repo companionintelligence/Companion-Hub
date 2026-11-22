@@ -1,5 +1,5 @@
-import { DEFAULT_LOCAL_DOMAIN, hubAppNetworkNames, managedAppLabels } from '@/common/constants';
-import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { DEFAULT_LOCAL_DOMAIN, managedAppLabels } from '@/common/constants';
+import { appNetworkName, extractAppUrn } from '@/common/helpers/app-helpers';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import {
   type Service,
@@ -17,6 +17,7 @@ import { labelsOfRoutersLosingTheirChain, TraefikLabelsBuilder, withAppStartingP
 import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
 import { requiresHubLoginOnPublicRoute } from '@/modules/apps/app-public-routing.helpers';
 import { securityGrantsFor } from '@/modules/apps/security-grants';
+import { isHubReservedServiceName } from '@/modules/network/network-constants';
 import { z } from 'zod';
 
 export const INTERNAL_INFRASTRUCTURE_PORTS = [6543, 5672] as const;
@@ -37,7 +38,8 @@ export interface NetworkIsolationOptions {
    */
   internal?: boolean;
   /**
-   * Prevent services from being added to the shared Hub main network.
+   * No longer has an effect: no service of any app joins a shared Hub network. Kept so options that
+   * still set it are accepted.
    */
   disableMainNetwork?: boolean;
   /**
@@ -375,6 +377,14 @@ export class DockerComposeBuilder {
       );
     }
 
+    // A service name is a DNS alias on the app's network, which the Hub, Traefik and the VPN sidecar
+    // join. One named like a Hub container could answer their lookups of it (`HUB_RESERVED_SERVICE_NAMES`).
+    if (isHubReservedServiceName(params.name)) {
+      throw new Error(
+        `App "${appName}" service "${params.name}" has a name reserved for the Hub's own containers. Rename the service in the app's compose file.`,
+      );
+    }
+
     // Enforce the app sandbox at the install sink: reject host-privileged features
     // (privileged, host network/PID namespaces, denied host-path binds like /var/run/docker.sock)
     // unless the app is explicitly granted them in TRUSTED_APP_SECURITY_ALLOWLIST. A warn-only
@@ -502,17 +512,18 @@ export class DockerComposeBuilder {
       .setDNS(params.dns)
       .setPlatform(params.platform)
       .setRuntime(params.runtime)
-      .setNetwork(`${appName}_${appStoreId}_network`);
+      // The app's own network and nothing else. Every app used to put its main container on the shared
+      // ci-hub_network too, where any other app could reach it without the Hub login and claim a name
+      // other containers looked up. `isMain` and `addToMainNetwork` no longer add one: the Hub,
+      // Traefik and the Private VPN sidecar join this network instead (`DockerService`).
+      .setNetwork(appNetworkName(appUrn));
 
     if (envFile) {
       service.setEnvFile([envFile]);
     }
 
-    // The Hub networks this service's container is on, which its labels may pin Traefik to.
-    const hubNetworks = (params.isMain || params.addToMainNetwork) && !isolation?.disableMainNetwork ? hubAppNetworkNames() : [];
-    hubNetworks.forEach((networkName, index) => {
-      service.setNetwork(networkName, index === 0 ? 1 : 0);
-    });
+    // The networks this service's container is on, which its labels may pin Traefik to.
+    const appNetworks = [appNetworkName(appUrn)];
 
     const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
 
@@ -558,7 +569,7 @@ export class DockerComposeBuilder {
     const appId = `${appName}-${appStoreId}`;
     const leftOutLabels = new Map(
       collectTraefikLabelIssues(params.extraLabels, appId, {
-        hubNetworks,
+        appNetworks,
         knownAppIds: this.knownAppIds,
         hostVariables: this.hostVariables,
       }).map((issue) => [issue.label, issue.params.owner ? `${issue.message}, it is ${issue.params.owner}'s` : issue.message]),
@@ -611,8 +622,6 @@ export class DockerComposeBuilder {
       this.applyOptions(options);
     }
 
-    const { appName, appStoreId } = extractAppUrn(appUrn);
-
     this.localDomain = localDomain || process.env.LOCAL_DOMAIN || DEFAULT_LOCAL_DOMAIN;
     this.cloudflareOriginHostname = cloudflareOriginHostname;
     this.cloudflarePublicHostname = cloudflarePublicHostname;
@@ -646,21 +655,11 @@ export class DockerComposeBuilder {
 
     const dockerCompose = this.addServices(myServices);
     const isolation = this.networkIsolationOptions;
-    if (!isolation?.disableMainNetwork) {
-      for (const networkName of hubAppNetworkNames()) {
-        dockerCompose.addNetwork({
-          key: networkName,
-          name: networkName,
-          external: true,
-        });
-      }
-    }
     // The Hub's boot-time network prune is filtered on the managed label, so only networks
-    // the Hub declared are ever pruned. The external Hub networks above are deliberately
-    // unlabelled here: they are shared infrastructure, not this app's to reclaim.
+    // the Hub declared are ever pruned.
     dockerCompose.addNetwork({
-      key: `${appName}_${appStoreId}_network`,
-      name: `${appName}_${appStoreId}_network`,
+      key: appNetworkName(appUrn),
+      name: appNetworkName(appUrn),
       external: false,
       subnet,
       internal: isolation?.internal,

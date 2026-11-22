@@ -145,4 +145,100 @@ describe('AppLifecycleService periodic exposure sync', () => {
     expect(ensureHubOnAppNetworks).toHaveBeenCalledTimes(1);
     started.mockRestore();
   });
+
+  // Docker does not retry a container that failed to start with the daemon; Traefik does whenever the
+  // Hub's data folder mounts late (an encrypted home or drive), and every app hostname stays dead.
+  it.each([
+    ['started', 1],
+    ['running', 0],
+    ['absent', 0],
+  ] as const)(
+    'starts Traefik after the app networks are rejoined (%s), and joins the edge network only when it started it',
+    async (result, edgeCalls) => {
+      const started = vi.spyOn(AppLifecycleService.prototype as any, 'startPeriodicExposureSync').mockImplementation(() => {});
+      const order: string[] = [];
+      const ensureHubOnAppNetworks = vi.fn(async () => {
+        order.push('networks');
+        return [];
+      });
+      const ensureTraefikRunning = vi.fn(async () => {
+        order.push('traefik');
+        return result;
+      });
+      const ensureTraefikOnEdgeNetwork = vi.fn().mockResolvedValue('present');
+      Object.assign(service, {
+        recoverStuckInstallsOnStartup: vi.fn().mockResolvedValue(undefined),
+        startTailscaleReadinessWatcher: vi.fn(),
+        syncInferenceAppsAfterHubUpgrade: vi.fn().mockResolvedValue(undefined),
+        dockerService: { ensureHubOnAppNetworks, ensureTraefikRunning, ensureTraefikOnEdgeNetwork },
+        moduleRef: { get: vi.fn().mockReturnValue(undefined) },
+      });
+
+      await service.onApplicationBootstrap();
+      await vi.waitFor(() => expect(ensureTraefikRunning).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(ensureTraefikOnEdgeNetwork).toHaveBeenCalledTimes(edgeCalls));
+
+      expect(order).toEqual(['networks', 'traefik']);
+      started.mockRestore();
+    },
+  );
+
+  // Their containers still name the shared network in their Traefik label, so Traefik would route to
+  // whichever network they are on first, a link network among them.
+  it('recreates every app bootstrap took off a shared Hub network, and goes on past one that fails', async () => {
+    const started = vi.spyOn(AppLifecycleService.prototype as any, 'startPeriodicExposureSync').mockImplementation(() => {});
+    const restartApp = vi.fn().mockRejectedValueOnce(new Error('busy')).mockResolvedValue({ requestId: 'r' });
+    Object.assign(service, {
+      recoverStuckInstallsOnStartup: vi.fn().mockResolvedValue(undefined),
+      startTailscaleReadinessWatcher: vi.fn(),
+      syncInferenceAppsAfterHubUpgrade: vi.fn().mockResolvedValue(undefined),
+      dockerService: { ensureHubOnAppNetworks: vi.fn().mockResolvedValue(['ci-memory:ci-marketplace', 'ci-openclaw:ci-marketplace']) },
+      moduleRef: { get: vi.fn().mockReturnValue(undefined) },
+      appRepository: { getAppByUrn: vi.fn().mockResolvedValue({ status: 'running' }) },
+      restartApp,
+    });
+
+    await service.onApplicationBootstrap();
+    await vi.waitFor(() => expect(restartApp).toHaveBeenCalledTimes(2));
+
+    expect(restartApp.mock.calls.map(([params]) => params)).toEqual([
+      { appUrn: 'ci-memory:ci-marketplace', skipPull: true, actor: { kind: 'system', reason: 'app-network-isolation' } },
+      { appUrn: 'ci-openclaw:ci-marketplace', skipPull: true, actor: { kind: 'system', reason: 'app-network-isolation' } },
+    ]);
+    started.mockRestore();
+  });
+
+  // The containers moved off the shared network are listed stopped or not, and a restart is `down` then
+  // `up`: recreating every one started each app the operator had stopped on the first boot after an upgrade.
+  it('leaves an app the operator stopped stopped, and recreates only apps whose row says running', async () => {
+    const started = vi.spyOn(AppLifecycleService.prototype as any, 'startPeriodicExposureSync').mockImplementation(() => {});
+    const restartApp = vi.fn().mockResolvedValue({ requestId: 'r' });
+    const statuses: Record<string, string | undefined> = {
+      'ci-memory:ci-marketplace': 'stopped',
+      'ci-openclaw:ci-marketplace': 'running',
+      'gone:ci-marketplace': undefined,
+    };
+    Object.assign(service, {
+      recoverStuckInstallsOnStartup: vi.fn().mockResolvedValue(undefined),
+      startTailscaleReadinessWatcher: vi.fn(),
+      syncInferenceAppsAfterHubUpgrade: vi.fn().mockResolvedValue(undefined),
+      dockerService: { ensureHubOnAppNetworks: vi.fn().mockResolvedValue(Object.keys(statuses)) },
+      moduleRef: { get: vi.fn().mockReturnValue(undefined) },
+      appRepository: {
+        getAppByUrn: vi.fn(async (appUrn: string) => (statuses[appUrn] ? { status: statuses[appUrn] } : undefined)),
+      },
+      restartApp,
+    });
+
+    await service.onApplicationBootstrap();
+    await vi.waitFor(() => expect((service as any).appRepository.getAppByUrn).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(restartApp).toHaveBeenCalledTimes(1));
+
+    expect(restartApp).toHaveBeenCalledWith({
+      appUrn: 'ci-openclaw:ci-marketplace',
+      skipPull: true,
+      actor: { kind: 'system', reason: 'app-network-isolation' },
+    });
+    started.mockRestore();
+  });
 });

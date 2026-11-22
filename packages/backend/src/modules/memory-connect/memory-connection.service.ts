@@ -7,6 +7,7 @@ import {
   MemoryConnectionRepository,
   type MemoryConnectionState,
 } from './memory-connection.repository';
+import { consumerMemoryUrlFrom } from './memory-consumer-url';
 
 export function normalizeHubUserId(hubUserId?: string | number | null): number {
   const parsed = Number(hubUserId);
@@ -115,7 +116,8 @@ export class MemoryConnectionService {
     }
 
     try {
-      return { url: row.serverUrl, token: this.encryption.decrypt(row.encryptedKey, row.appUrn) };
+      // The address the consumer reaches ci-memory at now, whatever older address the row holds.
+      return { url: consumerMemoryUrlFrom(row.serverUrl), token: this.encryption.decrypt(row.encryptedKey, row.appUrn) };
     } catch (err) {
       this.logger.error(`[MemoryConnect] failed to decrypt stored key for ${row.appUrn}`, err);
 

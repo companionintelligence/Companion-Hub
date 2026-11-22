@@ -784,7 +784,7 @@ describe('AppRuntimeMonitorService', () => {
           ],
         },
       });
-      dockerReadFacade.getServiceAddressOnHubNetwork.mockResolvedValue('10.200.0.7');
+      dockerReadFacade.getServiceAddressOnAppNetwork.mockResolvedValue('10.200.0.7');
       vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-21T13:00:00Z') });
     });
 
@@ -803,7 +803,7 @@ describe('AppRuntimeMonitorService', () => {
 
       const result = await sampleEvery(60_000, 3);
 
-      expect(dockerReadFacade.getServiceAddressOnHubNetwork).toHaveBeenCalledWith('cpu-hog:_user', 'web');
+      expect(dockerReadFacade.getServiceAddressOnAppNetwork).toHaveBeenCalledWith('cpu-hog:_user', 'web');
       expect(probeAppPort).toHaveBeenCalledWith('10.200.0.7', 80, 5_000);
       // Cached for a minute like the route probe: two dials over the two minutes.
       expect(probeAppPort).toHaveBeenCalledTimes(2);
@@ -932,7 +932,7 @@ describe('AppRuntimeMonitorService', () => {
         appsService.checkAppAvailability.mockResolvedValue({ available: true, stage: 'ready' } as any);
 
         await service.getAppRuntimeHealth('cpu-hog:_user' as any);
-        dockerReadFacade.getServiceAddressOnHubNetwork.mockResolvedValue('10.200.0.9');
+        dockerReadFacade.getServiceAddressOnAppNetwork.mockResolvedValue('10.200.0.9');
         await vi.advanceTimersByTimeAsync(61_000);
         const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
 
@@ -954,7 +954,7 @@ describe('AppRuntimeMonitorService', () => {
     });
 
     it('falls back to the route verdict when the main container has no address on the app network', async () => {
-      dockerReadFacade.getServiceAddressOnHubNetwork.mockResolvedValue(null);
+      dockerReadFacade.getServiceAddressOnAppNetwork.mockResolvedValue(null);
       appsService.checkAppAvailability.mockResolvedValue({ available: true, stage: 'ready' } as any);
 
       const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
@@ -1032,7 +1032,7 @@ describe('AppRuntimeMonitorService', () => {
         path: '/apps/_user/cpu-hog/docker-compose.json',
         content: { schemaVersion: 2, services: [{ name: 'web', image: 'alpine:3.20', isMain: true, internalPort: 80 }] },
       });
-      dockerReadFacade.getServiceAddressOnHubNetwork.mockResolvedValue('10.200.0.7');
+      dockerReadFacade.getServiceAddressOnAppNetwork.mockResolvedValue('10.200.0.7');
       vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-21T13:00:00Z') });
     });
 
@@ -1255,6 +1255,8 @@ describe('AppRuntimeMonitorService', () => {
 
     beforeEach(() => {
       installedApp();
+      // The gateway's address on the app's own network: the Hub dials that, never the service's name.
+      dockerReadFacade.getServiceAddressOnAppNetwork.mockImplementation(async (_urn, name) => (name === 'ci-hermes-gateway' ? '10.128.14.3' : null));
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ hub_integration: { readiness: descriptor } } as any);
       appFilesManager.getDockerComposeJson.mockResolvedValue({ path: '/apps/ci-hermes/docker-compose.json', content: hermesCompose });
       appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app.env', content: 'APP_SEED=s3cr3t-seed\nOTHER=x\n' });
@@ -1280,12 +1282,13 @@ describe('AppRuntimeMonitorService', () => {
       vi.restoreAllMocks();
     });
 
-    it('dials http://<service>:<port><path> with the bearer from the app env, and never logs it', async () => {
+    it("dials the service's address on the app's network, http://<address>:<port><path>, with the bearer from the app env, and never logs it", async () => {
       const result = await service.getAppRuntimeHealth('ci-hermes:ci-marketplace' as any);
 
       expect(fetch).toHaveBeenCalledTimes(1);
       const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
-      expect(url).toBe('http://ci-hermes-gateway:8642/health/detailed');
+      expect(url).toBe('http://10.128.14.3:8642/health/detailed');
+      expect(dockerReadFacade.getServiceAddressOnAppNetwork).toHaveBeenCalledWith('ci-hermes:ci-marketplace', 'ci-hermes-gateway');
       expect((init.headers as Record<string, string>).Authorization).toBe('Bearer s3cr3t-seed');
       expect(init.signal).toBeInstanceOf(AbortSignal);
 
@@ -1323,6 +1326,17 @@ describe('AppRuntimeMonitorService', () => {
       expect(fetch).not.toHaveBeenCalled();
     });
 
+    // Another app could answer for the name on one of the Hub's other networks, and this request carries
+    // the app's bearer.
+    it('never falls back to the service name when the service has no address on the app network', async () => {
+      dockerReadFacade.getServiceAddressOnAppNetwork.mockResolvedValue(null);
+
+      const result = await service.getAppRuntimeHealth('ci-hermes:ci-marketplace' as any);
+
+      expect(fetch).not.toHaveBeenCalled();
+      expect(result.readiness?.status).toBe('unknown');
+    });
+
     it('probes without a bearer when the manifest names none', async () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue({
         hub_integration: { readiness: { service: 'app', port: 8080, path: '/health' } },
@@ -1332,11 +1346,12 @@ describe('AppRuntimeMonitorService', () => {
         content: { schemaVersion: 2, services: [{ name: 'app', image: 'app:latest', isMain: true }] },
       });
       vi.mocked(fetch).mockResolvedValue(Response.json({ status: 'ok' }));
+      dockerReadFacade.getServiceAddressOnAppNetwork.mockResolvedValue('10.128.14.2');
 
       const result = await service.getAppRuntimeHealth('ci-hermes:ci-marketplace' as any);
 
       const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
-      expect(url).toBe('http://app:8080/health');
+      expect(url).toBe('http://10.128.14.2:8080/health');
       expect(init.headers).not.toHaveProperty('Authorization');
       expect(appFilesManager.getAppEnv).not.toHaveBeenCalled();
       expect(result.readiness).toMatchObject({ status: 'ok', checks: {} });
@@ -1368,7 +1383,7 @@ describe('AppRuntimeMonitorService', () => {
       const result = await service.getAppRuntimeHealth('ci-hermes:ci-marketplace' as any);
 
       expect(appFilesManager.getDockerComposeJson).toHaveBeenCalledWith('ci-hermes:ci-marketplace');
-      expect(fetch).toHaveBeenCalledWith('http://ci-hermes-gateway:8642/health/detailed', expect.anything());
+      expect(fetch).toHaveBeenCalledWith('http://10.128.14.3:8642/health/detailed', expect.anything());
       expect(result.readiness).toMatchObject({ status: 'degraded' });
       expect(logger.warn).not.toHaveBeenCalled();
     });

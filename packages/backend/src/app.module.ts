@@ -48,6 +48,7 @@ import { isMcpEnabled } from './modules/mcp/mcp-enabled';
 import { ApiKeyModule } from './modules/api-keys/api-key.module';
 import { MemoryConnectModule } from './modules/memory-connect/memory-connect.module';
 import { AgentNotifyModule } from './modules/agent-notify/agent-notify.module';
+import { AppLinksModule } from './modules/app-links/app-links.module';
 import { InferenceModule } from './modules/inference/inference.module';
 import { HubPoolModule } from './modules/hub-pool/hub-pool.module';
 import { TrainingModule } from './modules/training/training.module';
@@ -99,6 +100,7 @@ const imports: (DynamicModule | typeof I18nModule)[] = [
   // is mounted. Keys are only ever created deliberately; nothing is seeded at boot.
   ApiKeyModule,
   MemoryConnectModule,
+  AppLinksModule,
 ];
 
 // Gate on the built frontend bundle's presence, not NODE_ENV: the bundled

@@ -462,7 +462,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
         const agentNotifyService = this.moduleRef.get(AgentNotifyService, { strict: false });
         const target = await agentNotifyService?.resolveWebhookTarget(appUrn);
         if (target) {
-          agentNotifyService.registerWebhook(appUrn, target.url, target.token);
+          agentNotifyService.registerWebhook(appUrn, target.url, target.token, target.service);
         }
       } catch (hookErr) {
         logger.warn(`Failed to register agent webhook for ${appUrn}: ${hookErr}`);

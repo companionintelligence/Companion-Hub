@@ -7217,6 +7217,46 @@
         ]
       }
     },
+    "/api/app-links": {
+      "get": {
+        "operationId": "list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLinks"
+        ]
+      }
+    },
+    "/api/app-links/approval": {
+      "post": {
+        "operationId": "approve",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLinks"
+        ]
+      },
+      "delete": {
+        "operationId": "revoke",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLinks"
+        ]
+      }
+    },
     "/api/debug/seed": {
       "post": {
         "operationId": "seedDatabase",
@@ -10676,6 +10716,69 @@
                             }
                           },
                           "additionalProperties": false
+                        },
+                        "links": {
+                          "type": "object",
+                          "properties": {
+                            "connects_to": {
+                              "default": [],
+                              "maxItems": 16,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "app": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  },
+                                  "store": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  },
+                                  "service": {
+                                    "type": "string",
+                                    "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                                  },
+                                  "alias": {
+                                    "type": "string",
+                                    "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                                  }
+                                },
+                                "required": [
+                                  "app",
+                                  "service"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "accepts_from": {
+                              "default": [],
+                              "maxItems": 32,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "app": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  },
+                                  "store": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  }
+                                },
+                                "required": [
+                                  "app"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "connects_to",
+                            "accepts_from"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
@@ -11953,6 +12056,69 @@
                               "type": "boolean"
                             }
                           },
+                          "additionalProperties": false
+                        },
+                        "links": {
+                          "type": "object",
+                          "properties": {
+                            "connects_to": {
+                              "default": [],
+                              "maxItems": 16,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "app": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  },
+                                  "store": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  },
+                                  "service": {
+                                    "type": "string",
+                                    "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                                  },
+                                  "alias": {
+                                    "type": "string",
+                                    "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                                  }
+                                },
+                                "required": [
+                                  "app",
+                                  "service"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "accepts_from": {
+                              "default": [],
+                              "maxItems": 32,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "app": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  },
+                                  "store": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  }
+                                },
+                                "required": [
+                                  "app"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "connects_to",
+                            "accepts_from"
+                          ],
                           "additionalProperties": false
                         }
                       },
@@ -13536,6 +13702,69 @@
                         "type": "boolean"
                       }
                     },
+                    "additionalProperties": false
+                  },
+                  "links": {
+                    "type": "object",
+                    "properties": {
+                      "connects_to": {
+                        "default": [],
+                        "maxItems": 16,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "app": {
+                              "type": "string",
+                              "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                            },
+                            "store": {
+                              "type": "string",
+                              "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                            },
+                            "service": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                            },
+                            "alias": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                            }
+                          },
+                          "required": [
+                            "app",
+                            "service"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "accepts_from": {
+                        "default": [],
+                        "maxItems": 32,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "app": {
+                              "type": "string",
+                              "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                            },
+                            "store": {
+                              "type": "string",
+                              "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                            }
+                          },
+                          "required": [
+                            "app"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "connects_to",
+                      "accepts_from"
+                    ],
                     "additionalProperties": false
                   }
                 },

@@ -2,8 +2,9 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { LEGACY_NETWORK_NAME, hubContainerName, hubNetworkName, isHubApplianceContainerName } from '@/common/constants';
-import { createAppUrn } from '@/common/helpers/app-helpers';
+import { appUrnFromLabels, hubContainerName, isHubApplianceContainerName } from '@/common/constants';
+import { createAppUrn, ipOnAppNetwork } from '@/common/helpers/app-helpers';
+import type { AppUrn } from '@ci-hub/common/types';
 import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
 import { storedExposureForm } from '@ci-hub/common/types';
 import { Injectable, Inject } from '@nestjs/common';
@@ -151,17 +152,13 @@ function isExposedThroughTraefik(app: Parameters<typeof storedExposureForm>[0]):
 
 @Injectable()
 export class TraefikConfigService {
-  private readonly mainNetworkName: string;
-
   constructor(
     private readonly logger: LoggerService,
     private readonly config: ConfigurationService,
     private readonly filesystem: FilesystemService,
     @Inject(DOCKERODE) private readonly docker: Dockerode,
     private readonly appsRepository: AppsRepository,
-  ) {
-    this.mainNetworkName = hubNetworkName();
-  }
+  ) {}
 
   /**
    * Write Traefik routes for port-expose workloads (host port proxies).
@@ -276,16 +273,15 @@ export class TraefikConfigService {
           continue;
         }
 
-        // Get container IP from the main network
-        const networks = inspect.NetworkSettings?.Networks;
-        const networkSettings = networks?.[this.mainNetworkName] ?? networks?.[LEGACY_NETWORK_NAME];
-        if (!networkSettings?.IPAddress) {
-          this.logger.debug(`Skipping container ${inspect.Name}: not on a Hub network or IP not assigned yet`);
+        // The container's address on its app's own network, the one Traefik joins to reach it.
+        const labels = inspect.Config?.Labels || {};
+        const appUrn = appUrnFromLabels(labels) as AppUrn | undefined;
+        const containerIP = appUrn ? ipOnAppNetwork(appUrn, inspect.NetworkSettings?.Networks) : undefined;
+        if (!containerIP) {
+          this.logger.debug(`Skipping container ${inspect.Name}: not on its app's network or IP not assigned yet`);
           continue;
         }
 
-        const containerIP = networkSettings.IPAddress;
-        const labels = inspect.Config?.Labels || {};
         const project = labels[COMPOSE_PROJECT_LABEL];
         let app = project ? apps.get(project) : undefined;
         if (project && !app) {

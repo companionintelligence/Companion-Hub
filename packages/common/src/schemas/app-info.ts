@@ -143,6 +143,28 @@ export const inferenceProviderSchema = z.object({
   openai_compatible: z.string().min(1),
 });
 
+/** An app id or store slug as an app link names it: a URN half (see `castAppUrn` in the backend). */
+const APP_LINK_SEGMENT = /^[^.\-\s/\\\0:][^\s/\\\0:]*$/;
+/** A compose service name or a name to reach one by: no dots, so never a hostname elsewhere. */
+const APP_LINK_NAME = /^[a-z0-9][a-z0-9_-]*$/;
+/**
+ * Names an app link may not give the other app: the Hub's own services and the names it gives apps.
+ * A link only reaches the declaring app's own containers, so a clash would only confuse that app, but
+ * it would confuse it about the Hub.
+ */
+export const RESERVED_APP_LINK_ALIASES: ReadonlySet<string> = new Set([
+  'ci-hub',
+  'ci-os-hub',
+  'ci-memory',
+  'ci-hub-db',
+  'ci-hub-queue',
+  'ci-os-hub-queue',
+  'traefik',
+  'cloudflared',
+  'hub-tailscale',
+  'localhost',
+]);
+
 export const hubIntegrationSchema = z
   .object({
     mcp_client: z.boolean().default(false),
@@ -325,7 +347,7 @@ export const hubIntegrationSchema = z
     readiness: z
       .object({
         /**
-         * Compose service name the endpoint listens on; must be on the Hub's main network. Not
+         * Compose service name the endpoint listens on, in the app's own compose. Not
          * a hostname: lowercase, no dots, no `/` or `:`, no leading `-`. Every service in the
          * marketplace today already fits, so the rule costs nothing and refuses the shapes an
          * off-app target would need.
@@ -367,6 +389,60 @@ export const hubIntegrationSchema = z
       .object({
         /** Default the "Require Auth" toggle ON at install/expose time. */
         default: z.boolean().optional(),
+      })
+      .optional(),
+    /**
+     * Other apps this app talks to directly, container to container, and the apps it lets talk to it.
+     *
+     * Each app is on a Docker network of its own, and no other app is on it (see "App networks" in
+     * the Hub's docs/system/backend.md). An app that needs another app's service — Radarr calling
+     * Prowlarr — declares it in `connects_to`, and the other app declares the reverse in
+     * `accepts_from`. The Hub then puts the two on a network of their own: this app's containers,
+     * and the one named service of the other, under the name `alias`. Nothing else of either app is
+     * on it, and neither app can add a name to it.
+     *
+     * Both sides must name each other, by app and store, and a link between apps of the same store
+     * is made by itself. Any other link (two stores, or only one side declaring it) waits for the
+     * operator to allow it on the Hub. So no manifest can reach an app that did not ask for it, and a
+     * store cannot reach another store's apps without the operator.
+     *
+     * Example (radarr):
+     * ```json
+     * "hub_integration": {
+     *   "links": { "connects_to": [{ "app": "prowlarr", "service": "prowlarr" }], "accepts_from": [{ "app": "prowlarr" }] }
+     * }
+     * ```
+     */
+    links: z
+      .object({
+        connects_to: z
+          .array(
+            z.object({
+              /** The other app's id within its store (the part of its URN before `:`). */
+              app: z.string().regex(APP_LINK_SEGMENT, 'app must be an app id'),
+              /** The other app's store slug. Omitted: this app's own store. */
+              store: z.string().regex(APP_LINK_SEGMENT, 'store must be a store slug').optional(),
+              /** The compose service of the other app this app calls. */
+              service: z.string().regex(APP_LINK_NAME, 'service must be a compose service name, not a hostname'),
+              /** The name this app reaches it by. Omitted: the other app's id. */
+              alias: z
+                .string()
+                .regex(APP_LINK_NAME, 'alias must be a plain name, not a hostname')
+                .refine((alias) => !RESERVED_APP_LINK_ALIASES.has(alias), "alias names one of the Hub's own services")
+                .optional(),
+            }),
+          )
+          .max(16)
+          .default([]),
+        accepts_from: z
+          .array(
+            z.object({
+              app: z.string().regex(APP_LINK_SEGMENT, 'app must be an app id'),
+              store: z.string().regex(APP_LINK_SEGMENT, 'store must be a store slug').optional(),
+            }),
+          )
+          .max(32)
+          .default([]),
       })
       .optional(),
   })

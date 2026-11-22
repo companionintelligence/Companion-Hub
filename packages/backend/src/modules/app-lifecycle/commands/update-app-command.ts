@@ -302,7 +302,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
         const agentNotifyService = this.moduleRef.get(AgentNotifyService, { strict: false });
         const target = await agentNotifyService?.resolveWebhookTarget(appUrn);
         if (target) {
-          agentNotifyService.registerWebhook(appUrn, target.url, target.token);
+          agentNotifyService.registerWebhook(appUrn, target.url, target.token, target.service);
         }
       } catch (hookErr) {
         logger.warn(`Failed to refresh the agent webhook for ${appUrn}: ${hookErr}`);

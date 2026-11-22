@@ -9,6 +9,7 @@ import { linkedMountSource, type MountInfoEntry, mountedDataRoot, mountedFromFol
 import {
   apiKey,
   app,
+  appLinkApproval,
   appStore,
   deviceRegistration,
   entitlementCache,
@@ -76,6 +77,8 @@ const FACTORY_RESET_TABLES = [
   userDirectory,
   // Memory keys of apps the reset removed: an app installed again under the same name was handed the old one.
   memoryConnection,
+  // The operator's leave for apps the reset removed to reach each other: a new install of the same ids asks again.
+  appLinkApproval,
   // What the old organization bought and may use.
   entitlementCache,
   whoisCache,
