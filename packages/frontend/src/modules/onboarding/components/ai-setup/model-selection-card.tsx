@@ -118,14 +118,13 @@ export const RecommendedModels = ({
     .filter((m) => recommendedIds.has(m.id))
     .sort((a, b) => Number(b.id === preferredModelId) - Number(a.id === preferredModelId));
 
+  // The Hub downloads what is ticked on every engine but vLLM, oMLX's models through oMLX.
   const installHint =
-    chatBackend === 'omlx'
-      ? t('ONBOARDING_BACKEND_OMLX_HINT')
-      : chatBackend === 'vllm'
-        ? t('ONBOARDING_MODELS_VLLM_INSTALL_HINT')
-        : chatBackend === 'lemonade'
-          ? t('ONBOARDING_MODELS_LEMONADE_INSTALL_HINT')
-          : t('ONBOARDING_MODELS_INSTALL_DURING_DOWNLOAD');
+    chatBackend === 'vllm'
+      ? t('ONBOARDING_MODELS_VLLM_INSTALL_HINT')
+      : chatBackend === 'lemonade'
+        ? t('ONBOARDING_MODELS_LEMONADE_INSTALL_HINT')
+        : t('ONBOARDING_MODELS_INSTALL_DURING_DOWNLOAD');
 
   return (
     <StepSection number={4} badge="recommended" title={t('ONBOARDING_MODELS_TITLE')}>

@@ -27,6 +27,7 @@ export const INFERENCE_ENV_SETTING_KEYS = [
   'inferenceVllmApiKey',
   'inferenceVllmUrl',
   'inferenceOmlxUrl',
+  'inferenceOmlxApiKey',
   'inferenceMaxNumCtx',
   'inferenceCloudProviders',
   'hubPoolEnabled',

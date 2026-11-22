@@ -17,6 +17,7 @@ import {
   rescanInferenceHardware,
   saveCloudProviderConfig,
   saveInferencePreferences,
+  saveOmlxApiKey,
   unloadInferenceModel,
   unpinInferenceModel,
 } from '@/lib/inference/inference-api';
@@ -51,7 +52,7 @@ import { OllamaSetupCard } from '@/modules/onboarding/components/ai-setup/ollama
 import type { LemonadeStatus, OmlxStatus, OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import {
   EMBEDDING_INFERENCE_BACKEND,
-  hubLoadableSelection,
+  hubDownloadSelection,
   isHubLoadableBackend,
   hiddenInferenceBackends,
   recommendedInferenceBackend,
@@ -95,9 +96,8 @@ const unpinnablePins = (availableModelById: ModelIndex, pinnedIds: Iterable<stri
 const ENGINE_UNREACHABLE =
   /ECONNREFUSED|ECONNRESET|ECONNABORTED|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT|ConnectTimeoutError|network unreachable|socket hang up|fetch failed|\baborted\b|timeout of \d+ms exceeded/;
 
-/** The engine whose embedders Save ranks for `backend`: itself on Ollama and oMLX, else the shared embedding engine. */
-const embeddingBackendFor = (backend: InferenceBackendType): InferenceBackendType =>
-  backend === 'omlx' || backend === 'ollama' ? backend : EMBEDDING_INFERENCE_BACKEND;
+/** The engine whose embedders Save ranks for `backend`: itself on Ollama, else the shared embedding engine. */
+const embeddingBackendFor = (backend: InferenceBackendType): InferenceBackendType => (backend === 'ollama' ? backend : EMBEDDING_INFERENCE_BACKEND);
 
 /**
  * The catalog model an id names: its catalog id, its engine id, Lemonade's `user.` spelling of that, or
@@ -186,6 +186,7 @@ export const AiSettingsContainer = () => {
   const [vllmApiKey, setVllmApiKey] = useState('');
   const [vllmUrl, setVllmUrl] = useState('');
   const [omlxUrl, setOmlxUrl] = useState('');
+  const [omlxApiKey, setOmlxApiKey] = useState('');
   const [decodeEndpoint, setDecodeEndpoint] = useState('');
   const [encodeEndpoint, setEncodeEndpoint] = useState('');
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
@@ -230,6 +231,40 @@ export const AiSettingsContainer = () => {
     savedVllm.keyStored && vllmUrl.trim() !== savedVllm.url && !vllmApiKey.trim() ? t('AI_SETTINGS_VLLM_KEY_NEW_URL') : undefined;
   const omlxUrlRef = useRef('');
   omlxUrlRef.current = omlxUrl;
+  const omlxApiKeyRef = useRef('');
+  omlxApiKeyRef.current = omlxApiKey;
+  // The oMLX key follows the vLLM key's rules: the mask stands for the stored key, any edit replaces
+  // it whole, and the stored key belongs to the URL it was saved with.
+  const handleOmlxApiKeyChange = useCallback((value: string) => {
+    setOmlxApiKey((current) => (isMaskedKey(current) && value !== current ? value.replace(/•/g, '') : value));
+  }, []);
+  const [savedOmlx, setSavedOmlx] = useState({ url: '', keyStored: false });
+  const handleOmlxUrlChange = useCallback(
+    (value: string) => {
+      setOmlxUrl(value);
+      if (!savedOmlx.keyStored) return;
+      const moved = value.trim() !== savedOmlx.url;
+      setOmlxApiKey((current) => {
+        if (moved && isMaskedKey(current)) return '';
+        if (!moved && !current) return MASKED_KEY;
+        return current;
+      });
+    },
+    [savedOmlx],
+  );
+  // The key the desktop app just gave oMLX, stored at once: the field then shows the mask, as for a key
+  // the Hub already had. The Hub stores it for the saved URL, so while the URL field names another one
+  // the field keeps the key itself: a mask would read as the saved URL's key, which Save deletes.
+  const handleOmlxAdminKeySet = useCallback(
+    async (apiKey: string) => {
+      await saveOmlxApiKey(apiKey, selectedBackend);
+      setSavedOmlx((saved) => ({ ...saved, keyStored: true }));
+      setOmlxApiKey(omlxUrlRef.current.trim() === savedOmlx.url ? MASKED_KEY : apiKey);
+    },
+    [selectedBackend, savedOmlx.url],
+  );
+  const omlxApiKeyNotice =
+    savedOmlx.keyStored && omlxUrl.trim() !== savedOmlx.url && !omlxApiKey.trim() ? t('AI_SETTINGS_OMLX_KEY_NEW_URL') : undefined;
   const decodeEndpointRef = useRef('');
   decodeEndpointRef.current = decodeEndpoint;
   const encodeEndpointRef = useRef('');
@@ -328,6 +363,10 @@ export const AiSettingsContainer = () => {
       if (prefData?.preferredOmlxUrl) {
         setOmlxUrl(prefData.preferredOmlxUrl);
       }
+      if (prefData) {
+        setSavedOmlx({ url: prefData.preferredOmlxUrl?.trim() ?? '', keyStored: Boolean(prefData.preferredOmlxApiKey) });
+        setOmlxApiKey((current) => (prefData.preferredOmlxApiKey ? prefData.preferredOmlxApiKey : isMaskedKey(current) ? '' : current));
+      }
       if (prefData?.preferredDecodeEndpoint) {
         setDecodeEndpoint(prefData.preferredDecodeEndpoint);
       }
@@ -416,6 +455,7 @@ export const AiSettingsContainer = () => {
         selectedBackend === 'vllm' ? vllmUrlRef.current : undefined,
         selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
         selectedBackend === 'omlx' ? omlxUrlRef.current : undefined,
+        selectedBackend === 'omlx' ? omlxApiKeyRef.current : undefined,
       );
       setProfile(data);
       seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
@@ -450,7 +490,7 @@ export const AiSettingsContainer = () => {
   const checkOmlxStatus = useCallback(async () => {
     setCheckingOmlx(true);
     try {
-      const data = (await fetchOmlxInstallStatus(omlxUrlRef.current)) as OmlxStatus;
+      const data = (await fetchOmlxInstallStatus(omlxUrlRef.current, omlxApiKeyRef.current)) as OmlxStatus;
       setOmlxStatus(data);
       return data;
     } catch {
@@ -464,7 +504,7 @@ export const AiSettingsContainer = () => {
   const handleRecheckOmlx = useCallback(async () => {
     const status = await checkOmlxStatus();
     if (status?.ready) {
-      const data = await fetchInferenceOnboardingProfile('omlx', undefined, undefined, omlxUrlRef.current);
+      const data = await fetchInferenceOnboardingProfile('omlx', undefined, undefined, omlxUrlRef.current, omlxApiKeyRef.current);
       setProfile(data);
       seedSelectedModelIds(data, 'omlx', trackedModelsRef.current);
     }
@@ -591,6 +631,7 @@ export const AiSettingsContainer = () => {
       selectedBackend === 'vllm' ? vllmUrlRef.current : undefined,
       selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
       selectedBackend === 'omlx' ? omlxUrlRef.current : undefined,
+      selectedBackend === 'omlx' ? omlxApiKeyRef.current : undefined,
     )
       .then((data) => {
         // A reply for an engine the page has since left would seed its models and choices over the
@@ -713,17 +754,19 @@ export const AiSettingsContainer = () => {
         vllmApiKey: selectedBackend === 'vllm' ? (isMaskedKey(vllmApiKey) ? undefined : vllmApiKey.trim() || null) : null,
         vllmUrl: selectedBackend === 'vllm' ? vllmUrl.trim() || null : null,
         omlxUrl: selectedBackend === 'omlx' ? omlxUrl.trim() || null : null,
+        // Left out when another engine is saved, so the stored key stays for the default oMLX URL. A
+        // custom oMLX URL is cleared above, and the Hub drops the key with it: a key belongs to its server.
+        omlxApiKey: selectedBackend === 'omlx' ? (isMaskedKey(omlxApiKey) ? undefined : omlxApiKey.trim() || null) : undefined,
         decodeEndpoint: decodeEndpoint.trim() || null,
         encodeEndpoint: encodeEndpoint.trim() || null,
       });
 
-      // Include every Hub-loadable backend so a saved preference cannot point to a selected
-      // model that was never loaded.
-      const pullableSelectedModelIds = hubLoadableSelection(
-        compatibleSelectedModelIds,
-        (modelId) => availableModelById.get(modelId)?.backend,
-        preferredModel,
-      );
+      // Include every backend the Hub downloads for, so a saved preference cannot point to a selected
+      // model that was never downloaded. Only Ollama and Lemonade models are pinned after: oMLX loads
+      // a model on its first request.
+      const backendOf = (modelId: string) => availableModelById.get(modelId)?.backend;
+      const pullableSelectedModelIds = hubDownloadSelection(compatibleSelectedModelIds, backendOf);
+      const installedIds = new Set(profile.installedCatalogIds ?? []);
       const compatiblePinnedModelIds = unpinnablePins(availableModelById, pinnedModelIds);
       const modelOperationErrors: string[] = [];
       const pullFailureMessage = (modelId: string, reason: string) =>
@@ -734,7 +777,10 @@ export const AiSettingsContainer = () => {
               reason,
             })
           : `Failed to pull ${modelId}: ${reason}`;
-      const requestedPulls = pullableSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
+      // An oMLX model oMLX already lists needs nothing: there is no pin to follow the download.
+      const requestedPulls = pullableSelectedModelIds.filter(
+        (modelId) => !compatiblePinnedModelIds.includes(modelId) && (isHubLoadableBackend(backendOf(modelId)) || !installedIds.has(modelId)),
+      );
 
       if (requestedPulls.length > 0) {
         // Report a refusal now; waiting on it would only run out the ten-minute timeout.
@@ -755,6 +801,7 @@ export const AiSettingsContainer = () => {
             modelOperationErrors.push(`Failed to pull ${modelId}: timed out`);
             continue;
           }
+          if (!isHubLoadableBackend(backendOf(modelId))) continue;
 
           try {
             await pinInferenceModel(modelId);
@@ -1048,7 +1095,12 @@ export const AiSettingsContainer = () => {
                 checking={checkingOmlx}
                 onRecheck={handleRecheckOmlx}
                 endpointUrl={omlxUrl}
-                onEndpointUrlChange={setOmlxUrl}
+                onEndpointUrlChange={handleOmlxUrlChange}
+                apiKey={omlxApiKey}
+                onApiKeyChange={handleOmlxApiKeyChange}
+                apiKeyNotice={omlxApiKeyNotice}
+                hubHasApiKey={savedOmlx.keyStored || Boolean(omlxApiKey.trim())}
+                onAdminKeySet={handleOmlxAdminKeySet}
               />
             </section>
           )}

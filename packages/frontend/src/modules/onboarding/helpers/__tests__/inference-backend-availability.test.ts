@@ -3,7 +3,9 @@ import type { HardwareProfileResponse } from '@/modules/onboarding/helpers/ai-se
 import type { InferenceBackendType } from '@ci-hub/common/types';
 import {
   EMBEDDING_INFERENCE_BACKEND,
+  hubDownloadSelection,
   hubLoadableSelection,
+  isHubDownloadableBackend,
   hiddenInferenceBackends,
   isAppleSiliconMacProfile,
   localEngineBlocksFinish,
@@ -188,11 +190,23 @@ describe('inference-backend-availability', () => {
     };
     const backendOf = (id: string) => backends[id];
 
-    it('keeps Ollama rows and drops engines the Hub cannot install into', () => {
+    it('keeps Ollama rows and drops engines the Hub cannot pin on', () => {
       expect(hubLoadableSelection(['llama3-2-3b', 'qwen3-8b-vllm', 'qwen3-8b-omlx', 'nomic-embed'], backendOf)).toEqual([
         'llama3-2-3b',
         'nomic-embed',
       ]);
+    });
+
+    it("downloads oMLX's rows too, through oMLX, and still not vLLM's", () => {
+      expect(hubDownloadSelection(['llama3-2-3b', 'qwen3-8b-vllm', 'qwen3-8b-omlx', 'nomic-embed'], backendOf)).toEqual([
+        'llama3-2-3b',
+        'qwen3-8b-omlx',
+        'nomic-embed',
+      ]);
+      expect(isHubDownloadableBackend('omlx')).toBe(true);
+      expect(isHubDownloadableBackend('lemonade')).toBe(true);
+      expect(isHubDownloadableBackend('vllm')).toBe(false);
+      expect(isHubDownloadableBackend(undefined)).toBe(false);
     });
   });
 });

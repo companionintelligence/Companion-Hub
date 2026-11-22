@@ -15,9 +15,9 @@ afterEach(() => {
 });
 
 describe('installAndStartInferenceRunners', () => {
-  it('keeps the Apple Silicon set on oMLX', () => {
-    expect(DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS).toEqual(['omlx']);
-    expect(automaticRunnersForBackend('omlx')).toEqual(['omlx']);
+  it('installs oMLX with Ollama for embeddings on Apple Silicon, as for vLLM', () => {
+    expect(DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS).toEqual(['omlx', 'ollama']);
+    expect(automaticRunnersForBackend('omlx')).toEqual(['omlx', 'ollama']);
   });
 
   it('installs vLLM with Ollama for embeddings, and Ollama alone for Lemonade', () => {

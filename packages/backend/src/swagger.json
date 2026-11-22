@@ -8309,6 +8309,9 @@
           "inferenceOmlxUrl": {
             "type": "string"
           },
+          "inferenceOmlxApiKey": {
+            "type": "string"
+          },
           "inferenceDecodeEndpoint": {
             "type": "string"
           },
@@ -14300,6 +14303,10 @@
             "nullable": true,
             "type": "string",
             "format": "uri"
+          },
+          "omlxApiKey": {
+            "nullable": true,
+            "type": "string"
           },
           "decodeEndpoint": {
             "nullable": true,

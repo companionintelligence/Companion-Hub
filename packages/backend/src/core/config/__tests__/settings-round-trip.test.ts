@@ -80,6 +80,7 @@ const ONE_OF_EVERY_KEY: Required<PersistedSettings> = {
   inferenceVllmApiKey: 'vllm-key',
   inferenceVllmUrl: 'http://vllm:8000',
   inferenceOmlxUrl: 'http://omlx:8000',
+  inferenceOmlxApiKey: 'omlx-key',
   inferenceDecodeEndpoint: 'http://decode.example:8000/v1',
   inferenceEncodeEndpoint: 'http://encode.example:11434',
   // The handout context cap (core-2, 2026-09-20). Non-default: the default is no cap.

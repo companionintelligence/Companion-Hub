@@ -1016,6 +1016,8 @@
   "ONBOARDING_RECOMMENDED_APP_REPLACES_TITLE": "{{name}} - reemplaza {{replaces}}",
   "ONBOARDING_RECOMMENDED_MODELS_DESC": "Los modelos ya en Ollama están preseleccionados. Marca cualquier modelo adicional que desees descargar - los modelos sin marcar no se instalarán.",
   "ONBOARDING_INSTALL_STATUS_DOWNLOADING": "Descargando...",
+  "ONBOARDING_INSTALL_STATUS_DOWNLOADED": "Descargado",
+  "ONBOARDING_INSTALL_DOWNLOAD_NOT_RUNNING": "El Hub no está descargando este modelo. Reinténtalo desde Configuración > IA.",
   "ONBOARDING_REMOTE_SET_UP_LATER_SUFFIX": "- configurar más tarde",
   "ONBOARDING_REMOTE_VPN_HINT": "Accede a tu Hub solo desde dispositivos en tu red privada de Tailscale.",
   "ONBOARDING_REMOTE_WEB_HINT": "Un enlace web público a tu Hub. Requiere registro de dispositivo.",
