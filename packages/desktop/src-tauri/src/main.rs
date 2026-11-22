@@ -354,9 +354,30 @@ async fn local_ai_network_exposure_command() -> hub_manager::LocalAiNetworkExpos
         .unwrap_or_default()
 }
 
+/// The guard toggles act only for this machine's own Hub page: the IPC grant also covers remote
+/// origins (`*.ci.lan`, `*.ci.computer`), and none of them may turn the guard off.
+fn require_this_machines_hub_for_guard(
+    webview: &tauri::Webview,
+    state: &hub_manager::HubPaths,
+) -> Result<(), String> {
+    let api_port = port_manager::read_api_port(&state.env_path);
+    if webview
+        .url()
+        .is_ok_and(|page| hub_manager::may_change_local_ai_guard(&page, api_port))
+    {
+        Ok(())
+    } else {
+        Err(hub_manager::LOCAL_AI_GUARD_ELSEWHERE.to_string())
+    }
+}
+
 /// Install the guard that keeps this machine's AI servers off the network (asks for the password).
 #[tauri::command]
-async fn protect_local_ai_command() -> Result<(), String> {
+async fn protect_local_ai_command(
+    webview: tauri::Webview,
+    state: tauri::State<'_, hub_manager::HubPaths>,
+) -> Result<(), String> {
+    require_this_machines_hub_for_guard(&webview, &state)?;
     tokio::task::spawn_blocking(hub_manager::protect_local_ai)
         .await
         .map_err(|error| format!("The protection task failed: {error}"))?
@@ -365,7 +386,11 @@ async fn protect_local_ai_command() -> Result<(), String> {
 /// Turn the guard off, so other devices on the network can use this machine's AI servers. The
 /// choice is remembered (asks for the password on Linux).
 #[tauri::command]
-async fn allow_local_ai_on_network_command() -> Result<(), String> {
+async fn allow_local_ai_on_network_command(
+    webview: tauri::Webview,
+    state: tauri::State<'_, hub_manager::HubPaths>,
+) -> Result<(), String> {
+    require_this_machines_hub_for_guard(&webview, &state)?;
     tokio::task::spawn_blocking(hub_manager::allow_local_ai_on_network)
         .await
         .map_err(|error| format!("The guard task failed: {error}"))?

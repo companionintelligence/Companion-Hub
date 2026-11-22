@@ -311,6 +311,21 @@ fn run_elevated(script: &str, failure: &str) -> Result<(), String> {
     }
 }
 
+/// Whether the page asking may turn the guard on or off: this machine's Hub as the shell opens it,
+/// plain http on loopback at the API port. Every page the window may show (`*.ci.lan`,
+/// `*.ci.computer`, other loopback ports) holds the same IPC grant, so a page from another Hub or an
+/// installed app must not get to switch the guard off and put this machine's AI servers on the
+/// network.
+pub(crate) fn may_change_local_ai_guard(page: &tauri::Url, api_port: u16) -> bool {
+    page.scheme() == "http"
+        && matches!(page.host_str(), Some("127.0.0.1" | "localhost"))
+        && page.port_or_known_default() == Some(api_port)
+}
+
+/// The refusal a page gets when [`may_change_local_ai_guard`] says no.
+pub(crate) const LOCAL_AI_GUARD_ELSEWHERE: &str =
+    "Only this computer's own Hub can change the network guard for its AI servers.";
+
 /// Turn the guard on (Linux: asks for the password; a WSL engine: in its distro), and forget a
 /// choice to keep it off.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -351,6 +366,36 @@ pub fn allow_local_ai_on_network() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_this_machines_hub_may_change_the_guard() {
+        let page = |raw: &str| tauri::Url::parse(raw).unwrap();
+        assert!(may_change_local_ai_guard(
+            &page("http://127.0.0.1:5002/home"),
+            5002
+        ));
+        assert!(may_change_local_ai_guard(
+            &page("http://localhost:5002/"),
+            5002
+        ));
+        for elsewhere in [
+            "https://hub-laptop-acme.ci.computer/home",
+            "https://evil.ci.computer/",
+            "http://hub.ci.lan/home",
+            "http://freecut.ci.lan/",
+            "http://hub.ci.localhost/",
+            "http://127.0.0.1:8400/",
+            "http://localhost:5005/",
+            "https://127.0.0.1:5002/",
+            "http://192.168.1.9:5002/",
+            "tauri://localhost/",
+        ] {
+            assert!(
+                !may_change_local_ai_guard(&page(elsewhere), 5002),
+                "{elsewhere}"
+            );
+        }
+    }
 
     #[test]
     fn the_rules_drop_only_the_ai_ports_and_only_off_loopback_and_docker() {
