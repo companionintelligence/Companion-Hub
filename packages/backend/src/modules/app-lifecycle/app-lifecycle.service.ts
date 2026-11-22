@@ -65,6 +65,7 @@ import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitle
 import type { HubAction } from '@/core/portal/hub-actions';
 import type { ActorCheckContext, LifecycleActor, SystemLifecycleReason } from '@/core/portal/lifecycle-actor';
 import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
+import { personMayGrantFullCapability } from '@/modules/api-keys/may-grant-full';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
 import { getEffectiveExposureMode, publishForcedExposure, publishesHostPort, servesForcedExposure } from '../apps/app-exposure.helpers';
@@ -1627,6 +1628,34 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   private async assertActorMayApplyForm(actor: LifecycleActor, appUrn: AppUrn, form: unknown, action: HubAction): Promise<void> {
     await this.assertActorMay(actor, appUrn, action);
     await this.authorizeCustomDomainChange(appUrn, form, () => this.assertActorMayChangeCustomDomain(actor, appUrn));
+    // Only an install writes the answer (`installerMcpAccess`); a settings save drops it (`toStoredConfig`).
+    if (action === 'install') {
+      await this.assertActorMayGrantFullMcpAccess(actor, form);
+    }
+  }
+
+  /**
+   * Who may answer an app's request for the Hub's MCP tools with `full` in its install form: what
+   * raising any key to `full` takes, the operator who claimed the Hub or an organization owner or
+   * admin (`personMayGrantFullCapability`), asked of WhoIs fresh and refused when it can't say.
+   *
+   * The install route asks this of the request before it calls in, but the MCP tool runner
+   * (`hub_install_app` from `/api/mcp-admin`) passes the form straight through as the signed-in
+   * person, and `installerMcpAccess` writes an operator's answer. So it is asked here of the actor,
+   * for every path. A key's answer is never written, and an exempt principal is admitted by name, as
+   * by the route.
+   */
+  private async assertActorMayGrantFullMcpAccess(actor: LifecycleActor, form: unknown): Promise<void> {
+    if (actor.kind !== 'operator') {
+      return;
+    }
+    const mcpAccess = typeof form === 'object' && form !== null ? (form as { mcpAccess?: unknown }).mcpAccess : undefined;
+    if (mcpAccess !== 'full') {
+      return;
+    }
+    if (!(await personMayGrantFullCapability(actor.userId, this.resolveWhois()))) {
+      throw new TranslatableError('API_KEY_FULL_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
+    }
   }
 
   /**
