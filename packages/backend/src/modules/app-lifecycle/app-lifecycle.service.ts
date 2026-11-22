@@ -616,10 +616,20 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Recreates each app `ensureHubOnAppNetworks` took off a shared Hub network, by queueing a restart
    * for it. A restart that cannot be queued is logged and the next app goes on.
+   *
+   * Only an app whose row says `running` is recreated. Its containers are listed stopped or not, and a
+   * restart is `down` then `up`, so recreating every one of them started each app the operator had
+   * stopped on the first boot after the upgrade. A stopped app is composed onto its own network at its
+   * next start anyway.
    */
   private async recreateAppsMovedOffSharedNetworks(appUrns: AppUrn[]): Promise<void> {
     for (const appUrn of appUrns) {
       try {
+        const status = (await this.appRepository.getAppByUrn(appUrn))?.status;
+        if (status !== 'running') {
+          this.logger.info(`Not recreating ${appUrn} onto its own network now: it is ${status ?? 'not installed'}; its next start does it`);
+          continue;
+        }
         this.logger.info(`Recreating ${appUrn} onto its own network: it was on a network every app shared`);
         await this.restartApp({ appUrn, skipPull: true, actor: { kind: 'system', reason: 'app-network-isolation' } });
       } catch (error) {

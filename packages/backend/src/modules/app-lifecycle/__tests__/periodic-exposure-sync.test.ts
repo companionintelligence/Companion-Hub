@@ -194,6 +194,7 @@ describe('AppLifecycleService periodic exposure sync', () => {
       syncInferenceAppsAfterHubUpgrade: vi.fn().mockResolvedValue(undefined),
       dockerService: { ensureHubOnAppNetworks: vi.fn().mockResolvedValue(['ci-memory:ci-marketplace', 'ci-openclaw:ci-marketplace']) },
       moduleRef: { get: vi.fn().mockReturnValue(undefined) },
+      appRepository: { getAppByUrn: vi.fn().mockResolvedValue({ status: 'running' }) },
       restartApp,
     });
 
@@ -204,6 +205,40 @@ describe('AppLifecycleService periodic exposure sync', () => {
       { appUrn: 'ci-memory:ci-marketplace', skipPull: true, actor: { kind: 'system', reason: 'app-network-isolation' } },
       { appUrn: 'ci-openclaw:ci-marketplace', skipPull: true, actor: { kind: 'system', reason: 'app-network-isolation' } },
     ]);
+    started.mockRestore();
+  });
+
+  // The containers moved off the shared network are listed stopped or not, and a restart is `down` then
+  // `up`: recreating every one started each app the operator had stopped on the first boot after an upgrade.
+  it('leaves an app the operator stopped stopped, and recreates only apps whose row says running', async () => {
+    const started = vi.spyOn(AppLifecycleService.prototype as any, 'startPeriodicExposureSync').mockImplementation(() => {});
+    const restartApp = vi.fn().mockResolvedValue({ requestId: 'r' });
+    const statuses: Record<string, string | undefined> = {
+      'ci-memory:ci-marketplace': 'stopped',
+      'ci-openclaw:ci-marketplace': 'running',
+      'gone:ci-marketplace': undefined,
+    };
+    Object.assign(service, {
+      recoverStuckInstallsOnStartup: vi.fn().mockResolvedValue(undefined),
+      startTailscaleReadinessWatcher: vi.fn(),
+      syncInferenceAppsAfterHubUpgrade: vi.fn().mockResolvedValue(undefined),
+      dockerService: { ensureHubOnAppNetworks: vi.fn().mockResolvedValue(Object.keys(statuses)) },
+      moduleRef: { get: vi.fn().mockReturnValue(undefined) },
+      appRepository: {
+        getAppByUrn: vi.fn(async (appUrn: string) => (statuses[appUrn] ? { status: statuses[appUrn] } : undefined)),
+      },
+      restartApp,
+    });
+
+    await service.onApplicationBootstrap();
+    await vi.waitFor(() => expect((service as any).appRepository.getAppByUrn).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(restartApp).toHaveBeenCalledTimes(1));
+
+    expect(restartApp).toHaveBeenCalledWith({
+      appUrn: 'ci-openclaw:ci-marketplace',
+      skipPull: true,
+      actor: { kind: 'system', reason: 'app-network-isolation' },
+    });
     started.mockRestore();
   });
 });
