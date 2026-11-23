@@ -27,7 +27,7 @@ pub enum AuthError {
     ValueTooLarge,
     /// The OS keychain is missing, locked or refused the operation. There is no file fallback.
     SecureStoreUnavailable,
-    /// The command is not available on iOS and Android.
+    /// The loopback sign-in commands are not available on iOS and Android.
     UnsupportedPlatform,
     /// The OS refused a loopback socket, or a background task did not finish.
     InternalError,
@@ -46,6 +46,17 @@ impl AuthError {
             Self::SecureStoreUnavailable => "secure_store_unavailable",
             Self::UnsupportedPlatform => "unsupported_platform",
             Self::InternalError => "internal_error",
+        }
+    }
+
+    /// Maps the code a native secure store rejects with. The native stores use the codes of `code()`.
+    /// The Rust side checks keys and values first, so only `bad_request` and `value_too_large` are passed
+    /// through. Any other code, or none, fails closed as `secure_store_unavailable`.
+    pub fn from_native_code(code: &str) -> Self {
+        match code {
+            "bad_request" => Self::BadRequest,
+            "value_too_large" => Self::ValueTooLarge,
+            _ => Self::SecureStoreUnavailable,
         }
     }
 }
