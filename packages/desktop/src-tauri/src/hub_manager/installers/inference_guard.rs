@@ -15,6 +15,7 @@
 //!
 //! vLLM also gets an API key (`inference_runners`), because a person can start it on another port.
 
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 /// Ollama's port, the vLLM port the desktop starts it on (`inference_runners::VLLM_PORT`), and
 /// Lemonade's default port: the Hub's Lemonade setup has it listen on every interface for the same
 /// reason (`lemonade config set host=0.0.0.0`). A Lemonade the Hub runs as a container is published
@@ -22,10 +23,14 @@
 /// it.
 pub(crate) const INFERENCE_GUARD_PORTS: [u16; 3] = [11434, 8002, 13305];
 
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 pub(crate) const INFERENCE_GUARD_TABLE: &str = "companion_hub_inference";
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 pub(crate) const INFERENCE_GUARD_UNIT: &str = "companion-hub-inference-guard.service";
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 pub(crate) const INFERENCE_GUARD_RULES_PATH: &str = "/etc/companion-hub/inference-guard.nft";
 
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 /// The nftables rules. Loading them replaces the table whole, so loading twice is the same as once.
 /// `loopback0` is the loopback a WSL2 distro in mirrored networking mode sees Windows on.
 pub(crate) fn inference_guard_ruleset() -> String {
@@ -51,6 +56,7 @@ pub(crate) fn inference_guard_ruleset() -> String {
     )
 }
 
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 /// POSIX shell, run as root, that installs the rules and the unit that loads them at boot, and loads
 /// them now. Installs nftables with the system package manager when `nft` is missing. Exits non-zero
 /// when the rules could not be loaded.
@@ -106,6 +112,7 @@ echo inference-guard-active
     )
 }
 
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 /// POSIX shell, run as root, that removes the guard: the unit, the rules file and the loaded table.
 /// Exits 0 when there was none.
 pub(crate) fn inference_guard_remove_script() -> String {
@@ -128,17 +135,20 @@ echo inference-guard-removed
     )
 }
 
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 /// Where the person's choice to turn the guard off is kept. While it exists, the Ollama installer
 /// and the WSL startup step leave the guard off; turning the guard on again removes it.
 fn guard_disabled_marker(data_dir: &std::path::Path) -> std::path::PathBuf {
     data_dir.join("state").join("inference-guard-disabled")
 }
 
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 /// Whether the person turned the guard off.
 pub(crate) fn local_ai_guard_disabled(data_dir: &std::path::Path) -> bool {
     guard_disabled_marker(data_dir).exists()
 }
 
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 pub(crate) fn set_local_ai_guard_disabled(
     data_dir: &std::path::Path,
     disabled: bool,
@@ -185,6 +195,7 @@ impl LocalAiNetworkExposure {
     }
 }
 
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 /// The ports in `/proc/net/tcp` or `/proc/net/tcp6` text that are listening on every interface.
 pub(crate) fn wildcard_listening_ports(proc_net_tcp: &str) -> Vec<u16> {
     proc_net_tcp
