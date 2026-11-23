@@ -10,7 +10,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
 import { HttpException, HttpStatus, Inject, Injectable, OnApplicationBootstrap, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import type { AppUrn } from '@ci-hub/common/types';
+import type { AppUrn, McpAccessChoice } from '@ci-hub/common/types';
 import { normalizeStoredHostname, sanitizeAppSubdomain, servedExposureMode } from '@ci-hub/common/types';
 import { type CustomDomainForm, type CustomDomainState, requestsCustomDomainChange } from './custom-domain-authority';
 import { customDomainAuditLine } from './custom-domain-audit';
@@ -65,6 +65,7 @@ import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitle
 import type { HubAction } from '@/core/portal/hub-actions';
 import type { ActorCheckContext, LifecycleActor, SystemLifecycleReason } from '@/core/portal/lifecycle-actor';
 import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
+import { personMayGrantFullCapability } from '@/modules/api-keys/may-grant-full';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
 import { getEffectiveExposureMode, publishForcedExposure, publishesHostPort, servesForcedExposure } from '../apps/app-exposure.helpers';
@@ -437,6 +438,8 @@ function buildInstallRowPatch(parsedForm: ParsedAppForm, storedConfig: unknown):
     customDomain: _customDomain,
     customDomainTakeover: _customDomainTakeover,
     customDomainIntent: _customDomainIntent,
+    // A person's answer about the app's MCP key; only `installerMcpAccess` may write it.
+    mcpAccess: _mcpAccess,
     ...rowFields
   } = parsedForm;
 
@@ -485,6 +488,20 @@ function buildInstallRowPatch(parsedForm: ParsedAppForm, storedConfig: unknown):
  * any caller that patches one setting send no value, and reading that as `false`
  * would quietly turn off a choice somebody made.
  */
+/**
+ * The installer's answer to the app's request for the Hub's MCP tools, as a row patch, or nothing.
+ *
+ * Only a person's answer counts: the route checked that they may give it (`AppLifecycleController
+ * .installApp`). A key that installs an app gives none, even `none`, so a later grant is a person's
+ * call. Omitted means keep, as for the other row settings, so a reinstall without one keeps the answer.
+ */
+function installerMcpAccess(actor: LifecycleActor, parsedForm: ParsedAppForm): { mcpAccess?: McpAccessChoice } {
+  if ((actor.kind !== 'operator' && actor.kind !== 'exempt') || parsedForm.mcpAccess === undefined) {
+    return {};
+  }
+  return { mcpAccess: parsedForm.mcpAccess };
+}
+
 function autoRestartColumn(parsedForm: ParsedAppForm): { autoRestartOnDomainChange?: boolean } {
   return parsedForm.autoRestartOnDomainChange === undefined ? {} : { autoRestartOnDomainChange: parsedForm.autoRestartOnDomainChange };
 }
@@ -515,6 +532,12 @@ function toStoredConfig(parsedForm: ParsedAppForm): Record<string, unknown> {
    * restarts OFF is trying to avoid. It lives on the row, read by the sync.
    */
   delete stored.autoRestartOnDomainChange;
+  /*
+   * ⚠ AND THE MCP ANSWER, WHICH MUST NEVER BE REPLAYED. It lives on `app.mcp_access`, written by a
+   * person. A copy in the snapshot would be re-submitted by every version bump, and the snapshot is
+   * what the app's own key may rewrite.
+   */
+  delete stored.mcpAccess;
   /*
    * ⚠ AND THE EXPECTED VALUE, FOR THE SAME REASON ONE STEP FURTHER ON.
    *
@@ -1653,6 +1676,34 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   private async assertActorMayApplyForm(actor: LifecycleActor, appUrn: AppUrn, form: unknown, action: HubAction): Promise<void> {
     await this.assertActorMay(actor, appUrn, action);
     await this.authorizeCustomDomainChange(appUrn, form, () => this.assertActorMayChangeCustomDomain(actor, appUrn));
+    // Only an install writes the answer (`installerMcpAccess`); a settings save drops it (`toStoredConfig`).
+    if (action === 'install') {
+      await this.assertActorMayGrantFullMcpAccess(actor, form);
+    }
+  }
+
+  /**
+   * Who may answer an app's request for the Hub's MCP tools with `full` in its install form: what
+   * raising any key to `full` takes, the operator who claimed the Hub or an organization owner or
+   * admin (`personMayGrantFullCapability`), asked of WhoIs fresh and refused when it can't say.
+   *
+   * The install route asks this of the request before it calls in, but the MCP tool runner
+   * (`hub_install_app` from `/api/mcp-admin`) passes the form straight through as the signed-in
+   * person, and `installerMcpAccess` writes an operator's answer. So it is asked here of the actor,
+   * for every path. A key's answer is never written, and an exempt principal is admitted by name, as
+   * by the route.
+   */
+  private async assertActorMayGrantFullMcpAccess(actor: LifecycleActor, form: unknown): Promise<void> {
+    if (actor.kind !== 'operator') {
+      return;
+    }
+    const mcpAccess = typeof form === 'object' && form !== null ? (form as { mcpAccess?: unknown }).mcpAccess : undefined;
+    if (mcpAccess !== 'full') {
+      return;
+    }
+    if (!(await personMayGrantFullCapability(actor.userId, this.resolveWhois()))) {
+      throw new TranslatableError('API_KEY_FULL_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
+    }
   }
 
   /**
@@ -2091,6 +2142,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       await this.recordMainPort(appUrn, parsedForm.port);
       await this.appRepository.updateAppById(existingApp.id, {
         ...buildInstallRowPatch(parsedForm, current?.config),
+        ...installerMcpAccess(params.actor, parsedForm),
         // The reset leaves these `undefined`, which keeps a column as it was.
         ...(appInfo.exposable ? {} : { domain: null, publicDomain: null }),
       });
@@ -2144,6 +2196,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           isVisibleOnGuestDashboard,
           enableAuth: parsedForm.enableAuth ?? false,
           autoRestartOnDomainChange: parsedForm.autoRestartOnDomainChange ?? false,
+          ...installerMcpAccess(params.actor, parsedForm),
         });
         installRecord = { id: created.id, status: created.status, port: created.port, exposedLocal: created.exposedLocal };
         await this.claimCustomDomainIntent(created.id, parsedForm.customDomain);
@@ -2165,7 +2218,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           // A reinstall after all, which nothing can cancel (see `reinstall` above).
           this.operationRegistry.endPreparingInstall(appUrn, preparing);
           await this.recordMainPort(appUrn, parsedForm.port);
-          await this.appRepository.updateAppById(raced.id, buildInstallRowPatch(parsedForm, raced.config));
+          await this.appRepository.updateAppById(raced.id, {
+            ...buildInstallRowPatch(parsedForm, raced.config),
+            ...installerMcpAccess(params.actor, parsedForm),
+          });
           await this.claimCustomDomainIntent(raced.id, parsedForm.customDomain);
           return this.dispatchStart({ appUrn });
         }
@@ -2182,6 +2238,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     if (retriesRow) {
       await this.appRepository.updateAppById(installRecord.id, {
         status: 'installing',
+        ...installerMcpAccess(params.actor, parsedForm),
         config: toStoredConfig(parsedForm),
         port: parsedForm.port ?? installRecord.port ?? appInfo.port,
         version: appInfo.cihub_app_version,

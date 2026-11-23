@@ -360,8 +360,19 @@ export class ApiKeyService {
    * decision on the app's next restart, which is exactly when nobody is looking. Only a fresh key
    * (there was none to preserve) starts at the default.
    */
-  async provisionManagedKey(params: { appUrn: string; appName: string; existingRawKey?: string; scopes: ApiKeyScope[] }): Promise<string> {
-    const { appUrn, appName, existingRawKey } = params;
+  async provisionManagedKey(params: {
+    appUrn: string;
+    appName: string;
+    existingRawKey?: string;
+    scopes: ApiKeyScope[];
+    /**
+     * The level a person granted the app's MCP access at (`app.mcp_access`). It applies when the key
+     * is minted and when an existing key gains the `mcp` scope, which is the moment that answer is
+     * given effect; otherwise the key's level is left as an operator set it (see above).
+     */
+    mcpCapability?: ApiKeyCapability;
+  }): Promise<string> {
+    const { appUrn, appName, existingRawKey, mcpCapability } = params;
     const scopes = normalizeScopes(params.scopes);
     if (existingRawKey) {
       const row = await this.repo.findByHash(this.hash(existingRawKey));
@@ -370,12 +381,17 @@ export class ApiKeyService {
         if (current.length !== scopes.length || !scopes.every((scope) => current.includes(scope))) {
           await this.repo.updateScopes(row.id, scopes);
           this.logger.info('Managed key scopes updated', appUrn, `[${scopes.join(',')}]`);
+          if (mcpCapability && scopes.includes('mcp') && !current.includes('mcp') && row.capability !== mcpCapability) {
+            await this.repo.updateCapability(row.id, mcpCapability);
+            this.logger.info('Managed key level set for its MCP access', appUrn, mcpCapability);
+          }
         }
         return existingRawKey; // still valid — preserve it (no churn, no restart needed)
       }
     }
     await this.repo.deleteByOwnerAppUrn(appUrn); // clear any stale managed key(s) for this app
-    const created = await this.create(appName, { scopes, managed: true, ownerAppUrn: appUrn });
+    const capability = scopes.includes('mcp') ? mcpCapability : undefined;
+    const created = await this.create(appName, { scopes, managed: true, ownerAppUrn: appUrn, ...(capability ? { capability } : {}) });
     this.logger.info('Managed key provisioned', appUrn, `[${scopes.join(',')}]`);
     return created.key;
   }

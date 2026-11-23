@@ -6,6 +6,7 @@ import {
   GRANTED_ACTOR,
   UNGRANTED_CALLERS,
   asGrantedOperator,
+  asKey,
   asManagedKeyOnOtherApp,
   gateChecks,
   lifecycleActorGate,
@@ -135,11 +136,17 @@ describe('AppConfigTools', () => {
         expect(service()).not.toHaveBeenCalled();
       });
 
-      // Reading an app's overrides operates it, which a managed app key may do on any app at any level;
-      // changing them takes `full`.
+      // Reading an app's overrides reads values a person typed, often secrets, so another app's key needs
+      // `full` for it, as it does to change them; the app's own key reads its own.
       if (action === 'view') {
-        it.each(['read', 'write'] as const)("reaches the service for a managed app's key at %s on another app", async (capability) => {
-          await asManagedKeyOnOtherApp(call, capability);
+        it.each(['read', 'write'] as const)("SECURITY: refuses a managed app's key at %s on another app", async (capability) => {
+          await expect(asManagedKeyOnOtherApp(call, capability)).rejects.toThrow('MCP_SETTING_VALUES_FULL_REQUIRED');
+
+          expect(service()).not.toHaveBeenCalled();
+        });
+
+        it("reaches the service for an app's own key at read", async () => {
+          await asKey({ ownerAppUrn: appUrn, createdByUserId: null, capability: 'read' }, call);
 
           expect(service()).toHaveBeenCalled();
         });

@@ -66,6 +66,8 @@ export { defaultChatModelId } from '../inference/default-chat-model.js';
 export { gpuRuntimeReady } from '../inference/gpu-runtime.js';
 export { OPERATOR_MINTABLE_SCOPES } from './api-key-scopes.js';
 export type { OperatorMintableScope } from './api-key-scopes.js';
+export { MCP_ACCESS_CHOICES, mcpAccessGranted } from './mcp-access.js';
+export type { McpAccessChoice } from './mcp-access.js';
 export type {
   HardwareProfile,
   HardwareTier,

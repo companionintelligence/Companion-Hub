@@ -70,6 +70,10 @@ const { toast } = vi.hoisted(() => ({
   },
 }));
 
+const MCP_ROLE = vi.hoisted(() => ({ manageHub: true, canGrantFull: true }));
+vi.mock('@/lib/hooks/use-hub-access', () => ({ useHubAccess: () => ({ manageHub: MCP_ROLE.manageHub, isPending: false }) }));
+vi.mock('@/lib/hooks/use-can-grant-full', () => ({ useCanGrantFull: () => MCP_ROLE.canGrantFull }));
+
 vi.mock('sonner', () => ({
   toast: toast,
 }));
@@ -317,6 +321,85 @@ describe('InstallForm', () => {
       'COMMON_PRIVATE_VPN',
       'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE',
     ]);
+  });
+
+  // The app's own MCP key would reach the apps beside it, so an install asks first, and "No access"
+  // is what a click-through gives.
+  describe('an app that asks for the Hub MCP tools', () => {
+    const info = { ...baseInfo, urn: 'agent:someone-elses-store', hub_integration: { mcp_client: true } } as unknown as AppInfo;
+
+    beforeEach(() => {
+      MCP_ROLE.manageHub = true;
+      MCP_ROLE.canGrantFull = true;
+      vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
+    });
+
+    const renderForm = (props: Partial<ComponentProps<typeof InstallForm>> = {}) =>
+      render(
+        <MemoryRouter>
+          <InstallForm info={info} onSubmit={vi.fn()} formId="test-form" formFields={[]} {...props} />
+        </MemoryRouter>,
+      );
+
+    it('asks on install, with no access chosen', () => {
+      renderForm();
+
+      expect(screen.getByTestId('install-form-mcp-section')).toBeInTheDocument();
+      expect(screen.getByTestId('install-form-mcp-access-none')).toBeChecked();
+    });
+
+    it('submits no access when nothing was chosen', async () => {
+      const onSubmit = vi.fn();
+      renderForm({ onSubmit });
+
+      fireEvent.submit(document.getElementById('test-form') as HTMLFormElement);
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+      expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ mcpAccess: 'none' });
+    });
+
+    it('submits the level chosen', async () => {
+      const onSubmit = vi.fn();
+      renderForm({ onSubmit });
+
+      await userEvent.click(screen.getByTestId('install-form-mcp-access-write'));
+      fireEvent.submit(document.getElementById('test-form') as HTMLFormElement);
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+      expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ mcpAccess: 'write' });
+    });
+
+    it('lets a member see the question but give nothing', () => {
+      MCP_ROLE.manageHub = false;
+      renderForm();
+
+      expect(screen.getByTestId('install-form-mcp-access-write')).toBeDisabled();
+      expect(screen.getByText('APP_MCP_ACCESS_MANAGER_REQUIRED')).toBeInTheDocument();
+    });
+
+    it('offers full only to an owner or admin', () => {
+      MCP_ROLE.canGrantFull = false;
+      renderForm();
+
+      expect(screen.getByTestId('install-form-mcp-access-full')).toBeDisabled();
+      expect(screen.getByTestId('install-form-mcp-access-write')).toBeEnabled();
+    });
+
+    it('does not ask in the settings dialog, where the Hub access section answers it', () => {
+      renderForm({ isEdit: true, initialValues: {} });
+
+      expect(screen.queryByTestId('install-form-mcp-section')).not.toBeInTheDocument();
+    });
+
+    it('does not ask for an app that does not want the tools', () => {
+      render(
+        <MemoryRouter>
+          <InstallForm info={baseInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+        </MemoryRouter>,
+      );
+
+      expect(screen.queryByTestId('install-form-mcp-section')).not.toBeInTheDocument();
+    });
   });
 
   describe('an app whose listing needs a public address', () => {

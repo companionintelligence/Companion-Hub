@@ -20,7 +20,7 @@ import {
   type HubIntegration,
   writesAppBaseUrl,
 } from '@ci-hub/common/schemas';
-import type { AppUrn } from '@ci-hub/common/types';
+import { type AppUrn, mcpAccessGranted } from '@ci-hub/common/types';
 import { normalizeStoredHostname } from '@ci-hub/common/types';
 import { buildFqdnSubdomain, buildPublicWebIdentity, extractDeviceSlug, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { EnvUtils } from '../env/env.utils';
@@ -67,17 +67,22 @@ for (const secret of HUB_ONLY_SECRET_ENV_VARS) {
 const HUB_ONLY_SECRET_ENV_VAR_SET: ReadonlySet<string> = new Set(HUB_ONLY_SECRET_ENV_VARS);
 
 /**
- * The allowlist for one app: the shared keys plus the Memory env names its manifest declares.
+ * The allowlist for one app: the shared keys, plus, for an official-store app, the Memory env names
+ * its manifest declares, so an operator can pin those in the Hub's `.env`.
  *
- * Those names come from the manifest, which any store can publish, so a Hub-only secret is never
- * passed through under one: `"token_env": "JWT_SECRET"` would otherwise hand the app that secret.
- * Nor is a name no Hub integration may write (`hubIntegrationMayWrite`).
+ * Those names come from the manifest, and the Hub's `.env` holds more secrets than any list here
+ * names (`TAILSCALE_AUTHKEY`, `NODE_AUTH_TOKEN`, provider keys an operator added). So a manifest
+ * from any other store gets no pass-through at all: `"token_env": "TAILSCALE_AUTHKEY"` would
+ * otherwise hand it the value. Its Memory credentials still come from a brokered connection or the
+ * install form, as for every app. Even for the official store, a Hub-only secret is never passed
+ * through, nor a name no Hub integration may write (`hubIntegrationMayWrite`).
  */
 export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration' | 'urn' | 'source'>): ReadonlySet<string> {
   const keys = new Set(HUB_ENV_KEYS_INHERITED_BY_APPS);
   if (receivesPortalDeviceKey(config)) {
     for (const key of HUB_ENV_KEYS_INHERITED_BY_FIRST_PARTY_MEMORY) keys.add(key);
   }
+  if (!isOfficialStoreApp(config)) return keys;
   const memory = config.hub_integration?.memory;
   for (const name of [memory?.url_env, memory?.token_env]) {
     if (name && !HUB_ONLY_SECRET_ENV_VAR_SET.has(name) && hubIntegrationMayWrite(name)) keys.add(name);
@@ -245,7 +250,8 @@ const CUSTOM_APP_STORE_SLUG = '_user';
 /**
  * Returns the scopes for an app's Hub-managed key.
  *
- * The `mcp` scope serves an MCP tools consumer, and the `app` scope serves a
+ * The `mcp` scope serves an MCP tools consumer that a person let use the Hub's tools
+ * (`mcpAccess`, the app row's `mcp_access`), and the `app` scope serves a
  * provenance-gated first-party consumer. An empty array grants no managed key and no
  * per-app forward-auth secret. Both `generateEnvFile` and `HubAccessService` use this
  * gate so the operator-facing report cannot drift from the actual grant. It is not the
@@ -253,9 +259,11 @@ const CUSTOM_APP_STORE_SLUG = '_user';
  * secret with no key scope, and `HubAccessService` counts that gate too. A new kind of
  * trust material has to be added in both places.
  */
-export function hubTrustMaterialScopes(config: Pick<AppInfo, 'urn' | 'hub_integration'>): ApiKeyScope[] {
+export function hubTrustMaterialScopes(config: Pick<AppInfo, 'urn' | 'hub_integration'>, mcpAccess: string | null | undefined): ApiKeyScope[] {
   const scopes: ApiKeyScope[] = [];
-  if (config.hub_integration?.mcp_client) {
+  // Asking is not enough: any store can publish a manifest that sets `mcp_client`, and the key it would
+  // get reaches the apps beside it. A person answers first (`app.mcp_access`, see `mcpAccessGranted`).
+  if (config.hub_integration?.mcp_client && mcpAccessGranted(mcpAccess)) {
     scopes.push('mcp');
   }
   // The install URN's store slug provides provenance because manifest fields are forgeable.
@@ -448,6 +456,35 @@ export class AppHelpers {
   }
 
   /**
+   * A person's answer to this app's request for the Hub's MCP tools (`app.mcp_access`).
+   *
+   * An app installed before the Hub asked has none. An official-store app among them that already
+   * holds an MCP key keeps it, at that key's level, and the answer is recorded as given: Hermes and
+   * OpenClaw were installed from the Hub's own store expecting it, and taking it away unasked would
+   * stop them on their next restart. Every other unanswered app gets no MCP key until a person
+   * grants one, from the app's Hub access section.
+   */
+  private async resolveMcpAccess(appUrn: AppUrn, config: Pick<AppInfo, 'hub_integration'>, existingAppEnvMap: Map<string, string>) {
+    if (!config.hub_integration?.mcp_client) {
+      return null;
+    }
+    const stored = await this.appsRepository.getAppMcpAccess(appUrn);
+    if (stored !== null && stored !== undefined) {
+      return stored;
+    }
+    if (!isOfficialStoreApp({ urn: appUrn }) || !existingAppEnvMap.get('HUB_MCP_API_KEY')) {
+      return null;
+    }
+    const held = await this.apiKeys.findManagedByApp(appUrn);
+    if (!held?.scopes.includes('mcp')) {
+      return null;
+    }
+    await this.appsRepository.setAppMcpAccess(appUrn, held.capability);
+    this.logger.info(`[AppHelpers] ${appUrn} keeps the MCP access it had before the Hub asked, at ${held.capability}`);
+    return held.capability;
+  }
+
+  /**
    * The app's network subnet, allocated now if it has none yet. The env is written before the compose
    * file on install, and Traefik's address on the app's network, which the app is told to trust, comes
    * from it. The allocator returns the same subnet to the compose step that follows. Null when it cannot
@@ -493,7 +530,8 @@ export class AppHelpers {
     // this function (and its tests) mutate: the Hub's .env is the seed, but only
     // the keys an app is documented to inherit survive — see
     // HUB_ENV_KEYS_INHERITED_BY_APPS for what and why.
-    const inheritable = appInheritableHubEnvKeys(config);
+    // The URN this function was called with, not the copy in config.json: provenance is the Hub's.
+    const inheritable = appInheritableHubEnvKeys({ hub_integration: config.hub_integration, urn: appUrn, source: config.source });
     let withheld = 0;
     for (const key of [...envMap.keys()]) {
       if (!inheritable.has(key)) {
@@ -709,7 +747,7 @@ export class AppHelpers {
         }
 
         const length = field.min ?? 32;
-        const randomString = this.envUtils.createRandomString(field.env_variable, length, field.encoding);
+        const randomString = this.envUtils.createRandomString(appUrn, field.env_variable, length, field.encoding);
         envMap.set(envVar, randomString);
         continue;
       }
@@ -1007,7 +1045,12 @@ export class AppHelpers {
       }
     }
 
-    if (appName === 'cloudflared') {
+    // The tunnel token lets whoever holds it serve every public hostname of this Hub, so it goes
+    // only to the official store's cloudflared. The app's name alone is no provenance: any store
+    // can publish an app called `cloudflared`, and it installs as `cloudflared:<that store>`.
+    if (appName === 'cloudflared' && !isOfficialStoreApp({ urn: appUrn })) {
+      this.logger.warn(`[AppHelpers] ${appUrn} is named cloudflared but is not from the official store; it gets no tunnel token`);
+    } else if (appName === 'cloudflared') {
       const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
       if (org?.tunnelToken && org.tunnelId) {
         envMap.set('TUNNEL_TOKEN', org.tunnelToken);
@@ -1025,7 +1068,8 @@ export class AppHelpers {
     // The install URN gates the callback grant because manifest fields are
     // forgeable but store slugs are not. Third-party-store apps receive no
     // callback credential regardless of their manifest.
-    const scopes = hubTrustMaterialScopes(config);
+    const mcpAccess = await this.resolveMcpAccess(appUrn, config, existingAppEnvMap);
+    const scopes = hubTrustMaterialScopes(config, mcpAccess);
     const isMcpClient = scopes.includes('mcp');
     const isFirstPartyConsumer = scopes.includes('app');
     if (scopes.length > 0) {
@@ -1046,6 +1090,7 @@ export class AppHelpers {
         appName: config.name ?? appUrn,
         existingRawKey: existingManagedKey,
         scopes,
+        ...(mcpAccessGranted(mcpAccess) ? { mcpCapability: mcpAccess } : {}),
       });
 
       if (isMcpClient) {
@@ -1071,6 +1116,10 @@ export class AppHelpers {
         envMap.set('HUB_APP_KEY', managedKey);
         envMap.set('CI_APP_URN', appUrn);
       }
+    } else {
+      // Nothing to hold, so nothing may stay behind: an app whose MCP access was refused or never
+      // granted kept the key it had until now, and with it its reach over the apps beside it.
+      await this.apiKeys.revokeManagedByApp(appUrn);
     }
 
     // --- Standardized AI environment variables (opt-in) ---

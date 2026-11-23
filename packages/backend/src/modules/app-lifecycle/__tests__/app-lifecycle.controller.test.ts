@@ -157,3 +157,83 @@ describe('AppLifecycleController restore status', () => {
     expect(rehydration.acknowledgeRestore).not.toHaveBeenCalled();
   });
 });
+
+/*
+ * An app's MCP key reaches the apps beside it, so only a person who may manage the Hub gives it, and
+ * `full` takes an organization owner or admin, as raising any key to `full` does.
+ */
+describe('AppLifecycleController — who may answer an app’s request for the Hub MCP tools', () => {
+  const req = { hubPrincipal: 'session', user: { id: 7 } } as unknown as Request;
+  const appUrn = 'agent:someone-elses-store';
+
+  let lifecycle: MockProxy<AppLifecycleService>;
+  let hubAccess: MockProxy<HubAccessService>;
+  let whois: MockProxy<MarketplaceWhoIsService>;
+  let controller: AppLifecycleController;
+
+  beforeEach(() => {
+    lifecycle = mock<AppLifecycleService>();
+    lifecycle.installApp.mockResolvedValue({ requestId: 'r' } as never);
+    hubAccess = mock<HubAccessService>();
+    hubAccess.setMcpAccess.mockResolvedValue({ restarting: true });
+    whois = mock<MarketplaceWhoIsService>();
+    whois.lifecycleActor.mockReturnValue({ kind: 'operator', userId: 7 });
+    whois.isClaimingOperator.mockResolvedValue(false);
+    whois.isOrgManager.mockResolvedValue(false);
+    controller = new AppLifecycleController(lifecycle, mock<AppRehydrationService>(), hubAccess, whois, mock<PairingAppRestoreService>(), mock());
+  });
+
+  describe('at install', () => {
+    it.each([undefined, 'none'] as const)('asks nothing more for %s', async (mcpAccess) => {
+      await controller.installApp(appUrn, { mcpAccess } as never, req);
+
+      expect(whois.assertSessionMayManageHub).not.toHaveBeenCalled();
+      expect(lifecycle.installApp).toHaveBeenCalled();
+    });
+
+    it('SECURITY: refuses a grant from someone who may not manage the Hub, and installs nothing', async () => {
+      whois.assertSessionMayManageHub.mockRejectedValue(new Error('HUB_MANAGE_ROLE_REQUIRED'));
+
+      await expect(controller.installApp(appUrn, { mcpAccess: 'write' } as never, req)).rejects.toThrow('HUB_MANAGE_ROLE_REQUIRED');
+
+      expect(lifecycle.installApp).not.toHaveBeenCalled();
+    });
+
+    it('SECURITY: refuses full from a Hub manager who is no owner or admin', async () => {
+      await expect(controller.installApp(appUrn, { mcpAccess: 'full' } as never, req)).rejects.toThrow('API_KEY_FULL_ROLE_REQUIRED');
+
+      expect(lifecycle.installApp).not.toHaveBeenCalled();
+    });
+
+    it('lets an owner or admin install with full', async () => {
+      whois.isOrgManager.mockResolvedValue(true);
+
+      await controller.installApp(appUrn, { mcpAccess: 'full' } as never, req);
+
+      expect(lifecycle.installApp).toHaveBeenCalled();
+    });
+  });
+
+  describe('PUT :urn/hub-access/mcp', () => {
+    it('asks configure on the app, then records the answer', async () => {
+      await expect(controller.setMcpAccess(appUrn, { access: 'write' }, req)).resolves.toEqual({ restarting: true });
+
+      expect(whois.assertSessionAction).toHaveBeenCalledWith(req, appUrn, 'configure');
+      expect(hubAccess.setMcpAccess).toHaveBeenCalledWith(appUrn, 'write');
+    });
+
+    it('SECURITY: refuses full from someone who is no owner or admin, and records nothing', async () => {
+      await expect(controller.setMcpAccess(appUrn, { access: 'full' }, req)).rejects.toThrow('API_KEY_FULL_ROLE_REQUIRED');
+
+      expect(hubAccess.setMcpAccess).not.toHaveBeenCalled();
+    });
+
+    it('SECURITY: refuses someone without configure on the app, and records nothing', async () => {
+      whois.assertSessionAction.mockRejectedValue(new Error('APP_ACTION_GRANT_DENIED'));
+
+      await expect(controller.setMcpAccess(appUrn, { access: 'read' }, req)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+
+      expect(hubAccess.setMcpAccess).not.toHaveBeenCalled();
+    });
+  });
+});

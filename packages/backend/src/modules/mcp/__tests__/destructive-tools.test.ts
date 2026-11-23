@@ -5,6 +5,7 @@ import { mock } from 'vitest-mock-extended';
 import { AppController } from '@/app.controller';
 import { SSEController } from '@/core/sse/sse.controller';
 import { ApiKeyAdminController } from '@/modules/api-keys/api-key-admin.controller';
+import { AppLifecycleController } from '@/modules/app-lifecycle/app-lifecycle.controller';
 import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
 import { AppLinksController } from '@/modules/app-links/app-links.controller';
 import { HubPoolController } from '@/modules/hub-pool/hub-pool.controller';
@@ -120,6 +121,7 @@ const GUARDED_CONTROLLERS: Array<[file: string, controller: { name: string; prot
   ['app.controller.ts', AppController],
   ['core/sse/sse.controller.ts', SSEController],
   ['modules/api-keys/api-key-admin.controller.ts', ApiKeyAdminController],
+  ['modules/app-lifecycle/app-lifecycle.controller.ts', AppLifecycleController],
   ['modules/app-links/app-links.controller.ts', AppLinksController],
   ['modules/hub-pool/hub-pool.controller.ts', HubPoolController],
   ['modules/inference/inference.controller.ts', InferenceController],
@@ -151,6 +153,8 @@ const GUARDED_ROUTE_TOOLS: Record<string, string[]> = {
   'ApiKeyAdminController.createKey': [],
   'ApiKeyAdminController.revokeKey': [],
   'ApiKeyAdminController.updateKey': [],
+  // No tool may answer it: an app's own key would grant itself reach over the apps beside it.
+  'AppLifecycleController.setMcpAccess': [],
   'FactoryResetController.factoryReset': [],
   'HubPoolController.approvePeer': [],
   'HubPoolController.cancelPairingPin': [],

@@ -1890,6 +1890,90 @@ describe('AppLifecycleService', () => {
       });
     });
 
+    // The answer to the app's request for the Hub MCP tools lives on the row, written by a person; the
+    // route checked they may give it (`AppLifecycleController.installApp`).
+    describe('the installer’s answer about MCP access', () => {
+      it('is recorded on the row, and kept out of the stored form', async () => {
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { mcpAccess: 'read' } });
+
+        const row = appsRepository.createApp.mock.calls[0]?.[0] as Record<string, unknown>;
+        expect(row.mcpAccess).toBe('read');
+        expect(row.config).not.toHaveProperty('mcpAccess');
+      });
+
+      it('SECURITY: is ignored from a key, which may install an app but not give it reach', async () => {
+        await service.installApp({
+          actor: { kind: 'mcp', ownerAppUrn: null, createdByUserId: null, capability: 'full' },
+          appUrn,
+          form: { mcpAccess: 'full' },
+        });
+
+        const row = appsRepository.createApp.mock.calls[0]?.[0] as Record<string, unknown>;
+        expect(row).not.toHaveProperty('mcpAccess');
+        expect(row.config).not.toHaveProperty('mcpAccess');
+      });
+
+      it('is left as it was when an install gives none', async () => {
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+
+        expect(appsRepository.createApp.mock.calls[0]?.[0]).not.toHaveProperty('mcpAccess');
+      });
+
+      /*
+       * The install route asks this of the request, but the MCP tool runner (`hub_install_app` from
+       * `/api/mcp-admin`) hands the form straight here as the signed-in operator, whose answer is written.
+       */
+      describe('SECURITY: `full` from an operator, as the MCP tool runner sends it', () => {
+        const operator: LifecycleActor = { kind: 'operator', userId: 7 };
+        const people = { has: vi.fn(), isClaimingOperator: vi.fn(), isOrgManager: vi.fn() };
+
+        beforeEach(() => {
+          people.has.mockReset().mockResolvedValue(true);
+          people.isClaimingOperator.mockReset().mockResolvedValue(false);
+          people.isOrgManager.mockReset().mockResolvedValue(false);
+          vi.mocked((service as any).moduleRef.get).mockImplementation((token: unknown) => (token === MarketplaceWhoIsService ? people : undefined));
+        });
+
+        it('refuses a member, before anything is written', async () => {
+          await expect(service.installApp({ actor: operator, appUrn, form: { mcpAccess: 'full' } })).rejects.toThrow('API_KEY_FULL_ROLE_REQUIRED');
+
+          expect(people.isOrgManager).toHaveBeenCalledWith(7);
+          expect(appsRepository.createApp).not.toHaveBeenCalled();
+          expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        });
+
+        it('refuses when WhoIs cannot be resolved', async () => {
+          vi.mocked((service as any).moduleRef.get).mockImplementation(() => undefined);
+
+          await expect(service.installApp({ actor: operator, appUrn, form: { mcpAccess: 'full' } })).rejects.toThrow();
+          expect(appsRepository.createApp).not.toHaveBeenCalled();
+        });
+
+        it('records it for an organization owner or admin', async () => {
+          people.isOrgManager.mockResolvedValue(true);
+
+          await service.installApp({ actor: operator, appUrn, form: { mcpAccess: 'full' } });
+
+          expect(appsRepository.createApp.mock.calls[0]?.[0]).toMatchObject({ mcpAccess: 'full' });
+        });
+
+        it('records it for the operator who claimed the Hub', async () => {
+          people.isClaimingOperator.mockResolvedValue(true);
+
+          await service.installApp({ actor: operator, appUrn, form: { mcpAccess: 'full' } });
+
+          expect(appsRepository.createApp.mock.calls[0]?.[0]).toMatchObject({ mcpAccess: 'full' });
+        });
+
+        it('asks nothing more of a member for a lower level', async () => {
+          await service.installApp({ actor: operator, appUrn, form: { mcpAccess: 'write' } });
+
+          expect(people.isOrgManager).not.toHaveBeenCalled();
+          expect(appsRepository.createApp.mock.calls[0]?.[0]).toMatchObject({ mcpAccess: 'write' });
+        });
+      });
+    });
+
     it('records what the production guard applied, not what the request asked for', async () => {
       configService.getConfig.mockReturnValue({ ...configService.getConfig(), isProduction: true } as any);
 
@@ -9495,7 +9579,7 @@ describe('AppLifecycleService', () => {
         forwardAuth.invalidateApp.mockReset();
         const moduleRef = mock<ModuleRef>();
         moduleRef.get.mockReturnValue(forwardAuth);
-        hubAccess = new HubAccessService(apiKeys, hubAppFiles, service, new EnvUtils(), mock<LoggerService>(), moduleRef);
+        hubAccess = new HubAccessService(apiKeys, hubAppFiles, service, new EnvUtils(), mock<LoggerService>(), moduleRef, mock<AppsRepository>());
       });
 
       it("refuses a rotate while the app starts, with the start's 409, and leaves the old credentials working", async () => {

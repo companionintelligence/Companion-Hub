@@ -1,9 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import type { AppUrn } from '@ci-hub/common/types';
+import { type AppUrn, type McpAccessChoice, mcpAccessGranted } from '@ci-hub/common/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { AppsRepository } from '@/modules/apps/apps.repository';
 import { hubTrustMaterialScopes } from '@/modules/apps/app.helpers';
 import { FORWARD_AUTH_IDENTITY_SECRET_ENV, FORWARD_AUTH_SECRET_ENV, ForwardAuthSecretResolver } from '@/modules/auth/forward-auth-secret.resolver';
 import { EnvUtils } from '@/modules/env/env.utils';
@@ -18,6 +19,16 @@ export interface HubAccessStatus {
   identityVerification: boolean;
   /** Whether this app would be (re-)provisioned trust material on its next env generation. */
   provisioned: boolean;
+  /**
+   * The app's request for the Hub's MCP tools, which reach the apps beside it, and a person's answer.
+   * `null` when its manifest does not ask (`hub_integration.mcp_client`).
+   */
+  mcp: {
+    /** `null`: nobody has answered yet, so the app holds no MCP key. */
+    access: McpAccessChoice | null;
+    /** The level its MCP key works at now, which Settings → Security can change; `null` without one. */
+    keyCapability: string | null;
+  } | null;
 }
 
 /**
@@ -35,6 +46,7 @@ export class HubAccessService {
     private readonly envUtils: EnvUtils,
     private readonly logger: LoggerService,
     private readonly moduleRef: ModuleRef,
+    private readonly appsRepository: AppsRepository,
   ) {}
 
   /** Load the installed app manifest or 404 — shared by getStatus and rotate. */
@@ -50,10 +62,11 @@ export class HubAccessService {
   async getStatus(appUrn: AppUrn): Promise<HubAccessStatus> {
     // All three reads are independent — the manifest, the managed key, and the app.env — so fetch
     // them together rather than serializing the manifest load ahead of the other two.
-    const [info, managed, appEnv] = await Promise.all([
+    const [info, managed, appEnv, mcpAccess] = await Promise.all([
       this.requireApp(appUrn),
       this.apiKeys.findManagedByApp(appUrn),
       this.appFilesManager.getAppEnv(appUrn),
+      this.appsRepository.getAppMcpAccess(appUrn),
     ]);
     const envMap = this.envUtils.envStringToMap(appEnv.content);
     return {
@@ -61,8 +74,52 @@ export class HubAccessService {
       identityVerification: [FORWARD_AUTH_SECRET_ENV, FORWARD_AUTH_IDENTITY_SECRET_ENV].some((key) => (envMap.get(key) ?? '').trim().length > 0),
       // The gates generateEnvFile provisions from, never a restatement of them. Companion Memory gets its own identity
       // secret from the second one and holds neither key scope.
-      provisioned: hubTrustMaterialScopes(info).length > 0 || isMemoryProviderApp(info),
+      provisioned: hubTrustMaterialScopes(info, mcpAccess).length > 0 || isMemoryProviderApp(info),
+      mcp: info.hub_integration?.mcp_client
+        ? {
+            access: isMcpAccessChoice(mcpAccess) ? mcpAccess : null,
+            keyCapability: managed?.scopes.includes('mcp') ? managed.capability : null,
+          }
+        : null,
     };
+  }
+
+  /**
+   * Record a person's answer to the app's request for the Hub's MCP tools, and apply it.
+   *
+   * The caller has checked that the person may give it (`HubManagerGuard`, and an organization owner
+   * or admin for `full`). Refusing deletes the app's MCP key now, so it stops working before the app
+   * restarts. A granted level also becomes the level of a key the app already holds. A running app is
+   * restarted, which is when its env gains or loses `HUB_MCP_API_KEY`; a stopped one gets it at its
+   * next start, so this does not start it.
+   */
+  async setMcpAccess(appUrn: AppUrn, access: McpAccessChoice): Promise<{ restarting: boolean }> {
+    const info = await this.requireApp(appUrn);
+    if (!info.hub_integration?.mcp_client) {
+      throw new BadRequestException(`${appUrn} does not ask for the Hub's MCP tools`);
+    }
+
+    return this.appLifecycle.withAppHeld(appUrn, async (app) => {
+      await this.appsRepository.setAppMcpAccess(appUrn, access);
+      const managed = await this.apiKeys.findManagedByApp(appUrn);
+      if (!mcpAccessGranted(access)) {
+        // The `app` scope of an official Memory or OIDC consumer is no part of this answer, so only a key
+        // holding nothing else goes now; the restart takes `mcp` off one that holds both.
+        if (managed?.scopes.every((scope) => scope === 'mcp')) {
+          await this.apiKeys.revokeManagedByApp(appUrn);
+        }
+      } else if (managed?.scopes.includes('mcp') && managed.capability !== access) {
+        await this.apiKeys.setCapability(managed.id, access);
+      }
+      this.logger.info('MCP access set', appUrn, access);
+
+      const status = await this.appsRepository.getAppStatusByUrn(appUrn);
+      if (status?.status !== 'running') {
+        return { restarting: false };
+      }
+      await app.restart({ reason: 'hub-access-mcp' });
+      return { restarting: true };
+    });
   }
 
   /**
@@ -124,4 +181,8 @@ export class HubAccessService {
       }
     });
   }
+}
+
+function isMcpAccessChoice(value: string | null): value is McpAccessChoice {
+  return value === 'none' || mcpAccessGranted(value);
 }

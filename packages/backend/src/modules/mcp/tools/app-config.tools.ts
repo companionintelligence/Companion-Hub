@@ -1,10 +1,11 @@
-import { Injectable, type OnModuleInit } from '@nestjs/common';
+import { HttpStatus, Injectable, type OnModuleInit } from '@nestjs/common';
 import { UserConfigService } from '@/modules/user-config/user-config.service';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppsService } from '@/modules/apps/apps.service';
 import { castAppUrn } from '@/common/helpers/app-helpers';
+import { TranslatableError } from '@/common/error/translatable-error';
 import { settingsReadAction } from '@/core/portal/local-app-reads';
-import { assertMcpCallerMay } from '../mcp-tool-call';
+import { assertMcpCallerMay, mcpCallerMayReadSettingValues } from '../mcp-tool-call';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
 const urnProp = { type: 'string', description: 'App identifier in appName:storeSlug format' } as const;
@@ -88,6 +89,11 @@ export class AppConfigTools implements OnModuleInit {
   async getUserConfig(params: { appUrn: string }) {
     const appUrn = castAppUrn(params.appUrn);
     await assertMcpCallerMay(this.appLifecycleService, appUrn, settingsReadAction(appUrn));
+    // The overrides are values a person typed, often secrets; another app's key looks after this app
+    // without them (`mcpCallerMayReadSettingValues`).
+    if (!mcpCallerMayReadSettingValues(appUrn)) {
+      throw new TranslatableError('MCP_SETTING_VALUES_FULL_REQUIRED', {}, HttpStatus.FORBIDDEN);
+    }
     return this.userConfigService.getUserConfig(appUrn);
   }
   async updateUserConfig(params: { appUrn: string; dockerCompose: string; appEnv: string }) {

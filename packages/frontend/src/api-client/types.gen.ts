@@ -1673,6 +1673,10 @@ export type AcknowledgeRestoreResponseDto = {
     success: boolean;
 };
 
+export type McpAccessBody = {
+    access: 'none' | 'read' | 'write' | 'full';
+};
+
 export type AppFormBody = {
     port?: number;
     exposed?: boolean;
@@ -1683,6 +1687,7 @@ export type AppFormBody = {
     isVisibleOnGuestDashboard?: boolean;
     enableAuth?: boolean;
     autoRestartOnDomainChange?: boolean;
+    mcpAccess?: 'none' | 'read' | 'write' | 'full';
     localSubdomain?: string;
     publicDomain?: string;
     customDomain?: string;
@@ -5651,6 +5656,19 @@ export type RotateHubAccessData = {
 
 export type RotateHubAccessResponses = {
     201: unknown;
+};
+
+export type SetMcpAccessData = {
+    body: McpAccessBody;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/app-lifecycle/{urn}/hub-access/mcp';
+};
+
+export type SetMcpAccessResponses = {
+    200: unknown;
 };
 
 export type InstallAppData = {

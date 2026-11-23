@@ -22,7 +22,19 @@ Create a key one of two ways:
 
 `cihub mcp setup` only toggles `MCP_ENABLED`; it does not mint or install a credential.
 
-At **app install**, when `hub_integration.mcp_client: true`, the Hub injects:
+An app asks for the Hub's MCP tools with `hub_integration.mcp_client: true`. Asking isn't enough: any
+store can publish that manifest, and the key reaches the apps beside it. A person answers first, at
+install or later in the app's **Settings → Hub access**: **No access**, or the level the app's key works
+at (`read`, `write` or `full`, described below). Only someone who may manage the Hub can give access, and
+`full` takes an organization owner or admin. The answer is stored on the app (`app.mcp_access`), never in
+its settings form, which the app's own key may change. Until someone answers, the app holds no MCP key.
+An app installed by a key, through `hub_install_app`, is never answered by that key.
+
+Apps installed before the Hub asked: an official-store app (`ci-marketplace`) that already held an MCP key
+keeps it at its level, and that is recorded as the answer. Any other app loses its key at its next start,
+until a person grants access. Taking access away deletes the key at once and restarts a running app.
+
+Once access is granted, the Hub injects:
 
 | Env var           | Purpose                                                                         |
 | ----------------- | ------------------------------------------------------------------------------- |
@@ -48,9 +60,9 @@ every call, so a change applies from the agent's next call:
 
 | Level | On an app that is not its own |
 | --- | --- |
-| `read` | Read the app: status, logs, config, backups, skill, tools, OpenAPI spec, and operation status. |
-| `write` (what a managed key is provisioned with) | Also start, stop, or restart it, and call its MCP tools (`hub_call_app_tool`) and its API with any method (`hub_call_app_api`). |
-| `full` | Everything it may do on its own app. Only an organization owner or admin can give a key `full`. |
+| `read` | Read the app: status, logs, backups, skill, tools, OpenAPI spec, and operation status. Not what a person entered in its settings: the stored install form is left out of `hub_get_app` and `hub_list_installed_apps`, and `hub_get_user_config` is refused (`MCP_SETTING_VALUES_FULL_REQUIRED`). |
+| `write` | Also start, stop, or restart it, and call its MCP tools (`hub_call_app_tool`) and its API with any method (`hub_call_app_api`). |
+| `full` | Everything it may do on its own app, settings values included. Only an organization owner or admin can give a key `full`. |
 
 Below `full`, the rest is refused with `APP_ACTION_GRANT_DENIED`: installing the app; changing its
 configuration (user config, ignored versions, custom-app compose or metadata, availability repair, and
