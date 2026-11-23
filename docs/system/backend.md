@@ -31,9 +31,84 @@ packages/backend/
 | `sse` | Real-time status stream to frontend |
 | `mcp` | MCP server tools for agent apps |
 | `tailscale` / `cloudflare` | Optional sidecar integrations |
+| `app-links` | The networks that let one app reach another directly, and the operator's approvals of them — see [App links](#app-links). |
 | `inference` | Backend registry, model resolution, routing to a local engine. The OpenAI-compatible `/api/inference/v1/*` routes carry `InferenceAccessGuard`; `apps/:slug/credentials*` carries `InternalOriginGuard` (origin only, no key — see [App inference handout](#app-inference-handout)). |
 | `hub-pool` | Multi-Hub inference pooling: peer identity, pairing, discovery, ranking, and the proxy. The app-facing `v1/*` and `api/*` proxy routes (and the root-level `/api/version`, `/api/tags`) carry `InferenceAccessGuard`; `local/*` carries `PoolPeerGuard`. |
 | `registration` | Portal pairing, device ID, and registration-state drift. `check-in-response.ts` maps Portal's check-in answers to Hub responses, and `GET /registration/phase` reports the phase and last check-in without sending one — see [`portal-check-in.md`](../portal-check-in.md). The check-in also carries this Hub's own status (phase, degraded reasons, tunnel health, Tailscale connectivity, version) for Portal's org fleet report — see `check-in-payload.ts`; every field is optional and absent means "no report this time", never "the value is gone". |
+
+## App networks
+
+Each app is on a Docker network of its own, `<app>_<store>_network` (`appNetworkName`), and on no
+network another app is on. The compose builder puts every service there and nowhere else;
+`isMain` and `addToMainNetwork` no longer add the shared `ci-hub_network`, an app override may not
+name a Hub network, and `traefik.docker.network` may name only the app's own network (which the Hub
+sets). Before, every app's main container joined `ci-hub_network`, so any app could reach any
+other app's backend without the Hub login in front of it.
+
+Three containers join every app network after each `up` and at boot (`DockerService`
+`attachHubToAppNetworks` / `ensureHubOnAppNetworks`), and leave it before `down`:
+
+| Container | How | Why |
+| --- | --- | --- |
+| The Hub | aliases `ci-hub`, `ci-os-hub` | Apps are handed inference and the Hub API at `http://ci-hub:<port>`, from any service. |
+| Traefik | fixed address: the subnet's last host, `.254` of the app's /24 (`traefikAddressOnAppSubnet`) | To route to the app. The app is told that address as the hop it trusts (`HUB_TRUSTED_PROXY_CIDRS`, `ProxyTrustService.appTrustedProxyCidrs`). If an app container ever holds it, Traefik joins at an address Docker picks and the app trusts no Traefik hop. |
+| The Private VPN sidecar | no alias | `tailscale serve` proxies to the app container's address on this network (`getAppNetworkTarget`). |
+
+Traefik and the VPN sidecar join and leave whether they are running or not (`appNetworkMembers`):
+Docker applies a stopped container's networks at its next start. Counting only running ones left a
+Traefik that was down off the networks apps created meanwhile, and on the ones `compose down`
+deleted, and Docker then refuses to start it ("network <id> not found").
+
+At boot the Hub also starts Traefik when its container exists but is not running
+(`ensureTraefikRunning`), then puts it on the edge network. Docker does not retry a container that
+failed to start when the daemon did, and Traefik fails then whenever the Hub's data folder is mounted
+after Docker starts (an encrypted home that unlocks at login, an encrypted or external drive): its
+single-file bind mounts find no file ("not a directory: Are you trying to mount a directory onto a
+file?"), it stays down, and every app hostname with it while the Hub is healthy. It is tried again
+on a backoff for about a quarter of an hour. A start refused for a deleted network is answered by
+leaving that network by name (`leaveDeletedNetworks`) and trying again. It is started in place,
+never recreated from inside the Hub (see `ensureTraefikOnEdgeNetwork`). The Hub cannot do the same
+for its own container: a Hub whose bind mounts were missing at boot needs `docker start ci-hub`
+once the folder is there.
+
+At boot, `moveAppsOffSharedNetworks` takes any app container still on `ci-hub_network` or
+`ci-os-hub_network` off it, and `AppLifecycleService` then restarts each such app (system reason
+`app-network-isolation`). Disconnecting is not enough: the container's `traefik.docker.network`
+label still names the shared network, and Traefik then routes to whichever network the container is
+on first, which can be a link network Traefik is not on (seen on the dev Hub, 2026-11-18, for
+OpenClaw and Hermes). The restart also rewrites the app's Memory URL and trusted Traefik hop.
+
+**Nothing on an app network is looked up by name.** A container on several networks gets a name
+answered from whichever network claims it first (measured on Docker 29.6: an alias on a network
+that sorts before the real one wins, even over a real container name; two claimants on one network
+are round-robined). An app names its own services, so:
+
+- The Hub pins its own services in `/etc/hosts` (`extra_hosts`: `ci-hub-db`, `ci-hub-queue` at fixed
+  addresses on `ci-hub_internal`), and Traefik pins `ci-hub` to the Hub's fixed edge address for its
+  login check. `/etc/hosts` is read before Docker DNS, from Node too.
+- The Hub reaches an app's service by its address on the app's own network, never its name
+  (`DockerReadFacade.getServiceAddressOnAppNetwork`, `mainServiceAddressOf`): Companion Memory's
+  gateway for the connect exchange and key checks, agent wake-ups, readiness probes, the MCP
+  bridge's `${APP_HOST}` and the MCP API proxy. Each carries a credential that another app's
+  `gateway` or `api` service used to receive.
+
+### App links
+
+Two apps reach each other directly only over a link network (`ci-hub-link_<hash>`, internal, a
+/27 from 10.128.1.0–10.128.9.255) that `AppLinkService` makes for the pair: the consumer's
+running containers with no names of their own, and the one provider service it asked for, under
+the name the consumer reaches it by. The Hub connects every member, so no app can add a name
+there. Which links exist (`planAppLinks`):
+
+| Link | In force |
+| --- | --- |
+| A Companion Memory consumer (`hub_integration.memory.url_env` + `token_env`) to ci-memory's gateway, as `ci-memory` | Always. The key is the consent: the Hub hands it over only when the user connects the app, and the gateway refuses everything without one. Consumers are given `http://ci-memory:<port>`. |
+| `hub_integration.links`: A `connects_to` B and B `accepts_from` A, same store | By itself. |
+| The same across two stores, or declared by one side only | Once someone who manages the Hub allows it (`POST /api/app-links/approval`, the app page's "Connections to other apps" card). Kept in `app_link_approval`, bound to the service and name allowed. |
+
+Both sides name each other by app id *and* store, so an app of the same id in another store is not
+the one asked for. Links are re-made after every app `up`, at boot and every two minutes;
+uninstalling an app forgets its approvals and takes its links down.
 
 ## App volumes
 

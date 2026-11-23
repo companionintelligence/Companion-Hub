@@ -297,3 +297,72 @@ describe('parseInstalledAppInfo', () => {
     ).toBe(false);
   });
 });
+
+/*
+ * A form field's variable is written into app.env as `NAME=value`, and a key has no escape. A newline
+ * in it started a line of its own: `X=1\nAPP_DATA_DIR` with a default of `/` wrote `APP_DATA_DIR=/`
+ * after the Hub's own, and every `${APP_DATA_DIR}/...` bind the sandbox clears became a host path.
+ * Compose's env-file reader trims a leading space and an `export `, so those named it too.
+ */
+describe('appInfoSchema: a name that is no environment variable name', () => {
+  const NOT_NAMES = ['X=1\nAPP_DATA_DIR', ' APP_DATA_DIR', 'export APP_DATA_DIR', 'A B', 'A=B', '1ABC', 'A-B', 'A.B', 'A#B', '${A}', ''];
+  const refusal = (name: string) => `${JSON.stringify(name)} is not an environment variable name (letters, digits and _)`;
+
+  it.each(NOT_NAMES)('refuses %j as a form field', (name) => {
+    expect(issuesOf({ form_fields: [{ type: 'text', label: 'Name', env_variable: name, default: '/' }] })).toContainEqual([
+      'form_fields.0.env_variable',
+      refusal(name),
+    ]);
+  });
+
+  it.each(NOT_NAMES.filter(Boolean))('refuses %j as a base URL alias', (name) => {
+    expect(
+      issuesOf({ form_fields: [{ type: 'app_base_url', label: 'URL', env_variable: 'APP_BASE_URL', alias_env_variables: ['APP_URL', name] }] }),
+    ).toContainEqual(['form_fields.0.alias_env_variables.1', refusal(name)]);
+  });
+
+  it.each(NOT_NAMES.filter(Boolean))('refuses %j as an inference variable', (name) => {
+    expect(issuesOf({ hub_integration: { inference: { chat_model: name } } })).toContainEqual([
+      'hub_integration.inference.chat_model',
+      refusal(name),
+    ]);
+  });
+
+  it('accepts ordinary names, lower case included', () => {
+    expect(
+      issuesOf({
+        form_fields: [
+          { type: 'text', label: 'A', env_variable: 'DB_PASSWORD' },
+          { type: 'text', label: 'B', env_variable: '_private' },
+          { type: 'text', label: 'C', env_variable: 'tz2' },
+        ],
+        hub_integration: { inference: { chat_model: 'LLM_MODEL' } },
+      }),
+    ).toEqual([]);
+  });
+
+  it('reads an installed copy without such a field, and says so', () => {
+    const { parsed, leftOut } = parseInstalledAppInfo({
+      ...baseApp,
+      form_fields: [
+        { type: 'text', label: 'Root', env_variable: 'X=1\nAPP_DATA_DIR', default: '/' },
+        { type: 'app_base_url', label: 'URL', env_variable: 'APP_BASE_URL', alias_env_variables: ['APP_URL', 'export APP_DATA_DIR'] },
+        { type: 'text', label: 'Site', env_variable: 'SITE' },
+      ],
+      hub_integration: { inference: { chat_model: ' APP_DATA_DIR', embedding_model: 'EMBED_MODEL' } },
+    });
+
+    expect(parsed.success).toBe(true);
+    const app = parsed.success ? parsed.data : undefined;
+    expect(app?.form_fields.map((field) => [field.env_variable, field.alias_env_variables])).toEqual([
+      ['APP_BASE_URL', ['APP_URL']],
+      ['SITE', undefined],
+    ]);
+    expect(app?.hub_integration?.inference).toEqual({ embedding_model: 'EMBED_MODEL' });
+    expect(leftOut).toEqual([
+      'form field "X=1\\nAPP_DATA_DIR"',
+      'alias "export APP_DATA_DIR" of form field APP_BASE_URL',
+      'hub_integration.inference.chat_model (" APP_DATA_DIR")',
+    ]);
+  });
+});

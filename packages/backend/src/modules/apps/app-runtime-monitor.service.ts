@@ -684,7 +684,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
         return null;
       }
 
-      const address = await this.dockerReadFacade.getServiceAddressOnHubNetwork(appUrn, main.name);
+      const address = await this.dockerReadFacade.getServiceAddressOnAppNetwork(appUrn, main.name);
       if (!address) {
         return null;
       }
@@ -881,7 +881,13 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
       // A later reinstall or edit may break it again; warn again then.
       this.readinessServiceWarned.delete(appUrn);
 
-      const url = `http://${descriptor.service}:${descriptor.port}${descriptor.path}`;
+      // The service's address on the app's own network, not its name: another app could answer for the
+      // name, and this request carries the app's bearer (see `mainServiceAddressOf`).
+      const address = await this.dockerReadFacade.getServiceAddressOnAppNetwork(appUrn, descriptor.service);
+      if (!address) {
+        return unknownReadiness(sampledAt);
+      }
+      const url = `http://${address}:${descriptor.port}${descriptor.path}`;
       const headers: Record<string, string> = { Accept: 'application/json' };
       if (descriptor.bearer_env) {
         const appEnv = await this.appFilesManager.getAppEnv(appUrn);

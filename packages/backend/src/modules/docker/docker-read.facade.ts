@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { HUB_APPURN_LABEL, LEGACY_HUB_APPURN_LABEL, ipOnHubNetwork } from '@/common/constants';
+import { HUB_APPURN_LABEL, LEGACY_HUB_APPURN_LABEL } from '@/common/constants';
+import { ipOnAppNetwork } from '@/common/helpers/app-helpers';
 import { appUrnLabelSets, listContainersMatchingAnyLabelSets, managedAppLabelSets } from './hub-container-query';
 import { pLimit } from '@/common/helpers/file-helpers';
 import { withTimeout } from '@/common/helpers/with-timeout';
@@ -190,16 +191,16 @@ export class DockerReadFacade {
   }
 
   /**
-   * Every address a RUNNING container of any app named in `appNames` (any
-   * store) holds on any Docker network. What `AppContainerOriginGuard` compares
+   * Every address a RUNNING container of an app in `appUrns` (whole URNs, store
+   * included) holds on any Docker network. What `AppContainerOriginGuard` compares
    * a request's source address against: a container-to-container call arrives
    * from one of these, and nothing else on the appliance's networks does.
    * Read from the container list, which already carries per-network addresses,
    * so no inspect round-trip; a Docker failure yields an empty set (refuse).
    */
-  public async runningContainerAddressesForApps(appNames: readonly string[]): Promise<Set<string>> {
+  public async runningContainerAddressesForApps(appUrns: readonly string[]): Promise<Set<string>> {
     const addresses = new Set<string>();
-    if (appNames.length === 0) {
+    if (appUrns.length === 0) {
       return addresses;
     }
     let containers: Dockerode.ContainerInfo[];
@@ -216,7 +217,8 @@ export class DockerReadFacade {
     for (const container of containers) {
       const labels = container.Labels ?? {};
       const appUrn = labels[HUB_APPURN_LABEL] ?? labels[LEGACY_HUB_APPURN_LABEL];
-      if (!appUrn || !appNames.includes(appUrn.split(':')[0] ?? '')) {
+      // The whole URN, store included: the app name alone is any store's to choose.
+      if (!appUrn || !appUrns.includes(appUrn)) {
         continue;
       }
       for (const network of Object.values(container.NetworkSettings?.Networks ?? {})) {
@@ -230,19 +232,24 @@ export class DockerReadFacade {
   }
 
   /**
-   * The address a running container of the app's compose `service` holds on the Hub's app network,
-   * the one Traefik reaches exposed apps through. Null when no such container runs or it isn't on
-   * that network (host networking, `network_mode: service:…`). Throws when Docker fails or takes
+   * The address a running container of the app's compose `service` holds on the app's own network, the
+   * one the Hub, Traefik and the VPN sidecar reach it on. Null when no such container runs or it isn't
+   * on that network (host networking, `network_mode: service:…`). Throws when Docker fails or takes
    * longer than {@link DOCKER_INSPECT_TIMEOUT_MS}.
+   *
+   * This, not the service's name, is how the Hub reaches an app's service. The Hub is on every app's
+   * network, and Docker answers a name from whichever network claims it first, so any other app could
+   * answer for `gateway` or `api` (see "App networks" in docs/system/backend.md). The address is
+   * read from the container this app's compose project owns, on the network named for this app.
    */
-  public async getServiceAddressOnHubNetwork(appUrn: AppUrn, service: string): Promise<string | null> {
+  public async getServiceAddressOnAppNetwork(appUrn: AppUrn, service: string): Promise<string | null> {
     const containers = await withTimeout(
       listContainersMatchingAnyLabelSets(this.docker, appUrnLabelSets(appUrn, [`com.docker.compose.service=${service}`]), false),
       DOCKER_INSPECT_TIMEOUT_MS,
       `Docker container listing timed out for ${appUrn}`,
     );
     for (const container of containers) {
-      const address = container.State === 'running' ? ipOnHubNetwork(container.NetworkSettings?.Networks) : undefined;
+      const address = container.State === 'running' ? ipOnAppNetwork(appUrn, container.NetworkSettings?.Networks) : undefined;
       if (address) {
         return address;
       }
@@ -278,7 +285,7 @@ export class DockerReadFacade {
         limit(async () => {
           const inspect = await this.docker.getContainer(containerInfo.Id).inspect();
           const labels = inspect.Config?.Labels || {};
-          const containerIP = ipOnHubNetwork(inspect.NetworkSettings?.Networks);
+          const containerIP = ipOnAppNetwork(appUrn, inspect.NetworkSettings?.Networks);
 
           if (!containerIP) {
             return null;

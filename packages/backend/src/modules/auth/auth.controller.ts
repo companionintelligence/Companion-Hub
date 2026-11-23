@@ -122,6 +122,8 @@ import {
   portalBindingMatches,
   PORTAL_SSO_STATE_TTL_SECONDS,
   type PortalDesktopExchange,
+  APP_CHALLENGE_PATTERN,
+  appVerifierMatches,
   type PortalSsoErrorCode,
   type PortalSsoState,
   resolveHubRequestOrigin,
@@ -197,11 +199,21 @@ interface EdgeSsoTicket {
  * minutes, Memory's `staticfiles.auth.signatureTTL`), as it already does on a
  * Memory reached without a Hub.
  *
+ * `/api/agent/v1` is where another person's Companion Memory reaches this one:
+ * asking a question, collecting an answer, checking this box holds a person's
+ * key, accepting an invite. Those requests come from another box, never with a
+ * Hub session or a member's Portal token, and Memory authenticates every one
+ * itself: each is signed with the sender's own key and answered only through a
+ * link the owner made for that key (an identity check needs no link and proves
+ * only that a key the caller already names is held here). Without this the Hub
+ * answered every one with its login, so two Memories behind Hubs could never
+ * link or ask each other anything.
+ *
  * ONLY for the official Memory install — see `isMemoryProviderHost`. Every
  * other edge-authenticated app relies on the Hub to authenticate for it, and
  * these paths mean nothing to them.
  */
-const FORWARD_AUTH_APP_PUBLIC_PREFIXES = ['/api/authenticate', '/api/health', '/api/keys', '/powersync', '/static'] as const;
+const FORWARD_AUTH_APP_PUBLIC_PREFIXES = ['/api/authenticate', '/api/health', '/api/keys', '/api/agent/v1', '/powersync', '/static'] as const;
 
 /** Memory's object keys are UUIDs, so its signed links need no decoding. A literal `%2F` in a key would take two rounds. */
 const MAX_FORWARDED_PATH_DECODE_ROUNDS = 4;
@@ -341,6 +353,8 @@ self.addEventListener('activate', (event) => {
 });
 `;
 
+/** The Portal client the Hub's own sign-ins use (mobile-connect `OIDC_CLIENT_ID`). */
+const HUB_MOBILE_PORTAL_AUDIENCE = 'ci-hub';
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -1202,6 +1216,7 @@ export class AuthController {
     @Query('redirect_url') redirectUrl?: string,
     @Query('desktop') desktop?: string,
     @Query('desktop_channel') desktopChannel?: string,
+    @Query('app_challenge') appChallengeParam?: string,
   ) {
     // Only this sign-in's own request decides. The desktop app always sends desktop=1, and the
     // presence flag is applied at the callback, to loopback sign-ins only.
@@ -1242,6 +1257,10 @@ export class AuthController {
     // short-lived cookie, then required back at the callback (see portalCallback).
     const binding = crypto.randomBytes(32).toString('base64url');
     // A short callback window limits stale PKCE state.
+    // Only for a sign-in that ends in a one-time code handed to an app, and only a well-formed one:
+    // anything else is dropped, which leaves the code redeemable the old way rather than by no one.
+    const appChallenge =
+      isDesktop && typeof appChallengeParam === 'string' && APP_CHALLENGE_PATTERN.test(appChallengeParam) ? appChallengeParam : undefined;
     const portalState: PortalSsoState = {
       codeVerifier,
       redirectUrl: redirectUrl || null,
@@ -1249,6 +1268,7 @@ export class AuthController {
       desktop: isDesktop,
       desktopChannel: channel,
       binding,
+      ...(appChallenge ? { appChallenge } : {}),
     };
 
     // Built before the state and cookie are written: CI_CLOUD_URL is only checked as a string, so
@@ -1308,6 +1328,7 @@ export class AuthController {
       let redirectUrl: string | null;
       let hubOrigin: string;
       let binding: string | undefined;
+      let appChallenge: string | undefined;
 
       try {
         const parsed = JSON.parse(cached) as PortalSsoState;
@@ -1317,6 +1338,7 @@ export class AuthController {
         desktop = parsed.desktop;
         desktopChannel = parsed.desktopChannel ?? 'packaged';
         binding = parsed.binding;
+        appChallenge = parsed.appChallenge;
       } catch {
         return redirectError(null, 'callback_error');
       }
@@ -1409,6 +1431,7 @@ export class AuthController {
           sessionId,
           redirectPath: toDesktopRedirectPath(redirectUrl, hubOrigin),
           userId: operator.id,
+          ...(appChallenge ? { appChallenge } : {}),
         };
         this.cache.set(portalDesktopPendingKey(desktopToken), JSON.stringify(exchangePayload), PORTAL_DESKTOP_HANDOFF_TTL_SECONDS);
         const deepLink = buildPortalDesktopDeepLink(desktopToken, desktopChannel);
@@ -1556,7 +1579,12 @@ export class AuthController {
 
   @Get('/portal/desktop-exchange')
   @ApiResponse({ type: PortalDesktopExchangeDto })
-  async exchangePortalDesktopLogin(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Query('token') token?: string) {
+  async exchangePortalDesktopLogin(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+    @Query('token') token?: string,
+    @Query('verifier') verifier?: string,
+  ) {
     if (!token) {
       throw new BadRequestException('Missing desktop exchange token');
     }
@@ -1574,6 +1602,28 @@ export class AuthController {
     } catch {
       this.cache.del(cacheKey);
       throw new BadRequestException('Malformed desktop exchange payload');
+    }
+
+    // A code minted for an app that kept a secret goes only to that app. A wrong or missing secret
+    // burns the code: whoever is presenting it took it off the link and is not the app that asked,
+    // and the same refusal as an unknown code tells them nothing more.
+    if (parsed.appChallenge !== undefined && !appVerifierMatches(parsed.appChallenge, verifier)) {
+      this.cache.del(cacheKey);
+      this.logger.warn('Portal desktop exchange refused a code presented without its app secret');
+      throw new BadRequestException('Invalid or expired desktop exchange token');
+    }
+
+    // An app that sends a secret asked for a bound code. A code with no challenge was minted for
+    // some other sign-in (a page can start one without app_challenge) and must not sign this app
+    // in as whoever finished it. Burn it the same way.
+    if (parsed.appChallenge === undefined && verifier !== undefined) {
+      this.cache.del(cacheKey);
+      this.logger.warn('Portal desktop exchange refused an unbound code presented with an app secret');
+      throw new BadRequestException('Invalid or expired desktop exchange token');
+    }
+
+    if (parsed.appChallenge === undefined) {
+      this.logger.info('Portal desktop exchange redeemed a code with no app secret (an app from before app binding)');
     }
 
     let sessionId = parsed.sessionId;
@@ -1605,15 +1655,19 @@ export class AuthController {
    * then pick is the same account, so the second in-app sheet is not a new
    * login: it is this id_token becoming a Hub session.
    *
-   * The token is the one `ci-hub` PKCE minted (`aud` includes `ci-hub`). An
-   * unverified email is refused the same way the browser callback refuses it.
+   * The token is the one `ci-hub` PKCE minted (`aud` includes `ci-hub`), and only that audience is
+   * accepted here. The default list also takes tokens Portal minted for the extension, the applet,
+   * Capture and the rest, which forward-auth needs; a session on this Hub is not one of their uses, and
+   * a token handed to any of those clients was otherwise a Hub sign-in too. An unverified email is
+   * refused the same way the browser callback refuses it.
    */
   @Post('/portal/mobile-session')
   @ApiResponse({ type: PortalDesktopExchangeDto })
   async establishPortalMobileSession(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const bearer = extractBearerToken(typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined);
     const portalBase = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
-    const claims = bearer && portalBase ? await verifyPortalIdToken(bearer, { publicCiCloudUrl: portalBase }) : null;
+    const claims =
+      bearer && portalBase ? await verifyPortalIdToken(bearer, { publicCiCloudUrl: portalBase, audiences: [HUB_MOBILE_PORTAL_AUDIENCE] }) : null;
     if (!claims?.email || claims.emailVerified !== true) {
       throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
     }

@@ -234,8 +234,9 @@ describe('mobile privacy/permission posture', () => {
    * Every zone Companion Portal publishes a Hub under, the new `.pw` zones first.
    * The app reaches a Hub at its public hostname through the native HTTP client
    * (`http:default`), and its events and sockets through the webview (CSP
-   * `connect-src`, `remote.urls`). A zone missing from any one of the three is a
-   * Hub the phone cannot sign in to, with nothing on screen saying why.
+   * `connect-src`). A zone missing from either is a Hub the phone cannot sign in
+   * to, with nothing on screen saying why. `remote.urls` is not one of them: it
+   * decides which REMOTE pages may call native commands, and names no Hub zone.
    */
   const HUB_ZONES = [
     'ci.computer',
@@ -259,21 +260,13 @@ describe('mobile privacy/permission posture', () => {
     'mysticalengine.com',
   ];
 
-  /**
-   * The zones named by the one Hub pattern in `remote.urls`: the entries of its `(?:…)` alternations,
-   * unescaped. That file explains why every zone shares one pattern instead of one entry each.
-   */
-  const remoteHubZones = (urls: string[]) => {
-    const hub = urls.find((url) => url.startsWith('https://(')) ?? '';
-    return [...hub.matchAll(/\(\?:([^()]*)\)/g)].flatMap((match) => (match[1] ?? '').split('|')).map((zone) => zone.replace(/\\\./g, '.'));
-  };
-
-  it('keeps remote.urls to two patterns, because Tauri compiles each one at every launch', () => {
+  it('lets only the local dev server use native commands, never a page on a Hub zone', () => {
     const caps = JSON.parse(read('capabilities/default.json')) as { remote: { urls: string[] } };
 
-    // One per zone cost seconds of startup on a phone (24 patterns, each compiled for every allowed command).
-    expect(caps.remote.urls).toHaveLength(2);
-    expect(caps.remote.urls[0]).toBe('http://(localhost|127\\.0\\.0\\.1|lvh\\.me):*');
+    // The bundled UI needs no remote.urls entry. Naming the Hub zones gave the session store, native
+    // HTTP and the opener to any page on them that loaded in the window, installed apps included.
+    // One pattern also keeps startup fast: Tauri compiles each one for every allowed command at launch.
+    expect(caps.remote.urls).toEqual(['http://(localhost|127\\.0\\.0\\.1|lvh\\.me):*']);
   });
 
   it.each(HUB_ZONES)('can reach a Hub published under %s', (zone) => {
@@ -288,7 +281,6 @@ describe('mobile privacy/permission posture', () => {
     const connectSrc = (csp.match(/connect-src([^;]*)/)?.[1] ?? '').trim().split(/\s+/);
 
     expect(http?.allow?.map((entry) => entry.url)).toContain(`https://*.${zone}/*`);
-    expect(remoteHubZones(caps.remote.urls)).toContain(zone);
     expect(connectSrc).toContain(`https://*.${zone}`);
     expect(connectSrc).toContain(`wss://*.${zone}`);
   });

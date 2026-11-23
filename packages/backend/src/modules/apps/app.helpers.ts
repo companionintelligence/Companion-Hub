@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { HUB_ENV_KEYS_INHERITED_BY_APPS, hubContainerName } from '@/common/constants';
+import { HUB_ENV_KEYS_INHERITED_BY_APPS, HUB_ENV_KEYS_INHERITED_BY_FIRST_PARTY_MEMORY, hubContainerName } from '@/common/constants';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
@@ -15,6 +15,7 @@ import {
   type FormField,
   HUB_OWNED_APP_ENV_VARS,
   hubIntegrationMayWrite,
+  isEnvVariableName,
   type MemoryUrlStyle,
   type HubIntegration,
   writesAppBaseUrl,
@@ -39,6 +40,7 @@ import { MemoryConnectionService } from '../memory-connect/memory-connection.ser
 import { GATEWAY_API_PREFIX } from '../memory-connect/memory-exchange.client';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 import { ProxyTrustService } from '../network/proxy-trust.service';
+import { SubnetManagerService } from '../network/subnet-manager.service';
 import { FORWARD_AUTH_IDENTITY_SECRET_ENV, FORWARD_AUTH_SECRET_ENV, ForwardAuthSecretResolver } from '../auth/forward-auth-secret.resolver';
 import { mergeFormFieldDefaults } from '@ci-hub/common/validation';
 
@@ -71,8 +73,11 @@ const HUB_ONLY_SECRET_ENV_VAR_SET: ReadonlySet<string> = new Set(HUB_ONLY_SECRET
  * passed through under one: `"token_env": "JWT_SECRET"` would otherwise hand the app that secret.
  * Nor is a name no Hub integration may write (`hubIntegrationMayWrite`).
  */
-export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration'>): ReadonlySet<string> {
+export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration' | 'urn' | 'source'>): ReadonlySet<string> {
   const keys = new Set(HUB_ENV_KEYS_INHERITED_BY_APPS);
+  if (receivesPortalDeviceKey(config)) {
+    for (const key of HUB_ENV_KEYS_INHERITED_BY_FIRST_PARTY_MEMORY) keys.add(key);
+  }
   const memory = config.hub_integration?.memory;
   for (const name of [memory?.url_env, memory?.token_env]) {
     if (name && !HUB_ONLY_SECRET_ENV_VAR_SET.has(name) && hubIntegrationMayWrite(name)) keys.add(name);
@@ -81,13 +86,14 @@ export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration'
 }
 
 /**
- * Whether a manifest may have the Hub write `name` into the app's env: not a value the Hub sets for
+ * Whether a manifest may have the Hub write `name` into the app's env: a plain variable name
+ * (`isEnvVariableName`: a newline in a key writes a second line), and not a value the Hub sets for
  * the app itself (`HUB_OWNED_APP_ENV_VARS`). The manifest schema refuses those names and an installed
  * copy is read without them (`parseInstalledAppInfo`). This is for a manifest that reaches the env
  * some other way.
  */
 function manifestMayWriteEnv(name: string): boolean {
-  return !HUB_OWNED_APP_ENV_VARS.has(name);
+  return isEnvVariableName(name) && !HUB_OWNED_APP_ENV_VARS.has(name);
 }
 
 /**
@@ -209,13 +215,32 @@ export function needsHubAppKey(config: Pick<AppInfo, 'hub_integration'>): boolea
  * Whether an app is first-party Companion Memory as env generation sees it, which is the app that gets
  * this Hub's Portal device key as `HUB_API_KEY`.
  *
- * `ci-memory` deployments and source builds of the same product both count. The OIDC fallback, Portal
- * bearer config, device key and maps key all follow this one test, and so does the refresh that hands
- * Memory a new key after pairing (`DeviceKeyRefreshService`).
+ * Two installs count, both by INSTALL PROVENANCE: the official store's `ci-memory` (`isMemoryProviderApp`),
+ * and a source build of the same product the operator added as a custom app (store `_user`, `source`
+ * naming the CI-Server repository). The OIDC fallback, Portal bearer config, device key and maps key all
+ * follow this one test, and so does the refresh that hands Memory a new key after pairing
+ * (`DeviceKeyRefreshService`).
+ *
+ * ⚠ NEVER BY MANIFEST FIELDS ALONE. `id` and `source` are copied from config.json, which any store
+ * publishes: a manifest that said `"id": "ci-memory"` was handed this Hub's Portal device key, the
+ * Portal maps key and the Portal sign-in config (2026-11-18). A custom app is the operator's own, so
+ * its `source` is the operator's word; a store app's is not.
  */
-export function receivesPortalDeviceKey(config: Pick<AppInfo, 'id' | 'source'>): boolean {
-  return config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
+export function receivesPortalDeviceKey(config: Pick<AppInfo, 'urn' | 'source'>): boolean {
+  if (isMemoryProviderApp(config)) {
+    return true;
+  }
+  let store: string;
+  try {
+    store = extractAppUrn(config.urn).appStoreId;
+  } catch {
+    return false;
+  }
+  return store === CUSTOM_APP_STORE_SLUG && typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server');
 }
+
+/** The store every custom app is filed under (see `security-grants.ts`). */
+const CUSTOM_APP_STORE_SLUG = '_user';
 
 /**
  * Returns the scopes for an app's Hub-managed key.
@@ -412,13 +437,29 @@ export class AppHelpers {
    * Docker lookup behind the trust list did. No service, or a bad answer,
    * simply means no hops are vouched for.
    */
-  private resolveTrustedProxyCidrs(): string[] {
+  private async resolveTrustedProxyCidrs(appUrn: AppUrn): Promise<string[]> {
     try {
       const service = this.moduleRef.get(ProxyTrustService, { strict: false });
-      const cidrs = service?.trustedProxyCidrs?.();
+      const cidrs = service?.appTrustedProxyCidrs?.(await this.resolveAppSubnet(appUrn));
       return Array.isArray(cidrs) ? cidrs.filter((cidr): cidr is string => typeof cidr === 'string' && cidr.length > 0) : [];
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * The app's network subnet, allocated now if it has none yet. The env is written before the compose
+   * file on install, and Traefik's address on the app's network, which the app is told to trust, comes
+   * from it. The allocator returns the same subnet to the compose step that follows. Null when it cannot
+   * be had, in which case the app trusts the edge hops alone.
+   */
+  private async resolveAppSubnet(appUrn: AppUrn): Promise<string | null> {
+    try {
+      const subnetManager = this.moduleRef.get(SubnetManagerService, { strict: false });
+      return subnetManager ? await subnetManager.allocateSubnet(appUrn) : null;
+    } catch (error) {
+      this.logger.debug(`No subnet for ${appUrn} yet: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
     }
   }
 
@@ -573,12 +614,11 @@ export class AppHelpers {
     // so an app that reads the client address can walk X-Forwarded-For back
     // past Traefik and the tunnel to the real visitor instead of seeing
     // Traefik for everyone. Re-derived on every generation and REMOVED when
-    // nothing can be vouched for. Traefik's address in it is Docker's to
-    // reassign, so a running app keeps a stale one until it is recreated:
-    // TrustedProxyRefreshService restarts the apps that read it within a
-    // minute of Traefik moving, which bounds how long another container that
-    // is given the address it left could be believed.
-    const trustedProxies = this.resolveTrustedProxyCidrs();
+    // nothing can be vouched for. Traefik's address in it is its fixed one on
+    // this app's own network (`traefikAddressOnAppSubnet`); a running app that
+    // still has another, from before apps had networks of their own or from a
+    // subnet that has since changed, is restarted by TrustedProxyRefreshService.
+    const trustedProxies = await this.resolveTrustedProxyCidrs(appUrn);
     if (trustedProxies.length > 0) {
       envMap.set('HUB_TRUSTED_PROXY_CIDRS', trustedProxies.join(','));
     } else {
@@ -591,10 +631,14 @@ export class AppHelpers {
     // A manifest that names a value the Hub sets for the app gets the Hub's value. The manifest
     // schema refuses such a manifest, so this is only for one that reaches here some other way.
     const leaveOutManifestEnv = (name: string, source: string) => {
+      if (!isEnvVariableName(name)) {
+        this.logger.warn(`[AppHelpers] ${appUrn}: ${source} names ${JSON.stringify(name)}, which is no variable name; it is left out`);
+        return;
+      }
       this.logger.warn(`[AppHelpers] ${appUrn}: ${source} names ${name}, which the Hub sets for the app; the Hub's value is kept`);
     };
     const leaveOutIntegrationEnv = (name: string, source: string) => {
-      if (HUB_OWNED_APP_ENV_VARS.has(name)) {
+      if (HUB_OWNED_APP_ENV_VARS.has(name) || !isEnvVariableName(name)) {
         leaveOutManifestEnv(name, source);
       } else {
         this.logger.warn(`[AppHelpers] ${appUrn}: ${source} names ${name}, which no Hub integration may write; it is left out`);
@@ -1305,6 +1349,15 @@ export class AppHelpers {
     const hubContainer = hubContainerName();
     const hubPort = process.env.API_PORT || '3000';
     envMap.set('HUB_INFERENCE_URL', `http://${hubContainer}:${hubPort}/api/inference/v1`);
+
+    // Every writer above checks its names. This is the one place they all meet, so a key that is no
+    // variable name is dropped here too: written as-is, a newline in it would start a line of its own.
+    for (const key of [...envMap.keys()]) {
+      if (!isEnvVariableName(key)) {
+        envMap.delete(key);
+        this.logger.warn(`[AppHelpers] ${appUrn}: left ${JSON.stringify(key)} out of app.env, as it is no variable name`);
+      }
+    }
 
     await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));
 

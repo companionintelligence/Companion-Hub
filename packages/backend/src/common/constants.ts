@@ -132,11 +132,6 @@ export function hubQueueName(env: NodeJS.ProcessEnv = process.env): string {
   return hubContainerName(env) === LEGACY_HUB_CONTAINER_NAME ? LEGACY_RABBITMQ_HOST : DEFAULT_RABBITMQ_HOST;
 }
 
-export function hubAppNetworkNames(env: NodeJS.ProcessEnv = process.env): string[] {
-  const primary = hubNetworkName(env);
-  return primary === LEGACY_NETWORK_NAME ? [primary] : [primary, LEGACY_NETWORK_NAME];
-}
-
 /**
  * The ONLY keys an app's env may inherit from the Hub's own `.env`.
  *
@@ -159,8 +154,10 @@ export function hubAppNetworkNames(env: NodeJS.ProcessEnv = process.env): string
  *   `TZ` is used by dozens of manifests) and the values this function itself
  *   reads back from the seeded map (`CI_HUB_APP_DATA_PATH`, `LOCAL_DOMAIN`).
  * - Operator pins: the Hub honours a value the operator set in its `.env` for
- *   these instead of its own default (`setUnlessOperatorSet`, the maps-key
- *   gate). They stay operator-overridable, which is the documented behaviour.
+ *   these instead of its own default (`setUnlessOperatorSet`). They stay
+ *   operator-overridable, which is the documented behaviour. The maps keys are
+ *   pinned the same way but only for first-party Memory
+ *   ({@link HUB_ENV_KEYS_INHERITED_BY_FIRST_PARTY_MEMORY}).
  *
  * An app-specific pass-through — the Memory `url_env`/`token_env` names a
  * manifest declares, which an operator may pin the same way — is added per app
@@ -183,9 +180,15 @@ export const HUB_ENV_KEYS_INHERITED_BY_APPS: ReadonlySet<string> = new Set([
   'PORTAL_OIDC_ENABLED',
   'PORTAL_OIDC_ISSUER',
   'PORTAL_OIDC_JWKS_URI',
-  'GOOGLE_MAPS_KEY',
-  'GEOCODING_API_KEY',
 ]);
+
+/**
+ * Operator pins only first-party Companion Memory inherits: the maps keys. Memory is the one app the
+ * Hub hands Portal's maps key, and an operator's own key in the Hub's `.env` wins over Portal's there
+ * (`setUnlessOperatorSet`, the maps-key gate). They used to be in {@link HUB_ENV_KEYS_INHERITED_BY_APPS},
+ * which handed an operator's Google Maps key to every app from every store; no store app reads them.
+ */
+export const HUB_ENV_KEYS_INHERITED_BY_FIRST_PARTY_MEMORY: ReadonlySet<string> = new Set(['GOOGLE_MAPS_KEY', 'GEOCODING_API_KEY']);
 
 export function isHubApplianceContainerName(name: string): boolean {
   const n = name.replace(/^\//, '');
@@ -203,15 +206,6 @@ export function managedAppLabels(appUrn: string): Record<string, string | boolea
     [LEGACY_HUB_MANAGED_LABEL]: true,
     [LEGACY_HUB_APPURN_LABEL]: appUrn,
   };
-}
-
-export function ipOnHubNetwork(networks?: Record<string, { IPAddress?: string } | undefined> | null): string | undefined {
-  if (!networks) return undefined;
-  for (const name of HUB_NETWORK_NAMES) {
-    const ip = networks[name]?.IPAddress;
-    if (ip) return ip;
-  }
-  return undefined;
 }
 
 // Traefik

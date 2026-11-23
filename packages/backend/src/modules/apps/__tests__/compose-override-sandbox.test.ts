@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { collectComposeOverrideViolations, describeComposeOverrideViolations } from '../compose-override-sandbox';
+import { appNetworkName } from '@/common/helpers/app-helpers';
 
 const CUSTOM_APP = 'plain-app:_user' as never;
 const OFFICIAL_APP = (name: string) => `${name}:ci-marketplace` as never;
@@ -60,6 +61,11 @@ describe('collectComposeOverrideViolations', () => {
   });
 
   describe('what only an override can say', () => {
+    // A service name is a DNS alias on the app's network, which the Hub, Traefik and the VPN sidecar join.
+    it.each(['ci-hub', 'ci-os-hub', 'hub-tailscale', 'ci-hub-queue'])('refuses a service named %s', (name) => {
+      expect(rules(`services:\n  ${name}:\n    image: nginx\n`)).toEqual(['COMPOSE_OVERRIDE_SERVICE_NAME_RESERVED']);
+    });
+
     it.each([
       'build',
       'cgroup',
@@ -301,9 +307,18 @@ describe('collectComposeOverrideViolations', () => {
     });
   });
 
-  it('lets a label pin Traefik to a Hub network and no other', () => {
-    expect(check(service('labels:\n  traefik.docker.network: ci-hub_network'))).toEqual([]);
-    expect(rules(service('labels:\n  traefik.docker.network: other'))).toEqual(['CUSTOM_APP_ERROR_TRAEFIK_NETWORK_NOT_HUB']);
+  // Traefik reaches the app on the app's own network, which it joins; no app is on a shared Hub network.
+  it('lets a label pin Traefik to the app’s own network and no other', () => {
+    expect(check(service(`labels:\n  traefik.docker.network: ${appNetworkName(CUSTOM_APP)}`))).toEqual([]);
+    for (const network of ['ci-hub_network', 'ci-os-hub_network', 'other']) {
+      expect(rules(service(`labels:\n  traefik.docker.network: ${network}`))).toEqual(['CUSTOM_APP_ERROR_TRAEFIK_NETWORK_NOT_HUB']);
+    }
+  });
+
+  it.each(['ci-hub_network', 'ci-os-hub_network', 'ci-hub_edge', 'ci-hub_internal'])('refuses joining the Hub network %s', (network) => {
+    expect(rules(`networks:\n  ${network}:\nservices:\n  web:\n    networks:\n      - ${network}\n`)).toEqual(
+      expect.arrayContaining(['COMPOSE_OVERRIDE_NETWORK_NOT_ALLOWED']),
+    );
   });
 
   describe('normal overrides', () => {

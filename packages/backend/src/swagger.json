@@ -528,7 +528,7 @@
             "description": "Invalid callback data"
           },
           "403": {
-            "description": "Not sent from this Hub's own machine, or the Hub is already registered"
+            "description": "No host-local key, setup code or Hub manager, or the Hub is already registered"
           }
         },
         "summary": "Handle registration callback from CI Cloud (deprecated GET form — use POST)",
@@ -1883,6 +1883,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "app_challenge",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1983,6 +1991,14 @@
         "parameters": [
           {
             "name": "token",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "verifier",
             "required": true,
             "in": "query",
             "schema": {
@@ -6060,105 +6076,28 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/TerminusHealthCheckResult"
+                    }
+                  ],
                   "properties": {
                     "status": {
-                      "type": "string",
                       "enum": [
                         "ok",
                         "degraded"
                       ],
                       "example": "ok"
                     },
-                    "info": {
-                      "type": [
-                        "object",
-                        "null"
-                      ],
-                      "example": {
-                        "database": {
-                          "status": "up",
-                          "responseTime": 12
-                        }
-                      },
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": [
-                          "status"
-                        ],
-                        "properties": {
-                          "status": {
-                            "type": "string",
-                            "enum": [
-                              "up",
-                              "degraded",
-                              "down"
-                            ]
-                          },
-                          "responseTime": {
-                            "type": "number",
-                            "description": "Time the health indicator took to respond, in ms"
-                          }
-                        },
-                        "additionalProperties": true
-                      }
-                    },
                     "error": {
-                      "type": [
-                        "object",
-                        "null"
-                      ],
-                      "example": {},
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": [
-                          "status"
-                        ],
-                        "properties": {
-                          "status": {
-                            "type": "string",
-                            "enum": [
-                              "up",
-                              "degraded",
-                              "down"
-                            ]
-                          },
-                          "responseTime": {
-                            "type": "number",
-                            "description": "Time the health indicator took to respond, in ms"
-                          }
-                        },
-                        "additionalProperties": true
-                      }
+                      "example": {}
                     },
                     "details": {
-                      "type": "object",
                       "example": {
                         "database": {
                           "status": "up",
                           "responseTime": 12
                         }
-                      },
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": [
-                          "status"
-                        ],
-                        "properties": {
-                          "status": {
-                            "type": "string",
-                            "enum": [
-                              "up",
-                              "degraded",
-                              "down"
-                            ]
-                          },
-                          "responseTime": {
-                            "type": "number",
-                            "description": "Time the health indicator took to respond, in ms"
-                          }
-                        },
-                        "additionalProperties": true
                       }
                     }
                   }
@@ -6171,85 +6110,29 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/TerminusHealthCheckResult"
+                    }
+                  ],
                   "properties": {
                     "status": {
-                      "type": "string",
                       "enum": [
                         "error",
                         "shutting_down"
                       ],
                       "example": "error"
                     },
-                    "info": {
-                      "type": [
-                        "object",
-                        "null"
-                      ],
-                      "example": {
-                        "database": {
-                          "status": "up",
-                          "responseTime": 12
-                        }
-                      },
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": [
-                          "status"
-                        ],
-                        "properties": {
-                          "status": {
-                            "type": "string",
-                            "enum": [
-                              "up",
-                              "degraded",
-                              "down"
-                            ]
-                          },
-                          "responseTime": {
-                            "type": "number",
-                            "description": "Time the health indicator took to respond, in ms"
-                          }
-                        },
-                        "additionalProperties": true
-                      }
-                    },
                     "error": {
-                      "type": [
-                        "object",
-                        "null"
-                      ],
                       "example": {
                         "redis": {
                           "status": "down",
                           "message": "Could not connect",
                           "responseTime": 3005
                         }
-                      },
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": [
-                          "status"
-                        ],
-                        "properties": {
-                          "status": {
-                            "type": "string",
-                            "enum": [
-                              "up",
-                              "degraded",
-                              "down"
-                            ]
-                          },
-                          "responseTime": {
-                            "type": "number",
-                            "description": "Time the health indicator took to respond, in ms"
-                          }
-                        },
-                        "additionalProperties": true
                       }
                     },
                     "details": {
-                      "type": "object",
                       "example": {
                         "database": {
                           "status": "up",
@@ -6260,27 +6143,6 @@
                           "message": "Could not connect",
                           "responseTime": 3005
                         }
-                      },
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": [
-                          "status"
-                        ],
-                        "properties": {
-                          "status": {
-                            "type": "string",
-                            "enum": [
-                              "up",
-                              "degraded",
-                              "down"
-                            ]
-                          },
-                          "responseTime": {
-                            "type": "number",
-                            "description": "Time the health indicator took to respond, in ms"
-                          }
-                        },
-                        "additionalProperties": true
                       }
                     }
                   }
@@ -7198,6 +7060,46 @@
         },
         "tags": [
           "MemoryConnect"
+        ]
+      }
+    },
+    "/api/app-links": {
+      "get": {
+        "operationId": "list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLinks"
+        ]
+      }
+    },
+    "/api/app-links/approval": {
+      "post": {
+        "operationId": "approve",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLinks"
+        ]
+      },
+      "delete": {
+        "operationId": "revoke",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLinks"
         ]
       }
     },
@@ -10022,7 +9924,8 @@
                             },
                             "spec_path": {
                               "default": "agents/openapi.yaml",
-                              "type": "string"
+                              "type": "string",
+                              "minLength": 1
                             },
                             "base_url": {
                               "type": "string"
@@ -10658,6 +10561,69 @@
                               "type": "boolean"
                             }
                           },
+                          "additionalProperties": false
+                        },
+                        "links": {
+                          "type": "object",
+                          "properties": {
+                            "connects_to": {
+                              "default": [],
+                              "maxItems": 16,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "app": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  },
+                                  "store": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  },
+                                  "service": {
+                                    "type": "string",
+                                    "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                                  },
+                                  "alias": {
+                                    "type": "string",
+                                    "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                                  }
+                                },
+                                "required": [
+                                  "app",
+                                  "service"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "accepts_from": {
+                              "default": [],
+                              "maxItems": 32,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "app": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  },
+                                  "store": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  }
+                                },
+                                "required": [
+                                  "app"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "connects_to",
+                            "accepts_from"
+                          ],
                           "additionalProperties": false
                         }
                       },
@@ -11299,7 +11265,8 @@
                             },
                             "spec_path": {
                               "default": "agents/openapi.yaml",
-                              "type": "string"
+                              "type": "string",
+                              "minLength": 1
                             },
                             "base_url": {
                               "type": "string"
@@ -11935,6 +11902,69 @@
                               "type": "boolean"
                             }
                           },
+                          "additionalProperties": false
+                        },
+                        "links": {
+                          "type": "object",
+                          "properties": {
+                            "connects_to": {
+                              "default": [],
+                              "maxItems": 16,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "app": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  },
+                                  "store": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  },
+                                  "service": {
+                                    "type": "string",
+                                    "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                                  },
+                                  "alias": {
+                                    "type": "string",
+                                    "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                                  }
+                                },
+                                "required": [
+                                  "app",
+                                  "service"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "accepts_from": {
+                              "default": [],
+                              "maxItems": 32,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "app": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  },
+                                  "store": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  }
+                                },
+                                "required": [
+                                  "app"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "connects_to",
+                            "accepts_from"
+                          ],
                           "additionalProperties": false
                         }
                       },
@@ -12881,7 +12911,8 @@
                       },
                       "spec_path": {
                         "default": "agents/openapi.yaml",
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1
                       },
                       "base_url": {
                         "type": "string"
@@ -13517,6 +13548,69 @@
                         "type": "boolean"
                       }
                     },
+                    "additionalProperties": false
+                  },
+                  "links": {
+                    "type": "object",
+                    "properties": {
+                      "connects_to": {
+                        "default": [],
+                        "maxItems": 16,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "app": {
+                              "type": "string",
+                              "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                            },
+                            "store": {
+                              "type": "string",
+                              "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                            },
+                            "service": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                            },
+                            "alias": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                            }
+                          },
+                          "required": [
+                            "app",
+                            "service"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "accepts_from": {
+                        "default": [],
+                        "maxItems": 32,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "app": {
+                              "type": "string",
+                              "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                            },
+                            "store": {
+                              "type": "string",
+                              "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                            }
+                          },
+                          "required": [
+                            "app"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "connects_to",
+                      "accepts_from"
+                    ],
                     "additionalProperties": false
                   }
                 },
@@ -15218,6 +15312,111 @@
           "url"
         ],
         "additionalProperties": false
+      },
+      "TerminusHealthIndicatorResult": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "up",
+              "degraded",
+              "down"
+            ],
+            "description": "The status of this health indicator"
+          },
+          "responseTime": {
+            "type": "number",
+            "description": "Time the health indicator took to respond, in ms"
+          },
+          "cachedResponse": {
+            "type": "boolean",
+            "description": "Whether this result was served from the cache"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "TerminusHealthCheckResult": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "error",
+              "ok",
+              "degraded",
+              "shutting_down"
+            ],
+            "example": "ok"
+          },
+          "info": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/TerminusHealthIndicatorResult"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              ]
+            },
+            "example": {
+              "database": {
+                "status": "up",
+                "responseTime": 12
+              }
+            }
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/TerminusHealthIndicatorResult"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              ]
+            },
+            "example": {}
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/TerminusHealthIndicatorResult"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              ]
+            },
+            "example": {
+              "database": {
+                "status": "up",
+                "responseTime": 12
+              }
+            }
+          }
+        },
+        "required": [
+          "status",
+          "details"
+        ]
       },
       "PublicWebRepairBody": {
         "type": "object",

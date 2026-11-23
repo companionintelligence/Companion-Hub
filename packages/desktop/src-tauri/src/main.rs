@@ -20,12 +20,15 @@ pub mod hub_env;
 pub mod hub_manager;
 mod hub_names;
 mod inference_runners;
+mod installer_signature;
 mod login_autostart;
+mod login_start_unit;
 pub mod port_manager;
 mod portal_token;
 mod portal_url;
 mod sentry_scrubber;
 mod tray;
+mod update_signature;
 mod updater;
 mod webview_navigation;
 
@@ -394,6 +397,26 @@ async fn allow_local_ai_on_network_command(
     tokio::task::spawn_blocking(hub_manager::allow_local_ai_on_network)
         .await
         .map_err(|error| format!("The guard task failed: {error}"))?
+}
+
+/// The setup code an unpaired Hub asks for before it pairs, read from its data directory so a
+/// person pairing in this window is never asked for it. Only for this machine's Hub as the shell
+/// opens it: every Hub page the window may show holds the same IPC grant, and another Hub's page,
+/// or a page on the LAN, must not learn this one's code.
+#[tauri::command]
+fn hub_setup_code(
+    webview: tauri::Webview,
+    state: tauri::State<'_, hub_manager::HubPaths>,
+) -> Option<String> {
+    let api_port = port_manager::read_api_port(&state.env_path);
+    let page = webview.url().ok()?;
+    if !desktop_sign_in_wait::shows_this_machines_hub(&page, api_port) {
+        return None;
+    }
+    desktop_sign_in_wait::read_hub_setup_code(&desktop_sign_in_wait::hub_settings_path(
+        &state.data_dir,
+        &state.env_path,
+    ))
 }
 
 /// Get the current Hub status (Docker availability, container state, health).
@@ -771,6 +794,7 @@ pub fn run() {
             install_docker_engine_alternative_command,
             start_wsl_engine_command,
             consume_pending_pairing_code,
+            hub_setup_code,
             consume_pending_portal_auth,
             consume_pending_install_intent,
             check_desktop_update_command,
@@ -1281,6 +1305,10 @@ fn run_detached_mode() -> Result<String, String> {
             &format!("Pre-start cleanup failed (non-fatal): {}", error),
         );
     }
+
+    // Headless mode has no tray to come back at login (login_autostart needs a graphical session),
+    // so a Hub in a home folder unlocked at login gets the systemd user service instead.
+    login_start_unit::ensure(&data_dir);
 
     let message = hub_manager::start_hub(&compose_path, &env_path, &data_dir).map_err(|error| {
         error_reporting::capture_setup_failure(&error);

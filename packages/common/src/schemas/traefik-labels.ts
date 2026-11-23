@@ -68,16 +68,20 @@ export const TRAEFIK_LABEL_REFUSALS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The Hub networks the Hub puts an app's main containers on, under the names a Hub uses unless it runs
- * under another container name: see `hubAppNetworkNames` in the backend, whose names the compose
- * builder passes in.
+ * The Hub's own networks. No app container is on any of them: each app has a network of its own, and
+ * Traefik joins that one to reach it (see "App networks" in docs/system/backend.md). The two shared
+ * networks every app's main container used to join are listed so an older compose that still names
+ * them is refused rather than routed over a network the app is no longer on.
  */
-export const HUB_APP_NETWORK_NAMES: readonly string[] = ['ci-hub_network', 'ci-os-hub_network'];
+export const HUB_INFRASTRUCTURE_NETWORK_NAMES: readonly string[] = ['ci-hub_network', 'ci-os-hub_network', 'ci-hub_edge', 'ci-hub_internal'];
 
 /** What a caller that builds the app's compose knows about it and the Hub, for {@link collectTraefikLabelIssues}. */
 export interface TraefikLabelCheckOptions {
-  /** The Hub networks the service's container is on, which `traefik.docker.network` may name. */
-  hubNetworks?: readonly string[];
+  /**
+   * The app's own networks, the only ones `traefik.docker.network` may name. Without them (a manifest
+   * checked on its own, before the Hub knows its store) it may name none: the Hub sets it.
+   */
+  appNetworks?: readonly string[];
   /** The ids of the apps the Hub knows about. */
   knownAppIds?: Iterable<string>;
   /**
@@ -118,14 +122,14 @@ export function collectTraefikLabelIssues(
   if (!entries.some(([label]) => label.toLowerCase().startsWith('traefik.'))) {
     return [];
   }
-  const hubNetworks = options.hubNetworks ?? HUB_APP_NETWORK_NAMES;
+  const appNetworks = options.appNetworks;
   const ownHosts = options.hostVariables
     ? new Set([...options.hostVariables].map((name) => `\${${name}}`).filter((host) => OWN_HOSTS.has(host)))
     : OWN_HOSTS;
   const ownership: Ownership = { appId, claims: appId ? claimsOver(appId, options.knownAppIds) : [], ownHosts };
   const issues: TraefikLabelIssue[] = [];
   for (const [label, value] of entries) {
-    const issue = traefikLabelIssue(label, value, ownership, hubNetworks);
+    const issue = traefikLabelIssue(label, value, ownership, appNetworks);
     if (issue) {
       issues.push(issue);
     }
@@ -190,17 +194,28 @@ function claimsOver(appId: string, knownAppIds: Iterable<string> | undefined): C
   return [...claims.values()].sort((a, b) => b.name.length - a.name.length);
 }
 
-function traefikLabelIssue(label: string, value: unknown, ownership: Ownership, hubNetworks: readonly string[]): TraefikLabelIssue | undefined {
+function traefikLabelIssue(
+  label: string,
+  value: unknown,
+  ownership: Ownership,
+  appNetworks: readonly string[] | undefined,
+): TraefikLabelIssue | undefined {
   const lower = label.toLowerCase();
   if (!lower.startsWith('traefik.') || lower === 'traefik.enable') {
     return undefined;
   }
   if (lower === 'traefik.docker.network') {
-    // Which of the container's networks Traefik reaches it on. A container on more than one needs it,
-    // or Traefik may pick a network it isn't on. Only a Hub network the container is on will do.
-    return typeof value === 'string' && hubNetworks.includes(value)
+    // Which of the container's networks Traefik reaches it on. The Hub sets it to the app's own
+    // network, the one Traefik joins; any other would send Traefik to a network it is not on, or to
+    // one of the Hub's own.
+    const allowed = typeof value === 'string' && (appNetworks ?? []).includes(value);
+    return allowed
       ? undefined
-      : { label, message: 'CUSTOM_APP_ERROR_TRAEFIK_NETWORK_NOT_HUB', params: { label, networks: hubNetworks.join(', ') } };
+      : {
+          label,
+          message: 'CUSTOM_APP_ERROR_TRAEFIK_NETWORK_NOT_HUB',
+          params: { label, networks: appNetworks?.join(', ') || "the app's own network" },
+        };
   }
 
   const [, kind, name, option] = HTTP_OBJECT_LABEL.exec(label) ?? [];

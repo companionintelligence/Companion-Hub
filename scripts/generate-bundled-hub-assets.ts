@@ -31,6 +31,10 @@ export const BUNDLED_HUB_ASSET_SOURCES = {
   BUNDLED_GPU_PROBE_SCRIPT: 'scripts/host-probes/cihub-gpu-processes.sh',
   BUNDLED_GPU_PROBE_SERVICE: 'scripts/host-probes/cihub-gpu-processes.service',
   BUNDLED_GPU_PROBE_TIMER: 'scripts/host-probes/cihub-gpu-processes.timer',
+  // The service that starts the Hub after login when it missed its start at boot
+  // (scripts/lib/login-start-unit.ts). The desktop app include_str!s the same two files.
+  BUNDLED_LOGIN_START_SCRIPT: 'scripts/login-start/companion-hub-login-start.sh',
+  BUNDLED_LOGIN_START_SERVICE: 'scripts/login-start/companion-hub-login-start.service',
 } as const;
 
 export const BUNDLED_HUB_ASSETS_MODULE = 'scripts/lib/bundled-hub-assets.generated.ts';

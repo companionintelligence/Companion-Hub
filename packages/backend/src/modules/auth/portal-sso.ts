@@ -33,6 +33,16 @@ export interface PortalSsoState {
    * existed may still be in flight; those fail closed at the callback.
    */
   binding?: string;
+  /**
+   * Ties the one-time desktop/mobile code to the APP that started the sign-in.
+   * The app makes a secret, keeps it, and sends only its SHA-256 (base64url)
+   * here; `/desktop-exchange` hands out the session only to a caller presenting
+   * the secret. The code itself rides a `cihub://` link, which another app can
+   * register for and any web page can open, so without this whoever held the
+   * link held the session, and a page could sign the phone in as someone else.
+   * Optional: an app from before this sends none, and is still served.
+   */
+  appChallenge?: string;
 }
 
 /**
@@ -103,6 +113,23 @@ export interface PortalDesktopExchange {
   sessionId: string;
   redirectPath: string;
   userId?: number;
+  /** Carried from {@link PortalSsoState.appChallenge}: the exchange needs its secret. */
+  appChallenge?: string;
+}
+
+/** An S256 challenge: base64url SHA-256, 43 characters. */
+export const APP_CHALLENGE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
+/** Whether `verifier` is the secret behind `challenge`, compared in constant time. */
+export function appVerifierMatches(challenge: string, verifier: string | undefined): boolean {
+  if (typeof verifier !== 'string' || verifier.length < 43 || verifier.length > 128) {
+    return false;
+  }
+
+  const expected = Buffer.from(challenge, 'utf8');
+  const actual = Buffer.from(crypto.createHash('sha256').update(verifier).digest('base64url'), 'utf8');
+
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
 }
 
 export function resolveSameOriginRedirectUrl(redirectUrl: string | null | undefined, hubOrigin: string): string | null {

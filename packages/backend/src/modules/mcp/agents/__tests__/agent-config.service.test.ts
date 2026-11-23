@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
@@ -48,6 +49,32 @@ describe('AgentConfigService', () => {
     });
     appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/.env', content: '' });
     envUtils.envStringToMap.mockReturnValue(new Map());
+    // Lexical containment; the real one also resolves links (see "a spec that is a link out").
+    filesystem.isWithin.mockImplementation(async (target: string, root: string) => path.resolve(target).startsWith(`${path.resolve(root)}/`));
+  });
+
+  describe('an OpenAPI spec outside the app folder', () => {
+    it.each(['../../../state/settings.json', '../../ci-store/other-app/agents/openapi.json', 'agents/../../../.env'])(
+      'is not read: %s',
+      async (spec_path) => {
+        filesystem.pathExists.mockResolvedValue(true);
+        const result = await service.getAgentConfig(TEST_URN, makeAppInfo({ openapi: { enabled: true, spec_path } }));
+        expect(result?.openapi.specPath).toBeNull();
+      },
+    );
+
+    it('is not read when the file in the folder is a link out', async () => {
+      filesystem.pathExists.mockResolvedValue(true);
+      filesystem.isWithin.mockResolvedValue(false);
+      const result = await service.getAgentConfig(TEST_URN, makeAppInfo({ openapi: { enabled: true, spec_path: 'agents/openapi.yaml' } }));
+      expect(result?.openapi.specPath).toBeNull();
+    });
+
+    it('is read when it lives in the folder', async () => {
+      filesystem.pathExists.mockResolvedValue(true);
+      const result = await service.getAgentConfig(TEST_URN, makeAppInfo({ openapi: { enabled: true, spec_path: 'docs/api.json' } }));
+      expect(result?.openapi.specPath).toBe('/data/apps/ci-store/nextcloud/docs/api.json');
+    });
   });
 
   it('should be defined', () => {

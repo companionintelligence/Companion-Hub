@@ -4,6 +4,7 @@ import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { hubAuthFlowPolicy, readHubAuthFlow } from '@/lib/hub-auth-flow';
 import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
 import { getHubBaseUrlSync, isMobileClient } from '@/lib/mobile-connection';
+import { clearAppVerifier, pendingAppVerifier } from '@/lib/deep-link-app-binding';
 import { buildPortalDesktopExchangeUrl } from '@/lib/portal-sso-url';
 import { isViteLocalFrontend } from '@/lib/tauri-hub-probe';
 import {
@@ -78,12 +79,26 @@ export function useDesktopPortalAuth() {
     processedDesktopPortalTokens.current.add(token);
     persistDesktopPortalToken(token);
 
+    // Only a code for a sign-in this app started: anything else came from a link someone else opened,
+    // to sign this phone in as an account of their choosing. Dropped like a used one.
+    const verifier = pendingAppVerifier();
+    if (!verifier) {
+      console.warn('desktop portal auth: dropped a sign-in link this app did not start');
+      rememberUsedDesktopPortalToken(token);
+      clearPersistedDesktopPortalToken();
+      if (!recovered && !latest.current.isLoggedIn) {
+        toast.error(t('AUTH_PORTAL_ERROR_STATE_EXPIRED'), { id: DESKTOP_PORTAL_EXCHANGE_TOAST_ID });
+      }
+      return;
+    }
+
     try {
       const isMobile = isMobileClient();
       const isTauriDesktop = isTauriDesktopApp();
 
       const exchangeAbsoluteUrl = buildPortalDesktopExchangeUrl({
         token,
+        verifier,
         remoteHubUrl: getHubBaseUrlSync(),
         isTauriDesktop,
         isMobileClient: isMobile,
@@ -114,6 +129,7 @@ export function useDesktopPortalAuth() {
         // token and is handled as a failed attempt below.
         rememberUsedDesktopPortalToken(token);
         clearPersistedDesktopPortalToken();
+        clearAppVerifier();
         if (!recovered && !latest.current.isLoggedIn) {
           toast.error(t('AUTH_PORTAL_ERROR_STATE_EXPIRED'), { id: DESKTOP_PORTAL_EXCHANGE_TOAST_ID });
         }
@@ -126,6 +142,7 @@ export function useDesktopPortalAuth() {
       const data = (await res.json()) as { sessionId: string; redirectPath: string };
       rememberUsedDesktopPortalToken(token);
       clearPersistedDesktopPortalToken();
+      clearAppVerifier();
       setTauriSessionId(data.sessionId);
       markHubSessionIssuedAt();
       latest.current.setUserContext({ isLoggedIn: true });

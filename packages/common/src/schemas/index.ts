@@ -13,7 +13,7 @@ import {
   isConfidentialRuntime,
 } from './dynamic-compose.js';
 import { parseComposeJson, parseInstalledComposeJson } from './utils/convert-legacy-schema.js';
-import { collectTraefikLabelIssues, HUB_APP_NETWORK_NAMES, HUB_FORWARD_AUTH_MIDDLEWARES, HUB_TRAEFIK_NAMES } from './traefik-labels.js';
+import { collectTraefikLabelIssues, HUB_FORWARD_AUTH_MIDDLEWARES, HUB_INFRASTRUCTURE_NETWORK_NAMES, HUB_TRAEFIK_NAMES } from './traefik-labels.js';
 import { BUILDER_ENFORCED_LABEL_REFUSALS, isBuilderEnforcedLabelIssue, safeParseKeepingBuilderEnforcedLabels } from './builder-enforced-labels.js';
 import type { AppSecurityGrants, DependsOn, DynamicCompose, Service, ServiceInput, ServiceSecurityViolation } from './dynamic-compose.js';
 
@@ -32,8 +32,10 @@ import {
   formFieldSchema,
   frontmatterSchema,
   hubIntegrationSchema,
+  ENV_VARIABLE_NAME_PATTERN,
   HUB_OWNED_APP_ENV_VARS,
   hubIntegrationMayWrite,
+  isEnvVariableName,
   parseInstalledAppInfo,
   writesAppBaseUrl,
   inferenceEnvMappingSchema,
@@ -118,7 +120,7 @@ export {
   collectServiceSecurityViolations,
   isReservedHubLabel,
   collectTraefikLabelIssues,
-  HUB_APP_NETWORK_NAMES,
+  HUB_INFRASTRUCTURE_NETWORK_NAMES,
   HUB_FORWARD_AUTH_MIDDLEWARES,
   HUB_TRAEFIK_NAMES,
   BUILDER_ENFORCED_LABEL_REFUSALS,
@@ -148,8 +150,10 @@ export {
   agentOpenApiConfigSchema,
   agentSkillConfigSchema,
   hubIntegrationSchema,
+  ENV_VARIABLE_NAME_PATTERN,
   HUB_OWNED_APP_ENV_VARS,
   hubIntegrationMayWrite,
+  isEnvVariableName,
   parseInstalledAppInfo,
   writesAppBaseUrl,
   inferenceEnvMappingSchema,

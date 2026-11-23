@@ -752,6 +752,18 @@ export type MyAppsDto = {
                 edge_auth?: {
                     default?: boolean;
                 };
+                links?: {
+                    connects_to: Array<{
+                        app: string;
+                        store?: string;
+                        service: string;
+                        alias?: string;
+                    }>;
+                    accepts_from: Array<{
+                        app: string;
+                        store?: string;
+                    }>;
+                };
             };
         };
         metadata: {
@@ -1011,6 +1023,18 @@ export type GuestAppsDto = {
                 };
                 edge_auth?: {
                     default?: boolean;
+                };
+                links?: {
+                    connects_to: Array<{
+                        app: string;
+                        store?: string;
+                        service: string;
+                        alias?: string;
+                    }>;
+                    accepts_from: Array<{
+                        app: string;
+                        store?: string;
+                    }>;
                 };
             };
         };
@@ -1337,6 +1361,18 @@ export type GetAppDto = {
             };
             edge_auth?: {
                 default?: boolean;
+            };
+            links?: {
+                connects_to: Array<{
+                    app: string;
+                    store?: string;
+                    service: string;
+                    alias?: string;
+                }>;
+                accepts_from: Array<{
+                    app: string;
+                    store?: string;
+                }>;
             };
         };
     };
@@ -1746,6 +1782,40 @@ export type EditLinkBodyDto = {
     description?: string;
     iconUrl?: string | '';
     isVisibleOnGuestDashboard?: boolean;
+};
+
+export type TerminusHealthIndicatorResult = {
+    /**
+     * The status of this health indicator
+     */
+    status: 'up' | 'degraded' | 'down';
+    /**
+     * Time the health indicator took to respond, in ms
+     */
+    responseTime?: number;
+    /**
+     * Whether this result was served from the cache
+     */
+    cachedResponse?: boolean;
+};
+
+export type TerminusHealthCheckResult = {
+    status: 'error' | 'ok' | 'degraded' | 'shutting_down';
+    info?: {
+        [key: string]: TerminusHealthIndicatorResult & {
+            [key: string]: unknown;
+        };
+    } | null;
+    error?: {
+        [key: string]: TerminusHealthIndicatorResult & {
+            [key: string]: unknown;
+        };
+    } | null;
+    details: {
+        [key: string]: TerminusHealthIndicatorResult & {
+            [key: string]: unknown;
+        };
+    };
 };
 
 export type PublicWebRepairBody = {
@@ -2829,7 +2899,7 @@ export type HandleCallbackErrors = {
      */
     400: unknown;
     /**
-     * Not sent from this Hub's own machine, or the Hub is already registered
+     * No host-local key, setup code or Hub manager, or the Hub is already registered
      */
     403: unknown;
 };
@@ -3699,6 +3769,7 @@ export type StartPortalLoginData = {
         redirect_url: string;
         desktop: string;
         desktop_channel: string;
+        app_challenge: string;
     };
     url: '/api/auth/portal/start';
 };
@@ -3754,6 +3825,7 @@ export type ExchangePortalDesktopLoginData = {
     path?: never;
     query: {
         token: string;
+        verifier: string;
     };
     url: '/api/auth/portal/desktop-exchange';
 };
@@ -6022,38 +6094,10 @@ export type CheckErrors = {
     /**
      * The Health Check is not successful
      */
-    503: {
+    503: TerminusHealthCheckResult & {
         status?: 'error' | 'shutting_down';
-        info?: {
-            [key: string]: {
-                status: 'up' | 'degraded' | 'down';
-                /**
-                 * Time the health indicator took to respond, in ms
-                 */
-                responseTime?: number;
-                [key: string]: unknown;
-            };
-        } | null;
-        error?: {
-            [key: string]: {
-                status: 'up' | 'degraded' | 'down';
-                /**
-                 * Time the health indicator took to respond, in ms
-                 */
-                responseTime?: number;
-                [key: string]: unknown;
-            };
-        } | null;
-        details?: {
-            [key: string]: {
-                status: 'up' | 'degraded' | 'down';
-                /**
-                 * Time the health indicator took to respond, in ms
-                 */
-                responseTime?: number;
-                [key: string]: unknown;
-            };
-        };
+        error?: unknown;
+        details?: unknown;
     };
 };
 
@@ -6063,38 +6107,10 @@ export type CheckResponses = {
     /**
      * The Health Check is successful
      */
-    200: {
+    200: TerminusHealthCheckResult & {
         status?: 'ok' | 'degraded';
-        info?: {
-            [key: string]: {
-                status: 'up' | 'degraded' | 'down';
-                /**
-                 * Time the health indicator took to respond, in ms
-                 */
-                responseTime?: number;
-                [key: string]: unknown;
-            };
-        } | null;
-        error?: {
-            [key: string]: {
-                status: 'up' | 'degraded' | 'down';
-                /**
-                 * Time the health indicator took to respond, in ms
-                 */
-                responseTime?: number;
-                [key: string]: unknown;
-            };
-        } | null;
-        details?: {
-            [key: string]: {
-                status: 'up' | 'degraded' | 'down';
-                /**
-                 * Time the health indicator took to respond, in ms
-                 */
-                responseTime?: number;
-                [key: string]: unknown;
-            };
-        };
+        error?: unknown;
+        details?: unknown;
     };
 };
 
@@ -6599,6 +6615,39 @@ export type Disconnect2Data = {
 };
 
 export type Disconnect2Responses = {
+    201: unknown;
+};
+
+export type ListData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/app-links';
+};
+
+export type ListResponses = {
+    200: unknown;
+};
+
+export type RevokeData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/app-links/approval';
+};
+
+export type RevokeResponses = {
+    200: unknown;
+};
+
+export type ApproveData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/app-links/approval';
+};
+
+export type ApproveResponses = {
     201: unknown;
 };
 

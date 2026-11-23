@@ -488,3 +488,37 @@ describe('hubIntegrationSchema', () => {
     });
   });
 });
+
+describe('hubIntegrationSchema links', () => {
+  it('reads both directions, with the store and the name to reach the other app by left optional', () => {
+    const parsed = hubIntegrationSchema.parse({
+      links: {
+        connects_to: [
+          { app: 'prowlarr', service: 'prowlarr' },
+          { app: 'immich', store: 'photos', service: 'server', alias: 'photos' },
+        ],
+      },
+    });
+
+    expect(parsed?.links).toEqual({
+      connects_to: [
+        { app: 'prowlarr', service: 'prowlarr' },
+        { app: 'immich', store: 'photos', service: 'server', alias: 'photos' },
+      ],
+      accepts_from: [],
+    });
+  });
+
+  // A link only reaches the declaring app's own containers, but the name it gives the other app must not
+  // stand in for the Hub's own services there, nor be a hostname that means something elsewhere.
+  it.each([
+    ['an alias that names the Hub', { app: 'x', service: 'web', alias: 'ci-hub' }],
+    ['an alias that names Companion Memory', { app: 'x', service: 'web', alias: 'ci-memory' }],
+    ['an alias that is a hostname', { app: 'x', service: 'web', alias: 'evil.example.com' }],
+    ['a service that is a hostname', { app: 'x', service: 'host.docker.internal' }],
+    ['an app id with a colon', { app: 'x:y', service: 'web' }],
+    ['an app id that is a path', { app: '../x', service: 'web' }],
+  ])('refuses %s', (_case, entry) => {
+    expect(hubIntegrationSchema.safeParse({ links: { connects_to: [entry] } }).success).toBe(false);
+  });
+});

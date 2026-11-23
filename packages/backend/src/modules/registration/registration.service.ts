@@ -74,6 +74,7 @@ import { ModuleRef } from '@nestjs/core';
 import { AuthService } from '@/modules/auth/auth.service';
 import { PortalPushKeyService } from './portal-push-key.service';
 import { describePublicReachability, probePublicHostname } from './public-reachability';
+import { SetupCodeService } from './setup-code.service';
 
 const CLOUD_VALIDATION_THROTTLE_MS = 30 * 1000;
 /**
@@ -466,6 +467,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // restores its token here first.
     await this.syncTunnelWithRegistration();
 
+    // An unpaired Hub asks for its setup code before it pairs; a registered one has none.
+    await this.refreshPhaseFromSources().catch(() => undefined);
+    this.syncSetupCode();
+
     // Restore the Traefik route so Cloudflare Tunnel requests for the public
     // hostname reach Companion Hub.
     await this.ensureHubRouteFromRegistration();
@@ -585,6 +590,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     this._currentPhase = to;
     this._degradedReasons = to === 'degraded' ? reasons : [];
+    this.syncSetupCode();
 
     this.logger.info(`Provisioning phase: ${from} → ${to}${reasons.length ? ` (${reasons.join(', ')})` : ''}`);
 
@@ -1984,6 +1990,24 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   public async isRegistered(): Promise<boolean> {
     await this.refreshPhaseFromSources();
     return isOperational(this._currentPhase);
+  }
+
+  /**
+   * Keep `state/setup-code` in step with the phase: a code while the Hub is unpaired, none once it
+   * is registered (`SetupCodeService`). Fire and forget; neither step throws. Looked up lazily, like
+   * the push-key service, so the harnesses that build this class need not wire it.
+   */
+  private syncSetupCode(): void {
+    let setupCode: SetupCodeService | undefined;
+    try {
+      setupCode = this.moduleRef?.get(SetupCodeService, { strict: false });
+    } catch {
+      return;
+    }
+    if (!setupCode) {
+      return;
+    }
+    void (isOperational(this._currentPhase) ? setupCode.retire() : setupCode.ensure());
   }
 
   /**

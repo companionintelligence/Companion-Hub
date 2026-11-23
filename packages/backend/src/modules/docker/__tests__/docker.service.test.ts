@@ -408,6 +408,31 @@ describe('DockerService', () => {
       );
     });
 
+    it("runs an app's compose without the Hub's secrets in its environment", async () => {
+      mockComposeArgResolution();
+      const probeProcess = createComposeProbeProcess(0);
+      const mockSpawnProcess = createMockSpawnProcess();
+      mockSpawnProcess.on = vi.fn().mockImplementation((event, handler) => {
+        if (event === 'close') {
+          queueMicrotask(() => handler(0));
+        }
+        return mockSpawnProcess;
+      });
+      (child_process.spawn as any).mockImplementationOnce(() => probeProcess).mockImplementationOnce(() => mockSpawnProcess);
+      process.env.JWT_SECRET = 'hub-signing-key';
+
+      try {
+        await service.composeApp('test-app' as any, 'up -d');
+      } finally {
+        delete process.env.JWT_SECRET;
+      }
+
+      const [, , options] = (child_process.spawn as any).mock.calls[1];
+      expect(options.env).toBeDefined();
+      expect(options.env).not.toHaveProperty('JWT_SECRET');
+      expect(options.env.PATH).toBe(process.env.PATH);
+    });
+
     it('detaches the Hub before compose down, and attaches it only after a successful up', async () => {
       const appUrn = 'test-app' as any;
       mockComposeArgResolution();
@@ -1070,9 +1095,13 @@ describe('DockerService', () => {
               'traefik.http.services.anything-llm-ci-marketplace.loadbalancer.server.port': '3001',
             },
           },
+          // On its own network, where the VPN sidecar joins it; a shared Hub network no longer counts.
           NetworkSettings: {
             Networks: {
               'ci-os-hub_network': {
+                IPAddress: '172.18.0.99',
+              },
+              'anything-llm_ci-marketplace_network': {
                 IPAddress: '172.18.0.10',
               },
             },

@@ -40,10 +40,31 @@ function hasDefault(field: { default?: unknown }): boolean {
   return field.default !== undefined && String(field.default).trim() !== '';
 }
 
-/** An env variable a manifest has the Hub write for the app: never one of {@link HUB_OWNED_APP_ENV_VARS}. */
+/**
+ * A name the Hub may write as a key into an app's env file: what Compose's `${NAME}` can name.
+ *
+ * The name is written as `NAME=value` with nothing escaped, because no escape exists for a key. A
+ * newline in it started a second line, so `"env_variable": "X=1\nAPP_DATA_DIR"` with a default of `/`
+ * wrote `APP_DATA_DIR=/` after the Hub's own, Compose took the last one, and every
+ * `${APP_DATA_DIR}/...` bind the sandbox clears as the app's own folder became a host path.
+ * Compose's env-file reader also trims a leading space and an `export `, so those spellings named
+ * `APP_DATA_DIR` past the exact-name check as well.
+ */
+export const ENV_VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export function isEnvVariableName(name: unknown): name is string {
+  return typeof name === 'string' && ENV_VARIABLE_NAME_PATTERN.test(name);
+}
+
+/**
+ * An env variable a manifest has the Hub write for the app: a plain variable name
+ * ({@link ENV_VARIABLE_NAME_PATTERN}), and never one of {@link HUB_OWNED_APP_ENV_VARS}.
+ */
 function appWrittenEnvName(schema: z.ZodString): z.ZodString {
   return schema.superRefine((name, ctx) => {
-    if (HUB_OWNED_APP_ENV_VARS.has(name)) {
+    if (!isEnvVariableName(name)) {
+      ctx.addIssue({ code: 'custom', message: `${JSON.stringify(name)} is not an environment variable name (letters, digits and _)` });
+    } else if (HUB_OWNED_APP_ENV_VARS.has(name)) {
       ctx.addIssue({ code: 'custom', message: `${name} is set by the Hub for every app, so a manifest can't set it` });
     }
   });
@@ -57,7 +78,7 @@ function appWrittenEnvName(schema: z.ZodString): z.ZodString {
  * in the app's env, so the next env build would take the host of the integration's URL.
  */
 export function hubIntegrationMayWrite(name: string): boolean {
-  return !HUB_OWNED_APP_ENV_VARS.has(name) && name !== 'APP_BASE_URL';
+  return isEnvVariableName(name) && !HUB_OWNED_APP_ENV_VARS.has(name) && name !== 'APP_BASE_URL';
 }
 
 /** An env variable a Hub integration writes for the app: see {@link hubIntegrationMayWrite}. */
@@ -121,6 +142,28 @@ export const inferenceProviderSchema = z.object({
   /** Value to write when Hub AI Settings use vLLM, Lemonade, or cloud. */
   openai_compatible: z.string().min(1),
 });
+
+/** An app id or store slug as an app link names it: a URN half (see `castAppUrn` in the backend). */
+const APP_LINK_SEGMENT = /^[^.\-\s/\\\0:][^\s/\\\0:]*$/;
+/** A compose service name or a name to reach one by: no dots, so never a hostname elsewhere. */
+const APP_LINK_NAME = /^[a-z0-9][a-z0-9_-]*$/;
+/**
+ * Names an app link may not give the other app: the Hub's own services and the names it gives apps.
+ * A link only reaches the declaring app's own containers, so a clash would only confuse that app, but
+ * it would confuse it about the Hub.
+ */
+export const RESERVED_APP_LINK_ALIASES: ReadonlySet<string> = new Set([
+  'ci-hub',
+  'ci-os-hub',
+  'ci-memory',
+  'ci-hub-db',
+  'ci-hub-queue',
+  'ci-os-hub-queue',
+  'traefik',
+  'cloudflared',
+  'hub-tailscale',
+  'localhost',
+]);
 
 export const hubIntegrationSchema = z
   .object({
@@ -304,7 +347,7 @@ export const hubIntegrationSchema = z
     readiness: z
       .object({
         /**
-         * Compose service name the endpoint listens on; must be on the Hub's main network. Not
+         * Compose service name the endpoint listens on, in the app's own compose. Not
          * a hostname: lowercase, no dots, no `/` or `:`, no leading `-`. Every service in the
          * marketplace today already fits, so the rule costs nothing and refuses the shapes an
          * off-app target would need.
@@ -346,6 +389,60 @@ export const hubIntegrationSchema = z
       .object({
         /** Default the "Require Auth" toggle ON at install/expose time. */
         default: z.boolean().optional(),
+      })
+      .optional(),
+    /**
+     * Other apps this app talks to directly, container to container, and the apps it lets talk to it.
+     *
+     * Each app is on a Docker network of its own, and no other app is on it (see "App networks" in
+     * the Hub's docs/system/backend.md). An app that needs another app's service — Radarr calling
+     * Prowlarr — declares it in `connects_to`, and the other app declares the reverse in
+     * `accepts_from`. The Hub then puts the two on a network of their own: this app's containers,
+     * and the one named service of the other, under the name `alias`. Nothing else of either app is
+     * on it, and neither app can add a name to it.
+     *
+     * Both sides must name each other, by app and store, and a link between apps of the same store
+     * is made by itself. Any other link (two stores, or only one side declaring it) waits for the
+     * operator to allow it on the Hub. So no manifest can reach an app that did not ask for it, and a
+     * store cannot reach another store's apps without the operator.
+     *
+     * Example (radarr):
+     * ```json
+     * "hub_integration": {
+     *   "links": { "connects_to": [{ "app": "prowlarr", "service": "prowlarr" }], "accepts_from": [{ "app": "prowlarr" }] }
+     * }
+     * ```
+     */
+    links: z
+      .object({
+        connects_to: z
+          .array(
+            z.object({
+              /** The other app's id within its store (the part of its URN before `:`). */
+              app: z.string().regex(APP_LINK_SEGMENT, 'app must be an app id'),
+              /** The other app's store slug. Omitted: this app's own store. */
+              store: z.string().regex(APP_LINK_SEGMENT, 'store must be a store slug').optional(),
+              /** The compose service of the other app this app calls. */
+              service: z.string().regex(APP_LINK_NAME, 'service must be a compose service name, not a hostname'),
+              /** The name this app reaches it by. Omitted: the other app's id. */
+              alias: z
+                .string()
+                .regex(APP_LINK_NAME, 'alias must be a plain name, not a hostname')
+                .refine((alias) => !RESERVED_APP_LINK_ALIASES.has(alias), "alias names one of the Hub's own services")
+                .optional(),
+            }),
+          )
+          .max(16)
+          .default([]),
+        accepts_from: z
+          .array(
+            z.object({
+              app: z.string().regex(APP_LINK_SEGMENT, 'app must be an app id'),
+              store: z.string().regex(APP_LINK_SEGMENT, 'store must be a store slug').optional(),
+            }),
+          )
+          .max(32)
+          .default([]),
       })
       .optional(),
   })
@@ -832,7 +929,10 @@ export const appInfoObjectSchema = z.object({
 export const appInfoSchema = z.preprocess(normalizeAppInfoInput, appInfoObjectSchema);
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
-const isHubOwnedEnvName = (value: unknown): boolean => typeof value === 'string' && HUB_OWNED_APP_ENV_VARS.has(value);
+/** A name the schema refuses for a form field or alias: one the Hub sets, or no variable name at all. */
+const isHubOwnedEnvName = (value: unknown): boolean => typeof value === 'string' && (HUB_OWNED_APP_ENV_VARS.has(value) || !isEnvVariableName(value));
+/** How a left-out name is shown in the log: as it is, or quoted when it holds a newline or a space. */
+const shownEnvName = (value: unknown): string => (isEnvVariableName(value) ? value : JSON.stringify(value));
 const isRefusedIntegrationEnvName = (value: unknown): boolean => typeof value === 'string' && !hubIntegrationMayWrite(value);
 
 /** What {@link withoutHubOwnedEnvNames} left out of a manifest. */
@@ -849,7 +949,8 @@ type LeftOut = {
 /**
  * A manifest without what {@link appInfoSchema} refuses about the values the Hub sets for every app:
  * a form field or alias named for one of {@link HUB_OWNED_APP_ENV_VARS}, a Hub integration that names
- * one or `APP_BASE_URL` and a default on a field that writes `APP_BASE_URL`.
+ * one or `APP_BASE_URL`, either of them under a name that is no variable name
+ * ({@link ENV_VARIABLE_NAME_PATTERN}), and a default on a field that writes `APP_BASE_URL`.
  */
 function withoutHubOwnedEnvNames(config: Record<string, unknown>): LeftOut & { config: Record<string, unknown> } {
   const leftOut: string[] = [];
@@ -864,13 +965,13 @@ function withoutHubOwnedEnvNames(config: Record<string, unknown>): LeftOut & { c
         continue;
       }
       if (isHubOwnedEnvName(field.env_variable)) {
-        leftOut.push(`form field ${field.env_variable}`);
+        leftOut.push(`form field ${shownEnvName(field.env_variable)}`);
         continue;
       }
       let kept = field;
       const aliases = Array.isArray(field.alias_env_variables) ? field.alias_env_variables : [];
       if (aliases.some(isHubOwnedEnvName)) {
-        leftOut.push(...aliases.filter(isHubOwnedEnvName).map((alias) => `alias ${alias} of form field ${String(field.env_variable)}`));
+        leftOut.push(...aliases.filter(isHubOwnedEnvName).map((alias) => `alias ${shownEnvName(alias)} of form field ${String(field.env_variable)}`));
         kept = { ...kept, alias_env_variables: aliases.filter((alias) => !isHubOwnedEnvName(alias)) };
       }
       if (writesAppBaseUrl(kept) && hasDefault(kept)) {
@@ -890,16 +991,16 @@ function withoutHubOwnedEnvNames(config: Record<string, unknown>): LeftOut & { c
     if (isRecord(integration.inference)) {
       const entries = Object.entries(integration.inference);
       for (const [key, name] of entries.filter(([, name]) => isRefusedIntegrationEnvName(name))) {
-        leftOut.push(`hub_integration.inference.${key} (${String(name)})`);
+        leftOut.push(`hub_integration.inference.${key} (${shownEnvName(name)})`);
       }
       kept.inference = Object.fromEntries(entries.filter(([, name]) => !isRefusedIntegrationEnvName(name)));
     }
     if (isRecord(integration.inference_provider) && isRefusedIntegrationEnvName(integration.inference_provider.env)) {
-      leftOut.push(`hub_integration.inference_provider (${String(integration.inference_provider.env)})`);
+      leftOut.push(`hub_integration.inference_provider (${shownEnvName(integration.inference_provider.env)})`);
       delete kept.inference_provider;
     }
     if (isRecord(integration.oidc) && isRefusedIntegrationEnvName(integration.oidc.issuer_env)) {
-      leftOut.push(`hub_integration.oidc (${String(integration.oidc.issuer_env)})`);
+      leftOut.push(`hub_integration.oidc (${shownEnvName(integration.oidc.issuer_env)})`);
       delete kept.oidc;
     }
     // The URL and the key go together: the Hub writes neither without the other.
@@ -908,7 +1009,7 @@ function withoutHubOwnedEnvNames(config: Record<string, unknown>): LeftOut & { c
       (isRefusedIntegrationEnvName(integration.memory.url_env) || isRefusedIntegrationEnvName(integration.memory.token_env))
     ) {
       const { url_env, token_env, ...memory } = integration.memory;
-      leftOut.push(`hub_integration.memory (${[url_env, token_env].filter(isRefusedIntegrationEnvName).join(', ')})`);
+      leftOut.push(`hub_integration.memory (${[url_env, token_env].filter(isRefusedIntegrationEnvName).map(shownEnvName).join(', ')})`);
       kept.memory = memory;
     }
     result = { ...result, hub_integration: kept };

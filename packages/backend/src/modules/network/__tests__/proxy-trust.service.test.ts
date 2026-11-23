@@ -38,13 +38,16 @@ describe('ProxyTrustService', () => {
     expect(service.isTrustedProxy('172.19.0.7')).toBe(false);
   });
 
-  it('trusts exactly the two edge hops and Traefik, each as a /32', async () => {
+  it('trusts exactly the two edge hops and Traefik at its two addresses, each as a /32', async () => {
     networkInspect.mockResolvedValue(edgeNetwork);
     containerInspect.mockResolvedValue(traefikOnHubNetwork('172.19.0.7'));
 
     await service.refresh();
 
-    expect(service.trustedProxyCidrs()).toEqual(['10.128.0.3/32', '10.128.0.4/32', '172.19.0.7/32']);
+    // Traefik's fixed edge address is where its Hub login check comes from: it pins `ci-hub` to the
+    // Hub's edge address rather than ask Docker DNS.
+    expect(service.trustedProxyCidrs()).toEqual(['10.128.0.3/32', '10.128.0.4/32', '10.128.0.2/32', '172.19.0.7/32']);
+    expect(service.isTrustedProxy('10.128.0.2')).toBe(true);
     // cloudflared and the Tailscale sidecar, at their fixed edge addresses.
     expect(service.isTrustedProxy('10.128.0.3')).toBe(true);
     expect(service.isTrustedProxy('10.128.0.4')).toBe(true);
@@ -52,7 +55,7 @@ describe('ProxyTrustService', () => {
     // the host arrives from (docker-proxy, or an app dialling
     // host.docker.internal:80), so it must never vouch for anyone.
     expect(service.isTrustedProxy('10.128.0.1')).toBe(false);
-    // Nor the rest of the subnet: nothing else on it is a hop.
+    // Nor the rest of the subnet: nothing else on it is a hop, the Hub's own edge address included.
     expect(service.isTrustedProxy('10.128.0.5')).toBe(false);
     expect(service.isTrustedProxy('172.19.0.7')).toBe(true);
     // Express hands over the socket address IPv6-mapped; still Traefik.
@@ -104,7 +107,7 @@ describe('ProxyTrustService', () => {
 
     await service.refresh();
 
-    expect(service.trustedProxyCidrs()).toEqual(['172.19.0.7/32']);
+    expect(service.trustedProxyCidrs()).toEqual(['10.128.0.2/32', '172.19.0.7/32']);
   });
 
   it('takes the first host as the gateway when the network does not name one', async () => {
@@ -114,7 +117,7 @@ describe('ProxyTrustService', () => {
 
     await service.refresh();
 
-    expect(service.trustedProxyCidrs()).toEqual(['10.128.0.4/32']);
+    expect(service.trustedProxyCidrs()).toEqual(['10.128.0.4/32', '10.128.0.2/32']);
   });
 
   it('follows an operator-moved edge network and its hop addresses', async () => {
@@ -141,7 +144,7 @@ describe('ProxyTrustService', () => {
 
     networkInspect.mockResolvedValue({ IPAM: { Config: [{ Subnet: '10.128.0.0/29', IPRange: '10.128.0.4/30', Gateway: '10.128.0.1' }] } });
     await service.refresh();
-    expect(service.trustedProxyCidrs()).toEqual(['10.128.0.3/32', '172.19.0.7/32']);
+    expect(service.trustedProxyCidrs()).toEqual(['10.128.0.3/32', '10.128.0.2/32', '172.19.0.7/32']);
   });
 
   it('tells listeners about every read, and whether it found Traefik', async () => {
@@ -160,9 +163,25 @@ describe('ProxyTrustService', () => {
     await service.refresh();
 
     expect(seen).toEqual([
-      { cidrs: ['10.128.0.3/32', '10.128.0.4/32', '172.19.0.7/32'], traefikResolved: true },
-      { cidrs: ['10.128.0.3/32', '10.128.0.4/32'], traefikResolved: false },
+      {
+        cidrs: ['10.128.0.3/32', '10.128.0.4/32', '10.128.0.2/32', '172.19.0.7/32'],
+        appEdgeCidrs: ['10.128.0.3/32', '10.128.0.4/32'],
+        traefikResolved: true,
+      },
+      { cidrs: ['10.128.0.3/32', '10.128.0.4/32', '10.128.0.2/32'], appEdgeCidrs: ['10.128.0.3/32', '10.128.0.4/32'], traefikResolved: false },
     ]);
+  });
+
+  // An app is on none of the Hub's networks: Traefik reaches it on the app's own network, at that
+  // subnet's last host address.
+  it("hands an app the edge hops and Traefik's address on the app's own network, and no other of Traefik's", async () => {
+    networkInspect.mockResolvedValue(edgeNetwork);
+    containerInspect.mockResolvedValue(traefikOnHubNetwork('172.19.0.7'));
+
+    await service.refresh();
+
+    expect(service.appTrustedProxyCidrs('10.128.12.0/24')).toEqual(['10.128.0.3/32', '10.128.0.4/32', '10.128.12.254/32']);
+    expect(service.appTrustedProxyCidrs(null)).toEqual(['10.128.0.3/32', '10.128.0.4/32']);
   });
 
   // A stopped or removed Traefik releases its Hub-network address to the next container that asks;
