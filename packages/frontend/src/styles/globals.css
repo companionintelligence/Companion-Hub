@@ -37,7 +37,14 @@
   --titlebar-height: 0px;
   --safe-area-top: env(safe-area-inset-top, 0px);
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
-  --header-offset: calc(3.5rem + var(--titlebar-height, 0px) + var(--safe-area-top, 0px));
+  /*
+   * Height of the fixed app header. The header sits below the desktop title bar
+   * (`top: --titlebar-height`) and the page is laid out below the bar too, so the bar
+   * is not part of this. Counting it here made the header 40px taller in the desktop
+   * app than in a browser. Anything placed from the top of the window adds
+   * `--titlebar-height` itself.
+   */
+  --header-offset: calc(3.5rem + var(--safe-area-top, 0px));
   /*
    * Height of the app shell. Not `100vh`: in a phone browser that is the height with
    * the address bar hidden, so a shell sized by it runs past the bottom of the screen
@@ -77,7 +84,7 @@ html.ci-mobile:not(.ci-android) {
    * the MCP settings page). Reserve the header height plus the titlebar offset.
    */
   html {
-    scroll-padding-top: calc(var(--header-offset) + 0.5rem);
+    scroll-padding-top: calc(var(--titlebar-height, 0px) + var(--header-offset) + 0.5rem);
   }
 
   /*

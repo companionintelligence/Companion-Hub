@@ -43,7 +43,7 @@ export function AppMediaGallery({ appName, screenshots, demoVideoUrl, isLoading 
   // Dialog portals to <body> and traps focus. Rendered in place, the page wrapper's transform
   // would size a fixed overlay to the page and hide the close control under the header.
   // The dialog starts below the titlebar + header so the window controls and nav stay usable.
-  // z-40 keeps the header (z-50) on top. (--header-offset already includes the titlebar height.)
+  // z-40 keeps the header (z-50) on top.
   const onLightboxKeyDown = (event: KeyboardEvent) => {
     if (event.key === 'ArrowLeft' && screenshots.length > 1) {
       showPrevShot();
