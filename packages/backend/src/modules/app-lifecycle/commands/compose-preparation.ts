@@ -10,6 +10,7 @@ import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { publishesCloudflarePublicRoute } from '@/modules/apps/app-public-routing.helpers';
 import { DockerComposeBuilder } from '@/modules/docker/builders/compose.builder';
+import { appUrnLabelSets, listContainersMatchingAnyLabelSets } from '@/modules/docker/hub-container-query';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
@@ -73,7 +74,7 @@ export async function prepareAppComposeDir(
   docker: Dockerode,
   appUrn: AppUrn,
   form: AppEventFormInput,
-  options?: { excludeSubnets?: string[]; createVolumeDirs?: boolean },
+  options?: { excludeSubnets?: string[]; createVolumeDirs?: boolean; applyDataMoves?: boolean },
 ): Promise<void> {
   const appFilesManager = moduleRef.get(AppFilesManager, { strict: false });
   const marketplaceService = moduleRef.get(MarketplaceService, { strict: false });
@@ -273,6 +274,8 @@ export async function prepareAppComposeDir(
     const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain, posixPermissionsSupported, {
       loopbackHostPort,
       manifest: appInfo ?? undefined,
+      // A mount a data move relocated keeps its named volume where the Hub uses one (see `dataMoves`).
+      dataMoves: appInfo?.data_moves,
       defaultAppCpuLimit,
       knownAppIds: await knownAppIdsLookup,
       // The hosts the Hub set for this app. compose expands one it left unset from the Hub's own
@@ -319,6 +322,25 @@ export async function prepareAppComposeDir(
   // Install makes the folders itself once the copy is done. Any other prepare while that copy is
   // pending (a start, restart, reset or update of an app whose install failed before it) skips them
   // too, as dev did: Docker only made them when it created a container.
+  // Before the mount folders are made: a listing that changed its data layout says what moves where
+  // (`data_moves`), and its data has to be in the new places when its containers start. Only while
+  // none of them runs (a restart prepares once before its `down`, a dashboard start may leave some
+  // up): the moves then wait for the next prepare. An update runs them itself, after it has stopped
+  // the app and counts the new version as started, so a rollback brings the old data back.
+  // A move that would overwrite files throws, and the start stops with it.
+  if (
+    options?.applyDataMoves !== false &&
+    !(await appFilesManager.storeDataCopyPending(appUrn)) &&
+    (await appFilesManager.declaresDataMoves(appUrn))
+  ) {
+    const running = await listContainersMatchingAnyLabelSets(docker, appUrnLabelSets(appUrn), true, { status: ['running', 'restarting', 'paused'] });
+    if (running.length === 0) {
+      await appFilesManager.applyDataMoves(appUrn);
+    } else {
+      logger.debug(`Left the data moves of ${appUrn} for its next start: ${running.length} of its containers still run`);
+    }
+  }
+
   if (options?.createVolumeDirs !== false && !(await appFilesManager.storeDataCopyPending(appUrn))) {
     try {
       await appFilesManager.createVolumeHostDirs(appUrn);

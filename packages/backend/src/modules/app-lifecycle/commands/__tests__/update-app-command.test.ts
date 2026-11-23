@@ -113,6 +113,42 @@ describe('UpdateAppCommand', () => {
     (command as any).ensureAppDir = vi.fn().mockResolvedValue(undefined);
   });
 
+  describe('data moves', () => {
+    it("moves the new version's data after the pull and before it starts, never in the update's own prepares", async () => {
+      const order: string[] = [];
+      dockerService.composeApp.mockImplementation(async (_urn, cmd) => {
+        order.push(cmd.split(' ')[0] as string);
+        return undefined as any;
+      });
+      appFilesManager.applyDataMoves.mockImplementation(async () => {
+        order.push('move');
+        return [];
+      });
+
+      await command.execute(appUrn, {});
+
+      expect(order.slice(order.indexOf('pull'))).toEqual(['pull', 'move', 'up']);
+      for (const [, , options] of (command as any).ensureAppDir.mock.calls) {
+        expect(options).toMatchObject({ applyDataMoves: false });
+      }
+    });
+
+    it('rolls the data back from the backup when a move fails, as it does for a new version that fails', async () => {
+      appFilesManager.applyDataMoves.mockRejectedValue(new Error('both places hold files'));
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', undefined);
+      // The new version never started: the only `up` is the rollback's, after the data came back.
+      const ups = dockerService.composeApp.mock.calls
+        .map((call, index) => ({ cmd: call[1], order: dockerService.composeApp.mock.invocationCallOrder[index] as number }))
+        .filter(({ cmd }) => cmd.startsWith('up'));
+      const restoredAt = backupManager.restoreApp.mock.invocationCallOrder[0] as number;
+      expect(ups.every(({ order }) => order > restoredAt)).toBe(true);
+    });
+  });
+
   it('successfully executes update when health check passes', async () => {
     const result = await command.execute(appUrn, {});
 

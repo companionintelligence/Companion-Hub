@@ -765,6 +765,10 @@ export type MyAppsDto = {
                     }>;
                 };
             };
+            data_moves: Array<{
+                from: string;
+                to: string;
+            }>;
         };
         metadata: {
             hasCustomConfig?: boolean;
@@ -1037,6 +1041,10 @@ export type GuestAppsDto = {
                     }>;
                 };
             };
+            data_moves: Array<{
+                from: string;
+                to: string;
+            }>;
         };
         metadata: {
             hasCustomConfig?: boolean;
@@ -1375,6 +1383,10 @@ export type GetAppDto = {
                 }>;
             };
         };
+        data_moves: Array<{
+            from: string;
+            to: string;
+        }>;
     };
     metadata: {
         hasCustomConfig?: boolean;

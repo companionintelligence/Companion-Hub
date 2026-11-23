@@ -509,6 +509,7 @@ export class PortExposeService {
       created_at: Date.now(),
       updated_at: Date.now(),
       force_pull: false,
+      data_moves: [],
     } satisfies AppInfo;
 
     const descriptionPath = path.join(dataDir, 'apps', appStoreId, appName, 'metadata', 'description.md');

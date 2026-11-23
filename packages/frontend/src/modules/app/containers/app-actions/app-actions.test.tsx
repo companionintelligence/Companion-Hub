@@ -281,6 +281,7 @@ function makeInfo(overrides: Partial<AppInfo> = {}): AppInfo {
     created_at: 0,
     updated_at: 1700000000000,
     force_pull: false,
+    data_moves: [],
     ...overrides,
   };
 }

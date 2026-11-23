@@ -10666,6 +10666,28 @@
                         "sse_events"
                       ],
                       "additionalProperties": false
+                    },
+                    "data_moves": {
+                      "default": [],
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "from": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "to": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "from",
+                          "to"
+                        ],
+                        "additionalProperties": false
+                      }
                     }
                   },
                   "required": [
@@ -10692,7 +10714,8 @@
                     "dynamic_config",
                     "created_at",
                     "updated_at",
-                    "force_pull"
+                    "force_pull",
+                    "data_moves"
                   ],
                   "additionalProperties": false
                 },
@@ -12007,6 +12030,28 @@
                         "sse_events"
                       ],
                       "additionalProperties": false
+                    },
+                    "data_moves": {
+                      "default": [],
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "from": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "to": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "from",
+                          "to"
+                        ],
+                        "additionalProperties": false
+                      }
                     }
                   },
                   "required": [
@@ -12033,7 +12078,8 @@
                     "dynamic_config",
                     "created_at",
                     "updated_at",
-                    "force_pull"
+                    "force_pull",
+                    "data_moves"
                   ],
                   "additionalProperties": false
                 },
@@ -13653,6 +13699,28 @@
                   "sse_events"
                 ],
                 "additionalProperties": false
+              },
+              "data_moves": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "to": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "from",
+                    "to"
+                  ],
+                  "additionalProperties": false
+                }
               }
             },
             "required": [
@@ -13679,7 +13747,8 @@
               "dynamic_config",
               "created_at",
               "updated_at",
-              "force_pull"
+              "force_pull",
+              "data_moves"
             ],
             "additionalProperties": false
           },

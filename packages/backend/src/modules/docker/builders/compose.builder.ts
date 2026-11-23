@@ -2,6 +2,7 @@ import { DEFAULT_LOCAL_DOMAIN, managedAppLabels } from '@/common/constants';
 import { appNetworkName, extractAppUrn } from '@/common/helpers/app-helpers';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import {
+  type DataMove,
   type Service,
   type ServiceInput,
   serviceSchema,
@@ -88,6 +89,29 @@ export interface ComposeBuilderOptions {
    * all three, as when the caller can't tell.
    */
   hostVariables?: Iterable<string>;
+  /**
+   * The app's data moves (`data_moves`). Where the Hub mounts a named volume instead of a bind
+   * (`requiresPosixPermissions` on a host without POSIX permissions), the data lives in a volume named
+   * after the host path, which a folder move on disk does not reach. A mount whose path a move
+   * produced keeps the volume of the path it came from, so the data is still there after the move.
+   */
+  dataMoves?: readonly DataMove[];
+}
+
+/**
+ * For each path a data move produced, the path whose volume it inherits: the first one in a chain of
+ * moves (`a` → `b`, then `b` → `c` gives `c` the volume of `a`). The data folder itself (`.`) never
+ * backs a volume of its own, so moves from it are left out.
+ */
+export function volumePathsBeforeMoves(moves: readonly DataMove[]): Map<string, string> {
+  const before = new Map<string, string>();
+  for (const { from, to } of moves) {
+    if (from === '.' || to === '.') {
+      continue;
+    }
+    before.set(to, before.get(from) ?? from);
+  }
+  return before;
 }
 
 interface Network {
@@ -166,6 +190,7 @@ export class DockerComposeBuilder {
    * volume would silently merge two data directories. This turns that into a build-time error.
    */
   private volumeSources: Record<string, string> = {};
+  private volumePathsBeforeMoves = new Map<string, string>();
   private localDomain: string;
   private cloudflareOriginHostname?: string;
   private cloudflarePublicHostname?: string;
@@ -265,6 +290,9 @@ export class DockerComposeBuilder {
     if (options.hostVariables !== undefined) {
       this.hostVariables = [...options.hostVariables];
     }
+    if (options.dataMoves !== undefined) {
+      this.volumePathsBeforeMoves = volumePathsBeforeMoves(options.dataMoves);
+    }
     return this;
   }
 
@@ -361,7 +389,8 @@ export class DockerComposeBuilder {
       .replace(/\$\{APP_DATA_DIR\}/g, '')
       .replace(/\/+/g, '/')
       .replace(/^\/+|\/+$/g, '');
-    const volumeName = deriveVolumeName(volume.hostPath);
+    // A path a data move produced keeps the volume its data is in (see `dataMoves`).
+    const volumeName = deriveVolumeName(this.volumePathsBeforeMoves.get(identity) ?? identity);
     this.registerVolume(volumeName, `hostPath:${identity}`);
 
     return { ...volume, hostPath: undefined, volumeName };
