@@ -10,8 +10,9 @@ export interface AutomaticInferenceRunnerResult {
   endpointUrl?: string;
   detail?: string;
   /**
-   * oMLX's main API key: the one the desktop app set when it installed oMLX, or the one oMLX already
-   * has. The Hub needs it to download models through oMLX's admin API.
+   * A runner's API key. For oMLX, its main key: the one the desktop app set when it installed oMLX, or
+   * the one oMLX already has. The Hub needs it to download models through oMLX's admin API. For vLLM,
+   * the key the desktop app started it with, which the Hub must send.
    */
   apiKey?: string;
   /** What to know about a runner that otherwise works, such as an oMLX the desktop app could not give a key. */

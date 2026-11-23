@@ -63,7 +63,8 @@ pub struct InferenceRunnerResult {
     pub endpoint_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    /// oMLX's main API key, which the Hub needs for oMLX's admin API (model downloads). Only the
+    /// A runner's API key. For oMLX, its main key: the Hub needs it for oMLX's admin API (model
+    /// downloads). For vLLM, the key the runner was started with, which the Hub must send. Only the
     /// frontend gets it: it is left out of the persisted results and out of `Debug`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<RunnerApiKey>,
@@ -181,11 +182,17 @@ fn success(
     }
 }
 
+/// `result` with the API key the runner was started with, unless it failed or was skipped.
 fn with_api_key(
     mut result: InferenceRunnerResult,
     api_key: Option<String>,
 ) -> InferenceRunnerResult {
-    result.api_key = api_key.map(RunnerApiKey);
+    if !matches!(
+        result.state,
+        InferenceRunnerState::Failed | InferenceRunnerState::Skipped
+    ) {
+        result.api_key = api_key.map(RunnerApiKey);
+    }
     result
 }
 
@@ -787,6 +794,9 @@ Install it with Homebrew (brew install jundot/omlx/omlx) or the oMLX app, or run
     }
 }
 
+/// vLLM listens on every interface so the Hub container can reach it over the Docker bridge, which
+/// put it on the network too; it serves to whoever sends its API key, and nobody else. Ollama has no
+/// key to set, so the network guard drops its port instead (`hub_manager::inference_guard`).
 fn install_and_start_vllm(data_dir: &Path) -> InferenceRunnerResult {
     if cfg!(target_os = "windows") {
         return skipped(
@@ -795,8 +805,44 @@ fn install_and_start_vllm(data_dir: &Path) -> InferenceRunnerResult {
         );
     }
 
+    if platform_is_apple_silicon() {
+        return skipped("vllm", "Apple Silicon uses oMLX. vLLM is the NVIDIA path.");
+    }
+
+    let api_key = match vllm_api_key(data_dir) {
+        Ok(key) => key,
+        Err(error) => return failed("vllm", error),
+    };
+
+    // Answers with no key at all: a vLLM started without one, by an earlier version of this app or
+    // by someone else. Ours is restarted with the key. Another one is left as it is, and said so.
     if probe_http(VLLM_PORT, "/v1/models") {
-        return already_running("vllm", VLLM_ENDPOINT);
+        match existing_runner_pid(data_dir, "vllm") {
+            Some(pid) => {
+                append_runner_log(
+                    data_dir,
+                    "vllm",
+                    &format!(
+                        "restarting vLLM (pid {pid}) with an API key: it answered without one"
+                    ),
+                );
+                if let Err(error) = stop_runner_process(data_dir, "vllm", pid) {
+                    return failed("vllm", error);
+                }
+            }
+            None => {
+                return success(
+                    "vllm",
+                    InferenceRunnerState::AlreadyRunning,
+                    Some(VLLM_ENDPOINT.to_string()),
+                    Some(format!(
+                        "A vLLM this app did not start is answering on port {VLLM_PORT} without an API key, so anyone on your network can use it. Restart it with --api-key."
+                    )),
+                );
+            }
+        }
+    } else if probe_http_authenticated(VLLM_PORT, "/v1/models", Some(&api_key)) {
+        return with_api_key(already_running("vllm", VLLM_ENDPOINT), Some(api_key));
     }
 
     let port = match available_host_port(VLLM_PORT) {
@@ -804,10 +850,6 @@ fn install_and_start_vllm(data_dir: &Path) -> InferenceRunnerResult {
         None => return failed("vllm", "No local port was available for vLLM.".to_string()),
     };
     let endpoint = host_endpoint(port);
-
-    if platform_is_apple_silicon() {
-        return skipped("vllm", "Apple Silicon uses oMLX. vLLM is the NVIDIA path.");
-    }
 
     let (executable, model, extra_args) = {
         if !nvidia_smi_works() {
@@ -834,9 +876,11 @@ fn install_and_start_vllm(data_dir: &Path) -> InferenceRunnerResult {
         "0.0.0.0".to_string(),
         "--port".to_string(),
         port.to_string(),
+        "--api-key".to_string(),
+        api_key.clone(),
     ];
     args.extend(extra_args);
-    start_host_process(
+    let result = start_host_process(
         data_dir,
         "vllm",
         &executable,
@@ -844,8 +888,81 @@ fn install_and_start_vllm(data_dir: &Path) -> InferenceRunnerResult {
         port,
         "/v1/models",
         &endpoint,
-        None,
-    )
+        Some(&api_key),
+    );
+    with_api_key(result, Some(api_key))
+}
+
+/// vLLM's API key: made once, kept in the runner state directory where only this user can read it,
+/// so a restarted vLLM takes the key the Hub already has.
+fn vllm_api_key(data_dir: &Path) -> Result<String, String> {
+    let path = runner_state_dir(data_dir).join("vllm.api-key");
+    if let Ok(existing) = fs::read_to_string(&path) {
+        let existing = existing.trim();
+        if existing.len() == 64 && existing.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Ok(existing.to_string());
+        }
+    }
+    let key = random_hex_key()?;
+    fs::create_dir_all(runner_state_dir(data_dir))
+        .map_err(|error| format!("Could not create the runner state directory: {error}"))?;
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
+        .open(&path)
+        .map_err(|error| format!("Could not save the vLLM API key: {error}"))?;
+    #[cfg(unix)]
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("Could not protect the vLLM API key: {error}"))?;
+    file.write_all(format!("{key}\n").as_bytes())
+        .map_err(|error| format!("Could not save the vLLM API key: {error}"))?;
+    Ok(key)
+}
+
+/// 32 random bytes as hex. vLLM is set up only on Linux, where `/dev/urandom` always exists.
+fn random_hex_key() -> Result<String, String> {
+    use std::io::Read;
+    let mut bytes = [0u8; 32];
+    fs::File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(&mut bytes))
+        .map_err(|error| format!("Could not make an API key: {error}"))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// Stop a runner this app started, and forget its pid: SIGTERM, then SIGKILL after 30 s.
+fn stop_runner_process(data_dir: &Path, runner: &str, pid: u32) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while process_is_alive(pid) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(250));
+        }
+        if process_is_alive(pid) {
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+        if process_is_alive(pid) {
+            return Err(format!(
+                "{runner} (pid {pid}) did not stop, so it could not be restarted with an API key."
+            ));
+        }
+        let _ = fs::remove_file(runner_pid_path(data_dir, runner));
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (data_dir, pid);
+        Err(format!(
+            "Restarting {runner} is not supported on this platform."
+        ))
+    }
 }
 
 fn install_and_start_ollama(data_dir: &Path) -> InferenceRunnerResult {
@@ -1766,6 +1883,7 @@ fn persist_results(data_dir: &Path, results: &[InferenceRunnerResult]) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
+    // The key lives in its own file, readable by this user alone (`vllm_api_key`).
     let without_keys = results
         .iter()
         .cloned()
@@ -1790,6 +1908,59 @@ fn format_command_output(stdout: &str, stderr: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn the_vllm_key_is_made_once_and_readable_by_this_user_alone() {
+        let data_dir = tempfile::tempdir().expect("tempdir");
+        let key = vllm_api_key(data_dir.path()).expect("key");
+        assert_eq!(key.len(), 64);
+        assert!(key.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        let path = runner_state_dir(data_dir.path()).join("vllm.api-key");
+        assert_eq!(
+            fs::metadata(&path).expect("stat").permissions().mode() & 0o777,
+            0o600
+        );
+        // A restarted vLLM takes the key the Hub already has.
+        assert_eq!(vllm_api_key(data_dir.path()).expect("again"), key);
+        // A damaged file is replaced, not trusted.
+        fs::write(&path, "not a key").expect("write");
+        let replaced = vllm_api_key(data_dir.path()).expect("replaced");
+        assert_ne!(replaced, key);
+        assert_eq!(replaced.len(), 64);
+    }
+
+    #[test]
+    fn the_key_goes_to_the_page_but_not_into_the_state_file() {
+        let data_dir = tempfile::tempdir().expect("tempdir");
+        let started = with_api_key(
+            success(
+                "vllm",
+                InferenceRunnerState::InstalledAndStarted,
+                Some(VLLM_ENDPOINT.to_string()),
+                None,
+            ),
+            Some("k".repeat(64)),
+        );
+        let json = serde_json::to_value(&started).expect("json");
+        assert_eq!(json["apiKey"], "k".repeat(64));
+
+        persist_results(data_dir.path(), &[started]);
+        let written =
+            fs::read_to_string(data_dir.path().join(RUNNER_STATE_FILE)).expect("state file");
+        assert!(!written.contains(&"k".repeat(64)));
+        assert!(!written.contains("apiKey"));
+
+        // No key on a runner that did not start.
+        assert_eq!(
+            with_api_key(failed("vllm", "no".to_string()), Some("k".repeat(64))).api_key,
+            None
+        );
+        assert_eq!(
+            with_api_key(skipped("vllm", "no"), Some("k".repeat(64))).api_key,
+            None
+        );
+    }
 
     #[test]
     fn dropped_runner_names_are_not_installed() {

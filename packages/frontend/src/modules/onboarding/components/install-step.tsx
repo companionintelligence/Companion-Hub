@@ -252,6 +252,7 @@ export const InstallStep = ({
       // are requested. Waiting first left the apps unrequested when someone pressed Continue.
       if (aiSetupConfig && !aiSetupConfig.skipped) {
         let automaticRunnerUrls = new Map<string, string>();
+        let automaticRunnerKeys = new Map<string, string>();
         let automaticOmlxKey: string | undefined;
         const automaticRunners = automaticRunnersForBackend(aiSetupConfig.backend);
 
@@ -270,6 +271,9 @@ export const InstallStep = ({
               setAiPhase((prev) => ({ ...prev, runnerResults }));
               automaticRunnerUrls = new Map(
                 runnerResults.filter((result) => result.endpointUrl).map((result) => [result.runner, result.endpointUrl as string]),
+              );
+              automaticRunnerKeys = new Map(
+                runnerResults.filter((result) => result.apiKey).map((result) => [result.runner, result.apiKey as string]),
               );
               automaticOmlxKey = runnerResults.find((result) => result.runner === 'omlx')?.apiKey?.trim() || undefined;
             } catch (error) {
@@ -322,7 +326,13 @@ export const InstallStep = ({
             ...models,
             // A resumed session stored these blank. Passing null would clear the key the first
             // pass already saved. Leaving them out keeps what is on disk.
-            vllmApiKey: resume ? undefined : (aiSetupConfig.vllmApiKey ?? null),
+            // The key that goes with the saved URL: the person's own for a URL they gave, else the one
+            // the desktop started vLLM with.
+            vllmApiKey: resume
+              ? undefined
+              : aiSetupConfig.vllmUrl?.trim()
+                ? (aiSetupConfig.vllmApiKey ?? null)
+                : (automaticRunnerKeys.get('vllm') ?? aiSetupConfig.vllmApiKey ?? null),
             vllmUrl: resume ? undefined : configuredOrAutomaticUrl(aiSetupConfig.vllmUrl, 'vllm'),
             omlxUrl: resume ? undefined : configuredOrAutomaticUrl(aiSetupConfig.omlxUrl, 'omlx'),
             // The key in oMLX's own settings, as the desktop app read or set it, else one typed in the

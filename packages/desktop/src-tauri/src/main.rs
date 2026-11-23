@@ -348,6 +348,57 @@ async fn announce_desktop_sign_in_wait_command(
     outcome.into_command_result()
 }
 
+/// Whether this machine's AI servers (Ollama, vLLM) can be reached from the network: listening on
+/// every interface with no guard. See `hub_manager::installers::inference_guard`.
+#[tauri::command]
+async fn local_ai_network_exposure_command() -> hub_manager::LocalAiNetworkExposure {
+    tokio::task::spawn_blocking(hub_manager::local_ai_network_exposure)
+        .await
+        .unwrap_or_default()
+}
+
+/// The guard toggles act only for this machine's own Hub page: the IPC grant also covers remote
+/// origins (`*.ci.lan`, `*.ci.computer`), and none of them may turn the guard off.
+fn require_this_machines_hub_for_guard(
+    webview: &tauri::Webview,
+    state: &hub_manager::HubPaths,
+) -> Result<(), String> {
+    let api_port = port_manager::read_api_port(&state.env_path);
+    if webview
+        .url()
+        .is_ok_and(|page| hub_manager::may_change_local_ai_guard(&page, api_port))
+    {
+        Ok(())
+    } else {
+        Err(hub_manager::LOCAL_AI_GUARD_ELSEWHERE.to_string())
+    }
+}
+
+/// Install the guard that keeps this machine's AI servers off the network (asks for the password).
+#[tauri::command]
+async fn protect_local_ai_command(
+    webview: tauri::Webview,
+    state: tauri::State<'_, hub_manager::HubPaths>,
+) -> Result<(), String> {
+    require_this_machines_hub_for_guard(&webview, &state)?;
+    tokio::task::spawn_blocking(hub_manager::protect_local_ai)
+        .await
+        .map_err(|error| format!("The protection task failed: {error}"))?
+}
+
+/// Turn the guard off, so other devices on the network can use this machine's AI servers. The
+/// choice is remembered (asks for the password on Linux).
+#[tauri::command]
+async fn allow_local_ai_on_network_command(
+    webview: tauri::Webview,
+    state: tauri::State<'_, hub_manager::HubPaths>,
+) -> Result<(), String> {
+    require_this_machines_hub_for_guard(&webview, &state)?;
+    tokio::task::spawn_blocking(hub_manager::allow_local_ai_on_network)
+        .await
+        .map_err(|error| format!("The guard task failed: {error}"))?
+}
+
 /// The setup code an unpaired Hub asks for before it pairs, read from its data directory so a
 /// person pairing in this window is never asked for it. Only for this machine's Hub as the shell
 /// opens it: every Hub page the window may show holds the same IPC grant, and another Hub's page,
@@ -733,6 +784,9 @@ pub fn run() {
             install_nvidia_runtime_command,
             live_session_state_command,
             install_and_start_inference_runners_command,
+            local_ai_network_exposure_command,
+            protect_local_ai_command,
+            allow_local_ai_on_network_command,
             omlx_setup_admin_key_command,
             omlx_admin_key_status_command,
             install_rocm_command,

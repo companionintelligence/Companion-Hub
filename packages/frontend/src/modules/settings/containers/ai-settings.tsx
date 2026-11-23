@@ -48,6 +48,7 @@ import { VllmSetupCard } from '@/modules/onboarding/components/ai-setup/vllm-set
 import { OmlxSetupCard } from '@/modules/onboarding/components/ai-setup/omlx-setup-card';
 import { ManualEndpointsCard } from '@/modules/onboarding/components/ai-setup/manual-endpoints-card';
 import { LemonadeSetupCard } from '@/modules/onboarding/components/ai-setup/lemonade-setup-card';
+import { LocalAiExposureNotice } from '@/modules/onboarding/components/ai-setup/local-ai-exposure-notice';
 import { OllamaSetupCard } from '@/modules/onboarding/components/ai-setup/ollama-setup-card';
 import type { LemonadeStatus, OmlxStatus, OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import {
@@ -1119,6 +1120,8 @@ export const AiSettingsContainer = () => {
               </div>
             </section>
           )}
+
+          <LocalAiExposureNotice />
 
           <ManualEndpointsCard
             decodeEndpoint={decodeEndpoint}

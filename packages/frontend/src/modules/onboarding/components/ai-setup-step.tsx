@@ -38,6 +38,7 @@ import { SystemOverview } from './ai-setup/system-overview';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
 import { useLiveSession } from '@/lib/inference/live-session';
 import { LiveSessionNotice } from './ai-setup/live-session-notice';
+import { LocalAiExposureNotice } from './ai-setup/local-ai-exposure-notice';
 import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
 import { VllmSetupCard } from './ai-setup/vllm-setup-card';
 import { OmlxSetupCard } from './ai-setup/omlx-setup-card';
@@ -370,14 +371,19 @@ export const AiSetupStep = ({
   // Re-check refreshes installed models without resetting in-progress choices. A status probe
   // alone leaves `installedCatalogIds` stale; unlike `fetchProfile`, this best-effort refresh
   // does not replace the step with an error.
-  const refreshInstalledModels = async (backend: InferenceBackendType, endpointUrlOverride?: string, omlxApiKeyOverride?: string) => {
+  const refreshInstalledModels = async (
+    backend: InferenceBackendType,
+    endpointUrlOverride?: string,
+    apiKeyOverride?: string,
+    omlxApiKeyOverride?: string,
+  ) => {
     const requestId = ++profileRequestId.current;
     try {
       const previouslyInstalled = new Set(profile?.installedCatalogIds ?? []);
       const data = await fetchInferenceOnboardingProfile(
         backend,
         backend === 'vllm' && endpointUrlOverride ? endpointUrlOverride : vllmUrl,
-        backend === 'vllm' ? vllmApiKey : undefined,
+        backend === 'vllm' ? (apiKeyOverride ?? vllmApiKey) : undefined,
         backend === 'omlx' && endpointUrlOverride ? endpointUrlOverride : omlxUrl,
         backend === 'omlx' ? (omlxApiKeyOverride ?? omlxApiKey) : undefined,
       );
@@ -455,9 +461,12 @@ export const AiSetupStep = ({
       throw new Error('The local runner did not return a reachable endpoint.');
     }
 
+    // The desktop starts vLLM with an API key of its own; the Hub saves it with the URL.
+    const apiKey = runner === 'vllm' ? (result.apiKey ?? vllmApiKey) : undefined;
     if (runner === 'vllm') {
       setVllmUrl(endpoint);
-      const status = (await fetchVllmInstallStatus(endpoint, vllmApiKey)) as VllmStatus;
+      if (result.apiKey) setVllmApiKey(result.apiKey);
+      const status = (await fetchVllmInstallStatus(endpoint, apiKey)) as VllmStatus;
       setVllmStatus(status);
       if (!status.ready) throw new Error('The local runner is still starting.');
     } else {
@@ -477,11 +486,11 @@ export const AiSetupStep = ({
       const status = (await fetchOmlxInstallStatus(endpoint, apiKey)) as OmlxStatus;
       setOmlxStatus(status);
       if (!status.ready) throw new Error('The local runner is still starting.');
-      await refreshInstalledModels(runner, endpoint, apiKey);
+      await refreshInstalledModels(runner, endpoint, undefined, apiKey);
       return;
     }
 
-    await refreshInstalledModels(runner, endpoint);
+    await refreshInstalledModels(runner, endpoint, apiKey);
   };
 
   // The key the desktop app just gave oMLX. Continue saves it with the rest; it is stored now too, so a
@@ -906,6 +915,8 @@ export const AiSetupStep = ({
                 <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleOllamaRecheck} />
               </div>
             )}
+
+            <LocalAiExposureNotice />
 
             <ManualEndpointsCard
               decodeEndpoint={decodeEndpoint}

@@ -266,11 +266,31 @@ fn install_ollama_macos() -> Result<OllamaInstallResult, String> {
 }
 
 #[cfg(any(test, target_os = "linux"))]
-pub(crate) fn ollama_linux_install_script() -> &'static str {
+/// With `guard` false (the person turned the network guard off) it leaves the guard alone.
+pub(crate) fn ollama_linux_install_script(guard: bool) -> String {
     // The official installer is distro-agnostic (tarball to /usr/local + systemd
     // unit + GPU detection), so unlike Docker no per-distro branching is needed —
     // only its hard dependencies (curl, zstd) vary by package manager.
-    r#"#!/bin/bash
+    if !guard {
+        return OLLAMA_LINUX_INSTALL_SCRIPT.replace(INFERENCE_GUARD_PLACEHOLDER, "");
+    }
+    OLLAMA_LINUX_INSTALL_SCRIPT.replace(
+        INFERENCE_GUARD_PLACEHOLDER,
+        &format!(
+            "# Ollama listens on every interface for the Hub container's sake; keep it off the\n\
+             # network with the guard. A failure leaves Ollama working, and the AI settings\n\
+             # page offers the guard again.\n\
+             ( set -e\n{}) 1>&2 || echo \"warning: could not keep Ollama off the network\" >&2\n",
+            inference_guard_install_script()
+        ),
+    )
+}
+
+#[cfg(any(test, target_os = "linux"))]
+const INFERENCE_GUARD_PLACEHOLDER: &str = "# @inference-guard@\n";
+
+#[cfg(any(test, target_os = "linux"))]
+const OLLAMA_LINUX_INSTALL_SCRIPT: &str = r#"#!/bin/bash
 # Ollama auto-installer for Companion Hub. Runs as root via pkexec.
 # Arg 1: username to add to the ollama group.
 set -e
@@ -321,6 +341,7 @@ EOF
     systemctl daemon-reload
     systemctl enable --now ollama || systemctl restart ollama
 fi
+# @inference-guard@
 
 # Best-effort: the ollama group grants direct model-dir access; the HTTP API
 # itself needs no group membership. Without systemd the script skips group
@@ -328,8 +349,7 @@ fi
 if getent group ollama >/dev/null 2>&1; then
     usermod -aG ollama "$USERNAME" || true
 fi
-"#
-}
+"#;
 
 /// Install Ollama on Linux via the official install.sh, elevated with pkexec
 /// (GUI polkit prompt). The script handles arch detection, the systemd service,
@@ -345,7 +365,8 @@ pub fn install_ollama_linux() -> Result<OllamaInstallResult, String> {
         "pkexec is not installed or not on PATH. Install polkit/pkexec and try again.".to_string()
     })?;
 
-    let wrapper_script = write_elevated_script(ollama_linux_install_script().as_bytes())?;
+    let guard = !local_ai_guard_disabled(&super::get_hub_data_dir());
+    let wrapper_script = write_elevated_script(ollama_linux_install_script(guard).as_bytes())?;
 
     let output = Command::new(&pkexec_path)
         .arg(&*wrapper_script)
