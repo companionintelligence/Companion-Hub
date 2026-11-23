@@ -223,7 +223,7 @@ describe.skipIf(process.platform === 'win32')('InstallAppCommand on a store app 
     expect((await fs.promises.lstat(mounted)).isFile()).toBe(true);
     expect(await fs.promises.readFile(mounted, 'utf8')).toContain('upstreams:');
     expect((await fs.promises.readFile(path.join(appDataDir, 'data', 'secrets.env'), 'utf8')).trim()).toBe('API_KEY=s3cret');
-  });
+  }, 15_000); // copies a store folder through the real filesystem; a loaded runner can pass the 5 s default
 
   // Every prepare that does not say otherwise: start, restart, reset, network recovery. dispatchStart,
   // dispatchRestart and reset have no status gate, so they reach an app whose install failed before
