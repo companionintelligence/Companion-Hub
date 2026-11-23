@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { type BindMountRef, findNestedBindMounts } from './bind-mount-nesting.js';
 import { collectTraefikLabelIssues } from './traefik-labels.js';
 import { dynamicComposeSchemaV1 } from './utils/converters/v1.js';
 
@@ -958,6 +959,62 @@ const assertComposeInsideSandbox = (
     for (const [index, service] of override.services.entries()) {
       refuse(service, ['overrides', overrideIndex, 'services', index]);
     }
+  }
+  // One folder inside another the app can write to (see bind-mount-nesting.ts). The services as they
+  // stand, and with each architecture's override's volumes added, since Start may apply either.
+  // The parsed services carry `name` and `readOnly`; SecurityCheckedService only names what the
+  // per-service check reads.
+  const base = compose.services as readonly MountingService[];
+  refuseNestedBindMounts(base, ['services'], ctx);
+  for (const [overrideIndex, override] of (compose.overrides ?? []).entries()) {
+    refuseNestedBindMounts(
+      [...base, ...(override.services as readonly MountingService[])],
+      ['overrides', overrideIndex, 'services'],
+      ctx,
+      base.length,
+    );
+  }
+};
+
+type MountedVolume = { hostPath?: string; readOnly?: boolean };
+type MountingService = { name?: string; volumes?: MountedVolume[] };
+
+/** Each bind mount of these services, with where it sits in the list (`[serviceIndex, volumeIndex]`). */
+const bindMountsAt = (services: readonly MountingService[]) => {
+  const mounts: (BindMountRef & { at: [number, number] })[] = [];
+  for (const [serviceIndex, service] of services.entries()) {
+    for (const [volumeIndex, volume] of (service.volumes ?? []).entries()) {
+      if (volume.hostPath !== undefined) {
+        mounts.push({
+          service: service.name ?? `#${serviceIndex}`,
+          source: volume.hostPath,
+          readOnly: volume.readOnly === true,
+          at: [serviceIndex, volumeIndex],
+        });
+      }
+    }
+  }
+  return mounts;
+};
+
+/**
+ * Reports the inner mount of each nested pair. `firstReported` skips services before that index (an
+ * override's check runs over the base services too, which the base check already reported on).
+ */
+const refuseNestedBindMounts = (services: readonly MountingService[], at: PropertyKey[], ctx: z.RefinementCtx, firstReported = 0) => {
+  const reported = new Set<string>();
+  for (const { inner } of findNestedBindMounts(bindMountsAt(services))) {
+    const [serviceIndex, volumeIndex] = (inner as ReturnType<typeof bindMountsAt>[number]).at;
+    const key = `${serviceIndex}.${volumeIndex}`;
+    if (serviceIndex < firstReported || reported.has(key)) {
+      continue;
+    }
+    reported.add(key);
+    ctx.addIssue({
+      code: 'custom',
+      message: 'CUSTOM_APP_ERROR_HOST_PATH_NESTED',
+      path: [...at, serviceIndex - firstReported, 'volumes', volumeIndex, 'hostPath'],
+    });
   }
 };
 

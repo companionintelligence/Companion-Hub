@@ -93,6 +93,9 @@ describe('DockerService', () => {
     }).compile();
 
     service = module.get<DockerService>(DockerService);
+    // The bind-mount check before a start runs `docker compose config`, its own spawn; these tests count
+    // the spawns of the command itself. The check has its own tests (docker.service.bind-mounts.test.ts).
+    vi.spyOn(service, 'readAppBindMounts').mockResolvedValue([]);
     dockerReadFacade = module.get(DockerReadFacade);
   });
 

@@ -6,6 +6,8 @@ import {
   type ServiceInput,
   serviceSchema,
   collectServiceSecurityViolations,
+  describeNestedBindMounts,
+  findNestedBindMounts,
   collectTraefikLabelIssues,
   isReservedHubLabel,
   LOOPBACK_HOST_PORT_INTERFACE,
@@ -650,6 +652,24 @@ export class DockerComposeBuilder {
       }
       return service;
     });
+
+    // One folder inside another the app can write to is a host escape (see bind-mount-nesting.ts in
+    // @ci-hub/common). Refused here, with the manifest's own paths, so an install fails before it
+    // starts anything; every start checks the expanded mounts again (DockerService.assertBindMountsSafe).
+    const nestedMounts = findNestedBindMounts(
+      fixedServices.flatMap((service) =>
+        (service.volumes ?? []).flatMap((volume) =>
+          volume.hostPath === undefined ? [] : [{ service: service.name, source: volume.hostPath, readOnly: volume.readOnly === true }],
+        ),
+      ),
+      { grantedHostPaths: securityGrantsFor(appUrn).hostPaths },
+    );
+    if (nestedMounts.length > 0) {
+      throw new Error(
+        `App "${extractAppUrn(appUrn).appName}" mounts a folder inside another folder it can write to: ${describeNestedBindMounts(nestedMounts)}. ` +
+          'Code in the app could replace the inner folder with a link to anywhere on this computer. Give each mount a folder of its own, side by side.',
+      );
+    }
 
     const myServices = fixedServices.map((service) => this.buildService(service, form, appUrn, envFile, options));
 

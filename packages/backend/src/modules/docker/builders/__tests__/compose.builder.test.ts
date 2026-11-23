@@ -146,6 +146,38 @@ describe('DockerComposeBuilder', () => {
       await expect(composeBuilder.getDockerCompose([service], {}, urn, subnet)).rejects.toThrow(/host-privileged access/);
     });
 
+    it('refuses a folder inside another the app can write to, across services', async () => {
+      const services: ServiceInput[] = [
+        { name: 'web', image: 'image', internalPort: 80, isMain: true, volumes: [{ hostPath: '${APP_DATA_DIR}/data', containerPath: '/data' }] },
+        { name: 'db', image: 'image', volumes: [{ hostPath: '${APP_DATA_DIR}/data/db', containerPath: '/var/lib/db' }] },
+      ];
+      await expect(composeBuilder.getDockerCompose(services, {}, urn, subnet)).rejects.toThrow(
+        /mounts a folder inside another folder it can write to: "\$\{APP_DATA_DIR\}\/data\/db" \(db\) is inside "\$\{APP_DATA_DIR\}\/data", which web can write to/,
+      );
+    });
+
+    it('builds folders side by side, and one inside a folder mounted read-only', async () => {
+      const services: ServiceInput[] = [
+        {
+          name: 'web',
+          image: 'image',
+          internalPort: 80,
+          isMain: true,
+          volumes: [
+            { hostPath: '${APP_DATA_DIR}/data/app', containerPath: '/data' },
+            { hostPath: '${APP_DATA_DIR}/data/config', containerPath: '/config', readOnly: true },
+          ],
+        },
+        { name: 'db', image: 'image', volumes: [{ hostPath: '${APP_DATA_DIR}/data/db', containerPath: '/var/lib/db' }] },
+        {
+          name: 'nats',
+          image: 'image',
+          volumes: [{ hostPath: '${APP_DATA_DIR}/data/config/nats.conf', containerPath: '/nats.conf', readOnly: true }],
+        },
+      ];
+      await expect(composeBuilder.getDockerCompose(services, {}, urn, subnet)).resolves.toBeDefined();
+    });
+
     it('rejects host network mode from a non-allowlisted app', async () => {
       const service: ServiceInput = { name: 'svc', image: 'image', internalPort: 80, networkMode: 'host' };
       await expect(composeBuilder.getDockerCompose([service], {}, urn, subnet)).rejects.toThrow(/host-privileged access/);
