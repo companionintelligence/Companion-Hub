@@ -17,7 +17,8 @@ export const AuthLayout = ({ children, wide = false }: AuthLayoutProps) => {
       className="flex flex-col items-center overflow-y-auto bg-background"
       style={{
         height: 'var(--app-height)',
-        paddingTop: 'calc(var(--titlebar-height, 0px) + max(2rem, var(--safe-area-top, 0px)))',
+        // The shell is laid out below the desktop title bar, so the bar takes no padding here.
+        paddingTop: 'max(2rem, var(--safe-area-top, 0px))',
         paddingBottom: 'max(2rem, var(--safe-area-bottom, 0px))',
         paddingLeft: 'max(1rem, env(safe-area-inset-left, 0px))',
         paddingRight: 'max(1rem, env(safe-area-inset-right, 0px))',

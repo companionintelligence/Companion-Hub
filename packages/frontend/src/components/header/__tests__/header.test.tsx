@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { act, render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
@@ -97,6 +99,15 @@ describe('Header', () => {
     expect(header.style.height).toBe('var(--header-offset)');
   });
 
+  it('sits below the desktop title bar and does not count the bar again in its height', () => {
+    renderHeader(true);
+    expect(screen.getByTestId('app-header').style.top).toBe('var(--titlebar-height, 0px)');
+    // With the bar in --header-offset as well, the header was 40px taller in the desktop app than in a browser,
+    // and the page and the screenshot viewer, which start at its bottom edge, moved down with it.
+    const globalsCss = readFileSync(resolve(__dirname, '../../../styles/globals.css'), 'utf8');
+    expect(/--header-offset:\s*([^;]+);/.exec(globalsCss)?.[1]).toBe('calc(3.5rem + var(--safe-area-top, 0px))');
+  });
+
   it('opens the phone menu without a Radix portal', async () => {
     renderHeader(true);
     expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
@@ -109,7 +120,7 @@ describe('Header', () => {
       'zoom-in-95',
       'slide-in-from-top-2',
       'overflow-y-auto',
-      'max-h-[calc(100dvh-var(--header-offset)-1rem)]',
+      'max-h-[calc(100dvh-var(--titlebar-height,0px)-var(--header-offset)-1rem)]',
     );
     const scrim = screen.getByTestId('mobile-app-menu-scrim');
     expect(scrim.style.top).toBe('calc(var(--titlebar-height, 0px) + var(--header-offset))');

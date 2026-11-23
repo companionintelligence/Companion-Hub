@@ -7,7 +7,7 @@ vi.mock('@/components/language-selector/language-selector', () => ({
 }));
 
 describe('AuthLayout', () => {
-  it('pads for the phone safe area and the desktop title bar', () => {
+  it('pads for the phone safe area, and not again for the desktop title bar it sits below', () => {
     render(
       <AuthLayout>
         <p>Sign in</p>
@@ -15,7 +15,7 @@ describe('AuthLayout', () => {
     );
 
     const shell = screen.getByText('Sign in').closest('.overflow-y-auto') as HTMLElement;
-    expect(shell.style.paddingTop).toBe('calc(var(--titlebar-height, 0px) + max(2rem, var(--safe-area-top, 0px)))');
+    expect(shell.style.paddingTop).toBe('max(2rem, var(--safe-area-top, 0px))');
     expect(shell.style.paddingBottom).toBe('max(2rem, var(--safe-area-bottom, 0px))');
   });
 });
