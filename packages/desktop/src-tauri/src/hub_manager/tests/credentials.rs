@@ -18,7 +18,7 @@ type Ran = (i32, String, String);
 /// As in the real image, Postgres trusts loopback connections and asks everyone else for the
 /// role's password.
 struct FakeEngine {
-    /// False acts like the WSL engine at `tcp://127.0.0.1:2375`: `docker exec` exits 0 and prints
+    /// False acts like the WSL engine at `tcp://127.0.0.1:2376`: `docker exec` exits 0 and prints
     /// nothing whatever the command did, and `docker run` keeps its exit status but prints nothing.
     streams_output: bool,
     /// With `streams_output` false, `docker exec` still exits 0 but passes on the first line the

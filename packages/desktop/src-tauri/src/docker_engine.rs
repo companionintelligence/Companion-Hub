@@ -19,6 +19,61 @@ use crate::hub_names::{HUB_CONTAINER, HUB_NETWORK_NAMES, LEGACY_HUB_CONTAINER};
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub const DOCKER_CONTEXT_WSL_ENGINE: &str = "wsl-engine";
+
+/// Where the Docker engine inside WSL listens, for Windows to reach it through WSL's localhost
+/// forwarding. TLS with client certificates (`dockerd --tlsverify`): see [`WSL_ENGINE_LEGACY_HOST`].
+pub const WSL_ENGINE_TLS_HOST: &str = "tcp://127.0.0.1:2376";
+
+/// ⚠ WHERE IT USED TO LISTEN, WITH NO AUTHENTICATION AT ALL. Plain TCP on 127.0.0.1:2375 answered
+/// any program on the Windows machine, another account's and a web page's included (DNS
+/// rebinding: Docker never checks the Host header), as root over a Docker that can mount the
+/// Windows drives under /mnt/c and runs the Hub. An engine still on it is moved to
+/// [`WSL_ENGINE_TLS_HOST`] at the next Hub start (`hub_manager::ensure_wsl_engine_tls`).
+pub const WSL_ENGINE_LEGACY_HOST: &str = "tcp://127.0.0.1:2375";
+
+/// The folder in the Windows profile holding the client certificate for [`WSL_ENGINE_TLS_HOST`], in
+/// the names `DOCKER_CERT_PATH` expects (`ca.pem`, `cert.pem`, `key.pem`). Readable by its owner
+/// only: the key is what lets a program use that Docker.
+pub fn wsl_engine_client_cert_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".docker").join("companionhub-wsl"))
+}
+
+/// Points a `docker` command at `docker_host`, with the client certificate when that is the WSL
+/// engine. `DOCKER_HOST` bypasses the TLS settings a Docker context keeps, so they are given as
+/// `DOCKER_TLS_VERIFY` / `DOCKER_CERT_PATH` here; for any other host, inherited ones are cleared so
+/// they cannot apply to it.
+pub fn apply_docker_host(cmd: &mut Command, docker_host: &str) {
+    cmd.env("DOCKER_HOST", docker_host);
+    // Avoid inheriting a sticky DOCKER_CONTEXT that fights DOCKER_HOST.
+    cmd.env_remove("DOCKER_CONTEXT");
+    match wsl_engine_tls_env(docker_host, wsl_engine_client_cert_dir().as_deref()) {
+        Some(env) => {
+            for (key, value) in env {
+                cmd.env(key, value);
+            }
+        }
+        None => {
+            cmd.env_remove("DOCKER_TLS_VERIFY");
+            cmd.env_remove("DOCKER_CERT_PATH");
+        }
+    }
+}
+
+/// The TLS variables [`apply_docker_host`] sets for `docker_host`, or `None` when it is not the WSL
+/// engine (or there is no profile to keep the certificate in).
+pub(crate) fn wsl_engine_tls_env(
+    docker_host: &str,
+    cert_dir: Option<&Path>,
+) -> Option<[(&'static str, String); 2]> {
+    if docker_host.trim().trim_end_matches('/') != WSL_ENGINE_TLS_HOST {
+        return None;
+    }
+    let dir = cert_dir?;
+    Some([
+        ("DOCKER_TLS_VERIFY", "1".to_string()),
+        ("DOCKER_CERT_PATH", dir.display().to_string()),
+    ])
+}
 /// The Docker context socktainer registers on startup.
 pub const DOCKER_CONTEXT_SOCKTAINER: &str = "socktainer";
 pub const DOCKER_ENGINE_STATE_FILENAME: &str = "docker-engine.json";
@@ -240,9 +295,7 @@ fn base_docker_command() -> Command {
 
 fn docker_command_for_host(docker_host: &str) -> Command {
     let mut cmd = base_docker_command();
-    cmd.env("DOCKER_HOST", docker_host);
-    // Avoid inheriting a sticky DOCKER_CONTEXT that fights DOCKER_HOST.
-    cmd.env_remove("DOCKER_CONTEXT");
+    apply_docker_host(&mut cmd, docker_host);
     cmd
 }
 
@@ -765,6 +818,22 @@ fn persist_engine(data_dir: &Path, engine: &PinnedDockerEngine) -> Result<(), St
     })
 }
 
+/// A saved WSL engine still at [`WSL_ENGINE_LEGACY_HOST`] moved to [`WSL_ENGINE_TLS_HOST`], once
+/// `hub_manager::ensure_wsl_engine_tls` has moved the engine itself. Every engine lookup that falls
+/// back to the saved one (waking the engine before a start, the status polls) then asks the TLS
+/// listener instead of a port nothing answers on any more.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn repoint_persisted_wsl_engine(data_dir: &Path) {
+    if let Some(mut engine) = load_persisted_engine(data_dir) {
+        if engine.kind == DockerEngineKind::WslEngine
+            && engine.docker_host.trim_end_matches('/') == WSL_ENGINE_LEGACY_HOST
+        {
+            engine.docker_host = WSL_ENGINE_TLS_HOST.to_string();
+            let _ = persist_engine(data_dir, &engine);
+        }
+    }
+}
+
 pub fn load_persisted_engine(data_dir: &Path) -> Option<PinnedDockerEngine> {
     let raw = std::fs::read_to_string(docker_engine_state_path(data_dir)).ok()?;
     serde_json::from_str(&raw).ok()
@@ -1204,6 +1273,40 @@ mod tests {
         assert_eq!(
             docker_context_host_from_inspect_output(inspect_output),
             Some("unix:///home/test/.docker/desktop/docker.sock".to_string())
+        );
+    }
+
+    #[test]
+    fn a_saved_wsl_engine_moves_from_the_plain_tcp_port_to_tls_and_nothing_else_does() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = |host: &str, kind: DockerEngineKind| PinnedDockerEngine {
+            docker_host: host.to_string(),
+            kind,
+            context_name: Some(DOCKER_CONTEXT_WSL_ENGINE.to_string()),
+            reason: "test".to_string(),
+            selected_at: 1,
+            path_style: None,
+        };
+        persist_engine(
+            dir.path(),
+            &engine(WSL_ENGINE_LEGACY_HOST, DockerEngineKind::WslEngine),
+        )
+        .unwrap();
+        repoint_persisted_wsl_engine(dir.path());
+        assert_eq!(
+            load_persisted_engine(dir.path()).unwrap().docker_host,
+            WSL_ENGINE_TLS_HOST
+        );
+
+        persist_engine(
+            dir.path(),
+            &engine("npipe:////./pipe/docker_engine", DockerEngineKind::Desktop),
+        )
+        .unwrap();
+        repoint_persisted_wsl_engine(dir.path());
+        assert_eq!(
+            load_persisted_engine(dir.path()).unwrap().docker_host,
+            "npipe:////./pipe/docker_engine"
         );
     }
 

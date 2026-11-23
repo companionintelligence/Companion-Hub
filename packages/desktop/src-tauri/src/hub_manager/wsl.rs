@@ -219,7 +219,7 @@ pub(crate) fn ensure_wsl_engine_gpu_runtime(data_dir: &Path) {
     }
     // The setup script restarts the in-distro dockerd so it loads the nvidia runtime.
     // That briefly drops the daemon the host CLI — and the imminent, UN-RETRIED
-    // database bootstrap (start_database_first) — reach over tcp://127.0.0.1:2375.
+    // database bootstrap (start_database_first) — reach over tcp://127.0.0.1:2376 (TLS).
     // Wait for the daemon to be responsive again before returning so that bootstrap
     // never hits a mid-restart daemon; report whether the runtime registered.
     const READINESS_WAIT_SECS: u32 = 20;

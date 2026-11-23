@@ -16,6 +16,38 @@ import { resolveCanonicalDataDir } from './paths';
 export const DOCKER_ENGINE_STATE_FILENAME = 'docker-engine.json';
 export const DOCKER_CONTEXT_WSL_ENGINE = 'wsl-engine';
 
+/**
+ * Where the Docker engine inside WSL listens for Windows, with TLS client certificates. It used to
+ * be plain TCP on 127.0.0.1:2375, which answered every program and account on the machine (and web
+ * pages through DNS rebinding) as root over Docker. The desktop moves an engine over at the next
+ * Hub start; see packages/desktop/src-tauri/src/hub_manager/wsl_engine_tls.rs.
+ */
+export const WSL_ENGINE_TLS_HOST = 'tcp://127.0.0.1:2376';
+
+/** The folder holding the client certificate for WSL_ENGINE_TLS_HOST, as DOCKER_CERT_PATH expects it. */
+export function wslEngineClientCertDir(home: string = os.homedir()): string {
+  return path.join(home, '.docker', 'companionhub-wsl');
+}
+
+/**
+ * `env` pointed at `dockerHost`, with the WSL engine's client certificate when that is the host it
+ * names. DOCKER_HOST bypasses the TLS settings a Docker context keeps, so they go in as
+ * DOCKER_TLS_VERIFY / DOCKER_CERT_PATH; for any other host, inherited ones are dropped so they
+ * cannot apply to it. Kept in step with `apply_docker_host` in the desktop's docker_engine.rs.
+ */
+export function dockerEnvForHost(env: NodeJS.ProcessEnv, dockerHost: string, home: string = os.homedir()): NodeJS.ProcessEnv {
+  const next: NodeJS.ProcessEnv = { ...env, DOCKER_HOST: dockerHost };
+  delete next.DOCKER_CONTEXT;
+  if (dockerHost.trim().replace(/\/+$/, '') === WSL_ENGINE_TLS_HOST) {
+    next.DOCKER_TLS_VERIFY = '1';
+    next.DOCKER_CERT_PATH = wslEngineClientCertDir(home);
+  } else {
+    delete next.DOCKER_TLS_VERIFY;
+    delete next.DOCKER_CERT_PATH;
+  }
+  return next;
+}
+
 export type DockerEngineKind = 'desktop' | 'system' | 'wsl-engine' | 'rootless' | 'other';
 
 export type PinnedDockerEngine = {
@@ -104,11 +136,7 @@ function runDocker(
   dockerHost?: string,
   env: NodeJS.ProcessEnv = process.env,
 ): { status: number | null; stdout: string; stderr: string } {
-  const nextEnv = { ...env };
-  if (dockerHost) {
-    nextEnv.DOCKER_HOST = dockerHost;
-    delete nextEnv.DOCKER_CONTEXT;
-  }
+  const nextEnv = dockerHost ? dockerEnvForHost(env, dockerHost) : { ...env };
   const result = spawnSync('docker', args, {
     encoding: 'utf8',
     env: nextEnv,
@@ -504,9 +532,7 @@ export function effectiveDockerHost(options?: { dataDir?: string; env?: NodeJS.P
 export function dockerEnvWithPinnedHost(baseEnv: NodeJS.ProcessEnv = process.env, options?: { dataDir?: string }): NodeJS.ProcessEnv {
   const host = effectiveDockerHost({ dataDir: options?.dataDir, env: baseEnv });
   if (!host) return { ...baseEnv };
-  const next = { ...baseEnv, DOCKER_HOST: host };
-  delete next.DOCKER_CONTEXT;
-  return next;
+  return dockerEnvForHost(baseEnv, host);
 }
 
 export function pinnedPathStyle(options?: { dataDir?: string; env?: NodeJS.ProcessEnv }): 'drive' | 'wsl-mnt' | null {

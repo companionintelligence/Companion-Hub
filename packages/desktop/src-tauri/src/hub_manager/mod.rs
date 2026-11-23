@@ -41,6 +41,7 @@ mod status;
 mod windows_paths;
 mod wsl;
 mod wsl_engine_files;
+mod wsl_engine_tls;
 
 #[cfg(test)]
 mod tests;
@@ -70,6 +71,8 @@ pub(crate) use windows_paths::*;
 pub(crate) use wsl::*;
 #[allow(unused_imports)]
 pub(crate) use wsl_engine_files::*;
+#[allow(unused_imports)]
+pub(crate) use wsl_engine_tls::*;
 
 #[cfg(target_os = "windows")]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -301,9 +304,9 @@ fn base_docker_command() -> Command {
 pub fn docker_command() -> Command {
     let mut cmd = base_docker_command();
     if let Some(docker_host) = preferred_docker_host() {
-        cmd.env("DOCKER_HOST", docker_host);
-        // Sticky CLI contexts must not override the pinned Hub engine.
-        cmd.env_remove("DOCKER_CONTEXT");
+        // Sticky CLI contexts must not override the pinned Hub engine; the WSL engine's client
+        // certificate comes along with its host.
+        crate::docker_engine::apply_docker_host(&mut cmd, &docker_host);
     }
     cmd
 }

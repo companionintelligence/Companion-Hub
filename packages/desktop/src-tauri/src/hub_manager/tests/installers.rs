@@ -641,11 +641,21 @@ fn wsl2_engine_user_script_owns_per_user_state_and_avoids_daemon_json_hosts() {
     // TCP exposure must be a systemd drop-in, not daemon.json "hosts"
     // (which conflicts with Ubuntu's -H fd:// unit).
     assert!(script.contains("docker.service.d"));
-    assert!(script.contains("-H fd:// -H tcp://127.0.0.1:2375"));
     assert!(!script.contains("\"hosts\""));
+    // The listener needs a client certificate (wsl_engine_tls.rs): plain TCP on 2375 answered
+    // every program and account on the machine, and web pages through DNS rebinding.
+    assert!(script.contains("-H fd:// -H tcp://127.0.0.1:2376 --tlsverify"));
+    assert!(
+        !script.contains("2375"),
+        "the installer must never open the unauthenticated port"
+    );
+    // The client copy is the signed-in user's alone.
+    assert!(script.contains(r"'.docker\companionhub-wsl'"));
+    assert!(script.contains("/inheritance:r"));
     // Per-user context routing (no env vars) + logon keepalive — generated in
     // the non-elevated phase so they land in the real user's profile.
-    assert!(script.contains("context create wsl-engine"));
+    assert!(script.contains("context $contextVerb wsl-engine --docker $endpoint"));
+    assert!(script.contains("host=tcp://127.0.0.1:2376,ca="));
     assert!(script.contains("GetFolderPath('Startup')"));
     assert!(script.contains("sleep infinity"));
     // Must restart only the target distro, not every running WSL distro.

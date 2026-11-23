@@ -8,8 +8,9 @@ use super::*;
 /// paths run the open-source Docker Engine instead:
 ///   - macOS: Colima (Engine in a lightweight vz VM). Homebrew when present,
 ///     otherwise verified binaries (colima + lima + docker CLI) into /usr/local.
-///   - Windows: Docker Engine inside WSL2 (Ubuntu), TCP-exposed on
-///     127.0.0.1:2375 with a docker context — no Docker Desktop involved.
+///   - Windows: Docker Engine inside WSL2 (Ubuntu), reachable from Windows on 127.0.0.1:2376
+///     with TLS client certificates, through a docker context — no Docker Desktop involved
+///     (see hub_manager/wsl_engine_tls.rs).
 ///   - Linux: the standard Engine install (already licensing-free).
 pub fn install_docker_engine_alternative() -> Result<DockerInstallResult, String> {
     #[cfg(target_os = "linux")]
@@ -244,8 +245,9 @@ fn install_colima_macos() -> Result<DockerInstallResult, String> {
 //     does not require Windows admin.
 //   - Ubuntu's docker-ce systemd unit uses `-H fd://`, which conflicts with a
 //     daemon.json `hosts` key — TCP exposure needs a systemd drop-in instead.
-//   - WSL2 localhost forwarding makes tcp://127.0.0.1:2375 reachable from
-//     Windows, but only while the distro runs — and systemd services do NOT
+//   - WSL2 localhost forwarding makes tcp://127.0.0.1:2376 reachable from
+//     Windows (and from every other program and account on it: hence TLS with a
+//     client certificate only this user holds), but only while the distro runs — and systemd services do NOT
 //     keep the VM alive, hence the hidden `sleep infinity` keepalive in the
 //     user's Startup folder.
 //   - docker.exe goes where find_docker_binary() already looks, and a docker
@@ -460,9 +462,11 @@ if ! command -v dockerd >/dev/null 2>&1; then
   rm -f /tmp/get-docker.sh
 fi
 printf '[boot]\nsystemd=true\n' > /etc/wsl.conf
-mkdir -p /etc/systemd/system/docker.service.d
-printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd -H fd:// -H tcp://127.0.0.1:2375\n' > /etc/systemd/system/docker.service.d/companionhub-tcp.conf
 systemctl enable docker 2>/dev/null || true"#;
+    // Run once systemd is up (after the restart below): it restarts Docker on its TLS listener.
+    let tls_setup = crate::hub_manager::wsl_engine_tls_root_script();
+    let tls_dir = crate::hub_manager::WSL_ENGINE_TLS_DIR;
+    let tls_host = crate::docker_engine::WSL_ENGINE_TLS_HOST;
 
     format!(
         r#"# Continue (not Stop): this phase runs probes that are *expected* to fail —
@@ -491,9 +495,29 @@ $setup = @'
 $setup | & wsl.exe -d $distro -u root -- sh
 if ($LASTEXITCODE -ne 0) {{ throw "Docker Engine setup inside WSL failed with exit code $LASTEXITCODE" }}
 
-# Restart the distro so wsl.conf + the drop-in take effect.
+# Restart the distro so wsl.conf takes effect (systemd).
 & wsl.exe --terminate $distro
 & wsl.exe -d $distro -u root -- true
+
+# Phase 4b: Docker answers Windows only over TLS, to a client holding the certificate made here
+# (hub_manager/wsl_engine_tls.rs). Plain TCP answered every program on this machine.
+$tls = @'
+{tls_setup}
+'@ -replace "`r`n", "`n"
+$tlsOut = ($tls | & wsl.exe -d $distro -u root -- sh)
+if ($LASTEXITCODE -ne 0) {{ throw "TLS setup for Docker inside WSL failed with exit code $LASTEXITCODE" }}
+$tlsMarker = ($tlsOut | Where-Object {{ $_.Trim() }} | Select-Object -Last 1)
+if ($tlsMarker -ne 'tls-configured' -and $tlsMarker -ne 'tls-already') {{ throw "TLS setup for Docker inside WSL did not finish: $tlsMarker" }}
+$certDir = Join-Path $env:USERPROFILE '.docker\companionhub-wsl'
+New-Item -ItemType Directory -Force -Path $certDir | Out-Null
+& icacls.exe $certDir /inheritance:r /grant:r "$($env:USERDOMAIN)\$($env:USERNAME):(OI)(CI)F" /T /Q | Out-Null
+if ($LASTEXITCODE -ne 0) {{ throw "Could not limit $certDir to $($env:USERNAME)." }}
+foreach ($name in 'ca.pem','cert.pem','key.pem') {{
+  $pem = (& wsl.exe -d $distro -u root -- cat "{tls_dir}/$name") -join "`n"
+  if ($LASTEXITCODE -ne 0 -or $pem -notmatch '-----BEGIN') {{ throw "Could not read $name from the WSL distro." }}
+  [IO.File]::WriteAllText((Join-Path $certDir $name), "$pem`n")
+}}
+$endpoint = "host={tls_host},ca=$(Join-Path $certDir 'ca.pem'),cert=$(Join-Path $certDir 'cert.pem'),key=$(Join-Path $certDir 'key.pem')"
 
 # Phase 5: route the CLI at the WSL engine via a context (read from ~/.docker
 # at runtime — no env vars, no Hub restart needed).
@@ -504,10 +528,9 @@ $dockerBin = Join-Path $programFiles 'Docker\Docker\resources\bin'
 $dockerExe = Join-Path $dockerBin 'docker.exe'
 if (-not (Test-Path $dockerExe)) {{ throw "Static docker CLI is missing at $dockerExe." }}
 & $dockerExe context inspect {wsl_context} 2>$null | Out-Null
-if ($LASTEXITCODE -ne 0) {{
-  & $dockerExe context create {wsl_context} --docker host=tcp://127.0.0.1:2375 | Out-Null
-  if ($LASTEXITCODE -ne 0) {{ throw "Failed to create the {wsl_context} docker context." }}
-}}
+$contextVerb = if ($LASTEXITCODE -eq 0) {{ 'update' }} else {{ 'create' }}
+& $dockerExe context $contextVerb {wsl_context} --docker $endpoint | Out-Null
+if ($LASTEXITCODE -ne 0) {{ throw "Failed to $contextVerb the {wsl_context} docker context." }}
 & $dockerExe context use {wsl_context} | Out-Null
 if ($LASTEXITCODE -ne 0) {{ throw "Failed to select the {wsl_context} docker context." }}
 
@@ -532,6 +555,9 @@ for ($i = 0; $i -lt 60; $i++) {{
 throw 'Timed out waiting for the Docker Engine inside WSL2 to come up.'
 "#,
         linux_setup = linux_setup,
+        tls_setup = tls_setup,
+        tls_dir = tls_dir,
+        tls_host = tls_host,
         wsl_context = DOCKER_CONTEXT_WSL_ENGINE,
     )
 }
