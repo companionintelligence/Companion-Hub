@@ -62,7 +62,7 @@ describe('HardwareInspectorService', () => {
 
     service = module.get<HardwareInspectorService>(HardwareInspectorService);
     hostMetricsService = module.get<HostMetricsService>(HostMetricsService);
-  });
+  }, 30_000); // compiles a Nest module per test; a loaded runner can pass the 10 s default
 
   afterEach(() => {
     process.env.CI_HUB_HOST_PLATFORM = originalHostPlatform;
