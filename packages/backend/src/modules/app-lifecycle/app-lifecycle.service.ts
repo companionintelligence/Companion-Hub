@@ -636,14 +636,62 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.appEventsQueue.onEvent((data, reply) => this.invokeCommand(data, reply));
   }
 
+  /**
+   * Recreates each app `ensureHubOnAppNetworks` took off a shared Hub network, by queueing a restart
+   * for it. A restart that cannot be queued is logged and the next app goes on.
+   *
+   * Only an app whose row says `running` is recreated. Its containers are listed stopped or not, and a
+   * restart is `down` then `up`, so recreating every one of them started each app the operator had
+   * stopped on the first boot after the upgrade. A stopped app is composed onto its own network at its
+   * next start anyway.
+   */
+  private async recreateAppsMovedOffSharedNetworks(appUrns: AppUrn[]): Promise<void> {
+    for (const appUrn of appUrns) {
+      try {
+        const status = (await this.appRepository.getAppByUrn(appUrn))?.status;
+        if (status !== 'running') {
+          this.logger.info(`Not recreating ${appUrn} onto its own network now: it is ${status ?? 'not installed'}; its next start does it`);
+          continue;
+        }
+        this.logger.info(`Recreating ${appUrn} onto its own network: it was on a network every app shared`);
+        await this.restartApp({ appUrn, skipPull: true, actor: { kind: 'system', reason: 'app-network-isolation' } });
+      } catch (error) {
+        this.logger.warn(
+          `Could not recreate ${appUrn} onto its own network: ${error instanceof Error ? error.message : String(error)}. Restart it to route to it again.`,
+        );
+      }
+    }
+  }
+
   async onApplicationBootstrap() {
     void this.recoverStuckInstallsOnStartup();
 
     // Recreating this container drops the app-network attachments `compose up` added. Put them
-    // back before apps call inference, or an off-network service cannot resolve `ci-hub`.
-    void this.dockerService.ensureHubOnAppNetworks().catch((error: unknown) => {
-      this.logger.error(`Failed to reattach the Hub to app networks: ${error instanceof Error ? error.message : String(error)}`);
-    });
+    // back before apps call inference, or an off-network service cannot resolve `ci-hub`. An app still
+    // on a shared Hub network from before apps had networks of their own is taken off it there, and is
+    // recreated here so its labels, Memory URL and trusted Traefik hop match its own network.
+    const appNetworksRejoined = Promise.resolve().then(() => this.dockerService.ensureHubOnAppNetworks());
+    void appNetworksRejoined
+      .then((moved) => this.recreateAppsMovedOffSharedNetworks(moved ?? []))
+      .catch((error: unknown) => {
+        this.logger.error(`Failed to reattach the Hub to app networks: ${error instanceof Error ? error.message : String(error)}`);
+      });
+
+    // Docker does not retry a container that failed to start when the daemon did, and Traefik fails
+    // then whenever the Hub's data folder mounts after Docker (an encrypted home or drive): the Hub
+    // comes up and every app hostname stays dead. Start it once its app networks are right (a stopped
+    // Traefik is joined to them too), and put it on the edge network cloudflared reaches it on.
+    void appNetworksRejoined
+      .catch(() => undefined)
+      .then(() => this.dockerService.ensureTraefikRunning())
+      .then(async (result) => {
+        if (result === 'started') {
+          await this.dockerService.ensureTraefikOnEdgeNetwork();
+        }
+      })
+      .catch((error: unknown) => {
+        this.logger.error(`Failed to start Traefik: ${error instanceof Error ? error.message : String(error)}`);
+      });
 
     this.logger.info('Triggering initial Cloudflare sync in 5s...');
     setTimeout(() => {

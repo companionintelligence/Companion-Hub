@@ -7,6 +7,7 @@ import { SSEController } from '@/core/sse/sse.controller';
 import { ApiKeyAdminController } from '@/modules/api-keys/api-key-admin.controller';
 import { AppLifecycleController } from '@/modules/app-lifecycle/app-lifecycle.controller';
 import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
+import { AppLinksController } from '@/modules/app-links/app-links.controller';
 import { HubPoolController } from '@/modules/hub-pool/hub-pool.controller';
 import { InferenceController } from '@/modules/inference/inference.controller';
 import { MarketplaceController } from '@/modules/marketplace/marketplace.controller';
@@ -121,6 +122,7 @@ const GUARDED_CONTROLLERS: Array<[file: string, controller: { name: string; prot
   ['core/sse/sse.controller.ts', SSEController],
   ['modules/api-keys/api-key-admin.controller.ts', ApiKeyAdminController],
   ['modules/app-lifecycle/app-lifecycle.controller.ts', AppLifecycleController],
+  ['modules/app-links/app-links.controller.ts', AppLinksController],
   ['modules/hub-pool/hub-pool.controller.ts', HubPoolController],
   ['modules/inference/inference.controller.ts', InferenceController],
   ['modules/marketplace/marketplace.controller.ts', MarketplaceController],
@@ -146,6 +148,8 @@ const GUARDED_CONTROLLERS: Array<[file: string, controller: { name: string; prot
 const GUARDED_ROUTE_TOOLS: Record<string, string[]> = {
   'AppController.acknowledgeWelcome': [],
   'AppController.updateUserSettings': [],
+  'AppLinksController.approve': [],
+  'AppLinksController.revoke': [],
   'ApiKeyAdminController.createKey': [],
   'ApiKeyAdminController.revokeKey': [],
   'ApiKeyAdminController.updateKey': [],

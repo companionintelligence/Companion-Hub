@@ -2,6 +2,56 @@
 
 The desktop release workflow keeps macOS signing/notarization as-is and now signs Windows installers with **Azure Artifact Signing** using **GitHub OIDC** via `azure/login`.
 
+## Update manifest signing
+
+The desktop app installs an update only from a `manifest.json` signed by a key it pins in `packages/desktop/src-tauri/src/update_signature.rs`. Without a valid signature it downloads nothing. The manifest lists each installer's URL, size and SHA-256. It comes from the same R2 bucket as the installers, and the same upload token writes both. So the hashes alone prove nothing about who published them: whoever can write to the bucket can swap the installers and the hashes together.
+
+Desktop Release splits the two powers between two jobs:
+
+- **`sign-manifest`** has the signing key (`DESKTOP_UPDATE_SIGNING_KEY`) and no R2 token. It builds the manifest from the release artifacts (`.github/scripts/build-desktop-manifest.mjs`) and signs it (`.github/scripts/sign-desktop-manifest.mjs`). The signature is Ed25519 over `companion-hub desktop update manifest v1\n` followed by the manifest's exact bytes, written to `manifest.json.sig` as 128 hex characters.
+- **`upload-r2`** has the R2 token and no key. It checks that the manifest describes the files it is uploading, then uploads the installers, the signature and the manifest as they are.
+
+The two jobs run in different GitHub Environments: `sign-manifest` in `production-update-signing` (or `dev-update-signing`), which holds only `DESKTOP_UPDATE_SIGNING_KEY`, and `upload-r2` in `production` (or `dev`), which holds the R2 token. Give each environment its own protection rules (required reviewers) in the repository settings, so neither approval releases both powers.
+
+Production and dev have separate keys, each a secret on its own signing environment. The app lists them separately, so a dev key can't sign a production update.
+
+The app also refuses a signed manifest dated before the build that reads it. Desktop Release stamps each build with `CI_HUB_BUILD_DATE` and signs the manifest after every build, so a release's own manifest is never older; an older one is a replayed release. `latest.json` stays unsigned: it only names a version, and the app never installs one older than its own (it reports no update).
+
+Before the app installs an update, it also checks the platform's own signature:
+
+- **macOS:** `codesign --verify --deep --strict` against Apple's Developer ID chain, team `68U45V853Y` and bundle ID `computer.ci.app.hub`.
+- **Windows:** `Get-AuthenticodeSignature` must say `Valid`, signed by `CN=Lifescope Inc, O=Lifescope Inc`.
+
+Linux packages carry no signature, so for Linux the manifest signature is the only check. The pins live in `packages/desktop/src-tauri/src/installer_signature.rs`. Change them there if the Apple team or the Windows publisher ever changes, and release the change before the first installer signed the new way.
+
+### Creating a key (once per environment)
+
+On a trusted machine:
+
+```bash
+openssl genpkey -algorithm ed25519 -out desktop-update-production.pem
+# The public key, as update_signature.rs lists it (64 hex characters):
+openssl pkey -in desktop-update-production.pem -pubout -outform DER | tail -c 32 | xxd -p -c 64
+```
+
+1. Add the PEM file's whole contents as the secret `DESKTOP_UPDATE_SIGNING_KEY` on the **`production-update-signing`** GitHub Environment.
+2. Add the public key to `PRODUCTION_UPDATE_KEYS` in `update_signature.rs`.
+3. Do the same with a second key for **`dev-update-signing`** (`DEV_UPDATE_KEYS`).
+4. Keep an offline backup of each PEM file, then delete the local copy. A lost key means a rotation; a leaked one means a rotation now.
+
+Every build job first checks that `update_signature.rs` lists a key for its environment, so a build that could never update again fails before it compiles. `sign-desktop-manifest.mjs` refuses a key that isn't listed for the environment, so a release can't publish a manifest its own app would refuse.
+
+### Rotating a key
+
+1. Create the new key as above, and add its public key to the list **next to** the old one.
+2. Release, still signing with the old key.
+3. Replace the GitHub secret with the new key. The next release is signed with it, and every install that took step 2's release accepts it.
+4. A release later, remove the old public key.
+
+An install older than step 2's release trusts only the old key, so it can't update past the rotation. Its user installs the new version by hand from ci.computer.
+
+Installs from before manifest signing don't check signatures at all. They update to the first release with signing the old way, by SHA-256 alone, and check every update after that.
+
 ## macOS signing identity
 
 After importing `APPLE_CERTIFICATE`, the workflow **resolves the codesigning identity from the keychain** (`security find-identity -v -p codesigning`, parsing the quoted name from each `NN) <hash> "…"` line). macOS runners use BSD `sed`, so the parser uses `sed -E` extended regex.

@@ -36,8 +36,8 @@ function makeService() {
     markSkipped: vi.fn().mockResolvedValue(undefined),
     clear: vi.fn().mockResolvedValue(undefined),
     remove: vi.fn().mockResolvedValue(undefined),
-    getInjectableCreds: vi.fn().mockResolvedValue({ url: 'http://gateway:8642', token: 'tok' }),
-    credsFromRow: vi.fn().mockReturnValue({ url: 'http://gateway:8642', token: 'tok' }),
+    getInjectableCreds: vi.fn().mockResolvedValue({ url: 'http://ci-memory:8642', token: 'tok' }),
+    credsFromRow: vi.fn().mockReturnValue({ url: 'http://ci-memory:8642', token: 'tok' }),
     listConnected: vi.fn().mockResolvedValue([]),
     getActiveConnection: vi.fn().mockResolvedValue(undefined),
   };
@@ -88,7 +88,8 @@ function makeService() {
 
 const PROVIDER = {
   appUrn: 'ci-memory:local',
-  internalUrl: 'http://gateway:8642',
+  internalUrl: 'http://10.128.11.2:8642',
+  consumerUrl: 'http://ci-memory:8642',
   publicUrl: 'https://ci-memory.example.org',
 };
 
@@ -173,7 +174,8 @@ describe('MemoryConnectService.startConnect with a loopback ci-memory address', 
 
   const LOOPBACK_PROVIDER = {
     appUrn: 'ci-memory:local',
-    internalUrl: 'http://gateway:8642',
+    internalUrl: 'http://10.128.11.2:8642',
+    consumerUrl: 'http://ci-memory:8642',
     publicUrl: 'http://127.0.0.1:8642',
     hostPortOnLoopback: false,
   };
@@ -335,10 +337,11 @@ describe('MemoryConnectService.handleCallback', () => {
     // The store resolves the state for THIS user and the presented code (hashed),
     // so a fresh consent grant is distinguishable from a browser replay.
     expect(pending.consume).toHaveBeenCalledWith('state-nonce', 'user-1', expect.stringMatching(/^[0-9a-f]{64}$/));
-    expect(exchange.exchange).toHaveBeenCalledWith('http://gateway:8642', 'the-code');
+    expect(exchange.exchange).toHaveBeenCalledWith('http://10.128.11.2:8642', 'the-code');
+    // The Hub exchanged at the gateway's address; the app is handed the name its link gives the gateway.
     expect(connections.storeConnected).toHaveBeenCalledWith(
       'ci-openclaw:local',
-      'http://gateway:8642',
+      'http://ci-memory:8642',
       'raw-key',
       '2026-10-07T00:00:00.000Z',
       'user-1',
@@ -409,7 +412,7 @@ describe('MemoryConnectService.handleCallback', () => {
 
     const result = await service.handleCallback('the-code', 'state-nonce', 'user-1', vi.fn().mockResolvedValue(true));
 
-    expect(exchange.exchange).toHaveBeenCalledWith('http://gateway:8642', 'the-code');
+    expect(exchange.exchange).toHaveBeenCalledWith('http://10.128.11.2:8642', 'the-code');
     expect(result).toEqual({ next: FINISHING_PATH });
   });
 
@@ -490,7 +493,7 @@ describe('MemoryConnectService.handleCallback', () => {
 
     const result = await service.handleCallback('fresh-code', 'state-nonce', 'user-1');
 
-    expect(exchange.exchange).toHaveBeenCalledWith('http://gateway:8642', 'fresh-code');
+    expect(exchange.exchange).toHaveBeenCalledWith('http://10.128.11.2:8642', 'fresh-code');
     expect(connections.storeConnected).toHaveBeenCalled();
     expect(lifecycle.held.restart).toHaveBeenCalledWith({ skipPull: true, reason: 'memory-connect' });
     expect(result).toEqual({ next: FINISHING_PATH });
@@ -608,13 +611,13 @@ describe('MemoryConnectService side effects', () => {
   it('getStatus for another Hub person leaves the connection someone else made alone (#2080)', async () => {
     const { service, resolver, exchange, connections, lifecycle } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
-    connections.getRow.mockResolvedValue({ id: 1, state: 'connected', hubUserId: 1, encryptedKey: 'enc', serverUrl: 'http://gateway:8642' });
+    connections.getRow.mockResolvedValue({ id: 1, state: 'connected', hubUserId: 1, encryptedKey: 'enc', serverUrl: 'http://ci-memory:8642' });
     connections.getActiveConnection.mockResolvedValue({
       id: 1,
       state: 'connected',
       hubUserId: 1,
       encryptedKey: 'enc',
-      serverUrl: 'http://gateway:8642',
+      serverUrl: 'http://ci-memory:8642',
     });
     connections.getState.mockResolvedValue('unconfigured');
 
@@ -632,7 +635,7 @@ describe('MemoryConnectService side effects', () => {
   it("getStatus leaves another person's token alone while another operation holds the app, for a later poll", async () => {
     const { service, resolver, exchange, connections, lifecycle } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
-    connections.getRow.mockResolvedValue({ state: 'connected', hubUserId: 1, encryptedKey: 'enc', serverUrl: 'http://gateway:8642' });
+    connections.getRow.mockResolvedValue({ state: 'connected', hubUserId: 1, encryptedKey: 'enc', serverUrl: 'http://ci-memory:8642' });
     connections.getState.mockResolvedValue('connected');
     lifecycle.withAppHeldUnlessBusy.mockResolvedValue({ busy: 'start' });
 
@@ -649,7 +652,7 @@ describe('MemoryConnectService side effects', () => {
 
     await service.disconnect('ci-openclaw:local');
 
-    expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
+    expect(exchange.revoke).toHaveBeenCalledWith('http://10.128.11.2:8642', 'ci-openclaw:local');
     expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local', undefined);
     expect(lifecycle.withAppHeld).toHaveBeenCalledWith('ci-openclaw:local', expect.any(Function));
     expect(lifecycle.held.restartAndWait).toHaveBeenCalledWith({ skipPull: true });
@@ -729,7 +732,7 @@ describe('MemoryConnectService side effects', () => {
 
     await service.handleUninstall('ci-openclaw:local');
 
-    expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
+    expect(exchange.revoke).toHaveBeenCalledWith('http://10.128.11.2:8642', 'ci-openclaw:local');
     expect(connections.remove).toHaveBeenCalledWith('ci-openclaw:local');
     expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
   });
@@ -849,8 +852,8 @@ describe('MemoryConnectService side effects', () => {
 
     await service.rotateDueKeys();
 
-    expect(exchange.rotate).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
-    expect(connections.storeConnected).toHaveBeenCalledWith('ci-openclaw:local', 'http://gateway:8642', 'fresh-key', '2026-10-07T00:00:00.000Z', 3);
+    expect(exchange.rotate).toHaveBeenCalledWith('http://10.128.11.2:8642', 'ci-openclaw:local');
+    expect(connections.storeConnected).toHaveBeenCalledWith('ci-openclaw:local', 'http://ci-memory:8642', 'fresh-key', '2026-10-07T00:00:00.000Z', 3);
     expect(lifecycle.withAppHeldUnlessBusy).toHaveBeenCalledWith('ci-openclaw:local', expect.any(Function));
     expect(lifecycle.held.restartAndWait).toHaveBeenCalledWith({ skipPull: true });
   });
@@ -1152,7 +1155,7 @@ describe('MemoryConnectService with two Hub people', () => {
     hubUserId: 2,
     state: 'connected',
     encryptedKey: 'enc-2',
-    serverUrl: 'http://gateway:8642',
+    serverUrl: 'http://ci-memory:8642',
     keyExpiresAt: null,
   };
   const CONSUMED_BY_1 = { outcome: 'consumed', appUrn: APP, next: 'https://app.example.org/', userId: '1', redirect: 'https://app.example.org/' };
@@ -1216,10 +1219,10 @@ describe('MemoryConnectService with two Hub people', () => {
     await service.handleCallback('code-1', 'state-1', '1');
 
     // CI Memory revokes by app: after the exchange this would also take person 1's new key.
-    expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', APP);
+    expect(exchange.revoke).toHaveBeenCalledWith('http://10.128.11.2:8642', APP);
     expect(exchange.revoke.mock.invocationCallOrder[0]).toBeLessThan(exchange.exchange.mock.invocationCallOrder[0]);
     expect(connections.clear).toHaveBeenCalledWith(APP, 2);
-    expect(connections.storeConnected).toHaveBeenCalledWith(APP, 'http://gateway:8642', 'key-1', '2026-12-01T00:00:00.000Z', '1');
+    expect(connections.storeConnected).toHaveBeenCalledWith(APP, 'http://ci-memory:8642', 'key-1', '2026-12-01T00:00:00.000Z', '1');
     expect(lifecycle.held.restart).toHaveBeenCalledTimes(1);
   });
 
@@ -1258,7 +1261,7 @@ describe('MemoryConnectService with two Hub people', () => {
     const result = await service.handleCallback('code-1', 'state-1', '1');
 
     expect(result.error).toBeUndefined();
-    expect(connections.storeConnected).toHaveBeenCalledWith(APP, 'http://gateway:8642', 'key-1', '2026-12-01T00:00:00.000Z', '1');
+    expect(connections.storeConnected).toHaveBeenCalledWith(APP, 'http://ci-memory:8642', 'key-1', '2026-12-01T00:00:00.000Z', '1');
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('could not clear'), expect.any(Error));
   });
 
@@ -1299,7 +1302,7 @@ describe('MemoryConnectService with two Hub people', () => {
 
     expect(exchange.revoke).not.toHaveBeenCalled();
     expect(connections.clear).not.toHaveBeenCalled();
-    expect(connections.storeConnected).toHaveBeenCalledWith(APP, 'http://gateway:8642', 'key-2b', '2026-12-01T00:00:00.000Z', '2');
+    expect(connections.storeConnected).toHaveBeenCalledWith(APP, 'http://ci-memory:8642', 'key-2b', '2026-12-01T00:00:00.000Z', '2');
   });
 
   it("refuses person 1's Disconnect of person 2's connection without touching it", async () => {
@@ -1317,7 +1320,7 @@ describe('MemoryConnectService with two Hub people', () => {
 
     await service.disconnect(APP, '2');
 
-    expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', APP);
+    expect(exchange.revoke).toHaveBeenCalledWith('http://10.128.11.2:8642', APP);
     expect(connections.clear).toHaveBeenCalledWith(APP, '2');
     expect(lifecycle.held.restartAndWait).toHaveBeenCalledWith({ skipPull: true });
   });
@@ -1471,7 +1474,7 @@ describe('MemoryConnectService with an install-global connection', () => {
     hubUserId: 0,
     state: 'connected',
     encryptedKey: 'enc-0',
-    serverUrl: 'http://gateway:8642',
+    serverUrl: 'http://ci-memory:8642',
     keyExpiresAt: null,
   };
 
@@ -1500,7 +1503,7 @@ describe('MemoryConnectService with an install-global connection', () => {
 
     await service.disconnect(APP, '1');
 
-    expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', APP);
+    expect(exchange.revoke).toHaveBeenCalledWith('http://10.128.11.2:8642', APP);
     expect(connections.clear).toHaveBeenCalledWith(APP, 0);
     expect(lifecycle.held.restartAndWait).toHaveBeenCalledWith({ skipPull: true });
   });
@@ -1590,7 +1593,7 @@ describe('MemoryConnectService with the app held', () => {
   const FINISHING_PATH = '/memory-connect/finishing?app=ci-openclaw%3Alocal&next=https%3A%2F%2Fapp.example.org%2F';
   const BUSY_REDIRECT = '/?memoryConnect=busy&app=ci-openclaw%3Alocal';
   const CONSUMED = { outcome: 'consumed', appUrn: APP, next: 'https://app.example.org/', userId: '1', redirect: 'https://app.example.org/' };
-  const OWN_CONNECTION = { id: 7, appUrn: APP, state: 'connected', hubUserId: '1', encryptedKey: 'enc', serverUrl: 'http://gateway:8642' };
+  const OWN_CONNECTION = { id: 7, appUrn: APP, state: 'connected', hubUserId: '1', encryptedKey: 'enc', serverUrl: 'http://ci-memory:8642' };
   const EXCHANGED = { appUrn: APP, key: 'raw-key', expiresAt: '2026-12-01T00:00:00.000Z' };
 
   function connectingService() {
@@ -1645,7 +1648,7 @@ describe('MemoryConnectService with the app held', () => {
 
     finishExchange(EXCHANGED);
     expect(await after50ms(callback)).toEqual({ next: FINISHING_PATH });
-    expect(connections.storeConnected).toHaveBeenCalledWith(APP, 'http://gateway:8642', 'raw-key', '2026-12-01T00:00:00.000Z', '1');
+    expect(connections.storeConnected).toHaveBeenCalledWith(APP, 'http://ci-memory:8642', 'raw-key', '2026-12-01T00:00:00.000Z', '1');
     expect(lifecycle.held.restart).toHaveBeenCalledTimes(1);
   });
 

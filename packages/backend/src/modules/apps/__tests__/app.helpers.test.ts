@@ -20,6 +20,7 @@ import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { MemoryConnectionService } from '@/modules/memory-connect/memory-connection.service';
 import { ForwardAuthSecretResolver } from '@/modules/auth/forward-auth-secret.resolver';
 import { ProxyTrustService } from '@/modules/network/proxy-trust.service';
+import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 
 // APP_DATA_DIR is a host path built with Node's platform-aware path.join, so it uses
 // `\` on Windows. Normalize to POSIX separators before asserting so these path tests
@@ -748,21 +749,25 @@ describe('AppHelpers', () => {
       expect(envMap.has('HUB_API_KEY')).toBe(false);
     });
 
-    it('passes the hops the Hub can vouch for as HUB_TRUSTED_PROXY_CIDRS, and removes a stale value when there are none', async () => {
-      const proxyTrust = { trustedProxyCidrs: vi.fn() };
+    it("passes the hops the app may trust as HUB_TRUSTED_PROXY_CIDRS, with Traefik's address on the app's own network, and removes a stale value when there are none", async () => {
+      const proxyTrust = { appTrustedProxyCidrs: vi.fn() };
+      const subnets = { allocateSubnet: vi.fn().mockResolvedValue('10.128.12.0/24') };
       const moduleRefGet = vi
         .spyOn(moduleRefForHelpers, 'get')
-        .mockImplementation((token: unknown) => (token === ProxyTrustService ? proxyTrust : undefined));
+        .mockImplementation((token: unknown) => (token === ProxyTrustService ? proxyTrust : token === SubnetManagerService ? subnets : undefined));
       try {
-        proxyTrust.trustedProxyCidrs.mockReturnValue(['10.128.0.0/29', '172.19.0.7/32']);
+        proxyTrust.appTrustedProxyCidrs.mockReturnValue(['10.128.0.3/32', '10.128.12.254/32']);
         const envMap = new Map<string, string>();
         envUtils.envStringToMap.mockReturnValue(envMap);
         await appHelpers.generateEnvFile(testAppUrn, {});
-        expect(envMap.get('HUB_TRUSTED_PROXY_CIDRS')).toBe('10.128.0.0/29,172.19.0.7/32');
+        expect(envMap.get('HUB_TRUSTED_PROXY_CIDRS')).toBe('10.128.0.3/32,10.128.12.254/32');
+        // The app's subnet decides Traefik's address there; it is allocated now if the app has none yet.
+        expect(subnets.allocateSubnet).toHaveBeenCalledWith(testAppUrn);
+        expect(proxyTrust.appTrustedProxyCidrs).toHaveBeenCalledWith('10.128.12.0/24');
 
-        // Traefik gone, edge network gone: the app must not keep trusting an
-        // address Docker may hand to another container next.
-        proxyTrust.trustedProxyCidrs.mockReturnValue([]);
+        // Nothing to vouch for: the app must not keep trusting an address Docker may hand to another
+        // container next.
+        proxyTrust.appTrustedProxyCidrs.mockReturnValue([]);
         const stale = new Map<string, string>([['HUB_TRUSTED_PROXY_CIDRS', '172.19.0.7/32']]);
         envUtils.envStringToMap.mockReturnValue(stale);
         await appHelpers.generateEnvFile(testAppUrn, {});

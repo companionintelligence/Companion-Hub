@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { ApiProxyService } from '../../agents/api-proxy.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { DockerService } from '@/modules/docker/docker.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -25,6 +26,7 @@ describe('ApiProxyService', () => {
   let service: ApiProxyService;
   let lifecycle: MockProxy<AppLifecycleService>;
   let appFilesManager: MockProxy<AppFilesManager>;
+  let docker: { getServiceAddressOnAppNetwork: ReturnType<typeof vi.fn> };
   /** What the app's own app.env holds; the only place a `token_env` is read from. */
   const setAppEnv = (content: string) => appFilesManager.getAppEnv.mockResolvedValue({ path: 'app.env', content });
 
@@ -37,6 +39,13 @@ describe('ApiProxyService', () => {
     appFilesManager = mock<AppFilesManager>();
     setAppEnv('');
 
+    // The app's main service, and its address on the app's own network: the proxy sends there.
+    appFilesManager.getDockerComposeJson.mockResolvedValue({
+      path: '/apps/x/docker-compose.json',
+      content: { schemaVersion: 2, services: [{ name: 'web', image: 'app:latest', isMain: true }] },
+    } as never);
+    docker = { getServiceAddressOnAppNetwork: vi.fn().mockResolvedValue('10.128.20.5') };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ApiProxyService,
@@ -44,6 +53,7 @@ describe('ApiProxyService', () => {
         { provide: EnvUtils, useValue: new EnvUtils() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
         { provide: AppLifecycleService, useValue: lifecycle },
+        { provide: DockerService, useValue: docker },
       ],
     }).compile();
 
@@ -315,7 +325,19 @@ describe('ApiProxyService', () => {
       ).resolves.toEqual({
         content: [{ type: 'text', text: 'ok' }],
       });
-      expect(mockFetch).toHaveBeenCalledWith(expect.stringContaining('/api/x?y=1'), expect.anything());
+      expect(mockFetch).toHaveBeenCalledWith('http://10.128.20.5/api/x?y=1', expect.anything());
+      expect(docker.getServiceAddressOnAppNetwork).toHaveBeenCalledWith('nextcloud:ci-marketplace', 'web');
+    });
+
+    // The Hub is on every app's network, where another app could answer for a name.
+    it("sends nothing when the app's main service has no address on the app's network", async () => {
+      docker.getServiceAddressOnAppNetwork.mockResolvedValue(null);
+
+      const result = await service.proxyRequest('nextcloud:ci-marketplace' as AppUrn, { method: 'GET', path: '/api/x', actor: GRANTED_ACTOR });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toContain('no running main service');
+      expect(mockFetch).not.toHaveBeenCalled();
     });
   });
 

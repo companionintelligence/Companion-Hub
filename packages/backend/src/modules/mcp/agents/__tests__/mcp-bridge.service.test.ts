@@ -1,3 +1,4 @@
+/** biome-ignore-all lint/suspicious/noTemplateCurlyInString: ${APP_HOST} is the listing's own template */
 import { Test, TestingModule } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
@@ -22,6 +23,7 @@ const makeConfig = (mcp: ResolvedAgentConfig['mcp']): ResolvedAgentConfig => ({
 
 describe('McpBridgeService', () => {
   let service: McpBridgeService;
+  let docker: MockProxy<DockerService>;
   let appsService: MockProxy<AppsService>;
   let appFilesManager: MockProxy<AppFilesManager>;
   let envUtils: MockProxy<EnvUtils>;
@@ -44,6 +46,7 @@ describe('McpBridgeService', () => {
 
     moduleRef = module;
     service = module.get(McpBridgeService);
+    docker = module.get(DockerService);
     appsService = module.get(AppsService);
     appFilesManager = module.get(AppFilesManager);
     envUtils = module.get(EnvUtils);
@@ -51,6 +54,33 @@ describe('McpBridgeService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  // The bridge sends the app's token along, and the Hub is on every app's network, where another app could
+  // answer for a name. `${APP_HOST}` is the main service's address on the app's own network.
+  describe('the ${APP_HOST} in a listing’s MCP URL', () => {
+    const resolve = (url: string) =>
+      (service as unknown as { resolveTemplateUrl(url: string, urn: AppUrn): Promise<string> }).resolveTemplateUrl(url, TEST_URN);
+
+    beforeEach(() => {
+      appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/apps/x/docker-compose.json',
+        content: { schemaVersion: 2, services: [{ name: 'web', image: 'app:latest', isMain: true }] },
+      } as never);
+    });
+
+    it("is the main service's address on the app's network", async () => {
+      docker.getServiceAddressOnAppNetwork.mockResolvedValue('10.128.20.5');
+
+      await expect(resolve('http://${APP_HOST}:8080/mcp')).resolves.toBe('http://10.128.20.5:8080/mcp');
+      expect(docker.getServiceAddressOnAppNetwork).toHaveBeenCalledWith(TEST_URN, 'web');
+    });
+
+    it('refuses to connect, rather than name a host, while the main service is not running', async () => {
+      docker.getServiceAddressOnAppNetwork.mockResolvedValue(null);
+
+      await expect(resolve('http://${APP_HOST}:8080/mcp')).rejects.toThrow('no running main service');
+    });
   });
 
   describe('generateTools', () => {

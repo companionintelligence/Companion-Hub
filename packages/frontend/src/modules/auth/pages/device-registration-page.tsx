@@ -10,6 +10,11 @@ import {
   fetchRegistrationStatusResult,
   markRegistrationRestoreIntentDetailed,
   pairWithCode,
+  adoptSetupCodeFromDesktop,
+  adoptSetupCodeFromUrl,
+  getRegistrationSetupCode,
+  setRegistrationSetupCode,
+  SETUP_CODE_REQUIRED,
   prepareFreshRegistrationDetailed,
   probeRegistrationDomain,
 } from '@/lib/registration-api';
@@ -242,6 +247,17 @@ export default function DeviceRegistrationPage() {
   const [portalHasDevice, setPortalHasDevice] = useState(false);
   const [driftChoice, setDriftChoice] = useState<RegistrationDriftChoice | null>(() => getStoredDriftChoice());
   const [isPreparingFresh, setIsPreparingFresh] = useState(false);
+  // An unpaired Hub asks for its setup code before it pairs from anywhere but its own machine. The
+  // link `cihub setup-code` prints carries it, and so does the desktop app; otherwise it is typed in.
+  const [setupCodeInput, setSetupCodeInput] = useState(() => adoptSetupCodeFromUrl() ?? getRegistrationSetupCode() ?? '');
+  const [setupCodeRequired, setSetupCodeRequired] = useState(false);
+  // Once the Hub has asked, the field stays, and says so when the Hub accepts the code. Hiding it
+  // then read as the field vanishing. A code from the link or the desktop app is never asked for.
+  const [setupCodeAsked, setSetupCodeAsked] = useState(false);
+  /** The Hub turned down the code in the field; it is not sent again until the person edits it. */
+  const setupCodeRejectedRef = useRef(false);
+  /** What is wrong with the setup code, shown at its own field rather than at the pairing code's. */
+  const [setupCodeError, setSetupCodeError] = useState<string | null>(null);
   const isTauri = '__TAURI_INTERNALS__' in window;
   const canAutoPairFromDeepLink = isTauri && !isLoading && (!registrationStatus || requiresDeviceRegistration(registrationStatus));
 
@@ -258,7 +274,22 @@ export default function DeviceRegistrationPage() {
         device_id?: string;
         ci_cloud_url?: string;
         registration_url?: string | null;
+        setup_code_required?: boolean;
       };
+      const required = deviceData.setup_code_required === true;
+      setSetupCodeRequired(required);
+      if (required) {
+        setSetupCodeAsked(true);
+        if (getRegistrationSetupCode()) {
+          // The Hub turned the code down. Stop sending it: this page asks again every few seconds,
+          // and each ask with a wrong code counts towards the Hub's lockout.
+          setRegistrationSetupCode(null);
+          setupCodeRejectedRef.current = true;
+          setSetupCodeError(t('DEVICE_REGISTRATION_SETUP_CODE_WRONG'));
+        }
+      } else {
+        setSetupCodeError(null);
+      }
       setDeviceId(deviceData.device_id ?? null);
       setHubSentryDeviceId(deviceData.device_id);
       const base = deviceData.ci_cloud_url?.trim();
@@ -524,6 +555,7 @@ export default function DeviceRegistrationPage() {
       pairingInProgressRef.current = true;
       setIsPairing(true);
       setPairingError(null);
+      setSetupCodeError(null);
       setStatusError(null);
       setDeviceInfoError(null);
       completionStartedRef.current = false;
@@ -539,6 +571,17 @@ export default function DeviceRegistrationPage() {
           setRedirectStatusKey('DEVICE_REGISTRATION_PROVISIONING_STATUS');
           toast.success(t('DEVICE_REGISTRATION_PAIRING_ACCEPTED'));
           await refreshRegistrationStatus();
+        } else if (data.code === SETUP_CODE_REQUIRED) {
+          setMoveConfirmation(null);
+          setSetupCodeRequired(true);
+          setSetupCodeAsked(true);
+          setSetupCodeError(
+            t(
+              getRegistrationSetupCode() || setupCodeRejectedRef.current
+                ? 'DEVICE_REGISTRATION_SETUP_CODE_WRONG'
+                : 'DEVICE_REGISTRATION_SETUP_CODE_NEEDED',
+            ),
+          );
         } else if (data.code === DEVICE_MOVE_CONFIRMATION_REQUIRED && !confirmMove) {
           // Nothing changed on the Portal, and the code is still good: ask before taking this Hub
           // from the organization that holds it.
@@ -567,6 +610,18 @@ export default function DeviceRegistrationPage() {
     },
     [refreshRegistrationStatus, setPairingError, t],
   );
+
+  useEffect(() => {
+    if (!isTauri || getRegistrationSetupCode()) {
+      return;
+    }
+    void adoptSetupCodeFromDesktop().then((code) => {
+      if (code) {
+        setSetupCodeInput(code);
+        void loadDeviceInfo();
+      }
+    });
+  }, [isTauri, loadDeviceInfo]);
 
   useEffect(() => {
     if (!isTauri) {
@@ -688,7 +743,13 @@ export default function DeviceRegistrationPage() {
     await refreshRegistrationStatus();
   };
 
+  // The Hub is asking for its setup code and has not accepted one, so a pairing could only be refused.
+  const waitingForSetupCode = setupCodeRequired;
+
   const handlePair = async () => {
+    if (waitingForSetupCode) {
+      return;
+    }
     const code = pairingCode.trim().toUpperCase();
     if (code.length !== 6) {
       setPairingError(t('DEVICE_REGISTRATION_PAIRING_CODE_LENGTH'));
@@ -933,6 +994,57 @@ export default function DeviceRegistrationPage() {
               </div>
             </div>
 
+            {(setupCodeRequired || setupCodeAsked) && (
+              <div className="space-y-2">
+                <label htmlFor="setup-code" className="block text-sm text-muted-foreground">
+                  <HintText id="reg-setup-code" hint={t('DEVICE_REGISTRATION_SETUP_CODE_HINT')}>
+                    {t('DEVICE_REGISTRATION_SETUP_CODE_LABEL')}
+                  </HintText>
+                </label>
+                <input
+                  id="setup-code"
+                  placeholder="XXXX-XXXX"
+                  value={setupCodeInput}
+                  autoComplete="off"
+                  spellCheck={false}
+                  onChange={(event) => {
+                    const value = event.target.value
+                      .toUpperCase()
+                      .replace(/[^A-Z0-9-]/g, '')
+                      .slice(0, 9);
+                    const complete = value.replace(/-/g, '').length === 8;
+                    setSetupCodeInput(value);
+                    // Only a whole code is sent: this page asks the Hub every few seconds, and a
+                    // half-typed one would count as a wrong code towards the Hub's lockout.
+                    setRegistrationSetupCode(complete ? value : null);
+                    setupCodeRejectedRef.current = false;
+                    setSetupCodeError(null);
+                    // Not accepted until the Hub says so for this code.
+                    setSetupCodeRequired(true);
+                    // A complete code fetches the Portal link the Hub withheld without one.
+                    if (complete) {
+                      void loadDeviceInfo();
+                    }
+                  }}
+                  disabled={isPairing}
+                  aria-invalid={setupCodeError ? true : undefined}
+                  aria-describedby={setupCodeError ? 'setup-code-error' : undefined}
+                  className={`h-10 w-full rounded-md border bg-background/60 px-3 py-1 text-base font-mono shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:h-11 md:text-sm ${setupCodeError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
+                />
+                {setupCodeError && (
+                  <p id="setup-code-error" role="alert" className="text-[0.8rem] font-medium text-destructive">
+                    {setupCodeError}
+                  </p>
+                )}
+                {setupCodeAsked && !setupCodeRequired && (
+                  <p role="status" className="flex items-center gap-1.5 text-[0.8rem] text-muted-foreground">
+                    <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
+                    {t('DEVICE_REGISTRATION_SETUP_CODE_ACCEPTED')}
+                  </p>
+                )}
+              </div>
+            )}
+
             <div className="space-y-2">
               <label htmlFor="pairing-code" className="block text-sm text-muted-foreground">
                 <HintText id="reg-pairing-code" hint={t(REGISTRATION_PAIRING_CODE_HINT)}>
@@ -958,7 +1070,7 @@ export default function DeviceRegistrationPage() {
                     setPairingError(null);
                   }}
                   onKeyDown={(event) => {
-                    if (event.key === 'Enter' && pairingCode.length === 6 && !isPairing) {
+                    if (event.key === 'Enter' && pairingCode.length === 6 && !isPairing && !waitingForSetupCode) {
                       void handlePair();
                     }
                   }}
@@ -971,7 +1083,7 @@ export default function DeviceRegistrationPage() {
                 <Button
                   intent="primary"
                   onClick={() => void handlePair()}
-                  disabled={pairingCode.length !== 6 || isPairing}
+                  disabled={pairingCode.length !== 6 || isPairing || waitingForSetupCode}
                   loading={isPairing}
                   className="h-10 w-full shrink-0 sm:w-40 md:h-11"
                 >

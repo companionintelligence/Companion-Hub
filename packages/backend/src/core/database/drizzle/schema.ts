@@ -376,6 +376,26 @@ export const memoryConnection = pgTable(
   (table) => [uniqueIndex('memory_connection_app_urn_hub_user_idx').on(table.appUrn, table.hubUserId)],
 );
 
+/**
+ * An operator's leave for one app to reach another directly (`hub_integration.links`). Only needed
+ * for a link the Hub does not make by itself: one between two stores, or one only one side declared.
+ * Bound to the service and name the link was allowed with, so a manifest that later points the link
+ * somewhere else asks again.
+ */
+export const appLinkApproval = pgTable(
+  'app_link_approval',
+  {
+    id: serial().primaryKey().notNull(),
+    consumerUrn: varchar('consumer_urn').notNull(),
+    providerUrn: varchar('provider_urn').notNull(),
+    service: varchar().notNull(),
+    alias: varchar().notNull(),
+    approvedByUserId: integer('approved_by_user_id'),
+    createdAt: timestamp('created_at', { mode: 'string' }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('app_link_approval_pair_idx').on(table.consumerUrn, table.providerUrn)],
+);
+
 const telemetryJson = customType<{ data: unknown; driverData: string }>({
   dataType() {
     return 'jsonb';

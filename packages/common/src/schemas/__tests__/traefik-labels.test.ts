@@ -2,8 +2,8 @@
 import { describe, expect, it } from 'vitest';
 import { collectTraefikLabelIssues } from '../traefik-labels.js';
 
-const messages = (labels: Record<string, string | boolean>, appId?: string, hubNetworks?: readonly string[]) =>
-  collectTraefikLabelIssues(labels, appId, { hubNetworks }).map(({ label, message }) => [label, message]);
+const messages = (labels: Record<string, string | boolean>, appId?: string, appNetworks?: readonly string[]) =>
+  collectTraefikLabelIssues(labels, appId, { appNetworks }).map(({ label, message }) => [label, message]);
 
 describe('collectTraefikLabelIssues', () => {
   // The shapes the store apps that set Traefik labels use, one per kind.
@@ -80,31 +80,29 @@ describe('collectTraefikLabelIssues', () => {
     expect(messages({ [label]: 'x' })).toEqual([[label, 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN']]);
   });
 
-  // A container on more than one network needs it, or Traefik may pick one it can't reach.
-  it.each(['ci-hub_network', 'ci-os-hub_network'])('keeps traefik.docker.network set to the Hub network %s', (network) => {
-    expect(messages({ 'traefik.docker.network': network, 'Traefik.Docker.Network': network })).toEqual([]);
-  });
-
-  it.each([['another-app_network'], ['ci-hub_network2'], [' ci-hub_network'], ['${HUB_NET}'], [true]])(
+  // The Hub sets it to the app's own network, the one Traefik joins. A manifest checked on its own, with
+  // no app to know the network of, may name none: not a shared Hub network, which no app is on any more.
+  it.each([['ci-hub_network'], ['ci-os-hub_network'], ['ci-hub_edge'], ['another-app_network'], [' ci-hub_network'], ['${HUB_NET}'], [true]])(
     'refuses traefik.docker.network set to %s',
     (network) => {
       expect(collectTraefikLabelIssues({ 'traefik.docker.network': network })).toEqual([
         {
           label: 'traefik.docker.network',
           message: 'CUSTOM_APP_ERROR_TRAEFIK_NETWORK_NOT_HUB',
-          params: { label: 'traefik.docker.network', networks: 'ci-hub_network, ci-os-hub_network' },
+          params: { label: 'traefik.docker.network', networks: "the app's own network" },
         },
       ]);
     },
   );
 
-  it('takes the Hub networks the container is on from the caller', () => {
-    expect(messages({ 'traefik.docker.network': 'hub2_network' }, undefined, ['hub2_network'])).toEqual([]);
-    expect(messages({ 'traefik.docker.network': 'ci-hub_network' }, undefined, ['hub2_network'])).toEqual([
+  it("keeps traefik.docker.network set to the app's own network, which the caller names", () => {
+    expect(
+      messages({ 'traefik.docker.network': 'web_store_network', 'Traefik.Docker.Network': 'web_store_network' }, undefined, ['web_store_network']),
+    ).toEqual([]);
+    expect(messages({ 'traefik.docker.network': 'ci-hub_network' }, undefined, ['web_store_network'])).toEqual([
       ['traefik.docker.network', 'CUSTOM_APP_ERROR_TRAEFIK_NETWORK_NOT_HUB'],
     ]);
-    // A service the Hub keeps off its networks has none to name.
-    expect(messages({ 'traefik.docker.network': 'ci-hub_network' }, undefined, [])).toEqual([
+    expect(messages({ 'traefik.docker.network': 'other_store_network' }, undefined, ['web_store_network'])).toEqual([
       ['traefik.docker.network', 'CUSTOM_APP_ERROR_TRAEFIK_NETWORK_NOT_HUB'],
     ]);
   });

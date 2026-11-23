@@ -57,8 +57,10 @@ function request(ip: string, host: string, headers: Record<string, string> = {})
   return { ip, socket: { remoteAddress: ip }, headers: all, protocol: 'http', get: (name: string) => all[name.toLowerCase()] } as any;
 }
 
-/** What the setup service's request looks like to the Hub. */
-const fromSetupService = () => request('172.18.0.1', '127.0.0.1:5002');
+/** What the setup service's request looks like to the Hub: the gateway address, and the host-local key. */
+const fromSetupService = () => ({ ...request('172.18.0.1', '127.0.0.1:5002'), hubPrincipal: 'host-local' });
+/** An installed app on that same gateway address, with no key: it used to pass as the setup service. */
+const fromAppContainer = () => request('172.18.0.1', '127.0.0.1:5002');
 const fromLan = () => request('192.168.1.50', '192.168.1.10:5002');
 /** A machine on the LAN that names this Hub's loopback address, which its own address gives away. */
 const fromLanNamingLoopback = () => request('192.168.1.50', '127.0.0.1:5002');
@@ -170,7 +172,7 @@ describe('GET /registration/callback on a Hub that is registered and serving', (
     startServing();
     const before = snapshot();
 
-    for (const from of [fromLan(), fromLanNamingLoopback(), throughTunnel(), throughTraefik(), fromSetupService()]) {
+    for (const from of [fromLan(), fromLanNamingLoopback(), throughTunnel(), throughTraefik(), fromSetupService(), fromAppContainer()]) {
       await expect(sendGet(from)).rejects.toThrow(ForbiddenException);
       // The same organization would update the existing row in place rather than add one.
       await expect(sendGet(from, 'org-current')).rejects.toThrow(ForbiddenException);
@@ -191,10 +193,10 @@ describe('GET /registration/callback on a Hub that is not registered', () => {
     await vi.waitFor(() => expect((service as any)._currentPhase).toBe('publicly_ready'));
   });
 
-  it('is refused from anywhere else without changing anything', async () => {
+  it('is refused from anywhere else without changing anything, an installed app on the gateway included', async () => {
     const before = snapshot();
 
-    for (const from of [fromLan(), fromLanNamingLoopback(), throughTunnel(), throughTraefik()]) {
+    for (const from of [fromLan(), fromLanNamingLoopback(), throughTunnel(), throughTraefik(), fromAppContainer()]) {
       await expect(sendGet(from)).rejects.toThrow(ForbiddenException);
     }
 

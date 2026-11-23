@@ -112,7 +112,7 @@ export class MemoryApiKeyCheck {
     }
     try {
       const found = await this.providers.findProvider();
-      if (!found) {
+      if (!found?.internalUrl) {
         return null;
       }
       this.provider = { url: found.internalUrl.replace(/\/+$/, ''), expiresAt: Date.now() + PROVIDER_TTL_MS };
