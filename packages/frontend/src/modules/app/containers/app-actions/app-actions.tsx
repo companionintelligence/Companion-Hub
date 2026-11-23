@@ -506,7 +506,9 @@ export const AppActions = ({
         >
           <div className="installation-progress-fill" style={{ width: `${progressValue}%` }} />
         </div>
-        <p className="installation-progress-stage">{stageText}</p>
+        <p className="installation-progress-stage" title={stageText}>
+          {stageText}
+        </p>
       </div>
     );
   })();
