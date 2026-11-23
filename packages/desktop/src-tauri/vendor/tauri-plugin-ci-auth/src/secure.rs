@@ -2,13 +2,16 @@
 // Copyright (c) Lifescope Inc. All rights reserved.
 // Private & Confidential — Property of Lifescope Inc. Do not distribute.
 
-//! Secure storage behind a trait. Production uses the OS keychain through keyring. Tests use
-//! MemoryBackend. Nothing here writes a secret to disk, and when the keychain is unavailable every
-//! operation fails with secure_store_unavailable instead of falling back to anything weaker.
+//! Secure storage behind a trait. Desktop production uses the OS keychain through keyring, and iOS and
+//! Android use the native plugin (mobile.rs). Tests use MemoryBackend. Nothing here writes a secret to
+//! disk, and when the keychain is unavailable every operation fails with secure_store_unavailable instead
+//! of falling back to anything weaker.
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+use std::sync::Arc;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::error::AuthError;
 
@@ -81,8 +84,8 @@ impl fmt::Debug for MemoryBackend {
     }
 }
 
-/// A backend that reports the store as unavailable for every operation. It is the backend on iOS
-/// and Android, where the commands are not supported, so nothing can be stored there by accident.
+/// A backend that reports the store as unavailable for every operation. The plugin does not use it.
+/// It lets a test check that an unavailable store fails closed.
 #[derive(Debug, Default)]
 pub struct UnavailableBackend;
 
@@ -164,16 +167,10 @@ impl fmt::Debug for KeyringBackend {
     }
 }
 
-/// The backend the plugin uses unless the app supplies another one.
+/// The desktop backend: the OS keychain. iOS and Android build a MobileBackend in lib.rs instead.
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub(crate) fn default_backend(service: &str) -> Arc<dyn SecureBackend> {
     Arc::new(KeyringBackend::new(service))
-}
-
-/// On iOS and Android the keychain is not wired up yet, so the store reports unavailable.
-#[cfg(any(target_os = "ios", target_os = "android"))]
-pub(crate) fn default_backend(_service: &str) -> Arc<dyn SecureBackend> {
-    Arc::new(UnavailableBackend)
 }
 
 #[cfg(all(test, not(any(target_os = "ios", target_os = "android"))))]

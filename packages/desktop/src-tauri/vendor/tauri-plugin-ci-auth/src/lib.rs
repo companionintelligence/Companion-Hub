@@ -2,12 +2,15 @@
 // Copyright (c) Lifescope Inc. All rights reserved.
 // Private & Confidential — Property of Lifescope Inc. Do not distribute.
 
-//! tauri-plugin-ci-auth: RFC 8252 sign-in over a loopback redirect, and OS keychain storage for
-//! the Companion Intelligence desktop apps. README.md covers registration, the command contract
-//! and the error codes.
+//! tauri-plugin-ci-auth: RFC 8252 sign-in over a loopback redirect, and secure storage for the
+//! Companion Intelligence apps. Desktop stores in the OS keychain. iOS and Android store through the
+//! plugin's native code, which uses the Keychain and the Android Keystore. Loopback sign-in is desktop
+//! only. README.md covers registration, the command contract and the error codes.
 
 mod error;
 mod loopback;
+#[cfg(any(target_os = "ios", target_os = "android"))]
+mod mobile;
 mod secure;
 
 use std::fmt;
@@ -19,7 +22,7 @@ use std::time::{Duration, Instant};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::plugin::{Builder, TauriPlugin};
+use tauri::plugin::{Builder, PluginApi, TauriPlugin};
 use tauri::{Manager, Runtime, State};
 
 pub use error::AuthError;
@@ -29,13 +32,29 @@ pub use secure::{
     MemoryBackend, SecureBackend, UnavailableBackend, MAX_KEY_BYTES, MAX_VALUE_UNITS,
 };
 
-use loopback::{bind, local_port, redirect_uri, resolve_timeout, wait_for_callback};
-use secure::{default_backend, validate_key, validate_value};
+#[cfg(any(target_os = "ios", target_os = "android"))]
+use mobile::MobileBackend;
+
+use loopback::{bind, local_port, redirect_uri, resolve_timeout, success_page, wait_for_callback};
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+use secure::default_backend;
+use secure::{validate_key, validate_value};
+
+// The Swift entry point of the iOS plugin. It returns the plugin object that the Swift code retains.
+#[cfg(target_os = "ios")]
+tauri::ios_plugin_binding!(init_plugin_ci_auth);
 
 /// Plugin name. Commands are invoked as `plugin:ci-auth|<command>`.
 pub const PLUGIN_NAME: &str = "ci-auth";
 /// Keychain service used when the config does not name one.
 pub const DEFAULT_SERVICE: &str = "ci-auth";
+/// Longest service name the config may use, in bytes.
+const MAX_SERVICE_BYTES: usize = 128;
+/// The Android package and class of the native plugin, under `android/src/main/java`.
+#[cfg(target_os = "android")]
+const ANDROID_PLUGIN_IDENTIFIER: &str = "com.companionintelligence.tauri.ciauth";
+#[cfg(target_os = "android")]
+const ANDROID_PLUGIN_CLASS: &str = "CiAuthPlugin";
 /// How long a sign-in may stay pending while no await_loopback has taken it. It is also the longest
 /// timeout await_loopback accepts.
 const PENDING_SIGN_IN_TTL: Duration = Duration::from_millis(loopback::MAX_TIMEOUT_MS);
@@ -109,6 +128,8 @@ pub struct AuthState {
     sign_in: Mutex<SignInSlot>,
     /// How long a pending sign-in survives while no await_loopback has taken it.
     pending_ttl: Duration,
+    /// The page the browser gets once the callback arrives.
+    success_page: String,
 }
 
 #[derive(Default)]
@@ -141,7 +162,15 @@ impl AuthState {
             backend,
             sign_in: Mutex::new(SignInSlot::default()),
             pending_ttl: PENDING_SIGN_IN_TTL,
+            success_page: success_page(None),
         }
+    }
+
+    /// Names the app on the page the browser shows after the callback. The plugin passes the
+    /// `productName` from the app's Tauri config. With no name the page says "the app".
+    pub fn with_app_name(mut self, app_name: Option<&str>) -> Self {
+        self.success_page = success_page(app_name);
+        self
     }
 
     /// Creates the state with a different pending TTL, so a test can check the deadline it sets.
@@ -205,7 +234,7 @@ impl AuthState {
                 Arc::clone(&active.cancelled),
             )
         };
-        let outcome = wait_for_callback(&listener, port, &cancelled, timeout);
+        let outcome = wait_for_callback(&listener, port, &cancelled, timeout, &self.success_page);
         drop(listener);
         let mut slot = self.lock_sign_in();
         if slot.active.as_ref().is_some_and(|active| active.id == id) {
@@ -251,7 +280,8 @@ fn expire_pending(slot: &mut SignInSlot, now: Instant) {
     }
 }
 
-/// On iOS and Android every command fails with unsupported_platform before it touches any state.
+/// On iOS and Android the loopback commands fail with unsupported_platform before they touch any state.
+/// The secure_* commands are not affected: they run on the native store there.
 fn ensure_supported() -> Result<(), AuthError> {
     if cfg!(any(target_os = "ios", target_os = "android")) {
         Err(AuthError::UnsupportedPlatform)
@@ -330,7 +360,6 @@ async fn secure_get(
     state: State<'_, Arc<AuthState>>,
     key: Option<Value>,
 ) -> Result<SecureGetResponse, AuthError> {
-    ensure_supported()?;
     let key: String = required_arg(key)?;
     let state = state.inner().clone();
     run_blocking(move || {
@@ -347,7 +376,6 @@ async fn secure_set(
     key: Option<Value>,
     value: Option<Value>,
 ) -> Result<(), AuthError> {
-    ensure_supported()?;
     let (key, value) = secure_set_args(key, value)?;
     let state = state.inner().clone();
     run_blocking(move || state.secure_set(&key, &value)).await
@@ -358,7 +386,6 @@ async fn secure_remove(
     state: State<'_, Arc<AuthState>>,
     key: Option<Value>,
 ) -> Result<(), AuthError> {
-    ensure_supported()?;
     let key: String = required_arg(key)?;
     let state = state.inner().clone();
     run_blocking(move || state.secure_remove(&key)).await
@@ -376,14 +403,56 @@ pub fn init<R: Runtime>() -> TauriPlugin<R, Config> {
             secure_remove
         ])
         .setup(|app, api| {
-            let service = &api.config().service;
-            if service.trim().is_empty() {
-                return Err("plugins.ci-auth.service must not be empty".into());
-            }
-            app.manage(Arc::new(AuthState::new(default_backend(service))));
+            let service = api.config().service.clone();
+            validate_service(&service)?;
+            let backend = platform_backend(&api, &service)?;
+            let app_name = app.config().product_name.as_deref();
+            app.manage(Arc::new(AuthState::new(backend).with_app_name(app_name)));
             Ok(())
         })
         .build()
+}
+
+/// Keychain service names are 1 to 128 letters, digits, dots, underscores or hyphens. On Android the name is
+/// also part of a preference file name and a key alias, so the same rule holds on every platform.
+fn validate_service(service: &str) -> Result<(), String> {
+    let valid = (1..=MAX_SERVICE_BYTES).contains(&service.len())
+        && service
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
+    if valid {
+        Ok(())
+    } else {
+        Err("plugins.ci-auth.service must be 1 to 128 letters, digits, dots, underscores or hyphens".to_owned())
+    }
+}
+
+/// The backend on this platform. Desktop uses the OS keychain. iOS and Android register the native plugin,
+/// and their secure_* commands run there.
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+fn platform_backend<R: Runtime>(
+    _api: &PluginApi<R, Config>,
+    service: &str,
+) -> Result<Arc<dyn SecureBackend>, Box<dyn std::error::Error>> {
+    Ok(default_backend(service))
+}
+
+#[cfg(target_os = "ios")]
+fn platform_backend<R: Runtime>(
+    api: &PluginApi<R, Config>,
+    service: &str,
+) -> Result<Arc<dyn SecureBackend>, Box<dyn std::error::Error>> {
+    let handle = api.register_ios_plugin(init_plugin_ci_auth)?;
+    Ok(Arc::new(MobileBackend::new(handle, service)))
+}
+
+#[cfg(target_os = "android")]
+fn platform_backend<R: Runtime>(
+    api: &PluginApi<R, Config>,
+    service: &str,
+) -> Result<Arc<dyn SecureBackend>, Box<dyn std::error::Error>> {
+    let handle = api.register_android_plugin(ANDROID_PLUGIN_IDENTIFIER, ANDROID_PLUGIN_CLASS)?;
+    Ok(Arc::new(MobileBackend::new(handle, service)))
 }
 
 #[cfg(test)]
@@ -578,6 +647,28 @@ mod tests {
                 Some(AuthError::Cancelled)
             );
         });
+    }
+
+    #[test]
+    fn the_callback_page_names_the_app() {
+        let state = memory_state().with_app_name(Some("Companion Hub"));
+        let port = state.begin_loopback().expect("begin").port;
+        let client = thread::spawn(move || {
+            let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("connect");
+            stream
+                .write_all(b"GET /callback?code=abc&state=xyz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                .expect("write");
+            let mut response = String::new();
+            let _ = stream.read_to_string(&mut response);
+            response
+        });
+        state
+            .await_loopback(Duration::from_secs(10))
+            .expect("callback");
+        let response = client.join().expect("client");
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        assert!(response.contains("<p>Return to Companion Hub to continue.</p>"));
+        assert!(response.contains("<p>You can close this tab.</p>"));
     }
 
     #[test]
@@ -843,5 +934,41 @@ mod tests {
         assert_eq!(named.service, "com.example.app");
 
         assert!(serde_json::from_value::<Config>(serde_json::json!({ "servce": "typo" })).is_err());
+    }
+
+    #[test]
+    fn native_rejections_keep_their_code_and_fail_closed_otherwise() {
+        assert_eq!(
+            AuthError::from_native_code("bad_request"),
+            AuthError::BadRequest
+        );
+        assert_eq!(
+            AuthError::from_native_code("value_too_large"),
+            AuthError::ValueTooLarge
+        );
+        assert_eq!(
+            AuthError::from_native_code("secure_store_unavailable"),
+            AuthError::SecureStoreUnavailable
+        );
+        assert_eq!(
+            AuthError::from_native_code("some_future_code"),
+            AuthError::SecureStoreUnavailable
+        );
+        assert_eq!(
+            AuthError::from_native_code(""),
+            AuthError::SecureStoreUnavailable
+        );
+    }
+
+    #[test]
+    fn the_service_name_is_a_plain_identifier_on_every_platform() {
+        assert!(validate_service("ci-auth").is_ok());
+        assert!(validate_service("com.companionintelligence.hub").is_ok());
+        assert!(validate_service("hub_2.beta-1").is_ok());
+        assert!(validate_service(&"a".repeat(MAX_SERVICE_BYTES)).is_ok());
+        assert!(validate_service("").is_err());
+        assert!(validate_service("bad/service").is_err());
+        assert!(validate_service("has space").is_err());
+        assert!(validate_service(&"a".repeat(MAX_SERVICE_BYTES + 1)).is_err());
     }
 }

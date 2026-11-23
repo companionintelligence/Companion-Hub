@@ -30,18 +30,148 @@ const HEAD_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
-const SUCCESS_PAGE: &str = r#"<!doctype html>
+/// Longest app name the success page shows, in characters. A longer name is cut there.
+const MAX_APP_NAME_CHARS: usize = 64;
+
+/// Sent with every response. The success page loads nothing (no script, stylesheet, font or image)
+/// and its styles are inline, so everything else can be refused.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'; \
+                                       base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
+// The success page in three parts, joined around the escaped title and the line naming the app. The
+// palette is phthalo-mist from @companionintelligence/tokens: dark by default, light when the system
+// asks for it.
+const SUCCESS_PAGE_HEAD: &str = r#"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Signed in</title>
+<meta name="color-scheme" content="dark light">
+<title>"#;
+
+const SUCCESS_PAGE_BODY: &str = r#"</title>
+<style>
+:root {
+  color-scheme: dark light;
+  --bg: #041620;
+  --card: #0c323c;
+  --fg: #e8f2f4;
+  --muted: #a3babf;
+  --border: #154550;
+  --accent: #c5e8dc;
+  --accent-soft: rgba(197, 232, 220, 0.12);
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f3faf7;
+    --card: #ffffff;
+    --fg: #0a222e;
+    --muted: #3a524b;
+    --border: #dfece6;
+    --accent: #0a6358;
+    --accent-soft: rgba(10, 99, 88, 0.1);
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.5 Manrope, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+.card {
+  width: 100%;
+  max-width: 420px;
+  padding: 36px 32px 32px;
+  text-align: center;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 20px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.badge svg { width: 28px; height: 28px; display: block; }
+h1 { margin: 0 0 8px; font-size: 20px; font-weight: 600; }
+p { margin: 0; color: var(--muted); font-size: 14px; }
+p + p { margin-top: 4px; }
+</style>
 </head>
 <body>
-<p>Sign-in complete. You can close this window and return to the app.</p>
+<main class="card">
+<div class="badge" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+<h1>You&rsquo;re signed in</h1>
+<p>"#;
+
+const SUCCESS_PAGE_TAIL: &str = r#"</p>
+<p>You can close this tab.</p>
+</main>
 </body>
 </html>
 "#;
+
+/// The page the browser shows once the callback has arrived. `app_name` is the app's product name.
+/// Without a usable one the page says "the app" instead.
+pub fn success_page(app_name: Option<&str>) -> String {
+    let name = app_name
+        .and_then(display_name)
+        .map(|name| escape_html(&name));
+    let (title, back_to) = match &name {
+        Some(name) => (format!("Signed in to {name}"), name.as_str()),
+        None => ("Signed in".to_owned(), "the app"),
+    };
+    let mut page = String::with_capacity(4096);
+    page.push_str(SUCCESS_PAGE_HEAD);
+    page.push_str(&title);
+    page.push_str(SUCCESS_PAGE_BODY);
+    page.push_str("Return to ");
+    page.push_str(back_to);
+    page.push_str(" to continue.");
+    page.push_str(SUCCESS_PAGE_TAIL);
+    page
+}
+
+/// The name as the page shows it: trimmed, without control characters, at most MAX_APP_NAME_CHARS.
+/// None when nothing is left.
+fn display_name(raw: &str) -> Option<String> {
+    let name: String = raw
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(MAX_APP_NAME_CHARS)
+        .collect();
+    let name = name.trim_end();
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// Escapes text for an HTML element body.
+fn escape_html(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
 
 /// What a request line asks for.
 #[derive(PartialEq, Eq)]
@@ -135,14 +265,15 @@ pub fn parse_request_line(head: &[u8]) -> Result<Route, AuthError> {
     }
 }
 
-/// Waits for the callback that completes the sign-in and returns its full URL. The wait ends with
-/// Timeout when `timeout` passes, or with Cancelled when `cancelled` is set. The caller owns the
-/// listener and drops it afterwards.
+/// Waits for the callback that completes the sign-in and returns its full URL. The callback gets
+/// `success_page` as its response. The wait ends with Timeout when `timeout` passes, or with Cancelled
+/// when `cancelled` is set. The caller owns the listener and drops it afterwards.
 pub fn wait_for_callback(
     listener: &TcpListener,
     port: u16,
     cancelled: &AtomicBool,
     timeout: Duration,
+    success_page: &str,
 ) -> Result<String, AuthError> {
     listener
         .set_nonblocking(true)
@@ -157,7 +288,9 @@ pub fn wait_for_callback(
         }
         match listener.accept() {
             Ok((mut stream, _peer)) => {
-                if let Some(target) = serve_connection(&mut stream, deadline, cancelled) {
+                if let Some(target) =
+                    serve_connection(&mut stream, deadline, cancelled, success_page)
+                {
                     return Ok(format!("http://127.0.0.1:{port}{target}"));
                 }
             }
@@ -173,6 +306,7 @@ fn serve_connection(
     stream: &mut TcpStream,
     deadline: Instant,
     cancelled: &AtomicBool,
+    success_page: &str,
 ) -> Option<String> {
     // On macOS an accepted socket inherits O_NONBLOCK from the listener, and the reads below need
     // blocking mode with timeouts.
@@ -194,7 +328,7 @@ fn serve_connection(
             if cancelled.load(Ordering::SeqCst) {
                 return None;
             }
-            respond(stream, "200 OK", "", SUCCESS_PAGE);
+            respond(stream, "200 OK", "", success_page);
             Some(target)
         }
         Ok(Route::NotFound) => {
@@ -267,6 +401,7 @@ fn respond(stream: &mut TcpStream, status: &str, extra_headers: &str, body: &str
          Content-Type: text/html; charset=utf-8\r\n\
          Content-Length: {len}\r\n\
          Cache-Control: no-store\r\n\
+         Content-Security-Policy: {CONTENT_SECURITY_POLICY}\r\n\
          Referrer-Policy: no-referrer\r\n\
          X-Content-Type-Options: nosniff\r\n\
          {extra_headers}\
@@ -288,6 +423,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    /// The page a test's listener answers the callback with.
+    const PAGE: &str = "<p>test page</p>";
 
     /// Sends raw bytes to the listener and returns everything the server wrote before it closed.
     fn send_raw(port: u16, request: &[u8]) -> String {
@@ -428,12 +566,18 @@ mod tests {
             );
             (not_found, callback)
         });
-        let url = wait_for_callback(&listener, port, &cancelled, Duration::from_secs(10))
+        let url = wait_for_callback(&listener, port, &cancelled, Duration::from_secs(10), PAGE)
             .expect("callback");
         let (not_found, callback) = client.join().expect("client thread");
         assert!(not_found.starts_with("HTTP/1.1 404 "), "{not_found}");
         assert!(callback.starts_with("HTTP/1.1 200 OK"), "{callback}");
-        assert!(callback.contains("You can close this window"));
+        assert!(callback.contains(PAGE), "{callback}");
+        assert!(
+            callback.contains(&format!(
+                "Content-Security-Policy: {CONTENT_SECURITY_POLICY}\r\n"
+            )),
+            "{callback}"
+        );
         assert_eq!(
             url,
             format!("http://127.0.0.1:{port}/callback?code=abc&state=xyz")
@@ -450,7 +594,7 @@ mod tests {
             let _ = send_raw(port, b"GET /callback?code=ok&state=s HTTP/1.1\r\n\r\n");
             refused
         });
-        let url = wait_for_callback(&listener, port, &cancelled, Duration::from_secs(10))
+        let url = wait_for_callback(&listener, port, &cancelled, Duration::from_secs(10), PAGE)
             .expect("callback");
         let refused = client.join().expect("client thread");
         assert!(refused.starts_with("HTTP/1.1 405 "), "{refused}");
@@ -506,7 +650,7 @@ mod tests {
             let _ = send_raw(port, b"GET /callback?code=ok&state=s HTTP/1.1\r\n\r\n");
             refused
         });
-        let url = wait_for_callback(&listener, port, &cancelled, Duration::from_secs(10))
+        let url = wait_for_callback(&listener, port, &cancelled, Duration::from_secs(10), PAGE)
             .expect("callback");
         let refused = client.join().expect("client thread");
         assert!(refused.starts_with("HTTP/1.1 431 "), "{refused}");
@@ -522,7 +666,8 @@ mod tests {
         let port = local_port(&listener).expect("port");
         let cancelled = AtomicBool::new(false);
         let started = Instant::now();
-        let result = wait_for_callback(&listener, port, &cancelled, Duration::from_millis(50));
+        let result =
+            wait_for_callback(&listener, port, &cancelled, Duration::from_millis(50), PAGE);
         assert_eq!(result, Err(AuthError::Timeout));
         assert!(started.elapsed() < Duration::from_secs(5));
     }
@@ -532,7 +677,75 @@ mod tests {
         let listener = bind().expect("bind");
         let port = local_port(&listener).expect("port");
         let cancelled = AtomicBool::new(true);
-        let result = wait_for_callback(&listener, port, &cancelled, Duration::from_secs(10));
+        let result = wait_for_callback(&listener, port, &cancelled, Duration::from_secs(10), PAGE);
         assert_eq!(result, Err(AuthError::Cancelled));
+    }
+
+    #[test]
+    fn success_page_names_the_app_and_says_the_tab_can_close() {
+        let page = success_page(Some("Companion Hub"));
+        assert!(page.starts_with("<!doctype html>"));
+        assert!(page.contains("<title>Signed in to Companion Hub</title>"));
+        assert!(page.contains("<p>Return to Companion Hub to continue.</p>"));
+        assert!(page.contains("<p>You can close this tab.</p>"));
+        assert!(page.contains("You&rsquo;re signed in"));
+    }
+
+    #[test]
+    fn success_page_without_a_name_says_the_app() {
+        for missing in [None, Some(""), Some("   "), Some("\u{7}\n")] {
+            let page = success_page(missing);
+            assert!(page.contains("<title>Signed in</title>"), "{missing:?}");
+            assert!(
+                page.contains("<p>Return to the app to continue.</p>"),
+                "{missing:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn success_page_escapes_the_app_name() {
+        let page = success_page(Some(r#"<script>alert("x")</script> & 'co'"#));
+        assert!(!page.contains("<script"));
+        assert!(page.contains(
+            "Return to &lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; &#39;co&#39; to continue."
+        ));
+    }
+
+    #[test]
+    fn success_page_trims_and_cuts_a_long_name() {
+        let long = format!("  {}  ", "n".repeat(MAX_APP_NAME_CHARS + 10));
+        let page = success_page(Some(&long));
+        let shown = "n".repeat(MAX_APP_NAME_CHARS);
+        assert!(page.contains(&format!("Return to {shown} to continue.")));
+        assert!(!page.contains(&format!("{shown}n")));
+    }
+
+    #[test]
+    fn success_page_loads_nothing_from_anywhere() {
+        let page = success_page(Some("Companion Hub"));
+        for needle in ["<script", "<link", "src=", "href=", "url(", "@import"] {
+            assert!(
+                !page.contains(needle),
+                "the page should not contain {needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn error_responses_carry_the_content_security_policy() {
+        let listener = bind().expect("bind");
+        let port = local_port(&listener).expect("port");
+        let cancelled = AtomicBool::new(false);
+        let client = thread::spawn(move || {
+            let not_found = send_raw(port, b"GET /elsewhere HTTP/1.1\r\n\r\n");
+            let _ = send_raw(port, b"GET /callback?code=ok&state=s HTTP/1.1\r\n\r\n");
+            not_found
+        });
+        wait_for_callback(&listener, port, &cancelled, Duration::from_secs(10), PAGE)
+            .expect("callback");
+        let not_found = client.join().expect("client thread");
+        assert!(not_found.starts_with("HTTP/1.1 404 "), "{not_found}");
+        assert!(not_found.contains("Content-Security-Policy: default-src 'none';"));
     }
 }
