@@ -68,6 +68,11 @@ export interface ExposureSyncOptions {
    * container twice.
    */
   skipAutoRestartAppUrns?: AppUrn[];
+  /**
+   * This pass exists to report bindings an earlier pass wrote. It schedules no report pass of its
+   * own, so two passes can never keep each other going. See `scheduleCustomDomainReport`.
+   */
+  customDomainReportFollowUp?: boolean;
 }
 
 function buildPublicHostname(params: { appSubdomain: string; hubSubdomain?: string | null; orgSlug?: string | null; publicDomainRoot: string }) {
@@ -363,6 +368,27 @@ export class ExposureSyncService implements OnModuleDestroy {
   private static readonly CLOUDFLARE_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000, 120_000];
   private cloudflareRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private cloudflareRetryAttempt = 0;
+
+  /**
+   * Counts the custom-domain bindings `reconcileCustomDomains` has written, and the count the last
+   * report Companion Portal took was built from. The report goes out BEFORE the reconcile, so a
+   * pass that binds a domain tells the Portal nothing about it. Until a later report does, the
+   * Portal shows "Waiting for your Hub" and no Restart button. See {@link scheduleCustomDomainReport}.
+   */
+  private customDomainBindingGeneration = 0;
+  private reportedCustomDomainGeneration = 0;
+
+  /**
+   * How soon after a pass that changed a binding the pass that reports it goes out. Without it the
+   * report waited for the 5-minute poll. Short, since a person is usually looking at the Portal
+   * right then; long enough to let the restarts that pass dispatched get going.
+   */
+  private static readonly CUSTOM_DOMAIN_REPORT_DELAY_MS = 2_000;
+  /** How many times the report waits out another pass before leaving it to the poll. */
+  private static readonly CUSTOM_DOMAIN_REPORT_MAX_WAITS = 30;
+  private customDomainReportTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The apps whose restart a caller owns, carried into the reporting pass. */
+  private readonly customDomainReportSkips = new Set<AppUrn>();
 
   /** Factory resets under way. No Cloudflare pass goes out while one runs; see {@link holdForFactoryReset}. */
   private factoryResetHolds = 0;
@@ -866,6 +892,54 @@ export class ExposureSyncService implements OnModuleDestroy {
 
   onModuleDestroy() {
     this.clearCloudflareRetry();
+    if (this.customDomainReportTimer) {
+      clearTimeout(this.customDomainReportTimer);
+      this.customDomainReportTimer = null;
+    }
+  }
+
+  /**
+   * Sends one more pass shortly, so Companion Portal hears about a binding this Hub just wrote.
+   *
+   * The report rides on a sync and is built before the request, while the reconcile that writes
+   * the binding runs after the answer. Left alone, a domain connected in the Portal reached the
+   * Hub at one poll and was reported at the next, 5 minutes later, with the Portal saying "Waiting
+   * for your Hub" in between and offering no Restart. The pass sent here reports it within seconds.
+   *
+   * Nothing goes out when a later pass has already reported the binding, and nothing overlaps a
+   * pass still running: the timer waits it out, up to {@link CUSTOM_DOMAIN_REPORT_MAX_WAITS} times,
+   * and then leaves the report to the poll. The pass it sends is marked as a follow-up and books
+   * none of its own, so a binding that keeps changing costs one extra pass per change, not a loop.
+   */
+  private scheduleCustomDomainReport(skipAutoRestartAppUrns: Iterable<AppUrn> = [], waited = 0) {
+    for (const appUrn of skipAutoRestartAppUrns) {
+      this.customDomainReportSkips.add(appUrn);
+    }
+    if (this.customDomainReportTimer) {
+      return;
+    }
+
+    this.customDomainReportTimer = setTimeout(() => {
+      this.customDomainReportTimer = null;
+      if (this.reportedCustomDomainGeneration >= this.customDomainBindingGeneration) {
+        this.customDomainReportSkips.clear();
+        return;
+      }
+      if (this.isCloudflareSyncInFlight()) {
+        if (waited < ExposureSyncService.CUSTOM_DOMAIN_REPORT_MAX_WAITS) {
+          this.scheduleCustomDomainReport([], waited + 1);
+        } else {
+          this.customDomainReportSkips.clear();
+        }
+        return;
+      }
+
+      const skips = [...this.customDomainReportSkips];
+      this.customDomainReportSkips.clear();
+      this.logger.debug('[Cloudflare] Reporting the custom-domain binding this Hub just wrote');
+      void this.triggerCloudflareSync({ customDomainReportFollowUp: true, ...(skips.length > 0 ? { skipAutoRestartAppUrns: skips } : {}) });
+    }, ExposureSyncService.CUSTOM_DOMAIN_REPORT_DELAY_MS);
+    this.customDomainReportTimer.unref?.();
   }
 
   private clearCloudflareRetry() {
@@ -1007,6 +1081,8 @@ export class ExposureSyncService implements OnModuleDestroy {
         return;
       }
 
+      // Every binding written before these rows are read is in the report built from them.
+      const generationInReport = this.customDomainBindingGeneration;
       const apps = await this.appRepository.getApps();
       const cfg = this.config.getConfig();
       const defaultPublicDomain = resolveHubPublicDomainRoot(cfg);
@@ -1108,6 +1184,9 @@ export class ExposureSyncService implements OnModuleDestroy {
 
       const result = await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined, customDomainApps);
       this.settleCloudflareRetry(result.ok, options);
+      if (result.ok && customDomainApps !== undefined) {
+        this.reportedCustomDomainGeneration = Math.max(this.reportedCustomDomainGeneration, generationInReport);
+      }
       if (result.ok) {
         this.refreshPortExposeRegistryOnce();
       }
@@ -1271,6 +1350,7 @@ export class ExposureSyncService implements OnModuleDestroy {
         }
 
         let deferredRevertAppUrns: AppUrn[] = [];
+        const generationBeforeReconcile = this.customDomainBindingGeneration;
         try {
           deferredRevertAppUrns = await this.reconcileCustomDomains({
             // Re-read only when a row moved, so the join sees the served hostname.
@@ -1283,6 +1363,11 @@ export class ExposureSyncService implements OnModuleDestroy {
           });
         } catch (error) {
           this.logger.error(`[Cloudflare] Custom-domain reconcile failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+
+        // The report this pass sent was built before these writes, so the Portal has not heard of them.
+        if (this.customDomainBindingGeneration !== generationBeforeReconcile && !options?.customDomainReportFollowUp) {
+          this.scheduleCustomDomainReport(options?.skipAutoRestartAppUrns);
         }
 
         /*
@@ -2131,8 +2216,9 @@ export class ExposureSyncService implements OnModuleDestroy {
    *
    * One sync late for a domain bound DURING this pass: the report is built before
    * the request, and the binding is written by `reconcileCustomDomains` after the
-   * response. The next sync reports it. Portal reads the gap as "waiting for your
-   * Hub" rather than guessing.
+   * response. So a pass that writes a binding books one more pass a couple of
+   * seconds later (`scheduleCustomDomainReport`), and that one reports it. Portal
+   * reads the gap as "waiting for your Hub" rather than guessing.
    */
   private async buildCustomDomainApplyReport(
     apps: Awaited<ReturnType<AppsRepository['getApps']>>,
@@ -2513,6 +2599,7 @@ export class ExposureSyncService implements OnModuleDestroy {
         this.logger.debug(`[Cloudflare] Deferred custom-domain write for ${appUrn}: a lifecycle command claimed it during this sync`);
         continue;
       }
+      this.customDomainBindingGeneration += 1;
 
       /*
        * R2-HUBREGISTRATION-2: this write is what moves an app's public identity —
