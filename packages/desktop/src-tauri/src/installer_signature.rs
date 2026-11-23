@@ -25,6 +25,7 @@ pub(crate) const APPLE_TEAM_ID: &str = "68U45V853Y";
 /// The app's bundle identifier (`tauri.conf.json`), the same in production and dev builds.
 pub(crate) const MACOS_BUNDLE_ID: &str = "computer.ci.app.hub";
 
+#[cfg(any(test, target_os = "windows"))]
 /// The organization the Windows installers are Authenticode-signed as.
 pub(crate) const WINDOWS_PUBLISHER: &str = "Lifescope Inc";
 
@@ -75,6 +76,7 @@ pub(crate) fn verify_windows_installer(installer: &Path) -> Result<(), String> {
     windows_signature_verdict(&String::from_utf8_lossy(&output.stdout))
 }
 
+#[cfg(any(test, target_os = "windows"))]
 /// What `Get-AuthenticodeSignature` printed (the status, then the signer's subject), as a verdict.
 /// `Valid` means Windows trusts the certificate chain and the file is unchanged since it was signed.
 pub(crate) fn windows_signature_verdict(output: &str) -> Result<(), String> {
@@ -104,6 +106,7 @@ pub(crate) fn windows_signature_verdict(output: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(any(test, target_os = "windows"))]
 /// The value of `key` in an X.500 subject as Windows prints it: `CN=Name, O="Name, Inc", C=US`.
 fn subject_field(subject: &str, key: &str) -> Option<String> {
     let mut fields = Vec::new();
