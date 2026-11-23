@@ -5,7 +5,7 @@ import { CI_MARKETPLACE_STORE_SLUG } from '@/core/portal/portal.constants';
 import type { ServiceInput } from '@ci-hub/common/schemas';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import yaml from 'yaml';
-import { DockerComposeBuilder } from '../compose.builder';
+import { DockerComposeBuilder, volumePathsBeforeMoves } from '../compose.builder';
 import { ServiceBuilder } from '../service.builder';
 
 const urn = createAppUrn('nginx', 'store-id');
@@ -144,6 +144,38 @@ describe('DockerComposeBuilder', () => {
         volumes: [{ hostPath: '/var/run/docker.sock', containerPath: '/var/run/docker.sock' }],
       };
       await expect(composeBuilder.getDockerCompose([service], {}, urn, subnet)).rejects.toThrow(/host-privileged access/);
+    });
+
+    it('refuses a folder inside another the app can write to, across services', async () => {
+      const services: ServiceInput[] = [
+        { name: 'web', image: 'image', internalPort: 80, isMain: true, volumes: [{ hostPath: '${APP_DATA_DIR}/data', containerPath: '/data' }] },
+        { name: 'db', image: 'image', volumes: [{ hostPath: '${APP_DATA_DIR}/data/db', containerPath: '/var/lib/db' }] },
+      ];
+      await expect(composeBuilder.getDockerCompose(services, {}, urn, subnet)).rejects.toThrow(
+        /mounts a folder inside another folder it can write to: "\$\{APP_DATA_DIR\}\/data\/db" \(db\) is inside "\$\{APP_DATA_DIR\}\/data", which web can write to/,
+      );
+    });
+
+    it('builds folders side by side, and one inside a folder mounted read-only', async () => {
+      const services: ServiceInput[] = [
+        {
+          name: 'web',
+          image: 'image',
+          internalPort: 80,
+          isMain: true,
+          volumes: [
+            { hostPath: '${APP_DATA_DIR}/data/app', containerPath: '/data' },
+            { hostPath: '${APP_DATA_DIR}/data/config', containerPath: '/config', readOnly: true },
+          ],
+        },
+        { name: 'db', image: 'image', volumes: [{ hostPath: '${APP_DATA_DIR}/data/db', containerPath: '/var/lib/db' }] },
+        {
+          name: 'nats',
+          image: 'image',
+          volumes: [{ hostPath: '${APP_DATA_DIR}/data/config/nats.conf', containerPath: '/nats.conf', readOnly: true }],
+        },
+      ];
+      await expect(composeBuilder.getDockerCompose(services, {}, urn, subnet)).resolves.toBeDefined();
     });
 
     it('rejects host network mode from a non-allowlisted app', async () => {
@@ -528,6 +560,41 @@ describe('DockerComposeBuilder', () => {
 
       expect(yamlObject.services.database.volumes).toEqual(['data-db:/var/lib/postgresql']);
       expect(yamlObject.volumes).toEqual({ 'data-db': {} });
+    });
+
+    it('keeps the volume of the path a data move came from, where the data already is', async () => {
+      // ci-openclaw: `/data` was `${APP_DATA_DIR}/data` and moved to `data/app`. On this host it lived in
+      // the volume `data`, which a folder move on disk does not touch.
+      const openclaw: ServiceInput = {
+        name: 'openclaw',
+        image: 'image',
+        internalPort: 80,
+        isMain: true,
+        volumes: [
+          { hostPath: '${APP_DATA_DIR}/data/app', containerPath: '/data', requiresPosixPermissions: true },
+          { hostPath: '${APP_DATA_DIR}/data/linuxbrew', containerPath: '/home/linuxbrew', requiresPosixPermissions: true },
+        ],
+      };
+      const builder = permissionlessBuilder().applyOptions({ dataMoves: [{ from: 'data', to: 'data/app' }] });
+      const yamlObject = yaml.parse(await builder.getDockerCompose([openclaw], {}, urn, subnet));
+
+      expect(yamlObject.services.openclaw.volumes).toEqual(['data:/data', 'data-linuxbrew:/home/linuxbrew']);
+      expect(yamlObject.volumes).toEqual({ data: {}, 'data-linuxbrew': {} });
+    });
+
+    it('follows a chain of moves back to the first path, and leaves moves from the data folder itself out', () => {
+      expect(
+        volumePathsBeforeMoves([
+          { from: 'data/postgres', to: 'data/pg' },
+          { from: 'data/pg', to: 'data/db' },
+          { from: '.', to: 'data/app' },
+        ]),
+      ).toEqual(
+        new Map([
+          ['data/pg', 'data/postgres'],
+          ['data/db', 'data/postgres'],
+        ]),
+      );
     });
 
     it('gives sidecars sharing a data directory the same volume so they still share data', async () => {

@@ -163,15 +163,17 @@ interface Stubs {
     createVolumeHostDirs: Stub;
     storeDataCopyPending: Stub;
     setAppDataDirPermissions: Stub;
+    declaresDataMoves: Stub;
+    applyDataMoves: Stub;
   };
   marketplaceService: { getAppInfoFromAppStoreOrInstalled: Stub; copyAppFromRepoToInstalled: Stub; listedAppUrns: Stub };
-  logger: { info: Stub; warn: Stub; error: Stub };
+  logger: { info: Stub; warn: Stub; error: Stub; debug: Stub };
   subnetManager: { allocateSubnet: Stub };
   configService: { get: Stub; getConfig: Stub };
   resourceAllocator: { getEffectiveAppDefaults: Stub; getDockerCapacity: Stub; getDockerServerVersion: Stub };
   registrationService: { getDeviceRegistrationInfo: Stub };
   appsRepository: { getAppCustomDomain: Stub; getApps: Stub };
-  docker: { pruneContainers: Stub };
+  docker: { pruneContainers: Stub; listContainers: Stub };
 }
 
 const makeForm = (overrides: Record<string, unknown> = {}): AppEventFormInput =>
@@ -187,13 +189,15 @@ const createHarness = () => {
       // The store's data folder is already copied: the guard for a pending copy is tested on real files.
       storeDataCopyPending: vi.fn().mockResolvedValue(false),
       setAppDataDirPermissions: vi.fn().mockResolvedValue(undefined),
+      declaresDataMoves: vi.fn().mockResolvedValue(false),
+      applyDataMoves: vi.fn().mockResolvedValue([]),
     },
     marketplaceService: {
       getAppInfoFromAppStoreOrInstalled: vi.fn().mockResolvedValue({ id: 'nextcloud' }),
       copyAppFromRepoToInstalled: vi.fn().mockResolvedValue(undefined),
       listedAppUrns: vi.fn().mockResolvedValue([]),
     },
-    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     subnetManager: { allocateSubnet: vi.fn().mockResolvedValue('10.128.7.0/24') },
     configService: {
       get: vi.fn((key: string) => {
@@ -214,7 +218,10 @@ const createHarness = () => {
     },
     registrationService: { getDeviceRegistrationInfo: vi.fn().mockResolvedValue({ hubSubdomain: 'hub-desk-acme', slug: 'acme' }) },
     appsRepository: { getAppCustomDomain: vi.fn().mockResolvedValue(null), getApps: vi.fn().mockResolvedValue([]) },
-    docker: { pruneContainers: vi.fn().mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 }) },
+    docker: {
+      pruneContainers: vi.fn().mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 }),
+      listContainers: vi.fn().mockResolvedValue([]),
+    },
   };
 
   const moduleRef = {
@@ -304,6 +311,65 @@ describe('prepareAppComposeDir', () => {
 
     expect(stubs.appFilesManager.createVolumeHostDirs).toHaveBeenCalledWith('my-app:_user');
     expect(order).toEqual(['write', 'mkdir', 'chmod']);
+  });
+
+  /*
+   * A listing that changed its data layout says what moves where (`data_moves`). The data has to be in
+   * the new places before the mount folders are made and the containers start, and never moved out
+   * from under a container that still runs.
+   */
+  describe('data moves', () => {
+    it('runs them before the volume folders are made, when none of the app runs', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      const order: string[] = [];
+      stubs.appFilesManager.declaresDataMoves.mockResolvedValue(true);
+      stubs.appFilesManager.applyDataMoves.mockImplementation(async () => {
+        order.push('move');
+        return ['data/x → data/app/x'];
+      });
+      stubs.appFilesManager.createVolumeHostDirs.mockImplementation(async () => {
+        order.push('mkdir');
+      });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      expect(order).toEqual(['move', 'mkdir']);
+      expect(stubs.docker.listContainers).toHaveBeenCalledWith(
+        expect.objectContaining({ filters: expect.objectContaining({ status: ['running', 'restarting', 'paused'] }) }),
+      );
+    });
+
+    it('leaves them for the next start while a container of the app still runs', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.appFilesManager.declaresDataMoves.mockResolvedValue(true);
+      stubs.docker.listContainers.mockResolvedValue([{ Id: 'c1', State: 'running' }]);
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      expect(stubs.appFilesManager.applyDataMoves).not.toHaveBeenCalled();
+      expect(stubs.appFilesManager.createVolumeHostDirs).toHaveBeenCalled();
+    });
+
+    it('stops the prepare when a move would overwrite files', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.appFilesManager.declaresDataMoves.mockResolvedValue(true);
+      stubs.appFilesManager.applyDataMoves.mockRejectedValue(new Error('both places hold files'));
+
+      await expect(prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm())).rejects.toThrow('both places hold files');
+      expect(stubs.appFilesManager.createVolumeHostDirs).not.toHaveBeenCalled();
+    });
+
+    it('is skipped when the caller runs them itself, as an update does, and for a listing that declares none', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.appFilesManager.declaresDataMoves.mockResolvedValue(true);
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm(), { applyDataMoves: false });
+      expect(stubs.appFilesManager.applyDataMoves).not.toHaveBeenCalled();
+
+      stubs.appFilesManager.declaresDataMoves.mockResolvedValue(false);
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+      expect(stubs.appFilesManager.applyDataMoves).not.toHaveBeenCalled();
+      expect(stubs.docker.listContainers).not.toHaveBeenCalled();
+    });
   });
 
   it('still sweeps permissions when the volume folders cannot be made, and says why', async () => {

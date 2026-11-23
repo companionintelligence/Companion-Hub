@@ -10,6 +10,7 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AsyncMutex } from '@/utils/mutex/async-mutex';
 import { Injectable } from '@nestjs/common';
+import { applyAppDataMoves } from './app-data-moves';
 import { securityGrantsFor } from './security-grants';
 import { parseInstalledAppInfo, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -425,6 +426,35 @@ export class AppFilesManager {
     const mounts = await this.getAppDataBindMounts(appUrn);
     const roots = new Set(mounts.filter((mount) => mount.private && mount.target !== appDataDir).map((mount) => mount.target));
     return [...roots].sort();
+  }
+
+  /** Whether the installed version of the app declares data moves (`data_moves`), done or not. */
+  public async declaresDataMoves(appUrn: AppUrn): Promise<boolean> {
+    return ((await this.getInstalledAppInfo(appUrn))?.data_moves ?? []).length > 0;
+  }
+
+  /**
+   * Carries out the installed version's data moves (see applyAppDataMoves), leaving what holds one of
+   * its mounts where it is. Call it only while none of the app's containers run: a folder moved out
+   * from under a running one leaves it writing to a path that no longer is its data.
+   *
+   * @returns what was moved, as `from → to` lines
+   */
+  public async applyDataMoves(appUrn: AppUrn): Promise<string[]> {
+    const moves = (await this.getInstalledAppInfo(appUrn))?.data_moves ?? [];
+    if (moves.length === 0) {
+      return [];
+    }
+    const { appDataDir } = this.getAppPaths(appUrn);
+    const keepSources = (await this.getAppDataBindMounts(appUrn))
+      .map((mount) => path.relative(appDataDir, mount.target))
+      .filter((relative) => relative !== '' && !relative.startsWith('..'))
+      .map((relative) => relative.split(path.sep).join('/'));
+    const moved = await applyAppDataMoves({ appName: extractAppUrn(appUrn).appName, appDataDir, moves, keepSources });
+    if (moved.length > 0) {
+      this.logger.info(`Moved the data of ${appUrn} to its new layout: ${moved.join(', ')}`);
+    }
+    return moved;
   }
 
   /**

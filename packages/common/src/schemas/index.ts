@@ -26,6 +26,8 @@ import {
   RANDOM_ENCODINGS,
   appInfoSchema,
   appInfoObjectSchema,
+  dataMoveSchema,
+  type DataMove,
   appPrivacySchema,
   appPrivacyState,
   gpuRequirementsSchema,
@@ -105,6 +107,7 @@ import {
 } from './sse.js';
 
 import { toJsonSchema } from './utils/to-json-schema.js';
+import { bindSourceKey, describeNestedBindMounts, findNestedBindMounts, type BindMountRef, type NestedBindMount } from './bind-mount-nesting.js';
 
 export {
   dynamicComposeSchema,
@@ -118,6 +121,11 @@ export {
   serviceSchema,
   toJsonSchema,
   collectServiceSecurityViolations,
+  bindSourceKey,
+  describeNestedBindMounts,
+  findNestedBindMounts,
+  type BindMountRef,
+  type NestedBindMount,
   isReservedHubLabel,
   collectTraefikLabelIssues,
   HUB_INFRASTRUCTURE_NETWORK_NAMES,
@@ -138,6 +146,8 @@ export {
   PRIVACY_DATA_PURPOSES,
   appInfoSchema,
   appInfoObjectSchema,
+  dataMoveSchema,
+  type DataMove,
   appPrivacySchema,
   appPrivacyState,
   gpuRequirementsSchema,

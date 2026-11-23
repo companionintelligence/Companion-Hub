@@ -559,6 +559,7 @@ describe('AppsService', () => {
       moduleRef.get.mockImplementation((() => ({
         getRoutedContainerNames: vi.fn().mockResolvedValue(['test-app_test-store-web-1']),
         restartContainer: mockRestart,
+        assertBindMountsSafe: vi.fn().mockResolvedValue(undefined),
         syncExposurePublic: vi.fn(),
         getTunnelToken: () => 'token',
       })) as any);
@@ -569,11 +570,28 @@ describe('AppsService', () => {
       expect(result.detail).toContain('Restarted container: test-app_test-store-web-1');
     });
 
+    it('MUST NOT restart a container whose bind mounts the sandbox refuses, and says why', async () => {
+      const mockRestart = vi.fn().mockResolvedValue(undefined);
+      moduleRef.get.mockImplementation((() => ({
+        getRoutedContainerNames: vi.fn().mockResolvedValue(['test-app_test-store-web-1']),
+        restartContainer: mockRestart,
+        assertBindMountsSafe: vi.fn().mockRejectedValue(new Error('"data/db" in its data folder is a symbolic link')),
+        syncExposurePublic: vi.fn(),
+        getTunnelToken: () => 'token',
+      })) as any);
+
+      setupForResolve('proxy502');
+      const result = await service.resolveAppAvailability(appUrn);
+      expect(mockRestart).not.toHaveBeenCalled();
+      expect(result.detail).toContain('symbolic link');
+    });
+
     it('MUST say so instead of restarting a guessed name when the app has no routed container', async () => {
       const mockRestart = vi.fn().mockResolvedValue(undefined);
       moduleRef.get.mockImplementation((() => ({
         getRoutedContainerNames: vi.fn().mockResolvedValue([]),
         restartContainer: mockRestart,
+        assertBindMountsSafe: vi.fn().mockResolvedValue(undefined),
         syncExposurePublic: vi.fn(),
         getTunnelToken: () => 'token',
       })) as any);
@@ -593,6 +611,7 @@ describe('AppsService', () => {
       moduleRef.get.mockImplementation((() => ({
         getRoutedContainerNames: vi.fn().mockResolvedValue(['test-app_test-store-web-1', 'test-app_test-store-sidecar-1']),
         restartContainer: mockRestart,
+        assertBindMountsSafe: vi.fn().mockResolvedValue(undefined),
         syncExposurePublic: vi.fn(),
         getTunnelToken: () => 'token',
       })) as any);
@@ -662,7 +681,7 @@ describe('AppsService', () => {
           if ((token as { name?: string } | undefined)?.name === 'AppLifecycleService') {
             return { syncExposurePublic };
           }
-          return { getRoutedContainerNames, restartContainer };
+          return { getRoutedContainerNames, restartContainer, assertBindMountsSafe: vi.fn().mockResolvedValue(undefined) };
         }) as any);
         return { calls, getRoutedContainerNames, restartContainer };
       }

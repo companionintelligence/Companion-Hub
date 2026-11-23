@@ -229,7 +229,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       // not may be an install that failed before the copy, and a folder made here for a file a volume
       // mounts (`data/config.yml`) would stop the retry's copyDataDir. A stopped app gets them at its
       // next start (#2198).
-      await this.ensureAppDir(appUrn, form, { createVolumeDirs: this.wasRunning });
+      await this.ensureAppDir(appUrn, form, { createVolumeDirs: this.wasRunning, applyDataMoves: false });
       // Written once here so a write that fails (a read-only app.env) fails while the old version still runs.
       await appHelpers.generateEnvFile(appUrn, form);
 
@@ -245,7 +245,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       }
       await marketplaceService.copyAppFromRepoToInstalled(appUrn);
 
-      await this.ensureAppDir(appUrn, form, { createVolumeDirs: this.wasRunning });
+      await this.ensureAppDir(appUrn, form, { createVolumeDirs: this.wasRunning, applyDataMoves: false });
       // ⚠ AND AGAIN ONCE THE NEW FILES ARE IN. app.env is built from the installed config.json (its
       // version, port and form defaults), so the write above gave the new version the previous version's
       // environment. The start that follows a successful update rewrites app.env from the new files,
@@ -260,6 +260,10 @@ export class UpdateAppCommand extends AppLifecycleCommand {
         checkpoint('before starting the new version');
         await dockerService.composeApp(appUrn, 'pull');
         startedNewVersion = true;
+        // The new version's data layout, if it changed one (`data_moves`). The app is down, and from
+        // here a failure rolls the data back from the backup or snapshot, the moves with it. A stopped
+        // app gets them at its next start (prepareAppComposeDir).
+        await appFilesManager.applyDataMoves(appUrn);
         await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
         checkpoint('after starting the new version');
 

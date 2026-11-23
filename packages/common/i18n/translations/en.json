@@ -2208,6 +2208,7 @@
   "CUSTOM_APP_ERROR_TRAEFIK_RULE_NOT_OWN_HOST": "A router's rule must name this app's own address with Host(`${APP_DOMAIN}`), Host(`${APP_LOCAL_DOMAIN}`) or Host(`${APP_BASE_HOST}`) and no other host. Change {{label}}.",
   "CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED": "A custom app can't run a privileged container. Remove \"privileged\": true.",
   "CUSTOM_APP_ERROR_HOST_PATH_DENIED": "A custom app can't mount Docker's socket or a system folder such as /etc, /proc, /run or /var/lib/docker. Mount a folder in the app's data instead.",
+  "CUSTOM_APP_ERROR_HOST_PATH_NESTED": "This folder is inside another folder the app can write to. Code in the app could swap it for a link to anywhere on this computer, so mount it from its own folder beside the other one.",
   "CUSTOM_APP_ERROR_NETWORK_MODE_HOST_NOT_ALLOWED": "A custom app can't use the host's network or another container's network.",
   "CUSTOM_APP_ERROR_NETWORK_MODE_NOT_ALLOWED": "This network mode isn't allowed. Use bridge, none, default or service:<name>.",
   "CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED": "A custom app can't share the host's processes or another container's.",

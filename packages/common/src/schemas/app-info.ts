@@ -848,6 +848,44 @@ function normalizeAppInfoInput(input: unknown): unknown {
   };
 }
 
+/**
+ * A folder (or file) inside the app's data folder, as a data move names it: relative, forward
+ * slashes, no `.`/`..` segments, nothing at or below the Hub's own `app.env`. `.` alone is the app's
+ * data folder itself, and only a move's `from` may be that.
+ */
+const dataMovePathSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (value) =>
+      value === '.' ||
+      (!value.startsWith('/') &&
+        !value.includes('\\') &&
+        !/^[A-Za-z]:/.test(value) &&
+        value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..') &&
+        value !== 'app.env' &&
+        !value.startsWith('app.env/')),
+    'DATA_MOVE_PATH_INVALID',
+  );
+
+/**
+ * One step of a listing's data layout change, which the Hub carries out on the host before the new
+ * version's containers start (`applyAppDataMoves` in the backend). Two kinds:
+ *
+ * - `to` outside `from`: `from` is renamed to `to` (`data/postgres` → `data/db`).
+ * - `to` inside `from`: what `from` holds moves into `to` (`data` → `data/app`), except what holds
+ *   the new version's other mounts, which stays where it is. With `from: "."` the Hub's own
+ *   `app.env` and `backups` stay too.
+ *
+ * Each step only moves what is still in its old place, so a step that already ran does nothing. A
+ * destination that already holds files stops the start instead of merging into it.
+ */
+export const dataMoveSchema = z
+  .object({ from: dataMovePathSchema, to: dataMovePathSchema.refine((value) => value !== '.', 'DATA_MOVE_PATH_INVALID') })
+  .refine(({ from, to }) => from !== to && !(from !== '.' && to !== '.' && from.startsWith(`${to}/`)), 'DATA_MOVE_INTO_ITSELF');
+
+export type DataMove = z.output<typeof dataMoveSchema>;
+
 export const appInfoObjectSchema = z.object({
   id: z.string().refine((v) => v.split(':').length === 1),
   urn: zodAppUrn,
@@ -924,6 +962,12 @@ export const appInfoObjectSchema = z.object({
    */
   privacy: appPrivacySchema.optional(),
   hub_integration: hubIntegrationSchema,
+  /**
+   * Folder moves a version's new data layout needs, in order (see dataMoveSchema). Kept for good: a
+   * Hub that skips a version runs the steps of every version it skipped, and one that already ran a
+   * step finds nothing left to move.
+   */
+  data_moves: z.array(dataMoveSchema).optional().default([]),
 });
 
 export const appInfoSchema = z.preprocess(normalizeAppInfoInput, appInfoObjectSchema);

@@ -3,7 +3,9 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { abortError, isAbortError, throwIfAborted } from '@/common/abort';
 import { getAppDataHostPath, resolveAppDataHostRoot } from '@/common/helpers/app-data-path.helper';
-import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
+import { firstLinkOnTheWay, parseComposeConfigBindMounts, segmentsInside } from './bind-mount-guard';
 import {
   DEFAULT_APP_COMPOSE_INACTIVITY_TIMEOUT_MS,
   DEFAULT_APP_COMPOSE_TIMEOUT_MINUTES,
@@ -55,7 +57,7 @@ import {
   TAILSCALE_SIDECAR_CONTAINER_NAME,
   TRAEFIK_CONTAINER_NAME,
 } from '../network/network-constants';
-import { HUB_INFRASTRUCTURE_NETWORK_NAMES } from '@ci-hub/common/schemas';
+import { type BindMountRef, describeNestedBindMounts, findNestedBindMounts, HUB_INFRASTRUCTURE_NETWORK_NAMES } from '@ci-hub/common/schemas';
 
 export type { AppContainerRuntimeStats, AppNetworkTarget, ManagedAppContainerVerification } from './docker-read.facade';
 
@@ -187,6 +189,16 @@ const COMPOSE_CANCEL_SIGKILL_GRACE_MS = 5_000;
 
 /** The compose subcommands that create containers, and so read an app's user config to decide what they run. */
 const CONTAINER_CREATING_COMPOSE_VERBS = new Set(['up', 'create', 'run']);
+
+/**
+ * The compose subcommands that start containers. Docker sets up a container's bind mounts on every
+ * start, following any symbolic link in their sources, so each of these re-checks them first
+ * (`assertBindMountsSafe`).
+ */
+const CONTAINER_STARTING_COMPOSE_VERBS = new Set(['up', 'create', 'run', 'start', 'restart']);
+
+/** Timezone files every app may mount read-only from the host; never another app's folder. */
+const HOST_TIMEZONE_FILES = new Set(['/etc/localtime', '/etc/timezone']);
 
 // Every privileged helper walks a whole data folder (a database, a media library): deleting, copying or
 // archiving it. Uninstall, Reset, a restore and an update rollback all wait on one, so they get the same
@@ -1135,6 +1147,155 @@ export class DockerService {
     }
   }
 
+  /**
+   * Refuses to start an app's containers when a bind mount could be redirected out of the app's own
+   * folders. Docker follows symbolic links in a mount's source on every container start, so:
+   *
+   * - no source may sit inside another source the app can write to (`findNestedBindMounts`): code in
+   *   the container could replace it with a link, and Docker's own restart would mount the target;
+   * - no source in the app's data folder may run through a link already there (a restored backup, or
+   *   a link a store's `data/` folder brought in with the copy);
+   * - a host folder the operator gave this app may not overlap one another installed app can write to,
+   *   for the same reason as the first rule, across apps.
+   *
+   * Read from `docker compose config`, so the user override and every `${...}` are already applied.
+   */
+  public async assertBindMountsSafe(appUrn: AppUrn, signal?: AbortSignal): Promise<void> {
+    const mounts = await this.readAppBindMounts(appUrn, signal);
+    if (mounts.length === 0) {
+      return;
+    }
+    const { appName } = extractAppUrn(appUrn);
+    const grantedHostPaths = securityGrantsFor(appUrn).hostPaths ?? [];
+
+    const nested = findNestedBindMounts(mounts, { grantedHostPaths });
+    if (nested.length > 0) {
+      throw new Error(
+        `App "${appName}" mounts a folder inside another folder it can write to: ${describeNestedBindMounts(nested)}. ` +
+          'Code in the app could replace the inner folder with a link to anywhere on this computer, and Docker would mount that instead. ' +
+          'Give each mount a folder of its own, side by side.',
+      );
+    }
+
+    const hostAppDataDir = this.hostAppDataDirOf(appUrn);
+    const { appDataDir } = this.appFilesManager.getAppPaths(appUrn);
+    const operatorFolders: BindMountRef[] = [];
+    for (const mount of mounts) {
+      const segments = segmentsInside(hostAppDataDir, mount.source);
+      if (segments === null) {
+        if (!HOST_TIMEZONE_FILES.has(mount.source) && !grantedHostPaths.includes(mount.source)) {
+          operatorFolders.push({ ...mount, service: `${appName}/${mount.service}` });
+        }
+        continue;
+      }
+      const link = await firstLinkOnTheWay(appDataDir, segments);
+      if (link !== null) {
+        throw new Error(
+          `App "${appName}" can't start: "${link}" in its data folder is a symbolic link, and the mount of "${mount.source}" (${mount.service}) passes through it. ` +
+            'Docker would mount wherever the link points. Replace the link with a folder, or restore the app, and start it again.',
+        );
+      }
+    }
+
+    if (operatorFolders.length > 0) {
+      await this.assertNoSharedFolderNesting(appUrn, operatorFolders, signal);
+    }
+  }
+
+  /** `assertBindMountsSafe`'s rule across apps: this app's own host folders against every other app's. */
+  private async assertNoSharedFolderNesting(appUrn: AppUrn, own: BindMountRef[], signal?: AbortSignal): Promise<void> {
+    const others: BindMountRef[] = [];
+    for (const installed of await this.appsRepository.getApps()) {
+      const otherUrn = createAppUrn(installed.appName, installed.appStoreSlug);
+      if (otherUrn === appUrn) {
+        continue;
+      }
+      // Refused when another app's mounts can't be read: an app that can't be checked is not cleared.
+      const theirs = await this.readAppBindMounts(otherUrn, signal).catch((error: unknown) => {
+        throw new Error(
+          `App "${extractAppUrn(appUrn).appName}" shares host folders with other apps, and the mounts of "${installed.appName}" could not be read to check them: ${String(error)}`,
+        );
+      });
+      // A host path an app is granted outright already gives it everything under it (`filebrowser-quantum`'s `/`).
+      const granted = new Set(securityGrantsFor(otherUrn).hostPaths ?? []);
+      others.push(
+        ...theirs.filter((mount) => !granted.has(mount.source)).map((mount) => ({ ...mount, service: `${installed.appName}/${mount.service}` })),
+      );
+    }
+    const appOf = (mount: BindMountRef) => mount.service.split('/')[0];
+    const ownSet = new Set(own);
+    const crossing = findNestedBindMounts([...own, ...others]).filter(
+      ({ outer, inner }) => appOf(outer) !== appOf(inner) && (ownSet.has(outer) || ownSet.has(inner)),
+    );
+    if (crossing.length > 0) {
+      throw new Error(
+        `App "${extractAppUrn(appUrn).appName}" mounts a host folder that overlaps one another app can write to: ${describeNestedBindMounts(crossing)}. ` +
+          'Code in one app could replace the inner folder with a link, and Docker would mount the target in the other. Use folders that do not sit inside each other.',
+      );
+    }
+  }
+
+  /** The app's bind mounts as `docker compose config` resolves them. Public so tests can stand it in. */
+  public async readAppBindMounts(appUrn: AppUrn, signal?: AbortSignal): Promise<BindMountRef[]> {
+    const { args } = await this.getBaseComposeArgsApp(appUrn);
+    const composeFile = await this.appFilesManager.getDockerComposeYaml(appUrn);
+    let command: string[];
+    try {
+      await this.assertComposePluginAvailable();
+      command = ['docker', 'compose', ...args, 'config'];
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
+      command = ['docker-compose', ...args, 'config'];
+    }
+    const output = await this.captureComposeOutput(command, path.dirname(composeFile.path), signal);
+    return parseComposeConfigBindMounts(output);
+  }
+
+  /**
+   * Runs a short compose command and returns its stdout as written. Not `runDockerCompose`: that one
+   * trims each chunk, which can drop a space from a path that falls on a chunk boundary.
+   */
+  private captureComposeOutput(command: string[], cwd: string, signal?: AbortSignal): Promise<string> {
+    const [bin, ...rest] = command;
+    if (!bin) {
+      return Promise.reject(new Error('Command is empty'));
+    }
+    throwIfAborted(signal);
+    return new Promise((resolve, reject) => {
+      const child = spawn(bin, rest, { cwd, env: appComposeEnvironment(), signal });
+      const stdout: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      const timer = globalThis.setTimeout(() => child.kill('SIGKILL'), 120_000);
+      timer.unref?.();
+      child.stdout?.on('data', (chunk: Buffer) => stdout.push(Buffer.from(chunk)));
+      child.stderr?.on('data', (chunk: Buffer) => stderr.push(Buffer.from(chunk)));
+      child.on('error', (error) => {
+        globalThis.clearTimeout(timer);
+        reject(error);
+      });
+      child.on('close', (code) => {
+        globalThis.clearTimeout(timer);
+        if (code === 0) {
+          resolve(Buffer.concat(stdout).toString('utf8'));
+        } else {
+          reject(new Error(`${command.slice(0, 2).join(' ')} config failed (${code}): ${Buffer.concat(stderr).toString('utf8').trim()}`));
+        }
+      });
+    });
+  }
+
+  /** The app's data folder as the host (and so Docker) names it. */
+  private hostAppDataDirOf(appUrn: AppUrn): string {
+    const config = this.config.getConfig();
+    return getAppDataHostPath(appUrn, {
+      ciHubAppDataPath: process.env.CI_HUB_APP_DATA_PATH,
+      appDataPath: config.userSettings.appDataPath,
+      rootFolderHost: config.rootFolderHost,
+    });
+  }
+
   public getBaseComposeArgsHub = async () => {
     const { dataDir } = this.config.get('directories');
     const args: string[] = ['--env-file', path.join(dataDir, '.env')];
@@ -1170,6 +1331,9 @@ export class DockerService {
     const verb = command.trim().split(/\s+/)[0];
     if (verb && CONTAINER_CREATING_COMPOSE_VERBS.has(verb)) {
       await this.assertUserConfigInSandbox(appUrn);
+    }
+    if (verb && CONTAINER_STARTING_COMPOSE_VERBS.has(verb)) {
+      await this.assertBindMountsSafe(appUrn, signal);
     }
     // Detach first. `compose down` with the Hub still attached exits 0, logs "Resource is still in
     // use", and leaves the network behind.

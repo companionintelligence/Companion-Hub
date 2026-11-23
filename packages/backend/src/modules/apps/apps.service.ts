@@ -827,6 +827,11 @@ export class AppsService {
             // the app behind a published port doesn't answer. Restarting a running app publishes nothing and would
             // cut off one that is still starting, so only containers that are down restart.
             const containers = await dockerService.getRoutedContainerNames(appUrn, { downOnly: tailscaleRepair });
+            // `docker restart` sets the bind mounts up again and follows any link in them, as compose up
+            // does, so it gets the same check first. A refusal ends up in `failures` below.
+            if (containers.length > 0) {
+              await dockerService.assertBindMountsSafe(appUrn);
+            }
             if (containers.length === 0 && !tailscaleRepair) {
               failures.push(`Failed to restart container: no container found for ${app.appName}`);
             }
