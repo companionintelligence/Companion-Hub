@@ -280,7 +280,7 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
       }}
     >
       {/* The width of the app Settings dialog, so the three exposure choices fit on one line as they do there. */}
-      <DialogContent className="sm:max-w-2xl max-h-[calc(100dvh-2rem)] flex flex-col">
+      <DialogContent className="sm:max-w-2xl max-h-[calc(var(--app-height)-2rem)] flex flex-col">
         <DialogHeader>
           <DialogTitle>{t('PORT_EXPOSE_SETTINGS_TITLE', { name: info.name })}</DialogTitle>
         </DialogHeader>

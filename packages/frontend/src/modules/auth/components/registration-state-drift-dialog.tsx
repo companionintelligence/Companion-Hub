@@ -126,7 +126,7 @@ export function RegistrationStateDriftDialog({
     <Dialog open={open} onOpenChange={() => undefined}>
       <DialogContent
         size="lg"
-        className="max-h-[calc(100dvh-2rem)] gap-0 overflow-y-auto p-0 sm:max-w-2xl"
+        className="max-h-[calc(var(--app-height)-2rem)] gap-0 overflow-y-auto p-0 sm:max-w-2xl"
         showCloseButton={false}
         onPointerDownOutside={(event) => event.preventDefault()}
         onEscapeKeyDown={(event) => event.preventDefault()}

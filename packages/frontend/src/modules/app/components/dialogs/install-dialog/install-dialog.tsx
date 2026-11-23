@@ -127,7 +127,7 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose, boundCu
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden sm:max-w-2xl">
+      <DialogContent className="flex max-h-[calc(var(--app-height)-2rem)] flex-col overflow-hidden sm:max-w-2xl">
         <DialogHeader className="shrink-0">
           <DialogTitle>{t('APP_INSTALL_FORM_TITLE', { name: info.name })}</DialogTitle>
         </DialogHeader>
