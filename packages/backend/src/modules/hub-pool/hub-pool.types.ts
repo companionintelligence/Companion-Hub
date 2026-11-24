@@ -505,8 +505,11 @@ export interface PoolStatusLocalNode {
  * running — a direction switched off, or every connected peer individually disabled. It exists so
  * that a node which currently serves nothing cannot report `active`; without it, switching inbound
  * off would leave the badge, the state banner and the CLI all saying "routing normally".
+ *
+ * `no_peers` means nothing is paired. `peers_unreachable` means at least one pairing exists but none
+ * of them is connected right now; telling that operator to pair a Hub sends them the wrong way.
  */
-export type PoolStatusReason = 'active' | 'no_peers' | 'partially_disabled' | 'disabled_by_env' | 'disabled_by_setting';
+export type PoolStatusReason = 'active' | 'no_peers' | 'peers_unreachable' | 'partially_disabled' | 'disabled_by_env' | 'disabled_by_setting';
 
 export interface PoolStatus {
   /** Effective kill-switch state (env override applied). Not the same as `settings.poolEnabled`. */

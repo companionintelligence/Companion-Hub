@@ -23,7 +23,7 @@ const POOL_MUTATION_TIMEOUT_MS = 30_000;
 
 /** 'rejected' was retired in migration 0059 — nothing ever wrote it, and it overlapped `enabled`. */
 export type PoolPeerStatus = 'pending' | 'connected' | 'unreachable';
-export type PoolStatusReason = 'active' | 'no_peers' | 'partially_disabled' | 'disabled_by_env' | 'disabled_by_setting';
+export type PoolStatusReason = 'active' | 'no_peers' | 'peers_unreachable' | 'partially_disabled' | 'disabled_by_env' | 'disabled_by_setting';
 
 /** One side of the kill switch, as `/status` reports it. */
 export interface PoolEnabledState {
@@ -1004,6 +1004,8 @@ function describePoolReason(status: PoolStatusResponse): string {
       return `${OK} active — apps on this Hub are routed through the pool`;
     case 'no_peers':
       return `${PENDING} enabled, not routing — no connected peers, so this Hub resolves inference locally`;
+    case 'peers_unreachable':
+      return `${PENDING} enabled, not routing: no paired peer can be reached right now, so this Hub resolves inference locally`;
     case 'partially_disabled':
       return `${PENDING} partly disabled — pooling is on, but a direction is switched off or every peer is disabled (see below)`;
     case 'disabled_by_env':

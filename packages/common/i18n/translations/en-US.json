@@ -2655,6 +2655,7 @@
   "HUB_POOL_STATE_OFF": "Off",
   "HUB_POOL_REASON_ACTIVE": "Apps on this Hub are being routed through the pool. Each request goes to whichever paired Hub has the model and the shortest queue.",
   "HUB_POOL_REASON_NO_PEERS": "Pooling is on, but no Hub is paired yet, so every request is served by this node's own engines. Pair a Hub below to start sharing capacity.",
+  "HUB_POOL_REASON_PEERS_UNREACHABLE": "Pooling is on, but no paired Hub can be reached right now, so every request is served by this node's own engines. A paired Hub rejoins the pool by itself on its next successful check.",
   "HUB_POOL_REASON_DISABLED_SETTING": "Pooling is turned off on this Hub. Apps only use local engines, and paired Hubs treat this node as unavailable. Pairings are kept — turn it back on below.",
   "HUB_POOL_REASON_DISABLED_ENV": "Pooling is turned off for this appliance by HUB_POOL_USER_DISABLED in its .env file.",
   "HUB_POOL_REASON_PARTIAL": "Pooling is on, but only part of it is running — one direction is switched off, or every paired Hub is individually disabled. Check the controls below.",

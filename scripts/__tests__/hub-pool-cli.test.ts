@@ -173,6 +173,19 @@ describe('hub-pool-cli formatters', () => {
     expect(text).toContain('No paired peers');
   });
 
+  it('says the paired peers are unreachable rather than calling the pool unpaired', () => {
+    const text = formatPoolStatusLines(
+      status({
+        reason: 'peers_unreachable',
+        routingActive: false,
+        peers: [peer({ status: 'unreachable', consecutiveFailures: 5 })],
+        peerCounts: { total: 1, connected: 0, pending: 0, unreachable: 1, disabled: 0 },
+      }),
+    ).join('\n');
+    expect(text).toContain('no paired peer can be reached right now');
+    expect(text).not.toContain('unknown state');
+  });
+
   it('says why the local inventory is empty when a backend is down', () => {
     const text = formatPoolStatusLines(status({ localNode: { ...status().localNode, backends: [], capabilitiesError: 'ollama unreachable' } })).join(
       '\n',

@@ -2023,6 +2023,31 @@ describe('HubPoolPeerService', () => {
       expect(await service.getPoolStatus()).toMatchObject({ reason: 'no_peers', routingActive: false });
     });
 
+    it('says peers_unreachable, not no_peers, when the only paired Hub is unreachable', async () => {
+      // The card printed "no Hub is paired yet" right above a list showing the paired Hub.
+      repo.listAll.mockResolvedValue([mockPeer({ id: 'p1', status: 'unreachable', consecutiveFailures: 5 })]);
+
+      const status = await service.getPoolStatus();
+
+      expect(status).toMatchObject({ reason: 'peers_unreachable', routingActive: false });
+      expect(status.peerCounts).toMatchObject({ total: 1, connected: 0, unreachable: 1 });
+    });
+
+    it('keeps no_peers while the only row is a pairing request nobody has answered', async () => {
+      repo.listAll.mockResolvedValue([mockPeer({ id: 'p1', status: 'pending' })]);
+
+      expect(await service.getPoolStatus()).toMatchObject({ reason: 'no_peers', routingActive: false });
+    });
+
+    it('says active, not peers_unreachable, while any paired Hub is still connected', async () => {
+      repo.listAll.mockResolvedValue([
+        mockPeer({ id: 'p1', nodeFqdn: 'a.example-tailnet.ts.net', status: 'connected' }),
+        mockPeer({ id: 'p2', nodeFqdn: 'b.example-tailnet.ts.net', status: 'unreachable' }),
+      ]);
+
+      expect(await service.getPoolStatus()).toMatchObject({ reason: 'active', routingActive: true });
+    });
+
     it('reports the master switch, not partially_disabled, when both are in play', async () => {
       // The operator has one thing to change; naming the finer state would send them to the wrong control.
       repo.listAll.mockResolvedValue([mockPeer({ id: 'p1', status: 'connected' })]);
