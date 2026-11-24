@@ -41,3 +41,27 @@ describe('GET /tailscale/status', () => {
     });
   });
 });
+
+describe('POST /tailscale/auth/start', () => {
+  function controllerFor(result: { authUrl: string; reconnected?: boolean }) {
+    const service = new TailscaleService();
+    vi.spyOn(service, 'isCliAvailable').mockResolvedValue(true);
+    vi.spyOn(service, 'startAuth').mockResolvedValue(result);
+    // The sync after a connect is best-effort; a module ref that resolves nothing is enough here.
+    const moduleRef = { get: vi.fn(() => null) };
+    const logger = { warn: vi.fn(), debug: vi.fn(), error: vi.fn(), info: vi.fn() };
+    return new TailscaleController(service, moduleRef as never, logger as never);
+  }
+
+  it('says the Hub brought the tailnet back when it was only turned off', async () => {
+    await expect(controllerFor({ authUrl: '', reconnected: true }).startAuth()).resolves.toEqual({
+      success: true,
+      alreadyAuthenticated: true,
+      reconnected: true,
+    });
+  });
+
+  it('keeps the plain answer for a Hub that was already connected', async () => {
+    await expect(controllerFor({ authUrl: '' }).startAuth()).resolves.toEqual({ success: true, alreadyAuthenticated: true });
+  });
+});

@@ -59,7 +59,7 @@ export class TailscaleController {
     const result = await this.tailscaleService.startAuth();
     if (result.authUrl === '') {
       await this.triggerTailscaleExposureSync();
-      return { success: true, alreadyAuthenticated: true };
+      return { success: true, alreadyAuthenticated: true, ...(result.reconnected ? { reconnected: true } : {}) };
     }
     return { success: true, authUrl: result.authUrl };
   }

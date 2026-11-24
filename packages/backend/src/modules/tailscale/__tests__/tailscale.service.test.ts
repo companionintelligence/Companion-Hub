@@ -132,6 +132,114 @@ describe('TailscaleService', () => {
     expect(upCall[1]).not.toContain('--json');
   });
 
+  describe("on the host's own tailscaled", () => {
+    // tailscale 1.98.2 refusing the flags the Hub used to pass, on a host with Tailscale SSH and an operator set.
+    // Two warnings with help links come first, and the command it suggests names the login server.
+    const REFUSED_UP_STDERR = [
+      'Warning: IPv6 forwarding is disabled.',
+      'Subnet routes and exit nodes may not work correctly.',
+      'See https://tailscale.com/s/ip-forwarding',
+      'Warning: UDP GRO forwarding is suboptimally configured on eth0, UDP forwarding throughput capability will increase with a configuration change.',
+      'See https://tailscale.com/s/ethtool-config-udp-gro',
+      "Error: changing settings via 'tailscale up' requires mentioning all",
+      'non-default flags. To proceed, either re-run your command with --reset or',
+      'use the command below to explicitly mention the current value of',
+      'all non-default settings:',
+      '',
+      '\ttailscale up --accept-routes --advertise-routes=172.18.0.0/16,172.19.0.0/16 --login-server=https://controlplane.tailscale.com --operator=hub --ssh',
+      '',
+    ].join('\n');
+
+    type ExecCallback = (err: Error | null, stdout?: string, stderr?: string) => void;
+
+    /** A host tailscaled in `backendState`, answering `up` with `onUp`; every call lands in `execFileMock.mock.calls`. */
+    function hostTailscaled(backendState: string, onUp: (args: string[], cb: ExecCallback) => void) {
+      vi.mocked(access).mockResolvedValue(undefined);
+      let state = backendState;
+      execFileMock.mockImplementation((cmd: string, args: string[], _opts: unknown, cb: ExecCallback) => {
+        if (cmd !== '/usr/bin/tailscale') {
+          process.nextTick(() => cb(new Error('unexpected'), '', ''));
+          return;
+        }
+        if (args[0] === 'version') {
+          process.nextTick(() => cb(null, '1.98.2\n', ''));
+          return;
+        }
+        if (args[0] === 'status') {
+          process.nextTick(() => cb(null, JSON.stringify({ BackendState: state, Version: '1.98.2' }), ''));
+          return;
+        }
+        if (args[0] === 'up') {
+          onUp(args, (err, stdout, stderr) => {
+            if (!err) state = 'Running';
+            cb(err, stdout, stderr);
+          });
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      });
+    }
+
+    const upCalls = () => execFileMock.mock.calls.filter(([, args]: [string, string[]]) => args[0] === 'up').map(([, args]) => args);
+
+    it('brings the tailnet back after Disconnect with a bare tailscale up, which changes no setting', async () => {
+      hostTailscaled('Stopped', (_args, cb) => process.nextTick(() => cb(null, '', '')));
+
+      const result = await service.startAuth();
+
+      expect(result).toEqual({ authUrl: '', reconnected: true });
+      expect(upCalls()).toEqual([['up']]);
+    });
+
+    it('never names the route or login-server flags the sidecar gets', async () => {
+      hostTailscaled('NeedsLogin', (_args, cb) =>
+        process.nextTick(() => cb(null, '', '\nTo authenticate, visit:\n\n\thttps://login.tailscale.com/a/test-auth\n\n')),
+      );
+
+      const result = await service.startAuth();
+
+      expect(result.authUrl).toBe('https://login.tailscale.com/a/test-auth');
+      expect(upCalls()).toEqual([['up']]);
+    });
+
+    it('passes what the operator put in HUB_TAILSCALE_EXTRA_ARGS, and nothing it did not', async () => {
+      process.env.HUB_TAILSCALE_EXTRA_ARGS = '--accept-dns=false';
+      hostTailscaled('Stopped', (_args, cb) => process.nextTick(() => cb(null, '', '')));
+
+      await service.startAuth();
+
+      expect(upCalls()).toEqual([['up', '--accept-dns=false']]);
+    });
+
+    it("does not take the login server in tailscaled's refusal for a sign-in link, and logs the refusal", async () => {
+      process.env.HUB_TAILSCALE_EXTRA_ARGS = '--login-server=https://controlplane.tailscale.com --accept-routes';
+      const logged = vi.spyOn((service as any).logger, 'error').mockImplementation(() => undefined);
+      hostTailscaled('Stopped', (args, cb) =>
+        process.nextTick(() =>
+          cb(
+            Object.assign(new Error(`Command failed: /usr/bin/tailscale ${args.join(' ')}\n${REFUSED_UP_STDERR}`), {
+              stdout: '',
+              stderr: REFUSED_UP_STDERR,
+            }),
+            '',
+            REFUSED_UP_STDERR,
+          ),
+        ),
+      );
+
+      await expect(service.startAuth()).rejects.toThrow('Failed to start Tailscale auth');
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining('requires mentioning all'));
+    });
+
+    it('connectWithAuthKey adds no sidecar flags either', async () => {
+      hostTailscaled('NeedsLogin', (_args, cb) => process.nextTick(() => cb(null, '', '')));
+
+      await service.connectWithAuthKey('tskey-auth-testkey');
+
+      expect(upCalls()).toEqual([['up', '--auth-key', 'tskey-auth-testkey']]);
+    });
+  });
+
   it('connectWithAuthKey invokes tailscale up via sidecar (includes --reset)', async () => {
     execFileMock.mockImplementation(
       (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {

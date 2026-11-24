@@ -224,8 +224,21 @@ export class TailscaleService {
     }
   }
 
+  /**
+   * The sign-in link in `tailscale up` output, or null.
+   *
+   * `tailscale up` prints it after "To authenticate, visit:". Anything else that looks like a URL is
+   * not one: a refused `up` repeats the command with its `--login-server=<url>`, as does the exec
+   * error's own message, and warnings end with a tailscale.com help link. Opening the login server's
+   * address read as a sign-in that failed, while tailscaled's refusal went unlogged (CI-Hub#2548).
+   */
   private extractAuthUrl(output: string, expectedHost?: string | null): string | null {
-    const candidates = (output.match(/https?:\/\/[^\s"']+/gi) ?? []).map((url) => url.replace(/[),.;]+$/, ''));
+    const prompted = output.match(/To authenticate, visit:\s+(https?:\/\/[^\s"']+)/i)?.[1];
+    if (prompted) {
+      return prompted.replace(/[),.;]+$/, '');
+    }
+
+    const candidates = (output.match(/(?<![=\w])https?:\/\/[^\s"']+/gi) ?? []).map((url) => url.replace(/[),.;]+$/, ''));
     if (!candidates.length) {
       return null;
     }
@@ -250,7 +263,7 @@ export class TailscaleService {
         return false;
       }
     });
-    return tailscaleLoginMatch ?? candidates[0] ?? null;
+    return tailscaleLoginMatch ?? null;
   }
 
   private getExecErrorOutput(error: unknown): string {
@@ -302,7 +315,25 @@ export class TailscaleService {
     this.strategyCache = null;
   }
 
-  /** Same flags as `connectWithAuthKey`: env override or default Docker bridge advertisement. */
+  /**
+   * The flags `tailscale up` gets after `up` (and `--reset` or `--auth-key`), for the tailscaled the Hub drives.
+   *
+   * The sidecar is the Hub's own tailscaled, so it gets {@link getTailscaleUpExtraArgs}. The host's tailscaled
+   * belongs to whoever set it up. Naming any flag there makes tailscaled refuse unless every setting it holds
+   * that isn't a default is named too (Tailscale SSH, an operator), and a run it accepted would turn on
+   * accept-routes and advertise the Hub's Docker bridges from that machine to the whole tailnet. A bare
+   * `tailscale up` is the one form it takes as "bring the network back up and change nothing", which is what
+   * **Log In with Tailscale** has to do after **Disconnect**. So the host gets only what the operator put in
+   * HUB_TAILSCALE_EXTRA_ARGS.
+   */
+  private getTailscaleUpArgsFor(strategy: ExecStrategy): string[] {
+    if (strategy === 'sidecar') {
+      return this.getTailscaleUpExtraArgs();
+    }
+    return (process.env.HUB_TAILSCALE_EXTRA_ARGS || '').trim().split(/\s+/).filter(Boolean);
+  }
+
+  /** The sidecar's flags: env override or default Docker bridge advertisement. */
   private getTailscaleUpExtraArgs(): string[] {
     const extra = (process.env.HUB_TAILSCALE_EXTRA_ARGS || '').trim();
     if (!extra) {
@@ -579,7 +610,7 @@ export class TailscaleService {
   /**
    * Initiate Tailscale auth — returns URL for browser OAuth redirect (host or sidecar).
    */
-  async startAuth(operator?: string): Promise<{ authUrl: string }> {
+  async startAuth(operator?: string): Promise<{ authUrl: string; reconnected?: boolean }> {
     const publicErrorMessage = 'Failed to start Tailscale auth. Check server logs for details.';
     const strategy = await this.resolveStrategy();
     if (strategy === null) {
@@ -606,7 +637,7 @@ export class TailscaleService {
     // --reset resets persisted non-default preferences to defaults before applying
     // the provided flags. Only safe for the sidecar (isolated daemon); on the host
     // it would mutate the user's existing Tailscale configuration.
-    const extraArgs = this.getTailscaleUpExtraArgs();
+    const extraArgs = this.getTailscaleUpArgsFor(strategy);
     const loginServerHost = this.getConfiguredLoginServerHost(extraArgs);
     const args = ['up', ...(strategy === 'sidecar' ? ['--reset'] : []), ...extraArgs];
     if (operator) {
@@ -638,7 +669,8 @@ export class TailscaleService {
       }
 
       if (status.connected || status.backendState === 'Running') {
-        return { authUrl: '' };
+        // `Stopped` is what `tailscale down` leaves: still signed in, so `up` alone brought it back.
+        return preAuthStatus.backendState === 'Stopped' ? { authUrl: '', reconnected: true } : { authUrl: '' };
       }
 
       if (status.backendState === 'NeedsLogin' && status.authUrl) {
@@ -681,7 +713,7 @@ export class TailscaleService {
     }
 
     // --reset is scoped to the sidecar only — same rationale as startAuth.
-    const upArgs = ['up', ...(strategy === 'sidecar' ? ['--reset'] : []), '--auth-key', key, ...this.getTailscaleUpExtraArgs()];
+    const upArgs = ['up', ...(strategy === 'sidecar' ? ['--reset'] : []), '--auth-key', key, ...this.getTailscaleUpArgsFor(strategy)];
     const execFn = strategy === 'host' ? this.execHost.bind(this) : this.execDocker.bind(this);
     await execFn(upArgs, 120_000);
     this.invalidateStrategyCache();
