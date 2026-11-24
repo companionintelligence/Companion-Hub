@@ -1148,8 +1148,15 @@ describe('DockerComposeBuilder — the app-starting page on every app router', (
     expect(services.admin?.labels['traefik.http.routers.nginx-store-id-admin.middlewares']).toBe('ci-hub-app-starting@file');
   });
 
-  it('covers the Private VPN router too', async () => {
+  // After the Hub login, which this router once went without: it listens on `web`, which the LAN reaches.
+  it('covers the Private VPN router too, behind the Hub login', async () => {
     const services = await labelsFor({ exposureMode: 'tailscale' });
+
+    expect(services.nginx?.labels['traefik.http.routers.nginx-store-id-tailscale.middlewares']).toBe('ci-hub@file,ci-hub-app-starting@file');
+  });
+
+  it('leaves the Private VPN router without the login only when the operator switched it off', async () => {
+    const services = await labelsFor({ exposureMode: 'tailscale', enableAuth: false });
 
     expect(services.nginx?.labels['traefik.http.routers.nginx-store-id-tailscale.middlewares']).toBe('ci-hub-app-starting@file');
   });

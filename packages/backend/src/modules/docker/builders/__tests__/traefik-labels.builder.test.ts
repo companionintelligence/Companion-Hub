@@ -149,6 +149,14 @@ describe('withAppStartingPage', () => {
     });
   });
 
+  it('puts the Hub login in front of the Private VPN router when the login is on', () => {
+    const labels = withAppStartingPage(
+      new TraefikLabelsBuilder({ ...base, exposureMode: 'tailscale', enableAuth: true }).addTailscaleLabels().build(),
+    );
+
+    expect(labels['traefik.http.routers.ci-planning-ci-marketplace-tailscale.middlewares']).toBe(`ci-hub@file,${APP_STARTING_MIDDLEWARE}`);
+  });
+
   it('gives a router with no chain one of its own', () => {
     const labels = withAppStartingPage(new TraefikLabelsBuilder({ ...base, exposureMode: 'tailscale' }).addTailscaleLabels().build());
 

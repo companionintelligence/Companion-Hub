@@ -41,7 +41,7 @@ export const HUB_ROUTE_NAME_SUFFIXES: readonly string[] = [
 /** The file-provider middleware that strips visitor-set forwarded headers from tunnel requests. */
 export const EDGE_HEADERS_MIDDLEWARE = 'ci-hub-edge-headers@file';
 /** The Hub's sign-in (cache header, then forward auth) under the file provider. Its `@docker` twin vanishes when the Hub's labels flap. */
-const FORWARD_AUTH_MIDDLEWARE = 'ci-hub@file';
+export const FORWARD_AUTH_MIDDLEWARE = 'ci-hub@file';
 /** See `ci-hub-sw-reset` in assets/traefik/dynamic/dynamic.yml. */
 export const SW_RESET_MIDDLEWARE = 'ci-hub-sw-reset@file';
 /** What a browser sends when it fetches a service worker script. Nothing else sends this header. */
@@ -362,13 +362,19 @@ export class TraefikLabelsBuilder {
   addTailscaleLabels() {
     if (this.effectiveMode === 'tailscale') {
       const hostname = this.params.tailscaleHostname || `${this.params.appId}.${this.params.storeId}`;
+      const router = `traefik.http.routers.${this.params.appId}-${this.params.storeId}${TAILSCALE_ROUTER_SUFFIX}`;
 
       Object.assign(this.labels, {
         'traefik.enable': true,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${TAILSCALE_ROUTER_SUFFIX}.rule`]: `Host(\`${hostname}\`)`,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${TAILSCALE_ROUTER_SUFFIX}.entrypoints`]: 'web',
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${TAILSCALE_ROUTER_SUFFIX}.service`]: `${this.params.appId}-${this.params.storeId}`,
+        [`${router}.rule`]: `Host(\`${hostname}\`)`,
+        [`${router}.entrypoints`]: 'web',
+        [`${router}.service`]: `${this.params.appId}-${this.params.storeId}`,
       });
+      // This router listens on `web`, which answers the LAN: any request there naming the host above
+      // reached the app with no login. The same login as the Public web routes, on the same terms.
+      if (this.params.enableAuth) {
+        this.labels[`${router}.middlewares`] = FORWARD_AUTH_MIDDLEWARE;
+      }
     }
     return this;
   }

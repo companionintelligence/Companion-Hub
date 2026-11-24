@@ -12,13 +12,15 @@ import Dockerode from 'dockerode';
 import * as yaml from 'yaml';
 import { ADDRESS_KEPT_STATUSES } from '../apps/app-starting-page';
 import { AppsRepository } from '../apps/apps.repository';
-import { APP_STARTING_MIDDLEWARE } from './builders/traefik-labels.builder';
+import { APP_STARTING_MIDDLEWARE, FORWARD_AUTH_MIDDLEWARE } from './builders/traefik-labels.builder';
 import { DOCKERODE } from './constants';
 
 export interface PortExposeRoute {
   appUrn: string;
   traefikHost: string;
   upstreamPort: number;
+  /** The Hub login in front of the route: on unless the operator switched it off (`requiresHubLogin`). */
+  requireLogin: boolean;
 }
 
 interface TraefikRouter {
@@ -189,9 +191,10 @@ export class TraefikConfigService {
           rule: `Host(\`${route.traefikHost}\`)`,
           service: routerId,
           entryPoints: ['web'],
-          // An app route like any other: when the person's own service behind the port is down,
-          // Traefik answered the same bare 502 (CI-Hub#1764).
-          middlewares: [APP_STARTING_MIDDLEWARE],
+          // An app route like any other: the Hub login first, as on every app's routes, and when the
+          // person's own service behind the port is down, the "starting" page in place of Traefik's
+          // bare 502 (CI-Hub#1764). These routes once had no login, Public web included.
+          middlewares: route.requireLogin ? [FORWARD_AUTH_MIDDLEWARE, APP_STARTING_MIDDLEWARE] : [APP_STARTING_MIDDLEWARE],
         };
         config.http.services[routerId] = {
           loadBalancer: {
