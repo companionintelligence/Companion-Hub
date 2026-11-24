@@ -488,11 +488,19 @@ if (-not $distro) {{
   $distro = 'Ubuntu'
 }}
 
+# Runs a shell script as root in the distro. Never piped: Windows PowerShell adds CRLF after text
+# it pipes to a program, so a script's last `fi` reached sh as `fi\r` ("expecting fi"). Base64
+# passed as an argument (-e, no shell in between) arrives byte for byte.
+function Invoke-WslRootScript([string]$Distro, [string]$Script) {{
+  $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($Script -replace "`r`n", "`n")))
+  & wsl.exe -d $Distro -u root -e sh -c "echo $b64 | base64 -d | sh"
+}}
+
 # Phase 4: Docker Engine + systemd TCP drop-in inside the distro (as root).
 $setup = @'
 {linux_setup}
-'@ -replace "`r`n", "`n"
-$setup | & wsl.exe -d $distro -u root -- sh
+'@
+Invoke-WslRootScript $distro $setup
 if ($LASTEXITCODE -ne 0) {{ throw "Docker Engine setup inside WSL failed with exit code $LASTEXITCODE" }}
 
 # Restart the distro so wsl.conf takes effect (systemd).
@@ -503,8 +511,8 @@ if ($LASTEXITCODE -ne 0) {{ throw "Docker Engine setup inside WSL failed with ex
 # (hub_manager/wsl_engine_tls.rs). Plain TCP answered every program on this machine.
 $tls = @'
 {tls_setup}
-'@ -replace "`r`n", "`n"
-$tlsOut = ($tls | & wsl.exe -d $distro -u root -- sh)
+'@
+$tlsOut = (Invoke-WslRootScript $distro $tls)
 if ($LASTEXITCODE -ne 0) {{ throw "TLS setup for Docker inside WSL failed with exit code $LASTEXITCODE" }}
 $tlsMarker = ($tlsOut | Where-Object {{ $_.Trim() }} | Select-Object -Last 1)
 if ($tlsMarker -ne 'tls-configured' -and $tlsMarker -ne 'tls-already') {{ throw "TLS setup for Docker inside WSL did not finish: $tlsMarker" }}

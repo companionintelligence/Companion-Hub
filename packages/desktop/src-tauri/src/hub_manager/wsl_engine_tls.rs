@@ -42,6 +42,8 @@ const RENEW_WITHIN_SECONDS: u32 = 180 * 24 * 60 * 60;
 #[cfg(any(test, windows))]
 pub(crate) fn wsl_engine_tls_root_script() -> String {
     let port = WSL_ENGINE_TLS_HOST.rsplit(':').next().unwrap_or("2376");
+    // /proc/net/tcp writes ports as four upper-case hex digits.
+    let port_hex = format!("{:04X}", port.parse::<u16>().unwrap_or(2376));
     format!(
         r#"set -e
 dir={dir}
@@ -86,7 +88,11 @@ if [ "$(cat {dropin} 2>/dev/null)" != "$want" ]; then
   chmod 644 {dropin}
   changed=1
 fi
-if [ "$changed" = 1 ]; then
+# A run cut short after writing the drop-in leaves nothing to change but Docker not yet on TLS:
+# restart whenever the running daemon isn't listening there, not only when a file changed.
+listening=0
+awk 'NR > 1 && $4 == "0A" && toupper($2) == "0100007F:{port_hex}" {{ found = 1 }} END {{ exit !found }}' /proc/net/tcp && listening=1
+if [ "$changed" = 1 ] || [ "$listening" = 0 ]; then
   systemctl daemon-reload
   systemctl restart docker
   i=0
@@ -104,6 +110,7 @@ fi"#,
         days = CERT_DAYS,
         renew_within = RENEW_WITHIN_SECONDS,
         port = port,
+        port_hex = port_hex,
     )
 }
 
@@ -318,7 +325,9 @@ mod tests {
         // Keys are root's alone, and Docker restarts only when something changed.
         assert!(script.contains("umask 077"));
         assert!(script.contains("chmod 600 ./*-key.pem key.pem"));
-        assert!(script.contains("if [ \"$changed\" = 1 ]; then"));
+        assert!(script.contains("if [ \"$changed\" = 1 ] || [ \"$listening\" = 0 ]; then"));
+        // 2376 as /proc/net/tcp spells it, so a half-finished earlier run still restarts Docker.
+        assert!(script.contains("toupper($2) == \"0100007F:0948\""));
         assert!(script.ends_with("echo tls-already\nfi"));
     }
 

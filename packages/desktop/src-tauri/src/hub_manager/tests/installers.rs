@@ -665,6 +665,19 @@ fn wsl2_engine_user_script_owns_per_user_state_and_avoids_daemon_json_hosts() {
     assert!(script.contains("is-system-running"));
 }
 
+#[cfg(any(test, target_os = "windows"))]
+#[test]
+fn wsl2_engine_user_script_never_pipes_a_shell_script_into_wsl() {
+    let script = wsl2_engine_user_script();
+    // Windows PowerShell adds CRLF after text it pipes to a program: the TLS script's last `fi`
+    // reached sh as `fi\r` and the install failed with `Syntax error: end of file unexpected
+    // (expecting "fi")`. Both root scripts go as base64 in an argument instead.
+    assert!(!script.contains("| & wsl.exe"));
+    assert!(script.contains(r#"-e sh -c "echo $b64 | base64 -d | sh""#));
+    assert!(script.contains("Invoke-WslRootScript $distro $setup"));
+    assert!(script.contains("$tlsOut = (Invoke-WslRootScript $distro $tls)"));
+}
+
 #[test]
 fn docker_desktop_outer_launch_has_stop_on_error_preference() {
     let cmd = docker_desktop_windows_outer_launch_command(
