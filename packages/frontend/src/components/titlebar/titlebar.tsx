@@ -27,6 +27,11 @@ function detectIsMac(): boolean {
   return /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 }
 
+/**
+ * The bar's height, and the value of --titlebar-height that the header, dialogs and page layout
+ * are placed by. The bar is sized from this too: as `h-10` (2.5rem, 42.5px at this app's 17px root)
+ * it was 2.5px taller than the layout allowed for, so every page ran 2.5px past the window.
+ */
 const TITLEBAR_HEIGHT_PX = { mac: 28, other: 40 } as const;
 
 /**
@@ -113,7 +118,14 @@ export function Titlebar() {
     // A spacer holding the native overlay traffic-light band clear of the app
     // header. `relative z-[60]` so the `fixed z-50` header (components/header)
     // can never paint over it.
-    return <div ref={barRef} className="relative z-[60] h-7 w-full" style={KEEP_POINTER_EVENTS} data-tauri-drag-region />;
+    return (
+      <div
+        ref={barRef}
+        className="relative z-[60] w-full"
+        style={{ ...KEEP_POINTER_EVENTS, height: TITLEBAR_HEIGHT_PX.mac }}
+        data-tauri-drag-region
+      />
+    );
   }
 
   // Windows/Linux: custom titlebar with window controls.
@@ -126,7 +138,11 @@ export function Titlebar() {
   // The bar and its drag region render immediately; only the three window
   // controls wait for the IPC handle they actually need.
   return (
-    <div ref={barRef} className="relative z-[60] flex h-10 select-none border-b bg-background" style={KEEP_POINTER_EVENTS}>
+    <div
+      ref={barRef}
+      className="relative z-[60] flex select-none border-b bg-background"
+      style={{ ...KEEP_POINTER_EVENTS, height: TITLEBAR_HEIGHT_PX.other }}
+    >
       <div className="flex flex-1 items-center gap-2 px-3" data-tauri-drag-region>
         <img src="/icons/favicon-96x96.png" alt={t('APP_NAME')} className="h-5 w-5 pointer-events-none" />
         <span className="text-sm font-medium text-foreground pointer-events-none">{t('APP_NAME')}</span>
