@@ -66,17 +66,77 @@ export async function ensureWritableFile(filePath: string, fileMode = 0o644): Pr
   }
 }
 
-/** Write a bind-mounted file with permission recovery for stale root-owned paths. */
+let replaceSequence = 0;
+
+/** What a directory or mount that won't take the temporary file or the rename answers. */
+function isWriteRefusal(error: unknown): boolean {
+  return ['EACCES', 'EPERM', 'EBUSY'].some((code) => isFsErrorWithCode(error, code));
+}
+
+async function removeQuietly(filePath: string): Promise<void> {
+  try {
+    await fs.promises.unlink(filePath);
+  } catch {
+    /* never created, or already renamed */
+  }
+}
+
+/** Flush the new content to disk before the rename, so a power cut can't leave the target empty. */
+async function syncFile(filePath: string): Promise<void> {
+  const handle = await fs.promises.open(filePath, 'r');
+  try {
+    await handle.sync();
+  } catch {
+    /* Some mounts can't fsync. The rename still keeps readers off a half-written file. */
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Writes beside the target and renames over it, because a plain write empties the file first and
+ * Traefik, which rereads its folder on every change, then dropped every app's routes (CI-Hub#2541).
+ * Traefik loads only `.yml`, `.yaml` and `.toml`, so it never reads the `.tmp` file.
+ * `temp-refused` means the folder took no new file; `rename-refused` means only the swap failed.
+ */
+async function replaceFileContent(filePath: string, content: string, fileMode: number): Promise<'replaced' | 'temp-refused' | 'rename-refused'> {
+  replaceSequence += 1;
+  const tempPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}-${Date.now()}-${replaceSequence}.tmp`);
+  try {
+    await fs.promises.writeFile(tempPath, content, { encoding: 'utf8', mode: fileMode, flag: 'wx' });
+  } catch (error) {
+    await removeQuietly(tempPath);
+    if (isWriteRefusal(error)) return 'temp-refused';
+    throw error;
+  }
+
+  try {
+    await syncFile(tempPath);
+    await fs.promises.rename(tempPath, filePath);
+    return 'replaced';
+  } catch (error) {
+    await removeQuietly(tempPath);
+    if (isWriteRefusal(error)) return 'rename-refused';
+    throw error;
+  }
+}
+
+/**
+ * Write a bind-mounted file with permission recovery for stale root-owned paths. Readers see the
+ * old content or the new, never an empty file. Where the folder or mount still refuses the swap,
+ * the file is written in place as before.
+ */
 export async function writeHealableTextFile(filePath: string, content: string, fileMode = 0o644): Promise<void> {
   await ensureWritableFile(filePath, fileMode);
 
-  try {
-    await fs.promises.writeFile(filePath, content, { encoding: 'utf8', mode: fileMode });
-  } catch (error) {
-    if (!isFsErrorWithCode(error, 'EACCES')) {
-      throw error;
-    }
+  let outcome = await replaceFileContent(filePath, content, fileMode);
+  // Only a folder that refused the new file needs the repair. A refused rename (a mount point, a
+  // sticky folder) gets nothing from it, and the repair would open the folder to everyone.
+  if (outcome === 'temp-refused') {
     await retryWritableFile(filePath, fileMode);
+    outcome = await replaceFileContent(filePath, content, fileMode);
+  }
+  if (outcome !== 'replaced') {
     await fs.promises.writeFile(filePath, content, { encoding: 'utf8', mode: fileMode });
   }
 }
