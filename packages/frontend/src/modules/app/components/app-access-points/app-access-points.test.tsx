@@ -27,7 +27,9 @@ vi.mock('@tanstack/react-query', () => ({
     const data =
       queryKey[0] === 'tailscale-status'
         ? { installed: true, connected: true, servePermission: tailscaleStatus.servePermission }
-        : { entries: [{ listenPort: 3000 }, { listenPort: 8311 }] };
+        : queryKey[0] === 'tailscale-services'
+          ? { services: [] }
+          : { entries: [{ listenPort: 3000 }, { listenPort: 8311 }] };
     return { data: select ? select(data) : data };
   },
 }));
@@ -35,6 +37,7 @@ vi.mock('@tanstack/react-query', () => ({
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getServeStatusOptions: () => ({ queryKey: ['serve-status'], queryFn: vi.fn() }),
   getStatus3Options: () => ({ queryKey: ['tailscale-status'], queryFn: vi.fn() }),
+  getServicesStatusOptions: () => ({ queryKey: ['tailscale-services'], queryFn: vi.fn() }),
 }));
 
 vi.mock('@/context/app-context', () => ({
@@ -109,6 +112,28 @@ describe('buildAppAccessPoints', () => {
     expect(accessPoints[2]).toMatchObject({
       key: 'local',
       url: 'http://127.0.0.1:3000/login',
+    });
+  });
+
+  it("links a Private VPN app on its own Tailscale Service to that hostname, not a port of the Hub's", () => {
+    const accessPoints = buildAppAccessPoints({
+      app: { status: 'running', port: 3000, localSubdomain: 'openwebui', exposureMode: 'tailscale' } as any,
+      info,
+      sslPort: 443,
+      internalIp: '0.0.0.0',
+      cloudflareAvailable: false,
+      tailscaleAvailable: true,
+      tailscaleNodeFqdn: 'hub-tailscale-1.example.ts.net',
+      // The Hub node's HTTPS setting and its port listeners say nothing about a Service.
+      tailscaleHttpsEnabled: false,
+      tailscaleServedPorts: new Set(),
+      tailscaleServiceUrl: 'https://openwebui.example.ts.net/',
+    });
+
+    expect(accessPoints.find((point) => point.key === 'vpn')).toMatchObject({
+      url: 'https://openwebui.example.ts.net/login',
+      host: 'openwebui.example.ts.net',
+      state: 'active',
     });
   });
 

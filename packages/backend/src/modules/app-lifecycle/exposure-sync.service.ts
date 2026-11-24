@@ -32,7 +32,7 @@ import {
   type AppPublicRoutingSnapshot,
 } from '../apps/app-public-routing.helpers';
 import { ADDRESS_KEPT_STATUSES } from '../apps/app-starting-page';
-import { isPortExposeApp, PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
+import { isPortExposeApp, PORT_EXPOSE_KIND, publicPathSchema, requiresHubLogin } from '@ci-hub/common/schemas';
 import {
   CloudflareClientService,
   AppInfo,
@@ -50,6 +50,8 @@ import { hasPairingAppCheck, hasRestoreIntent, readRehydrationState } from './re
 import { customDomainAuditLine } from './custom-domain-audit';
 import { moveStoredPublicDomain, readServedHostname, resolveMovedPublicDomainRoot } from './public-domain-move';
 import { TailscaleServeOwnership } from './tailscale-serve-ownership';
+import { TailscaleServicesService } from '../tailscale/tailscale-services.service';
+import { TraefikConfigService } from '../docker/traefik-config.service';
 
 /** Options shared by every entry point into an exposure sync. */
 export interface ExposureSyncOptions {
@@ -588,6 +590,15 @@ export class ExposureSyncService implements OnModuleDestroy {
       });
 
       const selfHost = status.nodeFqdn?.toLowerCase() ?? null;
+
+      // Apps on a Tailscale Service leave the per-port map, so the cleanup below takes their old
+      // listeners down. The rest keep their ports (no Services set up, or this app's failed).
+      for (const appUrn of await this.syncTailscaleServices(shouldServe, desiredPorts, selfHost)) {
+        for (const [port, desired] of desiredPorts) {
+          if (desired.appUrn === appUrn) desiredPorts.delete(port);
+        }
+      }
+
       const ownership = await this.tailscaleServeOwnership.load();
 
       for (const desired of desiredPorts.values()) {
@@ -785,6 +796,60 @@ export class ExposureSyncService implements OnModuleDestroy {
         `${TAILSCALE_SERVE_DISABLED_ENV_VAR}=true stops the Hub publishing itself; ` +
         `run sudo tailscale serve --bg --yes --https=${port} ${upstreamUrl} once on the host, or remove ${TAILSCALE_SERVE_DISABLED_ENV_VAR} and restart the Hub.`,
     );
+  }
+
+  /**
+   * Puts each Private VPN app on its own Tailscale Service when the operator set Services up
+   * (`TailscaleServicesService`), and writes the Traefik routes their hostnames need. Answers the
+   * apps now on a Service. Any failure leaves every app on its per-port address.
+   */
+  private async syncTailscaleServices(
+    shouldServe: Awaited<ReturnType<AppsRepository['getApps']>>,
+    desiredPorts: ReadonlyMap<number, { appName: string; appUrn?: AppUrn; upstreamUrl: string }>,
+    selfHost: string | null,
+  ): Promise<AppUrn[]> {
+    const servicesService = this.moduleRef.get(TailscaleServicesService, { strict: false });
+    const traefikConfig = this.moduleRef.get(TraefikConfigService, { strict: false });
+    if (!servicesService || !traefikConfig) return [];
+
+    const byUrn = new Map(shouldServe.map((app) => [createAppUrn(app.appName, app.appStoreSlug), app]));
+    const wanted = [...desiredPorts.values()].filter((desired): desired is typeof desired & { appUrn: AppUrn } => Boolean(desired.appUrn));
+
+    let published: Map<AppUrn, { name: string; fqdn: string }>;
+    try {
+      ({ published } = await servicesService.sync(
+        wanted.map((desired) => ({ appUrn: desired.appUrn, label: desired.appName })),
+        selfHost ? `https://${selfHost}` : null,
+      ));
+    } catch (error) {
+      this.logger.warn(
+        `[Tailscale Services] Sync failed; Private VPN apps keep their per-port addresses: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      published = new Map();
+    }
+
+    const routes = [];
+    for (const desired of wanted) {
+      const service = published.get(desired.appUrn);
+      const app = byUrn.get(desired.appUrn);
+      if (!service || !app) continue;
+      const rawPaths = (app.config as { publicPaths?: unknown } | null | undefined)?.publicPaths;
+      routes.push({
+        appUrn: desired.appUrn,
+        host: service.fqdn,
+        upstreamUrl: desired.upstreamUrl,
+        requireLogin: requiresHubLogin(app),
+        publicPaths: Array.isArray(rawPaths) ? rawPaths.filter((path) => publicPathSchema.safeParse(path).success) : [],
+      });
+    }
+    try {
+      await traefikConfig.syncTailscaleServiceRoutes(routes);
+    } catch (error) {
+      // Without its route a Service answers Traefik's 404, so the app stays on its port this pass.
+      this.logger.error(`[Tailscale Services] Could not write their Traefik routes: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    }
+    return routes.map((route) => route.appUrn as AppUrn);
   }
 
   /**

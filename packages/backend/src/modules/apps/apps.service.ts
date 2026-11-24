@@ -26,6 +26,8 @@ import { CloudflareClientService, type PublicDnsFailureReason } from '../cloudfl
 import type { TunnelHealthService as TunnelHealthServiceType } from '../cloudflare/tunnel-health.service';
 import { TailscaleService } from '../tailscale/tailscale.service';
 import type { SSEService as SSEServiceType } from '@/core/sse/sse.service';
+import { tailscaleServicesStore } from '../tailscale/tailscale-services.store';
+import { createAppUrn } from '@/common/helpers/app-helpers';
 
 /**
  * Verdict of an app-availability probe.
@@ -627,7 +629,12 @@ export class AppsService {
       appUrl = `${scheme}://${host}:${app.port}${urlSuffix}`;
       return { available: true, appUrl, stage: 'ready' };
     }
-    if (exposureMode === 'tailscale') {
+    const tailscaleServiceAddress =
+      exposureMode === 'tailscale' ? tailscaleServicesStore.publishedServices().get(createAppUrn(app.appName, app.appStoreSlug)) : undefined;
+    if (tailscaleServiceAddress) {
+      // On its own Tailscale Service: `https://<label>.<tailnet>.ts.net/`, through Traefik and the Hub login.
+      appUrl = `https://${tailscaleServiceAddress.fqdn}${urlSuffix || '/'}`;
+    } else if (exposureMode === 'tailscale') {
       const tailscaleService = this.moduleRef.get(TailscaleService, { strict: false });
       const tailscaleStatus = tailscaleService ? await tailscaleService.getStatus().catch(() => null) : null;
       const appPort = app.port ?? info.port ?? null;

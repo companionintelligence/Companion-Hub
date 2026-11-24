@@ -14,6 +14,17 @@ const fixtures = vi.hoisted(() => ({
   cloudflareFails: false,
   tunnelEnabled: true,
   hardware: { gpu: { containerHostKind: 'docker-desktop' } } as Record<string, unknown>,
+  servicesStatus: {
+    configured: false,
+    savedInHub: false,
+    tag: 'tag:ci-hub',
+    ready: false,
+    blocker: 'not-set-up',
+    node: { running: false, nodeFqdn: null, tags: [], version: null },
+    services: [],
+  } as Record<string, unknown>,
+  setUpServices: vi.fn(),
+  turnOffServices: vi.fn(),
 }));
 
 vi.mock('react-i18next', () => {
@@ -70,6 +81,10 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   }),
   updatePoolSettingsMutation: () => ({ mutationFn: vi.fn() }),
   getHardwareOptions: () => ({ queryKey: ['hardware'], queryFn: async () => fixtures.hardware }),
+  getServicesStatusQueryKey: () => ['ts-services'],
+  getServicesStatusOptions: () => ({ queryKey: ['ts-services'], queryFn: async () => fixtures.servicesStatus }),
+  setUpServicesMutation: () => ({ mutationFn: fixtures.setUpServices }),
+  turnOffServicesMutation: () => ({ mutationFn: fixtures.turnOffServices }),
 }));
 
 const renderContainer = () => {
@@ -103,6 +118,16 @@ const poolStatus = () => ({
   routing: { recorded: 0, capacity: 200, served: 0, failed: 0, failovers: 0, lastAt: null },
 });
 
+const notSetUpServices = () => ({
+  configured: false,
+  savedInHub: false,
+  tag: 'tag:ci-hub',
+  ready: false,
+  blocker: 'not-set-up',
+  node: { running: false, nodeFqdn: null, tags: [], version: null },
+  services: [],
+});
+
 describe('NetworkSettingsContainer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -112,6 +137,7 @@ describe('NetworkSettingsContainer', () => {
     fixtures.cloudflareFails = false;
     fixtures.tunnelEnabled = true;
     fixtures.hardware = { gpu: { containerHostKind: 'docker-desktop' } };
+    fixtures.servicesStatus = notSetUpServices();
   });
 
   it('renders both cards with status badges and the tunnel id', async () => {
@@ -299,6 +325,76 @@ describe('NetworkSettingsContainer', () => {
 
       await screen.findByTestId('cloudflare-tunnel-card');
       await waitFor(() => expect(screen.queryByTestId('local-network-card')).toBeNull());
+    });
+  });
+
+  describe('separate addresses for VPN apps (Tailscale Services)', () => {
+    it('walks an operator who has not set it up through the tag owner and the OAuth client', async () => {
+      renderContainer();
+
+      const card = await screen.findByTestId('tailscale-services-card');
+      expect(within(card).getByText('SETTINGS_NETWORK_TS_SERVICES_NOT_SET_UP')).toBeTruthy();
+      expect(within(card).getByTestId('tailscale-services-blocker').textContent).toBe('SETTINGS_NETWORK_TS_SERVICES_BLOCKER_NOT_SET_UP');
+      expect(card.textContent).toContain('"tag:ci-hub": ["autogroup:admin"]');
+      expect(within(card).getByRole('button', { name: 'SETTINGS_NETWORK_TS_SERVICES_SET_UP' })).toHaveProperty('disabled', true);
+    });
+
+    it('sends the OAuth client and the tag the operator typed, trimmed', async () => {
+      fixtures.setUpServices.mockResolvedValue({ ...notSetUpServices(), configured: true, ready: true, blocker: null });
+      renderContainer();
+      const card = await screen.findByTestId('tailscale-services-card');
+
+      await userEvent.type(within(card).getByTestId('tailscale-services-client-id'), ' k123 ');
+      await userEvent.type(within(card).getByTestId('tailscale-services-client-secret'), 'tskey-client-abc');
+      await userEvent.type(within(card).getByTestId('tailscale-services-tag'), 'tag:hub-two');
+      expect(card.textContent).toContain('"tag:hub-two": ["autogroup:admin"]');
+      await userEvent.click(within(card).getByTestId('tailscale-services-set-up'));
+
+      await waitFor(() => expect(fixtures.setUpServices).toHaveBeenCalled());
+      expect(fixtures.setUpServices.mock.calls[0]?.[0]).toEqual({ body: { clientId: 'k123', clientSecret: 'tskey-client-abc', tag: 'tag:hub-two' } });
+      await waitFor(() => expect(toast.success).toHaveBeenCalledWith('SETTINGS_NETWORK_TS_SERVICES_SET_UP_DONE'));
+    });
+
+    it('shows what Tailscale refused, word for word', async () => {
+      fixtures.setUpServices.mockRejectedValue({ message: 'That secret is not an OAuth client secret. Those start with tskey-client-.' });
+      renderContainer();
+      const card = await screen.findByTestId('tailscale-services-card');
+
+      await userEvent.type(within(card).getByTestId('tailscale-services-client-id'), 'k1');
+      await userEvent.type(within(card).getByTestId('tailscale-services-client-secret'), 'tskey-auth-x');
+      await userEvent.click(within(card).getByTestId('tailscale-services-set-up'));
+
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('That secret is not an OAuth client secret. Those start with tskey-client-.'));
+    });
+
+    it('lists each app on its own address once it is in use, and hides the form', async () => {
+      fixtures.servicesStatus = {
+        ...notSetUpServices(),
+        configured: true,
+        savedInHub: true,
+        ready: true,
+        blocker: null,
+        node: { running: true, nodeFqdn: 'hub-tailscale.tail123.ts.net', tags: ['tag:ci-hub'], version: '1.98.3' },
+        services: [{ appUrn: 'memory:official', name: 'svc:memory', url: 'https://memory.tail123.ts.net/' }],
+      };
+      renderContainer();
+
+      const card = await screen.findByTestId('tailscale-services-card');
+      await waitFor(() => expect(within(card).getByText('https://memory.tail123.ts.net/')).toBeTruthy());
+      expect(within(card).queryByTestId('tailscale-services-form')).toBeNull();
+      expect(within(card).queryByTestId('tailscale-services-blocker')).toBeNull();
+      expect(within(card).getByTestId('tailscale-services-turn-off')).toBeTruthy();
+    });
+
+    it('says why when it is set up but not working', async () => {
+      fixtures.servicesStatus = { ...notSetUpServices(), configured: true, blocker: 'node-not-tagged' };
+      renderContainer();
+
+      const card = await screen.findByTestId('tailscale-services-card');
+      await waitFor(() =>
+        expect(within(card).getByTestId('tailscale-services-blocker').textContent).toBe('SETTINGS_NETWORK_TS_SERVICES_BLOCKER_NODE_NOT_TAGGED'),
+      );
+      expect(within(card).getByText('SETTINGS_NETWORK_TS_SERVICES_NOT_WORKING')).toBeTruthy();
     });
   });
 });

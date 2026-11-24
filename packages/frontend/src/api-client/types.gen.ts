@@ -284,6 +284,31 @@ export type TailscaleStatusDto = {
     };
 };
 
+export type TailscaleServicesStatusDto = {
+    configured: boolean;
+    savedInHub: boolean;
+    tag: string;
+    ready: boolean;
+    blocker: 'not-set-up' | 'node-not-running' | 'node-signed-out' | 'node-not-tagged' | 'node-too-old' | 'tailnet-unknown';
+    node: {
+        running: boolean;
+        nodeFqdn: string;
+        tags: Array<string>;
+        version: string;
+    };
+    services: Array<{
+        appUrn: string;
+        name: string;
+        url: string;
+    }>;
+};
+
+export type TailscaleServicesSetupBody = {
+    clientId: string;
+    clientSecret: string;
+    tag?: string;
+};
+
 export type LoadDto = {
     diskUsed: number;
     diskSize: number;
@@ -3351,6 +3376,45 @@ export type GetServeStatusResponses = {
 };
 
 export type GetServeStatusResponse = GetServeStatusResponses[keyof GetServeStatusResponses];
+
+export type TurnOffServicesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/services';
+};
+
+export type TurnOffServicesResponses = {
+    default: TailscaleServicesStatusDto;
+};
+
+export type TurnOffServicesResponse = TurnOffServicesResponses[keyof TurnOffServicesResponses];
+
+export type GetServicesStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/services';
+};
+
+export type GetServicesStatusResponses = {
+    default: TailscaleServicesStatusDto;
+};
+
+export type GetServicesStatusResponse = GetServicesStatusResponses[keyof GetServicesStatusResponses];
+
+export type SetUpServicesData = {
+    body: TailscaleServicesSetupBody;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/services/setup';
+};
+
+export type SetUpServicesResponses = {
+    default: TailscaleServicesStatusDto;
+};
+
+export type SetUpServicesResponse = SetUpServicesResponses[keyof SetUpServicesResponses];
 
 export type SystemLoadData = {
     body?: never;
