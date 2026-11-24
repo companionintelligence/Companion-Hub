@@ -20,6 +20,7 @@ import {
   labelsOfRoutersLosingTheirChain,
   TraefikLabelsBuilder,
   withAppStartingPage,
+  withHubLoginOnEveryRouter,
   withHubMiddlewaresFirst,
   withSignInUnderFileProvider,
 } from './traefik-labels.builder';
@@ -623,7 +624,15 @@ export class DockerComposeBuilder {
       .interpolateVariables(appId, localDomain)
       // After interpolation, so a manifest's `{{CI_HUB_APP_ID}}` router is the same router as ours.
       .transformLabels((labels) => withHubMiddlewaresFirst(labels, traefikLabels))
+      // First a listing's `ci-hub@docker` becomes `ci-hub@file` where it stood (CI-Engineering#510);
+      // then the login goes to the head of every router's chain, and onto routers that had none.
       .transformLabels(withSignInUnderFileProvider)
+      .transformLabels((labels) =>
+        withHubLoginOnEveryRouter(labels, traefikLabels, {
+          requireLogin: requiresHubLogin(form),
+          publicWeb: effectiveExposureMode === 'cloudflare',
+        }),
+      )
       .transformLabels(withAppStartingPage);
 
     return service.build();

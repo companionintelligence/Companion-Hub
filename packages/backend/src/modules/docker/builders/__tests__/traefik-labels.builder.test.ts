@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { APP_STARTING_MIDDLEWARE, TraefikLabelsBuilder, withAppStartingPage, withSignInUnderFileProvider } from '../traefik-labels.builder';
+import {
+  APP_STARTING_MIDDLEWARE,
+  TraefikLabelsBuilder,
+  withAppStartingPage,
+  withHubLoginOnEveryRouter,
+  withSignInUnderFileProvider,
+} from '../traefik-labels.builder';
 
 const base = {
   internalPort: 12002,
@@ -241,5 +247,65 @@ describe('withSignInUnderFileProvider', () => {
     };
 
     expect(withSignInUnderFileProvider(labels)).toEqual(labels);
+  });
+});
+
+describe('withHubLoginOnEveryRouter', () => {
+  const chain = (labels: Record<string, string | boolean>, router: string) => labels[`traefik.http.routers.${router}.middlewares`];
+  const on = { requireLogin: true, publicWeb: false };
+
+  it('gives a router a manifest declared with no chain the Hub login', () => {
+    const labels = withHubLoginOnEveryRouter({ 'traefik.http.routers.app-admin.rule': 'Host(`a.ci.lan`) && PathPrefix(`/admin`)' }, {}, on);
+
+    expect(chain(labels, 'app-admin')).toBe('ci-hub@file');
+  });
+
+  // A rewrite ahead of the login would change the request the login sees.
+  it("moves the login ahead of the manifest's own middlewares, and keeps those once", () => {
+    const labels = withHubLoginOnEveryRouter(
+      { 'traefik.http.routers.app-admin.middlewares': 'app-rewrite@docker,ci-hub@docker,app-headers@docker,app-rewrite@docker' },
+      {},
+      on,
+    );
+
+    expect(chain(labels, 'app-admin')).toBe('ci-hub@file,app-rewrite@docker,app-headers@docker');
+  });
+
+  it('puts the edge header strip first on a Public web app', () => {
+    const labels = withHubLoginOnEveryRouter(
+      { 'traefik.http.routers.app-admin.middlewares': 'app-headers@docker' },
+      {},
+      { requireLogin: true, publicWeb: true },
+    );
+
+    expect(chain(labels, 'app-admin')).toBe('ci-hub-edge-headers@file,ci-hub@file,app-headers@docker');
+  });
+
+  it('leaves the login off only when the operator switched it off, and takes out one the manifest set', () => {
+    const labels = withHubLoginOnEveryRouter(
+      { 'traefik.http.routers.app-admin.middlewares': 'ci-hub@file,app-headers@docker' },
+      {},
+      { requireLogin: false, publicWeb: false },
+    );
+
+    expect(chain(labels, 'app-admin')).toBe('app-headers@docker');
+  });
+
+  it('folds two spellings of one router into one chain, as Traefik reads them as one router', () => {
+    const labels = withHubLoginOnEveryRouter(
+      { 'traefik.http.routers.App-Admin.middlewares': 'app-a@docker', 'traefik.http.routers.app-admin.MIDDLEWARES': 'app-b@docker' },
+      {},
+      on,
+    );
+
+    expect(chain(labels, 'App-Admin')).toBe('ci-hub@file,app-a@docker,app-b@docker');
+    expect(Object.keys(labels).filter((key) => key.toLowerCase().endsWith('.middlewares'))).toHaveLength(1);
+  });
+
+  it("leaves the Hub's own routers as they are: the service-worker reset runs before the login there", () => {
+    const hub = { 'traefik.http.routers.app-sw-reset.middlewares': 'ci-hub-edge-headers@file,ci-hub-sw-reset@file,ci-hub@file' };
+    const labels = withHubLoginOnEveryRouter({ ...hub }, hub, { requireLogin: true, publicWeb: true });
+
+    expect(chain(labels, 'app-sw-reset')).toBe('ci-hub-edge-headers@file,ci-hub-sw-reset@file,ci-hub@file');
   });
 });

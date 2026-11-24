@@ -1145,7 +1145,10 @@ describe('DockerComposeBuilder — the app-starting page on every app router', (
     ]);
 
     expect(services.admin?.labels['traefik.http.routers.nginx-store-id-admin.rule']).toBe('Host(`${APP_DOMAIN}`) && PathPrefix(`/admin`)');
-    expect(services.admin?.labels['traefik.http.routers.nginx-store-id-admin.middlewares']).toBe('ci-hub-app-starting@file');
+    // Behind the edge strip and the Hub login like the app's own route: it once served /admin with neither.
+    expect(services.admin?.labels['traefik.http.routers.nginx-store-id-admin.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,ci-hub-app-starting@file',
+    );
   });
 
   // After the Hub login, which this router once went without: it listens on `web`, which the LAN reaches.
@@ -1512,7 +1515,10 @@ describe('DockerComposeBuilder — an app’s Traefik labels stay inside the app
       },
     );
 
-    expect(labels['traefik.http.routers.my-app-_user-files.middlewares']).toBe('my-app-_user-strip@docker,ci-hub@file,ci-hub-app-starting@file');
+    // At the head, behind the edge strip: a rewrite ahead of the login would change the request it sees.
+    expect(labels['traefik.http.routers.my-app-_user-files.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,my-app-_user-strip@docker,ci-hub-app-starting@file',
+    );
     expect(Object.values(labels).some((value) => String(value).includes('ci-hub@docker'))).toBe(false);
   });
 

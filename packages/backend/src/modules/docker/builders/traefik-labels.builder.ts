@@ -151,6 +151,63 @@ export function withSignInUnderFileProvider(labels: Record<string, string | bool
 }
 
 /**
+ * Puts the Hub's middlewares at the head of every HTTP router a manifest declared itself: the edge
+ * header strip on a Public web app, then the Hub login unless the operator switched it off
+ * (`requiresHubLogin`).
+ *
+ * A manifest may route its own hosts (`${APP_DOMAIN}`, `${APP_LOCAL_DOMAIN}`, `${APP_BASE_HOST}`) to
+ * its own services, and those routers carried whatever chain it gave them: none of them had to hold
+ * the login, and one with a longer rule outranked the Hub's router on the same host. Any of the
+ * Hub's middlewares a manifest placed further down its chain move to the head, so nothing of the
+ * app's (a path rewrite, say) runs before the login sees the request.
+ *
+ * The routers the Hub built (`hubLabels`) are left as {@link withHubMiddlewaresFirst} ordered them:
+ * the service-worker reset runs ahead of the login there on purpose. Runs after interpolation, and
+ * tells routers apart without regard to case, as Traefik does.
+ */
+export function withHubLoginOnEveryRouter(
+  labels: Record<string, string | boolean>,
+  hubLabels: Record<string, string | boolean>,
+  { requireLogin, publicWeb }: { requireLogin: boolean; publicWeb: boolean },
+): Record<string, string | boolean> {
+  const hubRouters = new Set<string>();
+  for (const key of Object.keys(hubLabels)) {
+    const router = HTTP_ROUTER_LABEL.exec(key)?.[1];
+    if (router) hubRouters.add(router.toLowerCase());
+  }
+  const head = [...(publicWeb ? [EDGE_HEADERS_MIDDLEWARE] : []), ...(requireLogin ? [FORWARD_AUTH_MIDDLEWARE] : [])];
+  const hubOwned = new Set([EDGE_HEADERS_MIDDLEWARE.toLowerCase(), ...HUB_FORWARD_AUTH_MIDDLEWARES]);
+
+  // Each manifest router under the first spelling seen, with every key that sets its chain.
+  const routers = new Map<string, { name: string; chainKeys: string[] }>();
+  for (const key of Object.keys(labels)) {
+    const [, router, option] = HTTP_ROUTER_LABEL.exec(key) ?? [];
+    if (!router || !option || hubRouters.has(router.toLowerCase())) continue;
+    let entry = routers.get(router.toLowerCase());
+    if (!entry) {
+      entry = { name: router, chainKeys: [] };
+      routers.set(router.toLowerCase(), entry);
+    }
+    if (option.toLowerCase() === 'middlewares') entry.chainKeys.push(key);
+  }
+
+  const result = { ...labels };
+  for (const { name, chainKeys } of routers.values()) {
+    const own: string[] = [];
+    for (const chainKey of chainKeys) {
+      for (const middleware of middlewareChain(result[chainKey])) {
+        const lower = middleware.toLowerCase();
+        if (!hubOwned.has(lower) && !own.some((existing) => existing.toLowerCase() === lower)) own.push(middleware);
+      }
+      delete result[chainKey];
+    }
+    const chain = [...head, ...own];
+    if (chain.length > 0) result[`traefik.http.routers.${name}.middlewares`] = chain.join(',');
+  }
+  return result;
+}
+
+/**
  * Ends every HTTP router in an app container's labels with {@link APP_STARTING_MIDDLEWARE}.
  *
  * Every router, whoever declared it. The ones this builder adds are only some of them: a manifest's
