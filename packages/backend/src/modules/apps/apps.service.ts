@@ -90,10 +90,26 @@ async function isRefusedByTailscale(tailscaleService: TailscaleService, appPort:
   return !entries.some((entry) => entry.listenPort === appPort && entry.host === selfHost);
 }
 
-/** Whether a failed fetch was refused by the host at the address, where a tailnet peer can still connect (see {@link servedAppAnswers}). */
-function wasRefused(error: unknown): boolean {
+/**
+ * Whether a failed fetch never reached a Serve listener at the address, where a tailnet peer can still connect
+ * (see {@link servedAppAnswers}). Either the host refused the connection, or a plain-HTTP listener on the host
+ * took it: Docker publishing the app's port on `0.0.0.0` answers the Hub's own connection to the node's tailnet
+ * address, while tailscaled still takes every tailnet peer's. The TLS handshake then reads an HTTP reply, which
+ * OpenSSL reports as "wrong version number" or "packet length too long". Other TLS failures (an alert, a
+ * certificate the Hub rejects) came from a TLS server and say nothing about this, so they don't count.
+ */
+function missedServeListener(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
-  return code === 'ECONNREFUSED' || (error instanceof Error && error.message.includes('ECONNREFUSED'));
+  const message = error instanceof Error ? error.message : '';
+  if (code === 'ECONNREFUSED' || message.includes('ECONNREFUSED')) {
+    return true;
+  }
+  return (
+    code === 'ERR_SSL_WRONG_VERSION_NUMBER' ||
+    code === 'ERR_SSL_PACKET_LENGTH_TOO_LONG' ||
+    message.includes('wrong version number') ||
+    message.includes('packet length too long')
+  );
 }
 
 /** The schemes a Tailscale Serve target can use that the Hub can ask, and the port each one defaults to. */
@@ -122,8 +138,8 @@ function parseServedTarget(dest: string | undefined): { host: string; port: numb
 }
 
 /**
- * Whether the app that Tailscale Serve forwards `appPort` to answers, for a Private VPN address the Hub was
- * refused at.
+ * Whether the app that Tailscale Serve forwards `appPort` to answers, for a Private VPN address where the Hub
+ * didn't reach Serve (see {@link missedServeListener}).
  *
  * The Hub dials from inside a Docker network, and a tailscaled that binds its Serve listeners to the tailscale
  * device (`100.x.y.z%tailscale0:<port>`, seen with 1.104.7) refuses a connection that arrives over any other
@@ -695,9 +711,10 @@ export class AppsService {
     } catch (e) {
       const message = e instanceof Error ? e.message : 'UNKNOWN_ERROR';
 
-      // A Serve listener bound to the tailscale device refuses the Hub, which dials from a Docker network, while
-      // every tailnet peer connects. Where Serve lists the port and the app behind it answers, the address is up.
-      if (privateVpn && wasRefused(e) && (await servedAppAnswers(privateVpn.tailscaleService, privateVpn.nodeFqdn, privateVpn.appPort))) {
+      // A Serve listener bound to the tailscale device refuses the Hub, which dials from a Docker network, and a
+      // plain-HTTP publish of the same port on the host answers it instead of Serve, while every tailnet peer
+      // connects. Where Serve lists the port and the app behind it answers, the address is up.
+      if (privateVpn && missedServeListener(e) && (await servedAppAnswers(privateVpn.tailscaleService, privateVpn.nodeFqdn, privateVpn.appPort))) {
         return { available: true, appUrl, stage: 'ready' };
       }
 

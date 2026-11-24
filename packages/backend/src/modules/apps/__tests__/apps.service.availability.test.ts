@@ -748,13 +748,22 @@ describe('AppsService.checkAppAvailability', () => {
       expect(result).toMatchObject({ available: true, appUrl: vpnUrl });
     });
 
-    // Only the refusal was measured. A timeout can come after the connection opened, and a name that does not
-    // resolve or a TLS failure is not something the target says anything about.
+    // A timeout can come after the connection opened, and a name that does not resolve or a TLS failure that came
+    // from a TLS server (an alert, a certificate the Hub rejects) is not something the target says anything about.
     it.each([
       ['a timeout', new Error('timeout of 5000ms exceeded'), 'CONNECTION_TIMEOUT'],
       ['a connect timeout', new Error('connect ETIMEDOUT 100.64.0.1:8080'), 'CONNECTION_TIMEOUT'],
       ['a name that does not resolve', new Error('getaddrinfo ENOTFOUND hub-tailscale-1.example.ts.net'), 'DNS_NOT_FOUND'],
-      ['a TLS failure', Object.assign(new Error('write EPROTO wrong version number'), { code: 'EPROTO' }), 'UNKNOWN'],
+      [
+        'a TLS alert',
+        Object.assign(new Error('write EPROTO 40B8:error:0A000438:SSL routines:ssl3_read_bytes:tlsv1 alert internal error'), { code: 'EPROTO' }),
+        'UNKNOWN',
+      ],
+      [
+        'a certificate the Hub rejects',
+        Object.assign(new Error("Hostname/IP does not match certificate's altnames"), { code: 'ERR_TLS_CERT_ALTNAME_INVALID' }),
+        'UNKNOWN',
+      ],
     ])('keeps the verdict and asks nothing after %s at the address', async (_name, error, errorCode) => {
       mockedAxiosGet.mockRejectedValue(error);
       vi.mocked(probeAppPort).mockResolvedValue('answered');
@@ -764,6 +773,57 @@ describe('AppsService.checkAppAvailability', () => {
       expect(result).toMatchObject({ available: false, errorCode });
       expect(ctx.tailscaleService.getServeStatus).not.toHaveBeenCalled();
       expect(probeAppPort).not.toHaveBeenCalled();
+    });
+
+    // The host's own Tailscale with an app Docker also publishes on 0.0.0.0:<port>: inside the Hub the tailnet name
+    // is the host's own tailnet address, and the Hub's connection to it lands on that plain-HTTP publish instead
+    // of Serve, while a laptop on the tailnet opens the app. OpenSSL words the plain reply differently by version.
+    describe('when a plain-HTTP listener on the host answers instead of Serve', () => {
+      const plainHttpReplies: [string, Error][] = [
+        [
+          'packet length too long',
+          Object.assign(new Error('write EPROTO 18:error:0A0000C6:SSL routines:tls_get_more_records:packet length too long'), {
+            code: 'EPROTO',
+          }),
+        ],
+        [
+          'wrong version number',
+          Object.assign(new Error('write EPROTO 2D93:error:0A00010B:SSL routines:tls_validate_record_header:wrong version number'), {
+            code: 'EPROTO',
+          }),
+        ],
+        ['ERR_SSL_WRONG_VERSION_NUMBER', Object.assign(new Error(''), { code: 'ERR_SSL_WRONG_VERSION_NUMBER' })],
+      ];
+
+      it.each(plainHttpReplies)('counts the app as available after %s when the target Serve forwards to answers', async (_name, error) => {
+        mockedAxiosGet.mockRejectedValue(error);
+        vi.mocked(probeAppPort).mockResolvedValue('answered');
+
+        const result = await ctx.service.checkAppAvailability(urn);
+
+        expect(result).toMatchObject({ available: true, appUrl: vpnUrl, stage: 'ready' });
+        expect(result.errorCode).toBeUndefined();
+        expect(probeAppPort).toHaveBeenCalledWith('172.22.0.8', 8080, 5_000);
+      });
+
+      it('keeps the error when Serve does not list the port', async () => {
+        mockedAxiosGet.mockRejectedValue(plainHttpReplies[0]?.[1]);
+        ctx.tailscaleService.getServeStatus.mockResolvedValue({ entries: [] });
+
+        const result = await ctx.service.checkAppAvailability(urn);
+
+        expect(result).toMatchObject({ available: false, errorCode: 'UNKNOWN' });
+        expect(probeAppPort).not.toHaveBeenCalled();
+      });
+
+      it('keeps the error when the target Serve forwards to does not answer', async () => {
+        mockedAxiosGet.mockRejectedValue(plainHttpReplies[0]?.[1]);
+        vi.mocked(probeAppPort).mockResolvedValue('refused');
+
+        const result = await ctx.service.checkAppAvailability(urn);
+
+        expect(result).toMatchObject({ available: false, errorCode: 'UNKNOWN' });
+      });
     });
 
     it('does not ask Serve when the address itself answers, whatever the status', async () => {
