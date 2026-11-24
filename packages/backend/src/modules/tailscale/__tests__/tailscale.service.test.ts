@@ -507,7 +507,7 @@ describe('TailscaleService', () => {
       await expect(service.getHostPortServeUpstream(8082)).resolves.toBe('http://localhost:8082');
     });
 
-    it('keeps host.docker.internal for the sidecar', async () => {
+    it('leaves the sidecar on host.docker.internal, as before', async () => {
       withStrategy('sidecar');
       await expect(service.getHostPortServeUpstream(8082)).resolves.toBe('http://host.docker.internal:8082');
     });
