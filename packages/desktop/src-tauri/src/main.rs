@@ -888,16 +888,17 @@ pub fn run() {
             // window hidden, so GTK first lays it out undecorated and at the restored size.
             // Started by the login autostart entry, it stays in the tray: the launch check
             // below brings the Hub back, and the tray (or opening the app) shows the window.
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            let window_shown = window_shown_at_launch(&args);
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {
-                let args: Vec<String> = std::env::args().skip(1).collect();
-                if !login_autostart::is_login_start(&args) {
+                if window_shown {
                     let _ = window.show();
                 }
             }
 
             // Build system tray (also registers close-to-hide handler)
-            tray::create_tray(app)?;
+            tray::create_tray(app, window_shown)?;
 
             // Initialize Hub data directory and compose file
             let resource_dir = app.path().resource_dir().map_err(|e| format!("{}", e))?;
@@ -1325,7 +1326,15 @@ fn focus_main_window(app: &tauri::AppHandle) {
         let _ = window.show();
         let _ = window.set_focus();
         let _ = window.unminimize();
+        tray::note_main_window_shown(app);
     }
+}
+
+/// Whether setup shows the main window. macOS and Windows create it shown. Everywhere else it is
+/// created hidden and shown in setup, unless the login autostart entry started the app, which
+/// leaves it in the tray.
+fn window_shown_at_launch(args: &[String]) -> bool {
+    cfg!(any(target_os = "macos", target_os = "windows")) || !login_autostart::is_login_start(args)
 }
 
 fn sanitize_download_filename(filename: &str) -> String {
@@ -1580,10 +1589,23 @@ mod tests {
     use super::{
         deep_link_urls_from_payload, extract_install_intent, extract_pairing_code,
         extract_portal_auth, is_plain_launch, launch_mode_from_args, sanitize_download_filename,
-        stack_dev_mode_enabled, stack_dev_override_paths, validate_open_path, LaunchMode,
-        STACK_DEV_COMPOSE_PATH_ENV, STACK_DEV_ENV, STACK_DEV_ENV_PATH_ENV,
+        stack_dev_mode_enabled, stack_dev_override_paths, validate_open_path,
+        window_shown_at_launch, LaunchMode, STACK_DEV_COMPOSE_PATH_ENV, STACK_DEV_ENV,
+        STACK_DEV_ENV_PATH_ENV,
     };
     use std::path::{Path, PathBuf};
+
+    /// The tray's first item starts from this, so a login start that leaves the window in the
+    /// tray must read Show Hub, or the first click on it only hides the hidden window.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_login_start_leaves_the_window_in_the_tray() {
+        assert!(!window_shown_at_launch(&["--login-start".to_string()]));
+        assert!(window_shown_at_launch(&[]));
+        assert!(window_shown_at_launch(&[
+            "cihub://pair?code=ABC123".to_string()
+        ]));
+    }
 
     #[test]
     fn validate_open_path_accepts_existing_dir() {
