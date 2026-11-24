@@ -957,3 +957,20 @@ fn an_installed_system_or_a_stock_live_session_is_not_a_companion_live_session()
         LiveSessionState::default()
     );
 }
+
+#[test]
+fn the_wsl_ollama_install_gets_zstd_before_running_install_sh() {
+    // Ollama ships .tar.zst; without zstd its install.sh stops after "Installing ollama to".
+    let script = OLLAMA_WSL_INSTALL_SCRIPT;
+    let zstd = script
+        .find(r#"missing="$missing zstd""#)
+        .expect("zstd check");
+    let install = script.find(r#"sh "$tmp""#).expect("runs install.sh");
+    assert!(zstd < install);
+    assert!(script.contains("apt-get install -y $missing"));
+    let status = std::process::Command::new("sh")
+        .args(["-n", "-c", script])
+        .status()
+        .expect("sh runs");
+    assert!(status.success());
+}

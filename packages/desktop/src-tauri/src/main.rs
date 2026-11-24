@@ -211,9 +211,14 @@ async fn install_docker_command() -> Result<hub_manager::DockerInstallResult, St
 async fn install_ollama_command() -> Result<hub_manager::OllamaInstallResult, String> {
     // Run on the blocking pool: on a WSL2 engine this shells out to an unbounded
     // in-distro `apt`/Ollama install, which must not pin an async-runtime worker.
-    tokio::task::spawn_blocking(hub_manager::install_ollama)
+    let result = tokio::task::spawn_blocking(hub_manager::install_ollama)
         .await
-        .map_err(|e| format!("Ollama install task failed: {e}"))?
+        .map_err(|e| format!("Ollama install task failed: {e}"))?;
+    // The page shows the error once; the log keeps it for whoever looks into it later.
+    if let Err(error) = &result {
+        let _ = hub_manager::append_desktop_log("ollama.install", error);
+    }
+    result
 }
 
 /// Install the NVIDIA container runtime through pkexec (native Linux only).

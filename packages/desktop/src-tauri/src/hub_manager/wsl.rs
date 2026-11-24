@@ -156,26 +156,39 @@ pub(crate) fn run_wsl_root_script_output(distro: &str, script: &str) -> Result<S
     }
     Err(wsl_script_failure(
         output.status.code(),
+        &String::from_utf8_lossy(&output.stdout),
         &String::from_utf8_lossy(&output.stderr),
     ))
 }
 
-/// Why a script run in WSL failed: its exit code and the end of its stderr, which says what failed
-/// (a long apt or openssl transcript before it is mostly noise).
+/// The last `max` characters of `text`, trimmed.
 #[cfg(any(test, windows))]
-pub(crate) fn wsl_script_failure(code: Option<i32>, stderr: &str) -> String {
-    let stderr = stderr.trim();
-    let chars: Vec<char> = stderr.chars().collect();
-    let tail: String = chars[chars.len().saturating_sub(600)..].iter().collect();
+fn text_tail(text: &str, max: usize) -> String {
+    let chars: Vec<char> = text.trim().chars().collect();
+    chars[chars.len().saturating_sub(max)..].iter().collect()
+}
+
+/// Why a script run in WSL failed: its exit code and the ends of its stderr and stdout, which say
+/// what failed (a long apt or openssl transcript before them is mostly noise). Stdout too, since
+/// some scripts report their error there: Ollama's install.sh printed "This version requires zstd"
+/// on stdout, and its stderr ended at the step before.
+#[cfg(any(test, windows))]
+pub(crate) fn wsl_script_failure(code: Option<i32>, stdout: &str, stderr: &str) -> String {
     let code = code.map_or_else(
         || "It ended without an exit code.".to_string(),
         |code| format!("It exited with code {code}."),
     );
-    if tail.is_empty() {
+    let stderr = text_tail(stderr, 600);
+    let stdout = text_tail(stdout, 300);
+    let mut message = if stderr.is_empty() {
         format!("{code} It printed nothing on stderr.")
     } else {
-        format!("{code} stderr: {tail}")
+        format!("{code} stderr: {stderr}")
+    };
+    if !stdout.is_empty() {
+        message.push_str(&format!(" stdout ends: {stdout}"));
     }
+    message
 }
 
 /// Install + configure nvidia-container-toolkit inside the WSL2 distro so the native

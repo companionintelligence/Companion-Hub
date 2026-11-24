@@ -464,15 +464,25 @@ fn the_wsl_bind_script_guards_only_our_own_bind() {
 #[test]
 fn a_failed_wsl_script_reports_its_exit_code_and_the_end_of_stderr() {
     assert_eq!(
-        wsl_script_failure(Some(1), "mkdir: cannot create directory '': No such file or directory\n"),
+        wsl_script_failure(Some(1), "", "mkdir: cannot create directory '': No such file or directory\n"),
         "It exited with code 1. stderr: mkdir: cannot create directory '': No such file or directory"
     );
     assert_eq!(
-        wsl_script_failure(None, "  \n"),
+        wsl_script_failure(None, "", "  \n"),
         "It ended without an exit code. It printed nothing on stderr."
     );
     let long = format!("{}the end", "apt noise ".repeat(200));
-    let message = wsl_script_failure(Some(100), &long);
+    let message = wsl_script_failure(Some(100), "", &long);
     assert!(message.ends_with("the end"));
     assert!(message.len() < 700);
+    // Ollama's install.sh says why on stdout; its stderr ends at the step before.
+    assert_eq!(
+        wsl_script_failure(
+            Some(1),
+            ">>> x\nERROR: This version requires zstd\n",
+            ">>> Installing ollama to /usr/local\n"
+        ),
+        "It exited with code 1. stderr: >>> Installing ollama to /usr/local \
+         stdout ends: >>> x\nERROR: This version requires zstd"
+    );
 }
