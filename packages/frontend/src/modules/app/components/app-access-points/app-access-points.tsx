@@ -9,7 +9,7 @@ import { openExternal } from '@/lib/helpers/open-external';
 import { cn } from '@/lib/utils';
 import { PORT_EXPOSE_OPEN_TO_COPY, type PortExposeOpenTo } from '@/modules/app/helpers/port-expose-open-to';
 import type { AppDetails, AppInfo } from '@/types/app.types';
-import { hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
+import { hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE, publishesHostPortsOnNetwork } from '@ci-hub/common/schemas';
 import { buildPublicWebIdentity, normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { publishesHostPort, publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm, storedHostPortForm } from '@ci-hub/common/types';
 import { useQuery } from '@tanstack/react-query';
@@ -255,9 +255,11 @@ export function buildAppAccessPoints(input: {
     ? resolveRoutingSubdomain(record.localSubdomain, urnAppName, urnAppStoreSlug)
     : record.localSubdomain || urnAppName;
   const cleanSubdomain = baseSubdomain ? sanitizeAppSubdomain(baseSubdomain) : '';
-  // A `hostPortStaysOnLoopback` app refuses connections on the LAN address. Its loopback URL also
-  // keeps the card from offering a QR code another device could never open.
-  const browserHost = hostPortStaysOnLoopback(info) ? LOOPBACK_HOST_PORT_INTERFACE : resolveBrowserHost(internalIp);
+  // The host port answers on the LAN address only when the operator opened it on the network
+  // (`publishesHostPortsOnNetwork`); otherwise on loopback, whose URL also keeps the card from
+  // offering a QR code another device could never open.
+  const onNetwork = publishesHostPortsOnNetwork(record.config as { portOnNetwork?: boolean } | undefined, hostPortStaysOnLoopback(info));
+  const browserHost = onNetwork ? resolveBrowserHost(internalIp) : LOOPBACK_HOST_PORT_INTERFACE;
   const directPort = app.port ?? info.port ?? null;
   const localEnabled = hasDirectLocalAccess(record, { hasHostPort: directPort != null, dynamicConfig: info.dynamic_config });
   const directScheme = info.https ? 'https' : 'http';

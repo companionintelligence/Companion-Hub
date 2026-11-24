@@ -33,7 +33,7 @@ import type { AvailableDomain } from '@ci-hub/common/types';
 import { buildPublicWebIdentity, sanitizeAppSubdomain, selectOfferedDomains, servedExposureMode } from '@ci-hub/common/types';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { saveBlobAsFile, splitSavedPath } from '@/lib/save-file';
-import { requiresHubLogin, servedOpenPort } from '@ci-hub/common/schemas';
+import { hostPortStaysOnLoopback, requiresHubLogin, servedOpenPort } from '@ci-hub/common/schemas';
 import { isMcpOptionalOnlyInstall } from '@ci-hub/common/validation';
 import {
   type LastUsedInstallConfig,
@@ -141,6 +141,8 @@ export type FormValues = {
   customDomainExpected?: string;
   isVisibleOnGuestDashboard?: boolean;
   enableAuth: boolean;
+  /** Publish the app's host ports on every interface, with no Hub login (`publishesHostPortsOnNetwork`). */
+  portOnNetwork?: boolean;
   maxBackups?: number;
   cpuLimit?: string;
   [key: string]: unknown;
@@ -1133,33 +1135,65 @@ export const InstallForm: React.FC<IProps> = ({
     );
   };
 
-  const renderAdvancedExposureOptions = () => {
-    if (!authSwitchShown) return null;
+  const renderPortOnNetworkSwitch = () => {
+    // An app that must stay on loopback gets nothing from it (`hostPortStaysOnLoopback`).
+    if (hostPortStaysOnLoopback(info)) return null;
+    if (!(isAdvancedMode || showAdvancedSettings || watch('portOnNetwork') === true)) return null;
 
     return (
       <Controller
         control={control}
-        name="enableAuth"
-        defaultValue={enableAuthFallback}
+        name="portOnNetwork"
+        defaultValue={false}
         render={({ field: { onChange, value, ref, ...props } }) => (
           <Switch
             {...props}
             className="mb-3"
             ref={ref}
-            checked={value ?? enableAuthFallback}
+            checked={value ?? false}
             onCheckedChange={onChange}
             label={
               <>
-                {t('APP_INSTALL_FORM_ENABLE_AUTH')}
-                <HintMarker anchorClass="enable-auth-hint" hint={t('APP_INSTALL_FORM_ENABLE_AUTH_HINT')} />
-                {info.hub_integration?.edge_auth?.default ? (
-                  <span className="ms-2 text-sm text-muted-foreground">{t('APP_INSTALL_FORM_ENABLE_AUTH_RECOMMENDED')}</span>
-                ) : null}
+                {t('APP_INSTALL_FORM_PORT_ON_NETWORK')}
+                <HintMarker anchorClass="port-on-network-hint" hint={t('APP_INSTALL_FORM_PORT_ON_NETWORK_HINT')} />
               </>
             }
           />
         )}
       />
+    );
+  };
+
+  const renderAdvancedExposureOptions = () => {
+    if (!authSwitchShown) return renderPortOnNetworkSwitch();
+
+    return (
+      <>
+        <Controller
+          control={control}
+          name="enableAuth"
+          defaultValue={enableAuthFallback}
+          render={({ field: { onChange, value, ref, ...props } }) => (
+            <Switch
+              {...props}
+              className="mb-3"
+              ref={ref}
+              checked={value ?? enableAuthFallback}
+              onCheckedChange={onChange}
+              label={
+                <>
+                  {t('APP_INSTALL_FORM_ENABLE_AUTH')}
+                  <HintMarker anchorClass="enable-auth-hint" hint={t('APP_INSTALL_FORM_ENABLE_AUTH_HINT')} />
+                  {info.hub_integration?.edge_auth?.default ? (
+                    <span className="ms-2 text-sm text-muted-foreground">{t('APP_INSTALL_FORM_ENABLE_AUTH_RECOMMENDED')}</span>
+                  ) : null}
+                </>
+              }
+            />
+          )}
+        />
+        {renderPortOnNetworkSwitch()}
+      </>
     );
   };
 

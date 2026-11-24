@@ -495,23 +495,36 @@ export function requiresHubLogin(form: { enableAuth?: boolean | null } | null | 
   return form?.enableAuth !== false;
 }
 
+/**
+ * Whether an app's host ports are published on every interface, the LAN and the tailnet included, with
+ * no Hub login in front of them: only when the operator asked for it (`portOnNetwork: true`), and never
+ * for an app that must stay on loopback ({@link hostPortStaysOnLoopback}). Otherwise every host port,
+ * the app's own and each a listing adds (`addPorts`), is published on 127.0.0.1 only: "This machine
+ * only" means that, and the other modes reach the app through Traefik, behind the login.
+ *
+ * Ports used to be published on every interface by default, so anyone on the LAN reached the app on
+ * its port with no login, whatever its mode.
+ */
+export function publishesHostPortsOnNetwork(form: { portOnNetwork?: boolean | null } | null | undefined, loopbackOnly: boolean): boolean {
+  return form?.portOnNetwork === true && !loopbackOnly;
+}
+
 /** The only interface a {@link hostPortStaysOnLoopback} app's host port is published on. */
 export const LOOPBACK_HOST_PORT_INTERFACE = '127.0.0.1';
 
 /**
- * Whether an app's host port is published on loopback only, instead of on every interface.
+ * Whether an app's host port stays on loopback even when the operator asks to publish its ports on the
+ * network ({@link publishesHostPortsOnNetwork}).
  *
  * A port published with no interface binds 0.0.0.0 and [::], so it answers the LAN and the tailnet
- * with no Hub login in front of it: forward-auth guards the Traefik routers, not the port. Most apps
- * want that "Local network" route. Two kinds must not get it:
+ * with no Hub login in front of it: forward-auth guards the Traefik routers, not the port. Two kinds
+ * of app must never answer there, whoever asks:
  *
  * - `edge_auth.default: true`: the app has no login of its own (OpenCode, Aider, Pi Web).
  * - `mcp_client: true`: the app drives an agent holding a Hub-minted MCP key (CI-OpenClaw,
  *   CI-Hermes). OpenClaw's wrapper also hands its gateway token to any caller of `/`.
  *
- * Reach these apps off-box through Private VPN or Public web; nothing in the Hub dials the host port.
- * The stored `enableAuth` is no opt-out: the column is `NOT NULL DEFAULT false`, so an install that
- * never decided reads like an operator who turned auth off. Honored from any store, like
+ * Reach these apps off-box through Private VPN or Public web. Honored from any store, like
  * `edge_auth.default`, because it can only narrow reach.
  */
 export function hostPortStaysOnLoopback(info: { exposable?: boolean; hub_integration?: HubIntegration }): boolean {

@@ -12,6 +12,11 @@ export const appFormSchema = z
     exposedLocal: z.boolean().optional(),
     exposureMode: z.enum(['local', 'cloudflare', 'tailscale']).optional(),
     openPort: z.boolean().optional(),
+    /**
+     * The operator's choice to publish the app's host ports on every interface (the LAN, the tailnet)
+     * with no Hub login in front of them (`publishesHostPortsOnNetwork`). Absent: 127.0.0.1 only.
+     */
+    portOnNetwork: z.boolean().optional(),
     domain: z.string().optional(),
     isVisibleOnGuestDashboard: z.boolean().optional(),
     enableAuth: z.boolean().optional(),

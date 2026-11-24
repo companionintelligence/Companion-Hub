@@ -6714,6 +6714,17 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
     });
 
+    it('keeps ports the operator opened on the network through a save that does not mention them', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, portOnNetwork: true } } as any);
+
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ config: expect.objectContaining({ portOnNetwork: true }) }),
+      );
+    });
+
     it('does not flip a stored explicit enableAuth=false when a partial update omits the field (#74)', async () => {
       // A PATCH that changes some other field WITHOUT resending enableAuth must inherit the app's
       // stored explicit false, not resolve to the manifest default — "operator choice wins" has to

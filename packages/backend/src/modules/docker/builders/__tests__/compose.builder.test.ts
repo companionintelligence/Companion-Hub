@@ -521,7 +521,7 @@ describe('DockerComposeBuilder', () => {
     );
     const yamlObject = yaml.parse(compose);
 
-    expect(yamlObject.services.service.ports).toEqual(['${APP_PORT}:440']);
+    expect(yamlObject.services.service.ports).toEqual(['127.0.0.1:${APP_PORT}:440']);
   });
 
   describe('named volumes', () => {
@@ -749,7 +749,7 @@ describe('DockerComposeBuilder', () => {
     const yamlObject = yaml.parse(compose);
 
     expect(yamlObject.services.service.ports).toBeDefined();
-    expect(yamlObject.services.service.ports[0]).toBe('${APP_PORT}:440');
+    expect(yamlObject.services.service.ports[0]).toBe('127.0.0.1:${APP_PORT}:440');
   });
 
   it('should only add default labels when service is not main', async () => {
@@ -790,7 +790,7 @@ describe('DockerComposeBuilder', () => {
     const yamlObject = yaml.parse(compose);
 
     expect(yamlObject.services.service.ports).toBeDefined();
-    expect(yamlObject.services.service.ports[0]).toBe('${APP_PORT}:440');
+    expect(yamlObject.services.service.ports[0]).toBe('127.0.0.1:${APP_PORT}:440');
     expect(yamlObject.services.service.labels['traefik.enable']).toBeUndefined();
   });
 
@@ -838,10 +838,39 @@ describe('DockerComposeBuilder', () => {
       );
     });
 
-    it('binds every interface when the option is absent, as it always has', async () => {
+    // It once bound every interface by default: the LAN reached the app on its port with no login.
+    it('binds loopback when the operator did not open the port on the network', async () => {
       const yamlObject = yaml.parse(await composeBuilder.getDockerCompose([main], { exposureMode: 'local' }, urn, subnet));
 
+      expect(yamlObject.services.service.ports).toEqual(['127.0.0.1:${APP_PORT}:18789']);
+    });
+
+    it('binds every interface only when the operator opened the port on the network', async () => {
+      const yamlObject = yaml.parse(
+        await composeBuilder.getDockerCompose([main], { exposureMode: 'local', portOnNetwork: true } as never, urn, subnet),
+      );
+
       expect(yamlObject.services.service.ports).toEqual(['${APP_PORT}:18789']);
+    });
+
+    it('keeps an app that must stay on loopback there, even when the operator opened its port', async () => {
+      const builder = new DockerComposeBuilder('ci.computer', 'ci.lan', true, { loopbackHostPort: true });
+      const yamlObject = yaml.parse(await builder.getDockerCompose([main], { exposureMode: 'local', portOnNetwork: true } as never, urn, subnet));
+
+      expect(yamlObject.services.service.ports).toEqual(['127.0.0.1:${APP_PORT}:18789']);
+    });
+
+    it("puts a listing's extra ports on loopback too, whatever interface it named, until the operator opens them", async () => {
+      const withExtra = { ...main, addPorts: [{ containerPort: 53, hostPort: 53, udp: true, interface: '0.0.0.0' }] } as never;
+
+      const closed = yaml.parse(await composeBuilder.getDockerCompose([withExtra], { exposureMode: 'local' }, urn, subnet));
+      const opened = yaml.parse(
+        await composeBuilder.getDockerCompose([withExtra], { exposureMode: 'local', portOnNetwork: true } as never, urn, subnet),
+      );
+
+      expect(closed.services.service.ports.slice(0, -1).every((port: string) => port.startsWith('127.0.0.1:'))).toBe(true);
+      expect(closed.services.service.ports.join(' ')).not.toContain('0.0.0.0');
+      expect(opened.services.service.ports.join(' ')).toContain('0.0.0.0:53:53');
     });
   });
 

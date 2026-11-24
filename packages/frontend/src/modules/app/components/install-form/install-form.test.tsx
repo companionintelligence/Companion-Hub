@@ -2218,6 +2218,51 @@ describe('InstallForm', () => {
     });
   });
 
+  describe('opening the port on the network', () => {
+    const portSwitch = () => screen.queryByRole('switch', { name: /APP_INSTALL_FORM_PORT_ON_NETWORK/ });
+    const renderWith = (info: AppInfo, onSubmit = vi.fn(), initialValues?: Record<string, unknown>) =>
+      render(
+        <MemoryRouter>
+          <InstallForm info={info} onSubmit={onSubmit} formId="test-form" formFields={[]} initialValues={initialValues} isEdit={!!initialValues} />
+        </MemoryRouter>,
+      );
+
+    it('offers it in advanced mode, off, and saves it when turned on', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      const onSubmit = vi.fn();
+      const { container } = renderWith(exposableInfo(), onSubmit);
+
+      await waitFor(() => expect(portSwitch()).toBeInTheDocument());
+      expect(portSwitch()).not.toBeChecked();
+      fireEvent.click(portSwitch() as HTMLElement);
+      await act(async () => {
+        fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+      });
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      expect(onSubmit.mock.calls[0]?.[0].portOnNetwork).toBe(true);
+    });
+
+    it('is not on screen in simple mode unless an installed app has it on', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext({ user: { advancedMode: false } }));
+      const first = renderWith(exposableInfo());
+      await waitFor(() => expect(screen.getByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' })).toBeInTheDocument());
+      expect(portSwitch()).not.toBeInTheDocument();
+      first.unmount();
+
+      renderWith(exposableInfo(), vi.fn(), { exposureMode: 'local', portOnNetwork: true });
+      await waitFor(() => expect(portSwitch()).toBeChecked());
+    });
+
+    it('is never offered for an app whose port must stay on this machine', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      renderWith({ ...(exposableInfo() as object), hub_integration: { mcp_client: true } } as unknown as AppInfo);
+
+      await waitFor(() => expect(getEnableAuthSwitch()).toBeInTheDocument());
+      expect(portSwitch()).not.toBeInTheDocument();
+    });
+  });
+
   // What the Hub serves for a stored form, written out by hand: the queue gives a missing `openPort`
   // the value true (`queueAppFormSchema`), and the route builder puts the login in front of every
   // route unless the form says `enableAuth: false` (`requiresHubLogin`). The port and the manifest's

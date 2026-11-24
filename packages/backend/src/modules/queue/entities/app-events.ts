@@ -15,6 +15,8 @@ const queueAppFormSchema = z
     // The default is shared with the settings dialog (`servedOpenPort`), which shows a stored form
     // with no `openPort` key as this.
     openPort: z.boolean().default(STORED_FORM_OPEN_PORT_DEFAULT),
+    // `publishesHostPortsOnNetwork`: absent publishes every host port on 127.0.0.1 only.
+    portOnNetwork: z.boolean().optional(),
     domain: z.string().optional(),
     isVisibleOnGuestDashboard: z.boolean().optional(),
     enableAuth: z.boolean().optional(),

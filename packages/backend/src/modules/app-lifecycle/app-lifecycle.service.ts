@@ -356,8 +356,10 @@ function keepStoredExposure(parsedForm: ParsedAppForm, submitted: ParsedAppForm,
   parsedForm.openPort = mode === 'local' ? true : (submitted.openPort ?? stored.openPort);
   parsedForm.localSubdomain ??= stored.localSubdomain;
   parsedForm.publicDomain ??= stored.publicDomain;
-  // An operator who switched the login off keeps it off through a save that does not mention it.
+  // An operator who switched the login off, or opened the app's ports on the network, keeps that
+  // through a save that does not mention it.
   parsedForm.enableAuth ??= stored.enableAuth;
+  parsedForm.portOnNetwork ??= stored.portOnNetwork;
 }
 
 /**
@@ -3136,6 +3138,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     // (`requiresHubLogin`).
     if (parsedForm.enableAuth === undefined) {
       parsedForm.enableAuth = (app.config as { enableAuth?: boolean } | null | undefined)?.enableAuth;
+    }
+    // The same for ports the operator opened on the network (`publishesHostPortsOnNetwork`).
+    if (parsedForm.portOnNetwork === undefined) {
+      parsedForm.portOnNetwork = (app.config as { portOnNetwork?: boolean } | null | undefined)?.portOnNetwork;
     }
 
     // Before the comparison below, so a choice this app can never be served on

@@ -12,6 +12,7 @@ import {
   collectTraefikLabelIssues,
   isReservedHubLabel,
   LOOPBACK_HOST_PORT_INTERFACE,
+  publishesHostPortsOnNetwork,
 } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import * as yaml from 'yaml';
@@ -517,7 +518,13 @@ export class DockerComposeBuilder {
       .setRestartPolicy(params.restart ?? 'unless-stopped')
       .setExtraHosts(extraHosts.length > 0 ? extraHosts : undefined)
       .setUlimits(params.ulimits)
-      .setPorts(params.addPorts)
+      // A listing's extra ports too: on 127.0.0.1 unless the operator opened the app's ports on the
+      // network. A listing's own `interface` only counts then, so it cannot widen what the app answers.
+      .setPorts(
+        publishesHostPortsOnNetwork(form, this.loopbackHostPort)
+          ? params.addPorts
+          : params.addPorts?.map((port) => ({ ...port, interface: LOOPBACK_HOST_PORT_INTERFACE })),
+      )
       .setNetworkMode(params.networkMode)
       .setCapAdd(params.capAdd)
       .setDeploy(deployConfig)
@@ -563,8 +570,8 @@ export class DockerComposeBuilder {
           // biome-ignore lint/suspicious/noTemplateCurlyInString: intended
           hostPort: '${APP_PORT}',
           // Without an interface Docker binds 0.0.0.0 and [::], reachable from the LAN and the
-          // tailnet with no Hub login in front of it.
-          interface: this.loopbackHostPort ? LOOPBACK_HOST_PORT_INTERFACE : undefined,
+          // tailnet with no Hub login in front of it: only when the operator asked for that.
+          interface: publishesHostPortsOnNetwork(form, this.loopbackHostPort) ? undefined : LOOPBACK_HOST_PORT_INTERFACE,
         });
       }
     }

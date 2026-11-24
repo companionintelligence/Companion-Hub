@@ -241,7 +241,7 @@ describe('buildAppAccessPoints', () => {
         exposureMode: 'tailscale',
         exposedLocal: true,
         openPort: false,
-        config: { exposureMode: 'tailscale', exposedLocal: true, openPort: false },
+        config: { exposureMode: 'tailscale', exposedLocal: true, openPort: false, portOnNetwork: true },
       } as any,
       info: { ...info, port: 8080, url_suffix: '' },
       sslPort: 443,
@@ -422,7 +422,15 @@ describe('buildAppAccessPoints', () => {
   });
 
   describe('Local access link', () => {
-    const localApp = { status: 'running', port: 18790, localSubdomain: 'hermes', exposureMode: 'local', openPort: true } as any;
+    // Opened on the network by the operator: only then does the port answer a LAN address at all.
+    const localApp = {
+      status: 'running',
+      port: 18790,
+      localSubdomain: 'hermes',
+      exposureMode: 'local',
+      openPort: true,
+      config: { portOnNetwork: true },
+    } as any;
     const base = {
       app: localApp,
       info: { ...info, url_suffix: '' },
@@ -519,7 +527,14 @@ describe('buildAppAccessPoints', () => {
   });
 
   describe('an app whose host port stays on loopback', () => {
-    const localInstall = { status: 'running', port: 18789, localSubdomain: 'openclaw', exposureMode: 'local', openPort: false } as any;
+    const localInstall = {
+      status: 'running',
+      port: 18789,
+      localSubdomain: 'openclaw',
+      exposureMode: 'local',
+      openPort: false,
+      config: { portOnNetwork: true },
+    } as any;
     const build = (appInfo: typeof info) =>
       buildAppAccessPoints({
         app: localInstall,
@@ -540,8 +555,22 @@ describe('buildAppAccessPoints', () => {
       }
     });
 
-    it('keeps the LAN address for every other app', () => {
+    it('keeps the LAN address for every other app whose port the operator opened on the network', () => {
       expect(build(info)[2]).toMatchObject({ key: 'local', url: 'http://192.168.1.9:18789/login' });
+    });
+
+    // Ports once answered the LAN by default; now only when the operator opened them.
+    it('offers loopback for an app whose port the operator did not open on the network', () => {
+      const accessPoints = buildAppAccessPoints({
+        app: { ...localInstall, config: {} },
+        info,
+        sslPort: 443,
+        internalIp: '192.168.1.9',
+        cloudflareAvailable: true,
+        tailscaleAvailable: false,
+      } as never);
+
+      expect(accessPoints[2]).toMatchObject({ key: 'local', url: 'http://127.0.0.1:18789/login' });
     });
   });
 });
