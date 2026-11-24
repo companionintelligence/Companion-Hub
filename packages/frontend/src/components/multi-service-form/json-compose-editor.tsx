@@ -95,7 +95,8 @@ export const JsonComposeEditor = ({ onChange }: Props) => {
           onChange={(e) => validateInput(e)}
           theme={copilot}
         />
-        {/* The validator's report, in the Hub's error alert rather than bare text under the editor. Its emoji go. */}
+        {/* The validator's report, in the Hub's error alert rather than bare text under the editor. Its emoji go, with
+            the skin tone of its pointing hand (👈🏽), which would otherwise be left as a square after the caret. */}
         {error && (
           <Alert variant="danger" className="m-3" data-testid="json-compose-editor-error">
             <AlertIcon>
@@ -105,7 +106,7 @@ export const JsonComposeEditor = ({ onChange }: Props) => {
               <AlertHeading>{t('MULTI_SERVICE_JSON_ERROR_TITLE')}</AlertHeading>
               <AlertDescription>
                 <pre className="mt-1 overflow-x-auto whitespace-pre-wrap font-mono text-xs">
-                  {error.replace(/\p{Extended_Pictographic}\uFE0F?\s?/gu, '')}
+                  {error.replace(/\p{Extended_Pictographic}(?:\p{Emoji_Modifier}|\uFE0F)*\s?/gu, '')}
                 </pre>
               </AlertDescription>
             </div>
