@@ -166,8 +166,8 @@ export class MemoryConnectController {
     try {
       // On success `next` is the SPA's finishing interstitial (the restart is
       // scheduled, not awaited — this handler must answer the browser fast); on a
-      // downstream failure it is the app URL, so the user always lands back on
-      // their app rather than the dashboard. A replayed state (refresh after an
+      // downstream failure it is the app's page in the Hub, which says the connect
+      // failed: the app's own address could not (#2544). A replayed state (refresh after an
       // aborted navigation) resolves to the interstitial too, without a second
       // exchange. The current user must match the one who started the flow
       // (login-CSRF guard).
@@ -176,7 +176,8 @@ export class MemoryConnectController {
 
       return { url: next };
     } catch (err) {
-      // Only an unknown/expired state reaches here (no app to return to).
+      // An unknown or expired state (no app to return to), or a connect that threw after the state
+      // was consumed. The service records that one's failure, so a refresh lands on the app's page.
       this.logger.error('[MemoryConnect] callback failed', err);
 
       return { url: '/?memoryConnect=error' };

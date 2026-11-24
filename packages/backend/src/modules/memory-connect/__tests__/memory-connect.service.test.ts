@@ -318,6 +318,8 @@ describe('MemoryConnectService.handleCallback', () => {
   beforeEach(() => vi.clearAllMocks());
 
   const FINISHING_PATH = '/memory-connect/finishing?app=ci-openclaw%3Alocal&next=https%3A%2F%2Fapp.example.org%2F';
+  // The app's page in the Hub, which says the connect failed (#2544).
+  const CONNECT_FAILED = '/apps/local/ci-openclaw?memoryConnect=error';
   const CONSUMED = {
     outcome: 'consumed',
     appUrn: 'ci-openclaw:local',
@@ -502,7 +504,7 @@ describe('MemoryConnectService.handleCallback', () => {
     expect(RESTARTS_THAT_WAIT_FOR_THE_APP.has('memory-connect')).toBe(false);
   });
 
-  it('returns the app URL with error on app mismatch (does not store), so the user lands back on the app', async () => {
+  it("lands on the app's page in the Hub with the failure marker on app mismatch (does not store)", async () => {
     const { service, resolver, exchange, connections, pending } = makeService();
     pending.consume.mockReturnValue(CONSUMED);
     resolver.findProvider.mockResolvedValue(PROVIDER);
@@ -511,11 +513,11 @@ describe('MemoryConnectService.handleCallback', () => {
     const result = await service.handleCallback('the-code', 'state-nonce', 'user-1');
 
     expect(connections.storeConnected).not.toHaveBeenCalled();
-    expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', 'https://app.example.org/');
-    expect(result).toEqual({ next: 'https://app.example.org/', error: true });
+    expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', CONNECT_FAILED);
+    expect(result).toEqual({ next: CONNECT_FAILED, error: true });
   });
 
-  it('returns the app URL with error when the exchange throws (no dead-end on the dashboard)', async () => {
+  it("lands on the app's page in the Hub with the failure marker when the exchange throws, not on the app's own address", async () => {
     const { service, resolver, exchange, connections, pending } = makeService();
     pending.consume.mockReturnValue(CONSUMED);
     resolver.findProvider.mockResolvedValue(PROVIDER);
@@ -524,8 +526,49 @@ describe('MemoryConnectService.handleCallback', () => {
     const result = await service.handleCallback('the-code', 'state-nonce', 'user-1');
 
     expect(connections.storeConnected).not.toHaveBeenCalled();
-    expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', 'https://app.example.org/');
-    expect(result).toEqual({ next: 'https://app.example.org/', error: true });
+    expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', CONNECT_FAILED);
+    expect(result).toEqual({ next: CONNECT_FAILED, error: true });
+  });
+
+  it("lands on the app's page with the failure marker when CI Memory refuses an expired code (#2544)", async () => {
+    // CI Memory's connect code lives a minute. A Hub sign-in that outlasts it gets a 400 from the exchange.
+    const { service, resolver, exchange, connections, pending } = makeService();
+    pending.consume.mockReturnValue(CONSUMED);
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    exchange.exchange.mockRejectedValue(Object.assign(new Error('Request failed with status code 400'), { response: { status: 400 } }));
+
+    const result = await service.handleCallback('the-code', 'state-nonce', 'user-1');
+
+    expect(connections.storeConnected).not.toHaveBeenCalled();
+    expect(result).toEqual({ next: '/apps/local/ci-openclaw?memoryConnect=error', error: true });
+  });
+
+  it('ends a failed connect of a custom app on Home with the failure marker, as its page reads none', async () => {
+    const { service, resolver, exchange, pending } = makeService();
+    pending.consume.mockReturnValue({ ...CONSUMED, appUrn: 'my-agent:_user' });
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    exchange.exchange.mockRejectedValue(new Error('Request failed with status code 400'));
+
+    expect(await service.handleCallback('the-code', 'state-nonce', 'user-1')).toEqual({ next: '/?memoryConnect=error', error: true });
+  });
+
+  it('says the connect failed when no CI Memory is left to exchange the code with', async () => {
+    const { service, resolver, exchange, pending } = makeService();
+    pending.consume.mockReturnValue(CONSUMED);
+    resolver.findProvider.mockResolvedValue(null);
+
+    expect(await service.handleCallback('the-code', 'state-nonce', 'user-1')).toEqual({ next: CONNECT_FAILED, error: true });
+    expect(exchange.exchange).not.toHaveBeenCalled();
+  });
+
+  it("records the app's page with the failure marker when the connect throws, so a refresh does not land on the app's own address", async () => {
+    const { service, resolver, connections, pending } = makeService();
+    pending.consume.mockReturnValue(CONSUMED);
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    connections.listConnected.mockRejectedValue(new Error('database gone'));
+
+    await expect(service.handleCallback('the-code', 'state-nonce', 'user-1')).rejects.toThrow('database gone');
+    expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', CONNECT_FAILED);
   });
 });
 
@@ -1233,7 +1276,7 @@ describe('MemoryConnectService with two Hub people', () => {
 
     const result = await service.handleCallback('code-1', 'state-1', '1');
 
-    expect(result).toEqual({ next: 'https://app.example.org/', error: true });
+    expect(result).toEqual({ next: '/apps/local/ci-openclaw?memoryConnect=error', error: true });
     expect(exchange.exchange).not.toHaveBeenCalled();
     expect(connections.clear).not.toHaveBeenCalled();
     expect(connections.storeConnected).not.toHaveBeenCalled();
@@ -1370,14 +1413,14 @@ describe('MemoryConnectService with two Hub people', () => {
     expect(await service.getStatus(APP, undefined, '2')).toMatchObject({ state: 'connected', connectedByOther: false });
   });
 
-  it('lands on the app, not on a removed-connection message, when nothing was replaced', async () => {
+  it("lands on the app's page in the Hub, not on a removed-connection message, when nothing was replaced", async () => {
     const { service, exchange, connections, pending } = withPerson2Connected();
     connections.listConnected.mockResolvedValue([]);
     connections.getActiveConnection.mockResolvedValue(undefined);
     pending.consume.mockReturnValue(CONSUMED_BY_1);
     exchange.exchange.mockRejectedValue(new Error('ci-memory unreachable'));
 
-    expect(await service.handleCallback('code-1', 'state-1', '1')).toEqual({ next: 'https://app.example.org/', error: true });
+    expect(await service.handleCallback('code-1', 'state-1', '1')).toEqual({ next: '/apps/local/ci-openclaw?memoryConnect=error', error: true });
   });
 
   it('revokes the new key when it cannot be stored, so no valid key is left that nobody holds', async () => {
@@ -1395,7 +1438,7 @@ describe('MemoryConnectService with two Hub people', () => {
     expect(lifecycle.held.restart).toHaveBeenCalled();
   });
 
-  it('revokes an unstored key on a plain connect too, and lands back on the app', async () => {
+  it("revokes an unstored key on a plain connect too, and lands on the app's page in the Hub", async () => {
     const { service, exchange, connections, pending, lifecycle } = withPerson2Connected();
     connections.listConnected.mockResolvedValue([]);
     connections.getActiveConnection.mockResolvedValue(undefined);
@@ -1407,7 +1450,7 @@ describe('MemoryConnectService with two Hub people', () => {
 
     expect(exchange.revoke).toHaveBeenCalledTimes(1);
     expect(exchange.revoke.mock.invocationCallOrder[0]).toBeGreaterThan(exchange.exchange.mock.invocationCallOrder[0]);
-    expect(result).toEqual({ next: 'https://app.example.org/', error: true });
+    expect(result).toEqual({ next: '/apps/local/ci-openclaw?memoryConnect=error', error: true });
     // The exchange replaced any earlier key of this person's, so the app must stop presenting it.
     expect(lifecycle.held.restart).toHaveBeenCalled();
   });
