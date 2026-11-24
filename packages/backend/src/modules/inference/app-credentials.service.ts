@@ -346,7 +346,9 @@ export class AppCredentialsService implements OnApplicationShutdown {
       this.logger.info(`[AppCredentials] ${slug}: no chat model chosen yet; handing out the setup wizard's default ${wizardDefault.backendModelId}`);
     }
     const candidates = wizardDefault ? [wizardDefault, ...recommended.filter((m) => m.id !== wizardDefault.id)] : recommended;
-    const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier, profile, slug, requirements);
+    const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier, profile, slug, requirements, (model) =>
+      this.isModelPulled(model.id, endpointHealth.modelsLoaded, backendType, endpointReady),
+    );
     // The same engine the app.env resolver picks (`embeddingBackendFor`), so an app is never handed one
     // embedder here and another there: this path used to hand Ollama's `nomic-embed-text` to a
     // Lemonade-only node, where nothing serves it. Where no local engine has a catalog embedder (vLLM
@@ -444,7 +446,10 @@ export class AppCredentialsService implements OnApplicationShutdown {
       // Host-managed servers can expose an operator-chosen model that is not in the Hub catalog.
       // A healthy endpoint with at least one served model is therefore ready even when there is no
       // curated `recommendedLlm` to match (the speculative inference model alias is configured at server startup).
+      // The model handed out is one the engine has (`pickIfAvailable`), even when the recommender
+      // named another, such as a substitute for a preferred model the app cannot run (#2538).
       chatModelReady =
+        Boolean(localChat.model) ||
         (recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType, endpointReady) : false) ||
         (isHostServedBackend(backendType) && endpointReady && endpointHealth.modelsLoaded.length > 0);
       if (!chatModelId && localChat.rejected.length > 0) {
@@ -452,6 +457,9 @@ export class AppCredentialsService implements OnApplicationShutdown {
       }
     }
     const embeddingsModelId = embeddings ? embedderEngineId(embeddings, embeddingsServed, embedsOnActive ? backend : this.ollamaBackend) : null;
+    // Every local pick above is one the engine has and the app accepts, so the pre-pull below has
+    // nothing to add unless the operator chose a model this node does not have yet.
+    const localHandout = poolChoice ? null : chatModelId;
 
     // ─── Cloud override: app → cloud provider API directly ───────────────
     if (cloudProvider) {
@@ -616,6 +624,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
         installedLocally: recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType, endpointReady) : false,
         poolServedBy: poolRouting && recommendedLlm ? nodesServing(poolRouting.inventory, recommendedLlm.backendModelId, recommendedLlm.backend) : [],
         poolHandout: routedThroughPool ? (poolChoice?.engineId ?? null) : null,
+        localHandout,
         operatorPreferred: Boolean(recommendedLlm && preferredModelId && recommendedLlm.id === preferredModelId),
         requirements,
         engineOffers: recommendedLlm?.backend === backendType ? (backend.offersModel?.(recommendedLlm.backendModelId) ?? null) : null,
@@ -671,8 +680,10 @@ export class AppCredentialsService implements OnApplicationShutdown {
   /**
    * The model this node would pull for a sibling app. Honors the user's preferred model (set during
    * AI setup) when it is an LLM that is runnable on the current hardware and meets the app's
-   * requirements — otherwise falls back to the top hardware-recommended model that meets them.
-   * Pulling a model the app would refuse spends the disk for nothing.
+   * requirements. Otherwise it falls back to the top hardware-recommended model that meets them. When
+   * that one is not on this node yet, a suitable one already downloading comes first: the wizard's
+   * other ticked models download while its apps install. A Default the app cannot use sent this to
+   * the top of the list instead (#2538). Pulling a model the app would refuse spends the disk for nothing.
    */
   private resolveRecommendedLlm(
     candidates: CuratedModel[],
@@ -681,6 +692,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
     profile: HardwareProfile,
     slug: AppSlug,
     requirements: AppInferenceRequirements,
+    isInstalled: (model: CuratedModel) => boolean,
   ): CuratedModel | null {
     const suitable = (model: CuratedModel) => checkModelRequirements(model, requirements).verdict !== 'fails';
     if (preferredId) {
@@ -699,7 +711,11 @@ export class AppCredentialsService implements OnApplicationShutdown {
         );
       }
     }
-    return candidates.find((m) => m.modality === 'llm' && suitable(m)) ?? null;
+    const usable = candidates.filter((m) => m.modality === 'llm' && suitable(m));
+    const top = usable[0];
+    if (!top) return null;
+    if (isInstalled(top)) return top;
+    return usable.find((m) => this.modelPuller.isPullPending(m.id)) ?? top;
   }
 
   private resolveAvailableLlm(

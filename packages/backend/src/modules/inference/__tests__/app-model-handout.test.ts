@@ -418,6 +418,17 @@ describe('decideModelPrePull', () => {
     expect(decideModelPrePull({ ...base, kind: 'embeddings', poolHandout: 'qwen3.6:27b' })).toMatchObject({ pull: true });
   });
 
+  it('does not pull a hardware substitute for an app this node already serves, but does pull the preferred model', () => {
+    expect(decideModelPrePull({ ...base, localHandout: 'qwen3.6:35b' })).toEqual({
+      kind: 'chat',
+      catalogId: 'qwen3-coder-30b',
+      pull: false,
+      reason: 'this app already runs on qwen3.6:35b from this node and qwen3-coder:30b is not the preferred model',
+    });
+    expect(decideModelPrePull({ ...base, localHandout: 'qwen3.6:35b', operatorPreferred: true })).toMatchObject({ pull: true });
+    expect(decideModelPrePull({ ...base, kind: 'embeddings', localHandout: 'qwen3.6:35b' })).toMatchObject({ pull: true });
+  });
+
   it('pulls only when nothing serves the model, the local Ollama is ready, and chat is not on cloud', () => {
     expect(decideModelPrePull(base)).toMatchObject({ pull: true, reason: 'not installed on this node and no pool node serves it' });
     expect(decideModelPrePull({ ...base, installedLocally: true })).toMatchObject({ pull: false });

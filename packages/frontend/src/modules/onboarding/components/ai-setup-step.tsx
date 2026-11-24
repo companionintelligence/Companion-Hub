@@ -27,6 +27,7 @@ import {
 } from '../helpers/ai-setup-types';
 import { type CuratedModel, defaultChatModelId, type InferenceBackendType } from '@ci-hub/common/types';
 import { AgentFrameworkCard } from './ai-setup/agent-apps-card';
+import { AgentModelFitNotice } from './ai-setup/agent-model-fit-notice';
 import { AccessMethodsCard } from './ai-setup/access-methods-card';
 import { CompanionAppsCard } from './ai-setup/companion-apps-card';
 import { StepSection } from './ai-setup/primitives';
@@ -944,6 +945,7 @@ export const AiSetupStep = ({
             onToggleModel={handleToggleModel}
             preferredModelId={preferredModelId}
             chatBackend={selectedBackend}
+            notice={<AgentModelFitNotice model={profile.availableModels.find((m) => m.id === preferredModelId)} frameworks={agentFrameworks} />}
           >
             <OtherModelsSection
               recommendedModels={backendRecommendedModels}
