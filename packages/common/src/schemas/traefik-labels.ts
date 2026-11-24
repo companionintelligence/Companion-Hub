@@ -45,7 +45,11 @@ const OWN_HOSTS = new Set([
   '${APP_BASE_HOST}',
 ]);
 
-/** The Hub's forward auth: assets/traefik/dynamic/dynamic.yml, and the Hub container's labels for the Docker provider. */
+/**
+ * The Hub's sign-in, as apps name it in their chains: a chain of `ci-hub-no-store` and
+ * `ci-hub-forward-auth` in assets/traefik/dynamic/dynamic.yml, and in the Hub container's labels for
+ * the Docker provider.
+ */
 export const HUB_FORWARD_AUTH_MIDDLEWARES: ReadonlySet<string> = new Set(['ci-hub@file', 'ci-hub@docker']);
 
 /**
@@ -140,17 +144,22 @@ export function collectTraefikLabelIssues(
 /**
  * Router, service and middleware names the Hub's own Traefik configuration defines.
  *
- * The Hub container's labels define the router, service and middleware `ci-hub` and the router
- * `ci-os-hub` on the Docker provider (docker-compose.prod.yml and the desktop app's copy). Its files
- * define `ci-hub`, `ci-hub-edge-headers`, `ci-hub-app-starting`, `ci-hub-sw-reset`, `hub-public` and
- * `hub-service` on the file provider (assets/traefik/dynamic/dynamic.yml and `TraefikConfigService`), which also holds
- * a copy of every app's routers, services and middlewares. An app may not define one: a name that is
- * one of these, or starts with one followed by a dash, is the Hub's unless an app's longer id covers
- * it, and the Hub's when that id is just as long.
+ * The Hub container's labels define the router, service and middleware `ci-hub`, the middlewares
+ * `ci-hub-no-store` and `ci-hub-forward-auth` and the router `ci-os-hub` on the Docker provider
+ * (docker-compose.prod.yml and the desktop app's copy). Its files define `ci-hub`, `ci-hub-no-store`,
+ * `ci-hub-forward-auth`, `ci-hub-edge-headers`, `ci-hub-app-starting`, `ci-hub-sw-reset`, `hub-public`
+ * and `hub-service` on the file provider (assets/traefik/dynamic/dynamic.yml and `TraefikConfigService`),
+ * which also holds a copy of every app's routers, services and middlewares. An app may not define one:
+ * a name that is one of these, or starts with one followed by a dash, is the Hub's unless an app's
+ * longer id covers it, and the Hub's when that id is just as long. That is why the two halves of the
+ * sign-in are listed too: app `ci-hub-forward` could otherwise define `ci-hub-forward-auth`, and its
+ * copy in apps.yml, which Traefik reads first, would replace the forward auth for every app.
  */
 export const HUB_TRAEFIK_NAMES: readonly string[] = [
   'ci-hub',
   'ci-os-hub',
+  'ci-hub-no-store',
+  'ci-hub-forward-auth',
   'ci-hub-edge-headers',
   'ci-hub-app-starting',
   'ci-hub-sw-reset',
