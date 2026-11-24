@@ -570,34 +570,58 @@ function WslEngineGuide() {
 /** Docker states Start engine can't fix: the Docker CLI is missing, or Docker refuses this user. */
 const NOT_AN_ENGINE_STOP: ReadonlySet<DockerAccessState> = new Set<DockerAccessState>(['not_installed', 'permission_denied']);
 
-/**
- * Whether the Hub runs on the Docker engine inside WSL (`docker_engine` in the desktop app's startup
- * progress) and that engine stopped. False while the engine is unknown and from an older shell that
- * doesn't say. Read when the gate mounts, so the engine is usually known before Docker stops
- * answering, and again when it does.
- */
-function useWslEngineStopped(dockerUnavailable: boolean): boolean {
-  const [progress, setProgress] = useState<Pick<StartupProgress, 'docker_engine' | 'docker_access'> | null>(null);
+type DockerRead = Pick<StartupProgress, 'docker_engine' | 'docker_access'>;
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: dockerUnavailable only triggers the re-read
+interface DockerReadState {
+  /** Null from an older shell that doesn't say. */
+  read: DockerRead | null;
+  /** A read (or a failed one) came back since Docker last stopped answering. */
+  settled: boolean;
+}
+
+/**
+ * The engine the Hub runs on and what Docker says to this user (`docker_engine` and `docker_access`
+ * in the desktop app's startup progress). Read when the gate mounts, so the engine is usually known
+ * before Docker stops answering, and again when it does. While Docker doesn't answer it is read
+ * again every poll: a daemon that wasn't up yet at login can come up and then refuse this user.
+ */
+function useDockerRead(dockerUnavailable: boolean): DockerReadState {
+  const [progress, setProgress] = useState<DockerRead | null>(null);
+  /** The `dockerUnavailable` the last finished read was for. */
+  const [readFor, setReadFor] = useState<boolean | null>(null);
+
   useEffect(() => {
     const invoke = getTauriInvoke();
     if (!invoke) return;
     let active = true;
-    invoke('get_startup_progress_command')
-      .then((raw) => {
-        const read = readStartupProgress(raw);
-        if (active) setProgress(read && { docker_engine: read.docker_engine, docker_access: read.docker_access });
-      })
-      .catch(() => {
+    let inFlight = false;
+    const read = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const raw = readStartupProgress(await invoke('get_startup_progress_command'));
+        if (active) setProgress(raw && { docker_engine: raw.docker_engine, docker_access: raw.docker_access });
+      } catch {
         // Keep what the last read said.
-      });
+      } finally {
+        inFlight = false;
+        if (active) setReadFor(dockerUnavailable);
+      }
+    };
+    void read();
+    const id = dockerUnavailable ? setInterval(() => void read(), STARTUP_PROGRESS_POLL_MS) : null;
     return () => {
       active = false;
+      if (id !== null) clearInterval(id);
     };
   }, [dockerUnavailable]);
 
-  return progress?.docker_engine === 'wsl-engine' && !NOT_AN_ENGINE_STOP.has(progress.docker_access);
+  return { read: progress, settled: !dockerUnavailable || readFor === true };
+}
+
+/** The Hub runs on the Docker engine inside WSL and that engine stopped. False while the engine is unknown. */
+function isWslEngineStopped(read: DockerRead | null): boolean {
+  return read?.docker_engine === 'wsl-engine' && !NOT_AN_ENGINE_STOP.has(read.docker_access);
 }
 
 function DockerInstallGuide({ wslEngineStopped }: { wslEngineStopped: boolean }) {
@@ -987,8 +1011,14 @@ function InitialisingRow() {
   );
 }
 
-/** The screen a `get_hub_status_command` result maps to. `starting` becomes stuck by itself. */
-type StartupScreenStatus = 'starting' | 'stopped' | 'failed';
+/**
+ * The screen a `get_hub_status_command` result maps to. `starting` becomes stuck by itself.
+ * `docker_refused`: Docker is installed but refuses this user, as the desktop bootstrap page says too.
+ */
+type StartupScreenStatus = 'starting' | 'stopped' | 'failed' | 'docker_refused';
+
+/** What adds this user to the docker group, as the desktop bootstrap page shows it. */
+const DOCKER_GROUP_COMMAND = 'sudo usermod -aG docker $USER';
 
 type StartupView = StartupScreenStatus | 'stuck';
 
@@ -1050,6 +1080,13 @@ function StartupScreen({
   }, [copied]);
 
   const view: StartupView = status === 'starting' && !downloading && elapsedSeconds >= stuckAfterSeconds ? 'stuck' : status;
+
+  // The command and the error share one Copied: a copy on one screen must not read as done on the next.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: view only triggers the reset
+  useEffect(() => {
+    setCopied(false);
+  }, [view]);
+
   const core = progress ? progress.services.filter((service) => !service.optional) : [];
   const dockerReady = !progress || progress.docker_access === 'available';
   const failedService = core.find((service) => service.state === 'failed') ?? null;
@@ -1074,6 +1111,8 @@ function StartupScreen({
   };
   const panelError = failedService ? null : errorText;
   const errorToCopy = [...new Set([failedService?.detail, errorText].filter((text): text is string => Boolean(text)))].join('\n\n');
+  // The group command is for Linux. Elsewhere the line says what to do.
+  const command = view === 'docker_refused' && detectPlatform() === 'linux' ? DOCKER_GROUP_COMMAND : null;
 
   let title: string;
   let line: string;
@@ -1117,14 +1156,19 @@ function StartupScreen({
       }
       break;
     }
+    case 'docker_refused':
+      title = t('HUB_STATUS_DOCKER_REFUSED_TITLE');
+      line = t('HUB_STATUS_DOCKER_REFUSED_LINE');
+      timeText = '';
+      break;
     default:
       title = t('HUB_STATUS_STARTING_TITLE');
       line = downloading ? t('HUB_STATUS_STARTING_DOWNLOADING') : t('HUB_STATUS_STARTING_SERVICES_ONLINE');
       timeText = t('HUB_STATUS_ELAPSED_TIME', { time: formatClock(elapsedSeconds) });
   }
 
-  // A stopped Hub reads 0% whatever the containers score.
-  const pct = progress && view !== 'stopped' ? progress.progress_pct : 0;
+  // A stopped Hub reads 0% whatever the containers score, and so does one this user can't see.
+  const pct = progress && view !== 'stopped' && view !== 'docker_refused' ? progress.progress_pct : 0;
   const barWidth = view === 'starting' || view === 'stuck' ? Math.max(pct, 4) : pct;
 
   let hubApi: FactValue = { key: 'HUB_STATUS_API_NOT_RUNNING' };
@@ -1144,8 +1188,8 @@ function StartupScreen({
       ]
     : ALWAYS_COUNTED.map((state) => ({ state, count: null }));
 
-  const handleCopyError = async () => {
-    if (errorToCopy && (await copyText(errorToCopy))) {
+  const handleCopy = async (text: string) => {
+    if (text && (await copyText(text))) {
       setCopied(true);
     }
   };
@@ -1237,6 +1281,16 @@ function StartupScreen({
           <InitialisingRow />
         )}
 
+        {command && (
+          <div className="flex items-center justify-between gap-3 rounded-md bg-muted py-1 pl-3 pr-1">
+            <code className="font-mono text-sm text-foreground [overflow-wrap:anywhere]">{command}</code>
+            <QuietAction onClick={() => void handleCopy(command)}>{copied ? t('HUB_STATUS_COPIED') : t('HUB_STATUS_COPY')}</QuietAction>
+            <span role="status" className="sr-only">
+              {copied ? t('HUB_STATUS_COMMAND_COPIED') : ''}
+            </span>
+          </div>
+        )}
+
         {view === 'starting' && elapsedSeconds > LOGS_LINK_AFTER_SECONDS && (
           <div className="flex justify-center">
             <QuietAction onClick={onViewLogs}>{t('HUB_STATUS_VIEW_LOGS')}</QuietAction>
@@ -1270,7 +1324,7 @@ function StartupScreen({
               {t('HUB_STATUS_TRY_AGAIN')}
             </Button>
             {errorToCopy && (
-              <QuietAction onClick={() => void handleCopyError()}>{copied ? t('HUB_STATUS_COPIED') : t('HUB_STATUS_COPY_ERROR')}</QuietAction>
+              <QuietAction onClick={() => void handleCopy(errorToCopy)}>{copied ? t('HUB_STATUS_COPIED') : t('HUB_STATUS_COPY_ERROR')}</QuietAction>
             )}
             <QuietAction onClick={onViewLogs}>{t('HUB_STATUS_VIEW_LOGS')}</QuietAction>
             <span role="status" className="sr-only">
@@ -1319,7 +1373,11 @@ export function HubStatus({ children }: HubStatusProps) {
   const [failedAfterSeconds, setFailedAfterSeconds] = useState<number | null>(null);
   const [logs, setLogs] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
-  const wslEngineStopped = useWslEngineStopped(status === 'DockerNotAvailable');
+  const { read: dockerRead, settled: dockerReadSettled } = useDockerRead(status === 'DockerNotAvailable');
+  const wslEngineStopped = isWslEngineStopped(dockerRead);
+  // Docker is installed and may well run the Hub, but refuses this user: installing Docker is no
+  // answer, so this gets the startup screen the desktop bootstrap page shows (Companion-Hub#2535).
+  const dockerRefused = status === 'DockerNotAvailable' && dockerRead?.docker_access === 'permission_denied';
   const resolvedTheme = useResolvedTheme();
   const renderedLogs = useMemo(() => {
     if (!logs) {
@@ -1627,8 +1685,10 @@ export function HubStatus({ children }: HubStatusProps) {
   const onConnectScreen = typeof window !== 'undefined' && isCloudConnectPath(window.location.pathname);
   if (!isTauri || isTauriMobileSync() || isMobileClient() || onConnectScreen || import.meta.env.VITE_HUB_RUNTIME === 'mobile') return <>{children}</>;
 
-  // Dark placeholder while the first hub status poll runs (avoids blank flash)
-  if (status === null) {
+  // Dark placeholder while the first hub status poll runs (avoids blank flash), and while Docker
+  // stopped answering before the read of why comes back: the install guide must not flash up for
+  // a Docker that is installed and refuses this user.
+  if (status === null || (status === 'DockerNotAvailable' && !dockerReadSettled)) {
     return (
       <SetupPageShell title={t('APP_NAME')} className="bg-transparent" contentClassName="items-center" fitShortWindows>
         <div className="flex justify-center py-16" role="status" aria-busy="true" aria-label={t('HUB_STATUS_CHECKING')}>
@@ -1670,9 +1730,11 @@ export function HubStatus({ children }: HubStatusProps) {
   }
 
   // A Hub on the WSL engine is set up already: only its engine stopped.
-  const gateTitle = status === 'DockerNotAvailable' && !wslEngineStopped ? t('COMMON_SET_UP_YOUR_HUB') : t('APP_NAME');
+  const gateTitle = status === 'DockerNotAvailable' && !wslEngineStopped && !dockerRefused ? t('COMMON_SET_UP_YOUR_HUB') : t('APP_NAME');
   let screenStatus: StartupScreenStatus = 'starting';
-  if (status === 'Stopped') {
+  if (dockerRefused) {
+    screenStatus = 'docker_refused';
+  } else if (status === 'Stopped') {
     screenStatus = 'stopped';
   } else if (isErrorStatus(status)) {
     screenStatus = 'failed';
@@ -1682,7 +1744,7 @@ export function HubStatus({ children }: HubStatusProps) {
     // Transparent so the body's background lift shows, as on the desktop bootstrap page.
     <SetupPageShell title={gateTitle} className="bg-transparent" contentClassName="items-center" fitShortWindows>
       <div className="flex flex-col items-center gap-6 w-full max-w-3xl px-4">
-        {status === 'DockerNotAvailable' ? (
+        {status === 'DockerNotAvailable' && !dockerRefused ? (
           <DockerInstallGuide wslEngineStopped={wslEngineStopped} />
         ) : (
           <StartupScreen
