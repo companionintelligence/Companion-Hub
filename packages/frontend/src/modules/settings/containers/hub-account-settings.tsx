@@ -19,9 +19,13 @@ const REDIRECT_DELAY_MS = 1500;
 
 type WatchState = 'idle' | 'watching' | Exclude<HubRemovalWatchEnd, 'removed' | 'timed_out'>;
 
+/**
+ * The session is dropped as the page leaves, not before the delay. Dropped first, the page's next
+ * request in those 1.5 s was refused and sent it to sign-in, with the toast cut short (#2555).
+ */
 function goToPairing() {
-  clearClientHubState({ keepPortalEmail: true });
   setTimeout(() => {
+    clearClientHubState({ keepPortalEmail: true });
     window.location.href = PAIRING_ROUTE;
   }, REDIRECT_DELAY_MS);
 }

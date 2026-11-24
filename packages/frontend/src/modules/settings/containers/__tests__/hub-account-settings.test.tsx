@@ -95,10 +95,12 @@ describe('HubAccountSection', () => {
     act(() => onEnd('removed'));
 
     expect(toast.success).toHaveBeenCalledWith('SETTINGS_HUB_ACCOUNT_REMOVED');
-    expect(clearClientHubState).toHaveBeenCalledWith({ keepPortalEmail: true });
+    // Still signed in while the toast shows: a request refused in that gap sent the page to sign-in (#2555).
+    expect(clearClientHubState).not.toHaveBeenCalled();
     act(() => {
       vi.runAllTimers();
     });
+    expect(clearClientHubState).toHaveBeenCalledWith({ keepPortalEmail: true });
     expect(window.location.href).toBe('/device-registration');
   });
 
@@ -176,5 +178,37 @@ describe('HubAccountSection', () => {
     await waitFor(() => expect(resetRegistration).toHaveBeenCalledWith());
     expect(toast.success).toHaveBeenCalledWith('SETTINGS_NETWORK_RESET_REGISTRATION_SUCCESS');
     expect(openExternal).not.toHaveBeenCalled();
+  });
+
+  it('keeps the session until the reset leaves for the pairing screen', async () => {
+    vi.mocked(resetRegistration).mockResolvedValue({ data: { success: true }, error: undefined } as never);
+    // Holds back only the redirect's timer, so the page can be looked at before it leaves.
+    const timers: Array<() => void> = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: () => void, delay?: number) => {
+      if (delay === 1500) {
+        timers.push(callback);
+        return 0;
+      }
+      return realSetTimeout(callback, delay);
+    }) as typeof globalThis.setTimeout);
+
+    try {
+      renderSection();
+      await userEvent.click(await screen.findByTestId('reregister-device-btn'));
+      await userEvent.click(await screen.findByTestId('reregister-confirm-btn'));
+      await waitFor(() => expect(toast.success).toHaveBeenCalledWith('SETTINGS_NETWORK_RESET_REGISTRATION_SUCCESS'));
+
+      expect(clearClientHubState).not.toHaveBeenCalled();
+      expect(window.location.href).toBe('http://hub.local/settings');
+
+      act(() => {
+        for (const timer of timers) timer();
+      });
+      expect(clearClientHubState).toHaveBeenCalledWith({ keepPortalEmail: true });
+      expect(window.location.href).toBe('/device-registration');
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
   });
 });

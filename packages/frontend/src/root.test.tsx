@@ -305,12 +305,24 @@ describe('root clientLoader registration gating', () => {
     expect(loginWithPortalError).toBeNull();
   });
 
-  it('allows login while device registration is still pending', async () => {
+  // A reset, a removal in the Portal and a factory reset all end the open page's session, which sends
+  // it to /login. Nobody can sign in to an unpaired Hub, so /login goes on to pairing (#2555).
+  it.each(['unregistered', 'paired', 'provisioning'] as const)('sends /login to pairing while the Hub is %s', async (phase) => {
+    resolveRegistrationStatus.mockResolvedValue(makeStatus(phase));
+
+    const result = (await clientLoader({ request: new Request('http://localhost/login') } as never)) as Response;
+
+    expect(result.status).toBe(302);
+    expect(result.headers.get('Location')).toBe('/device-registration');
+  });
+
+  it('sends a signed-out page that lands on /login after a reset to pairing', async () => {
     resolveRegistrationStatus.mockResolvedValue(makeStatus('unregistered'));
+    userContext.mockResolvedValue({ data: { isConfigured: true, isLoggedIn: false, isGuestDashboardEnabled: false } });
 
-    const result = await clientLoader({ request: new Request('http://localhost/login') } as never);
+    const result = (await clientLoader({ request: new Request('http://localhost/login?next=%2Fsettings') } as never)) as Response;
 
-    expect(result).toBeNull();
+    expect(result.headers.get('Location')).toBe('/device-registration');
   });
 
   it('does not force re-registration when registration status is temporarily unavailable', async () => {
