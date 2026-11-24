@@ -116,8 +116,9 @@ export class PortExposeService {
         openPort,
         localSubdomain: routingSubdomain,
         publicDomain: exposureMode === 'cloudflare' ? (publicDomain ?? null) : null,
-        // Behind the Hub login like any app (`requiresHubLogin`); it once wrote `false` here.
-        enableAuth: true,
+        // Behind the Hub login like any app unless the operator switched it off (`requiresHubLogin`).
+        // This once wrote `false` for every exposed port.
+        enableAuth: dto.enableAuth ?? true,
         isVisibleOnGuestDashboard: false,
       });
 
@@ -208,6 +209,8 @@ export class PortExposeService {
         openPort,
         localSubdomain: routingSubdomain,
         publicDomain: exposureMode === 'cloudflare' ? (publicDomain ?? null) : null,
+        // An update that leaves the login out keeps it as it is.
+        ...(dto.enableAuth === undefined ? {} : { enableAuth: dto.enableAuth }),
         status: 'running',
       });
 

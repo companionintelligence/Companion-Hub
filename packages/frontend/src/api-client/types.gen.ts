@@ -1695,6 +1695,7 @@ export type AppFormBody = {
     exposedLocal?: boolean;
     exposureMode?: 'local' | 'cloudflare' | 'tailscale';
     openPort?: boolean;
+    portOnNetwork?: boolean;
     domain?: string;
     isVisibleOnGuestDashboard?: boolean;
     enableAuth?: boolean;
@@ -1856,6 +1857,7 @@ export type CreatePortExposeAppDto = {
     exposureMode: 'local' | 'cloudflare' | 'tailscale';
     localSubdomain?: string;
     publicDomain?: string;
+    enableAuth?: boolean;
 };
 
 export type CreateCustomAppResponseDto = {
@@ -2115,6 +2117,7 @@ export type UpdatePortExposeAppDto = {
     exposureMode: 'local' | 'cloudflare' | 'tailscale';
     localSubdomain?: string;
     publicDomain?: string;
+    enableAuth?: boolean;
 };
 
 export type UpdateCustomAppDto = {

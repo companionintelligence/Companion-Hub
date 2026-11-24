@@ -15017,6 +15017,9 @@
           "openPort": {
             "type": "boolean"
           },
+          "portOnNetwork": {
+            "type": "boolean"
+          },
           "domain": {
             "type": "string"
           },
@@ -15626,6 +15629,9 @@
           "publicDomain": {
             "type": "string",
             "minLength": 1
+          },
+          "enableAuth": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -16896,6 +16902,9 @@
           "publicDomain": {
             "type": "string",
             "minLength": 1
+          },
+          "enableAuth": {
+            "type": "boolean"
           }
         },
         "required": [

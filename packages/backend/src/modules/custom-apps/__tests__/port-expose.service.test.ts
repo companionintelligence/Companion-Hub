@@ -130,6 +130,12 @@ describe('PortExposeService', () => {
       expect(traefikConfigService.syncPortExposeRoutes).toHaveBeenCalled();
     });
 
+    it('creates it with the Hub login switched off when the operator asks', async () => {
+      await service.createPortExposeApp({ name: 'hook', port: 8080, exposureMode: 'local', enableAuth: false });
+
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: false }));
+    });
+
     it('derives a URL-safe slug from a free-form display name', async () => {
       const result = await service.createPortExposeApp({
         name: 'Adguard Home Sync',
@@ -251,6 +257,18 @@ describe('PortExposeService', () => {
       );
       expect(traefikConfigService.syncPortExposeRoutes).toHaveBeenCalled();
       expect(exposureSyncService.syncExposurePublic).toHaveBeenCalled();
+    });
+
+    it('keeps the Hub login as it is when the update leaves it out', async () => {
+      await service.updatePortExposeApp('my-workload:_user', { port: 9090, exposureMode: 'local' });
+
+      expect(appsRepository.updateAppById.mock.calls.at(-1)?.[1]).not.toHaveProperty('enableAuth');
+    });
+
+    it('switches the Hub login off for a webhook that others call without signing in', async () => {
+      await service.updatePortExposeApp('my-workload:_user', { port: 9090, exposureMode: 'local', enableAuth: false });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, expect.objectContaining({ enableAuth: false }));
     });
 
     it('throws when cloudflare mode is missing a subdomain', async () => {

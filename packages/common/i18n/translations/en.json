@@ -288,6 +288,7 @@
   "PORT_EXPOSE_UPDATE_ERROR": "Could not save the settings",
   "PORT_EXPOSE_DETAILS_SUBTITLE": "Port {{port}}",
   "PORT_EXPOSE_KIND": "Exposed port",
+  "PORT_EXPOSE_ENABLE_AUTH_HINT": "Asks for your Hub login before anyone reaches this port. Turn it off for a webhook or an API that others call without signing in.",
   "PORT_EXPOSE_PUBLIC_CONFIRM_TITLE": "Open port {{port}} to anyone?",
   "PORT_EXPOSE_PUBLIC_CONFIRM_DESCRIPTION": "Anyone who has the address can reach this port. The Hub won't ask them to sign in first, so whatever runs on it has to protect itself.",
   "PORT_EXPOSE_PUBLIC_CONFIRM_PRIVATE": "To keep it private, choose {{local}} or {{vpn}} instead.",
