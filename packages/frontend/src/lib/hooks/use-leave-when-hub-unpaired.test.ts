@@ -7,9 +7,14 @@ const registration = vi.hoisted(() => ({
   refetch: vi.fn(),
 }));
 const { handleSessionExpired } = vi.hoisted(() => ({ handleSessionExpired: vi.fn() }));
+const connection = vi.hoisted(() => ({ mobile: false, hubBaseUrl: null as string | null }));
 
 vi.mock('@/lib/hooks/use-registration-status', () => ({ useRegistrationStatus: () => registration }));
 vi.mock('@/lib/session-expired', () => ({ handleSessionExpired }));
+vi.mock('@/lib/mobile-connection', () => ({
+  isMobileClient: () => connection.mobile,
+  getHubBaseUrlSync: () => connection.hubBaseUrl,
+}));
 
 const { UNPAIRED_CONFIRM_MS, useLeaveWhenHubUnpaired } = await import('./use-leave-when-hub-unpaired');
 
@@ -31,6 +36,8 @@ describe('useLeaveWhenHubUnpaired', () => {
     vi.useFakeTimers();
     vi.clearAllMocks();
     registration.data = status('publicly_ready');
+    connection.mobile = false;
+    connection.hubBaseUrl = null;
   });
 
   afterEach(() => {
@@ -84,6 +91,36 @@ describe('useLeaveWhenHubUnpaired', () => {
     unmount();
     await passConfirmDelay();
 
+    expect(handleSessionExpired).not.toHaveBeenCalled();
+  });
+
+  // A failed check keeps the old `unregistered` as its data, which must not count as a second answer.
+  it('asks again when the check fails instead of leaving on the old answer', async () => {
+    registration.data = status('unregistered');
+    registration.refetch.mockResolvedValueOnce({ isError: true, data: status('unregistered') });
+    registration.refetch.mockResolvedValueOnce({ isError: false, data: status('unregistered') });
+    renderHook(() => useLeaveWhenHubUnpaired());
+
+    await passConfirmDelay();
+    expect(registration.refetch).toHaveBeenCalledTimes(1);
+    expect(handleSessionExpired).not.toHaveBeenCalled();
+
+    await passConfirmDelay();
+    expect(registration.refetch).toHaveBeenCalledTimes(2);
+    expect(handleSessionExpired).toHaveBeenCalledTimes(1);
+  });
+
+  // The phone's root loader lets `/login` through without asking about pairing, so leaving would loop.
+  it('leaves a phone signed in to a remote Hub alone', async () => {
+    connection.mobile = true;
+    connection.hubBaseUrl = 'https://hub.example.test';
+    registration.data = status('unregistered');
+    registration.refetch.mockResolvedValue({ data: status('unregistered') });
+    renderHook(() => useLeaveWhenHubUnpaired());
+
+    await passConfirmDelay();
+
+    expect(registration.refetch).not.toHaveBeenCalled();
     expect(handleSessionExpired).not.toHaveBeenCalled();
   });
 });
