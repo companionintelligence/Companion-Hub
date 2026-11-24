@@ -1042,6 +1042,14 @@ describe('DeviceRegistrationPage', () => {
       delete win.__TAURI_INTERNALS__;
     });
 
+    /** The link's code waits in a dialog: says yes to it, and to nothing else. */
+    async function pairWithLinkCode(code: string) {
+      const dialog = await screen.findByTestId('registration-link-code-dialog');
+      expect(within(dialog).getByTestId('registration-link-code')).toHaveTextContent(code);
+      expect(pairWithCode).not.toHaveBeenCalled();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Pair with this code' }));
+    }
+
     async function openScreenAgain() {
       render(<DeviceRegistrationPage />);
       expect(await screen.findByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
@@ -1051,11 +1059,32 @@ describe('DeviceRegistrationPage', () => {
       });
     }
 
+    it('never pairs because a link arrived: it asks, and Cancel pairs nothing and empties the box', async () => {
+      // Anyone can write a cihub://pair link, and an unpaired desktop Hub supplies its own setup code.
+      const first = render(<DeviceRegistrationPage />);
+      await waitFor(() => expect(shell.pairListeners.length).toBeGreaterThan(0));
+
+      act(() => openPairingLink('ABC123'));
+      const dialog = await screen.findByTestId('registration-link-code-dialog');
+      await flushAsyncWork();
+      expect(pairWithCode).not.toHaveBeenCalled();
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(screen.queryByTestId('registration-link-code-dialog')).not.toBeInTheDocument());
+      expect(screen.getByLabelText('Enter pairing code:')).toHaveValue('');
+      expect(pairWithCode).not.toHaveBeenCalled();
+
+      first.unmount();
+      await openScreenAgain();
+      expect(pairWithCode).not.toHaveBeenCalled();
+    });
+
     it('submits a link opened on this screen once, and leaves no copy for the next visit', async () => {
       const first = render(<DeviceRegistrationPage />);
       await waitFor(() => expect(shell.pairListeners.length).toBeGreaterThan(0));
 
       act(() => openPairingLink('ABC123'));
+      await pairWithLinkCode('ABC123');
 
       await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('ABC123', { confirmMove: false }));
       await waitFor(() => expect(shell.parkedPairingCode).toBeNull());
@@ -1071,6 +1100,7 @@ describe('DeviceRegistrationPage', () => {
       await waitFor(() => expect(shell.pairListeners.length).toBeGreaterThan(0));
 
       act(() => openPairingLink('ABC123'));
+      await pairWithLinkCode('ABC123');
       await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('ABC123', { confirmMove: false }));
       // Linux and Windows hand the app every link twice.
       act(() => openPairingLink('ABC123'));
@@ -1089,6 +1119,7 @@ describe('DeviceRegistrationPage', () => {
       sessionStorage.setItem(STASH_KEY, 'DEF456');
 
       const first = render(<DeviceRegistrationPage />);
+      await pairWithLinkCode('DEF456');
 
       await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('DEF456', { confirmMove: false }));
       await waitFor(() => expect(sessionStorage.getItem(STASH_KEY)).toBeNull());
@@ -1109,6 +1140,7 @@ describe('DeviceRegistrationPage', () => {
       await waitFor(() => expect(shell.pairListeners.length).toBeGreaterThan(0));
 
       act(() => openPairingLink('GHI789'));
+      await pairWithLinkCode('GHI789');
 
       await waitFor(() => expect(toast.error).toHaveBeenCalledWith('That pairing code is no longer valid. Ask for a new one.'));
       // The code stays in the box, so Register can still retry it by hand.

@@ -40,6 +40,7 @@ import {
   RegistrationStateDriftDialog,
 } from '@/modules/auth/components/registration-state-drift-dialog';
 import { useTranslation } from 'react-i18next';
+import { RegistrationLinkCodeDialog } from '@/modules/auth/components/registration-link-code-dialog';
 import { RegistrationMoveDialog } from '@/modules/auth/components/registration-move-dialog';
 
 const DEFAULT_PORTAL_URL = (
@@ -226,6 +227,8 @@ export default function DeviceRegistrationPage() {
   }, []);
   /** A pairing the Portal will only finish as a move, waiting for the person's yes. */
   const [moveConfirmation, setMoveConfirmation] = useState<{ code: string; organizationName: string | null } | null>(null);
+  // A code a `cihub://pair` link brought, waiting for the person's yes (RegistrationLinkCodeDialog).
+  const [linkCode, setLinkCode] = useState<string | null>(null);
   const [redirectStatusKey, setRedirectStatusKey] = useState('DEVICE_REGISTRATION_SETTING_UP_HUB_ELLIPSIS');
   /** True while this page is checking the public URL after pairing, which can take several minutes. */
   const [followingPublicUrl, setFollowingPublicUrl] = useState(false);
@@ -259,7 +262,7 @@ export default function DeviceRegistrationPage() {
   /** What is wrong with the setup code, shown at its own field rather than at the pairing code's. */
   const [setupCodeError, setSetupCodeError] = useState<string | null>(null);
   const isTauri = '__TAURI_INTERNALS__' in window;
-  const canAutoPairFromDeepLink = isTauri && !isLoading && (!registrationStatus || requiresDeviceRegistration(registrationStatus));
+  const canOfferDeepLinkCode = isTauri && !isLoading && (!registrationStatus || requiresDeviceRegistration(registrationStatus));
 
   const loadDeviceInfo = useCallback(async () => {
     try {
@@ -653,7 +656,7 @@ export default function DeviceRegistrationPage() {
   }, [isTauri]);
 
   useEffect(() => {
-    if (!canAutoPairFromDeepLink) {
+    if (!canOfferDeepLinkCode) {
       return;
     }
 
@@ -675,13 +678,14 @@ export default function DeviceRegistrationPage() {
       deepLinkPairAttemptRef.current = pendingCode;
       setPendingDeepLinkCode(null);
       setPairingCode(pendingCode);
-      await doPair(pendingCode);
+      // Asked, never submitted on arrival: anyone can write a link (RegistrationLinkCodeDialog).
+      setLinkCode(pendingCode);
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [canAutoPairFromDeepLink, doPair, pendingDeepLinkCode]);
+  }, [canOfferDeepLinkCode, pendingDeepLinkCode]);
 
   const handleSetupNewDevice = async () => {
     setIsPreparingFresh(true);
@@ -879,6 +883,22 @@ export default function DeviceRegistrationPage() {
 
   return (
     <div className="space-y-6">
+      <RegistrationLinkCodeDialog
+        code={linkCode}
+        isPairing={isPairing}
+        onPair={() => {
+          if (linkCode) {
+            const code = linkCode;
+            setLinkCode(null);
+            void doPair(code);
+          }
+        }}
+        onCancel={() => {
+          setLinkCode(null);
+          setPairingCode('');
+        }}
+      />
+
       <RegistrationMoveDialog
         open={moveConfirmation !== null}
         organizationName={moveConfirmation?.organizationName ?? null}
