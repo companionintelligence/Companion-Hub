@@ -22,6 +22,7 @@ import { Trans, useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
 import { useState, useEffect, useCallback, useId, useRef } from 'react';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
+import { holdPageOnSessionExpiry } from '@/lib/session-expired';
 import {
   clearHubSteadySession,
   clearKeptStackUpdateOutcome,
@@ -98,6 +99,11 @@ const stackUpdateOutcomeMessage = (t: TFunction, outcome: StackUpdateOutcome) =>
     ? t('SETTINGS_ACTIONS_UPDATE_COMPLETE', { version: outcome.version })
     : t('SETTINGS_ACTIONS_UPDATE_NOT_CONFIRMED', { version: outcome.version });
 
+/** A factory reset unpairs the Hub, so it ends on the pairing page: nobody can sign in before that. */
+const FACTORY_RESET_DONE_ROUTE = '/device-registration';
+/** How long the reset's toast is on screen before the page leaves. */
+const FACTORY_RESET_TOAST_MS = 3000;
+
 /**
  * A `cihub` install has no desktop app, so the card says that instead of offering one. Unknown keeps the card.
  * The desktop window is the app itself, whatever the Hub can see of it. A Hub that says its desktop app
@@ -166,6 +172,9 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   const stackCheckSeq = useRef(0);
   const autoUpdatesBlockedId = `${autoUpdatesId}-blocked`;
   const [switchHubOpen, setSwitchHubOpen] = useState(false);
+  // Set while a factory reset keeps this page from being sent to sign-in. Let go if the page goes away.
+  const releaseFactoryResetPage = useRef<(() => void) | null>(null);
+  useEffect(() => () => releaseFactoryResetPage.current?.(), []);
 
   const desktop = isTauri();
   // The desktop app's own window, where this page can ask the app to install its update. `isTauri()`
@@ -196,9 +205,9 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   const setFactoryResetDialogOpen = useCallback(
     (open: boolean) => {
       // The Hub is already reset when the dialog is only left open to say the Portal still lists its
-      // apps. Closing it goes on to sign in, as a reset that needed no warning does.
+      // apps. Closing it goes on to pairing, as a reset that needed no warning does.
       if (!open && factoryResetPortalAppsLeft) {
-        window.location.href = '/login';
+        window.location.href = FACTORY_RESET_DONE_ROUTE;
         return;
       }
       setFactoryResetOpen(open);
@@ -224,6 +233,11 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
     }
 
     setFactoryResetting(true);
+    // The reset deletes every user, so this page's next request is refused, maybe before the reset has
+    // even answered. Refused, it went to sign-in and took the toast and the warning below with it.
+    // Held from here until the page leaves on its own.
+    releaseFactoryResetPage.current?.();
+    releaseFactoryResetPage.current = holdPageOnSessionExpiry();
     try {
       const result = await factoryReset({ body: { confirmation: typedName, removeAppsFromPortal: factoryResetRemovePortalApps } });
       if (result.error) {
@@ -239,9 +253,16 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
         setFactoryResetOpen(true);
         return;
       }
+      setFactoryResetOpen(false);
       toast.success(t('SETTINGS_FACTORY_RESET_SUCCESS'));
-      window.location.href = '/login';
+      setTimeout(() => {
+        window.location.href = FACTORY_RESET_DONE_ROUTE;
+      }, FACTORY_RESET_TOAST_MS);
     } catch (error) {
+      // A reset that stopped may have kept every user (it says so when files were left), so the page goes
+      // on as usual. If it did delete them, the next refused request sends the page to sign-in.
+      releaseFactoryResetPage.current?.();
+      releaseFactoryResetPage.current = null;
       setFactoryResetting(false);
       // A reset that stopped on files it could not delete says how many, which, and how to finish, and
       // one that refused a home folder as the data folder names it. Anything else may have stopped

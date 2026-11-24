@@ -1292,7 +1292,7 @@
   "SETTINGS_FACTORY_RESET_DIALOG_BODY": "Esto elimina permanentemente todos los usuarios, aplicaciones, estado de registro y datos locales de este Hub. Tendrás que iniciar sesión de nuevo como primer operador y volver a emparejar el dispositivo.",
   "SETTINGS_FACTORY_RESET_CONFIRMATION_LABEL": "Escribe \"{{phrase}}\" para confirmar",
   "SETTINGS_FACTORY_RESET_CONFIRMATION_MISMATCH": "La frase de confirmación no coincide.",
-  "SETTINGS_FACTORY_RESET_SUCCESS": "Restablecimiento de fábrica completado. Redirigiendo al inicio de sesión…",
+  "SETTINGS_FACTORY_RESET_SUCCESS": "Restablecimiento de fábrica completado. Abriendo la pantalla de emparejamiento…",
   "SETTINGS_FACTORY_RESET_ERROR": "Error al restablecer de fábrica. Prueba `cihub reset --yes` desde la CLI si el Hub no responde.",
   "SETTINGS_WIZARD_SUBTITLE": "Re-run the first-time setup wizard to reconfigure your agents, models, and remote access.",
   "SETTINGS_WIZARD_TITLE": "Setup Wizard",
