@@ -7,6 +7,8 @@ import { openExternal } from '@/lib/helpers/open-external';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { type HubRemovalWatchEnd, portalRemoveDeviceUrl, watchForHubRemoval } from '@/lib/hub-removal-watch';
 import { portalConfigQueryOptions } from '@/lib/portal-config';
+import { clearRegistrationCache } from '@/lib/registration-cache';
+import { clearStoredDriftChoice } from '@/lib/registration-state-drift';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2, Unlink } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -22,8 +24,12 @@ type WatchState = 'idle' | 'watching' | Exclude<HubRemovalWatchEnd, 'removed' | 
 /**
  * The session is dropped as the page leaves, not before the delay. Dropped first, the page's next
  * request in those 1.5 s was refused and sent it to sign-in, with the toast cut short (#2555).
+ * What the session doesn't need goes at once: a page closed or reloaded in those 1.5 s never runs
+ * the timer, and a registration cache left behind answers "paired" while the status API is down.
  */
 function goToPairing() {
+  clearRegistrationCache();
+  clearStoredDriftChoice();
   setTimeout(() => {
     clearClientHubState({ keepPortalEmail: true });
     window.location.href = PAIRING_ROUTE;

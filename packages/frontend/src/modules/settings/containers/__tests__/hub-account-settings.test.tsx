@@ -193,6 +193,9 @@ describe('HubAccountSection', () => {
       return realSetTimeout(callback, delay);
     }) as typeof globalThis.setTimeout);
 
+    sessionStorage.setItem('device-registered', 'true');
+    sessionStorage.setItem('device-registered-at', String(Date.now()));
+
     try {
       renderSection();
       await userEvent.click(await screen.findByTestId('reregister-device-btn'));
@@ -200,6 +203,8 @@ describe('HubAccountSection', () => {
       await waitFor(() => expect(toast.success).toHaveBeenCalledWith('SETTINGS_NETWORK_RESET_REGISTRATION_SUCCESS'));
 
       expect(clearClientHubState).not.toHaveBeenCalled();
+      // Gone before the delay, so a page closed in those 1.5 s doesn't keep calling the Hub paired.
+      expect(sessionStorage.getItem('device-registered')).toBeNull();
       expect(window.location.href).toBe('http://hub.local/settings');
 
       act(() => {

@@ -316,12 +316,12 @@ describe('root clientLoader registration gating', () => {
     expect(result.headers.get('Location')).toBe('/device-registration');
   });
 
-  it('sends a signed-out page that lands on /login after a reset to pairing', async () => {
+  it('sends /login with a page to come back to on to pairing as well', async () => {
     resolveRegistrationStatus.mockResolvedValue(makeStatus('unregistered'));
-    userContext.mockResolvedValue({ data: { isConfigured: true, isLoggedIn: false, isGuestDashboardEnabled: false } });
 
     const result = (await clientLoader({ request: new Request('http://localhost/login?next=%2Fsettings') } as never)) as Response;
 
+    expect(result.status).toBe(302);
     expect(result.headers.get('Location')).toBe('/device-registration');
   });
 
