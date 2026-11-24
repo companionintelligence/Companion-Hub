@@ -239,3 +239,52 @@ fn config_hash_ignores_the_learned_zone_and_nothing_else() {
         "only DOMAIN itself is left out"
     );
 }
+
+fn docker_check(state: DockerAccessState, detail: &str) -> DockerAccessCheck {
+    DockerAccessCheck {
+        state,
+        detail: Some(detail.to_string()),
+    }
+}
+
+/// `docker info` failed with "Too many open files" while all 22 containers kept running, and
+/// Stop Hub took that for "Docker isn't running": Clear Tunnel Token then said it had stopped them.
+#[test]
+fn stop_hub_does_not_take_a_failed_docker_info_for_a_stopped_hub() {
+    for check in [
+        docker_check(
+            DockerAccessState::Error,
+            "Failed to run docker info: Too many open files (os error 24)",
+        ),
+        docker_check(
+            DockerAccessState::PermissionDenied,
+            "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+        ),
+    ] {
+        let detail = check.detail.clone().expect("detail");
+        let error = stop_without_docker(&check).expect_err(&detail);
+        assert_eq!(
+            error,
+            with_view_logs_hint(format!(
+                "Docker did not answer, so the Hub may still be running ({detail})."
+            ))
+        );
+    }
+}
+
+#[test]
+fn stop_hub_counts_the_hub_stopped_when_docker_is_missing_or_not_running() {
+    for check in [
+        docker_check(
+            DockerAccessState::DaemonUnavailable,
+            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+        ),
+        docker_check(
+            DockerAccessState::NotInstalled,
+            "Docker CLI was not found on PATH.",
+        ),
+    ] {
+        let message = stop_without_docker(&check).expect("nothing left to stop");
+        assert!(message.ends_with("; Hub is effectively stopped."), "{message}");
+    }
+}

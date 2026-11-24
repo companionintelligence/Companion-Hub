@@ -871,20 +871,24 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
     }
     START_IMAGE_DOWNLOADS_SEEN.store(false, Ordering::SeqCst);
 
-    // If Docker is not available there are no containers to tear down.
-    // Return success immediately rather than letting `docker compose down`
-    // fail with a confusing plugin-flag error (e.g. "unknown flag: --env-file").
-    let docker_check = check_docker_access();
+    // Without Docker there are no containers to tear down. Return success at once rather than
+    // letting `docker compose down` fail with a confusing plugin-flag error (e.g. "unknown flag:
+    // --env-file"). Only when Docker is missing or not running, though: see
+    // `stop_without_docker`.
+    let mut docker_check = check_docker_access();
+    if !matches!(docker_check.state, DockerAccessState::Available)
+        && !docker_runs_nothing(&docker_check.state)
+    {
+        // The answer may be a status poll's from a few seconds ago. Ask once more before
+        // telling the user the Hub could not be stopped.
+        forget_docker_access_check();
+        docker_check = check_docker_access();
+    }
     if !matches!(docker_check.state, DockerAccessState::Available) {
-        let reason = docker_check
-            .detail
-            .unwrap_or_else(|| "Docker daemon is not running.".to_string());
-        let message = format!(
-            "Docker is not available ({}); Hub is effectively stopped.",
-            reason
-        );
-        let _ = append_desktop_log_for(&data_dir, "hub.stop", &message);
-        return Ok(message);
+        let outcome = stop_without_docker(&docker_check);
+        let (Ok(message) | Err(message)) = &outcome;
+        let _ = append_desktop_log_for(&data_dir, "hub.stop", message);
+        return outcome;
     }
 
     let _ = append_desktop_log_for(
@@ -949,12 +953,53 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
     }
 }
 
+/// Docker that isn't installed or isn't running runs no containers. Any other failed `docker info`
+/// (a permission error, or "Too many open files" on a busy host) says nothing about them, and they
+/// may well run on (Companion-Hub#2554).
+pub(crate) fn docker_runs_nothing(state: &DockerAccessState) -> bool {
+    matches!(
+        state,
+        DockerAccessState::NotInstalled | DockerAccessState::DaemonUnavailable
+    )
+}
+
+/// What Stop Hub makes of a `docker info` that didn't answer: stopped only when Docker runs
+/// nothing (see [`docker_runs_nothing`]), else a failure, since the Hub may still be running.
+pub(crate) fn stop_without_docker(check: &DockerAccessCheck) -> Result<String, String> {
+    if docker_runs_nothing(&check.state) {
+        let reason = check
+            .detail
+            .as_deref()
+            .unwrap_or("Docker daemon is not running.");
+        return Ok(format!(
+            "Docker is not available ({reason}); Hub is effectively stopped."
+        ));
+    }
+    let reason = check
+        .detail
+        .as_deref()
+        .unwrap_or("docker info gave no reason");
+    Err(with_view_logs_hint(format!(
+        "Docker did not answer, so the Hub may still be running ({reason})."
+    )))
+}
+
 /// Stops the running app containers along with the Hub and remembers them for the next start.
 /// `restart: unless-stopped` leaves a container stopped by hand stopped, so nothing else starts
 /// them again.
 pub fn stop_managed_app_containers(data_dir: &Path) -> Result<Option<String>, String> {
-    if !is_docker_available() {
-        return Ok(None);
+    let docker_check = check_docker_access();
+    if !matches!(docker_check.state, DockerAccessState::Available) {
+        if docker_runs_nothing(&docker_check.state) {
+            return Ok(None);
+        }
+        let reason = docker_check
+            .detail
+            .as_deref()
+            .unwrap_or("docker info gave no reason");
+        return Err(format!(
+            "Docker did not answer, so installed apps may still be running ({reason})."
+        ));
     }
 
     let ids = list_managed_app_container_ids()?;

@@ -43,8 +43,8 @@ pub(crate) fn cached_docker_access_check(
 /// Bumped by [`forget_docker_access_check`], so a check already under way doesn't cache its answer.
 static DOCKER_ACCESS_GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// Drop the cached check, so the next one asks Docker: it has just started.
-#[cfg_attr(not(windows), allow(dead_code))]
+/// Drop the cached check, so the next one asks Docker: it has just started, or its last answer
+/// may be stale.
 pub(crate) fn forget_docker_access_check() {
     let mut cache = lock_recovering(&DOCKER_ACCESS_CACHE);
     DOCKER_ACCESS_GENERATION.fetch_add(1, Ordering::SeqCst);
