@@ -696,6 +696,60 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
     });
   });
 
+  // A 122 GB Strix Halo machine, 2026-11-23 (#2539): with 36 GB free and qwen3.6:35b loaded by an app, the Hub refused
+  // MiniMax M2 230B and then sent the request to Ollama anyway, which loaded 51 GB of it. On unified
+  // memory that is the machine's own RAM, and the out-of-memory killer took the desktop session.
+  describe('a request for a model that does not fit in unified memory', () => {
+    it('is refused with the reason, and the engine never loads the model (#2539)', async () => {
+      ollama = new FakeOllama({ 'qwen3.6:35b': 22_000, 'gabegoodhart/minimax-m2:230b': 72_243 });
+      ollama.hold('qwen3.6:35b', 22_000);
+      const hardware = strixHalo(60_000, [ollama]);
+      const w = world(await hardware.getProfile(), ollama, { 'minimax-m2-community-230b': 72_243 }, { hardware });
+      w.pulled('minimax-m2-community-230b');
+
+      await expect(w.router.loadTrackedModel('minimax-m2-community-230b', { origin: 'request', numCtx: null })).resolves.toMatchObject({
+        loaded: false,
+        reason: expect.stringContaining('minimax-m2-community-230b needs 72243 MB'),
+        systemMemory: true,
+      });
+      const refused = w.router.prepareTrackedModel('gabegoodhart/minimax-m2:230b');
+      await expect(refused).rejects.toMatchObject({ status: 503, code: 'insufficient_memory' });
+      await expect(refused).rejects.toThrow(
+        /^The Hub did not load "gabegoodhart\/minimax-m2:230b" on ollama: minimax-m2-community-230b needs 72243 MB/,
+      );
+      expect(ollama.loads).toEqual([]);
+      expect(ollama.unloads).toEqual([]);
+    });
+
+    // Ollama unloads its own idle runners to fit a model, an app's among them, which a request may not ask the Hub to do.
+    it('is still left to the engine when unloading an idle model an app loaded would make room', async () => {
+      ollama = new FakeOllama({ 'qwen3.6:35b': 22_000, 'qwen3-coder:30b': 45_000 });
+      ollama.hold('qwen3.6:35b', 22_000);
+      const hardware = strixHalo(60_000, [ollama]);
+      const w = world(await hardware.getProfile(), ollama, { 'qwen3-coder-30b': 45_000 }, { hardware });
+      w.pulled('qwen3-coder-30b');
+
+      const outcome = await w.router.loadTrackedModel('qwen3-coder-30b', { origin: 'request', numCtx: null });
+
+      expect(outcome).toMatchObject({ loaded: false });
+      expect(outcome).not.toHaveProperty('systemMemory');
+      await expect(w.router.prepareTrackedModel('qwen3-coder:30b')).resolves.toBeNull();
+      expect(ollama.unloads).toEqual([]);
+    });
+
+    it('is still left to the engine on a discrete card, which puts the rest in system RAM (beta-1)', async () => {
+      ollama.hold('gemma4:e4b', 6_640);
+      const w = world(BETA_1, ollama, { 'qwen3-coder-30b': 19_000 });
+      w.pulled('qwen3-coder-30b');
+
+      const outcome = await w.router.loadTrackedModel('qwen3-coder-30b', { origin: 'request', numCtx: null });
+
+      expect(outcome).toMatchObject({ loaded: false });
+      expect(outcome).not.toHaveProperty('systemMemory');
+      await expect(w.router.prepareTrackedModel('qwen3-coder:30b')).resolves.toBeNull();
+    });
+  });
+
   // L2 after #1684/#1686, reproduced by the review of #1686: the model stayed pinned (never an eviction
   // candidate), but the load that found it resident recorded it `loaded`, and the Hub UI, which reads
   // `state === 'pinned'`, showed it unpinned.

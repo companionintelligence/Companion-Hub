@@ -9125,6 +9125,56 @@ describe('PoolProxyService', () => {
         });
       });
 
+      // #2539: on unified memory the engine loaded a model the Hub had refused, and the machine ran out of memory.
+      describe('for a model that would load into system memory it does not fit in', () => {
+        beforeEach(() => {
+          router.loadTrackedModel.mockResolvedValue({ loaded: false, reason: REFUSAL, systemMemory: true });
+        });
+
+        it('fails the request with the reason instead of sending it to the local engine', async () => {
+          peerService.listConnectedPeers.mockResolvedValue([]);
+          const res = createMockResponse();
+
+          await chat(res);
+
+          expect(urls()).toEqual([]);
+          expect(res.status).toHaveBeenCalledWith(503);
+          const body = vi.mocked(res.json).mock.calls[0]?.[0] as { error: string };
+          expect(body.error).toBe(
+            `The Hub did not load "${MODEL}" on ollama: ${REFUSAL}. Nothing else can take the request. Loading the model anyway ` +
+              'would run this machine out of memory. Unload a model or choose a smaller one in Settings > AI.',
+          );
+          expect(routingLog.list()[0]).toMatchObject({
+            outcome: 'failed',
+            status: 503,
+            node: POOL_SERVED_LOCALLY,
+            reason: `local load refused: ${REFUSAL}`,
+            localLoadRefused: null,
+          });
+        });
+
+        it('still fails over to a peer that serves the model', async () => {
+          const res = createMockResponse();
+
+          await chat(res);
+
+          expect(urls()).toEqual([PEER_A_URL]);
+          expect(res.status).toHaveBeenCalledWith(200);
+        });
+
+        it('fails the request rather than coming back to the local engine when the peer fails too', async () => {
+          vi.mocked(global.fetch).mockResolvedValue(new Response('engine down', { status: 503 }));
+          const res = createMockResponse();
+
+          await chat(res);
+
+          expect(urls()).toEqual([PEER_A_URL]);
+          expect(router.loadTrackedModel).toHaveBeenCalledTimes(1);
+          expect(res.status).toHaveBeenCalledWith(503);
+          expect(routingLog.list()[0]).toMatchObject({ outcome: 'failed', attempt: 3, candidates: 2, status: 503, localLoadRefused: null });
+        });
+      });
+
       it('answers that every candidate failed only once the local engine has failed too', async () => {
         vi.mocked(global.fetch).mockResolvedValue(new Response('engine down', { status: 503 }));
         const res = createMockResponse();
