@@ -56,3 +56,37 @@ it('names each size group with the cutoff the filter already uses', () => {
   expect(medium.querySelector('span:last-child')?.textContent).toBe('2');
   expect(large.querySelector('span:last-child')?.textContent).toBe('1');
 });
+
+// #2550: the Default was ticked inside a collapsed group, and the save that followed was a surprise.
+it('opens a group that holds a ticked model and leaves the others collapsed', () => {
+  render(
+    <OtherModels
+      recommendedModels={[]}
+      availableModels={[model('tiny', 0.27), model('mid', 30)]}
+      installedCatalogIds={['tiny']}
+      selectedModelIds={['tiny']}
+      onToggleModel={() => undefined}
+      preferredModelId="tiny"
+    />,
+  );
+
+  expect(screen.getByTestId('other-group-small')).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.getByTestId('model-checkbox-tiny')).toBeChecked();
+  expect(screen.getByTestId('other-group-medium')).toHaveAttribute('aria-expanded', 'false');
+});
+
+it('opens a collapsed group when a re-check ticks a model in it', () => {
+  const props = {
+    recommendedModels: [],
+    availableModels: [model('tiny', 0.27), model('mid', 30)],
+    installedCatalogIds: ['tiny'],
+    onToggleModel: () => undefined,
+  };
+  const { rerender } = render(<OtherModels {...props} selectedModelIds={[]} />);
+  expect(screen.getByTestId('other-group-small')).toHaveAttribute('aria-expanded', 'false');
+
+  rerender(<OtherModels {...props} selectedModelIds={['tiny']} preferredModelId="tiny" />);
+
+  expect(screen.getByTestId('other-group-small')).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.getByTestId('other-group-medium')).toHaveAttribute('aria-expanded', 'false');
+});

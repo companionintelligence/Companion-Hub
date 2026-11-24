@@ -1,5 +1,5 @@
 import { getInstalledApps, installApp } from '@/api-client/sdk.gen';
-import { pinInferenceModel, saveCloudProviderConfig, saveInferencePreferences } from '@/lib/inference/inference-api';
+import { fetchInferencePreferences, pinInferenceModel, saveCloudProviderConfig, saveInferencePreferences } from '@/lib/inference/inference-api';
 import {
   automaticRunnersForBackend,
   installAndStartInferenceRunners,
@@ -109,7 +109,8 @@ function withTimeout<T>(request: Promise<T>, ms: number): Promise<T> {
 /** The defaults the step stores. Each is the chosen id, or null while that model is not usable. */
 interface PreferenceModels {
   model: string | null;
-  embeddingModel: string | null;
+  /** Left out of the save when undefined, which keeps the stored one. */
+  embeddingModel: string | null | undefined;
   visionModel: string | null;
 }
 
@@ -238,7 +239,9 @@ export const InstallStep = ({
       const pullRefusals: Record<string, string> = {};
       const preferenceModels = (tracked: TrackedModel[]): PreferenceModels => ({
         model: preferenceModelId(aiSetupConfig?.preferredModelId, availablePreferenceModelIds, tracked),
-        embeddingModel: preferenceModelId(aiSetupConfig?.preferredEmbeddingModelId, availablePreferenceModelIds, tracked),
+        embeddingModel: aiSetupConfig?.keepSavedEmbeddingModel
+          ? undefined
+          : preferenceModelId(aiSetupConfig?.preferredEmbeddingModelId, availablePreferenceModelIds, tracked),
         visionModel: preferenceModelId(aiSetupConfig?.preferredVisionModelId, availablePreferenceModelIds, tracked),
       });
       // What the last save stored, so the download polling can correct it.
@@ -320,7 +323,14 @@ export const InstallStep = ({
           configured?.trim() || automaticRunnerUrls.get(runner) || null;
 
         try {
-          const models = preferenceModels(latestTracked);
+          // Left out of the save, which keeps what is stored (see `AiSetupConfig.keepSavedModels`). Only
+          // on the engine they were saved for: kept across a switch, another engine's model is handed out.
+          // A Hub that does not say which engine it has keeps them.
+          const savedBackend = aiSetupConfig.keepSavedModels
+            ? ((await withTimeout(fetchInferencePreferences(), REQUEST_TIMEOUT_MS).catch(() => null))?.preferredBackend ?? null)
+            : null;
+          const keepModels = aiSetupConfig.keepSavedModels && (savedBackend === null || savedBackend === aiSetupConfig.backend);
+          const models = keepModels ? null : preferenceModels(latestTracked);
           await saveInferencePreferences({
             backend: aiSetupConfig.backend,
             ...models,

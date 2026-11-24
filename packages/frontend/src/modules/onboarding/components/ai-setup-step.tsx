@@ -68,6 +68,15 @@ const isAgentModel = (model: CuratedModel) => model.modality === 'llm';
 const isEmbeddingModel = (model: CuratedModel) => model.modality === 'embedding';
 const isVisionModel = (model: CuratedModel) => model.modality === 'llm' && model.metadata?.capabilities?.vision === true;
 
+/**
+ * Whether `backend` answered when the profile was read. While Ollama is down, the profile's installed
+ * list is what the Hub remembers downloading, not what Ollama has: on a Hub that had pulled and pinned
+ * gemma3-270m, a re-run with Ollama stopped ticked it as the Default and saved it over the model chosen
+ * before (#2550).
+ */
+const engineAnswered = (data: HardwareProfileResponse, backend: InferenceBackendType) =>
+  data.backends.available.some((engine) => engine.type === backend && engine.running && engine.healthy);
+
 interface AiSetupStepProps {
   onComplete?: (config: AiSetupConfig) => void;
   onSkip?: () => void;
@@ -203,7 +212,8 @@ export const AiSetupStep = ({
    * so ticking all of Ollama pinned all of it and marked the smallest Default. Of the models already
    * on the active backend (and Ollama's embedders when chat is vLLM or oMLX), it ticks the ones on its
    * recommended list. The Default is always ticked, so when none of them is a chat model, the first
-   * chat model the engine has is ticked as the Default. An embedder is ticked the same way, or a Hub
+   * chat model the engine has is ticked as the Default. Nothing is ticked from an Ollama that did not
+   * answer: the list is then what the Hub remembers, not what Ollama has. An embedder is ticked the same way, or a Hub
    * whose only embedder is off the list would save none. Memory would then be handed the recommended
    * one to download in place of the one its index was built with. `defaultId` is the Default to keep
    * ticked. Left out (or passed as `undefined`), it is the one the wizard would mark. `alreadyTicked`
@@ -218,6 +228,8 @@ export const AiSetupStep = ({
     const installed = new Set(data.installedCatalogIds ?? []);
     const onEngine = data.availableModels.filter((m) => {
       if (!installed.has(m.id)) return false;
+      // Nothing is ticked from what the Hub only remembers: see `engineAnswered`.
+      if (m.backend === 'ollama' && !engineAnswered(data, 'ollama')) return false;
       if (m.backend === backend) return true;
       return isHostServedBackend(backend) && m.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(m);
     });
@@ -379,7 +391,14 @@ export const AiSetupStep = ({
   ) => {
     const requestId = ++profileRequestId.current;
     try {
-      const previouslyInstalled = new Set(profile?.installedCatalogIds ?? []);
+      // Ollama's models on a list read while it was down were only remembered, so none was ticked. Once
+      // it answers they count as new, or a re-check ticks nothing and Continue clears the saved models.
+      const ollamaWasDown = profile !== null && !engineAnswered(profile, 'ollama');
+      const previouslyInstalled = new Set(
+        (profile?.installedCatalogIds ?? []).filter(
+          (id) => !ollamaWasDown || profile?.availableModels.find((m) => m.id === id)?.backend !== 'ollama',
+        ),
+      );
       const data = await fetchInferenceOnboardingProfile(
         backend,
         backend === 'vllm' && endpointUrlOverride ? endpointUrlOverride : vllmUrl,
@@ -650,7 +669,10 @@ export const AiSetupStep = ({
             profile,
             selectedBackend,
             isVisionModel,
-            installedCatalogIds.filter((id) => !untickedModelIdsRef.current.has(id)),
+            // An Ollama that did not answer has no list of its own, only what the Hub remembers.
+            selectedBackend === 'ollama' && !engineAnswered(profile, 'ollama')
+              ? []
+              : installedCatalogIds.filter((id) => !untickedModelIdsRef.current.has(id)),
           )
         : undefined);
 
@@ -664,6 +686,11 @@ export const AiSetupStep = ({
       backend: selectedBackend,
       cloudProviders: validProviders,
       preferredModelId: effectivePreferredModelId,
+      // Nothing picked, and an engine that did not answer to pick from: the models saved before stay.
+      ...(selectedModels.length === 0 && !engineAnswered(profile, selectedBackend) ? { keepSavedModels: true } : {}),
+      // Embedders come from Ollama. With none ticked and Ollama not answering, the saved one stays, or
+      // Memory is handed another in place of the one its index was built with.
+      ...(!effectivePreferredEmbeddingModelId && !engineAnswered(profile, EMBEDDING_INFERENCE_BACKEND) ? { keepSavedEmbeddingModel: true } : {}),
       ...(effectivePreferredEmbeddingModelId ? { preferredEmbeddingModelId: effectivePreferredEmbeddingModelId } : {}),
       ...(effectivePreferredVisionModelId ? { preferredVisionModelId: effectivePreferredVisionModelId } : {}),
       remoteAccess,

@@ -16,6 +16,7 @@ const {
   saveCloudProviderConfig,
   fetchTrackedModels,
   startInferenceModelPull,
+  fetchInferencePreferences,
 } = vi.hoisted(() => ({
   installApp: vi.fn(),
   getInstalledApps: vi.fn(),
@@ -24,6 +25,7 @@ const {
   saveCloudProviderConfig: vi.fn(),
   fetchTrackedModels: vi.fn(),
   startInferenceModelPull: vi.fn(),
+  fetchInferencePreferences: vi.fn(),
 }));
 
 type TauriWindow = Window & {
@@ -40,6 +42,7 @@ vi.mock('@/lib/inference/inference-api', () => ({
   pinInferenceModel,
   saveCloudProviderConfig,
   startInferenceModelPull,
+  fetchInferencePreferences,
 }));
 
 vi.mock('@/lib/inference/tracked-models', async (importOriginal) => {
@@ -95,6 +98,7 @@ describe('InstallStep', () => {
     saveCloudProviderConfig.mockResolvedValue(undefined);
     fetchTrackedModels.mockResolvedValue([]);
     startInferenceModelPull.mockResolvedValue({ status: 'in_progress' });
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama' });
     mockInvalidateQueries.mockResolvedValue(undefined);
   });
 
@@ -210,6 +214,82 @@ describe('InstallStep', () => {
 
     expect(await screen.findByText('No apps selected for installation.')).toBeInTheDocument();
     expect(screen.queryByText(/Installing 1 of 0/)).not.toBeInTheDocument();
+  });
+
+  // #2550: a re-run with Ollama stopped and nothing ticked replaced the saved chat model and cleared the vision model.
+  it('leaves the saved models alone when the wizard had nothing to pick from', async () => {
+    render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          agentFrameworks: [],
+          remoteAccess: [],
+          selectedModels: [],
+          installedCatalogIds: ['gemma3-270m'],
+          backend: 'ollama',
+          cloudProviders: [],
+          keepSavedModels: true,
+          skipped: false,
+        }}
+      />,
+    );
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledTimes(1));
+    const saved = saveInferencePreferences.mock.calls[0]?.[0];
+    expect(saved).toMatchObject({ backend: 'ollama' });
+    expect(saved).not.toHaveProperty('model');
+    expect(saved).not.toHaveProperty('embeddingModel');
+    expect(saved).not.toHaveProperty('visionModel');
+    expect(pinInferenceModel).not.toHaveBeenCalled();
+  });
+
+  it('clears the saved models when the wizard moves to another engine, even with nothing to pick from', async () => {
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm' });
+    render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          agentFrameworks: [],
+          remoteAccess: [],
+          selectedModels: [],
+          installedCatalogIds: [],
+          backend: 'ollama',
+          cloudProviders: [],
+          keepSavedModels: true,
+          skipped: false,
+        }}
+      />,
+    );
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledTimes(1));
+    expect(saveInferencePreferences.mock.calls[0]?.[0]).toMatchObject({ backend: 'ollama', model: null, visionModel: null });
+  });
+
+  it('keeps the saved embedder when Ollama had none to pick from', async () => {
+    render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          agentFrameworks: [],
+          remoteAccess: [],
+          selectedModels: ['qwen3-5-4b'],
+          installedCatalogIds: ['qwen3-5-4b'],
+          backend: 'ollama',
+          cloudProviders: [],
+          preferredModelId: 'qwen3-5-4b',
+          keepSavedEmbeddingModel: true,
+          skipped: false,
+        }}
+      />,
+    );
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledTimes(1));
+    const saved = saveInferencePreferences.mock.calls[0]?.[0];
+    expect(saved).toMatchObject({ backend: 'ollama', model: 'qwen3-5-4b' });
+    expect(saved.embeddingModel).toBeUndefined();
   });
 
   it('persists selected backend preference during AI setup (no preferred model)', async () => {

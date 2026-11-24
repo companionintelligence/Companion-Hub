@@ -38,6 +38,16 @@ export interface AiSetupConfig {
   /** Catalog id of the default vision-capable model to use when one is selected/installed. */
   preferredVisionModelId?: string;
   /**
+   * Leave the saved chat, embedding and vision models as they are: nothing was picked, and the engine
+   * did not answer, so the wizard had no list of its own to pick from (#2550).
+   */
+  keepSavedModels?: boolean;
+  /**
+   * Leave the saved embedding model as it is: none was picked, and Ollama, which serves embedders, did
+   * not answer (#2550).
+   */
+  keepSavedEmbeddingModel?: boolean;
+  /**
    * Remote-access transports the user enabled for their Companion agents (Hermes, OpenClaw) and Hub
    * services — any of 'tailscale' (private VPN) and/or 'cloudflare' (public web URL). Empty means
    * local-only (no remote exposure).
