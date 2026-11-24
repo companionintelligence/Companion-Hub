@@ -8,7 +8,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -274,6 +274,20 @@ const FAKE_CURL = `#!/bin/sh
 exit 7
 `;
 
+/**
+ * The programs the script and the stubs call that are not stubbed, linked from this machine. PATH is
+ * the stubs and these links and nothing else: a GPU test box keeps the NVIDIA Container Toolkit in
+ * /usr/bin, and with /usr/bin on PATH the "no toolkit" node found it there and installed anyway.
+ */
+const BASE_TOOLS = ['bash', 'cat', 'grep', 'head', 'id', 'rm', 'sed', 'tail'];
+
+function linkBaseTools(bin: string) {
+  for (const tool of BASE_TOOLS) {
+    const found = ['/usr/bin', '/bin'].map((dir) => join(dir, tool)).find((path) => existsSync(path));
+    if (found) symlinkSync(found, join(bin, tool));
+  }
+}
+
 /** The script's fresh-install path asks the real 127.0.0.1:8850 whether anything listens. */
 const port8850Busy = spawnSync('bash', ['-c', '(echo > /dev/tcp/127.0.0.1/8850) >/dev/null 2>&1']).status === 0;
 
@@ -294,6 +308,7 @@ function runOnNode(node: NodeState) {
   writeFileSync(join(bin, 'curl'), FAKE_CURL, { mode: 0o755 });
   writeFileSync(join(bin, 'sleep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   if (node.toolkit !== false) writeFileSync(join(bin, 'nvidia-container-runtime-hook'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  linkBaseTools(bin);
   writeFileSync(join(state, 'identity'), IDENTITY);
   if (node.container) {
     writeFileSync(join(state, 'container'), '');
@@ -306,9 +321,11 @@ function runOnNode(node: NodeState) {
   if (node.logs) writeFileSync(join(state, 'logs'), node.logs);
   const res = spawnSync('bash', ['-c', omlxHelperInstallScript(OMLX_HELPER_PINNED_VERSION)], {
     encoding: 'utf8',
-    // Only the stubs and the base system: a docker or toolkit on the machine running the test must not answer for the node.
-    env: { PATH: `${bin}:/usr/bin:/bin`, HELPER_STATE: state },
+    // A docker or toolkit on the machine running the test must not answer for the node.
+    env: { PATH: bin, HELPER_STATE: state },
   });
+  // bash says "command not found", the stubs' /bin/sh says "not found": the script now calls a tool BASE_TOOLS lacks.
+  expect(res.stderr).not.toMatch(/\bnot found\b/);
   const calls = existsSync(join(state, 'calls')) ? readFileSync(join(state, 'calls'), 'utf8').trim().split('\n') : [];
   return { code: res.status, out: res.stdout, err: res.stderr, calls, result: classifyOmlxHelperOutput(res.stdout, res.stderr) };
 }
