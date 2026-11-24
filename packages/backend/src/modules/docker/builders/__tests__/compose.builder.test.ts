@@ -1034,12 +1034,13 @@ describe('DockerComposeBuilder — public web hostname in Traefik labels', () =>
       ]);
     });
 
-    it('does not change a route that served without a host port before', async () => {
+    // It once served with no login: a closed host port and no decision left the route open.
+    it('puts the login on a route with a closed host port whose form never decided', async () => {
       const middlewares = await routeMiddlewares({ exposureMode: 'cloudflare', openPort: false });
 
       expect(middlewares).toEqual([
-        'ci-hub-edge-headers@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
-        'ci-hub-edge-headers@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
+        'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
+        'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
       ]);
     });
   });

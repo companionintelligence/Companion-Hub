@@ -33,7 +33,7 @@ import type { AvailableDomain } from '@ci-hub/common/types';
 import { buildPublicWebIdentity, sanitizeAppSubdomain, selectOfferedDomains, servedExposureMode } from '@ci-hub/common/types';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { saveBlobAsFile, splitSavedPath } from '@/lib/save-file';
-import { requiresHubLoginOnPublicRoute, servedOpenPort } from '@ci-hub/common/schemas';
+import { requiresHubLogin, servedOpenPort } from '@ci-hub/common/schemas';
 import { isMcpOptionalOnlyInstall } from '@ci-hub/common/validation';
 import {
   type LastUsedInstallConfig,
@@ -364,39 +364,27 @@ export const InstallForm: React.FC<IProps> = ({
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(() => isMcpOptionalOnlyInstall(info));
 
   const mcpOptionalOnly = useMemo(() => isMcpOptionalOnlyInstall(info), [info]);
-  // What the enable-auth switch shows, and submits, when the form holds no value. A fresh install
-  // starts protected. An EDIT shows what the Hub actually serves for a stored form that never
-  // decided, by the rule the route builder uses (`requiresHubLoginOnPublicRoute`): the manifest's
-  // `hub_integration.edge_auth.default`, else the login while the host port is open, else off. The
-  // switch used to show `?? true` on an edit while the backend persisted `?? false` and built the
-  // route without the login, so an install that never decided looked protected and was not
-  // (OpenClaw, 2026-09-28). Then it showed the manifest default alone, which is OFF for a stored
-  // form on an open host port that the Hub serves WITH the login, and a save wrote that OFF over it.
-  //
-  // "Open host port" is `servedOpenPort`, not `Boolean(openPort)`: a stored form with NO `openPort`
-  // key (an API, MCP or onboarding install) is replayed through the queue schema, which defaults it
-  // to open, so the Hub serves it with the login. Reading the missing key as closed showed OFF for
-  // exactly the installs that never decided. An app with no public route (not exposable) has no
-  // login to show.
+  // What the enable-auth switch shows, and submits, when the form holds no value: on. The Hub puts
+  // its login in front of every route unless the operator switched it off (`requiresHubLogin`), so an
+  // install, and a stored form that never decided, both have it. Only a stored `false` shows off.
+  const enableAuthFallback = requiresHubLogin(undefined);
+  // The host port a stored form is served on: a form with no `openPort` key (an API, MCP or onboarding
+  // install) is replayed through the queue schema, which defaults it to open.
   const storedOpenPort = servedOpenPort(initialValues);
-  const enableAuthFallback = useMemo(
-    () => (isEdit ? Boolean(info.exposable) && requiresHubLoginOnPublicRoute({ openPort: storedOpenPort }, info) : true),
-    [isEdit, info, storedOpenPort],
-  );
   const hasAuthSwitch = Boolean(info.exposable && info.dynamic_config);
-  // The app goes on Public Web with the Hub login off. Simple mode shows the "Enable authentication"
-  // switch for this too, however the form got here (an import, a recently used config, the exposure
-  // buttons, or an app saved that way), so nobody puts an app on the internet without the login and
-  // without seeing it (#1984). The other modes don't count: the login guards the Public Web route only.
+  // The Hub login is off. Simple mode shows the "Enable authentication" switch for this too, however
+  // the form got here (an import, a recently used config, the exposure buttons, or an app saved that
+  // way), so nobody takes the login off an app without seeing it (#1984). Every mode counts: the login
+  // guards Public Web, the local network and the Private VPN alike.
   const watchEnableAuth = watch('enableAuth');
-  const loginOffOnPublicWeb = watchExposureMode === 'cloudflare' && (watchEnableAuth ?? enableAuthFallback) === false;
+  const loginOff = hasAuthSwitch && (watchEnableAuth ?? enableAuthFallback) === false;
   // Once shown that way the switch stays, so turning the login back on doesn't hide it.
   const [authSwitchRevealed, setAuthSwitchRevealed] = useState(false);
   useEffect(() => {
-    if (loginOffOnPublicWeb) setAuthSwitchRevealed(true);
-  }, [loginOffOnPublicWeb]);
+    if (loginOff) setAuthSwitchRevealed(true);
+  }, [loginOff]);
   // Whether the switch is drawn. An import reads this too, to tell when it leads somewhere nobody saw.
-  const authSwitchShown = hasAuthSwitch && (isAdvancedMode || showAdvancedSettings || loginOffOnPublicWeb || authSwitchRevealed);
+  const authSwitchShown = hasAuthSwitch && (isAdvancedMode || showAdvancedSettings || loginOff || authSwitchRevealed);
   const watchedFormValues = watch();
 
   // Client-side install-config export/import + "recently used" list (no backend involved — see
@@ -409,8 +397,8 @@ export const InstallForm: React.FC<IProps> = ({
   }, [info.id]);
 
   /**
-   * Sets the values. Returns true when they leave the app on Public Web with the Hub login off while
-   * the "Enable authentication" switch was hidden: the switch shows now (`loginOffOnPublicWeb`), and
+   * Sets the values. Returns true when they leave the app with the Hub login off while
+   * the "Enable authentication" switch was hidden: the switch shows now (`loginOff`), and
    * the caller says why in its toast (#1984).
    */
   const applyImportedValues = useCallback(
@@ -418,9 +406,7 @@ export const InstallForm: React.FC<IProps> = ({
       for (const [key, value] of Object.entries(values)) {
         setValue(key, value as string, { shouldDirty: true, shouldValidate: true });
       }
-      return (
-        hasAuthSwitch && !authSwitchShown && getValues('exposureMode') === 'cloudflare' && (getValues('enableAuth') ?? enableAuthFallback) === false
-      );
+      return hasAuthSwitch && !authSwitchShown && (getValues('enableAuth') ?? enableAuthFallback) === false;
     },
     [setValue, getValues, enableAuthFallback, hasAuthSwitch, authSwitchShown],
   );

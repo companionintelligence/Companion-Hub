@@ -484,6 +484,13 @@
       "when": 1781900000000,
       "tag": "0068_app_mcp_access",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1782000000000,
+      "tag": "0069_hub_login_on_every_route",
+      "breakpoints": true
     }
   ]
 }

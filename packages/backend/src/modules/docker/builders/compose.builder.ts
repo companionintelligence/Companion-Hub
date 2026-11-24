@@ -24,7 +24,7 @@ import {
   withSignInUnderFileProvider,
 } from './traefik-labels.builder';
 import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
-import { requiresHubLoginOnPublicRoute } from '@/modules/apps/app-public-routing.helpers';
+import { requiresHubLogin } from '@/modules/apps/app-public-routing.helpers';
 import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { isHubReservedServiceName } from '@/modules/network/network-constants';
 import { z } from 'zod';
@@ -72,11 +72,6 @@ export interface ComposeBuilderOptions {
    * `hostPortStaysOnLoopback(appInfo)` in `@ci-hub/common/schemas`, which says which apps and why.
    */
   loopbackHostPort?: boolean;
-  /**
-   * The app's manifest, when the caller could resolve it. Only its `hub_integration.edge_auth.default`
-   * is read, by `requiresHubLoginOnPublicRoute`, for a stored form that never decided `enableAuth`.
-   */
-  manifest?: Parameters<typeof requiresHubLoginOnPublicRoute>[1];
   /**
    * The operator's Default app CPU limit from Settings, for services the install form and the
    * manifest leave uncapped. Only that setting belongs here, never the resource allocator's
@@ -204,7 +199,6 @@ export class DockerComposeBuilder {
   private networkIsolationOptions?: NetworkIsolationOptions;
   private securityOptions?: string[];
   private loopbackHostPort = false;
-  private manifest?: Parameters<typeof requiresHubLoginOnPublicRoute>[1];
   private defaultAppCpuLimit?: string;
   private knownAppIds: string[] = [];
   private hostVariables?: string[];
@@ -283,9 +277,6 @@ export class DockerComposeBuilder {
     }
     if (options.loopbackHostPort !== undefined) {
       this.loopbackHostPort = options.loopbackHostPort;
-    }
-    if (options.manifest !== undefined) {
-      this.manifest = options.manifest;
     }
     if (options.defaultAppCpuLimit !== undefined) {
       this.defaultAppCpuLimit = options.defaultAppCpuLimit.trim() || undefined;
@@ -587,7 +578,7 @@ export class DockerComposeBuilder {
         appId: appName,
         storeId: appStoreId,
         exposureMode: effectiveExposureMode as 'local' | 'cloudflare' | 'tailscale',
-        enableAuth: requiresHubLoginOnPublicRoute(form, this.manifest),
+        enableAuth: requiresHubLogin(form),
         cloudflareOriginHostname: this.cloudflareOriginHostname,
         cloudflarePublicHostname: this.cloudflarePublicHostname,
         localDomain: this.localDomain,
