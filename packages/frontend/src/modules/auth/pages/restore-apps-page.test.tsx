@@ -284,7 +284,7 @@ describe('RestoreAppsPage', () => {
       });
 
       expect(await screen.findByTestId('restore-summary-local-apps')).toHaveTextContent(
-        "It doesn't keep apps you installed on This machine only or Private VPN, so pairing again doesn't bring them back.",
+        "Apps you installed on This machine only or Private VPN aren't kept in your CI Account, so pairing again doesn't bring them back.",
       );
     });
 

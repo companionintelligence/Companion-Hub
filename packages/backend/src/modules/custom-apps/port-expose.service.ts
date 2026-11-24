@@ -390,6 +390,10 @@ export class PortExposeService {
    */
   private warnAboutRefusedEntries(answer: Awaited<ReturnType<PortalClientService['postDeviceApplicationsRegistry']>> | undefined): void {
     for (const refusal of Array.isArray(answer?.refused) ? answer.refused : []) {
+      // A malformed entry must not throw: the post itself succeeded, and a throw here reads as a failed sync.
+      if (!refusal || typeof refusal !== 'object') {
+        continue;
+      }
       this.logger.warn(
         `[Portal] Companion Portal did not keep exposed port ${refusal.app ?? refusal.slug ?? 'unknown'}` +
           `${refusal.reason ? ` (${refusal.reason})` : ''}${refusal.message ? `: ${refusal.message}` : ''}. ` +
