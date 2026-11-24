@@ -14,6 +14,7 @@ export const INSTALL_FORM_META_KEYS = [
   'exposedLocal',
   'openPort',
   'portOnNetwork',
+  'publicPaths',
   'domain',
   'localSubdomain',
   'port',

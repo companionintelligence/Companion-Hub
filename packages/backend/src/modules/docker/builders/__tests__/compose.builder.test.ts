@@ -1187,6 +1187,17 @@ describe('DockerComposeBuilder — the app-starting page on every app router', (
     expect(services.nginx?.labels['traefik.http.routers.nginx-store-id-tailscale.middlewares']).toBe('ci-hub@file,ci-hub-app-starting@file');
   });
 
+  it("gives the operator's paths a router of their own without the login, and keeps it on the rest", async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare', publicPaths: ['/webhook'] });
+    const labels = services.nginx?.labels ?? {};
+
+    expect(labels['traefik.http.routers.nginx-store-id-insecure-public-paths.rule']).toBe(
+      '(Host(`nginx-hub1-acme.ci.lan`)) && (Path(`/webhook`) || PathPrefix(`/webhook/`))',
+    );
+    expect(String(labels['traefik.http.routers.nginx-store-id-insecure-public-paths.middlewares']).split(',')).not.toContain('ci-hub@file');
+    expect(String(labels['traefik.http.routers.nginx-store-id-insecure.middlewares']).split(',')).toContain('ci-hub@file');
+  });
+
   it('leaves the Private VPN router without the login only when the operator switched it off', async () => {
     const services = await labelsFor({ exposureMode: 'tailscale', enableAuth: false });
 

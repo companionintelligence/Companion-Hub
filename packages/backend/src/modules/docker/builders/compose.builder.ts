@@ -587,6 +587,7 @@ export class DockerComposeBuilder {
         storeId: appStoreId,
         exposureMode: effectiveExposureMode as 'local' | 'cloudflare' | 'tailscale',
         enableAuth: requiresHubLogin(form),
+        publicPaths: form.publicPaths,
         cloudflareOriginHostname: this.cloudflareOriginHostname,
         cloudflarePublicHostname: this.cloudflarePublicHostname,
         localDomain: this.localDomain,
@@ -595,6 +596,8 @@ export class DockerComposeBuilder {
 
       traefikBuilder.addCloudflareLabels();
       traefikBuilder.addTailscaleLabels();
+      // Last, so it sees every router the two above made.
+      traefikBuilder.addPublicPathRouters();
       traefikLabels = traefikBuilder.build();
     }
 

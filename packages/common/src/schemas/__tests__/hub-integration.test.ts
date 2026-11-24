@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hostPortStaysOnLoopback, manifestDefaultsEdgeAuthOn, hubIntegrationSchema, requiresHubLogin } from '../app-info';
+import { hostPortStaysOnLoopback, manifestDefaultsEdgeAuthOn, hubIntegrationSchema, publicPathSchema, requiresHubLogin } from '../app-info';
 import { appInfoSchema } from '../app-info';
 
 describe('hubIntegrationSchema', () => {
@@ -518,5 +518,36 @@ describe('hubIntegrationSchema links', () => {
     ['an app id that is a path', { app: '../x', service: 'web' }],
   ])('refuses %s', (_case, entry) => {
     expect(hubIntegrationSchema.safeParse({ links: { connects_to: [entry] } }).success).toBe(false);
+  });
+});
+
+describe('publicPathSchema', () => {
+  it.each(['/hook', '/api/v1/events', '/api/v1/events/', '/.well-known/acme', '/a_b~c-d.e'])('takes %s', (path) => {
+    expect(publicPathSchema.safeParse(path).success).toBe(true);
+  });
+
+  // Each is written into a Traefik rule as PathPrefix(`...`): a backtick or a space could end the quoting.
+  it.each([
+    '/',
+    '',
+    'hook',
+    '/hook`) || Host(`evil',
+    '/a b',
+    '/a/../admin',
+    '/a/./b',
+    '//double',
+    '/%2e%2e/admin',
+    '/a?b',
+    '/a#b',
+    `/${'a'.repeat(200)}`,
+  ])('refuses %j', (path) => {
+    expect(publicPathSchema.safeParse(path).success).toBe(false);
+  });
+
+  it('lets a listing suggest paths, and refuses a suggestion the operator could not save', () => {
+    expect(hubIntegrationSchema.parse({ edge_auth: { suggested_public_paths: ['/webhook'] } })?.edge_auth?.suggested_public_paths).toEqual([
+      '/webhook',
+    ]);
+    expect(hubIntegrationSchema.safeParse({ edge_auth: { suggested_public_paths: ['/'] } }).success).toBe(false);
   });
 });

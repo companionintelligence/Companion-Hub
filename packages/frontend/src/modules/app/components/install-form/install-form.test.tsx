@@ -2218,6 +2218,75 @@ describe('InstallForm', () => {
     });
   });
 
+  describe('paths without the Hub login', () => {
+    const pathsField = () => screen.queryByPlaceholderText('/webhook, /api/events');
+    const suggestion = () => screen.queryByRole('switch', { name: /APP_INSTALL_FORM_PUBLIC_PATH_SUGGESTED/ });
+    const withSuggestion = () =>
+      ({ ...(exposableInfo() as object), hub_integration: { edge_auth: { suggested_public_paths: ['/webhook'] } } }) as unknown as AppInfo;
+    const renderWith = (info: AppInfo, onSubmit = vi.fn()) =>
+      render(
+        <MemoryRouter>
+          <InstallForm info={info} onSubmit={onSubmit} formId="test-form" formFields={[]} />
+        </MemoryRouter>,
+      );
+    const submit = async (container: HTMLElement) => {
+      await act(async () => {
+        fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+      });
+    };
+
+    it("shows a listing's suggestion off, even in simple mode, and saves it only once turned on", async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext({ user: { advancedMode: false } }));
+      const onSubmit = vi.fn();
+      const { container } = renderWith(withSuggestion(), onSubmit);
+
+      await waitFor(() => expect(suggestion()).toBeInTheDocument());
+      expect(suggestion()).not.toBeChecked();
+      fireEvent.click(suggestion() as HTMLElement);
+      await submit(container);
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      expect(onSubmit.mock.calls[0]?.[0].publicPaths).toEqual(['/webhook']);
+    });
+
+    it('saves typed paths as a list', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      const onSubmit = vi.fn();
+      const { container } = renderWith(exposableInfo(), onSubmit);
+
+      await waitFor(() => expect(pathsField()).toBeInTheDocument());
+      fireEvent.change(pathsField() as HTMLElement, { target: { value: '/hook, /api/events  /hook' } });
+      await submit(container);
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      expect(onSubmit.mock.calls[0]?.[0].publicPaths).toEqual(['/hook', '/api/events']);
+    });
+
+    it('refuses a path the Hub could not open, and saves nothing', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      const onSubmit = vi.fn();
+      const { container } = renderWith(exposableInfo(), onSubmit);
+
+      await waitFor(() => expect(pathsField()).toBeInTheDocument());
+      fireEvent.change(pathsField() as HTMLElement, { target: { value: '/hook/../admin' } });
+      await submit(container);
+
+      await waitFor(() => expect(screen.getByText('APP_INSTALL_FORM_PUBLIC_PATHS_INVALID')).toBeInTheDocument());
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('is not offered with the login off: every path is open then', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      renderWith(withSuggestion());
+
+      await waitFor(() => expect(getEnableAuthSwitch()).toBeInTheDocument());
+      fireEvent.click(getEnableAuthSwitch());
+
+      await waitFor(() => expect(pathsField()).not.toBeInTheDocument());
+      expect(suggestion()).not.toBeInTheDocument();
+    });
+  });
+
   describe('opening the port on the network', () => {
     const portSwitch = () => screen.queryByRole('switch', { name: /APP_INSTALL_FORM_PORT_ON_NETWORK/ });
     const renderWith = (info: AppInfo, onSubmit = vi.fn(), initialValues?: Record<string, unknown>) =>

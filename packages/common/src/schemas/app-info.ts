@@ -165,6 +165,22 @@ export const RESERVED_APP_LINK_ALIASES: ReadonlySet<string> = new Set([
   'localhost',
 ]);
 
+/** Most paths one app may let through without the Hub login. */
+export const MAX_PUBLIC_PATHS = 16;
+
+/**
+ * A path an operator lets through without the Hub login (`publicPaths`): it and everything under it.
+ *
+ * Segments of letters, digits and `.`, `_`, `~`, `-`, joined by `/`: no `..` segment, no `/` alone
+ * (switch the whole login off instead), and nothing that could close a Traefik rule's quoting, since
+ * each path is written into one (`PathPrefix(\`...\`)`).
+ */
+export const publicPathSchema = z
+  .string()
+  .max(128)
+  .regex(/^(?:\/[A-Za-z0-9._~-]+)+\/?$/, 'A path starts with / and holds letters, digits, and . _ ~ - between slashes')
+  .refine((path) => !path.split('/').some((segment) => segment === '..' || segment === '.'), 'A path cannot hold . or .. segments');
+
 export const hubIntegrationSchema = z
   .object({
     mcp_client: z.boolean().default(false),
@@ -385,6 +401,12 @@ export const hubIntegrationSchema = z
       .object({
         /** The app has no login of its own: keep its host port on loopback. */
         default: z.boolean().optional(),
+        /**
+         * Paths the app serves to callers that cannot sign in, a webhook receiver say, which the
+         * operator may let through without the Hub login. Only ever a suggestion: the install form
+         * offers each one switched off, and only the operator's `publicPaths` take effect.
+         */
+        suggested_public_paths: z.array(publicPathSchema).max(MAX_PUBLIC_PATHS).optional(),
       })
       .optional(),
     /**

@@ -751,6 +751,7 @@ export type MyAppsDto = {
                 };
                 edge_auth?: {
                     default?: boolean;
+                    suggested_public_paths?: Array<string>;
                 };
                 links?: {
                     connects_to: Array<{
@@ -1027,6 +1028,7 @@ export type GuestAppsDto = {
                 };
                 edge_auth?: {
                     default?: boolean;
+                    suggested_public_paths?: Array<string>;
                 };
                 links?: {
                     connects_to: Array<{
@@ -1369,6 +1371,7 @@ export type GetAppDto = {
             };
             edge_auth?: {
                 default?: boolean;
+                suggested_public_paths?: Array<string>;
             };
             links?: {
                 connects_to: Array<{
@@ -1696,6 +1699,7 @@ export type AppFormBody = {
     exposureMode?: 'local' | 'cloudflare' | 'tailscale';
     openPort?: boolean;
     portOnNetwork?: boolean;
+    publicPaths?: Array<string>;
     domain?: string;
     isVisibleOnGuestDashboard?: boolean;
     enableAuth?: boolean;

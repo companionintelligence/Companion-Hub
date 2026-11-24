@@ -360,6 +360,7 @@ function keepStoredExposure(parsedForm: ParsedAppForm, submitted: ParsedAppForm,
   // through a save that does not mention it.
   parsedForm.enableAuth ??= stored.enableAuth;
   parsedForm.portOnNetwork ??= stored.portOnNetwork;
+  parsedForm.publicPaths ??= stored.publicPaths;
 }
 
 /**
@@ -3142,6 +3143,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     // The same for ports the operator opened on the network (`publishesHostPortsOnNetwork`).
     if (parsedForm.portOnNetwork === undefined) {
       parsedForm.portOnNetwork = (app.config as { portOnNetwork?: boolean } | null | undefined)?.portOnNetwork;
+    }
+    // And for paths the operator let through without the login.
+    if (parsedForm.publicPaths === undefined) {
+      parsedForm.publicPaths = (app.config as { publicPaths?: string[] } | null | undefined)?.publicPaths;
     }
 
     // Before the comparison below, so a choice this app can never be served on

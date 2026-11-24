@@ -6714,6 +6714,17 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
     });
 
+    it('keeps the paths the operator let through without the login through a save that does not mention them', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, publicPaths: ['/webhook'] } } as any);
+
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ config: expect.objectContaining({ publicPaths: ['/webhook'] }) }),
+      );
+    });
+
     it('keeps ports the operator opened on the network through a save that does not mention them', async () => {
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, portOnNetwork: true } } as any);
 

@@ -4,6 +4,7 @@ import { optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
 import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
 import isFQDN from 'validator/lib/isFQDN';
 import { MCP_ACCESS_CHOICES } from '@ci-hub/common/types';
+import { MAX_PUBLIC_PATHS, publicPathSchema } from '@ci-hub/common/schemas';
 
 export const appFormSchema = z
   .object({
@@ -17,6 +18,8 @@ export const appFormSchema = z
      * with no Hub login in front of them (`publishesHostPortsOnNetwork`). Absent: 127.0.0.1 only.
      */
     portOnNetwork: z.boolean().optional(),
+    /** Paths, and what is under them, served without the Hub login: the operator's choice only (`publicPathSchema`). */
+    publicPaths: z.array(publicPathSchema).max(MAX_PUBLIC_PATHS).optional(),
     domain: z.string().optional(),
     isVisibleOnGuestDashboard: z.boolean().optional(),
     enableAuth: z.boolean().optional(),

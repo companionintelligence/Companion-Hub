@@ -33,7 +33,7 @@ import type { AvailableDomain } from '@ci-hub/common/types';
 import { buildPublicWebIdentity, sanitizeAppSubdomain, selectOfferedDomains, servedExposureMode } from '@ci-hub/common/types';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { saveBlobAsFile, splitSavedPath } from '@/lib/save-file';
-import { hostPortStaysOnLoopback, requiresHubLogin, servedOpenPort } from '@ci-hub/common/schemas';
+import { hostPortStaysOnLoopback, MAX_PUBLIC_PATHS, publicPathSchema, requiresHubLogin, servedOpenPort } from '@ci-hub/common/schemas';
 import { isMcpOptionalOnlyInstall } from '@ci-hub/common/validation';
 import {
   type LastUsedInstallConfig,
@@ -143,6 +143,8 @@ export type FormValues = {
   enableAuth: boolean;
   /** Publish the app's host ports on every interface, with no Hub login (`publishesHostPortsOnNetwork`). */
   portOnNetwork?: boolean;
+  /** Paths served without the Hub login. Edited as `publicPathsText`, which is never submitted. */
+  publicPaths?: string[];
   maxBackups?: number;
   cpuLimit?: string;
   [key: string]: unknown;
@@ -150,6 +152,12 @@ export type FormValues = {
 
 const EMPTY_AVAILABLE_DOMAINS: AvailableDomain[] = [];
 const EMPTY_CUSTOM_DOMAINS: AvailableCustomDomainsResponseDto['domains'] = [];
+
+/** The paths in what the public-paths field holds: its raw text while edited, a list once saved. */
+function publicPathList(value: unknown): string[] {
+  const parts = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[\s,]+/) : [];
+  return [...new Set(parts.map((part) => String(part).trim()).filter(Boolean))];
+}
 
 function buildTailscalePortHost(nodeFqdn?: string | null, port?: number | null): string | null {
   const cleanNodeFqdn = nodeFqdn?.trim();
@@ -1164,8 +1172,75 @@ export const InstallForm: React.FC<IProps> = ({
     );
   };
 
+  const suggestedPublicPaths = info.hub_integration?.edge_auth?.suggested_public_paths ?? [];
+
+  const renderPublicPathsField = () => {
+    // Only while the login is on: with it off, every path is already open.
+    if (!hasAuthSwitch || (watchEnableAuth ?? enableAuthFallback) === false) return null;
+    const current = publicPathList(watch('publicPathsText') ?? initialValues?.publicPaths);
+    if (!(isAdvancedMode || showAdvancedSettings || suggestedPublicPaths.length > 0 || current.length > 0)) return null;
+
+    return (
+      <div className="mb-3">
+        {suggestedPublicPaths.map((path) => (
+          <Switch
+            key={path}
+            className="mb-2"
+            checked={current.includes(path)}
+            onCheckedChange={(on) => {
+              const next = on ? [...current, path] : current.filter((existing) => existing !== path);
+              setValue('publicPathsText', next.join(', '), { shouldDirty: true, shouldValidate: true });
+            }}
+            label={
+              <>
+                {t('APP_INSTALL_FORM_PUBLIC_PATH_SUGGESTED', { path })}
+                <HintMarker anchorClass="public-path-suggested-hint" hint={t('APP_INSTALL_FORM_PUBLIC_PATH_SUGGESTED_HINT', { path })} />
+              </>
+            }
+          />
+        ))}
+        <Controller
+          control={control}
+          name="publicPathsText"
+          defaultValue={publicPathList(initialValues?.publicPaths).join(', ')}
+          rules={{
+            validate: (value) => {
+              const paths = publicPathList(value);
+              if (paths.length > MAX_PUBLIC_PATHS) return t('APP_INSTALL_FORM_PUBLIC_PATHS_TOO_MANY', { max: MAX_PUBLIC_PATHS });
+              const bad = paths.find((path) => !publicPathSchema.safeParse(path).success);
+              return bad ? t('APP_INSTALL_FORM_PUBLIC_PATHS_INVALID', { path: bad }) : true;
+            },
+          }}
+          render={({ field: { onChange, value, ref, ...props } }) => (
+            <Input
+              {...props}
+              ref={ref}
+              value={typeof value === 'string' ? value : ''}
+              onChange={(event) => onChange(event.target.value)}
+              placeholder="/webhook, /api/events"
+              label={
+                <>
+                  {t('APP_INSTALL_FORM_PUBLIC_PATHS')}
+                  <HintMarker anchorClass="public-paths-hint" hint={t('APP_INSTALL_FORM_PUBLIC_PATHS_HINT')} />
+                </>
+              }
+              error={typeof errors.publicPathsText?.message === 'string' ? errors.publicPathsText.message : undefined}
+            />
+          )}
+        />
+      </div>
+    );
+  };
+
   const renderAdvancedExposureOptions = () => {
-    if (!authSwitchShown) return renderPortOnNetworkSwitch();
+    if (!authSwitchShown) {
+      return (
+        <>
+          {renderPublicPathsField()}
+          {renderPortOnNetworkSwitch()}
+        </>
+      );
+    }
 
     return (
       <>
@@ -1192,6 +1267,7 @@ export const InstallForm: React.FC<IProps> = ({
             />
           )}
         />
+        {renderPublicPathsField()}
         {renderPortOnNetworkSwitch()}
       </>
     );
@@ -1208,11 +1284,15 @@ export const InstallForm: React.FC<IProps> = ({
         withFieldDefaults[field.env_variable] = field.default;
       }
     }
+    // The text the paths were typed in is not part of the form the Hub takes: it goes in as the list.
+    const { publicPathsText, ...withoutPathsText } = withFieldDefaults;
     const formValues = {
-      ...withFieldDefaults,
+      ...withoutPathsText,
       exposureMode,
       exposedLocal: info.exposable && exposureMode === 'cloudflare', // backward compat
       enableAuth: withFieldDefaults.enableAuth ?? enableAuthFallback,
+      // Edited as text; saved as the list it names. A form that never showed the field leaves it out.
+      ...(publicPathsText === undefined ? {} : { publicPaths: publicPathList(publicPathsText) }),
       port: withFieldDefaults.port || (info.port ? info.port.toString() : undefined),
     };
 
