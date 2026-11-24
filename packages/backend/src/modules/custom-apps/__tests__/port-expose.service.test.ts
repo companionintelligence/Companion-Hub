@@ -407,6 +407,18 @@ describe('PortExposeService', () => {
       deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
     });
 
+    it('says so when the Portal did not keep a port just exposed This Machine Only', async () => {
+      appsRepository.getAppByUrn.mockResolvedValueOnce(null as any).mockResolvedValue(portExposeRow('old-test', 'local', 8092));
+      portalClient.postDeviceApplicationsRegistry.mockResolvedValue({
+        success: true,
+        refused: [{ app: 'old-test', slug: 'old-test', reason: 'subdomain_quota_exceeded' }],
+      });
+
+      await service.createPortExposeApp({ name: 'old-test', port: 8092, exposureMode: 'local' });
+
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('did not keep exposed port old-test (subdomain_quota_exceeded)'));
+    });
+
     it('sends the kind and mode when a This Machine Only port is exposed', async () => {
       appsRepository.getAppByUrn.mockResolvedValueOnce(null as any).mockResolvedValue(portExposeRow('notes', 'local'));
 
@@ -464,6 +476,32 @@ describe('PortExposeService', () => {
       expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith(
         expect.objectContaining({ apps: [expect.objectContaining({ name: 'notes', kind: PORT_EXPOSE_KIND, exposureMode: 'tailscale' })] }),
       );
+    });
+
+    // The Portal answers 200 for an entry over the organization's public address allowance and keeps
+    // nothing. A reinstall then had no record of the port, and nothing on the Hub said why (#2553).
+    it('names each port the Portal answered for but did not keep', async () => {
+      appsRepository.getApps.mockResolvedValue([portExposeRow('notes', 'tailscale'), portExposeRow('dev', 'local', 8092)]);
+      portalClient.postDeviceApplicationsRegistry.mockResolvedValue({
+        success: true,
+        refused: [{ app: 'dev', slug: 'dev', reason: 'subdomain_quota_exceeded', message: 'Your plan includes 3 public subdomains' }],
+      });
+
+      await service.syncAllPortalRegistryEntries();
+
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('did not keep exposed port dev (subdomain_quota_exceeded): Your plan includes 3'),
+      );
+    });
+
+    it('says nothing when the Portal kept every entry', async () => {
+      appsRepository.getApps.mockResolvedValue([portExposeRow('dev', 'local', 8092)]);
+      portalClient.postDeviceApplicationsRegistry.mockResolvedValue({ success: true, refused: [] });
+
+      await service.syncAllPortalRegistryEntries();
+
+      expect(logger.warn).not.toHaveBeenCalled();
     });
 
     it('sends nothing when there is nothing to send, or the Hub is not registered', async () => {

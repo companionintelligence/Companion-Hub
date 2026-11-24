@@ -336,7 +336,7 @@ export class PortExposeService {
     }
 
     try {
-      await this.portalClient.postDeviceApplicationsRegistry({ organizationId: org.id, apps: [entry] });
+      this.warnAboutRefusedEntries(await this.portalClient.postDeviceApplicationsRegistry({ organizationId: org.id, apps: [entry] }));
     } catch (error) {
       this.logger.warn(
         `[Portal] Failed to ${entry.remove ? 'remove' : 'upsert'} workload registry entry for ${appUrn}: ${describeNetworkError(error)}`,
@@ -379,7 +379,23 @@ export class PortExposeService {
       return;
     }
 
-    await this.portalClient.postDeviceApplicationsRegistry({ organizationId: org.id, apps: apps.map((app) => registryEntryFor(app)) });
+    this.warnAboutRefusedEntries(
+      await this.portalClient.postDeviceApplicationsRegistry({ organizationId: org.id, apps: apps.map((app) => registryEntryFor(app)) }),
+    );
+  }
+
+  /**
+   * Names each port Companion Portal answered for but did not keep. The Portal lists only what it kept,
+   * so a reinstall can't put such a port back, and before this nothing on the Hub said so (#2553).
+   */
+  private warnAboutRefusedEntries(answer: Awaited<ReturnType<PortalClientService['postDeviceApplicationsRegistry']>> | undefined): void {
+    for (const refusal of Array.isArray(answer?.refused) ? answer.refused : []) {
+      this.logger.warn(
+        `[Portal] Companion Portal did not keep exposed port ${refusal.app ?? refusal.slug ?? 'unknown'}` +
+          `${refusal.reason ? ` (${refusal.reason})` : ''}${refusal.message ? `: ${refusal.message}` : ''}. ` +
+          'It is not in the list a reinstalled Hub restores from.',
+      );
+    }
   }
 
   /**

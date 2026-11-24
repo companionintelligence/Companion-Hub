@@ -54,6 +54,11 @@ export function RestoreSummary({ summary, onLeave }: RestoreSummaryProps) {
           {restored.length > 0 ? t('RESTORE_APPS_DONE_TITLE') : t('RESTORE_APPS_DONE_TITLE_NONE')}
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">{t('RESTORE_APPS_DONE_DESCRIPTION')}</p>
+        {/* Only what has a public route, and exposed ports, reach the Portal. An app kept on this machine or
+            the Private VPN is in no list a reinstall reads, so it would vanish without a word here (#2553). */}
+        <p className="mt-2 text-sm text-muted-foreground" data-testid="restore-summary-local-apps">
+          {t('RESTORE_APPS_LOCAL_APPS_NOT_KEPT')}
+        </p>
       </div>
 
       {notRestored.length > 0 ? (

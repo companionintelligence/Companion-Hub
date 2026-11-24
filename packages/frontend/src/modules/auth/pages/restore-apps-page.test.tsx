@@ -277,6 +277,17 @@ describe('RestoreAppsPage', () => {
       expect(navigate).not.toHaveBeenCalled();
     });
 
+    // Apps on This machine only or Private VPN never reach the Portal, so the lists above can't name them (#2553).
+    it('says apps kept on this machine or the Private VPN are not brought back', async () => {
+      await act(async () => {
+        render(<RestoreAppsPage />);
+      });
+
+      expect(await screen.findByTestId('restore-summary-local-apps')).toHaveTextContent(
+        "It doesn't keep apps you installed on This machine only or Private VPN, so pairing again doesn't bring them back.",
+      );
+    });
+
     it('does not call an app restored when its install failed after the restore queued it', async () => {
       const failedEverywhere = {
         ...summary,
