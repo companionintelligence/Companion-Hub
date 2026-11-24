@@ -793,6 +793,7 @@ describe('AppsService.checkAppAvailability', () => {
           }),
         ],
         ['ERR_SSL_WRONG_VERSION_NUMBER', Object.assign(new Error(''), { code: 'ERR_SSL_WRONG_VERSION_NUMBER' })],
+        ['ERR_SSL_PACKET_LENGTH_TOO_LONG', Object.assign(new Error(''), { code: 'ERR_SSL_PACKET_LENGTH_TOO_LONG' })],
       ];
 
       it.each(plainHttpReplies)('counts the app as available after %s when the target Serve forwards to answers', async (_name, error) => {
