@@ -42,7 +42,7 @@ This is useful for pre-provisioned devices or admin-managed deployments.
 
 - **Disable:** two switches in the hub `.env` turn off the sidecar and the Hub's Tailscale Serve entries separately. See [Turn Private VPN off](#turn-private-vpn-off).
 - **Auth:** set **`TAILSCALE_AUTHKEY`** for unattended setup, or use browser sign-in from the Hub UI.
-- **Routes:** by default **`HUB_TAILSCALE_EXTRA_ARGS`** targets the public Tailscale control plane and advertises `172.18.0.0/16` so tailnet clients can reach the Hub's Docker bridge. Change this if your Docker network uses a different CIDR.
+- **Routes:** by default **`HUB_TAILSCALE_EXTRA_ARGS`** targets the public Tailscale control plane and advertises `172.18.0.0/16` so tailnet clients can reach the Hub's Docker bridge. Change this if your Docker network uses a different CIDR. It only applies to the sidecar. A Hub that uses the computer's own Tailscale signs in with a plain `tailscale up`, which keeps that machine's settings as they are and advertises no routes.
 - **Sidecar name:** CI-Hub uses **`TAILSCALE_SIDECAR_CONTAINER`** when it needs to run `docker exec ... tailscale ...` against a non-default container name.
 
 The backend **`TailscaleService`** talks to Tailscale via `docker exec hub-tailscale tailscale …` when the Hub container has no host Tailscale socket.

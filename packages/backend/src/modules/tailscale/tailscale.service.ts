@@ -229,8 +229,9 @@ export class TailscaleService {
    *
    * `tailscale up` prints it after "To authenticate, visit:". Anything else that looks like a URL is
    * not one: a refused `up` repeats the command with its `--login-server=<url>`, as does the exec
-   * error's own message, and warnings end with a tailscale.com help link. Opening the login server's
-   * address read as a sign-in that failed, while tailscaled's refusal went unlogged (CI-Hub#2548).
+   * error's own message (with `=` or a space before the URL), and warnings end with a tailscale.com
+   * help link. Opening the login server's address read as a sign-in that failed, while tailscaled's
+   * refusal went unlogged (CI-Hub#2548).
    */
   private extractAuthUrl(output: string, expectedHost?: string | null): string | null {
     const prompted = output.match(/To authenticate, visit:\s+(https?:\/\/[^\s"']+)/i)?.[1];
@@ -238,7 +239,7 @@ export class TailscaleService {
       return prompted.replace(/[),.;]+$/, '');
     }
 
-    const candidates = (output.match(/(?<![=\w])https?:\/\/[^\s"']+/gi) ?? []).map((url) => url.replace(/[),.;]+$/, ''));
+    const candidates = (output.match(/(?<![=\w]|--login-server\s+)https?:\/\/[^\s"']+/gi) ?? []).map((url) => url.replace(/[),.;]+$/, ''));
     if (!candidates.length) {
       return null;
     }
@@ -323,14 +324,12 @@ export class TailscaleService {
    * that isn't a default is named too (Tailscale SSH, an operator), and a run it accepted would turn on
    * accept-routes and advertise the Hub's Docker bridges from that machine to the whole tailnet. A bare
    * `tailscale up` is the one form it takes as "bring the network back up and change nothing", which is what
-   * **Log In with Tailscale** has to do after **Disconnect**. So the host gets only what the operator put in
-   * HUB_TAILSCALE_EXTRA_ARGS.
+   * **Log In with Tailscale** has to do after **Disconnect**. So the host gets no flags. HUB_TAILSCALE_EXTRA_ARGS
+   * isn't read for it either: it is the sidecar's `TS_EXTRA_ARGS` in compose, and the docs tell people to put
+   * the sidecar's routes there.
    */
   private getTailscaleUpArgsFor(strategy: ExecStrategy): string[] {
-    if (strategy === 'sidecar') {
-      return this.getTailscaleUpExtraArgs();
-    }
-    return (process.env.HUB_TAILSCALE_EXTRA_ARGS || '').trim().split(/\s+/).filter(Boolean);
+    return strategy === 'sidecar' ? this.getTailscaleUpExtraArgs() : [];
   }
 
   /** The sidecar's flags: env override or default Docker bridge advertisement. */
@@ -669,6 +668,8 @@ export class TailscaleService {
       }
 
       if (status.connected || status.backendState === 'Running') {
+        // `up` changed the state, so readers of getStatusCached must not keep the pre-`up` answer.
+        this.invalidateStatusCache();
         // `Stopped` is what `tailscale down` leaves: still signed in, so `up` alone brought it back.
         return preAuthStatus.backendState === 'Stopped' ? { authUrl: '', reconnected: true } : { authUrl: '' };
       }

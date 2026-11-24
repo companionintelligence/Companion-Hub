@@ -202,17 +202,16 @@ describe('TailscaleService', () => {
       expect(upCalls()).toEqual([['up']]);
     });
 
-    it('passes what the operator put in HUB_TAILSCALE_EXTRA_ARGS, and nothing it did not', async () => {
-      process.env.HUB_TAILSCALE_EXTRA_ARGS = '--accept-dns=false';
+    it("ignores HUB_TAILSCALE_EXTRA_ARGS, which holds the sidecar's routes", async () => {
+      process.env.HUB_TAILSCALE_EXTRA_ARGS = '--login-server=https://controlplane.tailscale.com --accept-routes --advertise-routes=172.18.0.0/16';
       hostTailscaled('Stopped', (_args, cb) => process.nextTick(() => cb(null, '', '')));
 
       await service.startAuth();
 
-      expect(upCalls()).toEqual([['up', '--accept-dns=false']]);
+      expect(upCalls()).toEqual([['up']]);
     });
 
     it("does not take the login server in tailscaled's refusal for a sign-in link, and logs the refusal", async () => {
-      process.env.HUB_TAILSCALE_EXTRA_ARGS = '--login-server=https://controlplane.tailscale.com --accept-routes';
       const logged = vi.spyOn((service as any).logger, 'error').mockImplementation(() => undefined);
       hostTailscaled('Stopped', (args, cb) =>
         process.nextTick(() =>
@@ -231,6 +230,15 @@ describe('TailscaleService', () => {
       expect(logged).toHaveBeenCalledWith(expect.stringContaining('requires mentioning all'));
     });
 
+    it('drops the cached status once a bare up brought the tailnet back', async () => {
+      hostTailscaled('Stopped', (_args, cb) => process.nextTick(() => cb(null, '', '')));
+      expect((await service.getStatusCached()).backendState).toBe('Stopped');
+
+      await service.startAuth();
+
+      expect((await service.getStatusCached()).backendState).toBe('Running');
+    });
+
     it('connectWithAuthKey adds no sidecar flags either', async () => {
       hostTailscaled('NeedsLogin', (_args, cb) => process.nextTick(() => cb(null, '', '')));
 
@@ -238,6 +246,34 @@ describe('TailscaleService', () => {
 
       expect(upCalls()).toEqual([['up', '--auth-key', 'tskey-auth-testkey']]);
     });
+  });
+
+  it('does not take a login server given after a space for a sign-in link either', async () => {
+    // The sidecar still names HUB_TAILSCALE_EXTRA_ARGS, and the exec error repeats the command.
+    process.env.HUB_TAILSCALE_EXTRA_ARGS = '--login-server https://headscale.example.com';
+    vi.spyOn((service as any).logger, 'error').mockImplementation(() => undefined);
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.98.2', ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('status')) {
+          process.nextTick(() => cb(null, JSON.stringify({ BackendState: 'NeedsLogin' }), ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('up')) {
+          const stderr = 'Error: something went wrong\n';
+          process.nextTick(() =>
+            cb(Object.assign(new Error(`Command failed: ${cmd} ${args.join(' ')}\n${stderr}`), { stdout: '', stderr }), '', stderr),
+          );
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
+
+    await expect(service.startAuth()).rejects.toThrow('Failed to start Tailscale auth');
   });
 
   it('connectWithAuthKey invokes tailscale up via sidecar (includes --reset)', async () => {
