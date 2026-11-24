@@ -198,6 +198,30 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('cihub
     expect(process.exitCode).toBe(1);
   });
 
+  it("removes the Hub's volumes by their whole name and keeps a backup named after one", async () => {
+    // A database backup kept as `ci_hub_pgdata_<name>` was deleted by a reset that matched by substring (#2551).
+    state.rootContainerDeletes = true;
+    const backups = ['ci_hub_pgdata_old', 'hub_tailscale_state_backup', 'old_ci_hub_app_data', 'ci-hub_ci_hub_pgdata_copy'];
+    state.listings = {
+      'volume ls --format {{.Name}}': listed(['ci_hub_pgdata', 'hub_tailscale_state', ...backups].join('\n')),
+      'volume ls --filter label=com.docker.compose.project=ci-os-hub --format {{.Name}}': listed('ci-os-hub_pgdata'),
+      // An appliance upgraded from the runtipi stack still carries that project's volumes.
+      'volume ls --filter label=com.docker.compose.project=runtipi --format {{.Name}}': listed('runtipi_db_data'),
+    };
+
+    await resetHub('prod', true);
+
+    const volumeRemovals = state.calls.filter((line) => line.startsWith('volume rm '));
+    expect(new Set(volumeRemovals)).toEqual(
+      new Set(['volume rm ci_hub_pgdata', 'volume rm hub_tailscale_state', 'volume rm ci-os-hub_pgdata', 'volume rm runtipi_db_data']),
+    );
+    expect(box('Removing lingering Hub volumes')?.lines).toEqual(['ci_hub_pgdata', 'hub_tailscale_state']);
+    // This fake engine still lists what was removed; the backups are not among what reset says is left.
+    expect(box('Reset incomplete')?.lines).toEqual(
+      expect.arrayContaining(['Volumes still there: ci_hub_pgdata, hub_tailscale_state, ci-os-hub_pgdata']),
+    );
+  });
+
   it('cihub recreate does not start a Hub on the surviving data', async () => {
     await recreateHub('prod', { detached: true, attached: false }, true);
 

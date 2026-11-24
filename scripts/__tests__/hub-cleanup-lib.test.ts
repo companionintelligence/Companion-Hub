@@ -8,6 +8,7 @@ import {
   getDesktopTunnelDir,
   getHubStateDirs,
   isCloudflaredTunnelToken,
+  isHubStackVolume,
   isRelatedVolume,
   isWithinPath,
   parseNames,
@@ -117,6 +118,25 @@ describe('hub-cleanup-lib', () => {
     expect(isRelatedVolume('runtipi_media')).toBe(true);
     expect(isRelatedVolume('postgres_data')).toBe(false);
     expect(isRelatedVolume('anotherstack_prod_data')).toBe(false);
+  });
+
+  it("matches the Hub stack's volumes by their whole name, never a name that only contains one", () => {
+    // As the prod compose file pins them, and as compose names them in a checkout's ci-hub project.
+    for (const name of ['ci_hub_pgdata', 'ci_hub_app_data', 'hub_tailscale_state', 'ci-hub_ci_hub_pgdata', 'ci-os-hub_hub_tailscale_state']) {
+      expect(isHubStackVolume(name)).toBe(true);
+      expect(isRelatedVolume(name)).toBe(true);
+    }
+    // A database backup kept beside the Hub was deleted by a reset that matched by substring (#2551).
+    for (const name of [
+      'ci_hub_pgdata_old',
+      'backup_ci_hub_pgdata',
+      'hub_tailscale_state.bak',
+      'myapp_ci_hub_app_data',
+      'ci-hub_ci_hub_pgdata_2026-11-24',
+    ]) {
+      expect(isHubStackVolume(name)).toBe(false);
+      expect(isRelatedVolume(name)).toBe(false);
+    }
   });
 
   it('treats runtipi and runcihub as Hub stack projects, not marketplace apps', () => {

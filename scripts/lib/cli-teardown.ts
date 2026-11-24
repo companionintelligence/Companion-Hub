@@ -14,7 +14,8 @@ import {
   type AppTeardownPlan,
   type DockerCliRunner,
   executeAppTeardown,
-  isRelatedVolume,
+  HUB_STACK_PROJECT_NAMES,
+  isHubStackVolume,
   parseNames,
   planAppTeardown,
   removeManagedAppProjects,
@@ -93,25 +94,45 @@ function removeProjectContainers(project: string, docker: HubDocker): void {
   docker.bestEffort(['rm', '-f', ...ids]);
 }
 
+/** The compose projects a prod install's Hub has run under: today's and the one before the rename. */
+const APPLIANCE_PROJECTS = ['ci-hub', 'ci-os-hub'] as const;
+
 /**
  * Label/volume/network teardown for a prod install, independent of any env file or compose file.
  * Used as the appliance fallback so a broken or partially provisioned Hub can still be cleaned.
  */
 function applianceDockerTeardown(removeVolumes: boolean, docker: HubDocker): void {
-  for (const project of ['ci-hub', 'ci-os-hub']) {
+  for (const project of APPLIANCE_PROJECTS) {
     removeProjectContainers(project, docker);
   }
   if (!removeVolumes) return;
 
-  const { stdout, ok } = docker.capture(['volume', 'ls', '--format', '{{.Name}}']);
-  if (ok && stdout) {
-    for (const volume of parseNames(stdout).filter(isRelatedVolume)) {
-      docker.bestEffort(['volume', 'rm', volume]);
-    }
+  for (const volume of hubVolumes(docker)) {
+    docker.bestEffort(['volume', 'rm', volume]);
   }
   for (const network of ['ci_hub_network', 'ci-hub_network', 'ci_os_hub_network', 'ci-os-hub_network']) {
     docker.bestEffort(['network', 'rm', network]);
   }
+}
+
+/**
+ * The Hub's own volumes on the engine. Compose labels the ones it created for a Hub project, and
+ * `compose down -v` finds them the same way. That includes the `runtipi` and `runcihub` projects an
+ * upgraded appliance still carries. The Hub stack's volumes are also matched by their whole name,
+ * since one the desktop app created before compose (`hub_tailscale_state`) has no label. A volume
+ * whose name only contains a Hub volume's, such as a database backup, is left alone.
+ */
+function hubVolumes(docker: HubDocker): string[] {
+  const list = (filter: string[]): string[] => {
+    const { ok, stdout } = docker.capture(['volume', 'ls', ...filter, '--format', '{{.Name}}']);
+    return ok ? parseNames(stdout) : [];
+  };
+  return [
+    ...new Set([
+      ...HUB_STACK_PROJECT_NAMES.flatMap((project) => list(['--filter', `label=com.docker.compose.project=${project}`])),
+      ...list([]).filter(isHubStackVolume),
+    ]),
+  ];
 }
 
 /** Tear down a desktop-installed prod Hub from anywhere (canonical data dir). */
@@ -670,13 +691,9 @@ function gpuProbeRewritesDataDirNote(dataDir: string): string[] {
   ];
 }
 
-function isHubVolume(name: string): boolean {
-  return name.includes('ci_hub_pgdata') || name.includes('ci_hub_app_data') || name.includes('hub_tailscale_state');
-}
-
 function verifyHubVolumesRemoved(docker: HubDocker) {
   const { stdout } = docker.capture(['volume', 'ls', '--format', '{{.Name}}']);
-  const lingering = parseNames(stdout).filter(isHubVolume);
+  const lingering = parseNames(stdout).filter(isHubStackVolume);
 
   if (lingering.length === 0) {
     return;
@@ -702,7 +719,10 @@ function lingeringDockerState(plan: AppTeardownPlan, hubProjects: string[], dock
   const hubContainers = hubProjects.map((project) =>
     docker.capture(['ps', '-a', '--filter', `label=com.docker.compose.project=${project}`, '--format', '{{.Names}}']),
   );
-  if (!allContainers.ok || !allVolumes.ok || hubContainers.some((listing) => !listing.ok)) {
+  const hubProjectVolumes = hubProjects.map((project) =>
+    docker.capture(['volume', 'ls', '--filter', `label=com.docker.compose.project=${project}`, '--format', '{{.Name}}']),
+  );
+  if (!allContainers.ok || !allVolumes.ok || [...hubContainers, ...hubProjectVolumes].some((listing) => !listing.ok)) {
     return { lines: ['Docker did not list its containers and volumes, so reset could not check that they were removed.'], commands: [] };
   }
   const plannedContainers = new Set([...plan.projects.flatMap((project) => project.containers), ...plan.unmanaged]);
@@ -715,7 +735,12 @@ function lingeringDockerState(plan: AppTeardownPlan, hubProjects: string[], dock
       ...hubContainers.flatMap((listing) => names(listing.stdout)),
     ]),
   ];
-  const volumes = parseNames(allVolumes.stdout).filter((name) => plannedVolumes.has(name) || isHubVolume(name));
+  const volumes = [
+    ...new Set([
+      ...parseNames(allVolumes.stdout).filter((name) => plannedVolumes.has(name) || isHubStackVolume(name)),
+      ...hubProjectVolumes.flatMap((listing) => parseNames(listing.stdout)),
+    ]),
+  ];
   const lines: string[] = [];
   const commands: string[] = [];
   if (containers.length > 0) {
