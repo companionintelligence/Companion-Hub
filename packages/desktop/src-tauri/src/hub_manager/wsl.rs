@@ -784,25 +784,42 @@ pub(crate) fn docker_answers_for_launch(
     Ok(docker_answers())
 }
 
+/// [`ensure_wsl_engine_tls`] at launch. Not fatal here; a Hub start runs it again and reports it.
+#[cfg(windows)]
+fn secure_wsl_engine_at_launch(data_dir: &Path) {
+    match ensure_wsl_engine_tls(data_dir) {
+        Ok(()) => forget_docker_access_check(),
+        Err(error) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "setup",
+                &format!("Couldn't secure the Docker engine in WSL: {error}"),
+            );
+        }
+    }
+}
+
 /// Whether Docker answers for the auto-start at launch. A Hub on the WSL engine whose engine
 /// stopped gets it started first, and waited for, unless the user stopped the Hub.
 pub fn docker_available_for_launch(data_dir: &Path) -> bool {
     #[cfg(windows)]
     {
+        // An engine an earlier build set up still answers anyone on plain TCP. Its Hub is running,
+        // so this launch starts nothing, and only a start moved it to TLS: without this it stayed
+        // open (the logon keepalive brings it back on 2375 after every reboot). Seen on Windows.
+        // Even with the Hub stopped by the user, since the engine answers anyway.
+        if wsl_engine_to_wake(data_dir).is_some()
+            && crate::docker_engine::probe_docker_host_reachable(
+                crate::docker_engine::WSL_ENGINE_LEGACY_HOST,
+            )
+        {
+            secure_wsl_engine_at_launch(data_dir);
+        }
         docker_answers_for_launch(is_docker_available, is_user_stopped(data_dir), || {
             // Before the wake: an engine left half moved to TLS answers on neither port, and the
             // Hub start that would finish the move (it runs this too) never runs while nothing
-            // answers. Not fatal here; a start reports it.
-            match ensure_wsl_engine_tls(data_dir) {
-                Ok(()) => forget_docker_access_check(),
-                Err(error) => {
-                    let _ = append_desktop_log_for(
-                        data_dir,
-                        "setup",
-                        &format!("Couldn't secure the Docker engine in WSL: {error}"),
-                    );
-                }
-            }
+            // answers.
+            secure_wsl_engine_at_launch(data_dir);
             wake_wsl_engine_for_start(data_dir)
         })
         .unwrap_or_else(|error| {
