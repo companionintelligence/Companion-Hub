@@ -178,7 +178,15 @@ fn wsl_engine_tls_in_place(data_dir: &Path, cert_dir: &Path) -> bool {
         && crate::docker_engine::probe_docker_host_reachable(WSL_ENGINE_TLS_HOST)
 }
 
-/// Gives the folder to its owner alone: no inherited access, full control for the signed-in user.
+/// Gives the folder to its owner alone: no inherited access, full control for the signed-in user,
+/// which files made in it afterwards inherit.
+///
+/// The folder only, never `/T`: on a file already there, `/inheritance:r` takes away the access it
+/// inherited (its only entry) and the `(OI)(CI)` grant doesn't apply to a file, so it is left with
+/// an empty ACL that nobody can read or overwrite. That broke the second run on Windows ("Access is
+/// denied" writing ca.pem, and deleting it too) and the Hub's TLS probe, which reads key.pem. Files
+/// already there are reset to inherit the folder's entry instead, which their owner may always do,
+/// and so mends a copy an earlier build left that way.
 #[cfg(windows)]
 fn restrict_to_current_user(dir: &Path) -> Result<(), String> {
     let user = match (std::env::var("USERDOMAIN"), std::env::var("USERNAME")) {
@@ -189,27 +197,48 @@ fn restrict_to_current_user(dir: &Path) -> Result<(), String> {
                 .to_string(),
         ),
     };
+    run_icacls(dir, &icacls_owner_only_args(&user))?;
+    for (name, _) in WSL_ENGINE_CLIENT_FILES {
+        let file = dir.join(name);
+        if file.exists() {
+            run_icacls(&file, &["/reset".to_string(), "/Q".to_string()])?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn run_icacls(path: &Path, args: &[String]) -> Result<(), String> {
     let mut command = Command::new("icacls");
     command.creation_flags(CREATE_NO_WINDOW);
     let output = command
-        .arg(dir)
-        .args([
-            "/inheritance:r",
-            "/grant:r",
-            &format!("{user}:(OI)(CI)F"),
-            "/T",
-            "/Q",
-        ])
+        .arg(path)
+        .args(args)
         .output()
         .map_err(|error| format!("Couldn't run icacls: {error}"))?;
     if output.status.success() {
         Ok(())
     } else {
+        // icacls says what went wrong on stdout.
         Err(format!(
-            "icacls failed: {}",
+            "icacls {} failed: {} {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stdout).trim(),
             String::from_utf8_lossy(&output.stderr).trim()
         ))
     }
+}
+
+/// `icacls <folder>` arguments that leave `user` the folder's only entry, inherited by what is made in
+/// it. No `/T`: see [`restrict_to_current_user`].
+#[cfg(any(test, windows))]
+pub(crate) fn icacls_owner_only_args(user: &str) -> [String; 4] {
+    [
+        "/inheritance:r".to_string(),
+        "/grant:r".to_string(),
+        format!("{user}:(OI)(CI)F"),
+        "/Q".to_string(),
+    ]
 }
 
 /// Points the `wsl-engine` Docker context at the TLS listener, creating it if it is missing.
@@ -280,9 +309,9 @@ pub(crate) fn ensure_wsl_engine_tls(data_dir: &Path) -> Result<(), String> {
                 .ok_or_else(|| {
                     format!("Couldn't read {source} from the WSL distro \"{distro}\".")
                 })?;
-        std::fs::write(cert_dir.join(name), format!("{pem}\n")).map_err(|error| {
-            format!("Couldn't write {}: {error}", cert_dir.join(name).display())
-        })?;
+        let path = cert_dir.join(name);
+        std::fs::write(&path, format!("{pem}\n"))
+            .map_err(|error| format!("Couldn't write {}: {error}", path.display()))?;
     }
     point_wsl_engine_context_at_tls(&cert_dir)?;
     crate::docker_engine::repoint_persisted_wsl_engine(data_dir);
@@ -335,10 +364,18 @@ mod tests {
 
     #[test]
     fn the_context_endpoint_names_the_tls_listener_and_the_three_files() {
-        let endpoint = wsl_engine_context_endpoint(Path::new("/home/u/.docker/companionhub-wsl"));
+        let dir = Path::new("/home/u/.docker/companionhub-wsl");
+        let endpoint = wsl_engine_context_endpoint(dir);
+        // Joined with the host's separator: `\` where this runs for real.
+        let file = |name: &str| dir.join(name).display().to_string();
         assert_eq!(
             endpoint,
-            "host=tcp://127.0.0.1:2376,ca=/home/u/.docker/companionhub-wsl/ca.pem,cert=/home/u/.docker/companionhub-wsl/cert.pem,key=/home/u/.docker/companionhub-wsl/key.pem"
+            format!(
+                "host=tcp://127.0.0.1:2376,ca={},cert={},key={}",
+                file("ca.pem"),
+                file("cert.pem"),
+                file("key.pem")
+            )
         );
     }
 
@@ -358,6 +395,17 @@ mod tests {
             assert!(wsl_engine_tls_env(host, Some(dir)).is_none(), "{host}");
         }
         assert!(wsl_engine_tls_env("tcp://127.0.0.1:2376", None).is_none());
+    }
+
+    #[test]
+    fn the_client_folder_acl_never_reaches_into_files_already_there() {
+        // /T on an existing file leaves it with an empty ACL: unreadable, even by its owner.
+        let args = icacls_owner_only_args("HOST\\kyle");
+        assert_eq!(args[2], "HOST\\kyle:(OI)(CI)F");
+        assert!(!args.iter().any(|arg| arg.eq_ignore_ascii_case("/T")));
+        let installer = crate::hub_manager::wsl2_engine_user_script();
+        assert!(!installer.contains("/T /Q"));
+        assert!(installer.contains("& icacls.exe $file /reset /Q"));
     }
 
     #[test]

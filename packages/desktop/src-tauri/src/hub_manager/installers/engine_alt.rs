@@ -518,12 +518,19 @@ $tlsMarker = ($tlsOut | Where-Object {{ $_.Trim() }} | Select-Object -Last 1)
 if ($tlsMarker -ne 'tls-configured' -and $tlsMarker -ne 'tls-already') {{ throw "TLS setup for Docker inside WSL did not finish: $tlsMarker" }}
 $certDir = Join-Path $env:USERPROFILE '.docker\companionhub-wsl'
 New-Item -ItemType Directory -Force -Path $certDir | Out-Null
-& icacls.exe $certDir /inheritance:r /grant:r "$($env:USERDOMAIN)\$($env:USERNAME):(OI)(CI)F" /T /Q | Out-Null
+# The folder only, never /T: on a file already there it leaves an empty ACL nobody can read or
+# delete. A file already there is reset to inherit the folder's owner-only entry instead.
+& icacls.exe $certDir /inheritance:r /grant:r "$($env:USERDOMAIN)\$($env:USERNAME):(OI)(CI)F" /Q | Out-Null
 if ($LASTEXITCODE -ne 0) {{ throw "Could not limit $certDir to $($env:USERNAME)." }}
 foreach ($name in 'ca.pem','cert.pem','key.pem') {{
   $pem = (& wsl.exe -d $distro -u root -- cat "{tls_dir}/$name") -join "`n"
   if ($LASTEXITCODE -ne 0 -or $pem -notmatch '-----BEGIN') {{ throw "Could not read $name from the WSL distro." }}
-  [IO.File]::WriteAllText((Join-Path $certDir $name), "$pem`n")
+  $file = Join-Path $certDir $name
+  if (Test-Path $file) {{
+    & icacls.exe $file /reset /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) {{ throw "Could not reset the access to $file." }}
+  }}
+  [IO.File]::WriteAllText($file, "$pem`n")
 }}
 $endpoint = "host={tls_host},ca=$(Join-Path $certDir 'ca.pem'),cert=$(Join-Path $certDir 'cert.pem'),key=$(Join-Path $certDir 'key.pem')"
 
