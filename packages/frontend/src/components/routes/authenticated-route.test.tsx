@@ -1,11 +1,15 @@
 import { render, screen } from '@/tests/test-utils';
 import { sdkOk } from '@/tests/sdk-mock-helpers';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AuthenticatedRoute from './authenticated-route';
 
 const { getRehydrateStatus, appContext } = vi.hoisted(() => ({
   getRehydrateStatus: vi.fn(),
-  appContext: { user: { hasCompletedOnboarding: false }, isLoading: false, loadFailed: false },
+  appContext: {
+    user: { hasCompletedOnboarding: false } as { hasCompletedOnboarding: boolean; username?: string },
+    isLoading: false,
+    loadFailed: false,
+  },
 }));
 
 vi.mock('@/api-client/sdk.gen', () => ({ getRehydrateStatus }));
@@ -79,5 +83,39 @@ describe('AuthenticatedRoute after a pairing', () => {
     render(<AuthenticatedRoute />);
 
     expect(await screen.findByTestId('outlet')).toBeInTheDocument();
+  });
+});
+
+/*
+ * The desktop app's sign-in page names the account it was signed in as once that session ends some
+ * other way, such as a password change. Nothing wrote that account in the desktop app (#2549).
+ */
+describe('AuthenticatedRoute remembers the desktop account', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    getRehydrateStatus.mockResolvedValue(status({ completed: true }));
+    appContext.user = { hasCompletedOnboarding: true, username: 'you@example.com' };
+  });
+
+  afterEach(() => {
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it('keeps the signed-in account in the desktop window', async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke: vi.fn() };
+
+    render(<AuthenticatedRoute />);
+
+    expect(await screen.findByTestId('outlet')).toBeInTheDocument();
+    expect(localStorage.getItem('ci-hub.portalAccountEmail')).toBe('you@example.com');
+  });
+
+  // A browser can be shared: its sign-in page must not name whoever used it last.
+  it('keeps nothing in a browser', async () => {
+    render(<AuthenticatedRoute />);
+
+    expect(await screen.findByTestId('outlet')).toBeInTheDocument();
+    expect(localStorage.getItem('ci-hub.portalAccountEmail')).toBeNull();
   });
 });
