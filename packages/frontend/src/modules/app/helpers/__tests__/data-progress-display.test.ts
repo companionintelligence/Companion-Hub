@@ -7,7 +7,7 @@ const t = (key: string) => key;
 describe('dataProgressText', () => {
   it('gives the figures, the total and the speed', () => {
     expect(dataProgressText(t, { step: 'archiving', doneBytes: 9_800_000_000, totalBytes: 21_000_000_000, bytesPerSecond: 45_000_000 })).toBe(
-      `APP_DATA_STEP_ARCHIVING: ${humanBytes(9_800_000_000)} / ${humanBytes(21_000_000_000)}, ${humanBytes(45_000_000)}/s`,
+      `APP_DATA_STEP_ARCHIVING: ${humanBytes(9_800_000_000)} / ${humanBytes(21_000_000_000)} (${humanBytes(45_000_000)}/s)`,
     );
   });
 

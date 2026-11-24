@@ -17,7 +17,7 @@ const DATA_STEP_LABEL_KEYS: Record<DataProgressStep, string> = {
 export const dataProgressPercent = ({ doneBytes, totalBytes }: DataProgress): number | null =>
   doneBytes !== undefined && totalBytes ? Math.round((doneBytes / totalBytes) * 100) : null;
 
-/** The step and its figures, e.g. `Backing up: 9.8 GB / 21 GB, 45 MB/s`. A step that cannot be measured is only named. */
+/** The step and its figures, e.g. `Backing up: 9.8 GB / 21 GB (45 MB/s)`. A step that cannot be measured is only named. */
 export const dataProgressText = (t: (key: string) => string, { step, doneBytes, totalBytes, bytesPerSecond }: DataProgress): string => {
   const label = t(DATA_STEP_LABEL_KEYS[step]);
 
@@ -25,5 +25,5 @@ export const dataProgressText = (t: (key: string) => string, { step, doneBytes, 
 
   const amount = totalBytes === undefined ? humanBytes(doneBytes) : `${humanBytes(doneBytes)} / ${humanBytes(totalBytes)}`;
 
-  return bytesPerSecond ? `${label}: ${amount}, ${humanBytes(bytesPerSecond)}/s` : `${label}: ${amount}`;
+  return bytesPerSecond ? `${label}: ${amount} (${humanBytes(bytesPerSecond)}/s)` : `${label}: ${amount}`;
 };
