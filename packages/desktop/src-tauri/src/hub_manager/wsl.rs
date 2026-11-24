@@ -665,11 +665,31 @@ fn start_wsl_engine_and_wait(
     }
 }
 
+/// The WSL engine a start or launch wakes: the one the Hub is pinned to or saved, or else, while the
+/// Docker CLI's current context is the WSL engine's, that engine at its TLS listener. The second is
+/// a Hub whose saved engine is still Docker Desktop on a machine now pointed at the WSL engine, as
+/// an engine install that stopped after Docker came up leaves it: nothing woke that engine, so
+/// nothing answered, so no start ran to finish its move to TLS.
+#[cfg(windows)]
+fn wsl_engine_to_wake(data_dir: &Path) -> Option<crate::docker_engine::PinnedDockerEngine> {
+    hub_wsl_engine(data_dir).or_else(|| {
+        let context = crate::docker_engine::current_docker_context_name(None)?;
+        (context == DOCKER_CONTEXT_WSL_ENGINE).then(|| crate::docker_engine::PinnedDockerEngine {
+            docker_host: crate::docker_engine::WSL_ENGINE_TLS_HOST.to_string(),
+            kind: crate::docker_engine::DockerEngineKind::WslEngine,
+            context_name: Some(context),
+            reason: "the Docker CLI's current context is the WSL engine".to_string(),
+            selected_at: 0,
+            path_style: Some("wsl-mnt".to_string()),
+        })
+    })
+}
+
 /// For a Hub start: when the Hub runs on the WSL engine and Docker doesn't answer, start the
 /// engine and wait for it. `Ok` when there was nothing to do too.
 #[cfg(windows)]
 pub(crate) fn wake_wsl_engine_for_start(data_dir: &Path) -> Result<(), String> {
-    let Some(engine) = hub_wsl_engine(data_dir) else {
+    let Some(engine) = wsl_engine_to_wake(data_dir) else {
         return Ok(());
     };
     if crate::docker_engine::probe_docker_host_reachable(&engine.docker_host) {
@@ -734,6 +754,19 @@ pub fn docker_available_for_launch(data_dir: &Path) -> bool {
     #[cfg(windows)]
     {
         docker_answers_for_launch(is_docker_available, is_user_stopped(data_dir), || {
+            // Before the wake: an engine left half moved to TLS answers on neither port, and the
+            // Hub start that would finish the move (it runs this too) never runs while nothing
+            // answers. Not fatal here; a start reports it.
+            match ensure_wsl_engine_tls(data_dir) {
+                Ok(()) => forget_docker_access_check(),
+                Err(error) => {
+                    let _ = append_desktop_log_for(
+                        data_dir,
+                        "setup",
+                        &format!("Couldn't secure the Docker engine in WSL: {error}"),
+                    );
+                }
+            }
             wake_wsl_engine_for_start(data_dir)
         })
         .unwrap_or_else(|error| {
