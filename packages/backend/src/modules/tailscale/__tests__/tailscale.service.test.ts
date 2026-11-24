@@ -497,6 +497,22 @@ describe('TailscaleService', () => {
     });
   });
 
+  describe('getHostPortServeUpstream', () => {
+    const withStrategy = (value: 'host' | 'sidecar') => {
+      (service as any).strategyCache = { value, expires: Date.now() + 60_000 };
+    };
+
+    it("names localhost when the host's tailscaled proxies, since host.docker.internal only resolves in containers", async () => {
+      withStrategy('host');
+      await expect(service.getHostPortServeUpstream(8082)).resolves.toBe('http://localhost:8082');
+    });
+
+    it('keeps host.docker.internal for the sidecar', async () => {
+      withStrategy('sidecar');
+      await expect(service.getHostPortServeUpstream(8082)).resolves.toBe('http://host.docker.internal:8082');
+    });
+  });
+
   it('disconnect uses docker sidecar when host unavailable', async () => {
     execFileMock.mockImplementation(
       (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {

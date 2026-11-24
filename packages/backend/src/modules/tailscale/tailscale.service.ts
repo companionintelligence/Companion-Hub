@@ -757,6 +757,22 @@ export class TailscaleService {
   }
 
   /**
+   * Upstream for a program the operator exposed from the host with **Expose a port**.
+   *
+   * In host mode Serve's proxy runs inside the host's tailscaled and dials from the host, where
+   * `host.docker.internal` does not resolve (that name only exists inside containers), so every
+   * request answered 502. The host reaches its own program on `localhost`, the same way it reaches
+   * the Hub in {@link getHubServeUpstream}. Sidecar mode keeps `host.docker.internal`.
+   */
+  async getHostPortServeUpstream(port: number): Promise<string> {
+    const strategy = await this.resolveStrategy();
+    if (strategy === 'host') {
+      return `http://localhost:${port}`;
+    }
+    return `http://host.docker.internal:${port}`;
+  }
+
+  /**
    * Serve an app via Tailscale Serve on a dedicated HTTPS port.
    */
   async serveApp(params: { appName: string; httpsPort: number; upstreamUrl?: string; localPort?: number }): Promise<void> {

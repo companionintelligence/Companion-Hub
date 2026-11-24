@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
 import { createAppUrn } from '@/common/helpers/app-helpers';
+import { AppFilesManager } from '../../apps/app-files-manager';
 import { ExposureSyncService } from '../exposure-sync.service';
 import { TailscaleServeOwnership } from '../tailscale-serve-ownership';
 import { servePermissionCommand, TailscaleService } from '../../tailscale/tailscale.service';
@@ -142,8 +144,11 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
   let tailscale: TailscaleService;
   let sse: { emit: ReturnType<typeof vi.fn> };
 
-  /** A fresh Hub process over `tailscaled`; `apps` is read on every pass, so tests can stop an app between passes. */
-  function buildSync(tailscaled: FakeHostTailscaled, apps: PrivateVpnApp[] = []): ExposureSyncService {
+  /**
+   * A fresh Hub process over `tailscaled`; `apps` is read on every pass, so tests can stop an app between passes.
+   * `installedInfo` is what the app's installed files say about it, by app name (an **Expose a port** entry, say).
+   */
+  function buildSync(tailscaled: FakeHostTailscaled, apps: PrivateVpnApp[] = [], installedInfo: Record<string, unknown> = {}): ExposureSyncService {
     tailscale = new TailscaleService();
     sse = { emit: vi.fn() };
     vi.spyOn(tailscale, 'isInstalled').mockResolvedValue(true);
@@ -152,7 +157,10 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
       async (args: string[]) => tailscaled.run(args),
     );
 
-    const moduleRef = { get: vi.fn((token: unknown) => (token === TailscaleService ? tailscale : null)) };
+    const appFiles = { getInstalledAppInfo: vi.fn(async (appUrn: string) => installedInfo[appUrn.split(':')[0] ?? ''] ?? null) };
+    const moduleRef = {
+      get: vi.fn((token: unknown) => (token === TailscaleService ? tailscale : token === AppFilesManager ? appFiles : null)),
+    };
     const appRepository = { getApps: vi.fn(async () => apps) };
     const dockerReadFacade = {
       getAppNetworkTarget: vi.fn(async (appUrn: string) => {
@@ -259,6 +267,42 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
     expect(tailscaled.serveConfig().Web?.['laptop.tailxyz.ts.net:3001']).toEqual({ Handlers: { '/': { Proxy: 'http://172.18.0.10:3001' } } });
     expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('turned off'));
     expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  describe("an exposed port on a Hub that uses the host's tailscaled", () => {
+    const exposedPort = (port: number): PrivateVpnApp => ({ ...privateVpnApp('public-test', port, ''), appStoreSlug: '_user' });
+
+    it('proxies to the program on the host, not to host.docker.internal, which the host cannot resolve', async () => {
+      const tailscaled = new FakeHostTailscaled('laptop.tailxyz.ts.net', '{}');
+      const sync = buildSync(tailscaled, [exposedPort(8082)], { 'public-test': { kind: PORT_EXPOSE_KIND, port: 8082 } });
+
+      await sync.syncTailscaleExposurePublic();
+
+      expect(tailscaled.writes).toEqual([['serve', '--bg', '--yes', '--https=8082', 'http://localhost:8082'], HUB_PUBLISH]);
+      expect(tailscaled.serveConfig().Web?.['laptop.tailxyz.ts.net:8082']).toEqual({ Handlers: { '/': { Proxy: 'http://localhost:8082' } } });
+    });
+
+    it("points the program's upstream port, not the published one, at localhost", async () => {
+      const tailscaled = new FakeHostTailscaled('laptop.tailxyz.ts.net', '{}');
+      const sync = buildSync(tailscaled, [exposedPort(8443)], { 'public-test': { kind: PORT_EXPOSE_KIND, port: 8443, upstreamPort: 3080 } });
+
+      await sync.syncTailscaleExposurePublic();
+
+      expect(tailscaled.serveConfig().Web?.['laptop.tailxyz.ts.net:8443']).toEqual({ Handlers: { '/': { Proxy: 'http://localhost:3080' } } });
+    });
+
+    it('repairs an entry an older Hub published for host.docker.internal', async () => {
+      const tailscaled = new FakeHostTailscaled('laptop.tailxyz.ts.net', '{}');
+      tailscaled.run(['serve', '--bg', '--yes', '--https=8082', 'http://host.docker.internal:8082']);
+      tailscaled.writes.length = 0;
+      const sync = buildSync(tailscaled, [exposedPort(8082)], { 'public-test': { kind: PORT_EXPOSE_KIND, port: 8082 } });
+
+      await sync.syncTailscaleExposurePublic();
+      await sync.syncTailscaleExposurePublic();
+
+      expect(tailscaled.writes).toEqual([['serve', '--bg', '--yes', '--https=8082', 'http://localhost:8082'], HUB_PUBLISH]);
+      expect(tailscaled.serveConfig().Web?.['laptop.tailxyz.ts.net:8082']).toEqual({ Handlers: { '/': { Proxy: 'http://localhost:8082' } } });
+    });
   });
 
   it('publishes and removes nothing, apps included, when TAILSCALE_SERVE_USER_DISABLED=true', async () => {
