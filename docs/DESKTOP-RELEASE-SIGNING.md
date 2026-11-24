@@ -86,6 +86,8 @@ The workflow `environment` input is the **cloud target**, not the signing secret
 
 R2 upload still selects the `dev` vs `production` Environment for Cloudflare tokens (`CF_R2_DL_API_TOKEN`, etc.).
 
+`CF_R2_DL_API_TOKEN` needs only **Workers R2 Storage Bucket Item: Write**, scoped to that environment's bucket (`dl-dev` for `dev`, `dl-prod` for `production`), and `CF_ACCOUNT_ID` names the account that owns the bucket. `upload-desktop-r2.sh` writes through R2's S3 endpoint with S3 credentials derived from the token (its id and the SHA-256 of its value), because `wrangler r2 object put` goes through the Cloudflare REST API, which refuses a bucket-scoped token with `403 Authentication error` (code 10000).
+
 ## Required Windows signing secrets
 
 Set these exact secret names on the **`production` GitHub Environment**:

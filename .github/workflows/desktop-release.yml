@@ -734,9 +734,7 @@ jobs:
           name: desktop-update-manifest
           path: update-manifest
 
-      - name: Install wrangler
-        run: npm install -g wrangler
-
+      # The script uploads with the AWS CLI that ubuntu-latest ships, through R2's S3 endpoint.
       - name: Upload artifacts to R2
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_R2_DL_API_TOKEN }}

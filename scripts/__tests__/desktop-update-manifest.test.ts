@@ -168,12 +168,37 @@ describe('sign-desktop-manifest.mjs', () => {
 });
 
 describe('upload-desktop-r2.sh', () => {
-  /** Runs the upload with a `wrangler` that records what it would put, and returns the R2 paths. */
-  function upload() {
+  const TOKEN = 'cf-test-token-value';
+  const TOKEN_ID = '0123456789abcdef0123456789abcdef';
+
+  /**
+   * Runs the upload with an `aws` that records what it would put and a `curl` that answers
+   * tokens/verify, and returns the R2 paths plus the credentials and endpoint `aws` was handed.
+   */
+  function upload(env: Record<string, string> = {}, verifyStatus = 'active') {
     const bin = path.join(dir, 'bin');
-    const log = path.join(dir, 'wrangler.log');
+    const log = path.join(dir, 'aws.log');
+    const creds = path.join(dir, 'aws.creds');
     fs.mkdirSync(bin, { recursive: true });
-    fs.writeFileSync(path.join(bin, 'wrangler'), `#!/bin/sh\necho "$5" >> "${log}"\n`, { mode: 0o755 });
+    fs.rmSync(log, { force: true });
+    fs.rmSync(creds, { force: true });
+    fs.writeFileSync(
+      path.join(bin, 'aws'),
+      `#!/bin/sh
+for a in "$@"; do case "$a" in s3://*) echo "\${a#s3://}" >> "${log}";; esac; done
+prev=""; for a in "$@"; do [ "$prev" = "--endpoint-url" ] && ep="$a"; prev="$a"; done
+echo "$AWS_ACCESS_KEY_ID $AWS_SECRET_ACCESS_KEY $AWS_DEFAULT_REGION $ep" > "${creds}"
+`,
+      { mode: 0o755 },
+    );
+    fs.writeFileSync(
+      path.join(bin, 'curl'),
+      `#!/bin/sh
+case "$*" in *"Bearer ${TOKEN}"*"/accounts/acct123/tokens/verify"*) ;; *) exit 22;; esac
+echo '{"success":true,"result":{"id":"${TOKEN_ID}","status":"${verifyStatus}"}}'
+`,
+      { mode: 0o755 },
+    );
     const result = spawnSync('bash', [UPLOAD], {
       cwd: dir,
       env: {
@@ -183,11 +208,17 @@ describe('upload-desktop-r2.sh', () => {
         DOWNLOAD_BASE_URL: 'https://dl-dev.ci.computer',
         RELEASE_TAG: 'v0.3.14',
         MANIFEST_DIR: dir,
+        CLOUDFLARE_API_TOKEN: TOKEN,
+        CLOUDFLARE_ACCOUNT_ID: 'acct123',
+        R2_ACCESS_KEY_ID: '',
+        R2_SECRET_ACCESS_KEY: '',
+        ...env,
       },
       encoding: 'utf8',
     });
     const paths = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : [];
-    return { result, paths };
+    const [keyId, secret, region, endpoint] = fs.existsSync(creds) ? fs.readFileSync(creds, 'utf8').trim().split(' ') : [];
+    return { result, paths, keyId, secret, region, endpoint };
   }
 
   it('uploads the signed manifest as it is, its signature before it', () => {
@@ -219,5 +250,53 @@ describe('upload-desktop-r2.sh', () => {
     expect(mismatched.result.status).toBe(1);
     expect(mismatched.result.stderr).toContain('not among the artifacts');
     expect(mismatched.paths).toEqual([]);
+  });
+
+  it("writes through R2's S3 endpoint with the token's S3 credentials, its secret masked", () => {
+    writeArtifact('release-x86_64-unknown-linux-gnu/hub.deb', 'deb bytes');
+    const manifest = buildManifest();
+    fs.writeFileSync(`${manifest}.sig`, `${'ab'.repeat(64)}\n`);
+
+    const { result, keyId, secret, region, endpoint } = upload();
+
+    expect(result.status, result.stderr).toBe(0);
+    const derived = crypto.createHash('sha256').update(TOKEN).digest('hex');
+    expect(keyId).toBe(TOKEN_ID);
+    expect(secret).toBe(derived);
+    expect(region).toBe('auto');
+    expect(endpoint).toBe('https://acct123.r2.cloudflarestorage.com');
+    expect(result.stdout).toContain(`::add-mask::${derived}`);
+  });
+
+  it('uses R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY as they are when both are set', () => {
+    writeArtifact('release-x86_64-unknown-linux-gnu/hub.deb', 'deb bytes');
+    const manifest = buildManifest();
+    fs.writeFileSync(`${manifest}.sig`, `${'ab'.repeat(64)}\n`);
+
+    const { result, keyId, secret } = upload({
+      CLOUDFLARE_API_TOKEN: '',
+      R2_ACCESS_KEY_ID: 'explicit-id',
+      R2_SECRET_ACCESS_KEY: 'explicit-secret',
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(keyId).toBe('explicit-id');
+    expect(secret).toBe('explicit-secret');
+  });
+
+  it('uploads nothing when Cloudflare rejects the token or reports it inactive', () => {
+    writeArtifact('release-x86_64-unknown-linux-gnu/hub.deb', 'deb bytes');
+    const manifest = buildManifest();
+    fs.writeFileSync(`${manifest}.sig`, `${'ab'.repeat(64)}\n`);
+
+    const rejected = upload({ CLOUDFLARE_API_TOKEN: 'some-other-token' });
+    expect(rejected.result.status).toBe(1);
+    expect(rejected.result.stdout).toContain('tokens/verify failed');
+    expect(rejected.paths).toEqual([]);
+
+    const expired = upload({}, 'expired');
+    expect(expired.result.status).toBe(1);
+    expect(expired.result.stdout).toContain('not active');
+    expect(expired.paths).toEqual([]);
   });
 });
